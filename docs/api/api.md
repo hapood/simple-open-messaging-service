@@ -135,13 +135,16 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 ### GET `/user/state-feed` — Client state feed
 
 - **Query**: `after`, optional `through`, `take`, and `mode=full|delta`. Returns a bounded page of
-  compacted relationship/request changes after its independent durable state-feed cursor. Conversation snapshots, content heads, read/unread state, and previews come from `POST /thread-feed`, not this endpoint. `RELATIONSHIP_INTENT` entries last updated more than seven days ago are
-  omitted in both full and delta mode; `INCOMING_INVITE_HEAD` remains available regardless of age
-  so request read state survives a device rebuild. Filtered ranges still advance the response cursor.
-  The response carries the current feed end and the next cursor for deterministic catch-up.
-- The client state feed retains relationship and request events, but no longer publishes
-  `THREAD_STATE`. Established and retained read-only conversations are created and updated by
-  the complete thread-feed snapshot; pending relationships do not create thread-list entries.
+  complete incoming-request head snapshots after its independent durable state-feed cursor; each
+  row body is `{ requestEndId, requestReadId }` with no event-type discriminator. Conversation
+  snapshots, content heads, read/unread state, and previews come from `POST /thread-feed`, not this
+  endpoint. Relationship and pair state reaches clients through the thread-feed snapshot; pending
+  relationships do not create thread-list entries. Rows are permanent transport history: clients
+  fold the range into their current head and may forget coordinates older than their full-sync
+  boundary. Filtered ranges still advance the response cursor.
+  The response carries the current feed end and the next cursor for deterministic catch-up, plus the
+  `profileNamespaceChangeEndId` hint.
+- The client state feed no longer publishes `THREAD_STATE` or per-relationship entries.
 - The default profile reference remains fixed until the relationship is established again. Revocation
   retains the previous reference; ordinary profile changes do not replace it.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
@@ -197,20 +200,25 @@ sent as a profile field; `target.profileNamespaceId` becomes the S2S path's
 Friend and group requests use the same directed facts. `RelationshipIntent(A,B)` and
 `RelationshipIntent(B,A)` are independent rows with independent notes. For a group relationship,
 one account is the group account and the other is the member account; `authorUserId` identifies which
-side authored the intent. There are no separate invite, join, friend-request, or group-membership
-request tables. The former polymorphic `Invite` table has been removed. Public relationship
-operations select the counterparty by Address; database intent ids are not part of the API contract.
-See the [relationship intent state machine](../overview/relationship-intent-state-machine.md) for
-the complete transition, pair-folding, and projection-side-effect rules.
+side authored the intent. Every observed request round is also stored as a permanent
+server-owned `RelationshipRequest` record covering friend requests, group applications, and group
+invitations; lists and decisions address that record by its decimal-string `requestId`. The former
+polymorphic `Invite` table has been removed. Intent identity itself (the four-column direction
+key) is not part of the API contract. See the
+[relationship intent state machine](../overview/relationship-intent-state-machine.md) for the
+complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/relationship/request` — Request a user or group relationship
 
-- **Body**: `{ account, namespaceId, note?: string(≤255), displayName?, avatar? }`. Namespace `0` selects a local account; a positive server-local identity namespace comes from the preceding federated resolve. For a foreign namespace, `displayName` is required and `avatar` is an optional untrusted request-card snapshot. `domain` and numeric user IDs are not mutation target fields.
+- **Body**: `{ account, namespaceId, note?: string(≤255), snapshot: { displayName, avatar } }`. Namespace `0` selects a local account; a positive server-local identity namespace comes from the preceding federated resolve. The snapshot is the send-time presentation of the receiver for the author's outgoing card; `avatar` is an explicit image reference or `null`. `domain` and numeric user IDs are not mutation target fields.
 - **Response data**: user intents return `{ status: "OK", threadId? }`; group-member intents return
   `{ status: "APPLIED" }` or an idempotent `{ status: "NO_OP", reason }`. Expected refusal is an
   HTTP-200 business envelope whose data is `{ status: "REJECTED", reason }`.
-- Execution upserts the caller's directed request. A new request expires after seven days; an explicit
-  resend after expiry renews the absolute expiry. `20001` friending self · `10001` target not found.
+- Execution opens or refreshes the caller's directed request round. A retry against the same live
+  round keeps its ID, evidence, and timestamps; a resend after expiry or a terminal conclusion
+  opens a new round with a new ID while the old round keeps its status and evidence. A live
+  reverse direction — their pending request, or their ACCEPTED that an own earlier revoke has not
+  yet reached — collapses into acceptance and re-establishes the pair synchronously. `20001` friending self · `10001` target not found.
 - A federated request publishes only `RELATIONSHIP_INTENT`, including the author's referenced
   profile namespace and `profileRev`. The receiver resolves that exact reference independently through the global profile
   resolver; there is no separate `PROFILE` State Feed event. An immutable `Profile` may be cached by that resolution without creating a foreign login/account row or changing relationship authorization.
@@ -218,31 +226,38 @@ the complete transition, pair-folding, and projection-side-effect rules.
   operation. The preceding exact-address resolve must already have established an active peer namespace.
   If it has not, the command returns a business rejection and creates no relationship request or State
   Feed item. Peer delivery is awakened only after commit.
-- No federated request id is exposed. A group account is accepted only for a federated group-join
+- The round ID is exposed to the author through the SENT list and drives later decisions. A group
+  account is accepted only for a federated group-join
   request; a local group relationship still requires an existing invitation.
 
-### POST `/relationship/revoke` — Revoke a relationship or pending request
+### POST `/relationship/revoke` — End an established P2P relationship
 
-- **Body**: `{ account, namespaceId }`; namespace `0` selects a local user.
-- For a user Address, revokes an incoming or outgoing pending friend request, or ends an active P2P
-  relationship. The conversation history is retained.
-- For a federated group Address, revokes only the caller's pending group-join request. Leaving an
-  active group remains a separate membership operation.
+- **Body**: `{ threadId }`, a positive P2P thread identifier. The former address
+  payload is rejected; there is no compatibility route.
+- Ends only an active P2P relationship belonging to the caller, symmetric to
+  group leave. Conversation history and concluded request records are retained.
+- The domain revalidates the active pair, thread and captured authorization epoch
+  under business locks. It must not redirect a stale revocation to a pending round.
+- Pending requests use `requests/reject` or `requests/withdraw` with an exact
+  `requestId`. Active group membership still uses `/group/leave`.
 - **Response data** follows the synchronous business-result contract above.
 
-### POST `/relationship/accept` — Accept an incoming relationship request
+### POST `/relationship/accept` — Accept an incoming friend request
 
-- **Body**: `{ account, namespaceId }`. Namespace-bound selection supports local and federated user requests as
-  well as local and federated group invitations. Database intent ids are not part of the API contract.
-- For a friend request, acceptance authors the caller's reverse direction. The P2P relationship is
-  active only when both directed intents are effective.
-- For a group invitation, the group mirror becomes active only after the origin's state snapshot
-  confirms membership.
-- **Response data** follows the synchronous business-result contract above.
+- **Body**: `{ requestId }`, the exact round ID observed on the RECEIVED list. The decision is
+  admitted only while that round is still the open round associated with the intent; a replaced or
+  concluded round returns `STALE_REQUEST`, an expired one `EXPIRED`. There is no address fallback.
+- Acceptance authors the caller's reverse direction, concludes the round as ACCEPTED, and
+  activates the pair synchronously. **Response data**: `{ status: "OK", threadId }` with the
+  active P2P thread.
+- A received federated request is projected into a local round on the receiving server using the
+  wire's own validity window; the receiver decides by that local round ID. Group invitations are
+  accepted through `POST /group/join-request`.
 
-There are no separate public reject, request-revoke, or delete-friend routes. All three user-facing
-actions use `/relationship/revoke` with the counterparty Address; the authored business transaction
-resolves and validates current state under its locks. A USER→GROUP federated join
+Request rejection and withdrawal use `/relationship/requests/reject` and
+`/relationship/requests/withdraw` with `{ requestId }`. Established friendship
+removal uses `/relationship/revoke` with `{ threadId }`, never the counterparty
+Address. Each transaction validates its distinct operation under business locks. A USER→GROUP federated join
 application likewise uses `/relationship/request`. GROUP→USER invitation administration remains
 under `/group/*` because the group, rather than the current user, authors that direction.
 
@@ -252,10 +267,21 @@ under `/group/*` because the group, rather than the current user, authors that d
   are ineffective even if an old feed projection remains. REVOKED has no expiry and is retained
   best-effort.
 
+### POST `/relationship/requests` — Online request list
+
+- **Body**: `{ bucket: "RECEIVED"|"SENT", before?, take? }`; `before` is an exclusive round-ID
+  decimal string, `take` is 1..50 (default 20). Newest round IDs first.
+- **Response data**: `{ items, hasMore, before, incomingHead }`. Items are closed records keyed by
+  round ID: INCOMING carries the exact author profile reference, OUTGOING the send-time snapshot.
+  Only rounds created within the last seven days are visible; older rounds stay stored but never
+  escape the window. Terminal status changes do not advance `incomingHead`.
+
 ### POST `/relationship/requests/read`
 
-- **Body**: `{ readThroughFeedId }`, a durably applied state-feed cursor; returns `{ readThroughFeedId }`. Advances the account-wide incoming-request read cursor, synchronized through `INCOMING_INVITE_HEAD`. Request lists are device projections consumed
-  from `ClientStateFeed`; the server exposes no separate incoming/outgoing list API.
+- **Body**: `{ requestReadId }`, a round-ID decimal string bounded by the account's current
+  `requestEndId`; the read advances monotonically and a duplicate or lower value is a no-op.
+- **Response data**: the complete `incomingHead` `{ requestEndId, requestReadId }`, synchronized
+  through ClientStateFeed.
 
 ---
 
@@ -404,16 +430,20 @@ task coalescing, and optimistic client correction semantics.
 
 ### Group request projections
 
-- `POST /group/join-requests` and `POST /group/invitations` use the same newest-first request-page
-  contract: `{ groupId, before?, take? }`. The caller must be an active OWNER or ADMIN;
-  rows carry the member address and `feedId` rather than a request id.
-- `POST /group/join-request/{accept,reject}` acts on a member-authored application.
-- `POST /group/invitation/revoke` cancels a still-live group-authored invitation.
-- Each manager action uses `{ groupId, account, namespaceId }` to identify the current member relationship.
-- These mutation routes execute their authored business transaction synchronously and return
-  `APPLIED`, an idempotent `NO_OP`, or an HTTP-200 business rejection.
-- These lists are backend projections written after the corresponding intent fact and relationship
-  fold commit. They are not membership authority.
+- `POST /group/join-requests` and `POST /group/invitations` use the shared newest-first request-page
+  contract: `{ groupId, before?, take? }`. The caller must be an active OWNER or ADMIN; rows are
+  shared round records keyed by exact request ID, plus the group-scoped
+  `joinRequestEndFeedId`/`joinRequestReadFeedId` manager coordinates.
+- `POST /group/join-request/accept` and `POST /group/join-request/reject` decide a member-authored
+  application by `{ groupId, requestId }`.
+- `POST /group/invitation/revoke` cancels a still-live group-authored invitation by
+  `{ groupId, requestId }`.
+- `POST /group/join-request` accepts the caller's received invitation round by `{ requestId }`
+  alone and returns `{ status: "OK", threadId }` for the joined group thread.
+- Manager decisions execute their authored business transaction synchronously and return `OK`,
+  `STALE_REQUEST`/`EXPIRED` for closed rounds, or an HTTP-200 business rejection.
+- These lists read the permanent server-owned round records written in the owning intent's
+  transaction. They are not membership authority.
 
 ### POST `/group/{leave, kick, transfer, set-role, update}`
 

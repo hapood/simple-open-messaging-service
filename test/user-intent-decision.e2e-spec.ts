@@ -4,6 +4,7 @@ import {
 } from '../src/common/locks/relationship-pair-business-lock.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
 import type { ProfiledAddress } from '../shared/profiled-address.js';
+import type { RequestSnapshot } from '../shared/request-snapshot.js';
 import {
   findP2PRelationship,
   seedAcceptedRelationship,
@@ -29,13 +30,11 @@ import { withBusinessLockCapture } from './business-lock-capture.js';
 import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
+import { RequestTransactionCapability } from '../src/relationship/request/request-transaction.contract.js';
 import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
-import {
-  UserIntentService,
-  type UserIntentDependencies,
-} from '../src/user/p2p-intent/authored/user-intent.service.js';
+import { UserIntentService } from '../src/user/p2p-intent/authored/user-intent.service.js';
 
 import { ReceivedUserIntentService } from '../src/user/p2p-intent/received/received-user-intent.service.js';
 import * as userIntentState from '../src/user/p2p-intent/shared/user-intent-state-sql.js';
@@ -76,20 +75,47 @@ function pairScope(
 describe('user intent decision', () => {
   let app: INestApplication;
   let database: DatabaseService;
-  let deps: UserIntentDependencies;
+  let deps: {
+    database: DatabaseService;
+    clientFeed: ClientStateFeedService;
+    peerFeed: PeerStateFeedService;
+    federation: FederationStateFeedPushService;
+    namespaces: FederationNamespaceService;
+  };
   let service: UserIntentService;
   const businessLocks: string[] = [];
   let sequence = 0;
 
   /** Dispatches one command to the service service; the suite compares
    * committed state after each command. */
-  async function runIntent(params: {
-    userId: number;
-    targetUserId: number | null;
-    target: { account: string; namespaceId: number };
-    decision: 'ACCEPTED' | 'REVOKED' | 'REQUESTED';
-    note?: string;
-  }): Promise<void> {
+  async function runIntent(
+    params:
+      | {
+          userId: number;
+          targetUserId: number | null;
+          target: { account: string; namespaceId: number };
+          decision: 'REQUESTED';
+          snapshot: RequestSnapshot;
+          note?: string;
+        }
+      | {
+          userId: number;
+          targetUserId: number | null;
+          target: { account: string; namespaceId: number };
+          decision: 'ACCEPTED' | 'REVOKED';
+          note?: string;
+        },
+  ): Promise<void> {
+    if (params.decision === 'REQUESTED') {
+      await service.execute({
+        userId: params.userId,
+        decision: 'REQUESTED',
+        snapshot: params.snapshot,
+        target: params.target,
+        ...(params.note === undefined ? {} : { note: params.note }),
+      });
+      return;
+    }
     await service.execute({
       userId: params.userId,
       decision: params.decision,
@@ -112,7 +138,15 @@ describe('user intent decision', () => {
       federation: app.get(FederationStateFeedPushService),
       namespaces: app.get(FederationNamespaceService),
     };
-    service = new UserIntentService(deps);
+    const requestCapability = app.get(RequestTransactionCapability);
+    service = new UserIntentService(
+      deps.database,
+      deps.clientFeed,
+      deps.peerFeed,
+      deps.federation,
+      deps.namespaces,
+      requestCapability,
+    );
   });
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -158,6 +192,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: bob.account, avatar: null },
       target: { account: bob.account, namespaceId: 0 },
     });
     const { pair } = await findP2PRelationship(database.db, alice.id, bob.id);
@@ -186,10 +221,14 @@ describe('user intent decision', () => {
     const domain = `received-profile-${++sequence}.test`;
     const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
     const peer = { account: 'remote-profile', domain, namespaceId };
-    const receiver = new ReceivedUserIntentService({
-      ...deps,
-      userIntents: service,
-    });
+    const receiver = new ReceivedUserIntentService(
+      deps.database,
+      deps.clientFeed,
+      deps.peerFeed,
+      deps.federation,
+      service,
+      app.get(RequestTransactionCapability),
+    );
     const clientUpdates: import('../src/client-state-feed/client-state-feed.service.js').PendingClientStateFeedUpdate[] =
       [];
     const now = Date.now();
@@ -244,13 +283,18 @@ describe('user intent decision', () => {
     const domain = `received-accept-profile-${++sequence}.test`;
     const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
     const peer = { account: 'remote-accept-profile', domain, namespaceId };
-    const receiver = new ReceivedUserIntentService({
-      ...deps,
-      userIntents: service,
-    });
+    const receiver = new ReceivedUserIntentService(
+      deps.database,
+      deps.clientFeed,
+      deps.peerFeed,
+      deps.federation,
+      service,
+      app.get(RequestTransactionCapability),
+    );
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: peer.account, avatar: null },
       target: { account: peer.account, namespaceId },
     });
     const now = Date.now();
@@ -295,6 +339,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: fromUserId,
       decision: 'REQUESTED',
+      snapshot: { displayName: target.account, avatar: null },
       target: { account: target.account, namespaceId: 0 },
       note,
     });
@@ -414,12 +459,52 @@ describe('user intent decision', () => {
         })
       : [];
     const userIds = [alice.id, bob.id].filter((id) => id > 0);
-    const feeds = await database.db.query.clientStateFeed.findMany({
-      where: and(
-        eq(tables.clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
-        inArray(tables.clientStateFeed.userId, userIds),
-      ),
-      orderBy: tables.clientStateFeed.id,
+    const requests = pair
+      ? await database.db.query.relationshipRequest.findMany({
+          where: or(
+            and(
+              eq(
+                tables.relationshipRequest.authorAccount,
+                firstEndpoint.account,
+              ),
+              eq(
+                tables.relationshipRequest.authorNamespaceId,
+                firstEndpoint.namespaceId,
+              ),
+              eq(
+                tables.relationshipRequest.receiverAccount,
+                secondEndpoint.account,
+              ),
+              eq(
+                tables.relationshipRequest.receiverNamespaceId,
+                secondEndpoint.namespaceId,
+              ),
+            ),
+            and(
+              eq(
+                tables.relationshipRequest.authorAccount,
+                secondEndpoint.account,
+              ),
+              eq(
+                tables.relationshipRequest.authorNamespaceId,
+                secondEndpoint.namespaceId,
+              ),
+              eq(
+                tables.relationshipRequest.receiverAccount,
+                firstEndpoint.account,
+              ),
+              eq(
+                tables.relationshipRequest.receiverNamespaceId,
+                firstEndpoint.namespaceId,
+              ),
+            ),
+          ),
+          orderBy: tables.relationshipRequest.id,
+        })
+      : [];
+    const heads = await database.db.query.account.findMany({
+      where: inArray(tables.account.id, userIds),
+      orderBy: tables.account.id,
     });
     const tasks = await database.db.query.durableTask.findMany({
       where: inArray(tables.durableTask.status, ['PENDING', 'SUPERSEDED']),
@@ -437,7 +522,8 @@ describe('user intent decision', () => {
       messages,
       states,
       audiences,
-      feeds,
+      requests,
+      heads,
       threadTasks,
     };
   }
@@ -481,6 +567,7 @@ describe('user intent decision', () => {
       targetUserId: bob.id,
       target: { account: bob.account, namespaceId: 0 },
       decision: 'REQUESTED',
+      snapshot: { displayName: bob.account, avatar: null },
       note: 'let us chat',
     });
     const after = await state(alice, bob);
@@ -506,15 +593,24 @@ describe('user intent decision', () => {
     expect(after.states.every((s) => s.messageVisibleThroughSeq === null)).toBe(
       true,
     );
-    // Both local endpoints learn the pending direction; no peer event, no tasks.
-    expect(after.feeds).toHaveLength(2);
-    expect(body(after.feeds[0].body).direction).toBe('OUTGOING');
-    expect(body(after.feeds[1].body).direction).toBe('INCOMING');
-    expect(body(after.feeds[0].body).peer).toMatchObject({
-      account: bob.account,
+    // One permanent round serves both viewpoints; only the receiver's
+    // incoming head moves. No peer event, no tasks.
+    expect(after.requests).toHaveLength(1);
+    expect(after.requests[0]).toMatchObject({
+      kind: 'FRIEND',
+      status: 'REQUESTED',
+      note: 'let us chat',
+      authorAccount: alice.account,
+      authorNamespaceId: 0,
+      receiverAccount: bob.account,
+      receiverNamespaceId: 0,
     });
-    expect(body(after.feeds[1].body).peer).toMatchObject({
-      account: alice.account,
+    expect(after.heads.find((head) => head.id === bob.id)).toMatchObject({
+      requestEndId: after.requests[0].id,
+      requestReadId: 0n,
+    });
+    expect(after.heads.find((head) => head.id === alice.id)).toMatchObject({
+      requestEndId: 0n,
     });
     expect(after.audiences).toHaveLength(0);
     expect(after.threadTasks).toHaveLength(0);
@@ -555,11 +651,16 @@ describe('user intent decision', () => {
       expect(participant.unreadCount).toBe(0);
       expect(participant.previewSeqs).toEqual([]);
     }
-    // Both directions reach both endpoints.
-    expect(after.feeds).toHaveLength(4);
-    expect(
-      after.feeds.filter((feed) => body(feed.body).direction === 'OUTGOING'),
-    ).toHaveLength(2);
+    // The acceptance concludes the seeded round without allocating a new
+    // request number or advancing any incoming head.
+    expect(after.requests).toHaveLength(1);
+    expect(after.requests[0]).toMatchObject({
+      status: 'ACCEPTED',
+      note: 'please',
+    });
+    expect(after.heads.find((head) => head.id === bob.id)).toMatchObject({
+      requestEndId: after.requests[0].id,
+    });
     expect(after.threadTasks.map((task) => task.taskType).sort()).toEqual([
       'FAN_OUT_FEDERATION_THREAD_CONTENT',
       'FAN_OUT_THREAD_CONTENT',
@@ -577,6 +678,7 @@ describe('user intent decision', () => {
       targetUserId: bob.id,
       target: { account: bob.account, namespaceId: 0 },
       decision: 'REQUESTED',
+      snapshot: { displayName: bob.account, avatar: null },
       note: 'from alice',
     });
     const after = await state(alice, bob);
@@ -618,6 +720,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: bob.account, avatar: null },
       target: { account: bob.account, namespaceId: 0 },
     });
     for (const user of [alice, bob]) {
@@ -648,6 +751,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: bob.account, avatar: null },
       target: { account: bob.account, namespaceId: 0 },
     });
     for (const user of [alice, bob]) {
@@ -707,6 +811,7 @@ describe('user intent decision', () => {
         await service.execute({
           userId: alice.id,
           decision: 'REQUESTED',
+          snapshot: { displayName: bob.account, avatar: null },
           target: { account: bob.account, namespaceId: 0 },
         });
         expect(reset).toHaveBeenCalledOnce();
@@ -775,7 +880,8 @@ describe('user intent decision', () => {
     expect(after.intents).toEqual(before.intents);
     expect(after.states).toEqual(before.states);
     expect(after.messages).toEqual(before.messages);
-    expect(after.feeds).toEqual(before.feeds);
+    expect(after.requests).toEqual(before.requests);
+    expect(after.heads).toEqual(before.heads);
     expect(after.audiences).toEqual(before.audiences);
     expect(after.threadTasks).toEqual(before.threadTasks);
     expect(notify).not.toHaveBeenCalled();
@@ -804,7 +910,8 @@ describe('user intent decision', () => {
     });
     const after = await state(alice, bob);
     expect(after.pair).toEqual(before.pair);
-    expect(after.feeds).toHaveLength(before.feeds.length);
+    expect(after.requests).toEqual(before.requests);
+    expect(after.heads).toEqual(before.heads);
     // A stale accept (no live reverse request) reports NOT_FOUND.
     const carol = await seedUser(app, `ack-stale-${++sequence}-carol`);
     await expect(
@@ -841,15 +948,14 @@ describe('user intent decision', () => {
     expect(authored).toMatchObject({ status: 'REVOKED' });
     expect(after.messages).toHaveLength(0);
     expect(after.threadTasks).toHaveLength(0);
-    const ended = after.feeds.filter(
-      (feed) => body(feed.body).status === 'REVOKED',
-    );
-    expect(ended).toHaveLength(2);
-    for (const feed of ended)
-      expect(body(feed.body)).toMatchObject({
-        requestStatus: 'WITHDRAWN',
-        requestDirection: feed.userId === alice.id ? 'OUTGOING' : 'INCOMING',
-      });
+    // The withdrawal concludes the author's round; the incoming head and the
+    // receiver's read cursor stay where the round left them.
+    expect(after.requests).toHaveLength(1);
+    expect(after.requests[0]).toMatchObject({ status: 'WITHDRAWN' });
+    expect(after.heads.find((head) => head.id === bob.id)).toMatchObject({
+      requestEndId: after.requests[0].id,
+      requestReadId: 0n,
+    });
   });
 
   it('rejects an incoming request through the same revocation', async () => {
@@ -866,20 +972,19 @@ describe('user intent decision', () => {
     });
     const after = await state(alice, bob);
     expect(after.pair).toMatchObject({ active: false });
-    // The recipient authored their own REVOKED; the applicant stays REQUESTED
-    // so a later re-application works through the existing gate.
-    expect(after.intents.map((intent) => intent.status)).toContain('REQUESTED');
-    expect(after.intents.map((intent) => intent.status)).toContain('REVOKED');
-    expect(after.messages).toHaveLength(0);
-    const ended = after.feeds.filter(
-      (feed) => body(feed.body).status === 'REVOKED',
+    // Same-node rejection concludes both effective directions atomically;
+    // re-application must open a new round, not revive the rejected one.
+    expect(after.intents).not.toHaveLength(0);
+    expect(after.intents.every((intent) => intent.status === 'REVOKED')).toBe(
+      true,
     );
-    expect(ended).toHaveLength(2);
-    for (const feed of ended)
-      expect(body(feed.body)).toMatchObject({
-        requestStatus: 'REJECTED',
-        requestDirection: feed.userId === alice.id ? 'OUTGOING' : 'INCOMING',
-      });
+    expect(after.messages).toHaveLength(0);
+    // Request history records the rejection independently of intent statuses.
+    expect(after.requests).toHaveLength(1);
+    expect(after.requests[0]).toMatchObject({
+      status: 'REJECTED',
+      note: 'hello?',
+    });
   });
 
   it('ends a friendship with the full departure effect set', async () => {
@@ -934,13 +1039,9 @@ describe('user intent decision', () => {
     expect(after.intents.every((intent) => intent.status === 'REVOKED')).toBe(
       true,
     );
-    // Both endpoints learn the closure with the sticky established flag.
-    const revokedFeeds = after.feeds.filter(
-      (feed) => body(feed.body).status === 'REVOKED',
-    );
-    expect(revokedFeeds.length).toBeGreaterThanOrEqual(2);
-    for (const feed of revokedFeeds.slice(0, 2))
-      expect(body(feed.body).established).toBe(true);
+    // Departure is a membership operation: it neither creates nor rewrites
+    // request history (this fixture seeds the pair without request rounds).
+    expect(after.requests).toEqual([]);
   });
 
   it('re-friends after a withdrawal only through a fresh live direction', async () => {
@@ -970,6 +1071,7 @@ describe('user intent decision', () => {
       targetUserId: bob.id,
       target: { account: bob.account, namespaceId: 0 },
       decision: 'REQUESTED',
+      snapshot: { displayName: bob.account, avatar: null },
     });
     const requested = await state(alice, bob);
     expect(requested.pair).toMatchObject({ active: false });
@@ -1000,6 +1102,7 @@ describe('user intent decision', () => {
       targetUserId: null,
       target: { account: `${prefix}-peer`, namespaceId },
       decision: 'REQUESTED',
+      snapshot: { displayName: `${prefix}-peer`, avatar: null },
       note: 'cross-server hello',
     });
     const after = await state(alice, {
@@ -1021,8 +1124,15 @@ describe('user intent decision', () => {
       status: 'REQUESTED',
       note: 'cross-server hello',
     });
-    // The remote target has no local account, so exactly one client feed row.
-    expect(after.feeds).toHaveLength(1);
+    // The remote target has no local account, so the round is one permanent
+    // row and no local incoming head exists to advance.
+    expect(after.requests).toHaveLength(1);
+    expect(after.requests[0]).toMatchObject({
+      kind: 'FRIEND',
+      status: 'REQUESTED',
+      receiverAccount: `${prefix}-peer`,
+      receiverNamespaceId: namespaceId,
+    });
     const peerRows = await database.db.query.peerStateFeed.findMany({
       where: eq(tables.peerStateFeed.namespaceId, namespaceId),
     });
@@ -1107,7 +1217,8 @@ describe('user intent decision', () => {
     ).rejects.toThrow('late failure');
     const failed = await state(alice, bob);
     expect(failed.pair).toEqual(before.pair);
-    expect(failed.feeds).toEqual(before.feeds);
+    expect(failed.requests).toEqual(before.requests);
+    expect(failed.heads).toEqual(before.heads);
     expect(failed.threadTasks).toEqual(before.threadTasks);
     expect(notify).not.toHaveBeenCalled();
     expect(push).not.toHaveBeenCalled();
@@ -1128,6 +1239,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: bob.account, avatar: null },
       target: { account: bob.account, namespaceId: 0 },
     });
     // Two racing acceptances serialize on the endpoint/pair scopes: the loser
@@ -1151,12 +1263,10 @@ describe('user intent decision', () => {
         (message) => contentOf(message).type === 'FRIEND_ADDED',
       ),
     ).toHaveLength(1);
-    // The state() helper reads both endpoints' feeds: the activated pair
-    // publishes both canonical directions to each user, so the deduped total
-    // is 2 users x 2 directions — exactly once per (user, direction) slot.
-    expect(
-      after.feeds.filter((feed) => body(feed.body)?.status === 'ACCEPTED'),
-    ).toHaveLength(4);
+    // The round is concluded exactly once: one permanent row, one status
+    // transition, and no additional request number.
+    expect(after.requests).toHaveLength(1);
+    expect(after.requests[0]).toMatchObject({ status: 'ACCEPTED' });
   });
 
   it('resolves the direct-namespace pair over a mirrored same-account decoy', async () => {
@@ -1167,6 +1277,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: bob.account, avatar: null },
       target: { account: bob.account, namespaceId: 0 },
     });
     // A group-mirror pair in a foreign namespace carries bob's account too;

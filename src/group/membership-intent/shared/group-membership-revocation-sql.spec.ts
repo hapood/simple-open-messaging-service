@@ -24,11 +24,12 @@ describe('group departure system message SQL', () => {
         memberAccount: 'alice',
         profileNamespaceId: 0,
         localMemberId: 11,
-        projectionDirections: [],
         author,
         receiver,
       }),
     );
+    expect(sql).not.toContain('"GroupRequestProjection"');
+    expect(sql).not.toContain('"ClientStateFeed"');
     // PostgreSQL cannot infer the type of bare bind parameters passed to
     // polymorphic jsonb_build_object. The type casts are required even when
     // the values are strings and integers in JavaScript.

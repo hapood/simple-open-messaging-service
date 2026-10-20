@@ -23,6 +23,8 @@ import {
 import { isBusinessRejection } from '../common/business-command-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { RelationshipRequestService } from '../relationship/request/relationship-request.service.js';
+import { RequestDecisionDto } from '../dto/relationship-request.dto.js';
 import { GroupService } from '../group/group.service.js';
 import { normalizeAccount } from '../common/account.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
@@ -62,6 +64,7 @@ import {
 @Controller()
 export class GroupController {
   constructor(
+    private readonly requests: RelationshipRequestService,
     private readonly groupService: GroupService,
     private readonly durableTasks: DurableTaskQueueService,
     private readonly rosterRoles: GroupRosterRoleService,
@@ -115,11 +118,16 @@ export class GroupController {
             account: normalizeAccount(user.account),
             namespaceId: user.namespaceId,
           };
-          return [JSON.stringify(address), { ...address, snapshot: user.snapshot }];
+          return [
+            JSON.stringify(address),
+            { ...address, snapshot: user.snapshot },
+          ];
         }),
       ).values(),
     ];
-    const invited: Array<Pick<GroupInviteAddressDto, 'account' | 'namespaceId'>> = [];
+    const invited: Array<
+      Pick<GroupInviteAddressDto, 'account' | 'namespaceId'>
+    > = [];
     const skipped: Array<
       Pick<GroupInviteAddressDto, 'account' | 'namespaceId'> & {
         reason: string;
@@ -199,10 +207,11 @@ export class GroupController {
     @Request() req: FastifyRequest,
     @Body() dto: QueryGroupJoinRequestsDto,
   ) {
-    return this.groupService.queryJoinRequests(
-      req.threadAccess!.threadId,
-      dto.before,
-      dto.take ?? 20,
+    return this.requests.queryGroup(
+      req.user.userId,
+      dto.groupId,
+      'APPLICATION',
+      dto,
     );
   }
 
@@ -217,10 +226,11 @@ export class GroupController {
     @Request() req: FastifyRequest,
     @Body() dto: QueryGroupJoinRequestsDto,
   ) {
-    return this.groupService.queryInvitations(
-      req.threadAccess!.threadId,
-      dto.before,
-      dto.take ?? 20,
+    return this.requests.queryGroup(
+      req.user.userId,
+      dto.groupId,
+      'INVITATION',
+      dto,
     );
   }
 
@@ -255,15 +265,12 @@ export class GroupController {
   async acceptJoinRequest(
     @Request() req: FastifyRequest,
     @Body() dto: HandleGroupJoinRequestDto,
-  ): Promise<GroupAuthoredMembershipIntentResult | ApiEnvelope> {
-    return this.groupIntentResult(
-      await this.groupIntents.execute({
-        threadId: req.threadAccess!.threadId,
-        target: this.managerTarget(dto),
-        scope: 'APPLICATION',
-        managerUserId: req.user.userId,
-        decision: 'ACCEPTED',
-      }),
+  ) {
+    return this.managerGroupRoundDecision(
+      req.user.userId,
+      dto,
+      'APPLICATION',
+      'ACCEPT',
     );
   }
 
@@ -278,15 +285,12 @@ export class GroupController {
   async rejectJoinRequest(
     @Request() req: FastifyRequest,
     @Body() dto: HandleGroupJoinRequestDto,
-  ): Promise<GroupAuthoredMembershipIntentResult | ApiEnvelope> {
-    return this.groupIntentResult(
-      await this.groupIntents.execute({
-        threadId: req.threadAccess!.threadId,
-        target: this.managerTarget(dto),
-        scope: 'APPLICATION',
-        managerUserId: req.user.userId,
-        decision: 'REVOKED',
-      }),
+  ) {
+    return this.managerGroupRoundDecision(
+      req.user.userId,
+      dto,
+      'APPLICATION',
+      'REJECT',
     );
   }
 
@@ -301,15 +305,12 @@ export class GroupController {
   async revokeInvitation(
     @Request() req: FastifyRequest,
     @Body() dto: HandleGroupJoinRequestDto,
-  ): Promise<GroupAuthoredMembershipIntentResult | ApiEnvelope> {
-    return this.groupIntentResult(
-      await this.groupIntents.execute({
-        threadId: req.threadAccess!.threadId,
-        target: this.managerTarget(dto),
-        scope: 'INVITATION',
-        managerUserId: req.user.userId,
-        decision: 'REVOKED',
-      }),
+  ) {
+    return this.managerGroupRoundDecision(
+      req.user.userId,
+      dto,
+      'INVITATION',
+      'WITHDRAW',
     );
   }
 
@@ -319,19 +320,135 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @Post('group/join-request')
   @ApiOperation({
-    summary: 'Author the local USER→GROUP request for an existing invitation',
+    summary: 'Accept an exact received group invitation round',
   })
   async joinRequestedGroup(
     @Request() req: FastifyRequest,
-    @Body() dto: GroupIdDto,
-  ): Promise<MemberAuthoredGroupMembershipIntentResult | ApiEnvelope> {
-    return this.memberIntentResult(
-      await this.memberIntents.execute({
-        threadId: dto.groupId,
-        memberUserId: req.user.userId,
-        decision: 'ACCEPTED',
-      }),
+    @Body() dto: RequestDecisionDto,
+  ) {
+    return this.memberGroupRoundDecision(
+      req.user.userId,
+      dto.requestId,
+      'ACCEPT',
     );
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle('group.join-request')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/invitation/decline')
+  @ApiOperation({
+    summary: 'Decline an exact received group invitation round',
+  })
+  async declineGroupInvitation(
+    @Request() req: FastifyRequest,
+    @Body() dto: RequestDecisionDto,
+  ) {
+    return this.memberGroupRoundDecision(
+      req.user.userId,
+      dto.requestId,
+      'REJECT',
+    );
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle('group.join-request')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/join-request/withdraw')
+  @ApiOperation({
+    summary: "Withdraw the member's own pending group application round",
+  })
+  async withdrawGroupApplication(
+    @Request() req: FastifyRequest,
+    @Body() dto: RequestDecisionDto,
+  ) {
+    return this.memberGroupRoundDecision(
+      req.user.userId,
+      dto.requestId,
+      'WITHDRAW',
+    );
+  }
+
+  /** Shared member-side round decision: the round locates the group;
+   * admission revalidates the exact round under the membership state
+   * machine's locks via the requestDecision gate. APPLIED and the idempotent
+   * NO_OP both satisfy the round. */
+  private async memberGroupRoundDecision(
+    userId: number,
+    requestId: string,
+    decision: 'ACCEPT' | 'REJECT' | 'WITHDRAW',
+  ) {
+    const resolution = await this.requests.resolveMemberGroupRound(
+      userId,
+      requestId,
+      decision,
+    );
+    if (resolution.status === 'STALE_REQUEST') return resolution;
+    const outcome = await this.memberIntents.execute(
+      {
+        threadId: resolution.threadId,
+        memberUserId: userId,
+        decision: decision === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED',
+      },
+      {
+        requestDecision: {
+          requestId: BigInt(requestId),
+          decision,
+        },
+      },
+    );
+    if (outcome.status === 'STALE_REQUEST' || outcome.status === 'EXPIRED')
+      return outcome;
+    if (isBusinessRejection(outcome))
+      return businessEnvelope(outcome.code, outcome.message, {
+        status: outcome.status,
+        reason: outcome.reason,
+      });
+    return { status: 'OK', threadId: resolution.threadId };
+  }
+
+  /** Shared manager-side round decision: the round resolves the addressed
+   * member for the known group thread, then the authored membership state
+   * machine settles it (activation, system message, fan-out, meta facts)
+   * with the exact-round gate under its locks. */
+  private async managerGroupRoundDecision(
+    managerUserId: number,
+    dto: HandleGroupJoinRequestDto,
+    scope: 'APPLICATION' | 'INVITATION',
+    decision: 'ACCEPT' | 'REJECT' | 'WITHDRAW',
+  ) {
+    const resolution = await this.requests.resolveManagerGroupRound(
+      managerUserId,
+      dto.groupId,
+      dto.requestId,
+      scope,
+    );
+    if (resolution.status === 'STALE_REQUEST') return resolution;
+    const outcome = await this.groupIntents.execute(
+      {
+        threadId: dto.groupId,
+        managerUserId,
+        decision: decision === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED',
+        target: resolution.member,
+        scope,
+      },
+      {
+        requestDecision: {
+          requestId: BigInt(dto.requestId),
+          decision,
+        },
+      },
+    );
+    if (outcome.status === 'STALE_REQUEST' || outcome.status === 'EXPIRED')
+      return outcome;
+    if (isBusinessRejection(outcome))
+      return businessEnvelope(outcome.code, outcome.message, {
+        status: outcome.status,
+        reason: outcome.reason,
+      });
+    return { status: 'OK', threadId: dto.groupId };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)

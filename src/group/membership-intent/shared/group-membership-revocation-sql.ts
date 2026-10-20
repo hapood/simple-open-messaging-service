@@ -1,12 +1,8 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
-import { requestProjectionFlipSql } from './group-membership-projection-sql.js';
 import { groupMemberProfileAddressSql } from '../../meta/group-member-profile-address.js';
-import {
-  clientIntentFeedWriteSql,
-  peerIntentFeedWriteSql,
-} from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
+import { peerIntentFeedWriteSql } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
 import { isGroupAccount } from '../../../common/account.js';
 
 export interface GroupMembershipRevocationInput {
@@ -18,8 +14,6 @@ export interface GroupMembershipRevocationInput {
   profileNamespaceId: number;
   /** Local Account.id of the member, or null for a peer-hosted member. */
   localMemberId: number | null;
-  /** Existing non-REVOKED projection directions for this member, from authorization. */
-  projectionDirections: readonly ('APPLICATION' | 'INVITATION')[];
   /** The REVOKED decision's author coordinates; the receiver is the other
    * endpoint. The `!` sigil distinguishes the group endpoint from the member,
    * so both the direction and the role derive from these two identities. */
@@ -38,19 +32,6 @@ function accountFanoutScopeKey(threadId: number, accountId: number): string {
   return JSON.stringify(['ACCOUNT_THREAD_FANOUT', threadId, accountId]);
 }
 
-function localRecipientKey(
-  authorAccount: string,
-  receiverAccount: string,
-): string {
-  return JSON.stringify([
-    'RELATIONSHIP_INTENT',
-    0,
-    authorAccount,
-    receiverAccount,
-    0,
-  ]);
-}
-
 /** One composed statement for a REVOKED decision. The pair's active-to-inactive
  * transition gates the MEMBER_DEPART fact, GROUP_LEFT message, and departure fan-out;
  * an inactive application rejection has none of these effects. Sibling CTEs
@@ -66,13 +47,7 @@ export function groupMembershipRevocationSql(
   // A remote member's received member direction has no group-authored recipient
   // event. A still-positive group direction is concluded and published by its
   // own writer.
-  const recipient = localMember
-    ? localRecipient(input, authorIsMember)
-    : authorIsMember
-      ? sql`recipient_result AS MATERIALIZED (
-          SELECT NULL::integer AS "userId", NULL::text AS "feedId"
-        )`
-      : peerRecipient(input);
+  const publishPeer = !localMember && !authorIsMember;
   const accountScope =
     input.localMemberId === null
       ? ''
@@ -184,13 +159,6 @@ export function groupMembershipRevocationSql(
       threadId: input.threadId,
       prefix: 'federation_fanout',
       federation: true,
-    })}, ${requestProjectionFlipSql({
-      threadId: input.threadId,
-      memberAccount: input.memberAccount,
-      profileNamespaceId: input.profileNamespaceId,
-      status: 'REVOKED',
-      authorAccount: input.author.account,
-      directions: input.projectionDirections,
     })}, audience_close AS (
       DELETE FROM "ThreadAudience" ta
       WHERE ta."threadId" = ${input.threadId} AND (
@@ -204,65 +172,17 @@ export function groupMembershipRevocationSql(
               AND p."endpointBType" = 'USER'
               AND p.id <> ${input.pairId})))
       RETURNING ta.id
-    ), ${recipient}
+    ) ${publishPeer ? sql`, ${peerRecipient(input)}` : sql.empty()}
     SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM depart_fact) AS "departed",
       EXISTS (SELECT 1 FROM audience_close) AS "audienceChanged",
-      (SELECT seq FROM system_message) AS "systemMessageSeq",
-      (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-      (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"
+      (SELECT seq FROM system_message) AS "systemMessageSeq"
+      ${publishPeer ? sql`, (SELECT "userId" FROM recipient_result) AS "recipientUserId",
+        (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"` : sql.empty()}
     FROM revocation v
     CROSS JOIN (SELECT count(*) FROM seq_alloc) thread_barrier
-    CROSS JOIN (SELECT count(*) FROM request_projection) projection_barrier
-  `;
-}
-
-/** Local recipient: the compacted RELATIONSHIP_INTENT feed row with body-level
- * dedupe, so a repeated revocation neither allocates a feed id nor wakes anyone.
- * `established` is false: the pair is already inactive within this statement. */
-function localRecipient(
-  input: GroupMembershipRevocationInput,
-  authorIsMember: boolean,
-): SQL {
-  const projection = input.projectionDirections[0];
-  const direction =
-    input.clientRequestDirection ??
-    (projection === 'APPLICATION' ? 'OUTGOING' : 'INCOMING');
-  const status =
-    input.clientRequestStatus ??
-    (projection === undefined
-      ? null
-      : authorIsMember
-        ? projection === 'APPLICATION'
-          ? 'WITHDRAWN'
-          : 'REJECTED'
-        : projection === 'APPLICATION'
-          ? 'REJECTED'
-          : 'WITHDRAWN');
-  return sql`
-    recipient_body AS MATERIALIZED (
-      SELECT ${localRecipientKey(input.author.account, input.receiver.account)}::text AS "compactionKey",
-        jsonb_build_object('status', v.status, 'note', v.note,
-          'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
-          'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
-            ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END,
-          'direction', ${authorIsMember ? 'OUTGOING' : 'INCOMING'}::text,
-          'threadId', ${input.threadId}::integer,
-          'established', (SELECT p.established FROM "RelationshipPair" p WHERE p.id = ${input.pairId}),
-          'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-            'profileRev', ${input.groupProfileRev}::integer)
-        ) || CASE WHEN ${status === null} THEN '{}'::jsonb
-          ELSE jsonb_build_object('requestStatus', ${status}::text,
-            'requestDirection', ${direction}::text) END AS body
-      FROM revocation v
-    ), candidate_bodies AS MATERIALIZED (
-      SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
-        b."compactionKey", ${input.author.account}::text AS account,
-        ${input.receiver.account}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
-      FROM recipient_body b
-    ), ${clientIntentFeedWriteSql()}
   `;
 }
 

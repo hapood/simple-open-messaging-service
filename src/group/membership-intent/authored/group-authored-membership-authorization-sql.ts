@@ -36,7 +36,6 @@ export type GroupMembershipAuthorizationRow = {
   localMemberId: number | null;
   authorized: boolean;
   managerIds: number[];
-  projectionDirections: Array<'APPLICATION' | 'INVITATION'>;
 };
 
 /** Names the group's business scope before locking when no request exists yet.
@@ -200,12 +199,7 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
             AND p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0
         )) AS authorized,
       COALESCE((SELECT jsonb_agg(id ORDER BY id) FROM managers
-        WHERE id IS DISTINCT FROM local_member.id), '[]'::jsonb) AS "managerIds",
-      COALESCE((SELECT jsonb_agg(DISTINCT p.direction ORDER BY p.direction)
-        FROM "GroupRequestProjection" p
-        WHERE p."threadId" = ${input.threadId} AND p."memberAccount" = ${input.targetAccount}
-          AND p."profileNamespaceId" = ${input.targetNamespaceId}
-          AND p.status = 'REQUESTED'), '[]'::jsonb) AS "projectionDirections"
+        WHERE id IS DISTINCT FROM local_member.id), '[]'::jsonb) AS "managerIds"
     FROM ${groupStateSql} g
     LEFT JOIN reverse rev ON true
     LEFT JOIN side_a ON true

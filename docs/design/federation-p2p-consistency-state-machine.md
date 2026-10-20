@@ -41,16 +41,22 @@ memory. Passwords, OTPs, cookies, and tokens are never written to artifacts.
 
 All workload mutations use the public relationship surface:
 
-| User action                | Endpoint                     |
-| -------------------------- | ---------------------------- |
-| Request or reverse-request | `POST /relationship/request` |
-| Accept an incoming request | `POST /relationship/accept`  |
-| Reject a request           | `POST /relationship/revoke`  |
-| Revoke a request           | `POST /relationship/revoke`  |
-| End a friendship           | `POST /relationship/revoke`  |
+| User action                | Endpoint                               | Identity                         |
+| -------------------------- | -------------------------------------- | -------------------------------- |
+| Request or reverse-request | `POST /relationship/request`           | account + namespaceId + snapshot |
+| Accept an incoming request | `POST /relationship/accept`            | requestId                        |
+| Reject a request           | `POST /relationship/requests/reject`   | requestId                        |
+| Withdraw a request         | `POST /relationship/requests/withdraw` | requestId                        |
+| End a friendship           | `POST /relationship/revoke`            | threadId on the actor's node     |
 
-The target domain is `local` when the target belongs to the actor's node and is
-the real federation domain otherwise.
+Namespace 0 addresses a local request target; a peer's namespace ID addresses
+its remote identity. Request decisions use the exact server-owned request row,
+not an endpoint fallback. Friendship removal uses the actor's P2P thread, is
+separate from request conclusion, and does not rewrite accepted request history.
+
+The P2P workload runner uses this contract exclusively; its operation modules carry unit
+coverage for the request-lifecycle mapping. Do not interpret a conformance-schema pass alone as
+validation of this HTTP workload.
 
 ## Online action selection
 

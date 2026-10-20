@@ -19,6 +19,7 @@ import {
 import { seedUserWithSession } from './seed.js';
 import { waitForDurableTask } from './durable-task-helpers.js';
 import { truncateTablesForTest } from './support/truncate';
+import { waitForReceivedRequest } from './support/received-request.js';
 
 describe('group disband task fan-out', () => {
   let app: NestFastifyApplication;
@@ -47,24 +48,31 @@ describe('group disband task fan-out', () => {
   it('marks a hosted group terminal, checkpoints children, and revokes every active member', async () => {
     const owner = await seedUserWithSession(app, 'disband-owner');
     const member = await seedUserWithSession(app, 'disband-member');
-    // The user-intent flow commits synchronously; only the group steps below
-    // travel through durable tasks.
+    // Request decisions commit synchronously; disband fan-out is durable.
     const sent = await request(app.getHttpServer())
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         account: member.account,
         namespaceId: 0,
+        snapshot: { displayName: member.account, avatar: null },
       });
     expect(sent.body.code).toBe(BusinessCode.OK);
+    const friendRequest = await waitForReceivedRequest(
+      app.getHttpServer(),
+      member.token,
+      {
+        kind: 'FRIEND',
+        author: { account: owner.account, namespaceId: 0 },
+        receiver: { account: member.account, namespaceId: 0 },
+      },
+    );
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({
-        account: owner.account,
-        namespaceId: 0,
-      });
+      .send({ requestId: friendRequest.id });
     expect(accepted.body.code).toBe(BusinessCode.OK);
+    expect(accepted.body.data.status).toBe('OK');
 
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')
@@ -76,14 +84,37 @@ describe('group disband task fan-out', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        users: [{ account: member.account, namespaceId: 0 }],
+        users: [
+          {
+            account: member.account,
+            namespaceId: 0,
+            snapshot: { displayName: member.account, avatar: null },
+          },
+        ],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
+    const groupThread = await database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, threadId),
+    });
+    if (!groupThread?.groupAccount) throw new Error('missing group identity');
+    const invitation = await waitForReceivedRequest(
+      app.getHttpServer(),
+      member.token,
+      {
+        kind: 'GROUP_INVITATION',
+        author: {
+          account: groupThread.groupAccount,
+          namespaceId: groupThread.authorityNamespaceId,
+        },
+        receiver: { account: member.account, namespaceId: 0 },
+      },
+    );
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ groupId: threadId });
+      .send({ requestId: invitation.id });
     expect(joined.body.code).toBe(BusinessCode.OK);
+    expect(joined.body.data.status).toBe('OK');
     const [threadBeforeDissolve] = await database.db
       .select({ groupId: messageThread.groupAccountId })
       .from(messageThread)

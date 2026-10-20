@@ -2,7 +2,6 @@ import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../../../federation/feder
 import { sql, type SQL } from 'drizzle-orm';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
-import { requestProjectionFlipSql } from './group-membership-projection-sql.js';
 import { groupMemberProfileAddressSql } from '../../meta/group-member-profile-address.js';
 
 export interface GroupMembershipAcceptanceInput {
@@ -16,7 +15,6 @@ export interface GroupMembershipAcceptanceInput {
   acceptedAt: Date;
   /** Which manager projection rows flip to ACCEPTED: the group's own ACK
    * accepts an application, the member's ACK completes an invitation. */
-  projectionDirections: readonly ('APPLICATION' | 'INVITATION')[];
   /** The member's ACK authors the member direction as well: it is the only
    * writer in this business family of a member-direction ACCEPTED, and
    * `join_source` reads the written row back so the roster fact sees this
@@ -74,10 +72,9 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
         AND "receiverAccount" = ${input.memberAccount} AND "receiverNamespaceId" = ${input.profileNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored_intent)
-    ), ${prepareRecipient(input)}, pair_change AS (
+    ), pair_change AS (
       UPDATE "RelationshipPair" SET active = true, established = true, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${input.pairId} AND NOT active AND EXISTS (SELECT 1 FROM accepted_intent)
-        AND EXISTS (SELECT 1 FROM recipient_prepared)
       RETURNING id
     ), roster_plan AS MATERIALIZED (
       SELECT 'MEMBER'::text AS role,
@@ -178,7 +175,6 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
         h."metaEndId", ${input.groupProfileRev}, (SELECT "profileSourceId" FROM group_profile_source), CURRENT_TIMESTAMP
       FROM local_member a CROSS JOIN roster_plan p CROSS JOIN join_source s
       CROSS JOIN accepted_intent i
-      CROSS JOIN recipient_prepared
       CROSS JOIN (SELECT count(*) FROM pair_change) pair_barrier
       CROSS JOIN (SELECT count(*) FROM member_fact) roster_barrier
       CROSS JOIN meta_head h
@@ -204,16 +200,6 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
       SELECT ${input.threadId}, 0, m."accountId", h."metaEndId" FROM member_state m CROSS JOIN meta_head h
       ON CONFLICT ("localUserId", "threadId") WHERE "localUserId" IS NOT NULL DO NOTHING
       RETURNING id
-    ), branch_done AS MATERIALIZED (
-      SELECT count(*) FROM member_state
-    ), recipient_feed AS (
-      INSERT INTO "ClientStateFeed" ("userId", account, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
-      SELECT a.id, ${input.groupAccount}, 0, 'RELATIONSHIP_INTENT', ${input.memberAccount}, 0, a."feedId", b."compactionKey", b.body
-      FROM recipient_allocation a CROSS JOIN recipient_body b CROSS JOIN branch_done
-      ON CONFLICT ("userId", "compactionKey") DO UPDATE SET "feedId" = EXCLUDED."feedId", body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
-      RETURNING "userId", "feedId"
-    ), recipient_result AS MATERIALIZED (
-      SELECT "userId", "feedId"::text AS "feedId", false AS invalid FROM recipient_feed
     )`;
 }
 
@@ -261,34 +247,6 @@ function remoteMember(input: GroupMembershipAcceptanceInput): SQL {
     ), branch_done AS MATERIALIZED (
       SELECT count(*) FROM source_sync
     ), ${peerRecipient(input)}`;
-}
-
-/** Reserve the local intent's position before participant triggers touch the same allocator.
- * Participant triggers may allocate later positions in this same statement. */
-function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
-  if (input.profileNamespaceId !== 0)
-    return sql`recipient_prepared AS MATERIALIZED (SELECT 1 AS ready)`;
-  const key = JSON.stringify([
-    'RELATIONSHIP_INTENT',
-    0,
-    input.groupAccount,
-    input.memberAccount,
-    0,
-  ]);
-  return sql`
-    recipient_body AS MATERIALIZED (
-      SELECT ${key}::text AS "compactionKey", jsonb_build_object('status', i.status, 'note', i.note,
-        'requestedAt', floor(extract(epoch FROM i."requestedAt") * 1000)::bigint, 'expiresAt', NULL,
-        'threadId', ${input.threadId}::integer, 'established', true,
-        'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-          'profileRev', ${input.groupProfileRev}::integer)) AS body
-      FROM accepted_intent i
-    ), recipient_allocation AS (
-      UPDATE "Account" a SET "clientStateFeedEndId" = a."clientStateFeedEndId" + 1, "updatedAt" = CURRENT_TIMESTAMP
-      FROM recipient_body b WHERE a.account = ${input.memberAccount} AND a."namespaceId" = 0
-        AND NOT EXISTS (SELECT 1 FROM "ClientStateFeed" f WHERE f."userId" = a.id AND f."compactionKey" = b."compactionKey" AND f.body = b.body)
-      RETURNING a.id, a."clientStateFeedEndId" AS "feedId"
-    ), recipient_prepared AS MATERIALIZED (SELECT count(*) FROM recipient_allocation)`;
 }
 
 function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
@@ -341,20 +299,6 @@ function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
     )`;
 }
 
-/** Acceptance only flips the managers' projection status (see the shared fragment's
- * contract). Managers exclude the applicant, whose Account may be updated by
- * participant/pair triggers. The group's own ACK accepts an application; the
- * member's ACK completes an invitation. */
-function managerProjections(input: GroupMembershipAcceptanceInput): SQL {
-  return requestProjectionFlipSql({
-    threadId: input.threadId,
-    memberAccount: input.memberAccount,
-    profileNamespaceId: input.profileNamespaceId,
-    status: 'ACCEPTED',
-    directions: input.projectionDirections,
-  });
-}
-
 /** One parameterized statement; CTE output dependencies connect the common and address-specific parts.
  * The roster effect admits the local and federation thread fan-outs in the same
  * statement (forward heads only; the executor reconciles the Meta coordinate). */
@@ -372,16 +316,15 @@ export function groupMembershipAcceptanceSql(
       threadId: input.threadId,
       prefix: 'federation_fanout',
       federation: true,
-    })},
-    ${managerProjections(input)}
+    })}
     SELECT i.status, i."profileRev", i.note, i."requestedAt", i."expiresAt",
-      (SELECT "feedId" FROM recipient_result) AS "recipientFeedId",
-      (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-      COALESCE((SELECT invalid FROM recipient_result), false) AS "invalidPeerHead",
+      ${input.profileNamespaceId !== 0 ? sql`
+        (SELECT "feedId" FROM recipient_result) AS "recipientFeedId",
+        (SELECT "userId" FROM recipient_result) AS "recipientUserId",
+        COALESCE((SELECT invalid FROM recipient_result), false) AS "invalidPeerHead",` : sql.empty()}
       p."memberChanged" AS "canonicalRosterChanged", EXISTS (SELECT 1 FROM audience_change) AS "audienceChanged",
       h."metaEndId"::text AS "groupMetaFeedEndId",
       (SELECT seq FROM system_message) AS "systemMessageSeq"
     FROM accepted_intent i CROSS JOIN roster_plan p CROSS JOIN meta_head h
-    CROSS JOIN (SELECT count(*) FROM seq_alloc) thread_barrier
-    CROSS JOIN (SELECT count(*) FROM request_projection) projection_barrier`;
+    CROSS JOIN (SELECT count(*) FROM seq_alloc) thread_barrier`;
 }

@@ -153,9 +153,9 @@ Meta](../design/canonical-group-meta.md) and [consumer rounds](../design/federat
 
 ## Client feeds
 
-`ClientStateFeed` compacts account-directed relationship/request metadata.
-`INCOMING_INVITE_HEAD` persists the account-wide incoming-request read watermark;
-request read state is not exclusively per-device.
+`ClientStateFeed` is an append-only per-account feed whose rows carry one complete incoming-request
+head body `{ requestEndId, requestReadId }`; it persists the account-wide incoming-request read
+watermark, so request read state is not exclusively per-device.
 
 Conversation snapshots, content heads, unread counts, and previews use
 `AccountThreadState.threadFeedId` and the independent `POST /thread-feed`

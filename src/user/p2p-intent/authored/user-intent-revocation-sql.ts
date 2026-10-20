@@ -2,10 +2,9 @@ import { sql, type SQL } from 'drizzle-orm';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { userIntentSystemParticipantsSql } from './user-intent-system-participants-sql.js';
 import {
-  userIntentClientBodiesSql,
   userIntentPeerWriteSql,
   type UserIntentFeedInput,
-} from './user-intent-client-feed-sql.js';
+} from './user-intent-peer-feed-sql.js';
 
 function threadFanoutScopeKey(threadId: number): string {
   return JSON.stringify(['THREAD_FANOUT', threadId]);
@@ -62,9 +61,9 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
     WITH authored AS (
       ${authoredSql}
     ), revocation AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt", snapshot FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt", snapshot
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
@@ -75,7 +74,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       RETURNING id
     ), departed AS MATERIALIZED (
       SELECT EXISTS (SELECT 1 FROM pair_change) AS departed
-    ), ${userIntentClientBodiesSql({ ...input, ownState: 'revocation', requestRevocation: true })}, seq_alloc AS (
+    ), seq_alloc AS (
       -- One update per row per statement: the epoch bump, the round disable,
       -- the head allocation, and the touch share this single write.
       UPDATE "MessageThread" t SET "curSeq" = t."curSeq" + 1,
@@ -174,8 +173,6 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM audience_close) AS "audienceChanged",
       (SELECT seq FROM system_message) AS "systemMessageSeq",
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('userId', r."userId", 'feedId', r."feedId")
-        ORDER BY r."userId") FROM recipient_result r), '[]'::jsonb) AS "clientUpdates",
       ${remote ? sql`(SELECT max("feedId") FROM peer_result)` : sql`NULL::text`} AS "peerFeedId"
     FROM revocation v
     CROSS JOIN (SELECT count(*) FROM member_watermark) watermark_barrier

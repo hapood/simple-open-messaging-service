@@ -4,12 +4,22 @@ import {
 } from './message-operations.mjs';
 import { LabApiError } from './api-actors.mjs';
 import { resolveWithRetry } from './execute.mjs';
+import { requestIdFromWire } from '../../../shared/relationship-request.ts';
+import { parseRequestSnapshot } from '../../../shared/request-snapshot.ts';
 
-function relationshipAddress(actor, peer, namespaceId = 0) {
-  return {
-    account: peer.account,
-    namespaceId,
-  };
+function profileSnapshot(profile) {
+  return parseRequestSnapshot({
+    displayName: profile?.name,
+    avatar: profile?.avatar || null,
+  });
+}
+
+function requestDecision(result, operationId) {
+  if (!['OK', 'STALE_REQUEST', 'EXPIRED'].includes(result?.status))
+    throw new Error(
+      `${operationId}: invalid request decision result: ${JSON.stringify(result)}`,
+    );
+  return result;
 }
 
 function journalBody(body) {
@@ -41,11 +51,13 @@ async function sendRequest(actor, peer, timeoutMs, actors) {
   const namespaceId = remote
     ? await peerNamespaceId(actors, actor, peer.domain, timeoutMs)
     : 0;
-  const body = relationshipAddress(actor, peer, namespaceId);
-  if (resolved) {
-    body.displayName = resolved.user.name;
-    if (resolved.user.avatar) body.avatar = resolved.user.avatar;
-  }
+  const body = {
+    account: peer.account,
+    namespaceId,
+    snapshot: profileSnapshot(
+      resolved ? resolved.user : await peer.myProfile(),
+    ),
+  };
   const accepted = await actor.post(
     '/relationship/request',
     body,
@@ -123,12 +135,6 @@ function peerNamespaceId(actors, actor, domain, timeoutMs) {
     .admin.peerNamespaceId(domain, Math.min(timeoutMs, 30_000));
 }
 
-function actorNamespaceId(actor, address) {
-  return address.slice(address.lastIndexOf('@') + 1) === actor.domain
-    ? 0
-    : undefined;
-}
-
 async function admitGroupOperation(operation, actors, timeoutMs) {
   const actor = actors.user(operation.actor);
   const separator = operation.group.lastIndexOf('@');
@@ -141,10 +147,11 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
   let endpoint;
   let body;
   let accepted;
+  let decision;
   let preflight;
   if (operation.type === 'REQUEST_GROUP_JOIN') {
     endpoint = '/relationship/request';
-    let displayName = operation.observedFacts.group.name;
+    let snapshot = profileSnapshot(operation.observedFacts.group);
     if (groupDomain !== actor.node.domain) {
       const resolved = await resolveWithRetry(
         actor,
@@ -157,7 +164,7 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
         groupDomain,
         timeoutMs,
       );
-      displayName = resolved.user.name;
+      snapshot = profileSnapshot(resolved.user);
       preflight = {
         endpoint: '/user/resolve-federated-stream',
         target: operation.group,
@@ -167,7 +174,7 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
       account: address.account,
       namespaceId: address.namespaceId,
       note: operation.id,
-      displayName,
+      snapshot,
     };
     accepted = await actor.post(
       endpoint,
@@ -176,28 +183,26 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
     );
   } else if (operation.type === 'ACCEPT_GROUP_INVITATION') {
     endpoint = '/group/join-request';
-    body = { groupId: threadId };
+    body = {
+      requestId: requestIdFromWire(operation.observedFacts.groupRequestId),
+    };
     accepted = await actor.post(
       endpoint,
       body,
       `accept invitation to ${operation.group}`,
     );
+    decision = requestDecision(accepted, operation.id);
   } else if (operation.type === 'REVOKE_GROUP_APPLICATION') {
-    endpoint = '/relationship/revoke';
-    if (groupDomain !== actor.node.domain) {
-      address.namespaceId = await peerNamespaceId(
-        actors,
-        actor,
-        groupDomain,
-        timeoutMs,
-      );
-    }
-    body = address;
+    endpoint = '/relationship/requests/withdraw';
+    body = {
+      requestId: requestIdFromWire(operation.observedFacts.userRequestId),
+    };
     accepted = await actor.post(
       endpoint,
       body,
-      `revoke group intent for ${operation.group}`,
+      `withdraw application for ${operation.group}`,
     );
+    decision = requestDecision(accepted, operation.id);
   } else if (operation.type === 'LEAVE_GROUP') {
     endpoint = '/group/leave';
     body = { groupId: threadId };
@@ -224,6 +229,9 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
         {
           account: operation.target.account,
           namespaceId: targetNamespaceId,
+          snapshot: profileSnapshot(
+            await actors.user(operation.target.address).myProfile(),
+          ),
         },
       ],
     };
@@ -250,14 +258,14 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
     }[operation.type];
     body = {
       groupId: threadId,
-      account: operation.target.memberAccount,
-      namespaceId: operation.target.memberNamespaceId ?? 0,
+      requestId: requestIdFromWire(operation.target.requestId),
     };
     accepted = await actor.post(
       endpoint,
       body,
       `${operation.type} in ${operation.group}`,
     );
+    decision = requestDecision(accepted, operation.id);
   } else if (
     operation.type === 'KICK_GROUP_MEMBER' ||
     operation.type === 'TRANSFER_GROUP_OWNERSHIP' ||
@@ -305,6 +313,7 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
     actor,
     request: { method: 'POST', endpoint, body: journalBody(body) },
     ...(preflight ? { preflight } : {}),
+    ...(decision ? { decision } : {}),
   };
 }
 
@@ -347,39 +356,48 @@ export async function admitOperation(operation, actors, timeoutMs) {
     );
   } else if (
     operation.type === 'ACCEPT_REQUEST' ||
-    operation.type === 'REJECT_REQUEST'
+    operation.type === 'REJECT_REQUEST' ||
+    operation.type === 'WITHDRAW_REQUEST'
   ) {
-    const actor = actors.user(operation.requestSubject);
-    const initiator = actors.user(operation.requestAuthor);
-    const endpoint =
-      operation.type === 'ACCEPT_REQUEST'
-        ? '/relationship/accept'
-        : '/relationship/revoke';
-    const body = relationshipAddress(
-      actor,
-      initiator,
-      actorNamespaceId(actor, initiator.address) ??
-        (await peerNamespaceId(actors, actor, initiator.domain, timeoutMs)),
+    const withdraw = operation.type === 'WITHDRAW_REQUEST';
+    const actor = actors.user(
+      withdraw ? operation.requestAuthor : operation.requestSubject,
     );
+    const endpoint = {
+      ACCEPT_REQUEST: '/relationship/accept',
+      REJECT_REQUEST: '/relationship/requests/reject',
+      WITHDRAW_REQUEST: '/relationship/requests/withdraw',
+    }[operation.type];
+    const body = {
+      requestId: requestIdFromWire(
+        withdraw
+          ? operation.observedFacts.outgoingRequestId
+          : operation.observedFacts.incomingRequestId,
+      ),
+    };
     const accepted = await actor.post(
       endpoint,
       body,
-      `${operation.type === 'ACCEPT_REQUEST' ? 'accept' : 'reject'} relationship request from ${initiator.address}`,
+      `${operation.type} ${body.requestId}`,
     );
     admission = {
       accepted,
       actor,
-      request: { method: 'POST', endpoint, body: journalBody(body) },
+      decision: requestDecision(accepted, operation.id),
+      request: { method: 'POST', endpoint, body },
     };
   } else if (operation.type === 'REVOKE_RELATIONSHIP') {
     const actor = actors.user(operation.actor);
     const peer = actors.user(operation.peer);
-    const body = relationshipAddress(
-      actor,
-      peer,
-      actorNamespaceId(actor, peer.address) ??
-        (await peerNamespaceId(actors, actor, peer.domain, timeoutMs)),
-    );
+    if (
+      operation.observedFacts?.state !== 'FRIEND' ||
+      !Number.isSafeInteger(operation.observedFacts.threadId) ||
+      operation.observedFacts.threadId <= 0
+    )
+      throw new Error(
+        `${operation.id}: established relationship requires an observed active thread`,
+      );
+    const body = { threadId: operation.observedFacts.threadId };
     const accepted = await actor.post(
       '/relationship/revoke',
       body,
@@ -408,13 +426,19 @@ export async function admitOperation(operation, actors, timeoutMs) {
     request: admission.request,
     ...(admission.preflight ? { preflight: admission.preflight } : {}),
     ...(admission.message ? { result: admission.message } : {}),
+    ...(admission.decision ? { result: admission.decision } : {}),
     ...(admission.expected ? { expected: admission.expected } : {}),
     ...(admission.attempts ? { attempts: admission.attempts } : {}),
     ...(admission.withdrawnClientMessageId
       ? { withdrawnClientMessageId: admission.withdrawnClientMessageId }
       : {}),
     ...(taskId ? { taskId, taskNode: admission.actor.node.name } : {}),
-    status: taskId ? 'ADMITTED' : 'SUCCEEDED',
+    status:
+      admission.decision && admission.decision.status !== 'OK'
+        ? 'OBSERVED_UNAVAILABLE'
+        : taskId
+          ? 'ADMITTED'
+          : 'SUCCEEDED',
     admittedAt: new Date().toISOString(),
   };
 }

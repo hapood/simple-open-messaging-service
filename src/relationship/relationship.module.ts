@@ -2,8 +2,13 @@ import { Module } from '@nestjs/common';
 import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
 import { MessageModule } from '../message/message.module.js';
 import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.module.js';
+import { GatewayModule } from '../gateway/gateway.module.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
 import { RelationshipService } from './relationship.service.js';
+import { RequestTransactionCapability } from './request/request-transaction.contract.js';
+import { RequestTransactionCapabilityImpl } from './request/request-transaction-capability.impl.js';
+import { RelationshipRequestService } from './request/relationship-request.service.js';
+import { RelationshipRequestServiceImpl } from './request/relationship-request.service.impl.js';
 
 /**
  * Relationship domain module. Pair + Intent own relationship state and transitions. Local conversation
@@ -13,8 +18,29 @@ import { RelationshipService } from './relationship.service.js';
  * remaining relationship projections and query-denial cleanup.
  */
 @Module({
-  imports: [AccountThreadStateModule, MessageModule, ClientStateFeedModule],
-  providers: [RelationshipService, RelationshipIntentService],
-  exports: [RelationshipService, RelationshipIntentService],
+  imports: [
+    AccountThreadStateModule,
+    MessageModule,
+    ClientStateFeedModule,
+    GatewayModule,
+  ],
+  providers: [
+    RelationshipService,
+    RelationshipIntentService,
+    {
+      provide: RequestTransactionCapability,
+      useClass: RequestTransactionCapabilityImpl,
+    },
+    {
+      provide: RelationshipRequestService,
+      useClass: RelationshipRequestServiceImpl,
+    },
+  ],
+  exports: [
+    RelationshipService,
+    RelationshipIntentService,
+    RequestTransactionCapability,
+    RelationshipRequestService,
+  ],
 })
 export class RelationshipModule {}

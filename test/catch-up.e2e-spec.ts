@@ -12,10 +12,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { withMessageDigest } from './support/message-fixture.js';
 import request from 'supertest';
 import { DatabaseService } from '../src/database/database.service';
-import { eq, sql } from 'drizzle-orm';
-import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service';
 import {
-  clientStateFeed,
   message,
   messageThread,
 } from '../src/database/schema';
@@ -28,7 +25,7 @@ import { truncateTablesForTest } from './support/truncate';
 
 /**
  * ClientStateFeed + /notification-feed/query e2e:
- *  - state feed: the sole device-facing compacted feed, including paired thread content heads.
+ *  - state feed transports request heads, independently of thread content heads.
  *  - notification-feed query: one descriptor per conversation. Message mode includes a bounded
  *    recent-message sample; private mode omits content entirely.
  *
@@ -141,73 +138,6 @@ describe('client state feed + notification feed', () => {
       .send(body);
   }
 
-  it('omits intents last updated over seven days ago without hiding invite heads or stalling cursors', async () => {
-    const feed = app.get(ClientStateFeedService);
-    for (const subjectAccount of ['expired', 'current']) {
-      await database.db.transaction((tx) =>
-        feed.writeInTx(tx, {
-          userId: recipientId,
-          account: 'recip',
-          namespaceId: 0,
-          eventType: 'RELATIONSHIP_INTENT',
-          subjectAccount,
-          subjectNamespaceId: 0,
-          body: { status: 'REQUESTED' },
-        }),
-      );
-    }
-    await database.db
-      .update(clientStateFeed)
-      .set({ updatedAt: sql`CURRENT_TIMESTAMP - INTERVAL '8 days'` })
-      .where(eq(clientStateFeed.subjectAccount, 'expired'));
-    await database.db.transaction((tx) =>
-      feed.writeInTx(tx, {
-        userId: recipientId,
-        account: '',
-        namespaceId: 0,
-        eventType: 'INCOMING_INVITE_HEAD',
-        subjectAccount: '',
-        subjectNamespaceId: 0,
-        body: { readThroughFeedId: 0 },
-      }),
-    );
-    await database.db
-      .update(clientStateFeed)
-      .set({ updatedAt: sql`CURRENT_TIMESTAMP - INTERVAL '8 days'` })
-      .where(eq(clientStateFeed.eventType, 'INCOMING_INVITE_HEAD'));
-
-    for (const mode of ['full', 'delta']) {
-      const page = (await getState({ after: 0, take: 200, mode })).body.data;
-      expect(
-        page.items.some(
-          (item: { subjectAccount: string }) =>
-            item.subjectAccount === 'expired',
-        ),
-      ).toBe(false);
-      expect(
-        page.items.some(
-          (item: { subjectAccount: string }) =>
-            item.subjectAccount === 'current',
-        ),
-      ).toBe(true);
-      expect(
-        page.items.some(
-          (item: { eventType: string }) =>
-            item.eventType === 'INCOMING_INVITE_HEAD',
-        ),
-      ).toBe(true);
-      expect(page.scannedThrough).toBe(page.stateFeedEndId);
-    }
-    const end = (await getState({ after: 0, take: 200 })).body.data
-      .stateFeedEndId;
-    const empty = (
-      await getState({ after: end - 3, through: end - 2, take: 1 })
-    ).body.data;
-    expect(empty.items).toEqual([]);
-    expect(empty.scannedThrough).toBe(end - 2);
-    expect(empty.hasMore).toBe(false);
-  });
-
   it('returns content heads and unread state together, outside state feed', async () => {
     const response = await getThreads();
     expect(response.body.code).toBe(0);
@@ -224,11 +154,8 @@ describe('client state feed + notification feed', () => {
       lastReadSeq: 0,
     });
     const state = await getState({ after: 0, take: 200, mode: 'full' });
-    expect(
-      state.body.data.items.some(
-        (row: { eventType: string }) => row.eventType === 'THREAD_CONTENT_HEAD',
-      ),
-    ).toBe(false);
+    expect(state.body.code).toBe(0);
+    expect(state.body.data.items).toEqual([]);
   });
 
   it('consumes every changed thread in feed order and advances empty ranges', async () => {

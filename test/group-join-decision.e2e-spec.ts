@@ -38,7 +38,6 @@ import { GroupRole } from '../src/database/enums.js';
 import { GroupService } from '../src/group/group.service.js';
 import {
   GroupAuthoredMembershipIntentService,
-  type GroupAuthoredMembershipIntentDependencies,
 } from '../src/group/membership-intent/authored/group-authored-membership-intent.service.js';
 import { MemberAuthoredGroupMembershipIntentService } from '../src/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
 import { GroupRosterRoleService } from '../src/group/roster-role/group-roster-role.service.js';
@@ -131,13 +130,16 @@ async function lockGroupScopeInTx(
 describe('group join decision', () => {
   let app: INestApplication;
   let database: DatabaseService;
-  let deps: GroupAuthoredMembershipIntentDependencies;
+  let capturedDatabase: DatabaseService;
   let services: {
     groups: GroupService;
     intents: RelationshipIntentService;
     mutations: GroupRelationshipMutationService;
     previews: ThreadPreviewService;
     rosterRoles: GroupRosterRoleService;
+    clientFeed: ClientStateFeedService;
+    peerFeed: PeerStateFeedService;
+    federation: FederationStateFeedPushService;
   };
   let authoredIntents: GroupAuthoredMembershipIntentService;
   const businessLocks: string[] = [];
@@ -161,21 +163,24 @@ describe('group join decision', () => {
     // Do not start schedulers: compare committed outbox state before background fanout consumes it.
     app = fixture.createNestApplication(new FastifyAdapter());
     database = app.get(DatabaseService);
-    deps = {
-      database: withBusinessLockCapture(database, businessLocks),
-      clientFeed: app.get(ClientStateFeedService),
-      peerFeed: app.get(PeerStateFeedService),
-      federation: app.get(FederationStateFeedPushService),
-      relationshipMutations: app.get(GroupRelationshipMutationService),
-    };
     services = {
       groups: app.get(GroupService),
       intents: app.get(RelationshipIntentService),
       mutations: app.get(GroupRelationshipMutationService),
       previews: app.get(ThreadPreviewService),
       rosterRoles: app.get(GroupRosterRoleService),
+      clientFeed: app.get(ClientStateFeedService),
+      peerFeed: app.get(PeerStateFeedService),
+      federation: app.get(FederationStateFeedPushService),
     };
-    authoredIntents = new GroupAuthoredMembershipIntentService(deps);
+    capturedDatabase = withBusinessLockCapture(database, businessLocks);
+    authoredIntents = new GroupAuthoredMembershipIntentService(
+      capturedDatabase,
+      services.clientFeed,
+      services.peerFeed,
+      services.federation,
+      services.mutations,
+    );
   });
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -210,6 +215,7 @@ describe('group join decision', () => {
         'REQUESTED',
         [],
         'please',
+        { snapshot: { displayName: 'Join authoredIntents', avatar: null } },
       );
     });
     const { pair } = await findGroupRelationship(
@@ -239,6 +245,36 @@ describe('group join decision', () => {
     };
   }
 
+  function requestScope(
+    groupAccount: string,
+    memberAccount: string,
+    memberNamespaceId = 0,
+  ) {
+    return or(
+      and(
+        eq(tables.relationshipRequest.kind, 'GROUP_APPLICATION'),
+        eq(tables.relationshipRequest.authorAccount, memberAccount),
+        eq(tables.relationshipRequest.authorNamespaceId, memberNamespaceId),
+        eq(tables.relationshipRequest.receiverAccount, groupAccount),
+        eq(tables.relationshipRequest.receiverNamespaceId, 0),
+      ),
+      and(
+        eq(tables.relationshipRequest.kind, 'GROUP_INVITATION'),
+        eq(tables.relationshipRequest.authorAccount, groupAccount),
+        eq(tables.relationshipRequest.authorNamespaceId, 0),
+        eq(tables.relationshipRequest.receiverAccount, memberAccount),
+        eq(tables.relationshipRequest.receiverNamespaceId, memberNamespaceId),
+      ),
+    );
+  }
+
+  function requestHistory(groupAccount: string, memberAccount: string) {
+    return database.db.query.relationshipRequest.findMany({
+      where: requestScope(groupAccount, memberAccount),
+      orderBy: tables.relationshipRequest.id,
+    });
+  }
+
   async function state(f: Awaited<ReturnType<typeof fixture>>) {
     const { pair } = await findGroupRelationship(
       database.db,
@@ -266,20 +302,13 @@ describe('group join decision', () => {
         eq(tables.threadAudience.localUserId, f.applicant.id),
       ),
     });
-    const projection = await database.db.query.groupRequestProjection.findFirst(
-      {
-        where: and(
-          eq(tables.groupRequestProjection.threadId, f.group.threadId),
-          eq(tables.groupRequestProjection.memberAccount, f.applicant.account),
-        ),
-      },
+    const requests = await requestHistory(f.group.account, f.applicant.account);
+    const application = requests.find(
+      (row) => row.kind === 'GROUP_APPLICATION',
     );
-    const feed = await database.db.query.clientStateFeed.findFirst({
-      where: and(
-        eq(tables.clientStateFeed.userId, f.applicant.id),
-        eq(tables.clientStateFeed.account, f.group.account),
-        eq(tables.clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
-      ),
+    const incomingHead = await database.db.query.account.findFirst({
+      where: eq(tables.account.id, f.applicant.id),
+      columns: { requestEndId: true, requestReadId: true },
     });
     const head = await database.db.query.accountThreadState.findFirst({
       where: and(
@@ -293,8 +322,9 @@ describe('group join decision', () => {
       roster,
       participant,
       audience,
-      projection,
-      feed,
+      requests,
+      application,
+      incomingHead,
       head,
     };
   }
@@ -415,7 +445,7 @@ describe('group join decision', () => {
   }
 
   it('preserves acceptance and rejection effects', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     for (const decision of ['ACCEPTED', 'REVOKED'] as const) {
@@ -441,19 +471,14 @@ describe('group join decision', () => {
           [f.applicant.account, 'REQUESTED'],
         ].sort(),
       );
-      expect(result.projection).toMatchObject({
-        direction: 'APPLICATION',
+      expect(result.requests).toHaveLength(1);
+      expect(result.application).toMatchObject({
+        kind: 'GROUP_APPLICATION',
         status: decision === 'ACCEPTED' ? 'ACCEPTED' : 'REJECTED',
+        note: 'please',
+        authorAccount: f.applicant.account,
+        receiverAccount: f.group.account,
       });
-      expect(result.feed?.body).toMatchObject({
-        status: decision,
-        note: decision === 'ACCEPTED' ? 'please' : '',
-      });
-      if (decision === 'REVOKED')
-        expect(result.feed?.body).toMatchObject({
-          requestStatus: 'REJECTED',
-          requestDirection: 'OUTGOING',
-        });
       if (decision === 'ACCEPTED') {
         expect(result.roster).toMatchObject({
           role: 'MEMBER',
@@ -481,7 +506,7 @@ describe('group join decision', () => {
     'activates a federated applicant (history=$history, existingFloor=$existingFloor)',
     async ({ history, existingFloor }) => {
       const notifications: Array<{ namespaceIds: number[] }> = [];
-      vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockImplementation(
+      vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockImplementation(
         async (namespaceIds) => {
           notifications.push({ namespaceIds: [...namespaceIds] });
         },
@@ -632,7 +657,7 @@ describe('group join decision', () => {
   );
 
   it('initializes a retained local read state without hiding history', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     for (const blocked of [false, true]) {
@@ -703,7 +728,7 @@ describe('group join decision', () => {
           (intent) => intent.authorAccount === f.group.account,
         )?.profileRev,
       );
-      expect(result.feed?.body).toMatchObject({ established: true });
+      expect(result.application).toMatchObject({ status: 'ACCEPTED' });
       expect(
         await database.db.query.message.findMany({
           where: eq(tables.message.threadId, f.group.threadId),
@@ -712,18 +737,24 @@ describe('group join decision', () => {
     }
   });
 
-  it('advances manager projection and profile heads without losing read watermarks', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+  it('preserves request-time evidence and manager read watermarks when current profiles change', async () => {
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
     const before = await state(f);
+    const metaBefore = await database.db.query.groupMeta.findFirst({
+      where: eq(tables.groupMeta.threadId, f.group.threadId),
+    });
+    if (!metaBefore) throw new Error('missing group request allocator');
+    const managerEnd = metaBefore.applicationEndId;
+    expect(managerEnd).toBeGreaterThan(0);
     await database.db.transaction(async (tx) => {
       await tx
         .update(tables.accountThreadState)
         .set({
-          joinRequestEndFeedId: before.projection!.feedId,
-          joinRequestReadFeedId: before.projection!.feedId,
+          joinRequestEndFeedId: managerEnd,
+          joinRequestReadFeedId: managerEnd,
         })
         .where(
           and(
@@ -759,29 +790,21 @@ describe('group join decision', () => {
         .where(eq(tables.groupAccount.account, f.group.account));
     });
     const seeded = await state(f);
-    const seededProfile = await database.db.query.clientStateFeed.findFirst({
-      where: and(
-        eq(tables.clientStateFeed.userId, f.owner.id),
-        eq(tables.clientStateFeed.eventType, 'PROFILE'),
-        eq(tables.clientStateFeed.account, f.applicant.account),
-      ),
-    });
     await runDecision(f.params);
     const after = await state(f);
     // Membership refers to the applicant-authored revision, not its newer default profile.
     expect(after.roster?.profileRev).toBe(1);
-    // The projection keeps the request-time fields written at application time.
-    expect(after.projection).toMatchObject({
+    // The permanent round keeps its request-time author reference and snapshot,
+    // not either endpoint's newer default profile.
+    expect(after.application).toMatchObject({
+      id: before.application!.id,
       status: 'ACCEPTED',
-      memberProfileRev: 1,
+      authorProfileRev: 1,
       note: 'please',
-    });
-    const profile = await database.db.query.clientStateFeed.findFirst({
-      where: and(
-        eq(tables.clientStateFeed.userId, f.owner.id),
-        eq(tables.clientStateFeed.eventType, 'PROFILE'),
-        eq(tables.clientStateFeed.account, f.applicant.account),
-      ),
+      snapshot: before.application!.snapshot,
+      requestedAt: before.application!.requestedAt,
+      expiresAt: before.application!.expiresAt,
+      createdAt: before.application!.createdAt,
     });
     const head = await database.db.query.accountThreadState.findFirst({
       where: and(
@@ -790,13 +813,10 @@ describe('group join decision', () => {
       ),
     });
     expect(head).toMatchObject({
-      joinRequestEndFeedId: after.projection!.feedId,
-      joinRequestReadFeedId: before.projection!.feedId,
+      joinRequestEndFeedId: managerEnd,
+      joinRequestReadFeedId: managerEnd,
     });
-    // Acceptance does not refresh the manager's profile entry and leaves the
-    // projection row's feed position untouched.
-    expect(profile).toEqual(seededProfile);
-    expect(after.projection!.feedId).toBe(before.projection!.feedId);
+    expect(after.incomingHead).toEqual(before.incomingHead);
     // Acceptance leaves the manager's thread-head watermarks untouched.
     expect(after.head).toMatchObject({
       joinRequestEndFeedId: seeded.head!.joinRequestEndFeedId,
@@ -809,7 +829,7 @@ describe('group join decision', () => {
   });
 
   it('serializes two approvals without duplicating membership', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -829,8 +849,8 @@ describe('group join decision', () => {
     });
     const result = await state(f);
     expect(result.pair?.active).toBe(true);
-    expect(result.projection).toMatchObject({
-      direction: 'APPLICATION',
+    expect(result.application).toMatchObject({
+      kind: 'GROUP_APPLICATION',
       status: 'ACCEPTED',
     });
     const joins = await database.db.query.groupMetaMemberFeed.findMany({
@@ -979,7 +999,7 @@ describe('group join decision', () => {
 
   it('rejects a pending application without admitting any fan-out', async () => {
     const f = await fixture();
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const before = await database.db.query.durableTask.findMany();
@@ -991,7 +1011,7 @@ describe('group join decision', () => {
 
   it('acceptance admits both thread fan-out channels', async () => {
     const f = await fixture();
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     await authoredIntents.execute(f.params);
@@ -1062,9 +1082,10 @@ describe('group join decision', () => {
         'REQUESTED',
         [],
         'INVITATION',
+        { snapshot: { displayName: invitee.account, avatar: null } },
       );
     });
-    const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
+    const notify = vi.spyOn(services.clientFeed, 'notifyFeedUpdates');
     const key = groupMembershipProjectionFanoutKey(f.group.threadId);
     await database.db.transaction(async (tx) => {
       await lockBusinessAccountsInTx(tx, [
@@ -1129,7 +1150,7 @@ describe('group join decision', () => {
       )?.checkpoint,
     ).toEqual({ afterManagerId: String(f.owner.id) });
 
-    // GC deletions and stale reads must not move a published watermark back.
+    // Stale reads and repeated fan-out must not move a published watermark back.
     await database.db
       .update(tables.accountThreadState)
       .set({ joinRequestEndFeedId: 999_999, groupInviteEndFeedId: 999_999 })
@@ -1146,18 +1167,13 @@ describe('group join decision', () => {
     expect(regressed?.groupInviteEndFeedId).toBe(999_999);
   });
 
-  it('numbers applications and invitations independently', async () => {
+  it('keeps request IDs separate from per-direction manager notification counters', async () => {
     const f = await fixture();
     const counterBefore = await database.db.query.groupMeta.findFirst({
       where: eq(tables.groupMeta.threadId, f.group.threadId),
     });
-    const applicationBefore =
-      await database.db.query.groupRequestProjection.findFirst({
-        where: and(
-          eq(tables.groupRequestProjection.threadId, f.group.threadId),
-          eq(tables.groupRequestProjection.direction, 'APPLICATION'),
-        ),
-      });
+    const applicationBefore = (await state(f)).application;
+    expect(applicationBefore).toBeDefined();
     // Inviting a fresh user stays REQUESTED; inviting the pending applicant
     // would auto-accept into membership instead of projecting an invitation.
     const invitee = await seedUser(app, `join-${f.owner.id}-invitee`);
@@ -1171,21 +1187,25 @@ describe('group join decision', () => {
         'REQUESTED',
         [],
         'INVITATION',
+        { snapshot: { displayName: invitee.account, avatar: null } },
       );
     });
-    const rows = await database.db.query.groupRequestProjection.findMany({
-      where: eq(tables.groupRequestProjection.threadId, f.group.threadId),
-    });
-    // The invitation advances only its own counter; the application retains
-    // its prior feed position even when group creation used earlier numbers.
-    const feedIds = Object.fromEntries(
-      rows.map((row) => [row.direction, row.feedId]),
+    const invitationRows = await requestHistory(
+      f.group.account,
+      invitee.account,
     );
+    expect(invitationRows).toHaveLength(1);
+    expect(invitationRows[0]).toMatchObject({
+      kind: 'GROUP_INVITATION',
+      status: 'REQUESTED',
+      note: 'join us',
+    });
+    expect(invitationRows[0].id).toBeGreaterThan(applicationBefore!.id);
+    // Global request IDs do not replace either manager notification counter.
     const counterAfter = await database.db.query.groupMeta.findFirst({
       where: eq(tables.groupMeta.threadId, f.group.threadId),
     });
-    expect(feedIds.APPLICATION).toBe(applicationBefore!.feedId);
-    expect(feedIds.INVITATION).toBe(counterBefore!.invitationEndId + 1);
+    expect((await state(f)).application).toEqual(applicationBefore);
     expect(counterAfter?.applicationEndId).toBe(
       counterBefore!.applicationEndId,
     );
@@ -1319,13 +1339,13 @@ describe('group join decision', () => {
     const f = await fixture();
     const before = await state(f);
     const tasksBefore = await database.db.query.durableTask.findMany();
-    const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
+    const notify = vi.spyOn(services.clientFeed, 'notifyFeedUpdates');
     const push = vi
-      .spyOn(deps.federation, 'pushStateFeedNamespaces')
+      .spyOn(services.federation, 'pushStateFeedNamespaces')
       .mockResolvedValue(undefined);
-    const transaction = deps.database.db.transaction.bind(deps.database.db);
+    const transaction = capturedDatabase.db.transaction.bind(capturedDatabase.db);
     const failure = vi
-      .spyOn(deps.database.db, 'transaction')
+      .spyOn(capturedDatabase.db, 'transaction')
       .mockImplementation(async (callback) =>
         transaction(async (tx) => {
           await callback(tx);
@@ -1425,12 +1445,14 @@ describe('group join decision', () => {
   );
 
   it('unified revocation kicks a rostered local member with the full membership effect set', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
     await authoredIntents.execute({ ...f.params, decision: 'ACCEPTED' });
-    expect((await state(f)).pair?.active).toBe(true);
+    const accepted = await state(f);
+    expect(accepted.pair?.active).toBe(true);
+    expect(accepted.application).toMatchObject({ status: 'ACCEPTED' });
     await authoredIntents.execute({
       ...f.params,
       decision: 'REVOKED',
@@ -1440,15 +1462,9 @@ describe('group join decision', () => {
     expect(after.pair?.active).toBe(false);
     expect(after.roster).toBeUndefined();
     expect(after.audience).toBeUndefined();
-    // The relationship intent is revoked, while the already accepted request
-    // projection remains accepted as historical request state.
-    expect(after.projection).toMatchObject({ status: 'ACCEPTED' });
-    expect(after.feed?.body).toMatchObject({
-      status: 'REVOKED',
-      // The kicked member's pair was established before; only a rejected
-      // applicant (never activated) reads established false.
-      established: true,
-    });
+    // Membership revocation must not rewrite accepted request history.
+    expect(after.requests).toEqual(accepted.requests);
+    expect(after.pair?.established).toBe(true);
     // GROUP_LEFT pins the kicked member's read watermark and carries the identity.
     const [message] = (
       await database.pool.query(
@@ -1522,7 +1538,7 @@ describe('group join decision', () => {
   });
 
   it('unified revocation kicks a rostered remote member through the peer feed', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const prefix = `join-kick-remote-${++sequence}`;
@@ -1650,7 +1666,7 @@ describe('group join decision', () => {
   });
 
   it('unified revocation only removes members strictly below the operator role', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1727,7 +1743,7 @@ describe('group join decision', () => {
   });
 
   it('unified revocation still rejects on a dissolved group but forbids removing members', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     // A rostered member is out of reach once the group is dissolved.
@@ -1772,7 +1788,7 @@ describe('group join decision', () => {
   });
 
   it('acceptance enforces the server capacity and keeps an invited slot', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     // The owner plus 998 accepted pairs reach the limit; a fresh applicant
@@ -1833,7 +1849,7 @@ describe('group join decision', () => {
   });
 
   it('unified acceptance treats a withdrawn application as a silent no-op', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1857,12 +1873,12 @@ describe('group join decision', () => {
     expect(result.pair?.active).toBe(false);
     // The application is member-authored (side B); the group never authored a row.
     expect(result.intents.map((intent) => intent.status)).toEqual(['REVOKED']);
-    // The withdrawal itself flipped the projection; the no-op left it untouched.
-    expect(result.projection).toMatchObject({ status: 'WITHDRAWN' });
+    // The withdrawal concluded the request; the later command left it intact.
+    expect(result.application).toMatchObject({ status: 'WITHDRAWN' });
   });
 
   it('unified acceptance completes an invitation whose invitee already acked', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1928,7 +1944,7 @@ describe('group join decision', () => {
   });
 
   it('unified request collapses a pending application into the acceptance path', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1936,6 +1952,7 @@ describe('group join decision', () => {
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: f.applicant.account, avatar: null },
       target: {
         account: f.applicant.account,
         namespaceId: 0,
@@ -1955,20 +1972,18 @@ describe('group join decision', () => {
       ].sort(),
     );
     expect(result.roster).toMatchObject({ role: 'MEMBER' });
-    // The applicant's own note wins, exactly like a direct ACK; no INVITATION
-    // projection row is created on the way in.
-    expect(result.feed?.body).toMatchObject({
+    // The applicant's original round is concluded; no invitation history is
+    // invented by the manager's crossed request.
+    expect(result.requests).toHaveLength(1);
+    expect(result.application).toMatchObject({
+      kind: 'GROUP_APPLICATION',
       status: 'ACCEPTED',
       note: 'please',
-    });
-    expect(result.projection).toMatchObject({
-      direction: 'APPLICATION',
-      status: 'ACCEPTED',
     });
   });
 
   it('unified request completes an outstanding invitation (req + ack = ack)', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -2006,6 +2021,7 @@ describe('group join decision', () => {
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: f.applicant.account, avatar: null },
       target: {
         account: f.applicant.account,
         namespaceId: 0,
@@ -2031,8 +2047,8 @@ describe('group join decision', () => {
     expect(result.roster).toMatchObject({ role: 'MEMBER' });
   });
 
-  it('unified request invites a fresh local member with projection-only effects', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+  it('unified request records a fresh local invitation and publishes only its incoming head', async () => {
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const owner = await seedUser(app, `join-req-${++sequence}-owner`);
@@ -2045,7 +2061,7 @@ describe('group join decision', () => {
       where: eq(tables.messageThread.id, created.threadId),
     });
     const group = { ...created, account: thread!.groupAccount! };
-    const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
+    const notify = vi.spyOn(services.clientFeed, 'notifyFeedUpdates');
     const tasksBefore = await database.db.query.durableTask.findMany();
     const [metaBefore] = await database.db
       .select()
@@ -2060,6 +2076,7 @@ describe('group join decision', () => {
       threadId: group.threadId,
       managerUserId: owner.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: invitee.account, avatar: null },
       target: {
         account: invitee.account,
         namespaceId: 0,
@@ -2114,36 +2131,31 @@ describe('group join decision', () => {
       invitationEndId: metaBefore.invitationEndId + 1,
       metaEndId: metaBefore.metaEndId,
     });
-    // One INVITATION projection row for the manager, numbered by the group.
-    const projection = await database.db.query.groupRequestProjection.findFirst(
-      {
-        where: and(
-          eq(tables.groupRequestProjection.threadId, group.threadId),
-          eq(tables.groupRequestProjection.direction, 'INVITATION'),
-          eq(tables.groupRequestProjection.memberAccount, invitee.account),
-          eq(tables.groupRequestProjection.profileNamespaceId, 0),
-        ),
-      },
-    );
-    expect(projection).toMatchObject({
+    // The invitation has a global bigint ID independent of the manager's
+    // per-direction notification counter.
+    const invitations = await requestHistory(group.account, invitee.account);
+    expect(invitations).toHaveLength(1);
+    const invitation = invitations[0];
+    expect(invitation).toMatchObject({
+      kind: 'GROUP_INVITATION',
       status: 'REQUESTED',
       note: 'join us',
-      feedId: meta.invitationEndId,
-      memberProfileRev: 0,
+      authorAccount: group.account,
+      authorNamespaceId: 0,
+      receiverAccount: invitee.account,
+      receiverNamespaceId: 0,
+      snapshot: { displayName: invitee.account, avatar: null },
     });
-    // The invitee learns through the compacted relationship feed.
-    const feed = await database.db.query.clientStateFeed.findFirst({
-      where: and(
-        eq(tables.clientStateFeed.userId, invitee.id),
-        eq(tables.clientStateFeed.account, group.account),
-        eq(tables.clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
-      ),
+    expect(intents[0].requestId).toBe(invitation.id);
+    const feedRows = await database.db.query.clientStateFeed.findMany({
+      where: eq(tables.clientStateFeed.userId, invitee.id),
+      orderBy: tables.clientStateFeed.feedId,
     });
-    expect(feed?.body).toMatchObject({
-      status: 'REQUESTED',
-      note: 'join us',
-      established: false,
-      threadId: group.threadId,
+    expect(feedRows).toHaveLength(1);
+    const feed = feedRows[0];
+    expect(feed.body).toEqual({
+      requestEndId: invitation.id.toString(),
+      requestReadId: '0',
     });
     // Only the projection fan-out task is admitted.
     const inserted = (await database.db.query.durableTask.findMany()).filter(
@@ -2165,7 +2177,7 @@ describe('group join decision', () => {
 
   it('unified request invites a fresh remote member through the peer feed', async () => {
     const notifications: number[][] = [];
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockImplementation(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockImplementation(
       async (namespaceIds) => {
         notifications.push([...namespaceIds]);
       },
@@ -2198,6 +2210,7 @@ describe('group join decision', () => {
       threadId: created.threadId,
       managerUserId: owner.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: 'Remote invitee', avatar: null },
       target: { account: member.account, namespaceId },
       note: 'join us',
     });
@@ -2244,7 +2257,7 @@ describe('group join decision', () => {
   });
 
   it('unified request re-invites a withdrawn applicant and no-ops for members, strangers, and dissolved groups', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
+    vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -2267,6 +2280,7 @@ describe('group join decision', () => {
         account: f.applicant.account,
         namespaceId: 0,
       },
+      snapshot: { displayName: f.applicant.account, avatar: null },
       note: 'again',
     });
     let result = await state(f);
@@ -2294,6 +2308,7 @@ describe('group join decision', () => {
       threadId: g.group.threadId,
       managerUserId: g.owner.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: g.applicant.account, avatar: null },
       target: {
         account: g.applicant.account,
         namespaceId: 0,
@@ -2323,6 +2338,7 @@ describe('group join decision', () => {
         threadId: g.group.threadId,
         managerUserId: g.owner.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: ghost, avatar: null },
         target: {
           account: ghost,
           namespaceId: 0,
@@ -2345,6 +2361,7 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         managerUserId: f.applicant.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: f.applicant.account, avatar: null },
         target: {
           account: f.applicant.account,
           namespaceId: 0,
@@ -2370,6 +2387,7 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: g.applicant.account, avatar: null },
         target: {
           account: g.applicant.account,
           namespaceId: 0,
@@ -2390,12 +2408,12 @@ describe('group join decision', () => {
     let membership: MemberAuthoredGroupMembershipIntentService;
 
     beforeAll(() => {
-      membership = new MemberAuthoredGroupMembershipIntentService({
-        database: deps.database,
-        clientFeed: deps.clientFeed,
-        relationshipMutations: services.mutations,
-        federation: deps.federation,
-      });
+      membership = new MemberAuthoredGroupMembershipIntentService(
+        withBusinessLockCapture(database, businessLocks),
+        services.clientFeed,
+        services.mutations,
+        services.federation,
+      );
     });
 
     /** Owner plus a fresh prospective member around one authoritative group. */
@@ -2430,7 +2448,7 @@ describe('group join decision', () => {
           ),
         );
 
-    it('applies to join, refreshes the application, and admits the projection fan-out', async () => {
+    it('opens an application, preserves same-round evidence on retry and admits manager fan-out', async () => {
       const f = await memberFixture();
       const messagesBefore = await database.pool.query(
         'SELECT count(*)::int AS n FROM "Message" WHERE "threadId" = $1',
@@ -2439,11 +2457,19 @@ describe('group join decision', () => {
       const initialMeta = await database.db.query.groupMeta.findFirst({
         where: eq(tables.groupMeta.threadId, f.group.threadId),
       });
-      const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
+      const incomingBefore = await database.db.query.account.findFirst({
+        where: eq(tables.account.id, f.member.id),
+        columns: {
+          requestEndId: true,
+          requestReadId: true,
+          clientStateFeedEndId: true,
+        },
+      });
       await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: 'Membership authoredIntents', avatar: null },
         note: 'let me in',
       });
       const { pair } = await findGroupRelationship(
@@ -2476,34 +2502,36 @@ describe('group join decision', () => {
         applicationEndId: initialMeta!.applicationEndId + 1,
         invitationEndId: initialMeta!.invitationEndId,
       });
-      // One APPLICATION projection row for the manager, numbered by the group.
-      const projection =
-        await database.db.query.groupRequestProjection.findFirst({
-          where: and(
-            eq(tables.groupRequestProjection.threadId, f.group.threadId),
-            eq(tables.groupRequestProjection.direction, 'APPLICATION'),
-            eq(tables.groupRequestProjection.memberAccount, f.member.account),
-          ),
-        });
-      expect(projection).toMatchObject({
+      const history = await requestHistory(f.group.account, f.member.account);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        kind: 'GROUP_APPLICATION',
         status: 'REQUESTED',
         note: 'let me in',
-        feedId: metaBefore.applicationEndId,
+        authorAccount: f.member.account,
+        authorNamespaceId: 0,
+        receiverAccount: f.group.account,
+        receiverNamespaceId: 0,
+        snapshot: { displayName: 'Membership authoredIntents', avatar: null },
       });
-      // The applicant learns through their own compacted outgoing feed row.
-      const feed = await database.db.query.clientStateFeed.findFirst({
-        where: and(
-          eq(tables.clientStateFeed.userId, f.member.id),
-          eq(tables.clientStateFeed.account, f.group.account),
-          eq(tables.clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
-        ),
-      });
-      expect(feed?.body).toMatchObject({
-        status: 'REQUESTED',
-        note: 'let me in',
-        direction: 'OUTGOING',
-        threadId: f.group.threadId,
-      });
+      expect(intents[0].requestId).toBe(history[0].id);
+      // SENT history is online only. Creating an outgoing application must not
+      // allocate an incoming head or a request-body feed entry for its author.
+      expect(
+        await database.db.query.account.findFirst({
+          where: eq(tables.account.id, f.member.id),
+          columns: {
+            requestEndId: true,
+            requestReadId: true,
+            clientStateFeedEndId: true,
+          },
+        }),
+      ).toEqual(incomingBefore);
+      expect(
+        await database.db.query.clientStateFeed.findMany({
+          where: eq(tables.clientStateFeed.userId, f.member.id),
+        }),
+      ).toEqual([]);
       // The projection fan-out task carries the per-manager notification.
       const tasks = await database.db.query.durableTask.findMany();
       expect(
@@ -2513,39 +2541,24 @@ describe('group join decision', () => {
             task.status === 'PENDING',
         ),
       ).toMatchObject({ checkpoint: { afterManagerId: '0' } });
-      // Only the applicant is woken in-process; managers ride the task.
-      expect(notify).toHaveBeenCalledTimes(1);
-      expect(notify.mock.calls[0][0]).toEqual([
-        { userId: f.member.id, feedId: Number(feed!.feedId) },
-      ]);
-
-      // A live application is refreshed: new number, note, and expiry.
-      notify.mockClear();
+      // A same-round retry must not allocate a new request ID or refresh its
+      // evidence, validity window or manager notification coordinate.
       await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: 'Changed application name', avatar: null },
         note: 'again please',
       });
       const [refreshedMeta] = await database.db
         .select()
         .from(tables.groupMeta)
         .where(eq(tables.groupMeta.threadId, f.group.threadId));
-      expect(refreshedMeta.applicationEndId).toBe(
-        metaBefore.applicationEndId + 1,
+      expect(refreshedMeta).toEqual(metaBefore);
+      expect(await requestHistory(f.group.account, f.member.account)).toEqual(
+        history,
       );
-      const refreshed =
-        await database.db.query.groupRequestProjection.findFirst({
-          where: and(
-            eq(tables.groupRequestProjection.threadId, f.group.threadId),
-            eq(tables.groupRequestProjection.direction, 'APPLICATION'),
-            eq(tables.groupRequestProjection.memberAccount, f.member.account),
-          ),
-        });
-      expect(refreshed).toMatchObject({
-        feedId: refreshedMeta.applicationEndId,
-        note: 'again please',
-      });
+      expect(await intentsOf(f)).toEqual(intents);
       const refreshedPair = await findGroupRelationship(
         database.db,
         f.group.threadId,
@@ -2564,9 +2577,10 @@ describe('group join decision', () => {
           account: f.member.account,
           namespaceId: 0,
         },
+        snapshot: { displayName: f.member.account, avatar: null },
         note: 'join us',
       });
-      const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
+      const notify = vi.spyOn(services.clientFeed, 'notifyFeedUpdates');
       await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
@@ -2597,17 +2611,13 @@ describe('group join decision', () => {
         [f.group.threadId],
       );
       expect(joined.rows[0].n).toBe(1);
-      // The INVITATION row flips; no APPLICATION row was ever created.
-      const rows = await database.db.query.groupRequestProjection.findMany({
-        where: and(
-          eq(tables.groupRequestProjection.threadId, f.group.threadId),
-          eq(tables.groupRequestProjection.memberAccount, f.member.account),
-        ),
-      });
+      // The original invitation is concluded; no application is invented.
+      const rows = await requestHistory(f.group.account, f.member.account);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
-        direction: 'INVITATION',
+        kind: 'GROUP_INVITATION',
         status: 'ACCEPTED',
+        snapshot: { displayName: f.member.account, avatar: null },
       });
       // Only the member is woken in-process.
       expect(notify).toHaveBeenCalledTimes(1);
@@ -2623,12 +2633,14 @@ describe('group join decision', () => {
           account: f.member.account,
           namespaceId: 0,
         },
+        snapshot: { displayName: f.member.account, avatar: null },
         note: 'join us',
       });
       await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: 'Membership authoredIntents', avatar: null },
         note: 'oh hi',
       });
       const { pair } = await findGroupRelationship(
@@ -2642,15 +2654,10 @@ describe('group join decision', () => {
         [f.group.account, 'ACCEPTED'],
         [f.member.account, 'ACCEPTED'],
       ]);
-      const rows = await database.db.query.groupRequestProjection.findMany({
-        where: and(
-          eq(tables.groupRequestProjection.threadId, f.group.threadId),
-          eq(tables.groupRequestProjection.memberAccount, f.member.account),
-        ),
-      });
+      const rows = await requestHistory(f.group.account, f.member.account);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
-        direction: 'INVITATION',
+        kind: 'GROUP_INVITATION',
         status: 'ACCEPTED',
       });
     });
@@ -2661,10 +2668,13 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: 'Membership authoredIntents', avatar: null },
         note: 'let me in',
       });
       const tasksBefore = await database.db.query.durableTask.findMany();
-      const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
+      const feedsBefore = await database.db.query.clientStateFeed.findMany({
+        where: eq(tables.clientStateFeed.userId, f.member.id),
+      });
       await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
@@ -2679,15 +2689,12 @@ describe('group join decision', () => {
       expect(intents.map((i) => [i.authorAccount, i.status])).toEqual([
         [f.member.account, 'REVOKED'],
       ]);
-      const projection =
-        await database.db.query.groupRequestProjection.findFirst({
-          where: and(
-            eq(tables.groupRequestProjection.threadId, f.group.threadId),
-            eq(tables.groupRequestProjection.direction, 'APPLICATION'),
-            eq(tables.groupRequestProjection.memberAccount, f.member.account),
-          ),
-        });
-      expect(projection).toMatchObject({ status: 'WITHDRAWN' });
+      const history = await requestHistory(f.group.account, f.member.account);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        kind: 'GROUP_APPLICATION',
+        status: 'WITHDRAWN',
+      });
       // No departure facts: the applicant was never rostered.
       const departures = await database.pool.query(
         `SELECT count(*)::int AS n FROM "GroupMetaMemberFeed"
@@ -2695,15 +2702,19 @@ describe('group join decision', () => {
         [f.group.threadId],
       );
       expect(departures.rows[0].n).toBe(0);
-      // Decision-time silence: no new tasks, only the member's own wake.
+      // A terminal update does not allocate a new-request notification.
       const newTasks = (await database.db.query.durableTask.findMany()).filter(
         (task) => !tasksBefore.some((previous) => previous.id === task.id),
       );
       expect(newTasks).toHaveLength(0);
-      expect(notify).toHaveBeenCalledTimes(1);
+      expect(
+        await database.db.query.clientStateFeed.findMany({
+          where: eq(tables.clientStateFeed.userId, f.member.id),
+        }),
+      ).toEqual(feedsBefore);
     });
 
-    it('declines an outstanding invitation without touching side A', async () => {
+    it('declines an invitation and concludes both local intent directions', async () => {
       const f = await memberFixture();
       await authoredIntents.execute({
         threadId: f.group.threadId,
@@ -2713,8 +2724,12 @@ describe('group join decision', () => {
           account: f.member.account,
           namespaceId: 0,
         },
+        snapshot: { displayName: f.member.account, avatar: null },
         note: 'join us',
       });
+      const pending = await requestHistory(f.group.account, f.member.account);
+      expect(pending).toHaveLength(1);
+      expect(pending[0].status).toBe('REQUESTED');
       await membership.execute({
         threadId: f.group.threadId,
         memberUserId: f.member.id,
@@ -2727,18 +2742,12 @@ describe('group join decision', () => {
       );
       const intents = await intentsOf(f);
       expect(intents.map((i) => [i.authorAccount, i.status])).toEqual([
-        [f.group.account, 'REQUESTED'],
+        [f.group.account, 'REVOKED'],
         [f.member.account, 'REVOKED'],
       ]);
-      const projection =
-        await database.db.query.groupRequestProjection.findFirst({
-          where: and(
-            eq(tables.groupRequestProjection.threadId, f.group.threadId),
-            eq(tables.groupRequestProjection.direction, 'INVITATION'),
-            eq(tables.groupRequestProjection.memberAccount, f.member.account),
-          ),
-        });
-      expect(projection).toMatchObject({ status: 'REJECTED' });
+      expect(await requestHistory(f.group.account, f.member.account)).toEqual([
+        { ...pending[0], status: 'REJECTED', updatedAt: expect.any(Date) },
+      ]);
     });
 
     it('leaves the roster with the full departure effect', async () => {
@@ -2747,6 +2756,7 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: 'Membership authoredIntents', avatar: null },
       });
       const _applied = await findGroupRelationship(
         database.db,
@@ -2766,6 +2776,12 @@ describe('group join decision', () => {
         scope: 'APPLICATION',
         decision: 'ACCEPTED',
       });
+      const acceptedHistory = await requestHistory(
+        f.group.account,
+        f.member.account,
+      );
+      expect(acceptedHistory).toHaveLength(1);
+      expect(acceptedHistory[0].status).toBe('ACCEPTED');
       const before = await database.db.query.durableTask.findMany();
       await membership.execute({
         threadId: f.group.threadId,
@@ -2819,13 +2835,9 @@ describe('group join decision', () => {
       expect(Number(threadFanout!.payload.messageEndSeq)).toBe(
         leftSeq.rows[0].n,
       );
-      const rows = await database.db.query.groupRequestProjection.findMany({
-        where: and(
-          eq(tables.groupRequestProjection.threadId, f.group.threadId),
-          eq(tables.groupRequestProjection.memberAccount, f.member.account),
-        ),
-      });
-      expect(rows.every((row) => row.status === 'ACCEPTED')).toBe(true);
+      expect(await requestHistory(f.group.account, f.member.account)).toEqual(
+        acceptedHistory,
+      );
     });
 
     it('rejects and no-ops the edges', async () => {
@@ -2858,11 +2870,13 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         memberUserId: f.member.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: 'Membership authoredIntents', avatar: null },
       });
       await authoredIntents.execute({
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: f.member.account, avatar: null },
         target: {
           account: f.member.account,
           namespaceId: 0,
@@ -2899,6 +2913,7 @@ describe('group join decision', () => {
           threadId: f.group.threadId,
           memberUserId: stranger.id,
           decision: 'REQUESTED',
+          snapshot: { displayName: 'Membership authoredIntents', avatar: null },
         }),
       ).resolves.toMatchObject({
         status: 'REJECTED',

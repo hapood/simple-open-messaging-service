@@ -30,6 +30,7 @@ import {
   type FedApp,
   type S2sProxy,
 } from './federation-harness.js';
+import { waitForReceivedRequest } from './support/received-request.js';
 import {
   uploadAvatar,
   establishFederatedFriendship,
@@ -65,9 +66,9 @@ import {
   forwardMessage,
   groupMeta,
   groupMetaMemberFeed,
-  groupRequestProjection,
   relationshipPair,
   relationshipIntent,
+  relationshipRequest,
   mediaAsset,
   messageAsset,
   message,
@@ -489,7 +490,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({
         account: 'bob',
         namespaceId: namespaceBOnA,
-        displayName: 'Bob',
+        snapshot: { displayName: 'Bob', avatar: null },
         note: 'hi from aaa',
       });
     expect(res.status).toBe(200);
@@ -559,12 +560,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(publishedRequest).toBeDefined();
 
+    const incomingFriendRequest = await waitForReceivedRequest(
+      appB.baseUrl,
+      tokenB,
+      {
+        kind: 'FRIEND',
+        author: { account: 'alice', namespaceId: namespaceAOnB },
+        receiver: { account: 'bob', namespaceId: 0 },
+      },
+    );
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ account: 'alice', namespaceId: namespaceAOnB });
+      .send({ requestId: incomingFriendRequest.id });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    // The address-only acceptance activates synchronously on the accepting
+    // Exact-round acceptance activates synchronously on the accepting
     // side; the origin learns through the peer state-feed push.
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
 
@@ -708,7 +718,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .send({
           account: betaAccount,
           namespaceId: namespaceBOnA,
-          displayName: 'Cross Beta',
+          snapshot: { displayName: 'Cross Beta', avatar: null },
           note: 'A request',
         });
       expect(fromA.body.code).toBe(BusinessCode.OK);
@@ -722,7 +732,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .send({
           account: alphaAccount,
           namespaceId: namespaceAOnB,
-          displayName: 'Cross Alpha',
+          snapshot: { displayName: 'Cross Alpha', avatar: null },
           note: 'B request',
         });
       expect(fromB.body.code).toBe(BusinessCode.OK);
@@ -2064,7 +2074,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: groupThreadA,
-        users: [{ account: 'bob', namespaceId: bobAddressOnA.namespaceId }],
+        users: [
+          {
+            account: 'bob',
+            namespaceId: bobAddressOnA.namespaceId,
+            snapshot: { displayName: 'Bob', avatar: null },
+          },
+        ],
       });
     expect(invite.body.code, JSON.stringify(invite.body)).toBe(BusinessCode.OK);
 
@@ -2149,13 +2165,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // Local acceptance updates the relationship state. The remote host later publishes the
     // authoritative member roster through GROUP_META; mirrors do not derive AccountThreadState.
+    const invitation = await waitForReceivedRequest(appB.baseUrl, tokenB, {
+      kind: 'GROUP_INVITATION',
+      author: {
+        account: groupAccount,
+        namespaceId: await requireActiveNamespaceId(appB, DOM_A),
+      },
+      receiver: { account: 'bob', namespaceId: 0 },
+    });
     const accept = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ groupId: mirrorB.id });
+      .send({ requestId: invitation.id });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, accept.body);
+    expect(accept.body.data.status).toBe('OK');
     const outboundJoin = await appB.database.query.peerStateFeed.findFirst({
       where: and(
         eq(peerStateFeed.namespaceId, aliceAddressOnB.namespaceId),
@@ -2479,7 +2503,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     firstMirrorGroupBId = mirrorB.groupId;
   }, 60_000);
 
-  it('projects a federated join application and converges reject, renew, and revoke', async () => {
+  it('records a federated join application on the receiver and converges reject, renew, and withdraw', async () => {
     const { id: erinLocalIdB, token: tokenErin } = await registerAndLogin(
       appB,
       'erin-join-projection',
@@ -2492,26 +2516,31 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({
         account: firstGroupAccount,
         namespaceId: namespaceAOnB,
-        displayName: 'fed-group',
+        snapshot: { displayName: 'fed-group', avatar: null },
         note: 'federated application',
       });
     expect(apply.body.code, JSON.stringify(apply.body)).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTask(appB.database, apply.body);
 
+    const memberNamespaceOnA = await requireActiveNamespaceId(appA, DOM_B);
+    const applicationRecord = () =>
+      appA.database.query.relationshipRequest.findFirst({
+        where: and(
+          eq(relationshipRequest.kind, 'GROUP_APPLICATION'),
+          eq(relationshipRequest.authorAccount, 'erin-join-projection'),
+          eq(relationshipRequest.authorNamespaceId, memberNamespaceOnA),
+          eq(relationshipRequest.receiverAccount, firstGroupAccount),
+          eq(relationshipRequest.receiverNamespaceId, 0),
+        ),
+        orderBy: desc(relationshipRequest.id),
+      });
     const projected = await vi.waitFor(
       async () => {
-        const row = await appA.database.query.groupRequestProjection.findFirst({
-          where: and(
-            eq(groupRequestProjection.threadId, firstGroupThreadA),
-            eq(groupRequestProjection.memberAccount, 'erin-join-projection'),
-            eq(
-              groupRequestProjection.profileNamespaceId,
-              await requireActiveNamespaceId(appA, DOM_B),
-            ),
-            eq(groupRequestProjection.direction, 'APPLICATION'),
-          ),
+        const row = await applicationRecord();
+        expect(row).toMatchObject({
+          status: 'REQUESTED',
+          note: 'federated application',
         });
-        expect(row).toMatchObject({ status: 'REQUESTED' });
         return row!;
       },
       { timeout: 5000, interval: 100 },
@@ -2522,7 +2551,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           .post('/api/v1/admin/federation/peers')
           .set('Cookie', adminCookieA)
           .send({
-            namespaceId: projected.profileNamespaceId,
+            namespaceId: memberNamespaceOnA,
             skip: 0,
             take: 1,
           });
@@ -2544,33 +2573,49 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 5000, interval: 100 },
     );
+    const listedApplication = async () => {
+      const response = await request(appA.baseUrl)
+        .post('/api/v1/group/join-requests')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ groupId: firstGroupThreadA, take: 50 });
+      expect(response.body.code, JSON.stringify(response.body)).toBe(
+        BusinessCode.OK,
+      );
+      const rows = response.body.data.items.filter(
+        (row: {
+          kind: string;
+          status: string;
+          author: { account: string; namespaceId: number };
+        }) =>
+          row.kind === 'GROUP_APPLICATION' &&
+          row.status === 'REQUESTED' &&
+          row.author.account === 'erin-join-projection' &&
+          row.author.namespaceId === memberNamespaceOnA,
+      );
+      expect(rows).toHaveLength(1);
+      return rows[0] as { id: string };
+    };
+    const pendingApplication = await vi.waitFor(listedApplication, {
+      timeout: 5000,
+      interval: 100,
+    });
     const rejected = await request(appA.baseUrl)
       .post('/api/v1/group/join-request/reject')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: firstGroupThreadA,
-        account: projected.memberAccount,
-        namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+        requestId: pendingApplication.id,
       });
     expect(rejected.body.code, JSON.stringify(rejected.body)).toBe(
       BusinessCode.OK,
     );
-    await waitForAcceptedDurableTask(appA.database, rejected.body);
+    expect(rejected.body.data).toMatchObject({ status: 'OK' });
     await vi.waitFor(
       async () => {
-        expect(
-          await appA.database.query.groupRequestProjection.findFirst({
-            where: and(
-              eq(groupRequestProjection.threadId, firstGroupThreadA),
-              eq(groupRequestProjection.memberAccount, 'erin-join-projection'),
-              eq(
-                groupRequestProjection.profileNamespaceId,
-                await requireActiveNamespaceId(appA, DOM_B),
-              ),
-              eq(groupRequestProjection.direction, 'APPLICATION'),
-            ),
-          }),
-        ).toMatchObject({ status: 'REJECTED' });
+        expect(await applicationRecord()).toMatchObject({
+          id: projected.id,
+          status: 'REJECTED',
+        });
       },
       { timeout: 5000, interval: 100 },
     );
@@ -2691,57 +2736,80 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({
         account: firstGroupAccount,
         namespaceId: namespaceAOnB,
-        displayName: 'fed-group',
+        snapshot: { displayName: 'fed-group', avatar: null },
         note: 'renewed application',
       });
     expect(renewed.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTask(appB.database, renewed.body);
     const renewedProjection = await vi.waitFor(
       async () => {
-        const row = await appA.database.query.groupRequestProjection.findFirst({
+        const rows = await appA.database.query.relationshipRequest.findMany({
           where: and(
-            eq(groupRequestProjection.threadId, firstGroupThreadA),
-            eq(groupRequestProjection.memberAccount, 'erin-join-projection'),
-            eq(
-              groupRequestProjection.profileNamespaceId,
-              await requireActiveNamespaceId(appA, DOM_B),
-            ),
-            eq(groupRequestProjection.direction, 'APPLICATION'),
+            eq(relationshipRequest.kind, 'GROUP_APPLICATION'),
+            eq(relationshipRequest.authorAccount, 'erin-join-projection'),
+            eq(relationshipRequest.authorNamespaceId, memberNamespaceOnA),
+            eq(relationshipRequest.receiverAccount, firstGroupAccount),
+            eq(relationshipRequest.receiverNamespaceId, 0),
           ),
         });
-        expect(row).toMatchObject({
-          status: 'REQUESTED',
-          note: 'renewed application',
-        });
-        expect(row!.feedId).toBeGreaterThan(projected.feedId);
-        return row!;
+        const renewed = rows.find((row) => row.status === 'REQUESTED');
+        expect(renewed).toMatchObject({ note: 'renewed application' });
+        expect(renewed!.id).toBeGreaterThan(projected.id);
+        return renewed!;
       },
       { timeout: 5000, interval: 100 },
     );
 
-    const revoked = await request(appB.baseUrl)
-      .post('/api/v1/relationship/revoke')
+    // The author withdraws her own pending round by its exact ID from her
+    // node's SENT history; the receiver concludes the same round without
+    // allocating another request number.
+    const sentApplication = await vi.waitFor(
+      async () => {
+        const response = await request(appB.baseUrl)
+          .post('/api/v1/relationship/requests')
+          .set('Authorization', `Bearer ${tokenErin}`)
+          .send({ bucket: 'SENT', take: 50 });
+        expect(response.body.code, JSON.stringify(response.body)).toBe(
+          BusinessCode.OK,
+        );
+        const rows = response.body.data.items.filter(
+          (row: {
+            kind: string;
+            status: string;
+            receiver: { account: string };
+          }) =>
+            row.kind === 'GROUP_APPLICATION' &&
+            row.status === 'REQUESTED' &&
+            row.receiver.account === firstGroupAccount,
+        );
+        expect(rows).toHaveLength(1);
+        return rows[0] as { id: string };
+      },
+      { timeout: 5000, interval: 100 },
+    );
+    const withdrawn = await request(appB.baseUrl)
+      .post('/api/v1/relationship/requests/withdraw')
       .set('Authorization', `Bearer ${tokenErin}`)
-      .send({ account: firstGroupAccount, namespaceId: namespaceAOnB });
-    expect(revoked.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, revoked.body);
+      .send({ requestId: sentApplication.id });
+    expect(withdrawn.body.code).toBe(BusinessCode.OK);
+    expect(withdrawn.body.data).toMatchObject({ status: 'OK' });
     await vi.waitFor(
       async () => {
-        const row = await appA.database.query.groupRequestProjection.findFirst({
-          where: and(
-            eq(groupRequestProjection.threadId, firstGroupThreadA),
-            eq(groupRequestProjection.memberAccount, 'erin-join-projection'),
-            eq(
-              groupRequestProjection.profileNamespaceId,
-              await requireActiveNamespaceId(appA, DOM_B),
-            ),
-            eq(groupRequestProjection.direction, 'APPLICATION'),
-          ),
+        expect(await applicationRecord()).toMatchObject({
+          id: renewedProjection.id,
+          status: 'WITHDRAWN',
         });
-        expect(row).toMatchObject({ status: 'WITHDRAWN' });
-        // feedId numbers the application; concluding that application flips
-        // its status without allocating another request number.
-        expect(row!.feedId).toBe(renewedProjection.feedId);
+        expect(
+          await appA.database.query.relationshipRequest.findMany({
+            where: and(
+              eq(relationshipRequest.kind, 'GROUP_APPLICATION'),
+              eq(relationshipRequest.authorAccount, 'erin-join-projection'),
+              eq(relationshipRequest.authorNamespaceId, memberNamespaceOnA),
+              eq(relationshipRequest.receiverAccount, firstGroupAccount),
+              eq(relationshipRequest.receiverNamespaceId, 0),
+            ),
+          }),
+        ).toHaveLength(2);
       },
       { timeout: 5000, interval: 100 },
     );
@@ -2868,6 +2936,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           {
             account: 'dave',
             namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+            snapshot: { displayName: 'Dave', avatar: null },
           },
         ],
       });
@@ -2912,12 +2981,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 5000 },
     );
+    const invitation = await waitForReceivedRequest(appB.baseUrl, tokenDave, {
+      kind: 'GROUP_INVITATION',
+      author: {
+        account: firstGroupAccount,
+        namespaceId: await requireActiveNamespaceId(appB, DOM_A),
+      },
+      receiver: { account: 'dave', namespaceId: 0 },
+    });
     const daveAccept = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${tokenDave}`)
-      .send({ groupId: firstMirrorBId });
+      .send({ requestId: invitation.id });
     expect(daveAccept.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, daveAccept.body);
+    expect(daveAccept.body.data.status).toBe('OK');
 
     // dave is now attached to the SAME mirror thread as bob (the shared-mirror property).
     await vi.waitFor(
@@ -3386,6 +3463,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           {
             account: 'dave',
             namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+            snapshot: { displayName: 'Dave at re-invitation', avatar: null },
           },
         ],
       });
@@ -3430,12 +3508,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 5000, interval: 100 },
     );
+    const invitation = await waitForReceivedRequest(appB.baseUrl, tokenDave, {
+      kind: 'GROUP_INVITATION',
+      author: {
+        account: firstGroupAccount,
+        namespaceId: await requireActiveNamespaceId(appB, DOM_A),
+      },
+      receiver: { account: 'dave', namespaceId: 0 },
+    });
     const rejoin = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${tokenDave}`)
-      .send({ groupId: firstMirrorBId });
+      .send({ requestId: invitation.id });
     expect(rejoin.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, rejoin.body);
+    expect(rejoin.body.data.status).toBe('OK');
     await vi.waitFor(
       async () => {
         const davePair = (
@@ -3607,7 +3693,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: firstGroupThreadA,
-        users: [{ account: 'bob', namespaceId: bobAddressOnA.namespaceId }],
+        users: [
+          {
+            account: 'bob',
+            namespaceId: bobAddressOnA.namespaceId,
+            snapshot: { displayName: 'Bob at re-invitation', avatar: null },
+          },
+        ],
       });
     expect(reinviteBob.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, reinviteBob.body);
@@ -3642,12 +3734,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 5000, interval: 100 },
     );
+    const invitation = await waitForReceivedRequest(appB.baseUrl, tokenB, {
+      kind: 'GROUP_INVITATION',
+      author: {
+        account: firstGroupAccount,
+        namespaceId: await requireActiveNamespaceId(appB, DOM_A),
+      },
+      receiver: { account: 'bob', namespaceId: 0 },
+    });
     const bobRejoin = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ groupId: firstMirrorBId });
+      .send({ requestId: invitation.id });
     expect(bobRejoin.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, bobRejoin.body);
+    expect(bobRejoin.body.data.status).toBe('OK');
     await vi.waitFor(
       async () => {
         const [originAudience, mirrorAudience, localState, bobOnMirror] =
@@ -3754,7 +3854,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .send({
           account: firstGroupAccount,
           namespaceId: await requireActiveNamespaceId(appB, DOM_A),
-          displayName: 'fed-group',
+          snapshot: { displayName: 'fed-group', avatar: null },
         });
       expect(rejoin.body.code).toBe(BusinessCode.OK);
       await waitForAcceptedDurableTask(appB.database, rejoin.body);
@@ -3861,6 +3961,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           {
             account: 'dave',
             namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+            snapshot: { displayName: 'Dave', avatar: null },
           },
         ],
       });
@@ -3921,7 +4022,25 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         set: { threadId: mirror.id, updatedAt: requestedAt },
       })
       .returning({ id: relationshipPair.id });
+    const [dishonestRequest] = await appB.database
+      .insert(relationshipRequest)
+      .values({
+        kind: 'GROUP_INVITATION',
+        status: 'REQUESTED',
+        authorAccount: mirror.group.account,
+        authorNamespaceId: mirror.group.namespaceId,
+        receiverAccount: 'bob',
+        receiverNamespaceId: 0,
+        authorProfileNamespaceId: 0,
+        authorProfileRev: mirror.group.profileRev,
+        snapshot: null,
+        note: '',
+        requestedAt,
+        expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+      })
+      .returning();
     await appB.database.insert(relationshipIntent).values({
+      requestId: dishonestRequest.id,
       authorAccount: mirror.group.account,
       authorNamespaceId: mirror.group.namespaceId,
       receiverAccount: 'bob',
@@ -3940,9 +4059,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ groupId: mirror.id });
+      .send({ requestId: dishonestRequest.id.toString() });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    await waitForAcceptedDurableTask(appB.database, accepted.body);
+    expect(accepted.body.data.status).toBe('OK');
 
     const outboundAcceptance =
       await appB.database.query.peerStateFeed.findFirst({
@@ -4106,10 +4225,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        account: 'bob',
-        namespaceId: bobAddressOnA.namespaceId,
-      });
+      .send({ threadId: oldThreadA!.threadId });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
     // The unfriend commits synchronously, including the boundary head item
@@ -4152,7 +4268,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({
         account: 'bob',
         namespaceId: bobAddressOnA.namespaceId,
-        displayName: 'Bob',
+        snapshot: { displayName: 'Bob', avatar: null },
         note: 'revive from alice',
       });
     expect(revive.body.code).toBe(BusinessCode.OK);
@@ -4270,10 +4386,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const response = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({
-        account: 'bob',
-        namespaceId: bobAddressOnA.namespaceId,
-      });
+      .send({ threadId: threadA!.threadId });
     expect(response.body.code).toBe(BusinessCode.OK);
     expect(response.body.data).toEqual({ status: 'OK' });
 

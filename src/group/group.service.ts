@@ -13,7 +13,6 @@ import { p2pPeerRelation } from '../relationship/shared/relationship-address.js'
 import type { NamespacedAddress } from '../common/client-identity.js';
 import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { Interval } from '@nestjs/schedule';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -24,7 +23,6 @@ import {
   groupMeta,
   account as userAccount,
   accountThreadState,
-  groupRequestProjection,
   messageThread,
   profileTable,
 } from '../database/schema.js';
@@ -200,10 +198,11 @@ export class GroupService {
           AND member_fact.body -> 'namespaceId' = to_jsonb(friend."namespaceId")
         ORDER BY member_fact."feedId" DESC LIMIT 1
       ) member ON true
-      LEFT JOIN "GroupRequestProjection" invitation ON
-        invitation."threadId" = ${threadId} AND invitation."memberAccount" = friend.account
-        AND invitation."profileNamespaceId" = friend."namespaceId"
-        AND invitation.direction = 'INVITATION'
+      LEFT JOIN "RelationshipIntent" invitation ON
+        invitation."authorAccount" = thread_scope."groupAccount"
+        AND invitation."authorNamespaceId" = 0
+        AND invitation."receiverAccount" = friend.account
+        AND invitation."receiverNamespaceId" = friend."namespaceId"
       WHERE friendship.kind = 'P2P' AND friendship.active = true AND friendship."threadId" IS NOT NULL
         ${afterThreadId === undefined ? sql.empty() : sql`AND friendship."threadId" > ${afterThreadId}`}
         ${normalizedSearch === '' ? sql.empty() : sql`AND (friend.account ILIKE ${pattern} ESCAPE '\\' OR (friend.account || '@' || friend.domain) ILIKE ${pattern} ESCAPE '\\')`}
@@ -215,124 +214,6 @@ export class GroupService {
       hasMore: rows.rows.length > take,
       afterThreadId: page.at(-1)?.threadId ?? null,
     };
-  }
-
-  async queryJoinRequests(threadId: number, before?: number, take = 20) {
-    return this.queryGroupRequests(threadId, 'APPLICATION', before, take);
-  }
-
-  async queryInvitations(threadId: number, before?: number, take = 20) {
-    return this.queryGroupRequests(threadId, 'INVITATION', before, take);
-  }
-
-  private async queryGroupRequests(
-    threadId: number,
-    direction: 'APPLICATION' | 'INVITATION',
-    before?: number,
-    take = 20,
-  ) {
-    const rows = await this.database.db.execute<{
-      feedId: number;
-      status: RequestProjectionStatusValue;
-      namespaceId: number;
-      profileRev: number;
-      account: string;
-      snapshot: RequestSnapshot | null;
-      note: string;
-      requestedAt: number | null;
-      expiresAt: number | null;
-    }>(sql`
-      SELECT projection."feedId",
-        CASE WHEN projection.status = 'REQUESTED'
-          AND projection."expiresAt" <= CURRENT_TIMESTAMP
-          THEN 'EXPIRED' ELSE projection.status END AS status,
-        projection."memberAccount" AS account,
-        projection."profileNamespaceId" AS "namespaceId", projection."memberProfileRev" AS "profileRev",
-        projection.snapshot, projection.note,
-        (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",
-        (EXTRACT(EPOCH FROM projection."expiresAt") * 1000)::bigint AS "expiresAt"
-      FROM "GroupRequestProjection" projection
-      WHERE projection."threadId" = ${threadId}
-        AND projection.direction = ${direction}
-        ${before === undefined ? sql.empty() : sql`AND projection."feedId" < ${before}`}
-      ORDER BY projection."feedId" DESC
-      LIMIT ${take + 1}
-    `);
-    const page = rows.rows.slice(0, take);
-    return {
-      data: page.map((row) => ({
-        ...row,
-        requestedAt: row.requestedAt === null ? null : Number(row.requestedAt),
-        expiresAt: row.expiresAt === null ? null : Number(row.expiresAt),
-      })),
-      hasMore: rows.rows.length > take,
-      before: page.at(-1)?.feedId ?? null,
-    };
-  }
-
-  /** Physically collect expired projections. Current managers of affected
-   * groups get a refreshed join-request head so their badge reflects the
-   * removed rows; manager enumeration lives in the batch sweep only. */
-  @Interval(60 * 60 * 1000)
-  async garbageCollectJoinRequestProjections(): Promise<number> {
-    const pending: PendingClientStateFeedUpdate[] = [];
-    const count = await this.database.db.transaction(async (tx) => {
-      const candidates = await tx.execute<{
-        threadId: number;
-        expiredThroughFeedId: number;
-      }>(sql`
-        SELECT projection."threadId",
-          MAX(projection."feedId")::integer AS "expiredThroughFeedId"
-        FROM "GroupRequestProjection" projection
-        WHERE projection."expiresAt" <= CURRENT_TIMESTAMP
-        GROUP BY projection."threadId"
-      `);
-      let removed = 0;
-      for (const candidate of candidates.rows) {
-        const deleted = await tx
-          .delete(groupRequestProjection)
-          .where(
-            and(
-              eq(groupRequestProjection.threadId, candidate.threadId),
-              sql`${groupRequestProjection.expiresAt} <= CURRENT_TIMESTAMP`,
-            ),
-          );
-        removed += deleted.rowCount ?? 0;
-        if ((deleted.rowCount ?? 0) === 0) continue;
-        const managers = await readCurrentLocalGroupManagersInTx(tx, {
-          groupId: candidate.threadId,
-          threadId: candidate.threadId,
-        });
-        const managerIds = managers.map((manager) => manager.userId);
-        if (managerIds.length === 0) continue;
-        await lockAccountFeedAllocatorsInTx(tx, managerIds);
-        const updated = await tx.execute<{ accountId: number }>(sql`
-          UPDATE "AccountThreadState"
-          SET "joinRequestReadFeedId" = LEAST(
-                "joinRequestEndFeedId",
-                GREATEST("joinRequestReadFeedId", ${candidate.expiredThroughFeedId})),
-              "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "threadId" = ${candidate.threadId}
-            AND "accountId" IN (${sql.join(
-              managerIds.map((id) => sql`${id}`),
-              sql`, `,
-            )})
-            AND "joinRequestReadFeedId" >= 0
-            AND "joinRequestReadFeedId" < LEAST(
-              "joinRequestEndFeedId", ${candidate.expiredThroughFeedId})
-          RETURNING "accountId" AS "accountId"
-        `);
-        pending.push(
-          ...(await captureThreadStateUpdatesInTx(
-            tx,
-            updated.rows.map((row) => row.accountId),
-          )),
-        );
-      }
-      return removed;
-    });
-    this.clientStateFeed.notifyFeedUpdates(pending);
-    return count;
   }
 
   async markJoinRequestsRead(

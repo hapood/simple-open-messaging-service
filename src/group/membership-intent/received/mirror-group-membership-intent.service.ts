@@ -36,7 +36,6 @@ import {
 import { mirrorMembershipRequestSql } from './mirror-membership-request-sql.js';
 import {
   mirrorMembershipActivationSql,
-  mirrorMembershipActivationFeedSql,
 } from './mirror-membership-acceptance-sql.js';
 import { mirrorMembershipRevocationSql } from './mirror-membership-revocation-sql.js';
 import { writeMirrorLocalGroupLeftInTx } from '../shared/mirror-local-group-left.js';
@@ -66,16 +65,6 @@ export interface MirrorGroupMembershipIntentCommand {
   /** The item's subject — the local member this group intent addresses. */
   memberAccount: string;
   body: MirrorGroupMembershipIntentBody;
-}
-
-export interface MirrorGroupMembershipIntentDependencies {
-  database: DatabaseService;
-  clientFeed: ClientStateFeedService;
-  peerFeed: PeerStateFeedService;
-  federation: FederationStateFeedPusher;
-  /** The member-side mutation service owns transition-gated acceptance
-   * confirmations sent back to the group authority. */
-  memberMutations: GroupRelationshipMutationService;
 }
 
 /** Routing outcomes, for tests and diagnostics. `noop:*` rows never change
@@ -126,26 +115,32 @@ interface ActivationContext {
 export class MirrorGroupMembershipIntentService {
   private readonly logger = new Logger(MirrorGroupMembershipIntentService.name);
 
-  constructor(private readonly deps: MirrorGroupMembershipIntentDependencies) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly clientFeed: ClientStateFeedService,
+    private readonly peerFeed: PeerStateFeedService,
+    private readonly federation: FederationStateFeedPusher,
+    private readonly memberMutations: GroupRelationshipMutationService,
+  ) {}
 
   async execute(
     command: MirrorGroupMembershipIntentCommand,
   ): Promise<{ routed: MirrorMembershipRouting }> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const peers = new Set<number>();
-    const applied = await this.deps.database.db.transaction(async (tx) =>
+    const applied = await this.database.db.transaction(async (tx) =>
       this.applyInTx(tx, command, clientUpdates, peers),
     );
     const routed = applied.routed;
     if (routed.startsWith('noop:')) return { routed };
     try {
       if (clientUpdates.length > 0)
-        this.deps.clientFeed.notifyFeedUpdates(clientUpdates);
+        this.clientFeed.notifyFeedUpdates(clientUpdates);
     } catch (error) {
       this.logger.warn('mirror intent client-state wake failed', error);
     }
     if (peers.size > 0)
-      void this.deps.federation.pushStateFeedNamespaces(peers.keys());
+      void this.federation.pushStateFeedNamespaces(peers.keys());
     return { routed };
   }
 
@@ -254,7 +249,7 @@ export class MirrorGroupMembershipIntentService {
             AND participant."accountId" = ${fresh.localMemberId}
           ORDER BY participant."accountId" FOR NO KEY UPDATE OF participant`,
       );
-    await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
+    await this.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
       { namespaceId: group.namespaceId },
     ]);
     const presentation: MirrorGroupPresentationInput = {
@@ -312,11 +307,7 @@ export class MirrorGroupMembershipIntentService {
       }
       if (lockedPairId === null)
         await this.mintPair(tx, threadId, group, memberAccount);
-      const result = await tx.execute<{
-        intentChanged: boolean;
-        recipientUserId: number | null;
-        recipientFeedId: string | null;
-      }>(
+      await tx.execute(
         mirrorMembershipRequestSql({
           threadId,
           presentation,
@@ -333,7 +324,21 @@ export class MirrorGroupMembershipIntentService {
           },
         }),
       );
-      this.pushRecipient(result.rows[0], clientUpdates);
+      // The mirrored invitation opens its round here with the local member as
+      // receiver: their incoming head is published and woken after commit. The
+      // remote-author round carries no author-side snapshot — the member's
+      // incoming view resolves the group through the wire author-profile
+      // coordinates. A mirrored remote-authority thread has no local manager
+      // watermarks to advance.
+      const effects =
+        await this.memberMutations.writeGroupRequestEffectsInTx(
+          tx,
+          threadId,
+          { account: memberAccount, namespaceId: 0 },
+          'REQUESTED',
+          'INVITATION',
+        );
+      clientUpdates.push(...effects.clientUpdates);
       return { routed: 'recorded-request' };
     }
 
@@ -386,22 +391,6 @@ export class MirrorGroupMembershipIntentService {
           }),
         );
         if (!confirmed.rows[0]) return { routed: 'noop:already-member' };
-        const feed = await tx.execute<{
-          recipientUserId: number | null;
-          recipientFeedId: string | null;
-        }>(
-          mirrorMembershipActivationFeedSql({
-            presentation,
-            memberAccount,
-            localMemberId: memberId,
-            status: 'ACCEPTED',
-            note: wireIntent.note,
-            requestedAt: wireIntent.requestedAt,
-            expiresAt: null,
-            threadId,
-          }),
-        );
-        this.pushRecipient(feed.rows[0], clientUpdates);
         return { routed: 'confirmed', threadId };
       }
       const memberLive = effective(
@@ -452,8 +441,6 @@ export class MirrorGroupMembershipIntentService {
       intentChanged: boolean;
       pairChanged: boolean;
       epochChanged: boolean;
-      recipientUserId: number | null;
-      recipientFeedId: string | null;
     }>(
       mirrorMembershipRevocationSql({
         threadId,
@@ -465,8 +452,16 @@ export class MirrorGroupMembershipIntentService {
         requestDirection,
       }),
     );
+    if (requestStatus && requestDirection) {
+      await this.memberMutations.writeGroupRequestEffectsInTx(
+        tx,
+        threadId,
+        { account: memberAccount, namespaceId: 0 },
+        requestStatus,
+        requestDirection === 'OUTGOING' ? 'APPLICATION' : 'INVITATION',
+      );
+    }
     const row = result.rows[0]!;
-    this.pushRecipient(row, clientUpdates);
     if (row.pairChanged) {
       await writeMirrorLocalGroupLeftInTx(tx, {
         threadId,
@@ -558,22 +553,6 @@ export class MirrorGroupMembershipIntentService {
       }
       return { routed: `noop:${context.routed}` };
     }
-    const feed = await tx.execute<{
-      recipientUserId: number | null;
-      recipientFeedId: string | null;
-    }>(
-      mirrorMembershipActivationFeedSql({
-        presentation,
-        memberAccount: command.memberAccount,
-        localMemberId: memberId,
-        status: context.persistStatus,
-        note: context.intent.note,
-        requestedAt: context.intent.requestedAt,
-        expiresAt: context.intent.expiresAt,
-        threadId: context.threadId,
-      }),
-    );
-    this.pushRecipient(feed.rows[0], context.clientUpdates);
     if (row.pairChanged) {
       context.clientUpdates.push(
         ...(await captureThreadStateUpdatesInTx(tx, [memberId])),
@@ -586,7 +565,7 @@ export class MirrorGroupMembershipIntentService {
       context.threadLock,
     );
     const confirmed =
-      await this.deps.memberMutations.writeMemberRelationshipIntentInTx(
+      await this.memberMutations.writeMemberRelationshipIntentInTx(
         tx,
         context.threadId,
         memberId,
@@ -595,6 +574,13 @@ export class MirrorGroupMembershipIntentService {
       );
     for (const domain of confirmed.keys()) context.peers.add(domain);
     context.peers.add(group.namespaceId);
+    await this.memberMutations.writeGroupRequestEffectsInTx(
+      tx,
+      context.threadId,
+      { account: command.memberAccount, namespaceId: 0 },
+      'ACCEPTED',
+      context.promote ? 'APPLICATION' : 'INVITATION',
+    );
     return { routed: context.routed, threadId: context.threadId };
   }
 
@@ -608,7 +594,7 @@ export class MirrorGroupMembershipIntentService {
     requestDirection?: 'INCOMING' | 'OUTGOING',
   ): Promise<void> {
     const allocated =
-      await this.deps.memberMutations.writeMemberRelationshipIntentInTx(
+      await this.memberMutations.writeMemberRelationshipIntentInTx(
         tx,
         threadId,
         memberUserId,
@@ -655,19 +641,4 @@ export class MirrorGroupMembershipIntentService {
     return row;
   }
 
-  private pushRecipient(
-    row:
-      | {
-          recipientUserId: number | null;
-          recipientFeedId: string | null;
-        }
-      | undefined,
-    clientUpdates: PendingClientStateFeedUpdate[],
-  ): void {
-    if (row?.recipientUserId != null && row.recipientFeedId != null)
-      clientUpdates.push({
-        userId: row.recipientUserId,
-        feedId: Number(row.recipientFeedId),
-      });
-  }
 }

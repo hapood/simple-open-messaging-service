@@ -225,6 +225,5 @@ presentation concerns and cannot affect membership.
 
 Relevant implementation entry points are
 [`RelationshipIntentService`](../../src/relationship/relationship-intent.service.ts),
-[`deriveRelationshipIntentTransition`](../../src/common/relationship-intent-state.ts), and the client
-request projection in
-[`FriendRequestProjection`](../../web/src/app/services/friend-request-state.ts).
+[`deriveRelationshipIntentTransition`](../../src/common/relationship-intent-state.ts), and the shared
+request projection in [`relationship-request.ts`](../../shared/relationship-request.ts).

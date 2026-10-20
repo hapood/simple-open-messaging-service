@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../../database/database.service.js';
-import type { UserIntentAuthorizationRow } from '../authored/user-intent-authorization-sql.js';
+
 
 /** One P2P endpoint identity. The domain is carried for feed keys and
  * display only — locality is always judged by namespaceId === 0. Pairs
@@ -43,50 +43,8 @@ export function pairPeerNamespaceId(
 
 /** ClientStateFeedService.compactionKey's exact shape, keyed by the canonical
  * pair side — never by the command actor (the mixed-writer lesson). */
-export function userIntentCompactionKey(
-  namespaceId: number,
-  account: UserIntentEndpoint,
-  subject: UserIntentEndpoint,
-): string {
-  return JSON.stringify([
-    'RELATIONSHIP_INTENT',
-    namespaceId,
-    account.account,
-    account.namespaceId,
-    subject.account,
-    subject.domain,
-  ]);
-}
 
-export function reverseRequestUnexpired(
-  row: UserIntentAuthorizationRow,
-  now = Date.now(),
-): boolean {
-  return (
-    row.reverseExpiresAt !== null &&
-    new Date(row.reverseExpiresAt).getTime() > now
-  );
-}
 
-export function ownRequestUnexpired(
-  row: UserIntentAuthorizationRow,
-  now = Date.now(),
-): boolean {
-  return (
-    row.ownExpiresAt !== null && new Date(row.ownExpiresAt).getTime() > now
-  );
-}
-
-/** Whether the reverse direction is currently a positive relationship fact. */
-export function reverseEffective(
-  row: UserIntentAuthorizationRow,
-  now = Date.now(),
-): boolean {
-  return (
-    row.reverseStatus === 'ACCEPTED' ||
-    (row.reverseStatus === 'REQUESTED' && reverseRequestUnexpired(row, now))
-  );
-}
 
 /** Lock the canonical P2P pair row, minting it when absent. Side A is the
  * local endpoint for a mixed pair, and the pair stores one peer namespace.

@@ -1,12 +1,8 @@
 import { writeP2PClientRelationshipInTx } from './shared/p2p-client-relationship.js';
-import {
-  groupState as group,
-  groupStateFields,
-} from '../group/shared/group-state.js';
 import { type AccountTarget } from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -14,7 +10,6 @@ import {
 import {
   messageThread,
   accountThreadState,
-  account as user,
 } from '../database/schema.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
@@ -100,69 +95,6 @@ export class RelationshipService {
       }
       return ids.length;
     });
-  }
-
-  async writeGroupRequestClientStateInTx(
-    tx: DatabaseTransaction,
-    threadId: number,
-    memberUserId: number,
-    pendingFeedUpdates: Array<{ userId: number; feedId: number }>,
-  ): Promise<void> {
-    const [state] = await tx
-      .select({
-        groupId: messageThread.id,
-        account: groupStateFields.account,
-        name: groupStateFields.name,
-        avatar: groupStateFields.avatar,
-        description: groupStateFields.description,
-        profileRev: groupStateFields.profileRev,
-        namespaceId: groupStateFields.namespaceId,
-      })
-      .from(messageThread)
-      .innerJoin(group, eq(group.id, messageThread.id))
-      .where(eq(messageThread.id, threadId))
-      .limit(1);
-    if (!state?.groupId || state.namespaceId !== 0) return;
-    const request = await tx.query.relationshipIntent.findFirst({
-      where: sql`
-        "authorNamespaceId" = 0
-        AND "authorAccount" = (SELECT thread."groupAccount" FROM "MessageThread" thread WHERE thread.id = ${threadId})
-        AND "receiverAccount" = (SELECT identity.account FROM "Account" identity WHERE identity.id = ${memberUserId})
-        AND "receiverNamespaceId" = (SELECT identity."namespaceId" FROM "Account" identity WHERE identity.id = ${memberUserId})
-      `,
-    });
-    const member = await tx.query.account.findFirst({
-      where: eq(user.id, memberUserId),
-      columns: { account: true },
-    });
-    if (!request || !member) return;
-    const feedId = await this.clientStateFeed.writeInTx(tx, {
-      userId: memberUserId,
-      account: state.account,
-      namespaceId: 0,
-      eventType: 'RELATIONSHIP_INTENT',
-      subjectAccount: member.account,
-      subjectNamespaceId: 0,
-      body: {
-        status:
-          request.status === 'ACCEPTED'
-            ? 'ACCEPTED'
-            : request.status === 'REQUESTED'
-              ? 'REQUESTED'
-              : 'REVOKED',
-        note: request.note,
-        requestedAt: request.requestedAt?.getTime() ?? null,
-        expiresAt: request.expiresAt?.getTime() ?? null,
-        threadId,
-        group: {
-          account: state.account,
-          namespaceId: 0,
-          profileRev: state.profileRev,
-        },
-      },
-    });
-    if (feedId !== null)
-      pendingFeedUpdates.push({ userId: memberUserId, feedId });
   }
 
   async writeRelationshipRequestClientStateInTx(

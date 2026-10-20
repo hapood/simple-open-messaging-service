@@ -47,24 +47,18 @@ kept consistent with [`schema.ts`](../../src/database/schema.ts).
   namespace-based compaction key; it has no domain column.
 - `PendingMedia` and `FileSyncProgress` use `publisherNamespaceId`.
 
-## Completed cleanup
+## Invariants and boundaries
 
-- [x] Audited locality decisions expressed indirectly or in SQL. Identity
-  comparisons resolve namespace equality; domains appear only as transport
+- Identity comparisons resolve namespace equality; domains appear only as transport
   targets for outbound S2S requests and lab-side display.
-- [x] Removed `MessageThread.groupDomain` from the schema and baseline.
-  Uniqueness on group threads is `(groupAccount, authorityNamespaceId)`.
-- [x] Removed `ClientStateFeed.domain`; feed items and intent bodies use
-  namespace coordinates end to end.
-- [x] Removed the `MessageThread.federationVersion` capture/compare fence.
-  Namespace identifiers are permanent; thread existence, peer tokens,
+- Group thread uniqueness is `(groupAccount, authorityNamespaceId)`; threads do not
+  store `groupDomain`.
+- `ClientStateFeed` feed items and intent bodies use namespace coordinates end to end.
+- Namespace identifiers are permanent; thread existence, peer tokens,
   `authorizationEpoch`, and commit-time re-reads cover stale-response risks.
-- [x] Replaced legacy all-optional coordinate selectors with closed shared
-  demands (`ProfileDemand`, `GroupMetaFeedDemand`) and renamed the federation
-  thread query flow from `selector` to `demand` terminology.
+- Federation queries use closed shared demands (`ProfileDemand`, `GroupMetaFeedDemand`)
+  rather than legacy all-optional selectors.
 
-These are tracked tasks, not authorization to change the business model or
-rewrite stored data.
 
 ## Related contracts and acceptance
 

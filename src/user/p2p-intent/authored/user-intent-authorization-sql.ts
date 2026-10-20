@@ -55,66 +55,70 @@ export function userIntentLocatorSql(params: {
  * the pair, the thread head, and the local identities the composed statements
  * write. Effectiveness (REQUESTED within expiry, or ACCEPTED) is derived by the
  * transaction owner with the same rule as RelationshipIntentService. */
-export interface UserIntentAuthorizationRow extends Record<string, unknown> {
+export interface PairAuthorizationRow extends Record<string, unknown> {
   pairActive: boolean;
   pairEstablished: boolean;
   threadId: number;
   authorizationEpoch: number;
   threadCurSeq: number;
-  ownStatus: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | null;
-  ownNote: string | null;
-  ownRequestedAt: string | null;
-  ownExpiresAt: string | null;
-  ownProfileRev: number | null;
-  reverseStatus: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | null;
-  reverseNote: string | null;
-  reverseRequestedAt: string | null;
-  reverseExpiresAt: string | null;
-  reverseProfileRev: number | null;
+  actorProfileRev: number;
   actorAvailability: string;
   localTargetId: number | null;
   targetAvailability: string | null;
 }
 
-/** One post-lock authorization statement. The pair and both intent rows are
- * already FOR NO KEY UPDATE locked by the preamble; this reads the branch state
- * the three commands dispatch on. Both directions are addressed by the
- * actor/target coordinates the caller already holds. */
-export function userIntentAuthorizationSql(params: {
+export interface DirectedIntentRow extends Record<string, unknown> {
+  requestId: string | null;
+  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  note: string;
+  requestedAt: string | null;
+  expiresAt: string | null;
+  profileRev: number;
+}
+
+/** Reads the Pair, Thread, and Endpoint presence under the pair lock. */
+export function pairAuthorizationSql(params: {
   pairId: bigint;
   actorUserId: number;
-  actorAccount: string;
-  actorNamespaceId: number;
   targetAccount: string;
   targetDomain: string;
   targetNamespaceId: number;
 }): SQL {
-  const { actorAccount, actorNamespaceId, targetAccount, targetNamespaceId } =
-    params;
   return sql`
     SELECT p.active AS "pairActive", p.established AS "pairEstablished",
       p."threadId", t."authorizationEpoch", t."curSeq" AS "threadCurSeq",
-      own.status AS "ownStatus", own.note AS "ownNote",
-      own."requestedAt"::text AS "ownRequestedAt", own."expiresAt"::text AS "ownExpiresAt",
-      own."profileRev" AS "ownProfileRev",
-      rev.status AS "reverseStatus", rev.note AS "reverseNote",
-      rev."requestedAt"::text AS "reverseRequestedAt", rev."expiresAt"::text AS "reverseExpiresAt",
-      rev."profileRev" AS "reverseProfileRev",
+      a."defaultProfileRev" AS "actorProfileRev",
       a.availability AS "actorAvailability",
       tgt.id::integer AS "localTargetId", tgt.availability AS "targetAvailability"
     FROM "RelationshipPair" p
     JOIN "MessageThread" t ON t.id = p."threadId"
-    LEFT JOIN "RelationshipIntent" own
-      ON own."authorAccount" = ${actorAccount} AND own."authorNamespaceId" = ${actorNamespaceId}
-      AND own."receiverAccount" = ${targetAccount} AND own."receiverNamespaceId" = ${targetNamespaceId}
-    LEFT JOIN "RelationshipIntent" rev
-      ON rev."authorAccount" = ${targetAccount} AND rev."authorNamespaceId" = ${targetNamespaceId}
-      AND rev."receiverAccount" = ${actorAccount} AND rev."receiverNamespaceId" = ${actorNamespaceId}
     CROSS JOIN "Account" a
     LEFT JOIN "Account" tgt ON tgt.account = ${params.targetAccount}
       AND tgt."namespaceId" = 0
       AND ${params.targetNamespaceId} = 0
       AND (SELECT domain FROM "IdentityNamespace" WHERE id = 0) = ${params.targetDomain}
     WHERE p.id = ${params.pairId} AND a.id = ${params.actorUserId}
+  `;
+}
+
+/** Reads a single directed intent fact for the exact author -> receiver direction. */
+export function directedIntentSql(params: {
+  authorAccount: string;
+  authorNamespaceId: number;
+  receiverAccount: string;
+  receiverNamespaceId: number;
+}): SQL {
+  return sql`
+    SELECT "requestId"::text AS "requestId",
+      status, note,
+      "requestedAt"::text AS "requestedAt",
+      "expiresAt"::text AS "expiresAt",
+      "profileRev"
+    FROM "RelationshipIntent"
+    WHERE "authorAccount" = ${params.authorAccount}
+      AND "authorNamespaceId" = ${params.authorNamespaceId}
+      AND "receiverAccount" = ${params.receiverAccount}
+      AND "receiverNamespaceId" = ${params.receiverNamespaceId}
+    LIMIT 1
   `;
 }

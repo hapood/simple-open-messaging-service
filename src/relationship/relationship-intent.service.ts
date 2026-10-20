@@ -14,7 +14,10 @@ import { and, eq, or, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
+  account,
+  groupAccount,
   messageThread,
+  profileTable,
   relationshipIntent,
   relationshipPair,
   account as user,
@@ -572,6 +575,19 @@ export class RelationshipIntentService {
           new Date(requestedAt!.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS))
         : null;
     const direction = params.direction;
+
+    const requestWrite =
+      status === 'REQUESTED'
+        ? {
+            status: 'REQUESTED' as const,
+            snapshot: await this.resolveSnapshotForRequestedInTx(
+              tx,
+              direction,
+              params.snapshot,
+            ),
+          }
+        : { status };
+
     const written = await tx.execute(
       authoredIntentWriteSql({
         author: {
@@ -586,9 +602,7 @@ export class RelationshipIntentService {
         note: params.note ?? '',
         requestedAt,
         expiresAt,
-        ...(status === 'REQUESTED'
-          ? { status: 'REQUESTED' as const, snapshot: parseRequestSnapshot(params.snapshot) }
-          : { status }),
+        ...requestWrite,
       }),
     );
     const raw = await this.readIntentByDirectionInTx(tx, params.direction);
@@ -600,6 +614,105 @@ export class RelationshipIntentService {
         (await this.shouldBeActiveInTx(tx, params.direction)),
       changed: (written.rowCount ?? 0) > 0,
     };
+  }
+
+  private async resolveSnapshotForRequestedInTx(
+    tx: DatabaseTransaction,
+    direction: IntentDirection,
+    suppliedSnapshot?: RequestSnapshot | null,
+  ): Promise<RequestSnapshot> {
+    if (suppliedSnapshot) {
+      return parseRequestSnapshot(suppliedSnapshot);
+    }
+    if (direction.receiverNamespaceId === 0) {
+      const isGroupReceiver = direction.receiverAccount.startsWith('!');
+      const [profile] = await tx
+        .select({
+          displayName: profileTable.displayName,
+          avatar: profileTable.avatar,
+        })
+        .from(isGroupReceiver ? groupAccount : account)
+        .innerJoin(
+          profileTable,
+          and(
+            eq(
+              profileTable.account,
+              isGroupReceiver ? groupAccount.account : account.account,
+            ),
+            eq(profileTable.publisherNamespaceId, 0),
+            eq(profileTable.profileNamespaceId, 0),
+            eq(
+              profileTable.profileRev,
+              isGroupReceiver
+                ? groupAccount.defaultProfileRev
+                : account.defaultProfileRev,
+            ),
+          ),
+        )
+        .where(
+          isGroupReceiver
+            ? eq(groupAccount.account, direction.receiverAccount)
+            : and(
+                eq(account.account, direction.receiverAccount),
+                eq(account.namespaceId, 0),
+              ),
+        )
+        .limit(1);
+
+      if (profile) {
+        return parseRequestSnapshot({
+          displayName: profile.displayName,
+          avatar: profile.avatar === '' ? null : profile.avatar,
+        });
+      }
+    }
+
+    if (direction.authorNamespaceId === 0) {
+      const isGroupAuthor = direction.authorAccount.startsWith('!');
+      const [profile] = await tx
+        .select({
+          displayName: profileTable.displayName,
+          avatar: profileTable.avatar,
+        })
+        .from(isGroupAuthor ? groupAccount : account)
+        .innerJoin(
+          profileTable,
+          and(
+            eq(
+              profileTable.account,
+              isGroupAuthor ? groupAccount.account : account.account,
+            ),
+            eq(profileTable.publisherNamespaceId, 0),
+            eq(profileTable.profileNamespaceId, 0),
+            eq(
+              profileTable.profileRev,
+              isGroupAuthor
+                ? groupAccount.defaultProfileRev
+                : account.defaultProfileRev,
+            ),
+          ),
+        )
+        .where(
+          isGroupAuthor
+            ? eq(groupAccount.account, direction.authorAccount)
+            : and(
+                eq(account.account, direction.authorAccount),
+                eq(account.namespaceId, 0),
+              ),
+        )
+        .limit(1);
+
+      if (profile) {
+        return parseRequestSnapshot({
+          displayName: profile.displayName,
+          avatar: profile.avatar === '' ? null : profile.avatar,
+        });
+      }
+    }
+
+    throw new Error(
+      `presentation snapshot is unavailable for ${direction.authorAccount} -> ${direction.receiverAccount}`,
+    );
   }
 
   private async lockUserPairMutationInTx(
@@ -880,7 +993,6 @@ export class RelationshipIntentService {
       ),
       columns: {
         status: true,
-        snapshot: true,
         profileRev: true,
         note: true,
         messageEndSeq: true,

@@ -13,7 +13,6 @@ import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
 import {
   RemoteMemberMembershipIntentService,
-  type RemoteMemberMembershipIntentDependencies,
 } from '../src/group/membership-intent/received/remote-member-membership-intent.service.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
 
@@ -59,14 +58,13 @@ describe('remote member membership intents on the authoritative group', () => {
     // Schedulers stay stopped: the database rows are the assertion surface.
     app = fixture.createNestApplication(new FastifyAdapter());
     database = app.get(DatabaseService);
-    const deps: RemoteMemberMembershipIntentDependencies = {
-      database: withBusinessLockCapture(database, businessLocks),
-      clientFeed: app.get(ClientStateFeedService),
-      peerFeed: app.get(PeerStateFeedService),
-      federation: app.get(FederationStateFeedPushService),
-      relationshipMutations: app.get(GroupRelationshipMutationService),
-    };
-    applier = new RemoteMemberMembershipIntentService(deps);
+    applier = new RemoteMemberMembershipIntentService(
+      withBusinessLockCapture(database, businessLocks),
+      app.get(ClientStateFeedService),
+      app.get(PeerStateFeedService),
+      app.get(FederationStateFeedPushService),
+      app.get(GroupRelationshipMutationService),
+    );
     namespaceId = await seedFederatedPeerNamespace(database.db, PEER_DOMAIN);
   });
 

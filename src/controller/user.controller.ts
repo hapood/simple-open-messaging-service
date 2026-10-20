@@ -56,11 +56,6 @@ import { parseGroupMetaFeedDemand } from '../../shared/group-meta-demand.js';
 /** One item in the device-facing compacted state feed. */
 type ClientStateFeedItem = {
   feedId: number;
-  account: string;
-  namespaceId: number;
-  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD';
-  subjectAccount: string;
-  subjectNamespaceId: number;
   body: unknown;
 };
 
@@ -294,11 +289,6 @@ export class UserController {
     const candidates = (
       await this.clientStateFeed.query(me, mode, after, scanEnd)
     ).map((item) => ({
-      account: item.account,
-      namespaceId: item.namespaceId,
-      eventType: item.eventType as ClientStateFeedItem['eventType'],
-      subjectAccount: item.subjectAccount,
-      subjectNamespaceId: item.subjectNamespaceId,
       feedId: item.feedId,
       body: item.body,
     })) satisfies ClientStateFeedItem[];

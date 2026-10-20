@@ -52,38 +52,42 @@ describe('GroupRelationshipMutationService', () => {
   );
 
   it('applies request projections in the same caller transaction', async () => {
-    const tx = {} as never;
-    const projection = {
-      writeEffectsInTx: vi.fn().mockResolvedValue(undefined),
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { groupAccount: '!group', authorityNamespaceId: 0 },
+            ]),
+          }),
+        }),
+      }),
+    } as never;
+    const requestCapability = {
+      concludeRequestInTx: vi.fn().mockResolvedValue({ status: 'CHANGED' }),
     };
     const service = new GroupRelationshipMutationService(
       {} as never,
-      projection as never,
+      requestCapability as never,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
     );
-    await service.writeGroupRequestEffectsInTx(
+    // When intent is missing, it exits cleanly without error
+    const effects = await service.writeGroupRequestEffectsInTx(
       tx,
       4,
-      7,
+      { account: 'alice', namespaceId: 0 },
       'ACCEPTED',
       'INVITATION',
       false,
     );
 
-    expect(projection.writeEffectsInTx).toHaveBeenCalledWith(
-      tx,
-      4,
-      7,
-      'ACCEPTED',
-      'INVITATION',
-      false,
-    );
+    expect(effects).toEqual({ created: false, clientUpdates: [] });
   });
 
-  it('locks a remote-group peer allocator before the account feed', async () => {
+  it('locks the remote-group peer allocator before publishing the protocol intent', async () => {
     const requestedAt = new Date('2026-09-04T00:00:00.000Z');
     const order: string[] = [];
     const tx = {
@@ -131,10 +135,7 @@ describe('GroupRelationshipMutationService', () => {
       }),
     };
     const clientStateFeed = {
-      writeInTx: vi.fn().mockImplementation(async () => {
-        order.push('client');
-        return 21;
-      }),
+      publishRequestHeadInTx: vi.fn(),
     };
     const groupRelationships = {
       writeLockedAuthoredIntentInTx: vi.fn().mockResolvedValue({
@@ -178,26 +179,10 @@ describe('GroupRelationshipMutationService', () => {
       tx,
       [{ namespaceId: 12 }],
     );
-    expect(order).toEqual(['peer-lock', 'client', 'peer-write']);
-    expect(clientStateFeed.writeInTx).toHaveBeenCalledWith(
-      tx,
-      expect.objectContaining({
-        userId: 7,
-        account: 'local-user',
-        subjectAccount: '!remote-group',
-        body: expect.objectContaining({
-          status: 'REVOKED',
-          requestedAt: null,
-          expiresAt: null,
-          group: {
-            account: '!remote-group',
-            namespaceId: 12,
-            profileRev: 4,
-          },
-        }),
-      }),
-    );
-    expect(clientFeedUpdates).toEqual([{ userId: 7, feedId: 21 }]);
+    expect(order).toEqual(['peer-lock', 'peer-write']);
+    expect(stateFeed.writeManyInTx).toHaveBeenCalledOnce();
+    expect(clientStateFeed.publishRequestHeadInTx).not.toHaveBeenCalled();
+    expect(clientFeedUpdates).toEqual([]);
   });
 
   it('reopens a dissolved mirror after a successfully authored positive intent', async () => {

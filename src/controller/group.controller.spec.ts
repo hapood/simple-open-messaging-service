@@ -18,9 +18,21 @@ describe('group invitation admission', () => {
       {
         groupId: 7,
         users: [
-          { account: 'Friend', namespaceId: 0, snapshot: { displayName: 'Friend', avatar: null } },
-          { account: 'friend', namespaceId: 0, snapshot: { displayName: 'Friend', avatar: null } },
-          { account: 'friend', namespaceId: 7, snapshot: { displayName: 'Remote Friend', avatar: null } },
+          {
+            account: 'Friend',
+            namespaceId: 0,
+            snapshot: { displayName: 'Friend', avatar: null },
+          },
+          {
+            account: 'friend',
+            namespaceId: 0,
+            snapshot: { displayName: 'Friend', avatar: null },
+          },
+          {
+            account: 'friend',
+            namespaceId: 7,
+            snapshot: { displayName: 'Remote Friend', avatar: null },
+          },
         ],
       },
     );
@@ -68,7 +80,16 @@ describe('group invitation admission', () => {
           user: { userId: 3 },
           threadAccess: { threadId: 7, participant: { role: 'OWNER' } },
         } as never,
-        { groupId: 7, users: [{ account: 'friend', namespaceId: 0, snapshot: { displayName: 'Friend', avatar: null } }] },
+        {
+          groupId: 7,
+          users: [
+            {
+              account: 'friend',
+              namespaceId: 0,
+              snapshot: { displayName: 'Friend', avatar: null },
+            },
+          ],
+        },
       ),
     ).resolves.toEqual({
       invited: [],
@@ -86,52 +107,154 @@ describe('group invitation admission', () => {
 });
 
 describe('group revocation admission', () => {
-  it('accepts an existing invitation in the member-authored transaction', async () => {
+  it('accepts an invitation by exact request round through the member state machine', async () => {
+    const resolveMemberGroupRound = vi
+      .fn()
+      .mockResolvedValue({ status: 'RESOLVED', threadId: 10 });
     const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
     const controller = Object.create(
       GroupController.prototype,
     ) as GroupController;
-    Object.assign(controller, { memberIntents: { execute } });
-
+    Object.assign(controller, {
+      requests: { resolveMemberGroupRound },
+      memberIntents: { execute },
+    });
     await expect(
       controller.joinRequestedGroup({ user: { userId: 3 } } as never, {
-        groupId: 10,
+        requestId: '9007199254740993',
       }),
-    ).resolves.toEqual({ status: 'APPLIED' });
-    expect(execute).toHaveBeenCalledExactlyOnceWith({
-      threadId: 10,
-      memberUserId: 3,
-      decision: 'ACCEPTED',
-    });
+    ).resolves.toEqual({ status: 'OK', threadId: 10 });
+    expect(resolveMemberGroupRound).toHaveBeenCalledExactlyOnceWith(
+      3,
+      '9007199254740993',
+      'ACCEPT',
+    );
+    expect(execute).toHaveBeenCalledExactlyOnceWith(
+      { threadId: 10, memberUserId: 3, decision: 'ACCEPTED' },
+      { requestDecision: { requestId: 9007199254740993n, decision: 'ACCEPT' } },
+    );
   });
 
-  it('executes join-request acceptance in the group-authored transaction', async () => {
-    const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
+  it('preserves the closed stale outcome without driving the state machine', async () => {
+    const resolveMemberGroupRound = vi
+      .fn()
+      .mockResolvedValue({ status: 'STALE_REQUEST' });
+    const execute = vi.fn();
     const controller = Object.create(
       GroupController.prototype,
     ) as GroupController;
-    Object.assign(controller, { groupIntents: { execute } });
-
-    await expect(
-      controller.acceptJoinRequest(
-        { user: { userId: 3 }, threadAccess: { threadId: 10 } } as never,
-        { account: 'member', namespaceId: 5 } as never,
-      ),
-    ).resolves.toEqual({ status: 'APPLIED' });
-    expect(execute).toHaveBeenCalledExactlyOnceWith({
-      threadId: 10,
-      target: { account: 'member', namespaceId: 5 },
-      scope: 'APPLICATION',
-      managerUserId: 3,
-      decision: 'ACCEPTED',
+    Object.assign(controller, {
+      requests: { resolveMemberGroupRound },
+      memberIntents: { execute },
     });
+    await expect(
+      controller.joinRequestedGroup({ user: { userId: 3 } } as never, {
+        requestId: '42',
+      }),
+    ).resolves.toEqual({ status: 'STALE_REQUEST' });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each([
-    ['rejectJoinRequest', 'APPLICATION'],
-    ['revokeInvitation', 'INVITATION'],
-    ['kickMember', 'MEMBER'],
+    ['declineGroupInvitation', 'REJECT', 'REVOKED'],
+    ['withdrawGroupApplication', 'WITHDRAW', 'REVOKED'],
   ] as const)(
+    'settles %s by exact request round through the member state machine',
+    async (method, decision, intentDecision) => {
+      const resolveMemberGroupRound = vi
+        .fn()
+        .mockResolvedValue({ status: 'RESOLVED', threadId: 10 });
+      const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
+      const controller = Object.create(
+        GroupController.prototype,
+      ) as GroupController;
+      Object.assign(controller, {
+        requests: { resolveMemberGroupRound },
+        memberIntents: { execute },
+      });
+      await expect(
+        controller[method]({ user: { userId: 3 } } as never, {
+          requestId: '42',
+        }),
+      ).resolves.toEqual({ status: 'OK', threadId: 10 });
+      expect(resolveMemberGroupRound).toHaveBeenCalledExactlyOnceWith(
+        3,
+        '42',
+        decision,
+      );
+      expect(execute).toHaveBeenCalledExactlyOnceWith(
+        { threadId: 10, memberUserId: 3, decision: intentDecision },
+        { requestDecision: { requestId: 42n, decision } },
+      );
+    },
+  );
+
+  it.each([
+    ['acceptJoinRequest', 'APPLICATION', 'ACCEPT', 'ACCEPTED'],
+    ['rejectJoinRequest', 'APPLICATION', 'REJECT', 'REVOKED'],
+    ['revokeInvitation', 'INVITATION', 'WITHDRAW', 'REVOKED'],
+  ] as const)(
+    'routes %s through the group state machine with the exact-round gate',
+    async (method, direction, decision, intentDecision) => {
+      const resolveManagerGroupRound = vi.fn().mockResolvedValue({
+        status: 'RESOLVED',
+        member: { account: 'applicant', namespaceId: 0 },
+      });
+      const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
+      const controller = Object.create(
+        GroupController.prototype,
+      ) as GroupController;
+      Object.assign(controller, {
+        requests: { resolveManagerGroupRound },
+        groupIntents: { execute },
+      });
+      await expect(
+        controller[method]({ user: { userId: 3 } } as never, {
+          groupId: 10,
+          requestId: '42',
+        }),
+      ).resolves.toEqual({ status: 'OK', threadId: 10 });
+      expect(resolveManagerGroupRound).toHaveBeenCalledExactlyOnceWith(
+        3,
+        10,
+        '42',
+        direction,
+      );
+      expect(execute).toHaveBeenCalledExactlyOnceWith(
+        {
+          threadId: 10,
+          managerUserId: 3,
+          decision: intentDecision,
+          target: { account: 'applicant', namespaceId: 0 },
+          scope: direction,
+        },
+        { requestDecision: { requestId: 42n, decision } },
+      );
+    },
+  );
+
+  it('preserves a stale manager round without driving the state machine', async () => {
+    const resolveManagerGroupRound = vi
+      .fn()
+      .mockResolvedValue({ status: 'STALE_REQUEST' });
+    const execute = vi.fn();
+    const controller = Object.create(
+      GroupController.prototype,
+    ) as GroupController;
+    Object.assign(controller, {
+      requests: { resolveManagerGroupRound },
+      groupIntents: { execute },
+    });
+    await expect(
+      controller.rejectJoinRequest({ user: { userId: 3 } } as never, {
+        groupId: 10,
+        requestId: '42',
+      }),
+    ).resolves.toEqual({ status: 'STALE_REQUEST' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([['kickMember', 'MEMBER']] as const)(
     'executes the group-authored business transaction directly for %s',
     async (method, scope) => {
       const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });

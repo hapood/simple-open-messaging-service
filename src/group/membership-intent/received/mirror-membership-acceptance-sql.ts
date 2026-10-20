@@ -1,12 +1,8 @@
 import { sql, type SQL } from 'drizzle-orm';
-import { clientIntentFeedWriteSql } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
 import {
   mirrorGroupDirection,
-  mirrorIntentCompactionKey,
-  mirrorIntentFeedBodySql,
   mirrorIntentReadBackSql,
   mirrorIntentWriteSql,
-  epochMillisSql,
   type MirrorGroupPresentationInput,
 } from './mirror-membership-shared-sql.js';
 
@@ -151,54 +147,5 @@ export function mirrorMembershipActivationSql(
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM member_state) AS "activated"
     FROM persisted_intent v
-  `;
-}
-
-/** Statement B of the activation: the invitee's RELATIONSHIP_INTENT feed row,
- * carrying the received intent's own status/note/timestamps. Split from the
- * activation statement because the AccountThreadState insert fires participant
- * triggers that write the same Account allocator rows this statement allocates
- * from (one update per row per statement). */
-export function mirrorMembershipActivationFeedSql(input: {
-  presentation: MirrorGroupPresentationInput;
-  memberAccount: string;
-  localMemberId: number;
-  status: 'REQUESTED' | 'ACCEPTED';
-  note: string;
-  requestedAt: Date | null;
-  expiresAt: Date | null;
-  threadId: number;
-}): SQL {
-  return sql`
-    WITH persisted_intent AS MATERIALIZED (
-      SELECT "profileRev" FROM "RelationshipIntent"
-      WHERE "authorAccount" = ${input.presentation.groupAccount}
-        AND "authorNamespaceId" = ${input.presentation.groupNamespaceId}
-        AND "receiverAccount" = ${input.memberAccount}
-        AND "receiverNamespaceId" = 0
-    ), candidate_bodies AS MATERIALIZED (
-      SELECT ${input.localMemberId}::integer AS "userId",
-        ${input.presentation.groupNamespaceId}::integer AS "namespaceId", 1 AS ordinal,
-        ${mirrorIntentCompactionKey({
-          groupNamespaceId: input.presentation.groupNamespaceId,
-          groupAccount: input.presentation.groupAccount,
-          memberAccount: input.memberAccount,
-        })}::text AS "compactionKey",
-        ${input.presentation.groupAccount}::text AS account,
-        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
-        ${mirrorIntentFeedBodySql({
-          status: sql`${input.status}::text`,
-          profileRev: sql`v."profileRev"`,
-          note: sql`${input.note}::text`,
-          requestedAt: epochMillisSql(sql`${input.requestedAt}::timestamptz`),
-          expiresAt: epochMillisSql(sql`${input.expiresAt}::timestamptz`),
-          established: sql`true`,
-          threadId: input.threadId,
-          presentation: input.presentation,
-        })} AS body
-      FROM persisted_intent v
-    ), ${clientIntentFeedWriteSql()}
-    SELECT (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-      (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"
   `;
 }

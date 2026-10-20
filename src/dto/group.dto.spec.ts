@@ -21,7 +21,11 @@ describe('group invitation address validation', () => {
       await validate(
         plainToInstance(InviteGroupDto, {
           groupId: 1,
-          users: [{ account: 'friend', namespaceId: 7 }],
+          users: [{
+            account: 'friend',
+            namespaceId: 7,
+            snapshot: { displayName: 'Friend', avatar: null },
+          }],
         }),
       ),
     ).toHaveLength(0);

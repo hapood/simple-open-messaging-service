@@ -1,4 +1,5 @@
 import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
+import type { RequestTransactionCapability } from '../../../relationship/request/request-transaction.contract.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
 import { lockBusinessAccountsInTx } from '../../../common/locks/account-business-lock.js';
@@ -6,11 +7,18 @@ import {
   requireP2PThreadContentLockUnderPairInTx,
   type ThreadContentLock,
 } from '../../../common/locks/thread-content-lock.js';
+import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import {
-  userIntentAuthorizationSql,
+  pairAuthorizationSql,
+  directedIntentSql,
   userIntentLocatorSql,
-  type UserIntentAuthorizationRow,
+  type PairAuthorizationRow,
+  type DirectedIntentRow,
 } from './user-intent-authorization-sql.js';
+import {
+  activePeerByThreadSql,
+  type ActivePeerByThreadRow,
+} from './user-intent-thread-end-sql.js';
 import {
   userIntentRequestSql,
   type UserIntentRequestInput,
@@ -32,15 +40,20 @@ import {
   lockUserIntentThreadStateInTx,
   requireExistingThreadId,
   resetUserIntentThreadStateInTx,
-  reverseEffective,
-  reverseRequestUnexpired,
-  ownRequestUnexpired,
-  userIntentCompactionKey,
   type UserIntentEndpoint,
 } from '../shared/user-intent-state-sql.js';
 import { Logger } from '@nestjs/common';
 import { MeasureBusinessOperation } from '../../../diagnostics/execution-measurement.js';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
+import {
+  account,
+  relationshipIntent,
+  relationshipRequest,
+} from '../../../database/schema.js';
+import type {
+  RequestDecision,
+  RequestDecisionResult,
+} from '../../../../shared/relationship-request.js';
 import { BusinessCode } from '../../../common/business-code.js';
 import { BusinessException } from '../../../common/business.exception.js';
 import {
@@ -76,6 +89,10 @@ export type UserIntentCommand = {
 );
 
 export interface UserIntentOptions {
+  requestDecision?: { requestId: bigint; decision: RequestDecision };
+  /** Thread-keyed friendship removal must still address the same active
+   * relationship after business locks, never a replacement pending round. */
+  establishedRelationship?: { threadId: number; epoch: number };
   /** Runs inside the intent transaction after branch validation and
    * before the composed statement, so a
    * rollback also rolls the tick back. */
@@ -92,19 +109,12 @@ export type UserIntentOutcome =
   | { status: 'APPLIED'; threadId?: number }
   | { status: 'NO_OP'; reason: 'ALREADY_ACTIVE'; threadId: number }
   | { status: 'NO_OP'; reason: 'STALE_AUTHORIZATION' }
+  | { status: 'STALE_REQUEST' | 'EXPIRED' }
   | BusinessRejection;
 
 export interface UserIntentTransactionOutcome {
   outcome: UserIntentOutcome;
   peers: Map<number, bigint>;
-}
-
-export interface UserIntentDependencies {
-  database: DatabaseService;
-  clientFeed: ClientStateFeedService;
-  peerFeed: PeerStateFeedService;
-  federation: FederationStateFeedPusher;
-  namespaces: FederationNamespaceService;
 }
 
 type Endpoint = UserIntentEndpoint;
@@ -133,6 +143,10 @@ interface StaleAuthorization {
   staleAuthorization: true;
 }
 
+interface InvalidRequestDecision {
+  requestDecisionStatus: 'STALE_REQUEST' | 'EXPIRED';
+}
+
 interface RejectedIntent {
   rejected: BusinessRejection;
 }
@@ -150,7 +164,7 @@ interface ValidatedIntentBase {
   readonly target: Endpoint;
   readonly localActorId: number;
   readonly localTargetId: number | null;
-  readonly authorization: UserIntentAuthorizationRow;
+  readonly authorization: PairAuthorizationRow;
   readonly validationTime: number;
 }
 
@@ -159,11 +173,14 @@ type ValidatedIntent = ValidatedIntentBase &
     | { readonly kind: 'request'; readonly input: UserIntentRequestInput }
     | {
         readonly kind: 'acceptance';
+        readonly reverseRequestId: bigint | null;
         readonly input: UserIntentAcceptanceInput;
       }
     | {
         readonly kind: 'revocation';
         readonly input: UserIntentRevocationInput;
+        readonly action: 'WITHDRAW' | 'REJECT' | 'END_FRIENDSHIP';
+        readonly targetRequestId: bigint | null;
       }
   );
 
@@ -174,7 +191,70 @@ type ValidatedIntent = ValidatedIntentBase &
 export class UserIntentService {
   private readonly logger = new Logger(UserIntentService.name);
 
-  constructor(private readonly deps: UserIntentDependencies) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly clientFeed: ClientStateFeedService,
+    private readonly peerFeed: PeerStateFeedService,
+    private readonly federation: FederationStateFeedPusher,
+    private readonly namespaces: FederationNamespaceService,
+    private readonly requestCapability: RequestTransactionCapability,
+  ) {}
+
+  async decidePersonalRequest(
+    userId: number,
+    requestId: string,
+    decision: RequestDecision,
+  ): Promise<RequestDecisionResult> {
+    const id = BigInt(requestId);
+    // This read locates the pair only. Admission is revalidated under its lock.
+    const [round] = await this.database.db
+      .select()
+      .from(relationshipRequest)
+      .where(
+        and(
+          eq(relationshipRequest.id, id),
+          eq(relationshipRequest.kind, 'FRIEND'),
+        ),
+      );
+    const [user] = await this.database.db
+      .select({ account: account.account })
+      .from(account)
+      .where(eq(account.id, userId));
+    if (!round || !user) return { status: 'STALE_REQUEST' };
+    const withdrawing = decision === 'WITHDRAW';
+    const ownerAccount = withdrawing
+      ? round.authorAccount
+      : round.receiverAccount;
+    const ownerNamespaceId = withdrawing
+      ? round.authorNamespaceId
+      : round.receiverNamespaceId;
+    if (ownerAccount !== user.account || ownerNamespaceId !== 0)
+      return { status: 'STALE_REQUEST' };
+    const outcome = await this.execute(
+      {
+        userId,
+        target: withdrawing
+          ? {
+              account: round.receiverAccount,
+              namespaceId: round.receiverNamespaceId,
+            }
+          : {
+              account: round.authorAccount,
+              namespaceId: round.authorNamespaceId,
+            },
+        decision: decision === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED',
+      },
+      { requestDecision: { requestId: id, decision } },
+    );
+    if (outcome.status === 'STALE_REQUEST' || outcome.status === 'EXPIRED')
+      return { status: outcome.status };
+    if (isBusinessRejection(outcome))
+      throw new BusinessException(outcome.code, outcome.message);
+    return {
+      status: 'OK',
+      threadId: 'threadId' in outcome ? (outcome.threadId ?? null) : null,
+    };
+  }
 
   @MeasureBusinessOperation('relationship.user-intent')
   async execute(
@@ -182,20 +262,87 @@ export class UserIntentService {
     options?: UserIntentOptions,
   ): Promise<UserIntentOutcome> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
-    const applied = await this.deps.database.db.transaction((tx) =>
+    const applied = await this.database.db.transaction((tx) =>
       this.executeInTx(tx, params, clientUpdates, options),
     );
+    this.publishIntentEffects(applied, clientUpdates);
+    return applied.outcome;
+  }
+
+  /** Thread-keyed entry that ends an established P2P relationship, symmetric
+   * to group leave. The pair row resolves the peer endpoint; only an active
+   * pair is terminable here, so a pending request round can never be decided
+   * through a thread or an address on this path. Ending the friendship never
+   * rewrites request history. */
+  @MeasureBusinessOperation('relationship.user-intent')
+  async endEstablishedRelationship(params: {
+    userId: number;
+    threadId: number;
+  }): Promise<UserIntentOutcome> {
+    const clientUpdates: PendingClientStateFeedUpdate[] = [];
+    const applied = await this.database.db.transaction(async (tx) => {
+      const row = (
+        await tx.execute<ActivePeerByThreadRow>(
+          activePeerByThreadSql(params.userId, params.threadId),
+        )
+      ).rows[0];
+      const selfIsEndpoint =
+        row !== undefined &&
+        ((row.endpointANamespaceId === 0 &&
+          row.endpointAAccount === row.actorAccount) ||
+          (row.endpointBNamespaceId === 0 &&
+            row.endpointBAccount === row.actorAccount));
+      if (!selfIsEndpoint || !row.pairActive)
+        return {
+          outcome: this.reject(
+            'INTENT_NOT_FOUND',
+            BusinessCode.NOT_FOUND,
+            `active relationship for thread [${params.threadId}] does not exist`,
+          ).rejected,
+          peers: new Map<number, bigint>(),
+        } satisfies UserIntentTransactionOutcome;
+      const target =
+        row.endpointANamespaceId === 0 &&
+        row.endpointAAccount === row.actorAccount
+          ? {
+              account: row.endpointBAccount,
+              namespaceId: row.endpointBNamespaceId,
+            }
+          : {
+              account: row.endpointAAccount,
+              namespaceId: row.endpointANamespaceId,
+            };
+      return this.executeInTx(
+        tx,
+        { userId: params.userId, decision: 'REVOKED', target },
+        clientUpdates,
+        {
+          establishedRelationship: {
+            threadId: params.threadId,
+            epoch: row.authorizationEpoch,
+          },
+        },
+      );
+    });
+    this.publishIntentEffects(applied, clientUpdates);
+    return applied.outcome;
+  }
+
+  /** Post-commit wake epilogue shared by every public entry. */
+  private publishIntentEffects(
+    applied: UserIntentTransactionOutcome,
+    clientUpdates: PendingClientStateFeedUpdate[],
+  ): void {
     if (applied.peers.size > 0 || clientUpdates.length > 0) {
       try {
         if (clientUpdates.length > 0)
-          this.deps.clientFeed.notifyFeedUpdates(clientUpdates);
+          this.clientFeed.notifyFeedUpdates(clientUpdates);
       } catch (error) {
         this.logger.warn('user intent client wake failed', error);
       }
       if (applied.peers.size > 0)
-        void this.deps.federation.pushStateFeedNamespaces(applied.peers.keys());
+        void this.federation.pushStateFeedNamespaces(applied.peers.keys());
     }
-    return applied.outcome;
   }
 
   /** Transactional entry for durable system work. The caller owns commit and
@@ -209,6 +356,11 @@ export class UserIntentService {
     const context = await this.lockAndValidateInTx(tx, params, options);
     // An already-active pair is a satisfied acceptance: nothing to write or
     // wake, while the outcome still carries the active thread.
+    if ('requestDecisionStatus' in context)
+      return {
+        outcome: { status: context.requestDecisionStatus },
+        peers: new Map(),
+      };
     if ('rejected' in context)
       return { outcome: context.rejected, peers: new Map() };
     if ('staleAuthorization' in context)
@@ -245,7 +397,11 @@ export class UserIntentService {
     params: UserIntentCommand,
     options?: UserIntentOptions,
   ): Promise<
-    ValidatedIntent | NoOpIntent | RejectedIntent | StaleAuthorization
+    | ValidatedIntent
+    | NoOpIntent
+    | RejectedIntent
+    | StaleAuthorization
+    | InvalidRequestDecision
   > {
     const targetAccount = normalizeAccount(params.target.account);
     // Identity addressing: the namespace id is the durable key. The target's
@@ -256,10 +412,10 @@ export class UserIntentService {
     let effectiveDomain: string;
     if (params.target.namespaceId === 0) {
       targetNamespaceId = 0;
-      effectiveDomain = await this.deps.namespaces.localDomainInTx(tx);
+      effectiveDomain = await this.namespaces.localDomainInTx(tx);
     } else {
       try {
-        const row = await this.deps.namespaces.captureActiveByIdInTx(
+        const row = await this.namespaces.captureActiveByIdInTx(
           tx,
           params.target.namespaceId,
         );
@@ -379,24 +535,12 @@ export class UserIntentService {
       pairId,
       shell,
     );
-    await tx.execute(
-      sql`SELECT 1 FROM "RelationshipIntent"
-      WHERE ("authorAccount" = ${actor.account} AND "authorNamespaceId" = ${actor.namespaceId}
-          AND "receiverAccount" = ${target.account} AND "receiverNamespaceId" = ${target.namespaceId})
-        OR ("authorAccount" = ${target.account} AND "authorNamespaceId" = ${target.namespaceId}
-          AND "receiverAccount" = ${actor.account} AND "receiverNamespaceId" = ${actor.namespaceId})
-      ORDER BY "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId"
-      FOR NO KEY UPDATE`,
-    );
-    // One post-lock authorization read; the participant reset below gates on it
-    // so an already-active pair's no-op path leaves participant state alone.
+
     const row = (
-      await tx.execute<UserIntentAuthorizationRow>(
-        userIntentAuthorizationSql({
+      await tx.execute<PairAuthorizationRow>(
+        pairAuthorizationSql({
           pairId,
           actorUserId: params.userId,
-          actorAccount: actor.account,
-          actorNamespaceId: actor.namespaceId,
           targetAccount,
           targetDomain: effectiveDomain,
           targetNamespaceId: target.namespaceId,
@@ -404,6 +548,19 @@ export class UserIntentService {
       )
     ).rows[0];
     if (!row) throw new Error('user intent authorization disappeared');
+    const established = options?.establishedRelationship;
+    if (
+      established &&
+      (params.decision !== 'REVOKED' ||
+        !row.pairActive ||
+        row.threadId !== established.threadId ||
+        row.authorizationEpoch !== established.epoch)
+    )
+      return this.reject(
+        'INTENT_NOT_FOUND',
+        BusinessCode.NOT_FOUND,
+        'established relationship changed before revocation',
+      );
     if (
       options?.expectedAuthorization &&
       (row.threadId !== options.expectedAuthorization.threadId ||
@@ -424,19 +581,67 @@ export class UserIntentService {
       authorization: row,
       validationTime: Date.now(),
     };
-    // Resolve the branch once before participant mutation. Expiry must not
-    // route the same command differently after an awaited allocator lock.
+
+    const exact = options?.requestDecision;
+    if (exact) {
+      const withdrawing = exact.decision === 'WITHDRAW';
+      const author = withdrawing ? actor : target;
+      const receiver = withdrawing ? target : actor;
+      const [intent] = await tx
+        .select()
+        .from(relationshipIntent)
+        .where(
+          and(
+            eq(relationshipIntent.authorAccount, author.account),
+            eq(relationshipIntent.authorNamespaceId, author.namespaceId),
+            eq(relationshipIntent.receiverAccount, receiver.account),
+            eq(relationshipIntent.receiverNamespaceId, receiver.namespaceId),
+          ),
+        );
+      const [round] = await tx
+        .select()
+        .from(relationshipRequest)
+        .where(eq(relationshipRequest.id, exact.requestId));
+      if (
+        row.pairActive ||
+        !intent ||
+        intent.status !== 'REQUESTED' ||
+        intent.requestId !== exact.requestId ||
+        !round ||
+        round.kind !== 'FRIEND' ||
+        round.status !== 'REQUESTED' ||
+        round.authorAccount !== author.account ||
+        round.authorNamespaceId !== author.namespaceId ||
+        round.receiverAccount !== receiver.account ||
+        round.receiverNamespaceId !== receiver.namespaceId
+      )
+        return { requestDecisionStatus: 'STALE_REQUEST' };
+      if (
+        !intent.expiresAt ||
+        intent.expiresAt.getTime() <= base.validationTime ||
+        round.expiresAt.getTime() <= base.validationTime
+      )
+        return { requestDecisionStatus: 'EXPIRED' };
+    }
+
     const context =
       params.decision === 'REQUESTED'
-        ? this.validateRequestInTx(base, row)
+        ? await this.validateRequestInTx(base)
         : params.decision === 'ACCEPTED'
-          ? this.validateAcceptanceInTx(base, row)
-          : this.validateRevocationInTx(base, row);
+          ? await this.validateAcceptanceInTx(base)
+          : exact
+            ? this.finalize(base, {
+                kind: 'revocation',
+                action: exact.decision === 'WITHDRAW' ? 'WITHDRAW' : 'REJECT',
+                targetRequestId: exact.requestId,
+                input: { ...feedInput(base) },
+              })
+            : await this.validateRevocationInTx(base);
     if ('noOp' in context || 'rejected' in context) return context;
     // Peer feed allocators precede every operation that may allocate from a
     // local Account state-feed counter, including AccountThreadState triggers.
     if (target.namespaceId !== 0)
-      await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
+      await this.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         { namespaceId: targetNamespaceId },
       ]);
     await lockUserIntentThreadStateInTx(tx, shell, actor, target);
@@ -466,19 +671,60 @@ export class UserIntentService {
    * pending request, or their ACCEPTED that our earlier revoke had withdrawn
    * from) collapses into the acceptance path with the authorization row
    * already in hand. Every other state receives a fresh or refreshed request. */
-  private validateRequestInTx(
+  private async validateRequestInTx(
     base: ValidatedIntentBase,
-    row: UserIntentAuthorizationRow,
-  ): ValidatedIntent | NoOpIntent | RejectedIntent {
-    if (base.params.decision !== 'REQUESTED') throw new Error('request command required');
-    if (reverseEffective(row, base.validationTime))
-      return this.validateAcceptanceInTx(base, row);
-    if (row.localTargetId === null && base.target.namespaceId === 0)
+  ): Promise<ValidatedIntent | NoOpIntent | RejectedIntent> {
+    if (base.params.decision !== 'REQUESTED')
+      throw new Error('request command required');
+    if (
+      base.authorization.localTargetId === null &&
+      base.target.namespaceId === 0
+    )
       return this.reject(
         'TARGET_NOT_FOUND',
         BusinessCode.NOT_FOUND,
         'request target is missing',
       );
+    // An active pair satisfies the command: no new round, no refresh.
+    if (base.authorization.pairActive)
+      return { noOp: true, threadId: base.threadId };
+
+    const [reverse] = (
+      await base.tx.execute<DirectedIntentRow>(
+        directedIntentSql({
+          authorAccount: base.target.account,
+          authorNamespaceId: base.target.namespaceId,
+          receiverAccount: base.actor.account,
+          receiverNamespaceId: base.actor.namespaceId,
+        }),
+      )
+    ).rows;
+
+    // `req + req/ack = ack`: a live reverse pending request, or their ACCEPTED
+    // that our earlier revoke withdrew from (the peer has not yet ingested the
+    // departure), both collapse into the acceptance path so the pair
+    // re-establishes synchronously on the re-adding side.
+    const reverseEffective =
+      reverse?.status === 'ACCEPTED' ||
+      (reverse?.status === 'REQUESTED' &&
+        reverse.expiresAt !== null &&
+        new Date(reverse.expiresAt).getTime() > base.validationTime);
+
+    if (reverseEffective) {
+      return this.finalize(base, {
+        kind: 'acceptance',
+        reverseRequestId: reverse.requestId ? BigInt(reverse.requestId) : null,
+        input: {
+          ...feedInput(base),
+          note: (base.params.decision === 'REQUESTED'
+            ? (base.params.note ?? '')
+            : ''
+          ).slice(0, 255),
+          acceptedAt: new Date(),
+        },
+      });
+    }
+
     const requestedAt = new Date();
     const expiresAt = new Date(
       requestedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
@@ -495,83 +741,147 @@ export class UserIntentService {
     });
   }
 
-  /** ACCEPTED entry states: an already-active pair is a satisfied no-op; a live
-   * reverse request is accepted; a reverse ACCEPTED (our withdrawal left their
-   * confirmation behind) completes the activation. Everything else — none,
-   * REVOKED, expired — is a stale command. */
-  private validateAcceptanceInTx(
+  private async validateAcceptanceInTx(
     base: ValidatedIntentBase,
-    row: UserIntentAuthorizationRow,
-  ): ValidatedIntent | NoOpIntent | RejectedIntent {
-    if (row.pairActive) return { noOp: true, threadId: base.threadId };
-    const live =
-      (row.reverseStatus === 'REQUESTED' &&
-        reverseRequestUnexpired(row, base.validationTime)) ||
-      row.reverseStatus === 'ACCEPTED';
-    if (!live)
-      return this.reject(
-        row.reverseStatus === 'REQUESTED'
-          ? 'INTENT_EXPIRED'
-          : 'INTENT_NOT_FOUND',
-        row.reverseStatus === 'REQUESTED'
-          ? BusinessCode.INVITE_EXPIRED
-          : BusinessCode.NOT_FOUND,
-        row.reverseStatus === 'REQUESTED'
-          ? 'request has expired'
-          : 'request not found',
-      );
-    if (row.localTargetId === null && base.target.namespaceId === 0)
+  ): Promise<ValidatedIntent | NoOpIntent | RejectedIntent> {
+    if (base.authorization.pairActive)
+      return { noOp: true, threadId: base.threadId };
+    if (
+      base.authorization.localTargetId === null &&
+      base.target.namespaceId === 0
+    )
       return this.reject(
         'TARGET_NOT_FOUND',
         BusinessCode.NOT_FOUND,
         'request target is missing',
       );
+
+    const [reverse] = (
+      await base.tx.execute<DirectedIntentRow>(
+        directedIntentSql({
+          authorAccount: base.target.account,
+          authorNamespaceId: base.target.namespaceId,
+          receiverAccount: base.actor.account,
+          receiverNamespaceId: base.actor.namespaceId,
+        }),
+      )
+    ).rows;
+
+    const live =
+      reverse?.status === 'REQUESTED' &&
+      reverse.expiresAt !== null &&
+      new Date(reverse.expiresAt).getTime() > base.validationTime;
+
+    if (!live)
+      return this.reject(
+        reverse?.status === 'REQUESTED' ? 'INTENT_EXPIRED' : 'INTENT_NOT_FOUND',
+        reverse?.status === 'REQUESTED'
+          ? BusinessCode.INVITE_EXPIRED
+          : BusinessCode.NOT_FOUND,
+        reverse?.status === 'REQUESTED'
+          ? 'request has expired'
+          : 'request not found',
+      );
+
     return this.finalize(base, {
       kind: 'acceptance',
+      reverseRequestId: reverse.requestId ? BigInt(reverse.requestId) : null,
       input: {
         ...feedInput(base),
-        // An ACK entry carries no note; the crossed-request collapse keeps the
-        // requester's note.
-        note: (base.params.decision === 'REQUESTED'
-          ? (base.params.note ?? '')
-          : ''
-        ).slice(0, 255),
+        note: '',
         acceptedAt: new Date(),
       },
     });
   }
 
-  /** REVOKE covers withdraw, reject, and end-friendship. Something must be
-   * live on either side — an intent or the pair itself — or the command is
-   * stale. Departure effects gate on the pair transition inside the statement. */
-  private validateRevocationInTx(
+  private async validateRevocationInTx(
     base: ValidatedIntentBase,
-    row: UserIntentAuthorizationRow,
-  ): ValidatedIntent | RejectedIntent {
+  ): Promise<ValidatedIntent | RejectedIntent> {
+    const ownDirection = (
+      await base.tx.execute<DirectedIntentRow>(
+        directedIntentSql({
+          authorAccount: base.actor.account,
+          authorNamespaceId: base.actor.namespaceId,
+          receiverAccount: base.target.account,
+          receiverNamespaceId: base.target.namespaceId,
+        }),
+      )
+    ).rows[0];
+
+    // BUG-1 convergence: an own ACCEPTED direction is concluded even when the
+    // pair is already down — typically inside the received-consumer
+    // transaction, where the peer's revocation deactivated the pair before
+    // our own conclusion is authored. The composed statement gates every
+    // departure effect on the pair transition, so this path only flips the
+    // direction and echoes the conclusion; a dangling live acceptance must
+    // never survive the peer's departure.
+    if (base.authorization.pairActive || ownDirection?.status === 'ACCEPTED') {
+      return this.finalize(base, {
+        kind: 'revocation',
+        action: 'END_FRIENDSHIP',
+        targetRequestId: null,
+        input: {
+          ...feedInput(base),
+        },
+      });
+    }
+
+    const own = ownDirection;
+
     const ownLive =
-      row.ownStatus === 'ACCEPTED' ||
-      (row.ownStatus === 'REQUESTED' &&
-        ownRequestUnexpired(row, base.validationTime));
-    if (
-      !(ownLive || reverseEffective(row, base.validationTime) || row.pairActive)
-    )
-      return this.reject(
-        row.ownStatus === 'REQUESTED' || row.reverseStatus === 'REQUESTED'
-          ? 'INTENT_EXPIRED'
-          : 'INTENT_NOT_FOUND',
-        row.ownStatus === 'REQUESTED' || row.reverseStatus === 'REQUESTED'
-          ? BusinessCode.INVITE_EXPIRED
-          : BusinessCode.NOT_FOUND,
-        row.ownStatus === 'REQUESTED' || row.reverseStatus === 'REQUESTED'
-          ? 'request has expired'
-          : 'request not found',
-      );
-    return this.finalize(base, {
-      kind: 'revocation',
-      input: {
-        ...feedInput(base),
-      },
-    });
+      own?.status === 'REQUESTED' &&
+      own.expiresAt !== null &&
+      new Date(own.expiresAt).getTime() > base.validationTime;
+
+    if (ownLive) {
+      return this.finalize(base, {
+        kind: 'revocation',
+        action: 'WITHDRAW',
+        targetRequestId: own.requestId ? BigInt(own.requestId) : null,
+        input: {
+          ...feedInput(base),
+        },
+      });
+    }
+
+    const [reverse] = (
+      await base.tx.execute<DirectedIntentRow>(
+        directedIntentSql({
+          authorAccount: base.target.account,
+          authorNamespaceId: base.target.namespaceId,
+          receiverAccount: base.actor.account,
+          receiverNamespaceId: base.actor.namespaceId,
+        }),
+      )
+    ).rows;
+
+    const reverseLive =
+      reverse?.status === 'REQUESTED' &&
+      reverse.expiresAt !== null &&
+      new Date(reverse.expiresAt).getTime() > base.validationTime;
+
+    if (reverseLive) {
+      return this.finalize(base, {
+        kind: 'revocation',
+        action: 'REJECT',
+        targetRequestId: reverse.requestId ? BigInt(reverse.requestId) : null,
+        input: {
+          ...feedInput(base),
+        },
+      });
+    }
+
+    return this.reject(
+      own?.status === 'REQUESTED' || reverse?.status === 'REQUESTED'
+        ? 'INTENT_EXPIRED'
+        : 'INTENT_NOT_FOUND',
+      own?.status === 'REQUESTED' || reverse?.status === 'REQUESTED'
+        ? BusinessCode.INVITE_EXPIRED
+        : BusinessCode.NOT_FOUND,
+      own?.status === 'REQUESTED' || reverse?.status === 'REQUESTED'
+        ? 'request has expired'
+        : 'request not found',
+    );
   }
 
   private reject(
@@ -588,8 +898,17 @@ export class UserIntentService {
     base: ValidatedIntentBase,
     branch:
       | { kind: 'request'; input: UserIntentRequestInput }
-      | { kind: 'acceptance'; input: UserIntentAcceptanceInput }
-      | { kind: 'revocation'; input: UserIntentRevocationInput },
+      | {
+          kind: 'acceptance';
+          reverseRequestId: bigint | null;
+          input: UserIntentAcceptanceInput;
+        }
+      | {
+          kind: 'revocation';
+          input: UserIntentRevocationInput;
+          action: 'WITHDRAW' | 'REJECT' | 'END_FRIENDSHIP';
+          targetRequestId: bigint | null;
+        },
   ): ValidatedIntent {
     return {
       ...base,
@@ -618,11 +937,44 @@ export class UserIntentService {
     context: Extract<ValidatedIntent, { kind: 'request' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<number, bigint>> {
+    const openResult = await this.requestCapability.openRequestInTx(
+      context.tx,
+      {
+        flow: {
+          kind: 'FRIEND',
+          author: {
+            account: context.actor.account,
+            namespaceId: context.actor.namespaceId,
+          },
+          receiver: {
+            account: context.target.account,
+            namespaceId: context.target.namespaceId,
+          },
+        },
+        evidence: {
+          authorProfileNamespaceId: 0,
+          authorProfileRev: context.authorization.actorProfileRev,
+          note: context.input.note,
+          requestedAt: context.input.requestedAt,
+          expiresAt: context.input.expiresAt,
+          snapshot: context.input.snapshot,
+        },
+      },
+    );
+    if (openResult.status !== 'STALE_REQUEST') {
+      clientUpdates.push(...openResult.effects.clientUpdates);
+    }
+
     const result = await context.tx.execute<{
       intentChanged: boolean;
-      clientUpdates: Array<{ userId: number; feedId: number }>;
       peerFeedId: string | null;
-    }>(userIntentRequestSql(context.input));
+    }>(
+      userIntentRequestSql({
+        ...context.input,
+        requestId:
+          openResult.status !== 'STALE_REQUEST' ? openResult.round.id : null,
+      }),
+    );
     await resetUserIntentThreadStateInTx(
       context.tx,
       context.threadId,
@@ -640,13 +992,30 @@ export class UserIntentService {
     context: Extract<ValidatedIntent, { kind: 'acceptance' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<number, bigint>> {
+    if (context.reverseRequestId !== null) {
+      await this.requestCapability.concludeRequestInTx(context.tx, {
+        flow: {
+          kind: 'FRIEND',
+          author: {
+            account: context.target.account,
+            namespaceId: context.target.namespaceId,
+          },
+          receiver: {
+            account: context.actor.account,
+            namespaceId: context.actor.namespaceId,
+          },
+        },
+        requestId: context.reverseRequestId,
+        cause: 'ACCEPT',
+      });
+    }
+
     const result = await context.tx.execute<{
       intentChanged: boolean;
       reverseUpgraded: boolean;
       pairChanged: boolean;
       audienceChanged: boolean;
       systemMessageSeq: number | null;
-      clientUpdates: Array<{ userId: number; feedId: number }>;
       peerFeedId: string | null;
     }>(userIntentAcceptanceSql(context.input));
     await resetUserIntentThreadStateInTx(
@@ -675,12 +1044,67 @@ export class UserIntentService {
     context: Extract<ValidatedIntent, { kind: 'revocation' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<number, bigint>> {
+    if (context.action === 'WITHDRAW' && context.targetRequestId !== null) {
+      await this.requestCapability.concludeRequestInTx(context.tx, {
+        flow: {
+          kind: 'FRIEND',
+          author: {
+            account: context.actor.account,
+            namespaceId: context.actor.namespaceId,
+          },
+          receiver: {
+            account: context.target.account,
+            namespaceId: context.target.namespaceId,
+          },
+        },
+        requestId: context.targetRequestId,
+        cause: 'WITHDRAW',
+      });
+    } else if (
+      context.action === 'REJECT' &&
+      context.targetRequestId !== null
+    ) {
+      await this.requestCapability.concludeRequestInTx(context.tx, {
+        flow: {
+          kind: 'FRIEND',
+          author: {
+            account: context.target.account,
+            namespaceId: context.target.namespaceId,
+          },
+          receiver: {
+            account: context.actor.account,
+            namespaceId: context.actor.namespaceId,
+          },
+        },
+        requestId: context.targetRequestId,
+        cause: 'REJECT',
+      });
+      if (context.localTargetId !== null) {
+        await context.tx.execute(
+          authoredIntentWriteSql({
+            author: {
+              account: context.target.account,
+              namespaceId: context.target.namespaceId,
+            },
+            receiver: {
+              account: context.actor.account,
+              namespaceId: context.actor.namespaceId,
+            },
+            threadId: context.threadId,
+            status: 'REVOKED',
+            note: '',
+            requestedAt: null,
+            expiresAt: null,
+          }),
+        );
+      }
+    }
+
     const result = await context.tx.execute<{
       intentChanged: boolean;
       pairChanged: boolean;
       audienceChanged: boolean;
       systemMessageSeq: number | null;
-      clientUpdates: Array<{ userId: number; feedId: number }>;
       peerFeedId: string | null;
     }>(userIntentRevocationSql(context.input));
     const peers = await this.collectStateFeedWakeHints(
@@ -692,24 +1116,23 @@ export class UserIntentService {
       result.rows[0]?.pairChanged === true &&
       context.localTargetId !== null
     ) {
-      const conclusion = await this.executeInTx(
-        context.tx,
-        {
-          userId: context.localTargetId,
-          decision: 'REVOKED',
-          target: {
+      await context.tx.execute(
+        authoredIntentWriteSql({
+          author: {
+            account: context.target.account,
+            namespaceId: context.target.namespaceId,
+          },
+          receiver: {
             account: context.actor.account,
             namespaceId: context.actor.namespaceId,
           },
-        },
-        clientUpdates,
+          threadId: context.threadId,
+          status: 'REVOKED',
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+        }),
       );
-      if (isBusinessRejection(conclusion.outcome))
-        throw new Error(
-          `local revoke conclusion rejected: ${conclusion.outcome.reason}`,
-        );
-      for (const [domain, feedId] of conclusion.peers)
-        peers.set(domain, feedId);
     }
     return peers;
   }
@@ -720,7 +1143,6 @@ export class UserIntentService {
     context: ValidatedIntent,
     result: {
       rows: Array<{
-        clientUpdates: Array<{ userId: number; feedId: number }>;
         peerFeedId: string | null;
       }>;
     },
@@ -728,11 +1150,6 @@ export class UserIntentService {
   ): Promise<Map<number, bigint>> {
     const row = result.rows[0];
     if (!row) throw new Error('user intent update disappeared');
-    for (const update of row.clientUpdates ?? [])
-      clientUpdates.push({
-        userId: update.userId,
-        feedId: Number(update.feedId),
-      });
     const ids = [context.localActorId, context.localTargetId].filter(
       (id): id is number => typeof id === 'number',
     );
@@ -761,8 +1178,6 @@ function feedInput(base: {
     namespaceId,
     // The compaction keys follow the direction each key names, independent of
     // which canonical pair side the actor occupies.
-    actorKey: userIntentCompactionKey(namespaceId, base.actor, base.target),
-    targetKey: userIntentCompactionKey(namespaceId, base.target, base.actor),
     actorAccount: base.actor.account,
     actorNamespaceId: base.actor.namespaceId,
     targetAccount: base.target.account,

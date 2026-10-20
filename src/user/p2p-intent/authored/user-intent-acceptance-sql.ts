@@ -2,10 +2,9 @@ import { sql, type SQL } from 'drizzle-orm';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../../../federation/federation-history-access-setting.js';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import {
-  userIntentClientBodiesSql,
   userIntentPeerWriteSql,
   type UserIntentFeedInput,
-} from './user-intent-client-feed-sql.js';
+} from './user-intent-peer-feed-sql.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
 import { userIntentSystemParticipantsSql } from './user-intent-system-participants-sql.js';
 
@@ -52,9 +51,9 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
     ), authored AS (
       ${authoredSql}
     ), accepted AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt", snapshot FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt", snapshot
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
@@ -66,23 +65,13 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
         AND "receiverAccount" = ${input.actorAccount} AND "receiverNamespaceId" = ${input.actorNamespaceId}
         AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
         AND ${remote ? sql`false` : sql`true`} AND EXISTS (SELECT 1 FROM authored)
-      RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt", snapshot
+      RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = true, established = true,
         "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${input.pairId} AND NOT active AND EXISTS (SELECT 1 FROM accepted)
       RETURNING id
-    ), ${userIntentClientBodiesSql({
-      ...input,
-      ownState: 'accepted',
-      // The reverse upgrade's base-table effect is invisible to this
-      // statement's snapshot, so the reverse direction publishes from the
-      // upgrade's read-back.
-      reverseState: 'reverse_upgrade',
-      // The published body represents the post-activation pair even though
-      // sibling CTEs otherwise see the statement snapshot.
-      establishedOverride: sql`(SELECT true FROM pair_change)`,
-    })}, audience_local AS (
+    ), audience_local AS (
       INSERT INTO "ThreadAudience" ("threadId", "targetNamespaceId", "localUserId")
       SELECT ${input.threadId}, 0, a.id
       FROM "RelationshipPair" p, "Account" a
@@ -143,8 +132,6 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM audience_local) OR EXISTS (SELECT 1 FROM audience_remote) AS "audienceChanged",
       (SELECT seq FROM system_message) AS "systemMessageSeq",
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('userId', r."userId", 'feedId', r."feedId")
-        ORDER BY r."userId") FROM recipient_result r), '[]'::jsonb) AS "clientUpdates",
       ${remote ? sql`(SELECT max("feedId") FROM peer_result)` : sql`NULL::text`} AS "peerFeedId"
     FROM accepted v
     CROSS JOIN (SELECT count(*) FROM seq_alloc) thread_barrier

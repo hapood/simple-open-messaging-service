@@ -2,9 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { AccountSubjectAddress } from '../../user/account-address.js';
 import { groupStateSql } from '../shared/group-state.js';
 import { authoredIntentWriteSql } from '../../common/sql/authored-relationship-intent-sql.js';
-import { requestProjectionFlipSql } from '../membership-intent/shared/group-membership-projection-sql.js';
 import {
-  clientIntentFeedWriteSql,
   peerIntentFeedWriteSql,
 } from '../../common/sql/relationship-intent-recipient-feed-sql.js';
 
@@ -23,7 +21,6 @@ export interface GroupDisbandMembershipRevocationInput {
   /** Local Account.id of the member, or null for a peer-hosted member. */
   localMemberId: number | null;
   /** Existing non-REVOKED projection directions for this member, from authorization. */
-  projectionDirections: readonly ('APPLICATION' | 'INVITATION')[];
 }
 
 /** Use before locking only to name the business scopes and fail fast on a
@@ -52,27 +49,6 @@ export function groupDisbandMembershipRevocationLocatorSql(input: {
     WHERE g.id = ${input.threadId}
     LIMIT 1
   `;
-}
-
-function groupToMemberKey(groupAccount: string, memberAccount: string): string {
-  // Matches ClientStateFeedService.compactionKey for the group→member write.
-  return JSON.stringify([
-    'RELATIONSHIP_INTENT',
-    0,
-    groupAccount,
-    memberAccount,
-  ]);
-}
-
-function memberToGroupKey(memberAccount: string, groupAccount: string): string {
-  // Matches ClientStateFeedService.compactionKey for the member's own
-  // OUTGOING entry — the side B intent's recipient write.
-  return JSON.stringify([
-    'RELATIONSHIP_INTENT',
-    0,
-    memberAccount,
-    groupAccount,
-  ]);
 }
 
 /** One composed statement for the disband sweep's per-member departure. The
@@ -137,14 +113,7 @@ export function groupDisbandMembershipRevocationSql(
       WHERE id = ${input.pairId} AND "threadId" = ${input.threadId}
         AND active IS DISTINCT FROM false
       RETURNING id
-    ), ${requestProjectionFlipSql({
-      threadId: input.threadId,
-      memberAccount: input.memberAccount,
-      profileNamespaceId: input.profileNamespaceId,
-      status: 'REVOKED',
-      authorAccount: input.groupAccount,
-      directions: input.projectionDirections,
-    })}, audience_close AS (
+    ), audience_close AS (
       DELETE FROM "ThreadAudience" ta
       WHERE ta."threadId" = ${input.threadId} AND (
         (ta."localUserId" = ${input.localMemberId}
@@ -156,55 +125,15 @@ export function groupDisbandMembershipRevocationSql(
               AND p.active AND p."endpointBNamespaceId" = ${input.profileNamespaceId}
               AND p.id <> ${input.pairId})))
       RETURNING ta.id
-    ), ${localMember ? localRecipients(input) : peerRecipient(input)}
+    ) ${localMember ? sql.empty() : sql`, ${peerRecipient(input)}`}
     SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
-      EXISTS (SELECT 1 FROM audience_close) AS "audienceChanged",
-      (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-      (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"
+      EXISTS (SELECT 1 FROM audience_close) AS "audienceChanged"
+      ${localMember ? sql.empty() : sql`,
+        (SELECT "userId" FROM recipient_result) AS "recipientUserId",
+        (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"`}
     FROM revocation v
-    CROSS JOIN (SELECT count(*) FROM request_projection) projection_barrier
-  `;
-}
-
-/** The two local recipient entries written for a local member: the group→member
- * compacted RELATIONSHIP_INTENT row (status flip with the group snapshot) and
- * the member's own OUTGOING entry under the member-as-account key, whose
- * requestedAt the REVOKED write clears. */
-function localRecipients(input: GroupDisbandMembershipRevocationInput): SQL {
-  return sql`
-    recipient_bodies AS MATERIALIZED (
-      SELECT ${groupToMemberKey(input.groupAccount, input.memberAccount)}::text AS "compactionKey",
-        jsonb_build_object('status', v.status, 'note', v.note,
-          'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
-          'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
-            ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END,
-          'threadId', ${input.threadId}::integer,
-          'established', (SELECT p.established FROM "RelationshipPair" p WHERE p.id = ${input.pairId}),
-          'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-            'profileRev', ${input.groupProfileRev}::integer)
-        ) AS body
-      FROM revocation v
-    ), candidate_bodies AS MATERIALIZED (
-      SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
-        b."compactionKey", ${input.groupAccount}::text AS account,
-        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
-      FROM recipient_bodies b
-      UNION ALL
-      SELECT ${input.localMemberId}::integer, 0, 2,
-        ${memberToGroupKey(input.memberAccount, input.groupAccount)}::text,
-        ${input.memberAccount}::text,
-        ${input.groupAccount}::text, 0::integer,
-        jsonb_build_object('status', v.status, 'note', '',
-          'requestedAt', NULL::bigint,
-          'expiresAt', NULL::bigint,
-          'direction', 'OUTGOING',
-          'threadId', ${input.threadId}::integer,
-          'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-            'profileRev', ${input.groupProfileRev}::integer))
-      FROM revocation v
-    ), ${clientIntentFeedWriteSql()}
   `;
 }
 

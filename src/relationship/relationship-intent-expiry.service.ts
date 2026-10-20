@@ -192,14 +192,6 @@ export class RelationshipIntentExpiryService {
               groupIsAuthor ? 'INVITATION' : 'APPLICATION',
               false,
             );
-          const [localMember] = await localAccountsForTargetsInTx(tx, [member]);
-          if (localMember)
-            await this.relationships.writeGroupRequestClientStateInTx(
-              tx,
-              request.threadId,
-              localMember.id,
-              pendingClientFeedUpdates,
-            );
         } else if (request.kind === 'P2P') {
           const author = validateNamespacedAddress({
             account: request.authorAccount,

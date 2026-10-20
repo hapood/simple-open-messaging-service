@@ -17,7 +17,7 @@ describe('group invitations by public address', () => {
   });
   afterAll(async () => mod?.close());
 
-  it('resolves the authoritative friend rather than a later group copy, without creating users', async () => {
+  it('deduplicates an exact address and delegates its supplied snapshot without creating users', async () => {
     const directNs = await seedFederatedPeerNamespace(
       database.db,
       'invite-direct.test',
@@ -85,9 +85,11 @@ describe('group invitations by public address', () => {
       account: direct.account,
       namespaceId: direct.namespaceId,
     };
+    const snapshot = { displayName: 'Friend', avatar: null };
+    const accountsBefore = await database.db.select().from(tables.account);
     const result = await controller.inviteUsers(req, {
       groupId: 9,
-      users: [address, address],
+      users: [{ ...address, snapshot }, { ...address, snapshot }],
     });
     // The controller dedupes addresses and delegates each unique one to the
     // group intent family, which owns friend resolution under its locks.
@@ -97,9 +99,11 @@ describe('group invitations by public address', () => {
       threadId: 9,
       managerUserId: local.id,
       decision: 'REQUESTED',
+      snapshot,
       target: address,
     });
     expect(decoy.namespaceId).not.toBe(direct.namespaceId);
+    expect(await database.db.select().from(tables.account)).toEqual(accountsBefore);
 
     const rejection = {
       status: 'REJECTED',
@@ -110,7 +114,7 @@ describe('group invitations by public address', () => {
     executeIntent.mockResolvedValueOnce(rejection);
     const inactive = await controller.inviteUsers(req, {
       groupId: 9,
-      users: [address],
+      users: [{ ...address, snapshot }],
     });
     expect(inactive.invited).toEqual([]);
     expect(inactive.skipped).toEqual([

@@ -18,6 +18,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   groupMetaMemberFeed,
   message,
+  messageThread,
   accountThreadState,
 } from '../src/database/schema.js';
 import { readCurrentGroupMemberInTx } from '../src/group/meta/current-group-roster.js';
@@ -25,6 +26,7 @@ import { seedUserWithSession } from './seed.js';
 import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
 import { createTestApp } from './support/app';
 import { truncateTablesForTest } from './support/truncate';
+import { waitForReceivedRequest } from './support/received-request.js';
 
 describe('group membership re-entry and ownership transfer', () => {
   let app: NestFastifyApplication;
@@ -69,6 +71,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .send({
         account: second.account,
         namespaceId: 0,
+        snapshot: { displayName: second.account, avatar: null },
       });
     expect(sent.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
@@ -77,13 +80,19 @@ describe('group membership re-entry and ownership transfer', () => {
       first.id,
       second.id,
     );
+    const incoming = await waitForReceivedRequest(
+      app.getHttpServer(),
+      second.token,
+      {
+        kind: 'FRIEND',
+        author: { account: first.account, namespaceId: 0 },
+        receiver: { account: second.account, namespaceId: 0 },
+      },
+    );
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${second.token}`)
-      .send({
-        account: first.account,
-        namespaceId: 0,
-      });
+      .send({ requestId: incoming.id });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
   }
@@ -98,7 +107,13 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${manager.token}`)
       .send({
         groupId,
-        users: [{ account: member.account, namespaceId: 0 }],
+        users: [
+          {
+            account: member.account,
+            namespaceId: 0,
+            snapshot: { displayName: member.account, avatar: null },
+          },
+        ],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     expect(
@@ -108,11 +123,28 @@ describe('group membership re-entry and ownership transfer', () => {
       account: member.account,
       namespaceId: 0,
     });
+    const groupThread = await database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, groupId),
+    });
+    if (!groupThread?.groupAccount) throw new Error('missing group identity');
+    const invitation = await waitForReceivedRequest(
+      app.getHttpServer(),
+      member.token,
+      {
+        kind: 'GROUP_INVITATION',
+        author: {
+          account: groupThread.groupAccount,
+          namespaceId: groupThread.authorityNamespaceId,
+        },
+        receiver: { account: member.account, namespaceId: 0 },
+      },
+    );
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ groupId });
+      .send({ requestId: invitation.id });
     expect(joined.body.code).toBe(BusinessCode.OK);
+    expect(joined.body.data.status).toBe('OK');
   }
 
   async function currentMember(threadId: number, userId: number) {

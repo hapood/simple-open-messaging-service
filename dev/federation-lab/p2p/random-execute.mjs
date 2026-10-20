@@ -408,7 +408,7 @@ export function unsubmittedGroupRequests(requests, group, operations) {
           ) &&
           operation.target?.direction === request.direction &&
           operation.target?.memberAddress === request.memberAddress &&
-          operation.target?.feedId === request.feedId,
+          operation.target?.requestId === request.requestId,
       ),
   );
 }

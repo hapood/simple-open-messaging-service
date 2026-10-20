@@ -1,42 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
 
-/** Relationship-intent client feed writes → body dedupe, one allocation block per recipient, upsert,
- * result. `candidate_bodies` must select "userId", "namespaceId", ordinal,
- * "compactionKey", account, "subjectAccount", "subjectNamespaceId", body —
- * one row per (recipient, direction); a recipient may hold several. A repeated
- * identical body neither allocates a feed id nor wakes anyone, matching
- * ClientStateFeedService.writeInTx's body-level dedupe. Callers may force a
- * fresh position for a repeated terminal effect on a newer request. */
-export function clientIntentFeedWriteSql(options?: { force?: SQL }): SQL {
-  return sql`
-    fresh_bodies AS MATERIALIZED (
-      SELECT b.*, row_number() OVER (PARTITION BY b."userId" ORDER BY b.ordinal) AS position,
-        count(*) OVER (PARTITION BY b."userId") AS total
-      FROM candidate_bodies b
-      WHERE (${options?.force ?? sql`false`}) OR NOT EXISTS (SELECT 1 FROM "ClientStateFeed" f
-        WHERE f."userId" = b."userId" AND f."compactionKey" = b."compactionKey" AND f.body = b.body)
-    ), recipient_alloc AS (
-      UPDATE "Account" a SET "clientStateFeedEndId" = a."clientStateFeedEndId" + t.total,
-        "updatedAt" = CURRENT_TIMESTAMP
-      FROM (SELECT "userId", max(total) AS total FROM fresh_bodies GROUP BY "userId") t
-      WHERE a.id = t."userId"
-      RETURNING a.id AS "userId", a."clientStateFeedEndId" AS "allocatedThrough"
-    ), recipient_feed AS (
-      INSERT INTO "ClientStateFeed"
-        ("userId", account, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
-      SELECT f."userId", f.account, f."namespaceId", 'RELATIONSHIP_INTENT',
-        f."subjectAccount", f."subjectNamespaceId",
-        a."allocatedThrough" - f.total + f.position, f."compactionKey", f.body
-      FROM fresh_bodies f JOIN recipient_alloc a ON a."userId" = f."userId"
-      ON CONFLICT ("userId", "compactionKey") DO UPDATE SET
-        "feedId" = EXCLUDED."feedId", body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
-      RETURNING "userId", "feedId"
-    ), recipient_result AS MATERIALIZED (
-      SELECT "userId", max("feedId")::text AS "feedId" FROM recipient_feed GROUP BY "userId"
-    )
-  `;
-}
-
 /** Peer feed writes → dedupe, one allocation block, upsert, result. The caller
  * builds `peer_changes` (body, position, and optionally invalid) so per-statement
  * dedupe rules stay explicit. `resultName` renames the result CTE when a

@@ -5,23 +5,30 @@ import {
   Request,
   HttpStatus,
   HttpCode,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
-import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { RelationshipRequestService } from '../relationship/request/relationship-request.service.js';
+import {
+  QueryRelationshipRequestsDto,
+  RequestDecisionDto,
+} from '../dto/relationship-request.dto.js';
 import { UserIntentService } from '../user/p2p-intent/authored/user-intent.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { businessEnvelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { isBusinessRejection } from '../common/business-command-result.js';
 import type { UserIntentOutcome } from '../user/p2p-intent/authored/user-intent.service.js';
+import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
+import { ResourceId } from '../common/resource-id.decorator.js';
 import {
   AcceptRelationshipDto,
+  RevokeRelationshipDto,
   ReadRelationshipRequestsDto,
   RequestRelationshipDto,
-  RevokeRelationshipDto,
 } from '../dto/relationship.dto.js';
-import { normalizeAccount } from '../common/account.js';
 import {
   MemberAuthoredGroupMembershipIntentService,
   type MemberAuthoredGroupMembershipIntentResult,
@@ -35,7 +42,7 @@ import {
 @Controller('relationship')
 export class RelationshipController {
   constructor(
-    private readonly clientStateFeed: ClientStateFeedService,
+    private readonly requests: RelationshipRequestService,
     private readonly userIntents: UserIntentService,
     private readonly userQuota: UserQuotaService,
     private readonly memberIntents: MemberAuthoredGroupMembershipIntentService,
@@ -51,59 +58,73 @@ export class RelationshipController {
     @Request() req: FastifyRequest,
     @Body() dto: ReadRelationshipRequestsDto,
   ) {
-    return {
-      readThroughFeedId:
-        await this.clientStateFeed.markRelationshipRequestsRead(
-          req.user.userId,
-          dto.readThroughFeedId,
-        ),
-    };
+    return this.requests.markRead(req.user.userId, dto.requestReadId);
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @Post('requests')
+  async queryRequests(
+    @Request() req: FastifyRequest,
+    @Body() dto: QueryRelationshipRequestsDto,
+  ) {
+    return this.requests.queryPersonal(req.user.userId, dto);
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('requests/reject')
+  async rejectRequest(
+    @Request() req: FastifyRequest,
+    @Body() dto: RequestDecisionDto,
+  ) {
+    return this.personalDecisionViaIntent(
+      req.user.userId,
+      dto.requestId,
+      'REJECT',
+    );
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('requests/withdraw')
+  async withdrawRequest(
+    @Request() req: FastifyRequest,
+    @Body() dto: RequestDecisionDto,
+  ) {
+    return this.personalDecisionViaIntent(
+      req.user.userId,
+      dto.requestId,
+      'WITHDRAW',
+    );
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @Throttle('relationship.revoke')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<RevokeRelationshipDto>('threadId')
   @Post('revoke')
   @ApiOperation({
     summary:
-      'Revoke a user relationship/request or a pending federated group-join request by account and identity namespace',
+      'End an established P2P relationship by its thread (group-leave symmetric)',
   })
   async revokeRelationship(
     @Request() req: FastifyRequest,
-    @Body() dto: RevokeRelationshipDto,
+    @Body() _dto: RevokeRelationshipDto,
   ) {
-    const me = req.user.userId;
-    const account = dto.account.trim().toLowerCase();
-    const namespaceId = dto.namespaceId;
-    if (account.startsWith('!')) {
-      const outcome = await this.memberIntents.executeByNamespace({
-        memberUserId: me,
-        target: { account, namespaceId },
-        decision: 'REVOKED',
-      });
-      if (isBusinessRejection(outcome))
-        return businessEnvelope(outcome.code, outcome.message, {
-          status: outcome.status,
-          reason: outcome.reason,
-        });
-      return outcome;
-    }
-    // The composed revocation owns the state gate: withdraw (own pending),
-    // reject (incoming pending), and end-friendship all resolve inside one
-    // transaction; nothing live on either side is the NOT_FOUND case.
-    const outcome = await this.userIntents.execute({
-      userId: me,
-      decision: 'REVOKED',
-      target: {
-        account,
-        namespaceId,
-      },
+    void _dto;
+    // Only an established pair is terminable here; pending request rounds are
+    // decided solely by their exact requestId on the request routes.
+    const outcome = await this.userIntents.endEstablishedRelationship({
+      userId: req.user.userId,
+      threadId: req.threadAccess!.threadId,
     });
     if (isBusinessRejection(outcome) && outcome.code === BusinessCode.NOT_FOUND)
-      return businessEnvelope(
-        BusinessCode.FRIEND_NOT_FOUND,
-        `relationship with account [${account}], namespaceId [${namespaceId}] does not exist`,
-        { status: outcome.status, reason: outcome.reason },
-      );
+      return businessEnvelope(BusinessCode.FRIEND_NOT_FOUND, outcome.message, {
+        status: outcome.status,
+        reason: outcome.reason,
+      });
     return this.intentResult(outcome);
   }
 
@@ -167,42 +188,26 @@ export class RelationshipController {
   @HttpCode(HttpStatus.OK)
   @Post('accept')
   @ApiOperation({
-    summary:
-      'Accept a relationship request by account and identity namespace (friend → P2P thread; group → join as MEMBER)',
+    summary: 'Accept the exact current request round',
   })
   async acceptRelationship(
     @Request() req: FastifyRequest,
     @Body() dto: AcceptRelationshipDto,
   ) {
-    const me = req.user.userId;
-    const account = normalizeAccount(dto.account);
-    const namespaceId = dto.namespaceId;
-    if (account.startsWith('!')) {
-      return this.memberIntentResult(
-        await this.memberIntents.executeByNamespace({
-          memberUserId: me,
-          target: { account, namespaceId },
-          decision: 'ACCEPTED',
-        }),
-      );
-    }
-    // Identity resolution and the live-request gate belong to the intent
-    // transaction, so stale or missing requests return REJECTED instead of
-    // escaping through the exception pipeline.
-    const outcome = await this.userIntents.execute({
-      userId: me,
-      decision: 'ACCEPTED',
-      target: {
-        account,
-        namespaceId,
-      },
-    });
-    if (isBusinessRejection(outcome) && outcome.code === BusinessCode.NOT_FOUND)
-      return businessEnvelope(BusinessCode.INVITE_NOT_FOUND, outcome.message, {
-        status: outcome.status,
-        reason: outcome.reason,
-      });
-    return this.intentResult(outcome);
+    return this.personalDecisionViaIntent(
+      req.user.userId,
+      dto.requestId,
+      'ACCEPT',
+    );
+  }
+
+  /** The domain command validates the exact round under the pair lock. */
+  private async personalDecisionViaIntent(
+    userId: number,
+    requestId: string,
+    decision: 'ACCEPT' | 'REJECT' | 'WITHDRAW',
+  ) {
+    return this.userIntents.decidePersonalRequest(userId, requestId, decision);
   }
 
   private memberIntentResult(

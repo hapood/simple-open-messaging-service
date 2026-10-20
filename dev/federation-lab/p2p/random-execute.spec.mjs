@@ -458,7 +458,7 @@ test('random request rejection does not wait for an incoming projection', async 
     address: bob,
     node: { name: 'bravo' },
     resolveFederatedUser: async () => assert.fail('must not wait for incoming'),
-    post: async () => ({ taskId: '1' }),
+    post: async () => ({ status: 'OK', threadId: null }),
   };
   const sender = {
     address: alice,
@@ -467,7 +467,12 @@ test('random request rejection does not wait for an incoming projection', async 
     node: { name: 'alpha' },
   };
   const result = await admitOperation(
-    { type: 'REJECT_REQUEST', requestSubject: bob, requestAuthor: alice },
+    {
+      type: 'REJECT_REQUEST',
+      requestSubject: bob,
+      requestAuthor: alice,
+      observedFacts: { incomingRequestId: '9223372036854775805' },
+    },
     {
       user: (address) => (address === bob ? receiver : sender),
       node: () => ({
@@ -478,7 +483,8 @@ test('random request rejection does not wait for an incoming projection', async 
     },
     1,
   );
-  assert.equal(result.status, 'ADMITTED');
+  assert.equal(result.status, 'SUCCEEDED');
+  assert.deepEqual(result.result, { status: 'OK', threadId: null });
 });
 
 test('only confirmed unavailable relationships suppress FRIEND_NOT_FOUND', async () => {
@@ -877,7 +883,10 @@ test('admits a remote group application with the observed group profile', async 
       node: () => ({
         admin: {
           peerNamespaceId: async (domain) => {
-            calls.push({ endpoint: '/admin/federation/peer-namespace', domain });
+            calls.push({
+              endpoint: '/admin/federation/peer-namespace',
+              domain,
+            });
             return 7;
           },
         },
@@ -899,7 +908,10 @@ test('admits a remote group application with the observed group profile', async 
         account: '!group',
         namespaceId: 7,
         note: 'op-1',
-        displayName: 'Resolved remote group',
+        snapshot: {
+          displayName: 'Resolved remote group',
+          avatar: null,
+        },
       },
     },
   ]);
@@ -975,7 +987,7 @@ test('uploads an avatar before a unary group profile update', async () => {
 test('does not resubmit group requests while their earlier decision is pending or completed', () => {
   const request = {
     direction: 'APPLICATION',
-    feedId: 48,
+    requestId: '9007199254740993',
     memberAddress: 'friend@bravo.test',
     memberAccount: 'friend',
     memberDomain: 'bravo.test',
@@ -1003,7 +1015,7 @@ test('does not resubmit group requests while their earlier decision is pending o
   }
   const completed = { ...operation, status: 'SUCCEEDED' };
   for (const candidate of [
-    { ...request, feedId: 49 },
+    { ...request, requestId: '9007199254740994' },
     { ...request, memberAddress: 'other@bravo.test' },
     { ...request, direction: 'INVITATION' },
   ])

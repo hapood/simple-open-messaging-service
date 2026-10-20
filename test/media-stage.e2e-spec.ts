@@ -146,6 +146,10 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
             account: targetAccount,
             namespaceId: 0,
           },
+          snapshot: {
+            displayName: targetAccount,
+            avatar: null,
+          },
           note,
         },
         { admissionInTx: (tx) => userQuota.tick(userId, 'requests', tx) },

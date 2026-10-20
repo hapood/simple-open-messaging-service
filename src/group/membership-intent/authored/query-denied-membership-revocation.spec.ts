@@ -21,13 +21,13 @@ describe('query-denied authored membership revocation', () => {
       .fn()
       .mockResolvedValue(new Map([['peer.test', 3n]]));
     const pushStateFeedNamespaces = vi.fn().mockResolvedValue(undefined);
-    const service = new GroupAuthoredMembershipIntentService({
-      database: target.database as never,
-      clientFeed: { notifyFeedUpdates: vi.fn() } as never,
-      peerFeed: {} as never,
-      federation: { pushStateFeedNamespaces } as never,
-      relationshipMutations: { writeGroupRelationshipIntentInTx } as never,
-    });
+    const service = new GroupAuthoredMembershipIntentService(
+      target.database as never,
+      { notifyFeedUpdates: vi.fn() } as never,
+      {} as never,
+      { pushStateFeedNamespaces } as never,
+      { writeGroupRelationshipIntentInTx } as never,
+    );
 
     await expect(
       service.executeQueryDeniedRevocation({
@@ -64,14 +64,14 @@ describe('query-denied authored membership revocation', () => {
     const writeMemberRelationshipIntentInTx = vi
       .fn()
       .mockResolvedValue(new Map());
-    const service = new MemberAuthoredGroupMembershipIntentService({
-      database: target.database as never,
-      clientFeed: { notifyFeedUpdates: vi.fn() } as never,
-      relationshipMutations: { writeMemberRelationshipIntentInTx } as never,
-      federation: {
+    const service = new MemberAuthoredGroupMembershipIntentService(
+      target.database as never,
+      { notifyFeedUpdates: vi.fn() } as never,
+      { writeMemberRelationshipIntentInTx } as never,
+      {
         pushStateFeedNamespaces: vi.fn(),
       },
-    });
+    );
 
     await expect(
       service.executeQueryDeniedRevocation({

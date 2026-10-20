@@ -34,11 +34,91 @@ test('reads roster identity from the canonical Group Meta body, not removed colu
     sql.includes('FROM "GroupMetaMemberFeed"'),
   );
   assert.ok(rosterSql);
+  const requestSql = queries.find((sql) =>
+    sql.includes('FROM "RelationshipRequest"'),
+  );
+  assert.ok(requestSql);
+  assert.match(requestSql, /request\."id"::text AS "requestId"/);
+  assert.match(requestSql, /thread\."groupAccount" = CASE request\."kind"/);
+  assert.match(
+    requestSql,
+    /thread\."authorityNamespaceId" = CASE request\."kind"/,
+  );
+  assert.match(
+    requestSql,
+    /WHEN 'GROUP_APPLICATION' THEN request\."authorNamespaceId" ELSE request\."receiverNamespaceId"/,
+  );
+  assert.doesNotMatch(queries.join('\n'), /GroupRequestProjection|"feedId"/);
   assert.match(rosterSql, /fact\."body" ->> 'account'/);
   assert.match(rosterSql, /fact\."body" ->> 'namespaceId'/);
   assert.doesNotMatch(
     rosterSql,
     /fact\."(?:memberAccount|profileNamespaceId)"/,
+  );
+});
+
+test('normalizes permanent rounds without losing bigint precision or conflating member identity with profile coordinates', async () => {
+  const node = { name: 'alpha' };
+  const requestRows = [
+    {
+      threadId: 19,
+      requestId: '9007199254740993',
+      direction: 'APPLICATION',
+      memberAccount: 'friend',
+      memberDomain: 'bravo.test',
+      memberNamespaceId: 2,
+      status: 'EXPIRED',
+      expiresAt: new Date(0),
+    },
+    {
+      threadId: 19,
+      requestId: '9223372036854775807',
+      direction: 'APPLICATION',
+      memberAccount: 'friend',
+      memberDomain: 'bravo.test',
+      memberNamespaceId: 2,
+      status: 'REQUESTED',
+      expiresAt: new Date(Date.now() + 60_000),
+    },
+  ];
+  const client = {
+    async query(query) {
+      if (query.includes('FROM "RelationshipRequest"'))
+        return { rows: requestRows };
+      if (query.includes('AS "groupId"'))
+        return {
+          rows: [
+            {
+              groupId: 19,
+              threadId: 19,
+              account: '!group',
+              domain: 'alpha.test',
+              namespaceId: 0,
+              dissolvedAt: null,
+            },
+          ],
+        };
+      return { rows: [] };
+    },
+  };
+  const connections = new Map([['alpha', { node, client }]]);
+  const snapshot = await readGroupWorkloadSnapshot(connections, {
+    alpha: { pairs: { active: [] } },
+  });
+  const rounds = snapshot.alpha.groups.get('!group@alpha.test').requests;
+  assert.deepEqual(
+    rounds.map(({ requestId }) => requestId),
+    ['9007199254740993', '9223372036854775807'],
+  );
+  assert.equal(rounds[1].memberNamespaceId, 2);
+  assert.equal(rounds[1].memberAddress, 'friend@bravo.test');
+  assert.equal(Object.hasOwn(rounds[1], 'feedId'), false);
+  requestRows[1].requestId = 9007199254740992;
+  await assert.rejects(
+    readGroupWorkloadSnapshot(connections, {
+      alpha: { pairs: { active: [] } },
+    }),
+    /invalid request ID/,
   );
 });
 
@@ -76,7 +156,7 @@ test('derives manager targets and retractable messages from one database observa
       {
         memberAddress: friend,
         direction: 'APPLICATION',
-        feedId: 44,
+        requestId: '9007199254740993',
         memberAccount: 'friend',
         memberDomain: 'bravo.test',
         memberNamespaceId: 1,
@@ -117,8 +197,8 @@ test('derives manager targets and retractable messages from one database observa
   assert.equal(facts.memberRole, 'OWNER');
   assert.equal(facts.membershipActive, true);
   assert.deepEqual(
-    facts.pendingApplications.map(({ feedId }) => feedId),
-    [44],
+    facts.pendingApplications.map(({ requestId }) => requestId),
+    ['9007199254740993'],
   );
   assert.deepEqual(
     facts.inviteCandidates.map(({ id }) => id),

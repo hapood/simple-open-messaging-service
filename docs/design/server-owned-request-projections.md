@@ -1,411 +1,449 @@
-# Server-Owned Request Projections for Client State Feed
+# Server-Owned Request Lists and Incoming Read Heads
 
-Status: PROPOSED — product decisions below require review before implementation.
+Status: REVIEW PROPOSAL. Transport, notification, and storage-retention rules
+below reflect the latest product decisions. Schema/API details require review
+before implementation. This document supersedes the earlier projection-feed,
+seven-day-GC, optimistic-read, and outgoing-head proposals.
 
-## 1. Goal and scope
+## 1. Confirmed boundaries
 
-Move user-facing relationship request state from client-side intent folding to
-server-owned, durable request projections. A retained request must be restorable
-from one complete record, including its terminal status, original note, identity,
-and send-time snapshot. Devices must not need the original REQUESTED event or
-both intent directions to display it.
+- Request lists are online server queries, not client-replicated projections.
+- Delete Web/SQLite request projection stores and client intent interpreters.
+- Keep ClientStateFeed and its cursor for the single incoming read head. Remove
+  client intent events and the now-redundant eventType discriminator; do not
+  replace them with request-record events.
+- The head contains only current incoming request ID and read incoming request ID.
+  No outgoing heads, arrival-versus-change pair, or local optimistic read values.
+- Only a new request ID advances the incoming head. In-place status changes do
+  not create unread notifications. Read state is account-wide and monotonic.
+- Do not garbage-collect request history. Apply a seven-day window in list APIs
+  only. Do not impose a seven-day storage-retention CHECK or store retainUntil.
+- S2S intents, their validity rules, and reciprocal REVOKED remain unchanged.
+  Request-history GC is distinct from authoritative intent expiry/conclusion.
+- No legacy data/API/cache compatibility. Edit 0000_base.sql and Drizzle together;
+  no deployment, commit, or shared-cache/database reset is implied.
 
-This proposal changes the **request family of ClientStateFeed**, not the
-federation State Feed. S2S continues to carry independently authored intents.
-The existing protocol remains unchanged: receiving REVOKED concludes an effective
-local REQUESTED or ACCEPTED with a locally authored REVOKED in the same atomic
-relationship transition. Rejection ends the request flow; a later request starts
-a new flow.
+## 2. PostgreSQL proposal
 
-RelationshipIntent, pair folding, authorization epochs, group roster facts, and
-ThreadFeed retain their owners. A request projection never grants access, creates
-a conversation, or establishes membership. ThreadFeed remains the conversation
-read model. Group Meta remains the roster/profile read model.
+Confirmed correction: no RelationshipRequestSlot or new intent identity column.
+RelationshipIntent.requestId is a nullable bigint foreign key to
+RelationshipRequest.id with ON DELETE SET NULL. Request rows have no reverse
+intentId. Existing intent identity and state transitions remain authoritative.
 
-There is no legacy API, payload, SQL-data, or client-cache compatibility layer.
-Update `database/migrations/0000_base.sql` and `src/database/schema.ts` directly.
-This is not permission to reset shared databases or caches during development.
+### 2.1 RelationshipRequest: one record per observed request round
 
-### What this does and does not guarantee
+Use one domain-owned table for friend requests, group applications, and group
+invitations. Both local personal views and authoritative manager views read the
+same lifecycle record. Replace the independent GroupRequestProjection storage.
 
-There will be one request presentation decision on the server, replicated to all
-devices. This removes device-dependent folding and missing-predecessor failures.
-It does not eliminate transport delay, offline state, races in publishing,
-server bugs, or missing S2S history. Atomic publication, cursor correctness,
-strict validation, and recovery tests remain essential.
-
-## 2. Current implementation findings
-
-- `src/client-state-feed/client-state-feed.service.ts` compacts relationship
-  intent bodies and filters them using a seven-day `updatedAt` window. A terminal
-  body is not a complete request record.
-- `web/src/app/services/friend-request-state.ts` updates only existing live
-  REQUESTED projections. A terminal fact cannot create history. Its feed-id
-  guard prevents old facts from overwriting newer projections.
-- `web/src/app/services/webdb-storage.ts` additionally settles both group request
-  directions on a group ACK. Local accept actions also write projection state.
-- `src-tauri/src/native_db/relationship_projection.rs` has a separate intent
-  interpreter. These interpreters are not identical; moving ownership requires
-  deleting both, not keeping either as a fallback.
-- `GroupRequestProjection` is already a server read model, but currently stores
-  the latest row per group/member/direction, has no explicit request-generation
-  token for actions, and shares expiry/GC concerns. It is a reference, not a
-  complete model to copy unchanged.
-- Personal request unread state is partly local: clients advance
-  `relationshipRequestStateRevision` when an incoming request becomes actionable.
-  Only `readThroughFeedId` is currently server-owned via INCOMING_INVITE_HEAD.
-- Group manager state uses `joinRequestEndFeedId`, `joinRequestReadFeedId`, and
-  `groupInviteEndFeedId`. Manager heads are propagated by durable fan-out and
-  ThreadFeed. Invitation updates and application updates have distinct streams.
-- Group GC currently advances read heads using removed projection feed IDs.
-  This must not be copied into a new arrival-watermark design: deleting history
-  is not evidence that a user read another request.
-- Restoring the original protocol exposed pre-existing implementation gaps in
-  P2P received rejection and same-node group rejection. They must be tested and
-  aligned with the original protocol, not hidden by presentation changes.
-
-## 3. Request identity and rounds
-
-Recommended initial product behavior: **one latest request per ordered request
-slot**, not an inbox retaining every historical round.
-
-A slot contains:
-
-- request kind: FRIEND, GROUP_APPLICATION, or GROUP_INVITATION;
-- author identity: account + namespaceId;
-- receiver identity: account + namespaceId;
-- viewer scope: local user or authoritative group management view.
-
-Each new request flow receives an opaque `requestId`. Retries of the same live
-flow retain it. After rejection, withdrawal, or expiry, a new flow receives a new
-ID and captures a new outgoing snapshot. The previous round is replaced in that
-slot. Opposite request directions are different slots.
-
-`requestId` is a presentation/action generation token, not federation authority
-and not an S2S identifier. A local shared group projection and its local user
-view must refer to the same locally observed flow. A different node may allocate
-a different local ID; the wire does not gain a new field.
-
-Remote flow detection must use validated intent transitions and existing wire
-request coordinates, with duplicate-delivery tracking. It must not use receive
-time, profile revision changes, or an assumed globally unique timestamp.
-Delayed wire facts obey the existing S2S cursor and intent validation rules.
-
-Accept/reject/withdraw request-card APIs carry `requestId` and target identity.
-Under the existing business locks, a stale ID returns an explicit stale-request
-result without acting on a newer round. General relationship removal/leave/kick
-commands remain separate from request-card actions.
-
-If retaining *all* rounds is desired instead, that is a product decision changing
-keys, pagination, storage limits, and GC. It must be chosen before SQL work.
-
-## 4. Durable ownership and data layout
-
-Introduce a domain-owned request capability under `src/relationship/request/`.
-It defines lifecycle transitions and immutable request presentation fields.
-Group membership services remain responsible for group decisions and manager
-authorization. Generic ClientStateFeed code only serializes/allocates/transports
-already-decided records; it must not become the business state machine.
-
-Use a durable request-round record and explicit user/group projection scopes:
-
-1. A request round stores its ID, ordered endpoints, kind, status, note,
-   requestedAt, requestExpiresAt, retainUntil, and the original presentation
-   evidence. It remains after its originating intent is overwritten by REVOKED.
-2. A current-slot constraint identifies the latest round. Replace the slot
-   atomically on a new flow; retain no accidental historical duplicates.
-3. Local-user projections carry viewer direction and the appropriate presentation
-   variant. Group manager projections remain shared, not duplicated per manager.
-4. ClientStateFeed stores the complete transport snapshot for a user slot.
-   Group listing endpoints read the corresponding shared group projection.
-5. Personal request notification heads are stored durably even when individual
-   requests are collected.
-
-Implementation must choose concrete normalized tables and constraints during
-schema review; do not maintain independently mutable lifecycle copies. Where a
-feed body duplicates a projection, update it in the same transaction. Existing
-GroupRequestProjection must be integrated with the common round semantics, not
-left as an alternative transition system.
-
-Required constraints include unique slot identity, valid namespace coordinates,
-allowed status/kind/direction combinations, non-null request times, bounded
-retention, and strict presentation variants. Thread references must be nullable
-or safely detached on shell deletion: deleting a message-free thread must not
-cascade away retained request history.
-
-## 5. Complete client contract
-
-Replace client RELATIONSHIP_INTENT with a distinct event family, provisionally
-`REQUEST_PROJECTION`. Do not reuse the old name with a different body.
-
-A full UPSERT contains:
-
-- opaque slot key and `requestId`;
-- kind, viewer direction/bucket, ordered endpoint identities;
-- status: REQUESTED, ACCEPTED, REJECTED, WITHDRAWN, or EXPIRED;
-- note, requestedAt, requestExpiresAt, retainUntil, server updatedAt;
-- nullable local thread reference, without conversation authority;
-- complete, discriminated presentation data;
-- immutable incoming-arrival coordinate where applicable.
-
-OUTGOING presentation contains a required `{displayName, avatar}` send-time
-snapshot. INCOMING presentation contains the original author's exact profile
-reference. Group manager applications use member author references; invitations
-use the invitee snapshot. No optional snapshot fallback, empty synthetic
-snapshot, or current-profile substitution is allowed. Snapshot does not enter
-S2S and cannot be used as authorization evidence.
-
-A terminal UPSERT has exactly the same completeness requirements. It must work
-when the client has no prior row. Use explicit nullable fields rather than
-omitted predecessor-dependent fields. Domain display is derived independently
-from namespace identity.
-
-Feed compaction identity is the viewer's request slot, not an intent direction
-misused as a presentation key. A new round replaces the slot with a new
-requestId. The feedId orders snapshots; it is not the round ID.
-
-The client validates and atomically replaces a slot only for a newer feedId.
-It does not infer direction from `!`, merge opposite intents, decide a terminal
-status, or patch ACCEPTED locally after an HTTP response. A successful action
-returns a committed feed head; the UI may show a transient pending action while
-sync catches up, but the durable card is server-owned.
-
-Snapshot avatar references must remain readable throughout retainUntil, including
-another device after relationship revocation. Define a durable asset strategy
-and access policy before shipping; a syntactically valid URL is insufficient.
-Incoming exact-profile references likewise do not grant new access after
-revocation. Resource availability and safe placeholders must be tested without
-silently fetching a newer profile.
-
-## 6. Transactional lifecycle
-
-For every authored or received intent command:
-
-1. Acquire the established domain/account/pair/intent locks in the existing order.
-2. Validate the command, wire item, and requestId where supplied.
-3. Capture the request transition and its causal role before automatic reciprocal
-   conclusions erase the distinction between reject and withdraw.
-4. Apply authoritative intents, reciprocal REVOKED where required, pair folding,
-   authorization epochs, and any roster/thread effects.
-5. Update the matching request round and all local views, publish complete user
-   snapshots, and durably admit manager fan-out when necessary.
-6. Commit; only then emit wakes. A wake is a hint, not the durable work record.
-
-Lifecycle rules:
-
-| Input | Projection result |
+| Column | Proposed representation and meaning |
 | --- | --- |
-| New valid request | Create REQUESTED round and initial presentation |
-| Duplicate/same-flow request | Keep round/presentation; no duplicate arrival |
-| Accepted live request | REQUESTED to ACCEPTED |
-| Receiver rejects | REQUESTED to REJECTED |
-| Author withdraws | REQUESTED to WITHDRAWN |
-| Validity expires | REQUESTED to EXPIRED |
-| Reciprocal convergence after a terminal decision | Preserve terminal result |
-| Terminal intent with no observed request | Do not invent request history |
-| New request after a closed flow | New requestId, new presentation, new arrival |
+| id | bigint generated primary key; immutable local round identity |
+| kind | FRIEND / GROUP_APPLICATION / GROUP_INVITATION |
+| authorAccount, authorNamespaceId | Ordered author identity |
+| receiverAccount, receiverNamespaceId | Ordered receiver identity |
+| status | Existing RequestProjectionStatus enum |
+| authorProfileNamespaceId, authorProfileRev | Original exact author profile evidence |
+| snapshot | Required target snapshot for locally authored visible requests; NULL for remote authors |
+| note | Original request note, NOT NULL; empty string is valid |
+| requestedAt | Protocol request time, NOT NULL |
+| expiresAt | Original request validity deadline, NOT NULL even after conclusion |
+| createdAt | First local insertion time for this round, DB-generated |
+| updatedAt | Last actual lifecycle modification time, DB-generated |
 
-Crossed requests and group invitation completion must be explicit test cases:
-settle the actual observed request rounds, rather than treating any ACK as a
-fresh request. Internal group founding must not create a phantom notification.
+No threadId, retainUntil, sourceFeedId, requestedSort, display-domain copy, or
+per-view duplicate lifecycle rows. Navigation obtains a thread from action
+results or the conversation read model. Namespace/account identities drive
+request queries and authorization; a request row is never an authority grant.
 
-Concurrent local writers must serialize projections with their owning business
-state. Use NO KEY UPDATE for non-key writes where appropriate. Multiple local
-recipients acquire allocator locks in canonical order. SQL sibling CTEs must
-read their writes through RETURNING, not assume base-table visibility.
+Same-flow retries retain the ID, presentation, and creation time. Terminal
+changes update the same row and updatedAt, leaving the ID unchanged. A new flow
+inserts a new row; old rounds remain. This is the proposed interpretation of
+"database does not delete": no replacement of old rounds by a slot upsert.
 
-The server projection is derived, but **not reconstructible from only today's
-compacted intents**. It is durable user history within retention and belongs in
-backups. Repair can republish ClientStateFeed from these rows; losing the rows
-cannot be repaired by fabricating original requests.
+Use bigint in TypeScript/Rust storage and decimal strings in JSON; never convert
+request IDs to JS numbers. Do not add a redundant UUID generation token: the
+immutable request ID also guards actions against newer rounds.
 
-## 7. Red-dot compatibility
+### 2.2 Owning intent association
 
-### Personal friend requests and received group invitations
+RelationshipIntent retains its four-column identity key and adds nullable
+requestId pointing at the associated visible request round. A new admitted
+round updates this reference; old request history remains independently stored.
+No reverse field or separate current-round table is needed. An index on the
+intent reference supports request actions and foreign-key deletion checks.
+Deleting a request sets referencing intent.requestId to NULL; deleting an intent
+does not delete or change request history. Normal operation does not GC requests.
 
-Keep the product formula `arrivalHead > readThrough`, but make both operands
-server-owned and durable. Recommended meaning: **new incoming requests not yet
-acknowledged by opening the received list**, not the number of pending actions.
+Request actions locate the intent through requestId under existing business
+locks. Missing association fails; do not fall back to endpoints or a newer round.
+Only REQUESTED admits further request decisions. ACCEPTED (ACK) and REVOKED are
+terminal for this request round. Accepting friendship updates the associated
+request presentation; later ending friendship is a different operation and must
+not rewrite that accepted record. Same-round authoring retries preserve evidence;
+terminal request-action retries are failures, not successful idempotence.
 
-- A genuinely new incoming request round advances arrivalHead using its first
-  user feed position. Outgoing requests, terminal changes, profile changes,
-  retries, and repeated sync do not advance it.
-- Publish a complete account notification-head snapshot containing arrivalHead
-  and readThrough. It survives request compaction and request-history GC.
-- Keep a separate generic request-change revision for refreshing an open list.
-  Do not use it as the unread numerator.
-- A read command carries the arrivalHead actually observed after the client page
-  transaction committed. The server advances readThrough monotonically, bounded
-  by the current arrivalHead, under the same account allocator lock.
-- A concurrent newer arrival remains unread. Reading on one device propagates to
-  every device through the head snapshot. A cold device reads the same two heads
-  even if all individual requests are already terminal.
-- Under this recommended meaning, terminal changes and GC do not automatically
-  clear unread. If the desired badge is "unseen actionable requests only", use
-  a server-derived set/count with read watermarks instead; do not approximate it
-  by changing readThrough during GC. This needs product confirmation.
+No AccountRequest association is needed initially: personal visibility is the
+exact local account identity on either endpoint, and manager visibility is the
+authoritative group endpoint plus current role authorization. Use two indexed
+personal branches for RECEIVED/SENT, not a full-table OR scan.
 
-The existing comparison and cross-device read concept are reusable; the existing
-client-derived numerator and `markRelationshipRequestsRead()` submission of the
-whole applied state-feed cursor are not reused unchanged.
+### 2.3 Constraints and indexes
 
-### Group manager badge
+- Explicit allowed kind/status values; namespace FKs RESTRICT.
+- Exact snapshot shape via the existing parser and equivalent strict JSON CHECK.
+  SQL NULL is required for remote authors and forbidden for locally authored
+  visible requests. Internal founding transitions create no user-visible round.
+  Local incoming API responses still expose author evidence, not the stored
+  outgoing snapshot belonging to the other local viewer.
+- expiresAt > requestedAt; nonnegative profile coordinates; required times/note.
+- No seven-day storage limit, expiry cascade, or thread FK.
+- Index `(receiverNamespaceId, receiverAccount, id DESC)` and the corresponding
+  author index for personal lists; group endpoints use the same ordered indexes.
+  Include kind where query-plan evidence warrants it.
+- createdAt supports the list-window predicate; check query plans with large
+  permanent history, including queries whose recent window is empty. Do not
+  assume an ID-ordered scan is bounded just because LIMIT is small. Choose a
+  composite/time index or a bounded indexed candidate query from measurements.
 
-Keep manager request scope and authorization separate from personal notifications.
-Maintain a list-change head for all application updates and a distinct arrival
-head for new applications. `groupInviteEndFeedId` remains an invitation-list
-refresh coordinate, not an application-unread coordinate.
+### 2.4 Snapshot ownership and preserved authority
 
-Managers compare application arrival head with their own per-group read head.
-A newly promoted manager starts read at the current arrival head, matching the
-current policy that old requests are not newly unread. ADMIN/OWNER transitions
-preserve the heads; loss of manager role removes capability and cached manager
-views. Any new head propagation must use existing durable fan-out, monotonic
-updates, and commit-time role checks. Delayed fan-out is allowed; lost work is
-not. Request listing and actions still revalidate current authority.
+Move target snapshot ownership out of RelationshipIntent into the request round
+when all writers have been connected. RelationshipIntent retains its protocol
+status, author profile evidence, note, times, and content heads. Keep its existing
+wire validity limits, including any seven-day REQUESTED validity rule: removing
+history retention does not amend the federation protocol.
 
-This deliberately separates list refresh from unread arrival. Existing end/read
-fields are therefore not blindly reusable with identical meaning.
+The request round is durable, not rebuildable from current compacted intents.
+A receiver node that never saw the original S2S REQUESTED cannot fabricate its
+history from REVOKED. Apply revocation effects without inventing a request record.
 
-## 8. Retention, expiry, and deletion
+### 2.5 Account incoming head
 
-Recommended policy to confirm: retain each latest request until
-`requestedAt + 7 days`, independent of terminal updates. Validity has its own
-`requestExpiresAt`; ordinary intent expiry may be shorter. Retries, profile
-changes, and rejects must not extend retainUntil.
+Add the following fields directly to Account; do not create a separate state table:
 
-The server owns expiry transitions. Clients may disable actions after the
-explicit requestExpiresAt and hide records after retainUntil while offline;
-they must not persist locally invented terminal status or advance server heads.
-All decision endpoints enforce validity independently of scheduler timeliness.
+- requestEndId: bigint NOT NULL DEFAULT 0;
+- requestReadId: bigint NOT NULL DEFAULT 0;
+- CHECK 0 <= requestReadId <= requestEndId.
 
-Publish an explicit DELETE for a collected slot, carrying its generation and a
-new feed position, so an incremental device removes it. Retain deletion evidence
-until the feed recovery policy permits collection. Define a durable cursor floor:
-a client older than that floor must do a full rebuild, never silently miss a
-delete. A slot recreated before an old DELETE arrives is protected by feed order
-and generation identity. Never delete intents or authorization facts as part of
-request-history GC.
+These are request IDs, not ClientStateFeed positions. No FK to an arbitrary global
+request ID is sufficient proof of ownership; domain writes must ensure the end
+belongs to an incoming request for that account. A read command is bounded by
+that account's current end and only advances read monotonically. It grants no
+other capability.
 
-## 9. Pagination and full recovery
+On new incoming request insertion, update requestEndId and publish the complete
+head in the business transaction. On a read change, update requestReadId and
+publish it. Terminal changes do neither. Lock all affected account/group scopes
+in the established order **before allocating the new request ID**: a global
+sequence alone does not guarantee commit ordering. A late lower ID must not
+appear behind an already acknowledged higher incoming ID for the same recipient.
 
-A full page of a compacted table bounded by `through` is not automatically an
-as-of snapshot: a concurrent update can move an unseen slot past that boundary.
-The new design must account for this rather than relying on HTTP 200 or an empty
-page as proof of completeness.
+### 2.6 ClientStateFeed
 
-Use a staged full rebuild: clear/stage the request replica once, scan the bounded
-full feed, then catch up deltas past that boundary before promoting the staged
-replica. Updates that moved out of the initial range are picked up by catch-up.
-Persist the rebuild marker and cursor so interruption restarts or resumes safely.
-A continuously changing server permits convergence, not an impossible promise
-of instantaneous global equality. Per-page snapshots and cursor-floor checks
-must be coherent database reads. If the cursor falls below the floor at any
-point, restart full recovery. Stage notification heads with request data to avoid
-transient full-rebuild badge decisions.
+Retain userId, feedId, body, createdAt, and updatedAt with a composite
+(userId, feedId) primary key: every published version appends one immutable
+row, and a record keeps the feedId it was published under. Retain the
+Account.clientStateFeedEndId allocator. Remove id and its sequence, eventType,
+compactionKey, and their constraints. The composite key handles both identity
+and the per-user cursor range scan without a second index. Remove intent-only
+account/namespaceId/subjectAccount/subjectNamespaceId columns and the namespace
+FK. Preserve the profileNamespaceChangeEndId response hint. Future state kinds
+append their own rows on the same per-account feedId sequence; the typed body
+discriminates content, so no event-type column is needed.
 
-Commit projection replacements, deletions, notification heads, list-change
-revision, and applied cursor in one IndexedDB/SQLite transaction. Rust owns native
-execution and cancellation/session epochs; platform adapters gain no request
-state machine. Replaying a page must be idempotent.
+The single head body (no event discriminator):
 
-## 10. Missing federation history boundary
+```json
+{ "requestEndId": "42", "requestReadId": "37" }
+```
 
-If the receiver node observed REQUESTED, its durable projection preserves the
-later terminal request for all its devices. The sender node always has its
-locally authored request projection.
+The ordinary envelope feedId orders complete head snapshots and cursor commits;
+it is not a third request watermark. Remove intent-age filtering from feed query.
+Published rows are permanent transport history with no GC expiry; clients fold
+the range into their current head and may forget coordinates older than their
+full-sync boundary.
 
-If S2S compaction removed REQUESTED before the receiver node ever observed it,
-receiving REVOKED alone cannot reveal the original note, timestamps, or profile
-reference. This proposal does not change the wire to transfer that history.
-The receiver applies revocation and authorization effects without inventing a
-request card. Confirm that this node-level limitation is acceptable; fixing it
-would be a separate S2S protocol/history-delivery project.
+### 2.7 Group manager state
 
-## 11. Implementation plan and gates
+Reuse existing group request counters, manager read fields, ThreadFeed delivery,
+and durable fan-out, but allocate new-request coordinates only for new rounds.
+Terminal changes must not advance manager unread heads. Keep existing invitation
+head behavior only where it is still required by group management consumers;
+do not add a personal sent head or silently remove unrelated group fields.
 
-### P0 — Confirm contract
+Group query responses return their group-scoped application read/end coordinates;
+they are distinct from global round IDs and personal notification heads. Maintain
+request ID as the action identity even when manager read transport uses existing
+scoped coordinates. Preserve new-manager initialization and role-change checks.
+Remove GC-driven read advancement. Audit SQL triggers and Drizzle constraints
+for parity before changing any manager field meaning.
 
-Resolve the decisions in section 13. Inventory every client intent producer and
-consumer, including raw SQL writers, expiry, disband, namespace/key lifecycle,
-local same-node commands, origin/mirror receive paths, and direct terminal cases.
-Separate old protocol-compliance bugs from projection work, but test them in the
-final contract. Do not silently change the restored S2S semantics.
+## 3. Web and native storage
 
-### P1 — Schema and domain capability
+Delete IndexedDB relationshipRequests and SQLite relationship_requests, their
+indexes, query/cleanup APIs, reducer modules, request-store IPC, and request-only
+reset/rebuild branches. Keep profile/thread/message storage and stateFeedCursor.
 
-Define round/slot identity, normalized source records, immutable presentation,
-notification heads, retention/deletion floor, and strict discriminated DTOs.
-Update the unpublished base SQL and Drizzle together. Add PostgreSQL constraint,
-transaction rollback, generation, and round-retention tests.
+Remove the four old request sync keys:
 
-### P2 — All server writers
+- relationshipRequestStateRevision;
+- relationshipIntentStateRevision;
+- relationshipRequestReadHead;
+- relationshipRequestCleanupAt.
 
-Connect the capability to P2P and group authored/received commands. Integrate
-shared manager projections and fan-out. Publish complete terminal snapshots in
-the business transaction. Remove old client raw-intent publishing; preserve S2S
-intent publishing and ThreadFeed. Add requestId guards to actions and responses.
-No dual-write legacy client event path is kept as a supported mode.
+Use one fixed account record: IndexedDB `accountState`, SQLite `account_state`,
+and shared `AccountState`. Merge account metadata and synchronization coordinates;
+there is no separate account_meta table or arbitrary sync key/value storage.
+Keep schema version 1 and directly replace the baseline layout, without migration.
 
-### P3 — Client replication and red dots
+The fixed fields are schemaVersion, selfProfile, selfIdentity, composerDrafts,
+threadFeedCursor, stateFeedId, stateFeedFullThrough,
+profileNamespaceChangeEndId, intentRequestEndId, intentRequestReadId, and
+intentRequestOptimisticReadId. Structured profile/identity/draft fields are typed
+JSON, not an arbitrary metadata dictionary. Device preferences, session storage,
+and message-cache schema metadata remain separate.
 
-Replace Web and Rust reducers with strict complete-snapshot upsert/delete.
-Remove local durable accept patches and raw-intent-specific parsing. Update IDB,
-SQLite, native IPC, list refresh, and notification-head storage together.
-Reject/reinitialize old disposable cache layouts explicitly; do not import or
-migrate their request records. Shared-cache resets are a separate operator action.
+The server head maps to intentRequestEndId and intentRequestReadId and commits
+atomically with stateFeedId. Source feed ordering uses the normal feed apply guard.
+The local optimistic read target is intentRequestOptimisticReadId, not a separate
+synchronization target. It comes only from an observed successful RECEIVED page,
+is persisted before submission, and survives transient failures for retry. A
+confirmation clears only a target it covers; stale responses must not clear newer
+intent. Badge comparison uses end > max(confirmed read, optimistic read), with
+bigint-safe comparison. No SENT notification or optimistic fields exist.
+HTTP responses must not overwrite a newer durable feed head. Each owner updates
+only its own fixed fields inside a transaction, preserving concurrent changes.
+These storage contracts are approved; optimistic retry and UI orchestration
+remain implementation work.
 
-### P4 — Recovery, expiry, resource lifetime
+Change account-cache schema identity / strict validation as needed to reject old
+layouts, with no old-request migration. Preserve preferences and session state;
+coordinate with concurrent session/cache work. Do not use a blanket SQLite file
+delete. Native PRAGMA user_version currently has a separate media cleanup meaning
+and must not be repurposed. Message-cache schemas do not need changing solely
+for request removal.
 
-Implement staged rebuild and cursor-floor handling, deterministic retention,
-explicit deletion, server expiry, durable avatar behavior, and role-loss cleanup.
-Update docs that still claim intent-driven conversation/request reconstruction.
+## 4. Shared method extraction and reuse
 
-### P5 — Verification and cleanup
+Inspected current implementations:
 
-Run isolated PostgreSQL and cross-device tests, then backend/Web/Rust/admin
-regression suites. Remove obsolete reducers, contracts, fixtures, and dead SQL
-helpers. No compatibility fallback. This work does not freeze or release the
-federation draft, and does not authorize commit, deployment, or shared-data reset.
+- Web friend-request-state.ts: applyFriendIntentToProjection,
+  applyGroupIntentToProjection, updateLiveProjection, boundedIntentExpiry.
+- ClientStateFeedService.writeGroupRequestInTx: shared group read/compare/write.
+- group-membership-projection-sql.ts: requestProjectionFlipSql.
+- FederationGroupRequestProjectionService.writeEffectsInTx: adapter from intent
+  state to group presentation.
+- GroupService.queryGroupRequests: shared group paging and computed expiry.
 
-## 12. Acceptance matrix
+Move reusable request behavior to `src/relationship/request/`, not generic feed
+infrastructure. Proposed capabilities:
 
-- FRIEND, GROUP_APPLICATION, GROUP_INVITATION; local and federated directions.
-- Request, same-flow retry, accept, reject, withdraw, expire, retry as new round,
-  crossed requests, late ACK, duplicate REVOKED, invitation completion.
-- Old requestId action racing a new round must not affect it.
-- SQL intent/projection/feed atomic rollback and two-local-recipient consistency.
-- Closed request retains snapshot/note/times, and current-profile changes neither
-  mutate outgoing presentation nor advance request arrival/list heads needlessly.
-- Fresh device after rejection/withdrawal/acceptance matches an existing device
-  whenever the server observed the request, with no predecessor in the feed.
-- No prior S2S REQUESTED: no fabricated history; revocation still removes grants.
-- Duplicate pages, out-of-order old pages, process/SQLite reopen, real app restart,
-  interrupted paged rebuild, concurrent compaction past `through`, lost wake,
-  expired cursor floor, deletion followed by a new generation.
-- Two devices: read-before-arrival, arrival-during-read, terminal-before-first-sync,
-  history-GC-before-first-sync, outgoing-only changes, new manager, role loss,
-  durable fan-out interruption, and reconnect without a wake.
-- Snapshot avatar readable after revocation on another device; null/failed avatar
-  never falls back to a live-profile demand. Incoming exact references remain
-  authorization constrained.
-- Established conversations and group roles converge via their own feeds, with
-  no request-projection-based permission or conversation creation.
+1. `openRequestInTx`: detect retry/new flow under existing locks; create immutable
+   presentation, owning-intent association, and new-request notification effects once.
+2. `concludeRequestInTx`: update only the matching live REQUESTED round, with an
+   explicit ACCEPT/REJECT/WITHDRAW/EXPIRE cause. Return changed/no-op. Reciprocal
+   REVOKED must not rewrite an already-decided REJECTED into WITHDRAWN.
+3. `requestStatusAt`: server-side effective status for query/action validity;
+   share expiry logic across personal/group views. Querying never deletes rows.
+4. `queryRequestPage`: shared window/keyset/DTO construction given an already
+   authorized personal or group scope.
+5. `markIncomingRequestsReadInTx`: reuse current account locking, monotonic read,
+   atomic head write, and post-commit wake pattern with request IDs as the bound.
 
-## 13. Decisions requiring confirmation
+The definition-only internal port is now captured in
+[request-transaction.contract.ts](../../src/relationship/request/request-transaction.contract.ts).
+Its proposed responsibility split requires review before implementation:
 
-1. **Scope:** only client-facing request events change; S2S intents remain intact.
-2. **History:** latest round per directional slot (recommended), or all rounds
-   during retention? "New projection" alone does not decide this.
-3. **Retention:** fixed seven days from request creation (recommended), or a
-   separate period after terminal resolution? This affects GC and avatar lifetime.
-4. **Badge meaning:** new incoming arrivals until viewed (recommended and closest
-   to the current personal watermark model), or only unseen still-actionable
-   requests? Apply the chosen meaning consistently to group manager applications.
-5. **Missing node history:** accept that a node which never received REQUESTED
-   cannot reconstruct that request from S2S REVOKED alone?
-6. **Stale actions:** require requestId for request-card decisions and reject old
-   rounds explicitly (recommended), with no legacy address-only action fallback.
+- The existing intent state machine determines admission under its locks; the
+  command no longer supplies a parallel NEW/RETRY decision. Newly admitted
+  rounds store evidence and update intent.requestId atomically. Same-round
+  authoring retries preserve the original evidence.
+- Open returns CREATED/UNCHANGED plus the stored round and post-commit client
+  hints, or STALE_REQUEST. A stale result never silently addresses a newer round.
+- Conclusion names the exact flow/ID and explicit cause. It returns CHANGED or
+  STALE_REQUEST. Missing intent association and terminal intent states fail;
+  there is no ALREADY_COMPLETED success. The intent owner checks expiry and
+  authorization; EXPIRE requires an elapsed deadline. Established friendship
+  revocation does not conclude or rewrite the request record.
+- Query receives a scope authorized in the same snapshot, a bigint cursor,
+  take, and captured server time. The scope type itself is not a security grant.
+- Read returns CHANGED/UNCHANGED with a complete bigint head and post-commit
+  hints, or READ_AHEAD for the application to reject. Invalid negative input
+  rejects. No method commits independently or publishes before commit.
 
-These decisions, atomic domain publication, and durable recovery are the closure
-conditions. Merely moving the client reducer to the server is not sufficient.
+These signatures do not register a provider, change the wire protocol, or fill
+in the request lifecycle implementation. Existing raw-SQL intent operations
+must share their semantics rather than grow a parallel decision engine.
+
+Reuse shared/request-projection-status.ts and shared/request-snapshot.ts directly.
+Use the existing intent services for business decisions, quota, authorization,
+reciprocal conclusion, and ThreadFeed effects; do not create a competing decision
+engine. Keep raw-SQL transactional callers: extract common SQL fragments where
+needed rather than a second SQL-only rule set beside TypeScript behavior.
+
+Do NOT copy client feedId guards, direction inference, local accept patches,
+seven-day GC, default profile revisions, or `note || oldNote` fallback. Empty
+note is valid. Client reducer fixtures should become domain tests for invariants,
+not preserve transport-specific quirks. The existing group SQL's explicit
+"only REQUESTED changes" guard is reusable; old cascade/key/storage layout is not.
+
+## 5. HTTP API proposal
+
+Reuse route conventions and existing domain command services. Names below are
+relative to `/api/v1`. Responses use the normal API envelope.
+
+### 5.1 Personal list: POST /relationship/requests
+
+New endpoint, following existing group POST query conventions:
+
+```json
+{ "bucket": "RECEIVED", "before": null, "take": 20 }
+```
+
+bucket is RECEIVED or SENT; before is an exclusive request ID decimal string; take is
+1..50, default 20. Initial before may be omitted. Query authenticated identity,
+not a caller-supplied account ID.
+
+Response data:
+
+```json
+{
+  "items": [],
+  "hasMore": false,
+  "before": null,
+  "incomingHead": { "requestEndId": "42", "requestReadId": "37" }
+}
+```
+
+Each item contains id (decimal string), kind, direction, ordered endpoint
+identities, status, note, requestedAt/expiresAt/createdAt/updatedAt, and strict
+presentation. OUTGOING uses required snapshot; INCOMING uses exact author
+reference. No threadId, domain string, sourceFeedId, or client reducer fields.
+The head is account-scoped and may accompany either bucket; opening SENT must
+not mark incoming requests read.
+
+Recommended seven-day predicate: `createdAt >= statement_timestamp() - interval
+'7 days'`. This means seven days since first local recording. It is not based on
+updatedAt, so rejection/retry does not bring old requests back into the window.
+The API never accepts a client-selected earlier window. This time basis remains
+a review choice; requestedAt would instead mean seven days from original request.
+
+Newest request IDs first, stable across status changes. Filter `id < before`
+when supplied. Authorization scope and bucket come from the authenticated query,
+not the cursor. Every page enforces both scope and the current seven-day window. New arrivals appear on a
+refresh, not spliced into later pages. States are current at each page snapshot;
+this is not an immutable multi-page history snapshot. No durable list-change
+revision is needed. Read data and returned head in one read-only snapshot.
+
+### 5.2 Existing POST /relationship/requests/read
+
+Change body to `{ "requestReadId": "42" }`. Return the complete authoritative
+incomingHead. Use the head observed with a successful RECEIVED query; do not use
+a global feed cursor or mark read before loading the list. Duplicate/lower reads
+are no-ops. A value above the account's current end is validation failure. The
+concurrent new request remains unread. No local optimistic persistence or
+optimistic badge clearing before server success.
+
+Opening the list acknowledges its observed head, including older entries no
+longer returned by the seven-day API. Time-window disappearance does not itself
+advance read state or create a new notification.
+
+### 5.3 Personal request decisions
+
+Keep `/relationship/request` for new outgoing requests and existing quota/domain
+orchestration. Reuse `/relationship/accept` as a request-only decision with
+required requestId. Add `/relationship/requests/reject` and
+`/relationship/requests/withdraw`, each requiring requestId, instead of ambiguously
+using a general address-only revoke operation for a historical card.
+
+Keep `/relationship/revoke` and RevokeRelationshipDto, now taking only
+`{ threadId }` to remove an established P2P relationship, symmetric to group
+leave. The former `{ account, namespaceId }` body is rejected, not supported as
+a compatibility path. Recheck the active pair, thread and captured authorization
+epoch under existing business locks before revocation; an unlocked locator is
+not authorization. This operation does not rewrite ended request history and
+is not a fallback path for request-card decisions. Existing group acceptance entry points
+must also resolve/check the same round, not bypass a new requestId guard.
+
+Resolve endpoints from the authorized request row. Under business locks verify
+the intent's requestId association, requester/receiver role, REQUESTED status,
+validity, and existing authorization. Explicitly reject stale/wrong-scope IDs;
+a historical ID cannot act on the latest round. Completed request decisions
+fail rather than returning an already-completed success. Seven-day list
+visibility is not the authorization or validity check for an action.
+
+Return the existing business outcome and a threadId only if the resulting domain
+operation actually provides an active conversation. Client refetches after action;
+it does not persist a local status patch.
+
+### 5.4 Group management routes
+
+Reuse POST /group/join-requests and /group/invitations with groupId, before, take.
+Reuse guards, but revalidate manager authority in the same snapshot used to read
+the page. Use the same seven-day window and record serializer as personal lists,
+with group-specific scope and snapshot/reference direction.
+
+Reuse /group/join-requests/read and its existing scoped read semantics. Add
+required requestId to /group/join-request/accept, /group/join-request/reject, and
+/group/invitation/revoke; resolve the member from that request and validate its
+group/direction, rather than trusting redundant caller-provided member identity.
+Keep group creation/invitation submission, roster changes, kick/leave, and role
+APIs in their existing domains. Do not broaden request access through snapshots.
+
+## 6. List refresh without notification watermarks
+
+New incoming IDs naturally cause StateFeed wake/head sync. Terminal changes and
+outgoing changes do not advance this head and must not generate a red dot.
+Use an ephemeral post-commit list-invalidation SSE hint for currently authorized
+viewers; no durable change counter is added. Coalesce hints and refetch only an
+open list. After own actions, opening the list, reconnect, or application focus,
+fetch again. A bounded polling interval while the list is visible (proposal:
+30 seconds) repairs lost invalidations without durable request replication.
+
+Ignore stale HTTP responses using in-memory account/session/filter/fetch
+ generations. These are request-lifecycle guards, not stored read optimism.
+Offline shows unavailable/stale state, not a successful empty list. Full
+instantaneous cross-device agreement is not promised; every successful refresh
+reads the same server authority.
+
+## 7. Removal and verification checklist
+
+Remove GroupService.garbageCollectJoinRequestProjections, its interval/callers,
+GC-only SQL, auto-read advancement, and tests that expect deletion. Remove Web
+cleanupRelationshipRequests, cleanup sync keys/timers, and native cleanup IPC/SQL.
+Keep RelationshipIntentExpiryService and protocol conclusion jobs: expiry is
+not deletion. Keep permanent rows after both expiry and the list time window.
+
+Required tests:
+
+- New round versus retry; only a new incoming ID lights the badge.
+- Every terminal status preserves ID, original presentation, and history.
+- Local/federated friend, application, invitation; crossed requests; reciprocal
+  REVOKED; internal group founding; missing S2S predecessor.
+- Two-device read synchronization, arrival racing read, no outgoing/terminal
+  notification, and no optimistic local read state.
+- Permanent old rows remain in SQL but never escape the API window, including
+  cursor tampering, terminal updates, multiple pages, and query-plan worst cases.
+- Stale requestId cannot affect a later round; manager permission races rejected.
+- All intent/request/slot/head/feed writes roll back atomically; sequence allocation
+  cannot introduce same-recipient out-of-order committed arrivals.
+- Fresh online list restores terminal records without cached predecessors;
+  Web/SQLite retired stores absent, heads/cursors survive restart.
+- No database truncation in tests except isolated test-owned databases.
+
+## 8. Remaining review choices
+
+1. Approve append-per-round permanent history and current-slot pointer (rather
+   than overwriting previous rounds).
+2. Approve createdAt as the seven-day API window basis and newest-ID ordering.
+3. Approve bigint round IDs as action tokens and personal incoming heads; normal
+   ClientStateFeed cursor type remains unchanged.
+4. Approve the route shapes/required request IDs and the visible-list refresh
+   mechanism without a persisted change head.
+5. Snapshot records remain forever; should their avatar assets remain accessible
+   forever, or only throughout the API-visible window? Do not promise permanent
+   media retention merely because the JSON record is permanent.
+
+No unresolved point licenses changing the restored S2S protocol or adding back
+client request projection storage, outgoing heads, optimistic reads, or history GC.

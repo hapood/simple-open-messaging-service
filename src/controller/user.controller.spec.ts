@@ -96,12 +96,7 @@ describe('UserController.queryStateFeed', () => {
     clientStateFeed.query.mockResolvedValue([
       {
         feedId: 5,
-        account: '' as const,
-        domain: 'local' as const,
-        eventType: 'INCOMING_INVITE_HEAD',
-        subjectAccount: '',
-        subjectNamespaceId: 0,
-        body: { readThroughFeedId: 0 },
+        body: { requestEndId: '9007199254740993', requestReadId: '0' },
       },
     ]);
 
@@ -110,10 +105,10 @@ describe('UserController.queryStateFeed', () => {
     ).resolves.toEqual({
       mode: 'full',
       items: [
-        expect.objectContaining({
+        {
           feedId: 5,
-          eventType: 'INCOMING_INVITE_HEAD',
-        }),
+          body: { requestEndId: '9007199254740993', requestReadId: '0' },
+        },
       ],
       scannedThrough: 6,
       stateFeedEndId: 6,

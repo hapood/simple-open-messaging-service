@@ -51,6 +51,7 @@ export const FIXED_WINDOW_DEFAULTS = {
   'group.create': [10, 60],
   'group.join-request': [20, 60],
   'group.leave': [20, 60],
+  'relationship.revoke': [20, 60],
   'group.dissolve': [10, 60],
   'group.kick': [20, 60],
   'group.transfer': [20, 60],

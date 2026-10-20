@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import {
   messageThread,
-  clientStateFeed,
+  relationshipRequest,
   federationThreadSyncState,
   message,
   accountThreadState,
@@ -23,6 +23,7 @@ import {
   type S2sProxy,
 } from './federation-harness.js';
 import { registerAndLogin } from './federation-test-helpers.js';
+import { waitForReceivedRequest } from './support/received-request.js';
 import { findGroupRelationship, findP2PRelationship } from './seed.js';
 
 describe('federated Address friend requests', () => {
@@ -97,7 +98,7 @@ describe('federated Address friend requests', () => {
       .send({
         account: 'address-bob',
         namespaceId: namespaceBOnA,
-        displayName: 'Address Bob',
+        snapshot: { displayName: 'Address Bob', avatar: null },
         note: 'address request',
       });
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
@@ -144,39 +145,37 @@ describe('federated Address friend requests', () => {
       new Date(incoming.expiresAt).getTime() -
         new Date(incoming.requestedAt).getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
-    const pendingClientIntent =
-      await appB.database.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, bobId),
-          eq(clientStateFeed.account, 'address-alice'),
-          eq(clientStateFeed.namespaceId, aliceNamespaceOnB.id),
-          eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
-          eq(clientStateFeed.subjectAccount, 'address-bob'),
-        ),
-      });
-    expect(pendingClientIntent).toMatchObject({
-      subjectNamespaceId: 0,
-      body: expect.objectContaining({
-        status: 'REQUESTED',
-        direction: 'INCOMING',
-        peer: expect.objectContaining({
-          account: 'address-alice',
-          namespaceId: aliceNamespaceOnB.id,
-        }),
-      }),
-    });
-    const namespaceAOnB =
-      (await appB.database.query.identityNamespace.findFirst({
-        where: eq(identityNamespace.domain, FED_DOMAIN_A),
-      }))!.id;
+    const pendingRequest = await vi.waitFor(
+      async () => {
+        const row = await appB.database.query.relationshipRequest.findFirst({
+          where: and(
+            eq(relationshipRequest.kind, 'FRIEND'),
+            eq(relationshipRequest.authorAccount, 'address-alice'),
+            eq(relationshipRequest.authorNamespaceId, aliceNamespaceOnB.id),
+            eq(relationshipRequest.receiverAccount, 'address-bob'),
+            eq(relationshipRequest.receiverNamespaceId, 0),
+          ),
+        });
+        // A remote author carries an exact profile reference, never a local
+        // snapshot; Bob decides this exact round by its receiver-side ID.
+        expect(row).toMatchObject({
+          status: 'REQUESTED',
+          note: 'address request',
+          authorProfileNamespaceId: 0,
+        });
+        expect(row!.snapshot).toBeNull();
+        return row!;
+      },
+      { timeout: 10_000, interval: 100 },
+    );
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bobToken}`)
-      .send({ account: 'address-alice', namespaceId: namespaceAOnB });
+      .send({ requestId: String(pendingRequest.id) });
     expect(accepted.body.code, JSON.stringify(accepted.body)).toBe(
       BusinessCode.OK,
     );
-    // The address-only acceptance activates synchronously on the accepting
+    // Exact-round acceptance activates synchronously on the accepting
     // side; the origin learns through the peer state-feed push.
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
     expect(typeof accepted.body.data.threadId).toBe('number');
@@ -253,30 +252,23 @@ describe('federated Address friend requests', () => {
           ]),
         );
 
-        const bobClientIntents =
-          await appB.database.query.clientStateFeed.findMany({
+        expect(
+          await appB.database.query.relationshipRequest.findFirst({
             where: and(
-              eq(clientStateFeed.userId, bobId),
-              eq(clientStateFeed.account, 'address-alice'),
-              eq(clientStateFeed.namespaceId, aliceNamespaceOnB.id),
-              eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
-              eq(clientStateFeed.subjectAccount, 'address-bob'),
+              eq(relationshipRequest.kind, 'FRIEND'),
+              eq(relationshipRequest.authorAccount, 'address-alice'),
+              eq(relationshipRequest.authorNamespaceId, aliceNamespaceOnB.id),
+              eq(relationshipRequest.receiverAccount, 'address-bob'),
+              eq(relationshipRequest.receiverNamespaceId, 0),
             ),
-          });
-        expect(bobClientIntents).toHaveLength(1);
-        expect(bobClientIntents[0]).toMatchObject({
-          subjectNamespaceId: 0,
-          body: expect.objectContaining({
-            status: 'ACCEPTED',
-            direction: 'INCOMING',
           }),
-        });
+        ).toMatchObject({ id: pendingRequest.id, status: 'ACCEPTED' });
       },
       { timeout: 10_000, interval: 100 },
     );
   });
 
-  it('refreshes and revokes an outgoing request without a foreign account row', async () => {
+  it('retries an outgoing request without rewriting evidence and withdraws it without a foreign account row', async () => {
     const charlie = await registerAndLogin(appB, 'address-charlie', 'Charlie');
     const target = {
       account: charlie.account,
@@ -288,7 +280,11 @@ describe('federated Address friend requests', () => {
       const response = await request(appA.baseUrl)
         .post('/api/v1/relationship/request')
         .set('Authorization', `Bearer ${aliceToken}`)
-        .send({ ...target, displayName: 'Charlie', note });
+        .send({
+          ...target,
+          snapshot: { displayName: 'Charlie', avatar: null },
+          note,
+        });
       expect(response.body.code, JSON.stringify(response.body)).toBe(
         BusinessCode.OK,
       );
@@ -325,6 +321,25 @@ describe('federated Address friend requests', () => {
       });
     const before = await readRequest();
     expect(before?.status).toBe('REQUESTED');
+    const roundRow = () =>
+      appA.database.query.relationshipRequest.findFirst({
+        where: and(
+          eq(relationshipRequest.kind, 'FRIEND'),
+          eq(relationshipRequest.authorAccount, 'address-alice'),
+          eq(relationshipRequest.authorNamespaceId, 0),
+          eq(relationshipRequest.receiverAccount, charlie.account),
+          eq(relationshipRequest.receiverNamespaceId, namespace!.id),
+        ),
+      });
+    const beforeRow = await roundRow();
+    expect(beforeRow).toMatchObject({
+      status: 'REQUESTED',
+      note: 'original request',
+      snapshot: { displayName: 'Charlie', avatar: null },
+    });
+    expect(before!.expiresAt!.getTime() - before!.requestedAt!.getTime()).toBe(
+      7 * 24 * 60 * 60 * 1000,
+    );
     const requestCount = async () => {
       const rows = await appA.database
         .select({
@@ -342,20 +357,10 @@ describe('federated Address friend requests', () => {
     const usedBeforeRefresh = await requestCount();
     await send('updated request');
     expect(await requestCount()).toBe(usedBeforeRefresh + 1);
-    const refreshed = await readRequest();
-    expect(refreshed).toMatchObject({
-      status: 'REQUESTED',
-      note: 'updated request',
-    });
-    expect(refreshed!.requestedAt!.getTime()).toBeGreaterThan(
-      before!.requestedAt!.getTime(),
-    );
-    expect(refreshed!.expiresAt!.getTime()).toBeGreaterThan(
-      before!.expiresAt!.getTime(),
-    );
-    expect(
-      refreshed!.expiresAt!.getTime() - refreshed!.requestedAt!.getTime(),
-    ).toBe(7 * 24 * 60 * 60 * 1000);
+    // A same-round retry charges admission again but must not rewrite the
+    // round's immutable evidence or refresh its validity window.
+    expect(await readRequest()).toEqual(before);
+    expect(await roundRow()).toEqual(beforeRow);
 
     const readMirroredRequest = async () => {
       const remoteNamespace =
@@ -391,25 +396,29 @@ describe('federated Address friend requests', () => {
       async () => {
         expect(await readMirroredRequest()).toMatchObject({
           status: 'REQUESTED',
-          note: 'updated request',
-          requestedAt: refreshed!.requestedAt,
-          expiresAt: refreshed!.expiresAt,
+          note: 'original request',
+          requestedAt: before!.requestedAt,
+          expiresAt: before!.expiresAt,
         });
       },
       { timeout: 10_000, interval: 100 },
     );
 
-    const revoked = await request(appA.baseUrl)
-      .post('/api/v1/relationship/revoke')
+    const withdrawn = await request(appA.baseUrl)
+      .post('/api/v1/relationship/requests/withdraw')
       .set('Authorization', `Bearer ${aliceToken}`)
-      .send(target);
-    expect(revoked.body.code, JSON.stringify(revoked.body)).toBe(
+      .send({ requestId: String(beforeRow!.id) });
+    expect(withdrawn.body.code, JSON.stringify(withdrawn.body)).toBe(
       BusinessCode.OK,
     );
-    // The local authoring side is synchronous now: the revocation (and its
-    // peer feed item) is committed when the request answers.
-    expect(revoked.body.data).toEqual({ status: 'OK' });
+    // The local authoring side is synchronous: the withdrawal (and its peer
+    // feed item) is committed when the request answers.
+    expect(withdrawn.body.data).toMatchObject({ status: 'OK' });
     expect((await readRequest())?.status).toBe('REVOKED');
+    expect(await roundRow()).toMatchObject({
+      id: beforeRow!.id,
+      status: 'WITHDRAWN',
+    });
     await vi.waitFor(
       async () => {
         expect((await readMirroredRequest())?.status).toBe('REVOKED');
@@ -460,46 +469,45 @@ describe('federated Address friend requests', () => {
       const response = await request(appA.baseUrl)
         .post('/api/v1/relationship/request')
         .set('Authorization', `Bearer ${alice.token}`)
-        .send({ ...target, snapshot: { displayName: 'Reject Bob', avatar: null }, note });
+        .send({
+          ...target,
+          snapshot: { displayName: 'Reject Bob', avatar: null },
+          note,
+        });
       expect(response.body.code, JSON.stringify(response.body)).toBe(
         BusinessCode.OK,
       );
     };
-    const reject = async () => {
+    const reject = async (requestId: bigint) => {
       const response = await request(appB.baseUrl)
-        .post('/api/v1/relationship/revoke')
+        .post('/api/v1/relationship/requests/reject')
         .set('Authorization', `Bearer ${bob.token}`)
-        .send(reverseTarget);
+        .send({ requestId: String(requestId) });
       expect(response.body.code, JSON.stringify(response.body)).toBe(
         BusinessCode.OK,
       );
     };
-    const requesterRequestFeed = () =>
-      appA.database.query.clientStateFeed.findFirst({
+    const requesterRounds = () =>
+      appA.database.query.relationshipRequest.findMany({
         where: and(
-          eq(clientStateFeed.userId, alice.id),
-          eq(clientStateFeed.account, alice.account),
-          eq(clientStateFeed.subjectAccount, bob.account),
-          eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+          eq(relationshipRequest.kind, 'FRIEND'),
+          eq(relationshipRequest.authorAccount, alice.account),
+          eq(relationshipRequest.authorNamespaceId, 0),
+          eq(relationshipRequest.receiverAccount, bob.account),
+          eq(relationshipRequest.receiverNamespaceId, target.namespaceId),
         ),
+        orderBy: relationshipRequest.id,
       });
-    const requesterRevokeFeed = () =>
-      appA.database.query.clientStateFeed.findFirst({
+    const recipientRound = () =>
+      appB.database.query.relationshipRequest.findFirst({
         where: and(
-          eq(clientStateFeed.userId, alice.id),
-          eq(clientStateFeed.account, bob.account),
-          eq(clientStateFeed.subjectAccount, alice.account),
-          eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+          eq(relationshipRequest.kind, 'FRIEND'),
+          eq(relationshipRequest.authorAccount, alice.account),
+          eq(relationshipRequest.authorNamespaceId, reverseTarget.namespaceId),
+          eq(relationshipRequest.receiverAccount, bob.account),
+          eq(relationshipRequest.receiverNamespaceId, 0),
         ),
-      });
-    const recipientFeed = () =>
-      appB.database.query.clientStateFeed.findFirst({
-        where: and(
-          eq(clientStateFeed.userId, bob.id),
-          eq(clientStateFeed.account, alice.account),
-          eq(clientStateFeed.subjectAccount, bob.account),
-          eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
-        ),
+        orderBy: desc(relationshipRequest.id),
       });
     const peerRevoke = () =>
       appB.database.query.peerStateFeed.findFirst({
@@ -511,68 +519,87 @@ describe('federated Address friend requests', () => {
       });
 
     await send('first request');
-    await vi.waitFor(
+    const firstRound = await vi.waitFor(
       async () => {
-        expect((await recipientFeed())?.body).toMatchObject({
+        const row = await recipientRound();
+        expect(row).toMatchObject({
           status: 'REQUESTED',
           note: 'first request',
-        });
-      },
-      { timeout: 15_000, interval: 100 },
-    );
-    const firstPending = (await requesterRequestFeed())!;
-    expect(firstPending.body).toMatchObject({
-      peer: { profileRev: 0 },
-      snapshot: { displayName: 'Reject Bob', avatar: null },
-    });
-    await reject();
-    const firstTerminal = await vi.waitFor(
-      async () => {
-        const row = await requesterRevokeFeed();
-        expect(row?.body).toMatchObject({
-          status: 'REVOKED',
-          requestStatus: 'REJECTED',
-          requestDirection: 'OUTGOING',
         });
         return row!;
       },
       { timeout: 15_000, interval: 100 },
     );
-    // Both bodies are committed together: observing the terminal also observes
-    // any erroneous stale REQUESTED republication in that same transaction.
-    expect(await requesterRequestFeed()).toEqual(firstPending);
-    const firstPeerRevoke = (await peerRevoke())!;
-
-    await send('second request');
+    const firstAuthorRows = await requesterRounds();
+    expect(firstAuthorRows).toHaveLength(1);
+    expect(firstAuthorRows[0]).toMatchObject({
+      status: 'REQUESTED',
+      note: 'first request',
+      snapshot: { displayName: 'Reject Bob', avatar: null },
+    });
+    await reject(firstRound.id);
     await vi.waitFor(
       async () => {
-        expect((await recipientFeed())?.body).toMatchObject({
-          status: 'REQUESTED',
-          note: 'second request',
-        });
-        expect((await requesterRequestFeed())?.body).toMatchObject({
-          status: 'REQUESTED',
-          note: 'second request',
+        expect(await recipientRound()).toMatchObject({
+          id: firstRound.id,
+          status: 'REJECTED',
         });
       },
       { timeout: 15_000, interval: 100 },
     );
-    const secondPending = (await requesterRequestFeed())!;
-    expect(secondPending.feedId).toBeGreaterThan(firstTerminal.feedId);
-    await reject();
+    // The terminal conclusion never republishes or resurrects the round, and
+    // its immutable evidence survives the status change.
+    const firstTerminal = await vi.waitFor(
+      async () => {
+        const rows = await requesterRounds();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toEqual({
+          ...firstAuthorRows[0],
+          status: 'REJECTED',
+          updatedAt: expect.any(Date),
+        });
+        return rows[0];
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    const firstPeerRevoke = (await peerRevoke())!;
+
+    await send('second request');
+    const secondRound = await vi.waitFor(
+      async () => {
+        const row = await recipientRound();
+        expect(row).toMatchObject({
+          status: 'REQUESTED',
+          note: 'second request',
+        });
+        expect(row!.id).toBeGreaterThan(firstRound.id);
+        return row!;
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    const secondAuthorRows = await requesterRounds();
+    expect(secondAuthorRows).toHaveLength(2);
+    const secondAuthorRow = secondAuthorRows.find(
+      (row) => row.id !== firstAuthorRows[0].id,
+    )!;
+    expect(secondAuthorRow).toMatchObject({
+      status: 'REQUESTED',
+      note: 'second request',
+      snapshot: { displayName: 'Reject Bob', avatar: null },
+    });
+    await reject(secondRound.id);
     const secondPeerRevoke = (await peerRevoke())!;
     expect(secondPeerRevoke.body).toEqual(firstPeerRevoke.body);
     expect(secondPeerRevoke.feedId).toBeGreaterThan(firstPeerRevoke.feedId);
     await vi.waitFor(
       async () => {
-        const terminal = await requesterRevokeFeed();
-        expect(terminal?.feedId).toBeGreaterThan(secondPending.feedId);
-        expect(terminal?.body).toMatchObject({
-          status: 'REVOKED',
-          requestStatus: 'REJECTED',
-          requestDirection: 'OUTGOING',
+        const rows = await requesterRounds();
+        expect(rows).toHaveLength(2);
+        expect(rows[0]).toEqual(firstTerminal);
+        expect(rows[1]).toMatchObject({
+          id: secondAuthorRow.id,
+          status: 'REJECTED',
         });
-        expect(await requesterRequestFeed()).toEqual(secondPending);
       },
       { timeout: 15_000, interval: 100 },
     );
@@ -596,7 +623,13 @@ describe('federated Address friend requests', () => {
       .set('Authorization', `Bearer ${aliceToken}`)
       .send({
         groupId: threadId,
-        users: [{ account: 'address-bob', namespaceId: ns.id }],
+        users: [
+          {
+            account: 'address-bob',
+            namespaceId: ns.id,
+            snapshot: { displayName: 'Address Bob', avatar: null },
+          },
+        ],
       });
     expect(invite.body.code).toBe(BusinessCode.OK);
     const authoredInvite = await appA.database.query.peerStateFeed.findFirst({
@@ -614,20 +647,27 @@ describe('federated Address friend requests', () => {
     const mirror = await vi.waitFor(
       async () => {
         const row = await appB.database.query.messageThread.findFirst({
-          where: and(
-            eq(messageThread.groupAccount, group.groupAccount!),
-          ),
+          where: and(eq(messageThread.groupAccount, group.groupAccount!)),
         });
         expect(row).toBeDefined();
         return row!;
       },
       { timeout: 15_000, interval: 100 },
     );
+    const invitation = await waitForReceivedRequest(appB.baseUrl, bobToken, {
+      kind: 'GROUP_INVITATION',
+      author: {
+        account: group.groupAccount!,
+        namespaceId: mirror.authorityNamespaceId,
+      },
+      receiver: { account: 'address-bob', namespaceId: 0 },
+    });
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${bobToken}`)
-      .send({ groupId: mirror.id });
+      .send({ requestId: invitation.id });
     expect(accepted.body.code).toBe(BusinessCode.OK);
+    expect(accepted.body.data.status).toBe('OK');
     const remote = {
       account: 'address-bob',
       domain: FED_DOMAIN_B,
@@ -733,10 +773,17 @@ describe('federated Address friend requests', () => {
         where: eq(identityNamespace.domain, FED_DOMAIN_B),
       }))!.id,
     };
+    const established = await findP2PRelationship(
+      appA.database,
+      aliceId,
+      target,
+    );
+    if (!established.pair?.active || !established.pair.threadId)
+      throw new Error('missing established friendship fixture');
     const revoke = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${aliceToken}`)
-      .send(target);
+      .send({ threadId: established.pair.threadId });
     expect(revoke.body.code).toBe(BusinessCode.OK);
     expect(revoke.body.data).toEqual({ status: 'OK' });
     const nsOnA = (await appA.database.query.identityNamespace.findFirst({
@@ -814,7 +861,7 @@ describe('federated Address friend requests', () => {
       .set('Authorization', `Bearer ${aliceToken}`)
       .send({
         ...target,
-        displayName: 'Address Bob',
+        snapshot: { displayName: 'Address Bob', avatar: null },
         note: 're-authorize after revoke',
       });
     expect(requested.body.code).toBe(BusinessCode.OK);
@@ -849,10 +896,15 @@ describe('federated Address friend requests', () => {
       },
       { timeout: 15_000, interval: 100 },
     );
+    const incoming = await waitForReceivedRequest(appB.baseUrl, bobToken, {
+      kind: 'FRIEND',
+      author: { account: peer.account, namespaceId: peer.namespaceId },
+      receiver: { account: 'address-bob', namespaceId: 0 },
+    });
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bobToken}`)
-      .send({ account: peer.account, namespaceId: peer.namespaceId });
+      .send({ requestId: incoming.id });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
     expect(

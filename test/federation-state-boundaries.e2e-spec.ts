@@ -175,6 +175,7 @@ describe('federation directed-state boundaries', () => {
           {
             userId: local.id,
             decision: 'REQUESTED',
+            snapshot: { displayName: peer.account, avatar: null },
             target: {
               account: peer.account,
               namespaceId: peer.namespaceId,
@@ -299,6 +300,7 @@ describe('federation directed-state boundaries', () => {
         {
           userId: local.id,
           decision: 'REQUESTED',
+          snapshot: { displayName: peer.account, avatar: null },
           target: {
             account: peer.account,
             namespaceId: peer.namespaceId,
@@ -398,6 +400,7 @@ describe('federation directed-state boundaries', () => {
         {
           userId: local.id,
           decision: 'REQUESTED',
+          snapshot: { displayName: peer.account, avatar: null },
           target: {
             account: peer.account,
             namespaceId: peer.namespaceId,

@@ -106,52 +106,29 @@ describe('ClientStateFeedService', () => {
     vi.useRealTimers();
   });
 
-  it('normalizes Date values before persisting a client feed body', async () => {
-    const values = vi.fn().mockReturnValue({
-      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-    });
+  it.each([false, true])('publishes only a complete changed request head (unchanged=%s)', async (unchanged) => {
+    const head = { requestEndId: '9007199254740993', requestReadId: '42' };
+    const lock = vi.fn().mockResolvedValue([{
+      requestEndId: 9007199254740993n, requestReadId: 42n,
+    }]);
+    const values = vi.fn().mockResolvedValue(undefined);
     const tx = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ feedId: 7 }]),
-          }),
-        }),
-      }),
+      select: vi.fn()
+        .mockReturnValueOnce({ from: () => ({ where: () => ({ for: lock }) }) })
+        .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(unchanged ? [{ body: head }] : []) }) }) }) }),
+      update: vi.fn().mockReturnValue({ set: () => ({ where: () => ({
+        returning: () => Promise.resolve([{ feedId: 7 }]),
+      }) }) }),
       insert: vi.fn().mockReturnValue({ values }),
     };
-    const service = new ClientStateFeedService(
-      undefined as never,
-      undefined as never,
-    );
-    const requestedAt = new Date('2026-08-25T07:22:30.552Z');
-
-    await service.writeInTx(tx as never, {
-      userId: 1,
-      account: 'admin',
-      eventType: 'RELATIONSHIP_INTENT',
-      namespaceId: 0,
-      subjectAccount: '!group',
-      subjectNamespaceId: 1,
-      body: { status: 'REQUESTED', requestedAt },
-    });
-
-    expect(values).toHaveBeenCalledWith(
-      expect.objectContaining({
-        feedId: 7,
-        body: {
-          status: 'REQUESTED',
-          requestedAt: requestedAt.getTime(),
-          established: false,
-        },
-      }),
-    );
+    const service = new ClientStateFeedService(undefined as never, undefined as never);
+    await expect(service.publishRequestHeadInTx(tx as never, 1)).resolves.toBe(unchanged ? null : 7);
+    expect(lock).toHaveBeenCalledExactlyOnceWith('no key update');
+    if (unchanged) {
+      expect(tx.update).not.toHaveBeenCalled();
+      expect(tx.insert).not.toHaveBeenCalled();
+    } else {
+      expect(values).toHaveBeenCalledExactlyOnceWith({ userId: 1, feedId: 7, body: head });
+    }
   });
 });

@@ -1,498 +1,412 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
+import type {
+  GroupRequestPage,
+  PersonalRequestPage,
+  RequestRecord,
+} from '../shared/relationship-request.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
-  groupRequestProjection,
+  relationshipRequest,
   messageThread,
   accountThreadState,
   durableTask,
 } from '../src/database/schema.js';
 import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
-import { GroupService } from '../src/group/group.service.js';
-import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
-import { admitGroupMembershipProjectionFanoutInTx } from '../src/group/membership-intent/shared/group-membership-projection-fanout.js';
-import { lockBusinessAccountsInTx } from '../src/common/locks/account-business-lock.js';
 import { readCurrentGroupMemberInTx } from '../src/group/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
-import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
-import { createTestApp } from './support/app';
+import { createTestApp } from './support/app.js';
+import { localIdentityDomain } from './support/local-domain.js';
 
-describe('group join request projection', () => {
+type Actor = Awaited<ReturnType<typeof seedUserWithSession>>;
+interface GroupFixture {
+  threadId: number;
+  account: string;
+  name: string;
+}
+
+describe('permanent group request history and online visibility', () => {
   let app: NestFastifyApplication;
-
+  let database: DatabaseService;
   beforeAll(async () => {
-    ({ app } = await createTestApp());
+    ({ app, database } = await createTestApp());
   });
+  afterAll(async () => app?.close());
 
-  afterAll(async () => app.close());
-
-  async function submitApplication(
-    threadId: number,
-    memberUserId: number,
-    note: string,
-  ): Promise<void> {
-    const database = app.get(DatabaseService);
-    await database.db.transaction(async (tx) => {
-      // Flow-entry group advisory: the mutation writers hold row locks only.
-      const thread = await database.db.query.messageThread.findFirst({
-        where: eq(messageThread.id, threadId),
-        columns: { groupAccount: true, authorityNamespaceId: true },
-      });
-      if (!thread?.groupAccount)
-        throw new Error('Group thread fixture not found');
-      await lockBusinessAccountsInTx(tx, [
-        {
-          account: thread.groupAccount,
-          profileNamespaceId: thread.authorityNamespaceId,
-        },
-      ]);
-      const updates: Array<{ userId: number; feedId: number }> = [];
-      await app
-        .get(GroupRelationshipMutationService)
-        .writeMemberRelationshipIntentInTx(
-          tx,
-          threadId,
-          memberUserId,
-          'REQUESTED',
-          updates,
-          note,
-        );
-      await admitGroupMembershipProjectionFanoutInTx(tx, {
-        threadId,
-        groupAccount: thread.groupAccount,
-      });
-    });
+  function post(actor: Actor, route: string, body: object) {
+    return request(app.getHttpServer())
+      .post(`/api/v1/${route}`)
+      .set('Authorization', `Bearer ${actor.token}`)
+      .send(body);
   }
-
-  it('retains a rejection and physically collects the projection after seven days', async () => {
-    const owner = await seedUserWithSession(app, 'join-projection-owner');
-    const applicant = await seedUserWithSession(
-      app,
-      'join-projection-applicant',
+  async function createGroup(
+    owner: Actor,
+    name: string,
+  ): Promise<GroupFixture> {
+    const response = await post(owner, 'group/create', { name });
+    expect(response.body.code, JSON.stringify(response.body)).toBe(
+      BusinessCode.OK,
     );
-    const created = await request(app.getHttpServer())
-      .post('/api/v1/group/create')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ name: 'Projected requests' });
-    expect(created.body.code).toBe(BusinessCode.OK);
-    const threadId = created.body.data.threadId as number;
-    const database = app.get(DatabaseService);
+    const threadId: number = response.body.data.threadId;
     const thread = await database.db.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
-      columns: { id: true, groupAccount: true },
     });
-    expect(thread?.id).toBeTypeOf('number');
-
-    await submitApplication(threadId, applicant.id, 'please');
-
-    const applicantPage = await request(app.getHttpServer())
-      .post('/api/v1/group/join-requests')
-      .set('Authorization', `Bearer ${applicant.token}`)
-      .send({ groupId: threadId });
-    expect(applicantPage.body.code).toBe(BusinessCode.THREAD_NOT_FOUND);
-
-    const pending = await request(app.getHttpServer())
-      .post('/api/v1/group/join-requests')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId });
-    expect(pending.body.data.data).toHaveLength(1);
-    expect(pending.body.data.data[0]).toMatchObject({
-      status: 'REQUESTED',
-      note: 'please',
+    if (!thread?.groupAccount) throw new Error('missing group fixture');
+    return { threadId, account: thread.groupAccount, name };
+  }
+  async function groupPage(
+    actor: Actor,
+    group: GroupFixture,
+    invitations = false,
+  ): Promise<GroupRequestPage> {
+    const response = await post(
+      actor,
+      invitations ? 'group/invitations' : 'group/join-requests',
+      {
+        groupId: group.threadId,
+        take: 50,
+      },
+    );
+    expect(response.body.code, JSON.stringify(response.body)).toBe(
+      BusinessCode.OK,
+    );
+    const page: GroupRequestPage = response.body.data;
+    expect(page.hasMore).toBe(false);
+    return page;
+  }
+  async function personalPage(
+    actor: Actor,
+    bucket: 'RECEIVED' | 'SENT' = 'RECEIVED',
+  ): Promise<PersonalRequestPage> {
+    const response = await post(actor, 'relationship/requests', {
+      bucket,
+      take: 50,
     });
-    expect(Number.isInteger(pending.body.data.data[0].feedId)).toBe(true);
-    // The projection fan-out advances the manager's request watermark before
-    // the read endpoint builds its cosmetic head.
-    const joinRequestFeedId = pending.body.data.data[0].feedId as number;
+    expect(response.body.code, JSON.stringify(response.body)).toBe(
+      BusinessCode.OK,
+    );
+    const page: PersonalRequestPage = response.body.data;
+    expect(page.hasMore).toBe(false);
+    return page;
+  }
+  async function apply(member: Actor, group: GroupFixture, note: string) {
+    const response = await post(member, 'relationship/request', {
+      account: group.account,
+      namespaceId: 0,
+      note,
+      snapshot: { displayName: group.name, avatar: null },
+    });
+    expect(response.body.code, JSON.stringify(response.body)).toBe(
+      BusinessCode.OK,
+    );
     await vi.waitFor(
       async () => {
-        const managerState =
-          await database.db.query.accountThreadState.findFirst({
-            where: and(
-              eq(accountThreadState.accountId, owner.id),
-              eq(accountThreadState.threadId, threadId),
-            ),
-          });
-        expect(managerState?.joinRequestEndFeedId).toBe(joinRequestFeedId);
+        expect(await stored(group, member)).toEqual([
+          expect.objectContaining({
+            kind: 'GROUP_APPLICATION',
+            status: 'REQUESTED',
+            note,
+          }),
+        ]);
       },
       { timeout: 10_000 },
     );
-    const read = await request(app.getHttpServer())
-      .post('/api/v1/group/join-requests/read')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        joinRequestReadFeedId: joinRequestFeedId,
-      });
+  }
+  async function befriend(owner: Actor, member: Actor) {
+    const response = await post(owner, 'relationship/request', {
+      account: member.account,
+      namespaceId: 0,
+      snapshot: { displayName: 'Member at friendship request', avatar: null },
+    });
+    expect(response.body.code, JSON.stringify(response.body)).toBe(
+      BusinessCode.OK,
+    );
+    const incoming = await vi.waitFor(
+      async () => {
+        const row = (await personalPage(member)).items.find(
+          (item) =>
+            item.kind === 'FRIEND' &&
+            item.author.account === owner.account &&
+            item.author.namespaceId === 0 &&
+            item.status === 'REQUESTED',
+        );
+        if (!row) throw new Error('friend request has not arrived');
+        return row;
+      },
+      { timeout: 10_000 },
+    );
+    const accepted = await post(member, 'relationship/accept', {
+      requestId: incoming.id,
+    });
+    expect(accepted.body.code, JSON.stringify(accepted.body)).toBe(
+      BusinessCode.OK,
+    );
+    expect(accepted.body.data.status).toBe('OK');
+  }
+  async function invite(
+    owner: Actor,
+    member: Actor,
+    group: GroupFixture,
+    displayName: string,
+  ) {
+    const response = await post(owner, 'group/invite', {
+      groupId: group.threadId,
+      users: [
+        {
+          account: member.account,
+          namespaceId: 0,
+          snapshot: { displayName, avatar: null },
+        },
+      ],
+    });
+    expect(response.body.code, JSON.stringify(response.body)).toBe(
+      BusinessCode.OK,
+    );
+    expect(response.body.data.invited).toEqual([
+      { account: member.account, namespaceId: 0 },
+    ]);
+  }
+  function stored(group: GroupFixture, member: Actor) {
+    return database.db.query.relationshipRequest.findMany({
+      where: or(
+        and(
+          eq(relationshipRequest.kind, 'GROUP_APPLICATION'),
+          eq(relationshipRequest.authorAccount, member.account),
+          eq(relationshipRequest.authorNamespaceId, 0),
+          eq(relationshipRequest.receiverAccount, group.account),
+          eq(relationshipRequest.receiverNamespaceId, 0),
+        ),
+        and(
+          eq(relationshipRequest.kind, 'GROUP_INVITATION'),
+          eq(relationshipRequest.authorAccount, group.account),
+          eq(relationshipRequest.authorNamespaceId, 0),
+          eq(relationshipRequest.receiverAccount, member.account),
+          eq(relationshipRequest.receiverNamespaceId, 0),
+        ),
+      ),
+      orderBy: relationshipRequest.id,
+    });
+  }
+  function onlyApplication(
+    page: GroupRequestPage,
+    member: Actor,
+  ): RequestRecord {
+    const rows = page.items.filter(
+      (row) =>
+        row.kind === 'GROUP_APPLICATION' &&
+        row.author.account === member.account &&
+        row.author.namespaceId === 0,
+    );
+    expect(rows).toHaveLength(1);
+    return rows[0];
+  }
+
+  it('hides old rejections from online pages without deleting history, even after participation deletion', async () => {
+    const owner = await seedUserWithSession(app, 'join-history-owner');
+    const applicant = await seedUserWithSession(app, 'join-history-applicant');
+    const group = await createGroup(owner, 'Permanent request history');
+    await apply(applicant, group, 'please');
+    const unauthorized = await post(applicant, 'group/join-requests', {
+      groupId: group.threadId,
+    });
+    expect(unauthorized.body.code).toBe(BusinessCode.THREAD_NOT_FOUND);
+
+    const pending = await vi.waitFor(
+      async () => {
+        const page = await groupPage(owner, group);
+        expect(page.joinRequestEndFeedId).toBeGreaterThan(0);
+        return page;
+      },
+      { timeout: 10_000 },
+    );
+    const row = onlyApplication(pending, applicant);
+    expect(row).toMatchObject({
+      status: 'REQUESTED',
+      direction: 'INCOMING',
+      note: 'please',
+    });
+    // Read the returned manager watermark, not the unrelated bigint request ID.
+    expect(Number.isInteger(pending.joinRequestEndFeedId)).toBe(true);
+    expect(pending.joinRequestEndFeedId).toBeGreaterThan(0);
+    const read = await post(owner, 'group/join-requests/read', {
+      groupId: group.threadId,
+      joinRequestReadFeedId: pending.joinRequestEndFeedId,
+    });
     expect(read.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(async () => {
-      const readHead = await database.db.query.accountThreadState.findFirst({
-        where: and(
-          eq(accountThreadState.accountId, owner.id),
-          eq(accountThreadState.threadId, threadId),
-        ),
-      });
-      expect(readHead).toMatchObject({
-        joinRequestEndFeedId: joinRequestFeedId,
-        joinRequestReadFeedId: joinRequestFeedId,
+      expect(
+        await database.db.query.accountThreadState.findFirst({
+          where: and(
+            eq(accountThreadState.accountId, owner.id),
+            eq(accountThreadState.threadId, group.threadId),
+          ),
+        }),
+      ).toMatchObject({
+        joinRequestEndFeedId: pending.joinRequestEndFeedId,
+        joinRequestReadFeedId: pending.joinRequestEndFeedId,
       });
     });
-
-    const rejected = await request(app.getHttpServer())
-      .post('/api/v1/group/join-request/reject')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        account: applicant.account,
-        namespaceId: 0,
-      });
+    const rejected = await post(owner, 'group/join-request/reject', {
+      groupId: group.threadId,
+      requestId: row.id,
+    });
     expect(rejected.body.code).toBe(BusinessCode.OK);
-
-    const history = await request(app.getHttpServer())
-      .post('/api/v1/group/join-requests')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId });
-    expect(history.body.data.data).toHaveLength(1);
-    expect(history.body.data.data[0].status).toBe('REJECTED');
-    expect(history.body.data.data[0].feedId).toBe(
-      pending.body.data.data[0].feedId,
-    );
-
-    // Expiry is the only collection trigger: an unexpired row survives every
-    // sweep even when its manager deleted their participation state.
-    const requestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-    await database.db
-      .update(groupRequestProjection)
-      .set({
-        requestedAt,
-        expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
-      })
-      .where(eq(groupRequestProjection.threadId, threadId));
+    expect(rejected.body.data.status).toBe('OK');
     expect(
-      await app.get(GroupService).garbageCollectJoinRequestProjections(),
-    ).toBeGreaterThanOrEqual(1);
-    const afterGc = await database.db.query.groupRequestProjection.findMany({
-      where: eq(groupRequestProjection.threadId, threadId),
-    });
-    expect(afterGc).toEqual([]);
+      onlyApplication(await groupPage(owner, group), applicant),
+    ).toMatchObject({ id: row.id, status: 'REJECTED' });
 
-    const now = new Date();
-    await database.db.insert(groupRequestProjection).values({
-      threadId,
-      memberAccount: applicant.account,
-      profileNamespaceId: 0,
-      memberProfileRev: 1,
-      direction: 'APPLICATION',
-      feedId: history.body.data.data[0].feedId + 1,
+    // Age both candidate window clocks so this test does not decide the open
+    // createdAt-vs-requestedAt review choice. updatedAt stays recent: a terminal
+    // status change must not bring an old request back into the online window.
+    const old = new Date(Date.now() - 8 * 86_400_000);
+    await database.db
+      .update(relationshipRequest)
+      .set({
+        createdAt: old,
+        requestedAt: old,
+        expiresAt: new Date(old.getTime() + 7 * 86_400_000),
+      })
+      .where(eq(relationshipRequest.id, BigInt(row.id)));
+    const history = await stored(group, applicant);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      id: BigInt(row.id),
       status: 'REJECTED',
       note: 'please',
-      requestedAt: now,
-      expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
     });
+    expect((await groupPage(owner, group)).items).toEqual([]);
+    expect((await personalPage(applicant, 'SENT')).items).toEqual([]);
+    expect(await stored(group, applicant)).toEqual(history);
+
     await database.db
       .delete(accountThreadState)
       .where(
         and(
-          eq(accountThreadState.threadId, threadId),
+          eq(accountThreadState.threadId, group.threadId),
           eq(accountThreadState.accountId, owner.id),
         ),
       );
-    expect(
-      await app.get(GroupService).garbageCollectJoinRequestProjections(),
-    ).toBe(0);
-    expect(
-      await database.db.query.groupRequestProjection.findMany({
-        where: eq(groupRequestProjection.threadId, threadId),
-      }),
-    ).toHaveLength(1);
+    expect(await stored(group, applicant)).toEqual(history);
   });
 
-  it('projects group invitations through the symmetric manager API', async () => {
-    const owner = await seedUserWithSession(app, 'invitation-projection-owner');
-    const member = await seedUserWithSession(
-      app,
-      'invitation-projection-member',
+  it('preserves invitation rounds and snapshots through retry, withdrawal and re-invitation', async () => {
+    const owner = await seedUserWithSession(app, 'invitation-history-owner');
+    const member = await seedUserWithSession(app, 'invitation-history-member');
+    await befriend(owner, member);
+    const group = await createGroup(owner, 'Invitation history');
+    await invite(owner, member, group, 'Member at invitation time');
+    const pending = await groupPage(owner, group, true);
+    const rounds = pending.items.filter(
+      (row) =>
+        row.receiver.account === member.account &&
+        row.receiver.namespaceId === 0,
     );
-    const snapshot = { displayName: 'Member at invitation time', avatar: null };
-    const friendRequest = await request(app.getHttpServer())
-      .post('/api/v1/relationship/request')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        account: member.account,
-        namespaceId: 0,
-        snapshot: { displayName: 'Member', avatar: null },
-      });
-    expect(friendRequest.body.code).toBe(BusinessCode.OK);
-    await waitForLocalRelationshipRequest(
-      app.get(DatabaseService).db,
-      friendRequest.body,
-      owner.id,
-      member.id,
-    );
-    const accepted = await request(app.getHttpServer())
-      .post('/api/v1/relationship/accept')
-      .set('Authorization', `Bearer ${member.token}`)
-      .send({
-        account: owner.account,
-        namespaceId: 0,
-      });
-    expect(accepted.body.code).toBe(BusinessCode.OK);
-    expect(accepted.body.data).toMatchObject({ status: 'OK' });
-
-    const created = await request(app.getHttpServer())
-      .post('/api/v1/group/create')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ name: 'Invitation projection' });
-    expect(created.body.code, JSON.stringify(created.body)).toBe(
-      BusinessCode.OK,
-    );
-    const threadId = created.body.data.threadId as number;
-    const invited = await request(app.getHttpServer())
-      .post('/api/v1/group/invite')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        users: [{ account: member.account, namespaceId: 0, snapshot }],
-      });
-    expect(invited.body.code).toBe(BusinessCode.OK);
-    expect(invited.body.data.invited).toEqual([
-      {
-        account: member.account,
-        namespaceId: 0,
-      },
-    ]);
-
-    const pending = await request(app.getHttpServer())
-      .post('/api/v1/group/invitations')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId });
-    // The listing is the projection history for the direction: the owner's own
-    // ACCEPTED founding invitation and the member's live invitation.
-    const requestedRows = pending.body.data.data.filter(
-      (row: { status: string }) => row.status === 'REQUESTED',
-    );
-    expect(requestedRows).toHaveLength(1);
-    expect(requestedRows[0]).toMatchObject({
-      snapshot,
-      account: member.account,
-      namespaceId: 0,
+    expect(rounds).toHaveLength(1);
+    const first = rounds[0];
+    expect(first).toMatchObject({
+      kind: 'GROUP_INVITATION',
+      direction: 'OUTGOING',
       status: 'REQUESTED',
+      snapshot: { displayName: 'Member at invitation time', avatar: null },
     });
-    const repeated = await request(app.getHttpServer())
-      .post('/api/v1/group/invite')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        users: [
-          {
-            account: member.account,
-            namespaceId: 0,
-            snapshot: {
-              displayName: 'Changed during the same request',
-              avatar: null,
-            },
-          },
-        ],
-      });
-    expect(repeated.body.code).toBe(BusinessCode.OK);
-    const repeatedHistory = await request(app.getHttpServer())
-      .post('/api/v1/group/invitations')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId });
-    expect(repeatedHistory.body.data.data).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          account: member.account,
-          status: 'REQUESTED',
-          snapshot,
-        }),
-      ]),
-    );
+    const firstStored = await stored(group, member);
+    await invite(owner, member, group, 'Changed during the same request');
+    expect(await groupPage(owner, group, true)).toEqual(pending);
+    expect(await stored(group, member)).toEqual(firstStored);
 
-    const revoked = await request(app.getHttpServer())
-      .post('/api/v1/group/invitation/revoke')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        account: member.account,
-        namespaceId: 0,
-      });
-    expect(revoked.body.code).toBe(BusinessCode.OK);
-    const history = await request(app.getHttpServer())
-      .post('/api/v1/group/invitations')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId });
-    expect(history.body.data.data[0]).toMatchObject({
+    const withdrawn = await post(owner, 'group/invitation/revoke', {
+      groupId: group.threadId,
+      requestId: first.id,
+    });
+    expect(withdrawn.body.code).toBe(BusinessCode.OK);
+    expect(withdrawn.body.data.status).toBe('OK');
+    const withdrawnStored = await stored(group, member);
+    expect(withdrawnStored).toHaveLength(1);
+    expect(withdrawnStored[0]).toMatchObject({
       status: 'WITHDRAWN',
-      snapshot,
+      snapshot: { displayName: 'Member at invitation time', avatar: null },
     });
+    const late = await post(member, 'group/join-request', {
+      requestId: first.id,
+    });
+    expect(late.body.code).toBe(BusinessCode.OK);
+    expect(late.body.data).toEqual({ status: 'STALE_REQUEST' });
 
-    const lateJoin = await request(app.getHttpServer())
-      .post('/api/v1/group/join-request')
-      .set('Authorization', `Bearer ${member.token}`)
-      .send({ groupId: threadId });
-    expect(lateJoin.body.code).toBe(BusinessCode.NOT_FOUND);
-    expect(lateJoin.body.data?.status).not.toBe('APPLIED');
-
-    const nextSnapshot = {
-      displayName: 'Member on the next invitation',
-      avatar: null,
-    };
-    const reinvited = await request(app.getHttpServer())
-      .post('/api/v1/group/invite')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        users: [
-          { account: member.account, namespaceId: 0, snapshot: nextSnapshot },
-        ],
-      });
-    expect(reinvited.body.code).toBe(BusinessCode.OK);
-    const joined = await request(app.getHttpServer())
-      .post('/api/v1/group/join-request')
-      .set('Authorization', `Bearer ${member.token}`)
-      .send({ groupId: threadId });
-    expect(joined.body.code).toBe(BusinessCode.OK);
-    const acceptedHistory = await request(app.getHttpServer())
-      .post('/api/v1/group/invitations')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId });
-    expect(acceptedHistory.body.data.data).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          account: member.account,
-          status: 'ACCEPTED',
-          snapshot: nextSnapshot,
-        }),
-      ]),
+    await invite(owner, member, group, 'Member on the next invitation');
+    const nextRounds = (await groupPage(owner, group, true)).items.filter(
+      (row) =>
+        row.receiver.account === member.account &&
+        row.receiver.namespaceId === 0,
     );
-    const stored = await app
-      .get(DatabaseService)
-      .db.query.groupRequestProjection.findFirst({
-        where: and(
-          eq(groupRequestProjection.threadId, threadId),
-          eq(groupRequestProjection.memberAccount, member.account),
-          eq(groupRequestProjection.profileNamespaceId, 0),
-          eq(groupRequestProjection.direction, 'INVITATION'),
-        ),
-      });
-    expect(stored).toMatchObject({
+    expect(nextRounds).toHaveLength(2);
+    const next = nextRounds[0];
+    expect(BigInt(next.id)).toBeGreaterThan(BigInt(first.id));
+    expect(next).toMatchObject({
+      status: 'REQUESTED',
+      snapshot: { displayName: 'Member on the next invitation', avatar: null },
+    });
+    const beforeStale = await stored(group, member);
+    const stale = await post(member, 'group/join-request', {
+      requestId: first.id,
+    });
+    expect(stale.body.data).toEqual({ status: 'STALE_REQUEST' });
+    expect(await stored(group, member)).toEqual(beforeStale);
+    const joined = await post(member, 'group/join-request', {
+      requestId: next.id,
+    });
+    expect(joined.body.code).toBe(BusinessCode.OK);
+    expect(joined.body.data.status).toBe('OK');
+    const acceptedHistory = await stored(group, member);
+    expect(acceptedHistory).toHaveLength(2);
+    expect(acceptedHistory[0]).toEqual(withdrawnStored[0]);
+    expect(acceptedHistory[1]).toMatchObject({
+      id: BigInt(next.id),
       status: 'ACCEPTED',
-      snapshot: nextSnapshot,
+      snapshot: { displayName: 'Member on the next invitation', avatar: null },
     });
   });
 
-  it('updates an existing application on manager ACK without creating an invitation projection', async () => {
+  it('accepts an application without manufacturing an invitation record', async () => {
     const owner = await seedUserWithSession(app, 'application-ack-owner');
     const applicant = await seedUserWithSession(app, 'application-ack-member');
-    const created = await request(app.getHttpServer())
-      .post('/api/v1/group/create')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ name: 'Application ACK projection' });
-    const threadId = created.body.data.threadId as number;
-    const database = app.get(DatabaseService);
-    const thread = await database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { id: true, groupAccount: true },
+    const group = await createGroup(owner, 'Application ACK history');
+    await apply(applicant, group, 'accept me');
+    const row = onlyApplication(await groupPage(owner, group), applicant);
+    const accepted = await post(owner, 'group/join-request/accept', {
+      groupId: group.threadId,
+      requestId: row.id,
     });
-    expect(thread?.id).toBeTypeOf('number');
-    await submitApplication(threadId, applicant.id, 'accept me');
-    const pending = await request(app.getHttpServer())
-      .post('/api/v1/group/join-requests')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId });
-    expect(pending.body.data.data[0]).toMatchObject({
-      account: applicant.account,
-      namespaceId: 0,
-      status: 'REQUESTED',
-    });
-
-    const accepted = await request(app.getHttpServer())
-      .post('/api/v1/group/join-request/accept')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        account: applicant.account,
-        namespaceId: 0,
-      });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-
-    const projections = await database.db.query.groupRequestProjection.findMany(
-      {
-        where: and(
-          eq(groupRequestProjection.threadId, threadId),
-          eq(groupRequestProjection.memberAccount, applicant.account),
-          eq(groupRequestProjection.profileNamespaceId, 0),
-        ),
-      },
-    );
-    expect(projections).toHaveLength(1);
-    expect(projections[0]).toMatchObject({
-      direction: 'APPLICATION',
+    expect(accepted.body.data.status).toBe('OK');
+    const history = await stored(group, applicant);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      id: BigInt(row.id),
+      kind: 'GROUP_APPLICATION',
       status: 'ACCEPTED',
     });
   });
 
-  it('updates an existing invitation on member ACK without creating an application projection', async () => {
+  it('accepts an invitation without manufacturing an application and preserves it after leaving', async () => {
     const owner = await seedUserWithSession(app, 'invitation-ack-owner');
     const member = await seedUserWithSession(app, 'invitation-ack-member');
-    const friendRequest = await request(app.getHttpServer())
-      .post('/api/v1/relationship/request')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        account: member.account,
-        namespaceId: 0,
-      });
-    await waitForLocalRelationshipRequest(
-      app.get(DatabaseService).db,
-      friendRequest.body,
-      owner.id,
-      member.id,
-    );
-    const friendAccepted = await request(app.getHttpServer())
-      .post('/api/v1/relationship/accept')
-      .set('Authorization', `Bearer ${member.token}`)
-      .send({
-        account: owner.account,
-        namespaceId: 0,
-      });
-    expect(friendAccepted.body.data).toMatchObject({ status: 'OK' });
-    const created = await request(app.getHttpServer())
-      .post('/api/v1/group/create')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ name: 'Invitation ACK projection' });
-    const threadId = created.body.data.threadId as number;
-    const invited = await request(app.getHttpServer())
-      .post('/api/v1/group/invite')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({
-        groupId: threadId,
-        users: [{ account: member.account, namespaceId: 0 }],
-      });
-    expect(invited.body.code).toBe(BusinessCode.OK);
-
-    const database = app.get(DatabaseService);
-    const groupThread = await database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { id: true, groupAccount: true },
-    });
-    expect(groupThread?.id).toBeTypeOf('number');
-    const groupIdentity = { account: groupThread!.groupAccount! };
-    expect(groupIdentity).toBeDefined();
+    await befriend(owner, member);
+    const group = await createGroup(owner, 'Invitation ACK history');
+    await invite(owner, member, group, 'Member at invitation');
     await expect(
       database.db.transaction((tx) =>
-        readCurrentGroupMemberInTx(tx, groupThread!.id, member.id),
+        readCurrentGroupMemberInTx(tx, group.threadId, member.id),
       ),
     ).resolves.toBeUndefined();
-    const candidates = await request(app.getHttpServer())
-      .post('/api/v1/group/invite-candidates')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, search: member.account });
+    const candidates = await post(owner, 'group/invite-candidates', {
+      groupId: group.threadId,
+      search: member.account,
+    });
+    expect(candidates.body.code).toBe(BusinessCode.OK);
     expect(candidates.body.data.data).toEqual([
       expect.objectContaining({
         account: member.account,
@@ -501,17 +415,23 @@ describe('group join request projection', () => {
         state: 'INVITED',
       }),
     ]);
-
-    const accepted = await request(app.getHttpServer())
-      .post('/api/v1/group/join-request')
-      .set('Authorization', `Bearer ${member.token}`)
-      .send({ groupId: threadId });
+    const received = (await personalPage(member)).items.filter(
+      (row) =>
+        row.kind === 'GROUP_INVITATION' &&
+        row.author.account === group.account &&
+        row.author.namespaceId === 0,
+    );
+    expect(received).toHaveLength(1);
+    const accepted = await post(member, 'group/join-request', {
+      requestId: received[0].id,
+    });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-
-    const acceptedCandidates = await request(app.getHttpServer())
-      .post('/api/v1/group/invite-candidates')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, search: member.account });
+    expect(accepted.body.data.status).toBe('OK');
+    const acceptedCandidates = await post(owner, 'group/invite-candidates', {
+      groupId: group.threadId,
+      search: member.account,
+    });
+    expect(acceptedCandidates.body.code).toBe(BusinessCode.OK);
     expect(acceptedCandidates.body.data.data).toEqual([
       expect.objectContaining({
         account: member.account,
@@ -520,174 +440,112 @@ describe('group join request projection', () => {
         state: 'MEMBER',
       }),
     ]);
-
-    const projections = await database.db.query.groupRequestProjection.findMany(
-      {
-        where: and(
-          eq(groupRequestProjection.threadId, threadId),
-          eq(groupRequestProjection.memberAccount, member.account),
-          eq(groupRequestProjection.profileNamespaceId, 0),
-        ),
-      },
-    );
-    expect(projections).toHaveLength(1);
-    expect(projections[0]).toMatchObject({
-      direction: 'INVITATION',
+    const history = await stored(group, member);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      id: BigInt(received[0].id),
+      kind: 'GROUP_INVITATION',
       status: 'ACCEPTED',
     });
-
-    const left = await request(app.getHttpServer())
-      .post('/api/v1/group/leave')
-      .set('Authorization', `Bearer ${member.token}`)
-      .send({ groupId: threadId });
+    const left = await post(member, 'group/leave', { groupId: group.threadId });
     expect(left.body.code).toBe(BusinessCode.OK);
     await expect(
       database.db.transaction((tx) =>
-        readCurrentGroupMemberInTx(tx, groupThread!.id, member.id),
+        readCurrentGroupMemberInTx(tx, group.threadId, member.id),
       ),
     ).resolves.toBeUndefined();
+    expect(await stored(group, member)).toEqual(history);
   });
 
-  it('does not manufacture a group request projection from a terminal fact', async () => {
+  it('does not manufacture history when a terminal action refers to a missing round', async () => {
     const owner = await seedUserWithSession(app, 'terminal-effect-owner');
     const member = await seedUserWithSession(app, 'terminal-effect-member');
-    const created = await request(app.getHttpServer())
-      .post('/api/v1/group/create')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ name: 'Terminal projection effect' });
-    const threadId = created.body.data.threadId as number;
-    const database = app.get(DatabaseService);
-    const feedId = await database.db.transaction((tx) =>
-      app.get(ClientStateFeedService).writeGroupRequestInTx(tx, {
-        threadId,
-        memberAccount: member.account,
-        profileNamespaceId: 0,
-        memberProfileRev: 1,
-        direction: 'APPLICATION',
-        status: 'ACCEPTED',
-        note: '',
-        requestedAt: null,
-        expiresAt: null,
-      }),
-    );
-    expect(feedId).toBeNull();
+    const group = await createGroup(owner, 'Missing round');
+    const requestId = '9223372036854775807';
     expect(
-      await database.db.query.groupRequestProjection.findMany({
-        where: and(
-          eq(groupRequestProjection.threadId, threadId),
-          eq(groupRequestProjection.memberAccount, member.account),
-          eq(groupRequestProjection.profileNamespaceId, 0),
-        ),
+      await database.db.query.relationshipRequest.findFirst({
+        where: eq(relationshipRequest.id, BigInt(requestId)),
       }),
-    ).toEqual([]);
+    ).toBeUndefined();
+    expect(await stored(group, member)).toEqual([]);
+    const response = await post(owner, 'group/join-request/accept', {
+      groupId: group.threadId,
+      requestId,
+    });
+    expect(response.body.code).toBe(BusinessCode.OK);
+    expect(response.body.data).toEqual({ status: 'STALE_REQUEST' });
+    expect(await stored(group, member)).toEqual([]);
+    expect((await groupPage(owner, group)).items).toEqual([]);
   });
 
-  it('keeps the shared projection across manager role changes and departure', async () => {
+  it('preserves shared history across manager promotion, demotion and departure', async () => {
     const owner = await seedUserWithSession(app, 'join-role-owner');
     const admin = await seedUserWithSession(app, 'join-role-admin');
     const applicant = await seedUserWithSession(app, 'join-role-applicant');
-    const created = await request(app.getHttpServer())
-      .post('/api/v1/group/create')
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ name: 'Role projection' });
-    const threadId = created.body.data.threadId as number;
-    const database = app.get(DatabaseService);
-    const thread = await database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { id: true, groupAccount: true },
+    await befriend(owner, admin);
+    const group = await createGroup(owner, 'Role request history');
+    await invite(owner, admin, group, 'Admin before promotion');
+    const received = (await personalPage(admin)).items.filter(
+      (row) =>
+        row.kind === 'GROUP_INVITATION' &&
+        row.author.account === group.account &&
+        row.author.namespaceId === 0,
+    );
+    expect(received).toHaveLength(1);
+    const joined = await post(admin, 'group/join-request', {
+      requestId: received[0].id,
     });
-    expect(thread?.id).toBeTypeOf('number');
-    await database.db.transaction(async (tx) => {
-      // Flow-entry group advisory: the mutation writers hold row locks only.
-      const thread = await database.db.query.messageThread.findFirst({
-        where: eq(messageThread.id, threadId),
-        columns: { groupAccount: true, authorityNamespaceId: true },
+    expect(joined.body.code).toBe(BusinessCode.OK);
+    expect(joined.body.data.status).toBe('OK');
+    await apply(applicant, group, 'admin should see this');
+    const history = await stored(group, applicant);
+    expect(history).toHaveLength(1);
+    expect(history[0].status).toBe('REQUESTED');
+    const setRole = (role: 'ADMIN' | 'MEMBER') =>
+      post(owner, 'group/set-role', {
+        groupId: group.threadId,
+        account: admin.account,
+        namespaceId: 0,
+        role,
       });
-      if (!thread?.groupAccount)
-        throw new Error('Group thread fixture not found');
-      await lockBusinessAccountsInTx(tx, [
-        {
-          account: thread.groupAccount,
-          profileNamespaceId: thread.authorityNamespaceId,
-        },
-      ]);
-      const updates: Array<{ userId: number; feedId: number }> = [];
-      const federation = app.get(GroupRelationshipMutationService);
-      await federation.writeGroupRelationshipIntentInTx(
-        tx,
-        threadId,
-        admin.id,
-        '',
-        'REQUESTED',
-        updates,
-      );
-      await federation.writeMemberRelationshipIntentInTx(
-        tx,
-        threadId,
-        admin.id,
-        'ACCEPTED',
-        updates,
-      );
-    });
-    await submitApplication(threadId, applicant.id, 'admin should see this');
-
-    // All managers share one projection per (thread, member, direction): role
-    // changes never delete it, they admit the projection fan-out that rebuilds
-    // each current manager's join-request watermark.
-    const sharedProjections = () =>
-      database.db.query.groupRequestProjection.findMany({
-        where: and(
-          eq(groupRequestProjection.threadId, threadId),
-          eq(groupRequestProjection.memberAccount, applicant.account),
-          eq(groupRequestProjection.profileNamespaceId, 0),
-        ),
-      });
-    const setRole = (token: string, role: 'ADMIN' | 'MEMBER') =>
-      request(app.getHttpServer())
-        .post('/api/v1/group/set-role')
-        .set('Authorization', `Bearer ${token}`)
-        .send({
-          groupId: threadId,
-          account: admin.account,
-          namespaceId: 0,
-          role,
-        });
-    expect(await sharedProjections()).toHaveLength(1);
-
-    const promoted = await setRole(owner.token, 'ADMIN');
+    const promoted = await setRole('ADMIN');
     expect(promoted.body.code, JSON.stringify(promoted.body)).toBe(
       BusinessCode.OK,
     );
-    expect(await sharedProjections()).toHaveLength(1);
+    expect(await stored(group, applicant)).toEqual(history);
+    expect(onlyApplication(await groupPage(admin, group), applicant).id).toBe(
+      history[0].id.toString(),
+    );
     expect(
       await database.db.query.durableTask.findFirst({
         where: and(
           eq(durableTask.taskType, DurableTaskType.FAN_OUT_GROUP_PROJECTION),
           eq(
             durableTask.coalescingKey,
-            JSON.stringify(['FAN_OUT_GROUP_PROJECTION', threadId]),
+            JSON.stringify(['FAN_OUT_GROUP_PROJECTION', group.threadId]),
           ),
         ),
       }),
     ).toBeDefined();
-
-    const demoted = await setRole(owner.token, 'MEMBER');
+    const demoted = await setRole('MEMBER');
     expect(demoted.body.code, JSON.stringify(demoted.body)).toBe(
       BusinessCode.OK,
     );
-    expect(await sharedProjections()).toHaveLength(1);
-
-    const promotedAgain = await setRole(owner.token, 'ADMIN');
+    expect(await stored(group, applicant)).toEqual(history);
+    const denied = await post(admin, 'group/join-requests', {
+      groupId: group.threadId,
+    });
+    expect(denied.body.code).toBe(BusinessCode.GROUP_FORBIDDEN);
+    const promotedAgain = await setRole('ADMIN');
     expect(promotedAgain.body.code).toBe(BusinessCode.OK);
-    expect(await sharedProjections()).toHaveLength(1);
-
-    const left = await request(app.getHttpServer())
-      .post('/api/v1/group/leave')
-      .set('Authorization', `Bearer ${admin.token}`)
-      .send({ groupId: threadId });
+    expect(onlyApplication(await groupPage(admin, group), applicant).id).toBe(
+      history[0].id.toString(),
+    );
+    const left = await post(admin, 'group/leave', { groupId: group.threadId });
     expect(left.body.code, JSON.stringify(left.body)).toBe(BusinessCode.OK);
-    // The owner still manages the same request history after one manager leaves.
-    expect(await sharedProjections()).toHaveLength(1);
-    expect(await sharedProjections()).toMatchObject([{ status: 'REQUESTED' }]);
+    expect(await stored(group, applicant)).toEqual(history);
+    expect(onlyApplication(await groupPage(owner, group), applicant).id).toBe(
+      history[0].id.toString(),
+    );
   });
 });

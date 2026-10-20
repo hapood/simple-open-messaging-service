@@ -314,6 +314,19 @@ CREATE TABLE public."AccountThreadState" (
     "threadId" integer NOT NULL,
     role public."GroupRole",
     "lastReadSeq" integer DEFAULT 0 NOT NULL,
+    "announcementReadFeedId" integer DEFAULT 0 NOT NULL,
+    "threadFeedId" integer DEFAULT 0 NOT NULL,
+    "messageEndSeq" integer DEFAULT 0 NOT NULL,
+    "tombstoneEndSeq" integer DEFAULT 0 NOT NULL,
+    "unreadCount" integer DEFAULT 0 NOT NULL,
+    "previewSeqs" integer[] DEFAULT '{}'::integer[] NOT NULL,
+    "lastMentionSeq" integer,
+    "joinRequestEndFeedId" integer DEFAULT 0 NOT NULL,
+    "groupInviteEndFeedId" integer DEFAULT 0 NOT NULL,
+    "joinRequestReadFeedId" integer DEFAULT '-1'::integer NOT NULL,
+    "groupMetaFeedEndId" integer,
+    "threadProfileRev" integer DEFAULT 0 NOT NULL,
+    "profileSourceId" integer,
     muted boolean DEFAULT false NOT NULL,
     blocked boolean DEFAULT false NOT NULL,
     pinned boolean DEFAULT false NOT NULL,
@@ -322,19 +335,6 @@ CREATE TABLE public."AccountThreadState" (
     alias character varying(64),
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "threadFeedId" integer DEFAULT 0 NOT NULL,
-    "unreadCount" integer DEFAULT 0 NOT NULL,
-    "lastMentionSeq" integer,
-    "messageEndSeq" integer DEFAULT 0 NOT NULL,
-    "tombstoneEndSeq" integer DEFAULT 0 NOT NULL,
-    "previewSeqs" integer[] DEFAULT '{}'::integer[] NOT NULL,
-    "joinRequestEndFeedId" integer DEFAULT 0 NOT NULL,
-    "joinRequestReadFeedId" integer DEFAULT '-1'::integer NOT NULL,
-    "groupInviteEndFeedId" integer DEFAULT 0 NOT NULL,
-    "groupMetaFeedEndId" integer,
-    "announcementReadFeedId" integer DEFAULT 0 NOT NULL,
-    "threadProfileRev" integer DEFAULT 0 NOT NULL,
-    "profileSourceId" integer,
     CONSTRAINT "AccountThreadState_announcementReadFeedId_check" CHECK (("announcementReadFeedId" >= 0)),
     CONSTRAINT "AccountThreadState_groupInviteEndFeedId_check" CHECK (("groupInviteEndFeedId" >= 0)),
     CONSTRAINT "AccountThreadState_groupMetaFeedEndId_check" CHECK ((("groupMetaFeedEndId" IS NULL) OR ("groupMetaFeedEndId" >= 0))),
@@ -588,20 +588,23 @@ $$;
 
 CREATE TABLE public."Account" (
     id integer NOT NULL,
+    account character varying(31) NOT NULL,
+    kind character varying(16) DEFAULT 'USER'::character varying NOT NULL,
+    "namespaceId" integer DEFAULT 0 NOT NULL,
+    "defaultProfileRev" integer DEFAULT 0 NOT NULL,
+    availability character varying(16) DEFAULT 'AVAILABLE'::character varying NOT NULL,
     "hashPwd" character varying(127),
     "mustChangePassword" boolean DEFAULT false NOT NULL,
     "disabledAt" timestamp(3) with time zone,
     "clientStateFeedEndId" integer DEFAULT 0 NOT NULL,
+    "requestEndId" bigint DEFAULT 0 NOT NULL,
+    "requestReadId" bigint DEFAULT 0 NOT NULL,
     "threadFeedEndId" integer DEFAULT 0 NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    account character varying(31) NOT NULL,
-    "namespaceId" integer DEFAULT 0 NOT NULL,
-    "defaultProfileRev" integer DEFAULT 0 NOT NULL,
-    availability character varying(16) DEFAULT 'AVAILABLE'::character varying NOT NULL,
-    kind character varying(16) DEFAULT 'USER'::character varying NOT NULL,
     CONSTRAINT "Account_account_check" CHECK (((account)::text !~~ '!%'::text)),
     CONSTRAINT "Account_availability_check" CHECK (((availability)::text = ANY (ARRAY[('AVAILABLE'::character varying)::text, ('REMOVED'::character varying)::text]))),
+    CONSTRAINT "Account_request_head_check" CHECK ("requestReadId" >= 0 AND "requestReadId" <= "requestEndId"),
     CONSTRAINT "Account_clientStateFeedEndId_check" CHECK (("clientStateFeedEndId" >= 0)),
     CONSTRAINT "Account_defaultProfileRev_check" CHECK (("defaultProfileRev" >= 0)),
     CONSTRAINT "Account_namespace_check" CHECK (("namespaceId" = 0)),
@@ -798,39 +801,13 @@ CREATE TABLE public."CallHistory" (
 --
 
 CREATE TABLE public."ClientStateFeed" (
-    id bigint NOT NULL,
     "userId" integer NOT NULL,
-    account character varying(31) NOT NULL,
-    "eventType" character varying(31) NOT NULL,
-    "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
-    "subjectNamespaceId" integer DEFAULT 0 NOT NULL,
-    "namespaceId" integer DEFAULT 0 NOT NULL,
     "feedId" integer NOT NULL,
     body jsonb NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "compactionKey" text NOT NULL,
     CONSTRAINT "ClientStateFeed_feedId_check" CHECK (("feedId" > 0))
 );
-
-
---
--- Name: ClientStateFeed_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."ClientStateFeed_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: ClientStateFeed_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."ClientStateFeed_id_seq" OWNED BY public."ClientStateFeed".id;
 
 
 --
@@ -1254,38 +1231,6 @@ CREATE TABLE public."GroupMetaMemberFeed" (
     CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (body <> '{}'::jsonb))),
     CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0)),
     CONSTRAINT "GroupMetaMemberFeed_profileSourceSeq_check" CHECK ((("profileSourceSeq" IS NULL) OR ("profileSourceSeq" > 0)))
-);
-
-
---
--- Name: GroupRequestProjection; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."GroupRequestProjection" (
-    "threadId" integer NOT NULL,
-    "memberAccount" character varying(31) NOT NULL,
-    "profileNamespaceId" integer NOT NULL,
-    "memberProfileRev" integer NOT NULL,
-    snapshot jsonb,
-    direction character varying(15) NOT NULL,
-    "feedId" integer NOT NULL,
-    status public."RequestProjectionStatus" NOT NULL,
-    note character varying(255) DEFAULT ''::character varying NOT NULL,
-    "requestedAt" timestamp(3) with time zone NOT NULL,
-    "expiresAt" timestamp(3) with time zone NOT NULL,
-    CONSTRAINT "GroupRequestProjection_direction_check" CHECK (((direction)::text = ANY (ARRAY[('APPLICATION'::character varying)::text, ('INVITATION'::character varying)::text]))),
-    CONSTRAINT "GroupRequestProjection_snapshot_check" CHECK (snapshot IS NULL OR (
-      direction = 'INVITATION' AND COALESCE(
-        jsonb_typeof(snapshot) = 'object'
-        AND (snapshot - 'displayName' - 'avatar') = '{}'::jsonb
-        AND jsonb_typeof(snapshot->'displayName') = 'string'
-        AND char_length(btrim(snapshot->>'displayName')) > 0
-        AND char_length(snapshot->>'displayName') <= 31
-        AND (snapshot->'avatar' = 'null'::jsonb OR
-          (jsonb_typeof(snapshot->'avatar') = 'string'
-            AND char_length(btrim(snapshot->>'avatar')) > 0)), false))),
-    CONSTRAINT "GroupRequestProjection_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "GroupRequestProjection_retention_check" CHECK ((("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))))
 );
 
 
@@ -1778,30 +1723,20 @@ CREATE TABLE public."QuotaFileByteUsage" (
 --
 
 CREATE TABLE public."RelationshipIntent" (
-    snapshot jsonb,
-    status public."RelationshipIntentStatus" NOT NULL,
-    note character varying(255) DEFAULT ''::character varying NOT NULL,
-    "requestedAt" timestamp(3) with time zone,
-    "expiresAt" timestamp(3) with time zone,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "profileRev" integer DEFAULT 0 NOT NULL,
-    "messageEndSeq" integer NOT NULL,
-    "tombstoneEndSeq" integer NOT NULL,
+    "requestId" bigint,
     "authorAccount" character varying(31) NOT NULL,
     "authorNamespaceId" integer NOT NULL,
     "receiverAccount" character varying(31) NOT NULL,
     "receiverNamespaceId" integer NOT NULL,
+    status public."RelationshipIntentStatus" NOT NULL,
     "profileNamespaceId" integer NOT NULL,
-    CONSTRAINT "RelationshipIntent_snapshot_check" CHECK (snapshot IS NULL OR (
-      "authorNamespaceId" = 0 AND COALESCE(
-        jsonb_typeof(snapshot) = 'object'
-        AND (snapshot - 'displayName' - 'avatar') = '{}'::jsonb
-        AND jsonb_typeof(snapshot->'displayName') = 'string'
-        AND char_length(btrim(snapshot->>'displayName')) > 0
-        AND char_length(snapshot->>'displayName') <= 31
-        AND (snapshot->'avatar' = 'null'::jsonb OR
-          (jsonb_typeof(snapshot->'avatar') = 'string'
-            AND char_length(btrim(snapshot->>'avatar')) > 0)), false))),
+    "profileRev" integer DEFAULT 0 NOT NULL,
+    "messageEndSeq" integer NOT NULL,
+    "tombstoneEndSeq" integer NOT NULL,
+    note character varying(255) DEFAULT ''::character varying NOT NULL,
+    "requestedAt" timestamp(3) with time zone,
+    "expiresAt" timestamp(3) with time zone,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "RelationshipIntent_author_namespace_check" CHECK (("authorNamespaceId" >= 0)),
     CONSTRAINT "RelationshipIntent_expiry_check" CHECK ((((status = 'REQUESTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))) OR ((status = 'ACCEPTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NULL)) OR ((status = 'REVOKED'::public."RelationshipIntentStatus") AND ("expiresAt" IS NULL)))),
     CONSTRAINT "RelationshipIntent_head_check" CHECK ((("messageEndSeq" >= 0) AND ("tombstoneEndSeq" >= 0))),
@@ -1810,6 +1745,47 @@ CREATE TABLE public."RelationshipIntent" (
     CONSTRAINT "RelationshipIntent_receiver_namespace_check" CHECK (("receiverNamespaceId" >= 0))
 );
 
+
+-- Permanent request history is independent of thread lifetime.
+CREATE TABLE public."RelationshipRequest" (
+    id bigserial PRIMARY KEY,
+    kind varchar(31) NOT NULL,
+    "authorAccount" varchar(31) NOT NULL,
+    "authorNamespaceId" integer NOT NULL,
+    "receiverAccount" varchar(31) NOT NULL,
+    "receiverNamespaceId" integer NOT NULL,
+    status public."RequestProjectionStatus" NOT NULL,
+    "authorProfileNamespaceId" integer NOT NULL,
+    "authorProfileRev" integer NOT NULL,
+    snapshot jsonb,
+    note varchar(255) NOT NULL,
+    "requestedAt" timestamptz(3) NOT NULL,
+    "expiresAt" timestamptz(3) NOT NULL,
+    "createdAt" timestamptz(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamptz(3) DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "RelationshipRequest_kind_check" CHECK (
+      (kind = 'FRIEND' AND "authorAccount" NOT LIKE '!%' AND "receiverAccount" NOT LIKE '!%') OR
+      (kind = 'GROUP_APPLICATION' AND "authorAccount" NOT LIKE '!%' AND "receiverAccount" LIKE '!%') OR
+      (kind = 'GROUP_INVITATION' AND "authorAccount" LIKE '!%' AND "receiverAccount" NOT LIKE '!%')),
+    CONSTRAINT "RelationshipRequest_endpoints_check" CHECK (
+      "authorAccount" <> '' AND "receiverAccount" <> '' AND
+      ("authorAccount" <> "receiverAccount" OR "authorNamespaceId" <> "receiverNamespaceId") AND
+      "authorNamespaceId" >= 0 AND "receiverNamespaceId" >= 0 AND
+      ("authorNamespaceId" = 0 OR "receiverNamespaceId" = 0)),
+    CONSTRAINT "RelationshipRequest_profile_check" CHECK ("authorProfileNamespaceId" >= 0 AND "authorProfileRev" >= 0),
+    CONSTRAINT "RelationshipRequest_expiry_check" CHECK ("expiresAt" > "requestedAt"),
+    CONSTRAINT "RelationshipRequest_snapshot_check" CHECK (
+      ("authorNamespaceId" <> 0 AND snapshot IS NULL) OR
+      ("authorNamespaceId" = 0 AND snapshot IS NOT NULL AND COALESCE(
+        jsonb_typeof(snapshot) = 'object' AND (snapshot - 'displayName' - 'avatar') = '{}'::jsonb
+        AND jsonb_typeof(snapshot->'displayName') = 'string'
+        AND char_length(btrim(snapshot->>'displayName')) > 0
+        AND char_length(snapshot->>'displayName') <= 31
+        AND (snapshot->'avatar' = 'null'::jsonb OR (jsonb_typeof(snapshot->'avatar') = 'string'
+          AND char_length(btrim(snapshot->>'avatar')) > 0)), false)))
+);
+CREATE INDEX "RelationshipRequest_author_page_idx" ON public."RelationshipRequest" ("authorNamespaceId", "authorAccount", "createdAt" DESC, id DESC);
+CREATE INDEX "RelationshipRequest_receiver_page_idx" ON public."RelationshipRequest" ("receiverNamespaceId", "receiverAccount", "createdAt" DESC, id DESC);
 
 --
 -- Name: RelationshipPair; Type: TABLE; Schema: public; Owner: -
@@ -2194,13 +2170,6 @@ ALTER TABLE ONLY public."AdminSession" ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
--- Name: ClientStateFeed id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."ClientStateFeed" ALTER COLUMN id SET DEFAULT nextval('public."ClientStateFeed_id_seq"'::regclass);
-
-
---
 -- Name: DiagnosticsReport id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2398,19 +2367,11 @@ ALTER TABLE ONLY public."CallHistory"
 
 
 --
--- Name: ClientStateFeed ClientStateFeed_compaction_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."ClientStateFeed"
-    ADD CONSTRAINT "ClientStateFeed_compaction_key" UNIQUE ("userId", "compactionKey");
-
-
---
 -- Name: ClientStateFeed ClientStateFeed_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."ClientStateFeed"
-    ADD CONSTRAINT "ClientStateFeed_pkey" PRIMARY KEY (id);
+    ADD CONSTRAINT "ClientStateFeed_pkey" PRIMARY KEY ("userId", "feedId");
 
 
 --
@@ -2547,14 +2508,6 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 
 ALTER TABLE ONLY public."GroupMeta"
     ADD CONSTRAINT "GroupMeta_pkey" PRIMARY KEY ("threadId");
-
-
---
--- Name: GroupRequestProjection GroupRequestProjection_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupRequestProjection"
-    ADD CONSTRAINT "GroupRequestProjection_pkey" PRIMARY KEY ("threadId", "memberAccount", "profileNamespaceId", direction);
 
 
 --
@@ -2937,13 +2890,6 @@ CREATE INDEX "CallHistory_pending_idx" ON public."CallHistory" USING btree (term
 
 
 --
--- Name: ClientStateFeed_user_feedId_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "ClientStateFeed_user_feedId_idx" ON public."ClientStateFeed" USING btree ("userId", "feedId");
-
-
---
 -- Name: DeletedMessage_threadId_messageSeq_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3109,27 +3055,6 @@ CREATE INDEX "ForwardMessage_bundleId_idx" ON public."ForwardMessage" USING btre
 --
 
 CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key" ON public."GroupMetaMemberFeed" USING btree ("threadId", ((body ->> 'account'::text)), ((body -> 'namespaceId'::text))) WHERE (operation <> 'GROUP_ANNOUNCEMENT'::public."GroupMetaMemberOperation");
-
-
---
--- Name: GroupRequestProjection_direction_feed_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "GroupRequestProjection_direction_feed_key" ON public."GroupRequestProjection" USING btree ("threadId", direction, "feedId");
-
-
---
--- Name: GroupRequestProjection_expiry_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "GroupRequestProjection_expiry_idx" ON public."GroupRequestProjection" USING btree ("expiresAt");
-
-
---
--- Name: GroupRequestProjection_thread_feed_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "GroupRequestProjection_thread_feed_idx" ON public."GroupRequestProjection" USING btree ("threadId", "feedId");
 
 
 --
@@ -3625,14 +3550,13 @@ ALTER TABLE ONLY public."CallHistory"
 
 
 --
--- Name: ClientStateFeed ClientStateFeed_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
+-- Request namespace foreign keys are installed after namespace primary keys.
+ALTER TABLE ONLY public."RelationshipRequest"
+    ADD CONSTRAINT "RelationshipRequest_authorNamespaceId_fkey" FOREIGN KEY ("authorNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
-ALTER TABLE ONLY public."ClientStateFeed"
-    ADD CONSTRAINT "ClientStateFeed_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public."RelationshipRequest"
+    ADD CONSTRAINT "RelationshipRequest_receiverNamespaceId_fkey" FOREIGN KEY ("receiverNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
-
---
 -- Name: ClientStateFeed ClientStateFeed_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3790,22 +3714,6 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 
 ALTER TABLE ONLY public."GroupMeta"
     ADD CONSTRAINT "GroupMeta_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
-
-
---
--- Name: GroupRequestProjection GroupRequestProjection_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupRequestProjection"
-    ADD CONSTRAINT "GroupRequestProjection_profileNamespaceId_fkey" FOREIGN KEY ("profileNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
--- Name: GroupRequestProjection GroupRequestProjection_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupRequestProjection"
-    ADD CONSTRAINT "GroupRequestProjection_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
 
 
 --
@@ -4009,6 +3917,12 @@ ALTER TABLE ONLY public."RelationshipIntent"
 
 
 --
+-- The nullable reference belongs to the intent, not the permanent request row.
+CREATE INDEX "RelationshipIntent_requestId_idx" ON public."RelationshipIntent" ("requestId");
+
+ALTER TABLE ONLY public."RelationshipIntent"
+    ADD CONSTRAINT "RelationshipIntent_requestId_fkey" FOREIGN KEY ("requestId") REFERENCES public."RelationshipRequest"(id) ON DELETE SET NULL;
+
 -- Name: RelationshipIntent RelationshipIntent_receiverNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 

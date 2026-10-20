@@ -15,7 +15,7 @@ import {
 } from '../../../../shared/request-snapshot.js';
 import { Injectable } from '@nestjs/common';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   ClientStateFeedService,
   type PendingClientStateFeedUpdate,
@@ -29,7 +29,8 @@ import {
   buildIntentDirection,
   RelationshipIntentService,
 } from '../../../relationship/relationship-intent.service.js';
-import { FederationGroupRequestProjectionService } from '../../../federation/federation-group-request-projection.service.js';
+import { RequestTransactionCapability } from '../../../relationship/request/request-transaction.contract.js';
+import type { RequestFlow } from '../../../relationship/request/request-transaction.contract.js';
 import { GroupRelationshipFoldService } from './group-relationship-fold.service.js';
 import { writeMirrorLocalGroupLeftInTx } from './mirror-local-group-left.js';
 import {
@@ -40,16 +41,6 @@ import type {
   RequestRevocationStatus,
   RequestProjectionStatusValue,
 } from '../../../../shared/request-projection-status.js';
-
-function groupIntentEndpoints(
-  groupAccount: string,
-  memberAccount: string,
-  author: 'GROUP' | 'MEMBER',
-): { account: string; subjectAccount: string } {
-  return author === 'GROUP'
-    ? { account: groupAccount, subjectAccount: memberAccount }
-    : { account: memberAccount, subjectAccount: groupAccount };
-}
 
 export interface GroupRelationshipMutationOptions {
   snapshot?: RequestSnapshot | null;
@@ -75,6 +66,14 @@ export interface GroupRelationshipMutationOptions {
   };
 }
 
+/** Result of a group request-effect write: whether a new round was created
+ * (the only transition that advances manager notification counters and
+ * admits the projection fan-out) plus the post-commit wake hints. */
+export interface GroupRequestEffectsResult {
+  readonly created: boolean;
+  readonly clientUpdates: readonly PendingClientStateFeedUpdate[];
+}
+
 /**
  * Serializes and applies relationship mutations. Transport wake-ups remain an
  * outer orchestration concern and occur only after the caller's transaction
@@ -84,7 +83,7 @@ export interface GroupRelationshipMutationOptions {
 export class GroupRelationshipMutationService {
   constructor(
     private readonly relationshipIntents: RelationshipIntentService,
-    private readonly groupRequestProjection: FederationGroupRequestProjectionService,
+    private readonly requestCapability: RequestTransactionCapability,
     private readonly relationships: RelationshipService,
     private readonly stateFeed: PeerStateFeedService,
     private readonly clientStateFeed: ClientStateFeedService,
@@ -176,7 +175,14 @@ export class GroupRelationshipMutationService {
         status,
         snapshot:
           status === 'REQUESTED'
-            ? parseRequestSnapshot(options.snapshot)
+            ? options.snapshot
+              ? parseRequestSnapshot(options.snapshot)
+              : group.namespaceId === 0
+                ? await this.readPresentationSnapshotInTx(tx, {
+                    account: group.account,
+                    group: true,
+                  })
+                : null
             : null,
         note,
         expiresAt:
@@ -210,16 +216,12 @@ export class GroupRelationshipMutationService {
           updatedAt: new Date(),
         })
         .where(eq(tables.messageThread.id, threadId));
-    const clientRequestedAt =
-      membership.request.status === 'REVOKED'
-        ? null
-        : membership.request.requestedAt;
     if (clientFeedUpdates && membership.pairChanged)
       clientFeedUpdates.push(
         ...(await captureThreadStateUpdatesInTx(tx, [memberUserId])),
       );
-    if (group.namespaceId === 0 && membership.changed)
-      await this.writeGroupRequestEffectsInTx(
+    if (membership.changed) {
+      const effects = await this.writeGroupRequestEffectsInTx(
         tx,
         threadId,
         memberUserId,
@@ -230,47 +232,11 @@ export class GroupRelationshipMutationService {
             : membership.request.status,
         membership.request.status === 'ACCEPTED' ? 'INVITATION' : 'APPLICATION',
         membership.request.status === 'REQUESTED',
+        options.snapshot,
       );
-    if (group.namespaceId === 0) {
-      if (clientFeedUpdates && membership.changed) {
-        const endpoints = groupIntentEndpoints(
-          group.account,
-          member.account,
-          'MEMBER',
-        );
-        const feedId = await this.clientStateFeed.writeInTx(tx, {
-          userId: memberUserId,
-          account: endpoints.account,
-          namespaceId: 0,
-          eventType: 'RELATIONSHIP_INTENT',
-          subjectAccount: endpoints.subjectAccount,
-          subjectNamespaceId: 0,
-          body: {
-            status: membership.request.status,
-            ...(clientRequestStatus
-              ? { requestStatus: clientRequestStatus }
-              : {}),
-            ...(clientRequestDirection
-              ? { requestDirection: clientRequestDirection }
-              : {}),
-            note: membership.request.note,
-            requestedAt: clientRequestedAt,
-            expiresAt: membership.request.expiresAt,
-            direction: 'OUTGOING',
-            snapshot: membership.request.snapshot,
-            threadId,
-            group: {
-              account: group.account,
-              namespaceId: 0,
-              profileRev: group.profileRev,
-            },
-          },
-        });
-        if (feedId !== null)
-          clientFeedUpdates.push({ userId: memberUserId, feedId });
-      }
-      return new Map();
+      clientFeedUpdates?.push(...effects.clientUpdates);
     }
+    if (group.namespaceId === 0) return new Map();
     const relationship: PeerStateFeedWrite = {
       namespaceId: group.namespaceId!,
       account: member.account,
@@ -288,43 +254,6 @@ export class GroupRelationshipMutationService {
         expiresAt: membership.request.expiresAt,
       },
     };
-    if (clientFeedUpdates && membership.changed) {
-      const endpoints = groupIntentEndpoints(
-        group.account,
-        member.account,
-        'MEMBER',
-      );
-      const feedId = await this.clientStateFeed.writeInTx(tx, {
-        userId: memberUserId,
-        account: endpoints.account,
-        namespaceId: group.namespaceId,
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: endpoints.subjectAccount,
-        subjectNamespaceId: group.namespaceId!,
-        body: {
-          status: membership.request.status,
-          ...(clientRequestStatus
-            ? { requestStatus: clientRequestStatus }
-            : {}),
-          ...(clientRequestDirection
-            ? { requestDirection: clientRequestDirection }
-            : {}),
-          note: membership.request.note,
-          requestedAt: clientRequestedAt,
-          expiresAt: membership.request.expiresAt,
-          direction: 'OUTGOING',
-          snapshot: membership.request.snapshot,
-          threadId,
-          group: {
-            account: group.account,
-            namespaceId: group.namespaceId,
-            profileRev: group.profileRev,
-          },
-        },
-      });
-      if (feedId !== null)
-        clientFeedUpdates.push({ userId: memberUserId, feedId });
-    }
     return relationship.body.status === 'ACCEPTED'
       ? this.stateFeed.writeAcceptanceConfirmationsInTx(tx, [relationship])
       : this.stateFeed.writeManyInTx(tx, [relationship]);
@@ -392,7 +321,14 @@ export class GroupRelationshipMutationService {
         status,
         snapshot:
           status === 'REQUESTED'
-            ? parseRequestSnapshot(options.snapshot)
+            ? options.snapshot
+              ? parseRequestSnapshot(options.snapshot)
+              : member.namespaceId === 0
+                ? await this.readPresentationSnapshotInTx(tx, {
+                    account: member.account,
+                    group: false,
+                  })
+                : null
             : null,
         note,
         expiresAt:
@@ -411,7 +347,7 @@ export class GroupRelationshipMutationService {
           .set({ updatedAt: new Date() })
           .where(eq(tables.messageThread.id, threadId));
     }
-    await this.writeGroupRequestEffectsInTx(
+    const effects = await this.writeGroupRequestEffectsInTx(
       tx,
       threadId,
       memberUserId,
@@ -426,44 +362,13 @@ export class GroupRelationshipMutationService {
           ? 'APPLICATION'
           : 'INVITATION'),
       membership.request.status === 'REQUESTED',
+      options.snapshot,
     );
+    clientFeedUpdates.push(...effects.clientUpdates);
     if (member.namespaceId === 0) {
       const [localAccount] = await localAccountsForTargetsInTx(tx, [member]);
       if (!localAccount)
         throw new Error('local invitation recipient is missing');
-      const endpoints = groupIntentEndpoints(
-        state.groupAccount,
-        member.account,
-        'GROUP',
-      );
-      const feedId = await this.clientStateFeed.writeInTx(tx, {
-        userId: localAccount.id,
-        account: endpoints.account,
-        namespaceId: 0,
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: endpoints.subjectAccount,
-        subjectNamespaceId: 0,
-        body: {
-          status: membership.request.status,
-          ...(clientRequestStatus
-            ? { requestStatus: clientRequestStatus }
-            : {}),
-          ...(clientRequestDirection
-            ? { requestDirection: clientRequestDirection }
-            : {}),
-          note: membership.request.note,
-          requestedAt: membership.request.requestedAt?.getTime() ?? null,
-          expiresAt: membership.request.expiresAt?.getTime() ?? null,
-          threadId,
-          group: {
-            account: state.groupAccount,
-            namespaceId: 0,
-            profileRev: state.groupProfileRev,
-          },
-        },
-      });
-      if (feedId !== null)
-        clientFeedUpdates.push({ userId: localAccount.id, feedId });
       if (membership.pairChanged)
         clientFeedUpdates.push(
           ...(await captureThreadStateUpdatesInTx(tx, [localAccount.id])),
@@ -514,6 +419,15 @@ export class GroupRelationshipMutationService {
     });
   }
 
+  /** Open or conclude the permanent request round mirrored by a group intent
+   * transition. Evidence is read from the freshly written intent in the same
+   * transaction, never fabricated; the round snapshot is captured at open
+   * time (command-supplied or derived from the local receiver) because the
+   * intent table no longer stores presentations. The manager notification
+   * counters in GroupMeta advance only for newly created rounds; conclusions
+   * never allocate a new-request head. Returns the in-process wake hints for
+   * the recipient's incoming head together with whether a new round was
+   * created. */
   async writeGroupRequestEffectsInTx(
     tx: DatabaseTransaction,
     threadId: number,
@@ -521,14 +435,220 @@ export class GroupRelationshipMutationService {
     status: RequestProjectionStatusValue = 'REQUESTED',
     direction: 'APPLICATION' | 'INVITATION' = 'APPLICATION',
     createIfMissing = true,
-  ): Promise<void> {
-    await this.groupRequestProjection.writeEffectsInTx(
-      tx,
-      threadId,
-      memberUserId,
-      status,
-      direction,
-      createIfMissing,
-    );
+    snapshot?: RequestSnapshot | null,
+  ): Promise<GroupRequestEffectsResult> {
+    const unchanged = { created: false, clientUpdates: [] };
+    const [thread] = await tx
+      .select({
+        groupAccount: tables.messageThread.groupAccount,
+        authorityNamespaceId: tables.messageThread.authorityNamespaceId,
+      })
+      .from(tables.messageThread)
+      .where(eq(tables.messageThread.id, threadId))
+      .limit(1);
+    if (!thread?.groupAccount) return unchanged;
+
+    const member = await accountAddressInTx(tx, memberUserId);
+    if (!member) return unchanged;
+
+    const isApplication = direction === 'APPLICATION';
+    const flow: RequestFlow = {
+      kind: isApplication ? 'GROUP_APPLICATION' : 'GROUP_INVITATION',
+      author: isApplication
+        ? { account: member.account, namespaceId: member.namespaceId }
+        : {
+            account: thread.groupAccount,
+            namespaceId: thread.authorityNamespaceId,
+          },
+      receiver: isApplication
+        ? {
+            account: thread.groupAccount,
+            namespaceId: thread.authorityNamespaceId,
+          }
+        : { account: member.account, namespaceId: member.namespaceId },
+    };
+
+    const [intent] = await tx
+      .select({
+        requestId: tables.relationshipIntent.requestId,
+        profileNamespaceId: tables.relationshipIntent.profileNamespaceId,
+        profileRev: tables.relationshipIntent.profileRev,
+        note: tables.relationshipIntent.note,
+        requestedAt: tables.relationshipIntent.requestedAt,
+        expiresAt: tables.relationshipIntent.expiresAt,
+      })
+      .from(tables.relationshipIntent)
+      .where(
+        and(
+          eq(
+            tables.relationshipIntent.authorAccount,
+            flow.author.account,
+          ),
+          eq(
+            tables.relationshipIntent.authorNamespaceId,
+            flow.author.namespaceId,
+          ),
+          eq(
+            tables.relationshipIntent.receiverAccount,
+            flow.receiver.account,
+          ),
+          eq(
+            tables.relationshipIntent.receiverNamespaceId,
+            flow.receiver.namespaceId,
+          ),
+        ),
+      )
+      .limit(1);
+    if (!intent) return unchanged;
+
+    if (status === 'REQUESTED') {
+      if (!intent.requestedAt || !intent.expiresAt) return unchanged;
+      if (!createIfMissing && !intent.requestId) return unchanged;
+      const result = await this.requestCapability.openRequestInTx(tx, {
+        flow,
+        evidence: {
+          authorProfileNamespaceId: intent.profileNamespaceId,
+          authorProfileRev: intent.profileRev,
+          note: intent.note,
+          requestedAt: intent.requestedAt,
+          expiresAt: intent.expiresAt,
+          snapshot: await this.resolveRoundSnapshotInTx(tx, snapshot, flow),
+        },
+      });
+      if (result.status === 'STALE_REQUEST') return unchanged;
+      if (result.status !== 'CREATED')
+        return {
+          created: false,
+          clientUpdates: [...result.effects.clientUpdates],
+        };
+      if (thread.authorityNamespaceId !== 0)
+        return {
+          created: true,
+          clientUpdates: [...result.effects.clientUpdates],
+        };
+      // The group's per-direction counters number new-round events for the
+      // manager watermarks; the row is created lazily for groups that have
+      // not fanned group meta yet. Mirrored remote-authority threads carry no
+      // local manager watermarks.
+      await tx
+        .insert(tables.groupMeta)
+        .values({
+          threadId,
+          applicationEndId: isApplication ? 1 : 0,
+          invitationEndId: isApplication ? 0 : 1,
+        })
+        .onConflictDoUpdate({
+          target: tables.groupMeta.threadId,
+          set: {
+            applicationEndId: sql`${tables.groupMeta.applicationEndId} + ${isApplication ? 1 : 0}`,
+            invitationEndId: sql`${tables.groupMeta.invitationEndId} + ${isApplication ? 0 : 1}`,
+            updatedAt: new Date(),
+          },
+        });
+      return {
+        created: true,
+        clientUpdates: [...result.effects.clientUpdates],
+      };
+    }
+
+    const cause =
+      status === 'ACCEPTED'
+        ? ('ACCEPT' as const)
+        : status === 'REJECTED'
+          ? ('REJECT' as const)
+          : status === 'WITHDRAWN'
+            ? ('WITHDRAW' as const)
+            : status === 'EXPIRED'
+              ? ('EXPIRE' as const)
+              : null;
+    if (!cause || !intent.requestId) return unchanged;
+    await this.requestCapability.concludeRequestInTx(tx, {
+      flow,
+      requestId: intent.requestId,
+      cause,
+    });
+    return unchanged;
+  }
+
+  /** Resolve the round snapshot for a newly opened round. The snapshot is
+   * the author-side captured presentation of the receiver and serves only the
+   * author's outgoing view, so it is required exactly for namespace-zero
+   * authors: remote-author rounds stored on this node are consumed only by
+   * incoming views that read the wire author-profile coordinates instead.
+   * Locally the value comes from the owning command when the author composed
+   * it against a remote receiver, and is derived from the local receiver's
+   * current default-profile otherwise. A namespace-zero author without any
+   * capturable presentation is a missing-evidence error, never a silent
+   * null that would surface at outgoing rendering. */
+  private async resolveRoundSnapshotInTx(
+    tx: DatabaseTransaction,
+    supplied: RequestSnapshot | null | undefined,
+    flow: RequestFlow,
+  ): Promise<RequestSnapshot | null> {
+    if (supplied) return parseRequestSnapshot(supplied);
+    if (flow.author.namespaceId !== 0) return null;
+    // A namespace-zero author's outgoing view renders this snapshot, so a
+    // remote receiver without a command-captured presentation is missing
+    // evidence. Local receivers (member or group) derive from their current
+    // default profile in this transaction.
+    if (flow.receiver.namespaceId !== 0)
+      throw new Error(
+        `round snapshot is unavailable for ${flow.author.account} -> ${flow.receiver.account}`,
+      );
+    return this.readPresentationSnapshotInTx(tx, {
+      account: flow.receiver.account,
+      group: flow.receiver.account.startsWith('!'),
+    });
+  }
+
+  /** The receiver-side presentation captured when a locally authored request
+   * opens without an explicit snapshot: the group's own current profile for
+   * applications, the local invitee's current profile for invitations. */
+  private async readPresentationSnapshotInTx(
+    tx: DatabaseTransaction,
+    subject: { account: string; group: boolean },
+  ): Promise<RequestSnapshot> {
+    const [row] = await tx
+      .select({
+        displayName: tables.profileTable.displayName,
+        avatar: tables.profileTable.avatar,
+      })
+      .from(subject.group ? tables.groupAccount : tables.account)
+      .innerJoin(
+        tables.profileTable,
+        and(
+          eq(
+            tables.profileTable.account,
+            subject.group
+              ? tables.groupAccount.account
+              : tables.account.account,
+          ),
+          eq(tables.profileTable.publisherNamespaceId, 0),
+          eq(tables.profileTable.profileNamespaceId, 0),
+          eq(
+            tables.profileTable.profileRev,
+            subject.group
+              ? tables.groupAccount.defaultProfileRev
+              : tables.account.defaultProfileRev,
+          ),
+        ),
+      )
+      .where(
+        subject.group
+          ? eq(tables.groupAccount.account, subject.account)
+          : and(
+              eq(tables.account.account, subject.account),
+              eq(tables.account.namespaceId, 0),
+            ),
+      )
+      .limit(1);
+    if (!row)
+      throw new Error(
+        `presentation snapshot is unavailable for ${subject.account}`,
+      );
+    return parseRequestSnapshot({
+      displayName: row.displayName,
+      avatar: row.avatar === '' ? null : row.avatar,
+    });
   }
 }

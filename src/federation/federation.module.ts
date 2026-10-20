@@ -6,7 +6,6 @@ import { DiscoveryService } from './discovery.service.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { GroupMembershipProjectionService } from '../group/membership-intent/shared/group-membership-projection.service.js';
 import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
-import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
 import { GroupRelationshipFoldService } from '../group/membership-intent/shared/group-relationship-fold.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
@@ -91,6 +90,7 @@ import { FederationInboundMediaBatchService } from './federation-inbound-media-b
 import { FederationDownloadAdminService } from './federation-download-admin.service.js';
 import { DurableTaskModule } from '../durable-task/durable-task.module.js';
 import { AuthoritativeMembershipFinalizerService } from '../group/membership-intent/shared/authoritative-membership-finalizer.service.js';
+import { RequestTransactionCapability } from '../relationship/request/request-transaction.contract.js';
 import { UserIntentService } from '../user/p2p-intent/authored/user-intent.service.js';
 import { ReceivedUserIntentService } from '../user/p2p-intent/received/received-user-intent.service.js';
 import { RemoteMemberMembershipIntentService } from '../group/membership-intent/received/remote-member-membership-intent.service.js';
@@ -144,6 +144,7 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
         PeerStateFeedService,
         FederationStateFeedPushService,
         FederationNamespaceService,
+        RequestTransactionCapability,
       ],
       useFactory: (
         database: DatabaseService,
@@ -151,14 +152,16 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
         peerFeed: PeerStateFeedService,
         stateFeedPush: FederationStateFeedPushService,
         namespaces: FederationNamespaceService,
+        requestCapability: RequestTransactionCapability,
       ) =>
-        new UserIntentService({
+        new UserIntentService(
           database,
           clientFeed,
           peerFeed,
-          federation: stateFeedPush,
+          stateFeedPush,
           namespaces,
-        }),
+          requestCapability,
+        ),
     },
     {
       provide: ReceivedUserIntentService,
@@ -167,24 +170,25 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
         ClientStateFeedService,
         PeerStateFeedService,
         FederationStateFeedPushService,
-        FederationNamespaceService,
         UserIntentService,
+        RequestTransactionCapability,
       ],
       useFactory: (
         database: DatabaseService,
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
         stateFeedPush: FederationStateFeedPushService,
-        namespaces: FederationNamespaceService,
         userIntents: UserIntentService,
+        requestCapability: RequestTransactionCapability,
       ) =>
-        new ReceivedUserIntentService({
+        new ReceivedUserIntentService(
           database,
           clientFeed,
           peerFeed,
-          federation: stateFeedPush,
+          stateFeedPush,
           userIntents,
-        }),
+          requestCapability,
+        ),
     },
     {
       provide: RemoteMemberMembershipIntentService,
@@ -204,13 +208,13 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
         namespaces: FederationNamespaceService,
         relationshipMutations: GroupRelationshipMutationService,
       ) =>
-        new RemoteMemberMembershipIntentService({
+        new RemoteMemberMembershipIntentService(
           database,
           clientFeed,
           peerFeed,
-          federation: stateFeedPush,
+          stateFeedPush,
           relationshipMutations,
-        }),
+        ),
     },
     {
       provide: MirrorGroupMembershipIntentService,
@@ -230,13 +234,13 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
         namespaces: FederationNamespaceService,
         memberMutations: GroupRelationshipMutationService,
       ) =>
-        new MirrorGroupMembershipIntentService({
+        new MirrorGroupMembershipIntentService(
           database,
           clientFeed,
           peerFeed,
-          federation: stateFeedPush,
+          stateFeedPush,
           memberMutations,
-        }),
+        ),
     },
     FederationThreadFanoutTaskHandler,
     KeypairService,
@@ -279,7 +283,6 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     AuthoritativeMembershipFinalizerService,
     FederationGroupMetaClient,
     FederationThreadMetaRoundExecutorService,
-    FederationGroupRequestProjectionService,
     GroupRelationshipFoldService,
     FederationReconnectService,
     FederationRecognitionService,

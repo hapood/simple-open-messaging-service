@@ -1,10 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
-import { clientIntentFeedWriteSql } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
 import {
-  epochMillisSql,
   mirrorGroupDirection,
-  mirrorIntentCompactionKey,
-  mirrorIntentFeedBodySql,
   mirrorIntentReadBackSql,
   mirrorIntentWriteSql,
   type MirrorGroupPresentationInput,
@@ -20,8 +16,8 @@ export interface MirrorMembershipRevocationInput {
   requestDirection?: 'INCOMING' | 'OUTGOING';
 }
 
-/** Persist received side A REVOKED, deactivate an active pair, and publish the
- * invitee's feed row. The epoch advances only when the last active local pair
+/** Persist received side A REVOKED and deactivate an active pair.
+ * The epoch advances only when the last active local pair
  * leaves. The caller writes the local GROUP_LEFT and its readable boundary
  * when the pair changed, then concludes an effective side B intent. This
  * statement writes no Group Meta fact. */
@@ -80,36 +76,10 @@ export function mirrorMembershipRevocationSql(
           "metaRecoveryThroughId" = NULL, "updatedAt" = CURRENT_TIMESTAMP
       FROM epoch_bump WHERE f."threadId" = epoch_bump.id
       RETURNING f."threadId"
-    ), candidate_bodies AS MATERIALIZED (
-      SELECT ${input.localMemberId}::integer AS "userId",
-        ${input.presentation.groupNamespaceId}::integer AS "namespaceId", 1 AS ordinal,
-        ${mirrorIntentCompactionKey({
-          groupNamespaceId: input.presentation.groupNamespaceId,
-          groupAccount: input.presentation.groupAccount,
-          memberAccount: input.memberAccount,
-        })}::text AS "compactionKey",
-        ${input.presentation.groupAccount}::text AS account,
-        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
-        ${mirrorIntentFeedBodySql({
-          status: sql`v.status`,
-          profileRev: sql`v."profileRev"`,
-          note: sql`v.note`,
-          requestedAt: epochMillisSql(sql`v."requestedAt"`),
-          expiresAt: epochMillisSql(sql`v."expiresAt"`),
-          established: sql`(SELECT p.established FROM "RelationshipPair" p
-            WHERE p.id = ${input.pairId})`,
-          threadId: input.threadId,
-          presentation: input.presentation,
-          requestStatus: input.requestStatus,
-          requestDirection: input.requestDirection,
-        })} AS body
-      FROM persisted_intent v
-    ), ${clientIntentFeedWriteSql()}
+    )
     SELECT EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
-      EXISTS (SELECT 1 FROM epoch_bump) AS "epochChanged",
-      (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-      (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"
+      EXISTS (SELECT 1 FROM epoch_bump) AS "epochChanged"
     FROM persisted_intent v
   `;
 }

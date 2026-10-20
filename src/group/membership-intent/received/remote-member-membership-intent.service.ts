@@ -66,14 +66,6 @@ export interface RemoteMemberMembershipIntentCommand {
   body: RemoteMemberMembershipIntentBody;
 }
 
-export interface RemoteMemberMembershipIntentDependencies {
-  database: DatabaseService;
-  clientFeed: ClientStateFeedService;
-  peerFeed: PeerStateFeedService;
-  federation: FederationStateFeedPusher;
-  relationshipMutations: GroupRelationshipMutationService;
-}
-
 /** Routing outcomes, for tests and diagnostics. `noop:*` rows never wrote. */
 export type RemoteMemberMembershipRouting =
   | 'recorded-request'
@@ -106,7 +98,11 @@ export class RemoteMemberMembershipIntentService {
   );
 
   constructor(
-    private readonly deps: RemoteMemberMembershipIntentDependencies,
+    private readonly database: DatabaseService,
+    private readonly clientFeed: ClientStateFeedService,
+    private readonly peerFeed: PeerStateFeedService,
+    private readonly federation: FederationStateFeedPusher,
+    private readonly relationshipMutations: GroupRelationshipMutationService,
   ) {}
 
   async execute(
@@ -114,17 +110,17 @@ export class RemoteMemberMembershipIntentService {
   ): Promise<{ routed: RemoteMemberMembershipRouting }> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const peers = new Set<number>();
-    const result = await this.deps.database.db.transaction(async (tx) =>
+    const result = await this.database.db.transaction(async (tx) =>
       this.applyInTx(tx, command, clientUpdates, peers),
     );
     try {
       if (clientUpdates.length > 0)
-        this.deps.clientFeed.notifyFeedUpdates(clientUpdates);
+        this.clientFeed.notifyFeedUpdates(clientUpdates);
     } catch (error) {
       this.logger.warn('remote member intent client wake failed', error);
     }
     if (peers.size > 0)
-      void this.deps.federation.pushStateFeedNamespaces(peers);
+      void this.federation.pushStateFeedNamespaces(peers);
     return { routed: result.routed };
   }
 
@@ -247,7 +243,7 @@ export class RemoteMemberMembershipIntentService {
     ).rows[0];
     if (!row) throw new Error('remote member authorization disappeared');
     // The member's outbound allocator precedes every client-feed allocation.
-    await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
+    await this.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
       { namespaceId: member.namespaceId },
     ]);
     const accounts = [...row.managerIds];
@@ -378,7 +374,6 @@ export class RemoteMemberMembershipIntentService {
     // row and no wake of their own.
     const result = await tx.execute<{
       intentChanged: boolean;
-      projectionChanged: boolean;
     }>(
       receivedMemberMembershipRequestSql({
         threadId: context.command.threadId,
@@ -405,7 +400,20 @@ export class RemoteMemberMembershipIntentService {
     );
     const row = result.rows[0];
     if (!row) throw new Error('remote member application update disappeared');
-    if (row.projectionChanged)
+    // The remote-authored application round stores no author-side snapshot:
+    // managers read the wire author-profile coordinates through the incoming
+    // view. A newly created round advances the manager notification counter
+    // and admits the projection fan-out task.
+    const effects =
+      await this.relationshipMutations.writeGroupRequestEffectsInTx(
+        tx,
+        context.command.threadId,
+        context.member,
+        'REQUESTED',
+        'APPLICATION',
+      );
+    context.clientUpdates.push(...effects.clientUpdates);
+    if (effects.created)
       await admitGroupMembershipProjectionFanoutInTx(tx, {
         threadId: context.command.threadId,
         groupAccount: context.group.groupAccount,
@@ -518,7 +526,6 @@ export class RemoteMemberMembershipIntentService {
       // the authored collapse.
       note: context.row.groupIntentNote ?? '',
       acceptedAt: new Date(),
-      projectionDirections: context.row.projectionDirections,
       memberAck: true,
       memberAuthoredSql: this.memberWireWriteSql(
         'ACCEPTED',
@@ -588,7 +595,6 @@ export class RemoteMemberMembershipIntentService {
       memberAccount: member.account,
       profileNamespaceId: member.namespaceId,
       localMemberId: null,
-      projectionDirections: context.row.projectionDirections,
       author: {
         account: member.account,
         namespaceId: member.namespaceId,
@@ -624,7 +630,9 @@ export class RemoteMemberMembershipIntentService {
     return {
       routed: row.pairChanged ? 'departure' : 'rejection',
       peerFeedId:
-        row.recipientFeedId === null ? undefined : BigInt(row.recipientFeedId),
+        row.recipientFeedId === null || row.recipientFeedId === undefined
+          ? undefined
+          : BigInt(row.recipientFeedId),
     };
   }
 
@@ -638,7 +646,7 @@ export class RemoteMemberMembershipIntentService {
     },
   ): Promise<void> {
     const allocated =
-      await this.deps.relationshipMutations.writeGroupRelationshipIntentInTx(
+      await this.relationshipMutations.writeGroupRelationshipIntentInTx(
         tx,
         context.threadId,
         context.member,

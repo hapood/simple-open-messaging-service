@@ -29,6 +29,7 @@ import {
 import { findP2PRelationship, seedFederatedPeerNamespace } from './seed';
 import { createTestApp } from './support/app';
 import { truncateTablesForTest } from './support/truncate';
+import { waitForReceivedRequest } from './support/received-request.js';
 
 /**
  * Regression contract test for the "first message after friend-add not delivered" bug.
@@ -83,20 +84,26 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const _invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob', namespaceId: 0 })
+      .send({
+        account: 'bob',
+        namespaceId: 0,
+        snapshot: { displayName: 'Bob', avatar: null },
+      })
       .expect((res) => {
         expect(res.status).toBe(200);
         expect(res.body.code).toBe(0);
         expect(res.body.data).toEqual({ status: 'OK' });
       });
 
+    const incoming = await waitForReceivedRequest(baseUrl, bob.token, {
+      kind: 'FRIEND',
+      author: { account: alice.account, namespaceId: 0 },
+      receiver: { account: bob.account, namespaceId: 0 },
+    });
     const accept = await request(baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({
-        account: 'alice',
-        namespaceId: 0,
-      });
+      .send({ requestId: incoming.id });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(0);
     expect(accept.body.data).toMatchObject({ status: 'OK' });
@@ -236,10 +243,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
       const removed = await request(baseUrl)
         .post('/api/v1/relationship/revoke')
         .set('Authorization', `Bearer ${alice.token}`)
-        .send({
-          account: 'bob',
-          namespaceId: 0,
-        });
+        .send({ threadId });
       expect(removed.status).toBe(200);
       expect(removed.body.code).toBe(0);
       expect(removed.body.data).toEqual({ status: 'OK' });
@@ -326,7 +330,12 @@ describe('First message after friend-add is delivered (single instance)', () => 
       database.db,
       'peer.test',
     );
-    const foreignBob = { account: 'bob', domain: 'peer.test', namespaceId };
+    const foreignBob = {
+      account: 'bob',
+      domain: 'peer.test',
+      namespaceId,
+      snapshot: { displayName: 'Bob', avatar: null },
+    };
 
     const userIntents = app.get(UserIntentService);
     const receivedUserIntents = app.get(ReceivedUserIntentService);
@@ -340,6 +349,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
             account: foreignBob.account,
             namespaceId: foreignBob.namespaceId,
           },
+          snapshot: foreignBob.snapshot,
         },
         [],
       );
@@ -399,6 +409,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
       account: 'strict-bob',
       domain: 'strict-peer.test',
       namespaceId,
+      snapshot: { displayName: 'Strict Bob', avatar: null },
     };
     const userIntents = app.get(UserIntentService);
     const receivedUserIntents = app.get(ReceivedUserIntentService);
@@ -412,6 +423,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
             account: foreignBob.account,
             namespaceId: foreignBob.namespaceId,
           },
+          snapshot: foreignBob.snapshot,
         },
         [],
       ),

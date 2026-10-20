@@ -28,12 +28,16 @@ withdrawn targets and retained receipt aliases. The group authority publishes it
 local target sequence. A mirror or P2P endpoint publishes local sequence for its
 own authors and the receiver's origin sequence for other targets. A known
 coordinate is preserved without requiring the target body to exist. Absence is
-normal and does not warn or reject inbound messages. The wire has no null variant. Explicit `{ seq: 0 }` denotes a reply without
-a target coordinate and is stored locally as `{ seq: 0, namespaceId: 0 }`.
-This implementation retains known positive coordinates while their bodies are
-missing; publishers MAY instead use zero for absent targets. Once published,
-the wire reference remains immutable. An authority's lost peer-to-local coordinate mapping is a
-local invariant violation, not permission to fabricate or silently omit a quote.
+normal and does not warn or reject inbound messages.
+
+The wire has no null or zero-valued variant: both `seq` and `originSeq` MUST be
+positive thread sequences. Neither `{ seq: 0 }` nor `{ originSeq: 0 }` is valid.
+Omission of `quoteTarget` and `quoteDigest` denotes an ordinary message rather
+than an unresolved reply. This implementation retains known positive coordinates
+while their bodies are missing; target existence is not a prerequisite for
+accepting a valid reply. Once published, the wire reference remains immutable.
+An authority's lost peer-to-local coordinate mapping is a local invariant
+violation, not permission to fabricate or silently omit a quote.
 
 Read projection translates references into client-local navigation coordinates
 without rewriting durable content. History gaps and progress are selected using
@@ -50,10 +54,3 @@ positive bundle references without a matching entry. Ordinary text omits `quoteT
 use the same representation before and after federation.
 The lab oracle compares resolved message identities, never raw numeric references
 across nodes, and reads the reference namespace independently from message origin.
-
-## Rollout
-
-The release-candidate correction replaced `targetSeq` with `seq` / `originSeq`.
-`targetSeq` is not an alternative v1 wire form. Upgrade communicating peers
-together before restarting the randomized lab.
-The existing source-scoped thread-sync migration is independent of this change.

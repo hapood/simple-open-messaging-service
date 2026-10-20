@@ -418,6 +418,8 @@ export const account = pgTable(
     mustChangePassword: boolean().default(false).notNull(),
     disabledAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     clientStateFeedEndId: integer().default(0).notNull(),
+    requestEndId: bigint({ mode: 'bigint' }).default(0n).notNull(),
+    requestReadId: bigint({ mode: 'bigint' }).default(0n).notNull(),
     threadFeedEndId: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -436,6 +438,10 @@ export const account = pgTable(
     check(
       'Account_clientStateFeedEndId_check',
       sql`${table.clientStateFeedEndId} >= 0`,
+    ),
+    check(
+      'Account_request_head_check',
+      sql`${table.requestReadId} >= 0 AND ${table.requestReadId} <= ${table.requestEndId}`,
     ),
     unique('Account_account_key').on(table.account),
     check('Account_account_check', sql`${table.account} NOT LIKE '!%'`),
@@ -681,6 +687,18 @@ export const accountThreadState = pgTable(
     uniqueIndex('AccountThreadState_accountId_threadFeedId_key').on(
       table.accountId,
       table.threadFeedId,
+    ),
+    check(
+      'AccountThreadState_groupInviteEndFeedId_check',
+      sql`${table.groupInviteEndFeedId} >= 0`,
+    ),
+    check(
+      'AccountThreadState_joinRequestEndFeedId_check',
+      sql`${table.joinRequestEndFeedId} >= 0`,
+    ),
+    check(
+      'AccountThreadState_joinRequestReadFeedId_check',
+      sql`${table.joinRequestReadFeedId} >= -1 AND ${table.joinRequestReadFeedId} <= ${table.joinRequestEndFeedId}`,
     ),
     check(
       'AccountThreadState_threadFeedId_check',
@@ -1556,22 +1574,11 @@ export const profileTable = pgTable(
   ],
 );
 
-/** Per-client compacted state projection. This is the device-facing analogue of PeerStateFeed:
- * feedId is the owning user's unified client-state scan coordinate.
- * Intent tombstones remain as
- * REVOKED snapshots, so a client resuming from an older cursor can converge without a delete log. */
+/** Account-scoped compacted notification heads. feedId is the client scan coordinate. */
 export const clientStateFeed = pgTable(
   'ClientStateFeed',
   {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     userId: integer().notNull(),
-    /** Event-specific stable identity used only for compaction within one local account. */
-    compactionKey: text().notNull(),
-    account: varchar({ length: 31 }).notNull(),
-    eventType: varchar({ length: 31 }).notNull(),
-    subjectAccount: varchar({ length: 31 }).default('').notNull(),
-    subjectNamespaceId: integer().default(0).notNull(),
-    namespaceId: integer().default(0).notNull(),
     feedId: integer().notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1582,104 +1589,46 @@ export const clientStateFeed = pgTable(
       .notNull(),
   },
   (table) => [
-    unique('ClientStateFeed_compaction_key').on(
-      table.userId,
-      table.compactionKey,
-    ),
-    index('ClientStateFeed_user_feedId_idx').on(table.userId, table.feedId),
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'ClientStateFeed_namespaceId_fkey',
-    }).onDelete('restrict'),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [account.id],
       name: 'ClientStateFeed_userId_fkey',
     }).onDelete('cascade'),
+    primaryKey({ columns: [table.userId, table.feedId] }),
     check('ClientStateFeed_feedId_check', sql`${table.feedId} > 0`),
   ],
 );
 
-/** Shared authoritative request projection for USER→GROUP applications and GROUP→USER invitations. */
-export const groupRequestProjection = pgTable(
-  'GroupRequestProjection',
+/** Permanent, locally observed request rounds. History is filtered by APIs, never aged out. */
+export const relationshipRequest = pgTable(
+  'RelationshipRequest',
   {
-    threadId: integer().notNull(),
-    memberAccount: varchar({ length: 31 }).notNull(),
-    profileNamespaceId: integer().notNull(),
-    memberProfileRev: integer().notNull(),
-    /** Send-time invitee presentation copied from the group-authored intent. */
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
+    kind: varchar({ length: 31 }).notNull(),
+    authorAccount: varchar({ length: 31 }).notNull(),
+    authorNamespaceId: integer().notNull(),
+    receiverAccount: varchar({ length: 31 }).notNull(),
+    receiverNamespaceId: integer().notNull(),
+    status: requestProjectionStatus().$type<RequestProjectionStatusValue>().notNull(),
+    authorProfileNamespaceId: integer().notNull(),
+    authorProfileRev: integer().notNull(),
     snapshot: jsonb().$type<RequestSnapshot>(),
-    direction: varchar({ length: 15 }).notNull(),
-    feedId: integer().notNull(),
-    status: requestProjectionStatus()
-      .$type<RequestProjectionStatusValue>()
-      .notNull(),
-    note: varchar({ length: 255 }).default('').notNull(),
-    requestedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }).notNull(),
-    expiresAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }).notNull(),
+    note: varchar({ length: 255 }).notNull(),
+    requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }).notNull(),
+    expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }).notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }).defaultNow().notNull(),
   },
   (table) => [
-    primaryKey({
-      columns: [
-        table.threadId,
-        table.memberAccount,
-        table.profileNamespaceId,
-        table.direction,
-      ],
-      name: 'GroupRequestProjection_pkey',
-    }),
-    uniqueIndex('GroupRequestProjection_direction_feed_key').on(
-      table.threadId,
-      table.direction,
-      table.feedId,
-    ),
-    index('GroupRequestProjection_thread_feed_idx').on(
-      table.threadId,
-      table.feedId,
-    ),
-    index('GroupRequestProjection_expiry_idx').on(table.expiresAt),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'GroupRequestProjection_threadId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.profileNamespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'GroupRequestProjection_profileNamespaceId_fkey',
-    }).onDelete('cascade'),
-    check(
-      'GroupRequestProjection_snapshot_check',
-      sql`${table.snapshot} IS NULL OR (
-        ${table.direction} = 'INVITATION' AND
-        COALESCE(jsonb_typeof(${table.snapshot}) = 'object'
-          AND (${table.snapshot} - 'displayName' - 'avatar') = '{}'::jsonb
-          AND jsonb_typeof(${table.snapshot}->'displayName') = 'string'
-          AND char_length(btrim(${table.snapshot}->>'displayName')) > 0
-          AND char_length(${table.snapshot}->>'displayName') <= 31
-          AND (${table.snapshot}->'avatar' = 'null'::jsonb OR
-            (jsonb_typeof(${table.snapshot}->'avatar') = 'string'
-              AND char_length(btrim(${table.snapshot}->>'avatar')) > 0)), false))`,
-    ),
-    check('GroupRequestProjection_feedId_check', sql`${table.feedId} > 0`),
-    check(
-      'GroupRequestProjection_direction_check',
-      sql`${table.direction} IN ('APPLICATION', 'INVITATION')`,
-    ),
-    check(
-      'GroupRequestProjection_retention_check',
-      sql`${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days'`,
-    ),
+    index('RelationshipRequest_author_page_idx').on(table.authorNamespaceId, table.authorAccount, table.createdAt.desc(), table.id.desc()),
+    index('RelationshipRequest_receiver_page_idx').on(table.receiverNamespaceId, table.receiverAccount, table.createdAt.desc(), table.id.desc()),
+    foreignKey({ columns: [table.authorNamespaceId], foreignColumns: [identityNamespace.id], name: 'RelationshipRequest_authorNamespaceId_fkey' }).onDelete('restrict'),
+    foreignKey({ columns: [table.receiverNamespaceId], foreignColumns: [identityNamespace.id], name: 'RelationshipRequest_receiverNamespaceId_fkey' }).onDelete('restrict'),
+    check('RelationshipRequest_kind_check', sql`(${table.kind} = 'FRIEND' AND ${table.authorAccount} NOT LIKE '!%' AND ${table.receiverAccount} NOT LIKE '!%') OR (${table.kind} = 'GROUP_APPLICATION' AND ${table.authorAccount} NOT LIKE '!%' AND ${table.receiverAccount} LIKE '!%') OR (${table.kind} = 'GROUP_INVITATION' AND ${table.authorAccount} LIKE '!%' AND ${table.receiverAccount} NOT LIKE '!%')`),
+    check('RelationshipRequest_endpoints_check', sql`${table.authorAccount} <> '' AND ${table.receiverAccount} <> '' AND (${table.authorAccount} <> ${table.receiverAccount} OR ${table.authorNamespaceId} <> ${table.receiverNamespaceId}) AND ${table.authorNamespaceId} >= 0 AND ${table.receiverNamespaceId} >= 0 AND (${table.authorNamespaceId} = 0 OR ${table.receiverNamespaceId} = 0)`),
+    check('RelationshipRequest_profile_check', sql`${table.authorProfileNamespaceId} >= 0 AND ${table.authorProfileRev} >= 0`),
+    check('RelationshipRequest_expiry_check', sql`${table.expiresAt} > ${table.requestedAt}`),
+    check('RelationshipRequest_snapshot_check', sql`(${table.authorNamespaceId} <> 0 AND ${table.snapshot} IS NULL) OR (${table.authorNamespaceId} = 0 AND ${table.snapshot} IS NOT NULL AND COALESCE(jsonb_typeof(${table.snapshot}) = 'object' AND (${table.snapshot} - 'displayName' - 'avatar') = '{}'::jsonb AND jsonb_typeof(${table.snapshot}->'displayName') = 'string' AND char_length(btrim(${table.snapshot}->>'displayName')) > 0 AND char_length(${table.snapshot}->>'displayName') <= 31 AND (${table.snapshot}->'avatar' = 'null'::jsonb OR (jsonb_typeof(${table.snapshot}->'avatar') = 'string' AND char_length(btrim(${table.snapshot}->>'avatar')) > 0)), false))`),
   ],
 );
 
@@ -2239,14 +2188,14 @@ export const profileTombstone = pgTable(
 export const relationshipIntent = pgTable(
   'RelationshipIntent',
   {
+    /** Current visible request round; protocol-only transitions may have none. */
+    requestId: bigint({ mode: 'bigint' }),
     authorAccount: varchar({ length: 31 }).notNull(),
     /** The initiator endpoint's own identity namespace; 0 for local authors. */
     authorNamespaceId: integer().notNull(),
     receiverAccount: varchar({ length: 31 }).notNull(),
     /** The receiver endpoint's own identity namespace; 0 for local receivers. */
     receiverNamespaceId: integer().notNull(),
-    /** Local send-time receiver presentation; never serialized into peer intents. */
-    snapshot: jsonb().$type<RequestSnapshot>(),
     status: relationshipIntentStatus().notNull(),
     /** Immutable author profile reference retained for the current request flow. */
     profileNamespaceId: integer().notNull(),
@@ -2270,6 +2219,12 @@ export const relationshipIntent = pgTable(
       ],
       name: 'RelationshipIntent_pkey',
     }),
+    index('RelationshipIntent_requestId_idx').on(table.requestId),
+    foreignKey({
+      columns: [table.requestId],
+      foreignColumns: [relationshipRequest.id],
+      name: 'RelationshipIntent_requestId_fkey',
+    }).onDelete('set null'),
     foreignKey({
       columns: [table.authorNamespaceId],
       foreignColumns: [identityNamespace.id],
@@ -2280,19 +2235,6 @@ export const relationshipIntent = pgTable(
       foreignColumns: [identityNamespace.id],
       name: 'RelationshipIntent_receiverNamespaceId_fkey',
     }).onDelete('restrict'),
-    check(
-      'RelationshipIntent_snapshot_check',
-      sql`${table.snapshot} IS NULL OR (
-        ${table.authorNamespaceId} = 0 AND
-        COALESCE(jsonb_typeof(${table.snapshot}) = 'object'
-          AND (${table.snapshot} - 'displayName' - 'avatar') = '{}'::jsonb
-          AND jsonb_typeof(${table.snapshot}->'displayName') = 'string'
-          AND char_length(btrim(${table.snapshot}->>'displayName')) > 0
-          AND char_length(${table.snapshot}->>'displayName') <= 31
-          AND (${table.snapshot}->'avatar' = 'null'::jsonb OR
-            (jsonb_typeof(${table.snapshot}->'avatar') = 'string'
-              AND char_length(btrim(${table.snapshot}->>'avatar')) > 0)), false))`,
-    ),
     check(
       'RelationshipIntent_author_namespace_check',
       sql`${table.authorNamespaceId} >= 0`,

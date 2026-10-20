@@ -777,6 +777,7 @@ describe('departure system message paths', () => {
           {
             userId: local.id,
             decision: 'REQUESTED',
+            snapshot: { displayName: peer.account, avatar: null },
             target: localToPeerTarget,
           },
           [],

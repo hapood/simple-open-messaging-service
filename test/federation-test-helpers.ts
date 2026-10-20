@@ -18,6 +18,7 @@ import {
 } from '../src/database/schema.js';
 import { PasswordHasher } from '../src/auth/password-hasher.service.js';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
+import { waitForReceivedRequest } from './support/received-request.js';
 
 /** The minimal app surface these helpers need (baseUrl for HTTP, database for direct DB/fixtures). */
 interface AppLike {
@@ -226,7 +227,7 @@ export async function establishFederatedFriendship(params: {
     .send({
       account: params.remoteAccount,
       namespaceId,
-      displayName: params.remoteAccount,
+      snapshot: { displayName: params.remoteAccount, avatar: null },
       note: params.note ?? '',
     });
   if (sent.body.code !== 0)
@@ -261,14 +262,23 @@ export async function establishFederatedFriendship(params: {
   }
   if (incomingNamespaceId === undefined)
     throw new Error('federated request did not reach remote');
+  const incoming = await waitForReceivedRequest(
+    params.remote.baseUrl,
+    params.remoteToken,
+    {
+      kind: 'FRIEND',
+      author: {
+        account: params.localAccount,
+        namespaceId: incomingNamespaceId,
+      },
+      receiver: { account: params.remoteAccount, namespaceId: 0 },
+    },
+  );
   const accepted = await request(params.remote.baseUrl)
     .post('/api/v1/relationship/accept')
     .set('Authorization', `Bearer ${params.remoteToken}`)
-    .send({
-      account: params.localAccount,
-      namespaceId: incomingNamespaceId,
-    });
-  if (accepted.body.code !== 0)
+    .send({ requestId: incoming.id });
+  if (accepted.body.code !== 0 || accepted.body.data?.status !== 'OK')
     throw new Error(
       `federated accept failed: ${JSON.stringify(accepted.body)}`,
     );

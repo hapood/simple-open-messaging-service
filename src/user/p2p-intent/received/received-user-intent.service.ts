@@ -9,10 +9,12 @@ import type {
   PendingClientStateFeedUpdate,
 } from '../../../client-state-feed/client-state-feed.service.js';
 import type { FederationStateFeedPusher } from '../../../federation/federation-state-feed.events.js';
+import type { RequestTransactionCapability } from '../../../relationship/request/request-transaction.contract.js';
 import type { PeerStateFeedService } from '../../../federation/peer-state-feed.service.js';
 import { openFederatedAudienceInTx } from '../../../federation/federation-audience.js';
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
+import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { normalizeAccount } from '../../../common/account.js';
 import { localIdentityDomain } from '../../../common/local-identity.js';
 import { lockBusinessAccountsInTx } from '../../../common/locks/account-business-lock.js';
@@ -23,9 +25,11 @@ import {
   type ThreadContentLock,
 } from '../../../common/locks/thread-content-lock.js';
 import {
-  userIntentAuthorizationSql,
+  pairAuthorizationSql,
+  directedIntentSql,
   userIntentLocatorSql,
-  type UserIntentAuthorizationRow,
+  type PairAuthorizationRow,
+  type DirectedIntentRow,
 } from '../authored/user-intent-authorization-sql.js';
 import { userIntentAcceptanceSql } from '../authored/user-intent-acceptance-sql.js';
 import { receivedUserIntentRequestSql } from './received-user-intent-request-sql.js';
@@ -37,16 +41,13 @@ import {
   InvalidReceivedIntentError,
   validateReceivedIntentBody,
 } from '../../../group/membership-intent/received/received-membership-body.js';
-import { epochMillisSql } from '../../../group/membership-intent/received/mirror-membership-shared-sql.js';
 import {
   ensureThreadShellInTx,
   lockOrMintUserPairInTx,
   lockUserIntentAccountsInTx,
   lockUserIntentThreadStateInTx,
-  ownRequestUnexpired,
   requireExistingThreadId,
   resetUserIntentThreadStateInTx,
-  userIntentCompactionKey,
   type UserIntentEndpoint,
 } from '../shared/user-intent-state-sql.js';
 
@@ -69,14 +70,6 @@ export interface ReceivedUserIntentCommand {
   localUserId: number;
   peer: { account: string; domain: string; namespaceId: number };
   body: ReceivedUserIntentBody;
-}
-
-export interface ReceivedUserIntentDependencies {
-  database: DatabaseService;
-  clientFeed: ClientStateFeedService;
-  peerFeed: PeerStateFeedService;
-  federation: FederationStateFeedPusher;
-  userIntents: UserIntentService;
 }
 
 /** Routing outcomes, for tests and diagnostics. `noop:*` rows never wrote. */
@@ -123,24 +116,30 @@ type Endpoint = UserIntentEndpoint;
 export class ReceivedUserIntentService {
   private readonly logger = new Logger(ReceivedUserIntentService.name);
 
-  constructor(private readonly deps: ReceivedUserIntentDependencies) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly clientFeed: ClientStateFeedService,
+    private readonly peerFeed: PeerStateFeedService,
+    private readonly federation: FederationStateFeedPusher,
+    private readonly userIntents: UserIntentService,
+    private readonly requestCapability: RequestTransactionCapability,
+  ) {}
 
   async execute(
     command: ReceivedUserIntentCommand,
   ): Promise<{ routed: ReceivedUserIntentRouting }> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const peers = new Set<number>();
-    const result = await this.deps.database.db.transaction(async (tx) =>
+    const result = await this.database.db.transaction(async (tx) =>
       this.applyInTx(tx, command, clientUpdates, peers),
     );
     try {
       if (clientUpdates.length > 0)
-        this.deps.clientFeed.notifyFeedUpdates(clientUpdates);
+        this.clientFeed.notifyFeedUpdates(clientUpdates);
     } catch (error) {
       this.logger.warn('received user intent client wake failed', error);
     }
-    if (peers.size > 0)
-      void this.deps.federation.pushStateFeedNamespaces(peers);
+    if (peers.size > 0) void this.federation.pushStateFeedNamespaces(peers);
     return { routed: result.routed };
   }
 
@@ -242,45 +241,60 @@ export class ReceivedUserIntentService {
       pairId,
       threadId,
     );
-    await tx.execute(
-      sql`SELECT 1 FROM "RelationshipIntent"
-      WHERE ("authorAccount" = ${localUser.account} AND "authorNamespaceId" = ${localUser.namespaceId}
-          AND "receiverAccount" = ${peer.account} AND "receiverNamespaceId" = ${peer.namespaceId})
-        OR ("authorAccount" = ${peer.account} AND "authorNamespaceId" = ${peer.namespaceId}
-          AND "receiverAccount" = ${localUser.account} AND "receiverNamespaceId" = ${localUser.namespaceId})
-      ORDER BY "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId"
-      FOR NO KEY UPDATE`,
-    );
-    // Post-lock state read; our side is "own", the peer's retained direction is
-    // "reverse". The routing decision reads only this row, never the locator.
-    const row = (
-      await tx.execute<UserIntentAuthorizationRow>(
-        userIntentAuthorizationSql({
+    const pairRow = (
+      await tx.execute<PairAuthorizationRow>(
+        pairAuthorizationSql({
           pairId,
           actorUserId: command.localUserId,
-          actorAccount: localUser.account,
-          actorNamespaceId: localUser.namespaceId,
           targetAccount: peer.account,
           targetDomain: peer.domain,
           targetNamespaceId: peer.namespaceId,
         }),
       )
     ).rows[0];
-    if (!row) throw new Error('user intent authorization disappeared');
+    if (!pairRow) throw new Error('user intent authorization disappeared');
     // The peer outbound allocator precedes every client-feed allocation,
     // including the AccountThreadState participant trigger below.
     if (namespaceId !== 0)
-      await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
+      await this.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         { namespaceId },
       ]);
-    // The incoming item is the peer's direction; the activation gate is our
-    // own live consent artifact (an unexpired request or a retained
-    // acceptance).
+
+    const [ownIntent] = (
+      await tx.execute<DirectedIntentRow>(
+        directedIntentSql({
+          authorAccount: localUser.account,
+          authorNamespaceId: localUser.namespaceId,
+          receiverAccount: peer.account,
+          receiverNamespaceId: peer.namespaceId,
+        }),
+      )
+    ).rows;
+
+    const [peerIntent] = (
+      await tx.execute<DirectedIntentRow>(
+        directedIntentSql({
+          authorAccount: peer.account,
+          authorNamespaceId: peer.namespaceId,
+          receiverAccount: localUser.account,
+          receiverNamespaceId: localUser.namespaceId,
+        }),
+      )
+    ).rows;
+
     const localLive =
-      row.ownStatus === 'ACCEPTED' ||
-      (row.ownStatus === 'REQUESTED' && ownRequestUnexpired(row));
+      ownIntent?.status === 'ACCEPTED' ||
+      (ownIntent?.status === 'REQUESTED' &&
+        ownIntent.expiresAt !== null &&
+        new Date(ownIntent.expiresAt).getTime() > Date.now());
     await lockUserIntentThreadStateInTx(tx, threadId, localUser, peer);
     await lockUserIntentAccountsInTx(tx, [command.localUserId]);
+
+    const contextBase = {
+      pair: pairRow,
+      localIntent: ownIntent ?? null,
+      peerIntent: peerIntent ?? null,
+    };
 
     // The peer's newest direction is always persisted first (the composed
     // statements' IS DISTINCT guards make a repeat a no-op); only the
@@ -295,7 +309,7 @@ export class ReceivedUserIntentService {
         threadLock,
         localUser,
         peer,
-        row,
+        ...contextBase,
         clientUpdates,
         peers,
       });
@@ -307,14 +321,14 @@ export class ReceivedUserIntentService {
         threadId,
         localUser,
         peer,
-        row,
+        ...contextBase,
         clientUpdates,
         localUserId: command.localUserId,
       });
     if (intent.status === 'ACCEPTED') {
       await resetUserIntentThreadStateInTx(tx, threadId, localUser, peer, {
         activate: false,
-        boundarySeq: row.threadCurSeq,
+        boundarySeq: pairRow.threadCurSeq,
       });
       return { routed: 'noop:dropped-ack' };
     }
@@ -324,7 +338,7 @@ export class ReceivedUserIntentService {
       threadId,
       localUser,
       peer,
-      row,
+      ...contextBase,
       clientUpdates,
       peers,
       localUserId: command.localUserId,
@@ -352,29 +366,23 @@ export class ReceivedUserIntentService {
       threadLock: ThreadContentLock;
       localUser: Endpoint;
       peer: Endpoint;
-      row: UserIntentAuthorizationRow;
+      pair: PairAuthorizationRow;
+      localIntent: DirectedIntentRow | null;
+      peerIntent: DirectedIntentRow | null;
       clientUpdates: PendingClientStateFeedUpdate[];
       peers: Set<number>;
     },
   ): Promise<ReceivedUserIntentResult> {
     const { command, intent, wireIntent, pairId, threadId } = context;
     const namespaceId = context.peer.namespaceId;
-    const { actorKey, targetKey } = this.intentFeedKeys(
-      namespaceId,
-      context.peer,
-      context.localUser,
-    );
     const result = await tx.execute<{
       reverseUpgraded: boolean;
       pairChanged: boolean;
-      clientUpdates: Array<{ userId: number; feedId: number }>;
     }>(
       userIntentAcceptanceSql({
         pairId,
         threadId,
         namespaceId,
-        actorKey,
-        targetKey,
         actorAccount: context.peer.account,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
@@ -408,16 +416,39 @@ export class ReceivedUserIntentService {
       context.peer,
       {
         activate: result.rows[0]?.pairChanged === true,
-        boundarySeq: context.row.threadCurSeq,
+        boundarySeq: context.pair.threadCurSeq,
       },
     );
-    this.pushUpdates(result.rows[0], context.clientUpdates);
+    // The locally authored direction this acceptance promotes may still be
+    // associated with an open round: conclude it in the same transaction so
+    // the author's outgoing history settles at ACCEPTED. A replay finds the
+    // round already concluded and the call reports stale without writes.
+    if (
+      context.localIntent?.status === 'REQUESTED' &&
+      context.localIntent.requestId !== null
+    )
+      await this.requestCapability.concludeRequestInTx(tx, {
+        flow: {
+          kind: 'FRIEND',
+          author: {
+            account: context.localUser.account,
+            namespaceId: 0,
+          },
+          receiver: {
+            account: context.peer.account,
+            namespaceId: context.peer.namespaceId,
+          },
+        },
+        requestId: BigInt(context.localIntent.requestId),
+        cause: 'ACCEPT',
+      });
     // Announce our direction when this item promoted it, or
     // when a received REQUESTED completed a dangling local acceptance. A
     // received ACK over an already-retained acceptance needs no announcement.
     const publishConfirmation =
       result.rows[0]?.reverseUpgraded === true ||
-      (intent.status === 'REQUESTED' && context.row.ownStatus === 'ACCEPTED');
+      (intent.status === 'REQUESTED' &&
+        context.localIntent?.status === 'ACCEPTED');
     if (publishConfirmation) {
       // The wireIntent body carries epoch-millisecond numbers (state feed §4.1),
       // so the timestamp converts in SQL — a raw timestamptz string would
@@ -431,7 +462,8 @@ export class ReceivedUserIntentService {
           requestedAt: string | null;
         }>(sql`
           SELECT status, "profileNamespaceId", "profileRev", note,
-            ${epochMillisSql(sql`"requestedAt"`)} AS "requestedAt"
+            CASE WHEN "requestedAt" IS NULL THEN NULL
+              ELSE floor(extract(epoch FROM "requestedAt") * 1000)::bigint END AS "requestedAt"
           FROM "RelationshipIntent"
           WHERE "authorAccount" = ${context.localUser.account}
             AND "authorNamespaceId" = ${context.localUser.namespaceId}
@@ -441,7 +473,7 @@ export class ReceivedUserIntentService {
       ).rows;
       if (!ours) throw new Error('local relationship direction disappeared');
       const confirmations =
-        await this.deps.peerFeed.writeAcceptanceConfirmationsInTx(tx, [
+        await this.peerFeed.writeAcceptanceConfirmationsInTx(tx, [
           {
             namespaceId,
             account: context.localUser.account,
@@ -473,12 +505,12 @@ export class ReceivedUserIntentService {
       ...(await captureThreadStateUpdatesInTx(tx, [command.localUserId])),
     );
     return {
-      routed: context.row.pairActive
+      routed: context.pair.pairActive
         ? 'noop:already-friends'
-        : context.row.ownStatus === 'REQUESTED'
+        : context.localIntent?.status === 'REQUESTED'
           ? 'activated'
           : 'completion',
-      threadId: context.row.pairActive ? undefined : threadId,
+      threadId: context.pair.pairActive ? undefined : threadId,
     };
   }
 
@@ -500,28 +532,22 @@ export class ReceivedUserIntentService {
       threadId: number;
       localUser: Endpoint;
       peer: Endpoint;
-      row: UserIntentAuthorizationRow;
+      pair: PairAuthorizationRow;
+      localIntent: DirectedIntentRow | null;
+      peerIntent: DirectedIntentRow | null;
       clientUpdates: PendingClientStateFeedUpdate[];
       localUserId: number;
     },
   ): Promise<ReceivedUserIntentResult> {
     const { intent, wireIntent, pairId, threadId } = context;
     const namespaceId = context.peer.namespaceId;
-    const { actorKey, targetKey } = this.intentFeedKeys(
-      namespaceId,
-      context.peer,
-      context.localUser,
-    );
     const result = await tx.execute<{
       intentChanged: boolean;
-      clientUpdates: Array<{ userId: number; feedId: number }>;
     }>(
       receivedUserIntentRequestSql({
         pairId,
         threadId,
         namespaceId,
-        actorKey,
-        targetKey,
         actorAccount: context.peer.account,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
@@ -549,6 +575,36 @@ export class ReceivedUserIntentService {
         }),
       }),
     );
+    // A remote-authored round is projected locally with the wire's own
+    // validity window, mirroring the group remote-application path: the
+    // receiver decides by this local round id. No author-side snapshot is
+    // stored — the incoming view resolves the wire author-profile
+    // coordinates. A refresh on an already-active pair projects nothing.
+    if (!context.pair.pairActive) {
+      const projected = await this.requestCapability.openRequestInTx(tx, {
+        flow: {
+          kind: 'FRIEND',
+          author: {
+            account: context.peer.account,
+            namespaceId: context.peer.namespaceId,
+          },
+          receiver: {
+            account: context.localUser.account,
+            namespaceId: 0,
+          },
+        },
+        evidence: {
+          authorProfileNamespaceId: wireIntent.profileNamespaceId,
+          authorProfileRev: wireIntent.profileRev,
+          snapshot: null,
+          note: wireIntent.note,
+          requestedAt: intent.requestedAt,
+          expiresAt: intent.expiresAt,
+        },
+      });
+      if (projected.status !== 'STALE_REQUEST')
+        context.clientUpdates.push(...projected.effects.clientUpdates);
+    }
     await resetUserIntentThreadStateInTx(
       tx,
       threadId,
@@ -556,19 +612,18 @@ export class ReceivedUserIntentService {
       context.peer,
       {
         activate: false,
-        boundarySeq: context.row.threadCurSeq,
+        boundarySeq: context.pair.threadCurSeq,
       },
     );
-    this.pushUpdates(result.rows[0], context.clientUpdates);
     context.clientUpdates.push(
       ...(await captureThreadStateUpdatesInTx(tx, [context.localUserId])),
     );
     // A stranger's application is recorded; an expired or withdrawn prior
     // direction is refreshed. The effects are identical — routing is only a
     // diagnostic. On an already-active pair the refresh carries no transition.
-    const routed: ReceivedUserIntentRouting = context.row.pairActive
+    const routed: ReceivedUserIntentRouting = context.pair.pairActive
       ? 'noop:already-friends'
-      : context.row.reverseStatus === null
+      : context.peerIntent === null
         ? 'recorded-request'
         : 'refreshed-request';
     return { routed };
@@ -594,7 +649,9 @@ export class ReceivedUserIntentService {
       threadId: number;
       localUser: Endpoint;
       peer: Endpoint;
-      row: UserIntentAuthorizationRow;
+      pair: PairAuthorizationRow;
+      localIntent: DirectedIntentRow | null;
+      peerIntent: DirectedIntentRow | null;
       clientUpdates: PendingClientStateFeedUpdate[];
       peers: Set<number>;
       localUserId: number;
@@ -602,21 +659,13 @@ export class ReceivedUserIntentService {
   ): Promise<ReceivedUserIntentResult> {
     const { wireIntent, pairId, threadId } = context;
     const namespaceId = context.peer.namespaceId;
-    const { actorKey, targetKey } = this.intentFeedKeys(
-      namespaceId,
-      context.peer,
-      context.localUser,
-    );
     const result = await tx.execute<{
       pairChanged: boolean;
-      clientUpdates: Array<{ userId: number; feedId: number }>;
     }>(
       userIntentRevocationSql({
         pairId,
         threadId,
         namespaceId,
-        actorKey,
-        targetKey,
         actorAccount: context.peer.account,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
@@ -641,16 +690,81 @@ export class ReceivedUserIntentService {
         }),
       }),
     );
-    this.pushUpdates(result.rows[0], context.clientUpdates);
+    // Open rounds settle with the peer's revocation: our pending request
+    // was rejected, the peer's own projected request was withdrawn. Both
+    // conclusions are idempotent — a redelivery finds closed rounds and the
+    // capability reports stale without writing.
+    if (
+      context.localIntent?.status === 'REQUESTED' &&
+      context.localIntent.requestId !== null
+    )
+      await this.requestCapability.concludeRequestInTx(tx, {
+        flow: {
+          kind: 'FRIEND',
+          author: {
+            account: context.localUser.account,
+            namespaceId: 0,
+          },
+          receiver: {
+            account: context.peer.account,
+            namespaceId: context.peer.namespaceId,
+          },
+        },
+        requestId: BigInt(context.localIntent.requestId),
+        cause: 'REJECT',
+      });
+    if (
+      context.peerIntent?.status === 'REQUESTED' &&
+      context.peerIntent.requestId !== null
+    )
+      await this.requestCapability.concludeRequestInTx(tx, {
+        flow: {
+          kind: 'FRIEND',
+          author: {
+            account: context.peer.account,
+            namespaceId: context.peer.namespaceId,
+          },
+          receiver: {
+            account: context.localUser.account,
+            namespaceId: 0,
+          },
+        },
+        requestId: BigInt(context.peerIntent.requestId),
+        cause: 'WITHDRAW',
+      });
     if (result.rows[0]?.pairChanged === true) {
       await this.authorOwnConclusionInTx(tx, context);
       return { routed: 'kick' };
     }
-    if (context.row.ownStatus === 'ACCEPTED') {
+    if (context.localIntent?.status === 'ACCEPTED') {
       await this.authorOwnConclusionInTx(tx, context);
       return { routed: 'conclusion' };
     }
-    if (context.row.ownStatus === 'REQUESTED') return { routed: 'rejection' };
+    if (context.localIntent?.status === 'REQUESTED') {
+      // BUG-1 convergence: the peer's REVOKED ends our pending direction in
+      // this same transaction — a left-live REQUESTED would swallow a later
+      // re-request as a same-round refresh and never reach the peer. The
+      // round itself already concluded REJECTED above; no echo is authored
+      // because the peer already holds the rejection fact.
+      await tx.execute(
+        authoredIntentWriteSql({
+          author: {
+            account: context.localUser.account,
+            namespaceId: 0,
+          },
+          receiver: {
+            account: context.peer.account,
+            namespaceId: context.peer.namespaceId,
+          },
+          threadId,
+          status: 'REVOKED',
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+        }),
+      );
+      return { routed: 'rejection' };
+    }
     return { routed: 'noop:already-revoked' };
   }
 
@@ -667,7 +781,7 @@ export class ReceivedUserIntentService {
       peers: Set<number>;
     },
   ): Promise<void> {
-    const result = await this.deps.userIntents.executeInTx(
+    const result = await this.userIntents.executeInTx(
       tx,
       {
         userId: context.localUserId,
@@ -682,31 +796,5 @@ export class ReceivedUserIntentService {
       );
     for (const namespaceId of result.peers.keys())
       context.peers.add(namespaceId);
-  }
-
-  /** Feed compaction keys follow the direction each key names: the wire
-   * author (the peer) and the local target. */
-  private intentFeedKeys(
-    namespaceId: number,
-    actor: Endpoint,
-    target: Endpoint,
-  ): { actorKey: string; targetKey: string } {
-    return {
-      actorKey: userIntentCompactionKey(namespaceId, actor, target),
-      targetKey: userIntentCompactionKey(namespaceId, target, actor),
-    };
-  }
-
-  private pushUpdates(
-    row:
-      | { clientUpdates?: Array<{ userId: number; feedId: number }> }
-      | undefined,
-    clientUpdates: PendingClientStateFeedUpdate[],
-  ): void {
-    for (const update of row?.clientUpdates ?? [])
-      clientUpdates.push({
-        userId: update.userId,
-        feedId: Number(update.feedId),
-      });
   }
 }

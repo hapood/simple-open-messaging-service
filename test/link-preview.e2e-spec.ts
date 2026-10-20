@@ -8,7 +8,7 @@ import { messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 import { createTestApp } from './support/app';
-import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
+import { waitForReceivedRequest } from './support/received-request.js';
 import { findP2PRelationship } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
 
@@ -77,21 +77,21 @@ describe('LINK message send (single instance)', () => {
     const invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob', namespaceId: 0 });
+      .send({
+        account: 'bob',
+        namespaceId: 0,
+        snapshot: { displayName: 'Bob', avatar: null },
+      });
     expect(invite.body.code).toBe(0);
-    await waitForLocalRelationshipRequest(
-      database.db,
-      invite.body,
-      alice.id,
-      bob.id,
-    );
+    const incoming = await waitForReceivedRequest(baseUrl, bob.token, {
+      kind: 'FRIEND',
+      author: { account: alice.account, namespaceId: 0 },
+      receiver: { account: bob.account, namespaceId: 0 },
+    });
     const accept = await request(baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({
-        account: alice.account,
-        namespaceId: 0,
-      });
+      .send({ requestId: incoming.id });
     expect(accept.body.data).toMatchObject({ status: 'OK' });
     const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
       .pair?.threadId;
@@ -134,24 +134,24 @@ describe('LINK message send (single instance)', () => {
     const appLike = { baseUrl, database: database.db };
     const alice = await registerAndLogin(appLike, 'alice2', 'Alice2');
     const bob = await registerAndLogin(appLike, 'bob2', 'Bob2');
-    const invite = await request(baseUrl)
+    await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob2', namespaceId: 0 })
+      .send({
+        account: 'bob2',
+        namespaceId: 0,
+        snapshot: { displayName: 'Bob2', avatar: null },
+      })
       .expect((res) => expect(res.body.code).toBe(0));
-    await waitForLocalRelationshipRequest(
-      database.db,
-      invite.body,
-      alice.id,
-      bob.id,
-    );
+    const incoming = await waitForReceivedRequest(baseUrl, bob.token, {
+      kind: 'FRIEND',
+      author: { account: alice.account, namespaceId: 0 },
+      receiver: { account: bob.account, namespaceId: 0 },
+    });
     const accept = await request(baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({
-        account: alice.account,
-        namespaceId: 0,
-      });
+      .send({ requestId: incoming.id });
     expect(accept.body.data).toMatchObject({ status: 'OK' });
     const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
       .pair?.threadId;

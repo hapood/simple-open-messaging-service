@@ -7,6 +7,7 @@ import {
 
 export interface UserIntentRequestInput extends UserIntentRequestStateInput {
   snapshot: RequestSnapshot;
+  requestId?: bigint | null;
 }
 
 /** Local requests always capture the receiver's send-time presentation. */
@@ -19,6 +20,7 @@ export function userIntentRequestSql(input: UserIntentRequestInput) {
     note: input.note,
     requestedAt: input.requestedAt,
     expiresAt: input.expiresAt,
+    requestId: input.requestId,
     snapshot: input.snapshot,
   }));
 }

@@ -1,4 +1,5 @@
 import { IsRequestSnapshot, RequestSnapshotDto } from './request-snapshot.dto.js';
+import { IsRequestId, RequestPageDto } from './relationship-request.dto.js';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
@@ -155,24 +156,12 @@ export class QueryGroupInviteCandidatesDto extends GroupIdDto {
 }
 
 /** Newest-first keyset page of projected USER→GROUP applications. */
-export class QueryGroupJoinRequestsDto extends GroupIdDto {
-  @ApiPropertyOptional({
-    example: 123,
-    description: 'Exclusive projection feed cursor. Omit for the newest page.',
-  })
-  @IsOptional()
+export class QueryGroupJoinRequestsDto extends RequestPageDto {
+  @ApiProperty({ example: 12 })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  before?: number;
-
-  @ApiPropertyOptional({ default: 20, description: 'Page size (1-50)' })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(50)
-  take?: number;
+  groupId!: number;
 }
 
 export class ReadGroupJoinRequestsDto extends GroupIdDto {
@@ -207,7 +196,11 @@ class GroupMemberTargetDto {
   namespaceId!: number;
 }
 
-export class HandleGroupJoinRequestDto extends GroupMemberTargetDto {}
+export class HandleGroupJoinRequestDto extends GroupIdDto {
+  @ApiProperty({ type: String, example: '42' })
+  @IsRequestId()
+  requestId!: string;
+}
 
 export class KickGroupDto extends GroupMemberTargetDto {}
 

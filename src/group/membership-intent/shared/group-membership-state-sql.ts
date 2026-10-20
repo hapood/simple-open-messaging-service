@@ -30,7 +30,6 @@ export interface GroupMembershipStateRow extends Record<string, unknown> {
   localMemberId: number | null;
   authorized: boolean;
   managerIds: number[];
-  projectionDirections: Array<'APPLICATION' | 'INVITATION'>;
 }
 
 /** Reads the locked canonical membership state used by member-authored commands
@@ -119,12 +118,7 @@ export function groupMembershipStateSql(input: {
       (${input.actorUserId}::integer IS NOT NULL
         AND local_member.id = ${input.actorUserId}) AS authorized,
       COALESCE((SELECT jsonb_agg(id ORDER BY id) FROM managers
-        WHERE id IS DISTINCT FROM local_member.id), '[]'::jsonb) AS "managerIds",
-      COALESCE((SELECT jsonb_agg(DISTINCT p.direction ORDER BY p.direction)
-        FROM "GroupRequestProjection" p
-        WHERE p."threadId" = ${input.threadId} AND p."memberAccount" = ${input.memberAccount}
-          AND p."profileNamespaceId" = ${input.profileNamespaceId}
-          AND p.status = 'REQUESTED'), '[]'::jsonb) AS "projectionDirections"
+        WHERE id IS DISTINCT FROM local_member.id), '[]'::jsonb) AS "managerIds"
     FROM ${groupStateSql} g
     LEFT JOIN side_b ON true
     LEFT JOIN side_a ON true

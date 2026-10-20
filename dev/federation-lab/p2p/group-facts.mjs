@@ -3,6 +3,7 @@ import {
   federationLabNodes,
 } from '../topology.mjs';
 import { pairKey } from './scenario.mjs';
+import { requestIdFromWire } from '../../../shared/relationship-request.ts';
 import { profileSubjectIdentityJoins } from './profile-subject-identity.mjs';
 
 function normalizeAddress(account, domain) {
@@ -99,13 +100,25 @@ async function readNodeGroupRows(client) {
         ORDER BY pair."id", "authorSide"
       `);
   const requests = await client.query(`
-        SELECT projection."threadId", projection."direction", projection."feedId",
-               projection."status", projection."expiresAt",
-               projection."memberAccount", projection."profileNamespaceId" AS "memberNamespaceId",
+        SELECT thread."id" AS "threadId", request."id"::text AS "requestId",
+               CASE request."kind" WHEN 'GROUP_APPLICATION' THEN 'APPLICATION'
+                 ELSE 'INVITATION' END AS "direction",
+               request."status", request."expiresAt",
+               CASE request."kind" WHEN 'GROUP_APPLICATION' THEN request."authorAccount"
+                 ELSE request."receiverAccount" END AS "memberAccount",
+               CASE request."kind" WHEN 'GROUP_APPLICATION' THEN request."authorNamespaceId"
+                 ELSE request."receiverNamespaceId" END AS "memberNamespaceId",
                ns."domain" AS "memberDomain"
-        FROM "GroupRequestProjection" projection
-        LEFT JOIN "IdentityNamespace" ns ON ns."id" = projection."profileNamespaceId"
-        ORDER BY projection."threadId", projection."direction", projection."feedId"
+        FROM "RelationshipRequest" request
+        JOIN "MessageThread" thread ON thread."type" = 'GROUP'
+          AND thread."groupAccount" = CASE request."kind"
+            WHEN 'GROUP_APPLICATION' THEN request."receiverAccount" ELSE request."authorAccount" END
+          AND thread."authorityNamespaceId" = CASE request."kind"
+            WHEN 'GROUP_APPLICATION' THEN request."receiverNamespaceId" ELSE request."authorNamespaceId" END
+        JOIN "IdentityNamespace" ns ON ns."id" = CASE request."kind"
+          WHEN 'GROUP_APPLICATION' THEN request."authorNamespaceId" ELSE request."receiverNamespaceId" END
+        WHERE request."kind" IN ('GROUP_APPLICATION', 'GROUP_INVITATION')
+        ORDER BY thread."id", request."id"
       `);
   const users = await client.query(`
         SELECT local_account."id", identity."account", identity."domain"
@@ -223,10 +236,10 @@ function normalizeNode(node, rows, p2pNode) {
     if (!group) continue;
     group.requests.push({
       direction: request.direction,
-      feedId: request.feedId,
+      requestId: requestIdFromWire(request.requestId),
       memberAccount: request.memberAccount,
       memberDomain: request.memberDomain,
-      memberNamespaceId: request.memberNamespaceId ?? 0,
+      memberNamespaceId: request.memberNamespaceId,
       status: request.status,
       expiresAt: request.expiresAt,
       memberAddress: normalizeAddress(
@@ -299,7 +312,7 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
       (relationship === undefined && me?.role === 'OWNER'));
   const memberRole = membershipActive ? (me?.role ?? null) : null;
   // Request rows are group-scoped: every OWNER/ADMIN observes (and can act on)
-  // all of them — the projection no longer attributes rows to one manager.
+  // all of them; permanent records are not attributed to one manager.
   const requests =
     memberRole === 'OWNER' || memberRole === 'ADMIN'
       ? (group?.requests ?? [])

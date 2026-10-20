@@ -54,13 +54,13 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         federation: FederationStateFeedPushService,
         relationshipMutations: GroupRelationshipMutationService,
       ) =>
-        new GroupAuthoredMembershipIntentService({
+        new GroupAuthoredMembershipIntentService(
           database,
           clientFeed,
           peerFeed,
           federation,
           relationshipMutations,
-        }),
+        ),
       inject: [
         DatabaseService,
         ClientStateFeedService,
@@ -77,12 +77,12 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         relationshipMutations: GroupRelationshipMutationService,
         federation: FederationStateFeedPushService,
       ) =>
-        new MemberAuthoredGroupMembershipIntentService({
+        new MemberAuthoredGroupMembershipIntentService(
           database,
           clientFeed,
           relationshipMutations,
           federation,
-        }),
+        ),
       inject: [
         DatabaseService,
         ClientStateFeedService,

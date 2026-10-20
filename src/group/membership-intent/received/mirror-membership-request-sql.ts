@@ -1,10 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
-import { clientIntentFeedWriteSql } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
 import {
-  epochMillisSql,
   mirrorGroupDirection,
-  mirrorIntentCompactionKey,
-  mirrorIntentFeedBodySql,
   mirrorIntentReadBackSql,
   mirrorIntentWriteSql,
   type MirrorGroupPresentationInput,
@@ -31,9 +27,8 @@ export interface MirrorMembershipRequestInput {
  * stranger branch (the preamble minted the inactive canonical pair, this
  * statement persists side A) and the refresh branch (side B REVOKED or expired
  * — side B stays untouched so re-application keeps working). Activating
- * collapses route to the acceptance statement instead. The invitee's only
- * artifact is the client feed row; a mirror owns no projections, meta facts,
- * or audience rows. */
+ * collapses route to the acceptance statement instead. Request history belongs
+ * to the permanent request capability; this statement writes no client event. */
 export function mirrorMembershipRequestSql(
   input: MirrorMembershipRequestInput,
 ): SQL {
@@ -60,31 +55,8 @@ export function mirrorMembershipRequestSql(
       readBackName: 'persisted_intent',
       author,
       receiver,
-    })}, candidate_bodies AS MATERIALIZED (
-      SELECT ${input.localMemberId}::integer AS "userId",
-        ${input.presentation.groupNamespaceId}::integer AS "namespaceId", 1 AS ordinal,
-        ${mirrorIntentCompactionKey({
-          groupNamespaceId: input.presentation.groupNamespaceId,
-          groupAccount: input.presentation.groupAccount,
-          memberAccount: input.memberAccount,
-        })}::text AS "compactionKey",
-        ${input.presentation.groupAccount}::text AS account,
-        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
-        ${mirrorIntentFeedBodySql({
-          status: sql`v.status`,
-          profileRev: sql`v."profileRev"`,
-          note: sql`v.note`,
-          requestedAt: epochMillisSql(sql`v."requestedAt"`),
-          expiresAt: epochMillisSql(sql`v."expiresAt"`),
-          established: sql`false`,
-          threadId: input.threadId,
-          presentation: input.presentation,
-        })} AS body
-      FROM persisted_intent v
-    ), ${clientIntentFeedWriteSql()}
-    SELECT EXISTS (SELECT 1 FROM authored) AS "intentChanged",
-      (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-      (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"
+    })}
+    SELECT EXISTS (SELECT 1 FROM authored) AS "intentChanged"
     FROM persisted_intent v
   `;
 }

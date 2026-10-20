@@ -1,16 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PATH_METADATA } from '@nestjs/common/constants.js';
+import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
 import { BusinessCode } from '../common/business-code.js';
 import { RelationshipController } from './relationship.controller.js';
 
-/** Constructor order: clientStateFeed, userIntents, userQuota, memberIntents. */
+/** Request-round commands and established-relationship commands use separate ports. */
 function build(overrides: {
-  clientStateFeed?: unknown;
+  requests?: unknown;
   userIntents?: unknown;
   userQuota?: unknown;
   memberIntents?: unknown;
 }): RelationshipController {
   return new RelationshipController(
-    (overrides.clientStateFeed ?? {}) as never,
+    (overrides.requests ?? {}) as never,
     (overrides.userIntents ?? {}) as never,
     (overrides.userQuota ?? {}) as never,
     (overrides.memberIntents ?? {}) as never,
@@ -18,210 +20,116 @@ function build(overrides: {
 }
 
 describe('RelationshipController.markRelationshipRequestsRead', () => {
-  it('advances the relationship-request read watermark', async () => {
-    const clientStateFeed = {
-      markRelationshipRequestsRead: vi.fn().mockResolvedValue(42),
+  it('forwards the observed request ID without number conversion', async () => {
+    const head = {
+      requestEndId: '9007199254740993',
+      requestReadId: '9007199254740993',
     };
-    const controller = build({ clientStateFeed });
-
+    const requests = { markRead: vi.fn().mockResolvedValue(head) };
+    const controller = build({ requests });
     await expect(
       controller.markRelationshipRequestsRead(
         { user: { userId: 7 } } as never,
-        { readThroughFeedId: 41 },
+        { requestReadId: head.requestReadId },
       ),
-    ).resolves.toEqual({ readThroughFeedId: 42 });
-    expect(clientStateFeed.markRelationshipRequestsRead).toHaveBeenCalledWith(
+    ).resolves.toEqual(head);
+    expect(requests.markRead).toHaveBeenCalledExactlyOnceWith(
       7,
-      41,
+      head.requestReadId,
     );
   });
 });
 
-describe('RelationshipController.acceptRelationship', () => {
-  it('resolves a group invitation from its relationship intent by namespace', async () => {
-    const memberIntents = {
-      executeByNamespace: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
-    };
-    const controller = build({ memberIntents });
+describe('RelationshipController request-round boundary', () => {
+  it.each([
+    ['acceptRelationship', 'ACCEPT'],
+    ['rejectRequest', 'REJECT'],
+    ['withdrawRequest', 'WITHDRAW'],
+  ] as const)(
+    'routes %s by exact request ID, not address',
+    async (method, decision) => {
+      const outcome = { status: 'OK', threadId: 21 };
+      const requests = { decidePersonal: vi.fn() };
+      const userIntents = {
+        execute: vi.fn(),
+        decidePersonalRequest: vi.fn().mockResolvedValue(outcome),
+      };
+      const memberIntents = { executeByNamespace: vi.fn() };
+      const controller = build({ requests, userIntents, memberIntents });
+      await expect(
+        controller[method]({ user: { userId: 7 } } as never, {
+          requestId: '9007199254740993',
+        }),
+      ).resolves.toEqual(outcome);
+      expect(userIntents.decidePersonalRequest).toHaveBeenCalledExactlyOnceWith(
+        7,
+        '9007199254740993',
+        decision,
+      );
+      expect(requests.decidePersonal).not.toHaveBeenCalled();
+      expect(userIntents.execute).not.toHaveBeenCalled();
+      expect(memberIntents.executeByNamespace).not.toHaveBeenCalled();
+    },
+  );
 
-    await expect(
-      controller.acceptRelationship({ user: { userId: 7 } } as never, {
-        account: '!remote-group',
-        namespaceId: 5,
-      }),
-    ).resolves.toEqual({ status: 'APPLIED' });
-    expect(memberIntents.executeByNamespace).toHaveBeenCalledWith({
-      memberUserId: 7,
-      target: { account: '!remote-group', namespaceId: 5 },
-      decision: 'ACCEPTED',
-    });
-  });
-
-  it('activates a known local P2P request synchronously through the intent service', async () => {
-    const userIntents = {
-      execute: vi.fn().mockResolvedValue({
-        status: 'APPLIED',
-        threadId: 12,
-      }),
-    };
+  it('preserves stale and completed round outcomes', async () => {
+    const userIntents = { decidePersonalRequest: vi.fn() };
     const controller = build({ userIntents });
-
-    await expect(
-      controller.acceptRelationship({ user: { userId: 7 } } as never, {
-        account: 'bob',
-        namespaceId: 0,
-      }),
-    ).resolves.toEqual({ status: 'OK', threadId: 12 });
-    expect(userIntents.execute).toHaveBeenCalledWith({
-      userId: 7,
-      decision: 'ACCEPTED',
-      target: { account: 'bob', namespaceId: 0 },
-    });
-  });
-
-  it('accepts a federated request synchronously through the intent service', async () => {
-    const userIntents = {
-      execute: vi.fn().mockResolvedValue({
-        status: 'APPLIED',
-        threadId: 21,
-      }),
-    };
-    const controller = build({ userIntents });
-
-    await expect(
-      controller.acceptRelationship({ user: { userId: 7 } } as never, {
-        account: 'bob',
-        namespaceId: 5,
-      }),
-    ).resolves.toEqual({ status: 'OK', threadId: 21 });
-    expect(userIntents.execute).toHaveBeenCalledWith({
-      userId: 7,
-      decision: 'ACCEPTED',
-      target: { account: 'bob', namespaceId: 5 },
-    });
-  });
-
-  it('preserves the invite-specific API code for a missing P2P intent', async () => {
-    const userIntents = {
-      execute: vi.fn().mockResolvedValue({
-        status: 'REJECTED',
-        reason: 'INTENT_NOT_FOUND',
-        code: BusinessCode.NOT_FOUND,
-        message: 'request not found',
-      }),
-    };
-    const controller = build({ userIntents });
-
-    await expect(
-      controller.acceptRelationship({ user: { userId: 7 } } as never, {
-        account: 'bob',
-        namespaceId: 0,
-      }),
-    ).resolves.toMatchObject({
-      code: BusinessCode.INVITE_NOT_FOUND,
-      data: { status: 'REJECTED', reason: 'INTENT_NOT_FOUND' },
-    });
-  });
-
-  it('forwards the namespace id on acceptance', async () => {
-    const userIntents = {
-      execute: vi.fn().mockResolvedValue({ status: 'APPLIED', threadId: 21 }),
-    };
-    const controller = build({ userIntents });
-
-    await expect(
-      controller.acceptRelationship({ user: { userId: 7 } } as never, {
-        account: 'bob',
-        namespaceId: 5,
-      }),
-    ).resolves.toEqual({ status: 'OK', threadId: 21 });
-    expect(userIntents.execute).toHaveBeenCalledWith({
-      userId: 7,
-      decision: 'ACCEPTED',
-      target: { account: 'bob', namespaceId: 5 },
-    });
+    for (const status of ['STALE_REQUEST', 'EXPIRED']) {
+      userIntents.decidePersonalRequest.mockResolvedValueOnce({ status });
+      await expect(
+        controller.acceptRelationship({ user: { userId: 7 } } as never, {
+          requestId: '42',
+        }),
+      ).resolves.toEqual({ status });
+    }
   });
 });
 
 describe('RelationshipController.revokeRelationship', () => {
-  it('revokes a local relationship synchronously through the intent service', async () => {
-    const userIntents = {
-      execute: vi.fn().mockResolvedValue({}),
-    };
-    const controller = build({ userIntents });
-
-    await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
-        account: ' Bob ',
-        namespaceId: 0,
-      }),
-    ).resolves.toEqual({ status: 'OK' });
-    expect(userIntents.execute).toHaveBeenCalledWith({
-      userId: 7,
-      decision: 'REVOKED',
-      target: { account: 'bob', namespaceId: 0 },
-    });
+  it('retains the revoke route name with a threadId resource key', () => {
+    const handler = RelationshipController.prototype.revokeRelationship;
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe('revoke');
+    expect(Reflect.getMetadata(RESOURCE_ID_KEY, handler)).toBe('threadId');
   });
-
-  it('revokes a federated relationship by namespace through the intent service', async () => {
+  it('ends an established relationship through the thread-keyed intent entry', async () => {
     const userIntents = {
-      execute: vi.fn().mockResolvedValue({}),
+      endEstablishedRelationship: vi
+        .fn()
+        .mockResolvedValue({ status: 'APPLIED' }),
     };
     const controller = build({ userIntents });
 
     await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
-        account: 'bob',
-        namespaceId: 5,
-      }),
+      controller.revokeRelationship(
+        { user: { userId: 7 }, threadAccess: { threadId: 12 } } as never,
+        { threadId: 12 },
+      ),
     ).resolves.toEqual({ status: 'OK' });
-    expect(userIntents.execute).toHaveBeenCalledWith({
+    expect(userIntents.endEstablishedRelationship).toHaveBeenCalledWith({
       userId: 7,
-      decision: 'REVOKED',
-      target: { account: 'bob', namespaceId: 5 },
+      threadId: 12,
     });
   });
 
   it('maps stale-revocation NOT_FOUND onto the public FRIEND_NOT_FOUND code', async () => {
     const userIntents = {
-      execute: vi.fn().mockResolvedValue({
+      endEstablishedRelationship: vi.fn().mockResolvedValue({
         status: 'REJECTED',
         reason: 'INTENT_NOT_FOUND',
         code: BusinessCode.NOT_FOUND,
-        message: 'request not found',
+        message: 'active relationship for thread [12] does not exist',
       }),
     };
     const controller = build({ userIntents });
 
     const result = await controller.revokeRelationship(
-      { user: { userId: 7 } } as never,
-      {
-        account: 'bob',
-        namespaceId: 0,
-      },
+      { user: { userId: 7 }, threadAccess: { threadId: 12 } } as never,
+      { threadId: 12 },
     );
     expect(result).toMatchObject({
       code: BusinessCode.FRIEND_NOT_FOUND,
       data: { status: 'REJECTED', reason: 'INTENT_NOT_FOUND' },
-    });
-  });
-
-  it('revokes a group application by namespace synchronously', async () => {
-    const memberIntents = {
-      executeByNamespace: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
-    };
-    const controller = build({ memberIntents });
-
-    await expect(
-      controller.revokeRelationship({ user: { userId: 7 } } as never, {
-        account: '!remote-group',
-        namespaceId: 5,
-      }),
-    ).resolves.toEqual({ status: 'APPLIED' });
-    expect(memberIntents.executeByNamespace).toHaveBeenCalledWith({
-      memberUserId: 7,
-      target: { account: '!remote-group', namespaceId: 5 },
-      decision: 'REVOKED',
     });
   });
 });

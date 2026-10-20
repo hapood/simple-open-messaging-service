@@ -19,7 +19,6 @@ import { GroupRelationshipMutationService } from '../src/group/membership-intent
 import { MemberAuthoredGroupMembershipIntentService } from '../src/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
 import {
   MirrorGroupMembershipIntentService,
-  type MirrorGroupMembershipIntentDependencies,
 } from '../src/group/membership-intent/received/mirror-group-membership-intent.service.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
@@ -134,14 +133,13 @@ describe('mirror group intent application', () => {
     // Schedulers stay stopped: the committed outbox is the assertion surface.
     app = fixture.createNestApplication(new FastifyAdapter());
     database = app.get(DatabaseService);
-    const deps: MirrorGroupMembershipIntentDependencies = {
-      database: withBusinessLockCapture(database, businessLocks),
-      clientFeed: app.get(ClientStateFeedService),
-      peerFeed: app.get(PeerStateFeedService),
-      federation: app.get(FederationStateFeedPushService),
-      memberMutations: app.get(GroupRelationshipMutationService),
-    };
-    applier = new MirrorGroupMembershipIntentService(deps);
+    applier = new MirrorGroupMembershipIntentService(
+      withBusinessLockCapture(database, businessLocks),
+      app.get(ClientStateFeedService),
+      app.get(PeerStateFeedService),
+      app.get(FederationStateFeedPushService),
+      app.get(GroupRelationshipMutationService),
+    );
     const namespaceId = await seedFederatedPeerNamespace(
       database.db,
       ORIGIN_DOMAIN,
@@ -218,13 +216,29 @@ describe('mirror group intent application', () => {
     };
   }
 
-  function feedRows(userId: number) {
-    return database.db.query.clientStateFeed.findMany({
-      where: and(
-        eq(tables.clientStateFeed.userId, userId),
-        eq(tables.clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+  async function requestRows(userId: number) {
+    const user = await database.db.query.account.findFirst({
+      where: eq(tables.account.id, userId),
+    });
+    if (!user) throw new Error('missing request-history reader');
+    return database.db.query.relationshipRequest.findMany({
+      where: or(
+        and(
+          eq(tables.relationshipRequest.kind, 'GROUP_INVITATION'),
+          eq(tables.relationshipRequest.authorAccount, group.account),
+          eq(tables.relationshipRequest.authorNamespaceId, group.namespaceId),
+          eq(tables.relationshipRequest.receiverAccount, user.account),
+          eq(tables.relationshipRequest.receiverNamespaceId, 0),
+        ),
+        and(
+          eq(tables.relationshipRequest.kind, 'GROUP_APPLICATION'),
+          eq(tables.relationshipRequest.authorAccount, user.account),
+          eq(tables.relationshipRequest.authorNamespaceId, 0),
+          eq(tables.relationshipRequest.receiverAccount, group.account),
+          eq(tables.relationshipRequest.receiverNamespaceId, group.namespaceId),
+        ),
       ),
-      orderBy: desc(tables.clientStateFeed.feedId),
+      orderBy: desc(tables.relationshipRequest.id),
     });
   }
 
@@ -247,7 +261,7 @@ describe('mirror group intent application', () => {
     });
   }
 
-  it('records a cold stranger invitation: shell anchor, inactive pair, side A persisted, feed row', async () => {
+  it('records a cold stranger invitation: shell anchor, inactive pair, intent and request history', async () => {
     await freshGroup();
     const bob = await member('cold');
     const { routed } = await run(bob, invitationBody());
@@ -270,26 +284,17 @@ describe('mirror group intent application', () => {
       messageEndSeq: 5,
       tombstoneEndSeq: 1,
     });
-    const feeds = await feedRows(bob.id);
-    expect(feeds).toHaveLength(1);
-    expect(feeds[0]!.body).toMatchObject({
-      status: 'REQUESTED',
-      note: 'join us',
-      threadId: pair!.threadId!,
-      group: {
-        account: group.account,
-        namespaceId: group.namespaceId,
-        profileRev: 3,
-      },
+    const requests = await requestRows(bob.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      kind: 'GROUP_INVITATION', status: 'REQUESTED', note: 'join us',
+      authorAccount: group.account, authorNamespaceId: group.namespaceId,
+      receiverAccount: bob.account, receiverNamespaceId: 0,
+      authorProfileNamespaceId: 0, authorProfileRev: 3, snapshot: null,
     });
-    // Invitation identity/profile comes from the persisted intent before any
-    // Group Meta facts are available; consuming Meta is a separate step.
-    // A mirror owns no projections and no meta facts.
-    expect(
-      await database.db.query.groupRequestProjection.findMany({
-        where: eq(tables.groupRequestProjection.threadId, pair!.threadId!),
-      }),
-    ).toHaveLength(0);
+    expect(sideA!.requestId).toBe(requests[0].id);
+    // A request record is not a thread or a Group Meta roster fact.
+    expect(requests[0]).not.toHaveProperty('threadId');
     expect(
       await database.db.query.groupMetaMemberFeed.findMany({
         where: eq(tables.groupMetaMemberFeed.threadId, pair!.threadId!),
@@ -302,12 +307,18 @@ describe('mirror group intent application', () => {
     const bob = await member('replay');
     const item = invitationBody();
     await run(bob, item);
-    const before = await feedRows(bob.id);
+    const before = await requestRows(bob.id);
+    const headBefore = await database.db.query.account.findFirst({
+      where: eq(tables.account.id, bob.id),
+      columns: { requestEndId: true, clientStateFeedEndId: true },
+    });
     const { routed } = await run(bob, item);
     expect(routed).toBe('recorded-request');
-    const after = await feedRows(bob.id);
-    expect(after).toHaveLength(before.length);
-    expect(after[0]!.feedId).toBe(before[0]!.feedId);
+    expect(await requestRows(bob.id)).toEqual(before);
+    expect(await database.db.query.account.findFirst({
+      where: eq(tables.account.id, bob.id),
+      columns: { requestEndId: true, clientStateFeedEndId: true },
+    })).toEqual(headBefore);
   });
 
   it('no-ops an already expired invitation item', async () => {
@@ -386,16 +397,13 @@ describe('mirror group intent application', () => {
       subjectAccount: group.account,
       subjectNamespaceId: group.namespaceId,
     });
-    // Client surface: one incoming row for the group's acceptance.
-    const feeds = await feedRows(bob.id);
-    const acceptedFeed = feeds.find((f) => bodyOf(f).status === 'ACCEPTED');
-    expect(acceptedFeed).toBeDefined();
-    expect(bodyOf(acceptedFeed!)).toMatchObject({
-      group: {
-        account: group.account,
-        namespaceId: group.namespaceId,
-        profileRev: 3,
-      },
+    const requests = await requestRows(bob.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      kind: 'GROUP_INVITATION', status: 'ACCEPTED',
+      authorAccount: group.account, authorNamespaceId: group.namespaceId,
+      receiverAccount: bob.account, receiverNamespaceId: 0,
+      authorProfileNamespaceId: 0, authorProfileRev: 3,
     });
     // The authoritative Group Meta delta will announce this join.
     const joins = await boundaryMessages(pair!.threadId!, 'GROUP_JOINED');
@@ -559,12 +567,12 @@ describe('mirror group intent application', () => {
       after.intents.find((intent) => intent.authorAccount === bob.account)
         ?.status,
     ).toBe('REVOKED');
-    const feeds = await feedRows(bob.id);
-    expect(feeds.some((f) => bodyOf(f).status === 'REVOKED')).toBe(true);
-    const terminal = feeds.find((f) => bodyOf(f).status === 'REVOKED');
-    expect(bodyOf(terminal!)).toMatchObject({
-      requestStatus: 'WITHDRAWN',
-      requestDirection: 'INCOMING',
+    const requests = await requestRows(bob.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      kind: 'GROUP_INVITATION', status: 'WITHDRAWN',
+      authorAccount: group.account, authorNamespaceId: group.namespaceId,
+      receiverAccount: bob.account, receiverNamespaceId: 0,
     });
   });
 
@@ -573,12 +581,12 @@ describe('mirror group intent application', () => {
     const bob = await member('withdraw-invite');
     await run(bob, invitationBody());
     await run(bob, revocationBody());
-    const feeds = await feedRows(bob.id);
-    const terminal = feeds.find((f) => bodyOf(f).status === 'REVOKED');
-    expect(terminal).toBeDefined();
-    expect(bodyOf(terminal!)).toMatchObject({
-      requestStatus: 'WITHDRAWN',
-      requestDirection: 'INCOMING',
+    const requests = await requestRows(bob.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      kind: 'GROUP_INVITATION', status: 'WITHDRAWN',
+      authorAccount: group.account, authorNamespaceId: group.namespaceId,
+      receiverAccount: bob.account, receiverNamespaceId: 0,
     });
   });
 
@@ -587,7 +595,20 @@ describe('mirror group intent application', () => {
     const bob = await member('rejection');
     await run(bob, invitationBody());
     const { pair } = await findPair(bob.account);
+    const requestedAt = new Date();
+    const expiresAt = new Date(msFromNow(6));
+    // Explicit authored-round fixture: do not synthesize historical evidence
+    // from a received REVOKED item that carries no request evidence.
+    const [application] = await database.db.insert(tables.relationshipRequest).values({
+      kind: 'GROUP_APPLICATION', status: 'REQUESTED',
+      authorAccount: bob.account, authorNamespaceId: 0,
+      receiverAccount: group.account, receiverNamespaceId: group.namespaceId,
+      authorProfileNamespaceId: 0, authorProfileRev: 1,
+      snapshot: { displayName: 'Group at application', avatar: null },
+      note: 'let me in', requestedAt, expiresAt,
+    }).returning();
     await database.db.insert(tables.relationshipIntent).values({
+      requestId: application.id,
       authorAccount: bob.account,
       authorNamespaceId: 0,
       receiverAccount: group.account,
@@ -598,8 +619,8 @@ describe('mirror group intent application', () => {
       note: 'let me in',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
-      expiresAt: new Date(msFromNow(6)),
+      requestedAt,
+      expiresAt,
     });
     const { routed } = await run(bob, revocationBody());
     expect(routed).toBe('application-rejected');
@@ -607,21 +628,20 @@ describe('mirror group intent application', () => {
     expect(after.sideA!.status).toBe('REVOKED');
     const sideB = after.intents.find((i) => i.authorAccount === bob.account);
     expect(sideB!.status).toBe('REVOKED');
-    const terminalFeeds = (await feedRows(bob.id)).filter(
-      (f) => bodyOf(f).status === 'REVOKED',
-    );
-    expect(terminalFeeds.length).toBeGreaterThan(0);
-    for (const feed of terminalFeeds)
-      expect(bodyOf(feed)).toMatchObject({
-        requestStatus: 'REJECTED',
-        requestDirection: 'OUTGOING',
-      });
+    const history = await requestRows(bob.id);
+    expect(history.filter((row) => row.kind === 'GROUP_APPLICATION'))
+      .toEqual([expect.objectContaining({
+        id: application.id, status: 'REJECTED',
+        authorAccount: bob.account, authorNamespaceId: 0,
+        receiverAccount: group.account, receiverNamespaceId: group.namespaceId,
+      })]);
 
     const concluded = (await findPair(bob.account)).intents;
     const outbound = await peerItems(group.namespaceId);
     await run(bob, revocationBody());
     expect((await findPair(bob.account)).intents).toEqual(concluded);
     expect(await peerItems(group.namespaceId)).toEqual(outbound);
+    expect(await requestRows(bob.id)).toEqual(history);
     await database.db.transaction((tx) =>
       app
         .get(GroupRelationshipMutationService)
@@ -925,7 +945,10 @@ describe('mirror group intent application', () => {
       await expect(
         metaFeed.resolveVisibleGroup(alice.id, { threadId }),
       ).resolves.toMatchObject({ groupId: threadId });
-      // Changing the current local profile must not replace the intent snapshot.
+      const acceptedHistory = await requestRows(alice.id);
+      expect(acceptedHistory).toHaveLength(1);
+      expect(acceptedHistory[0].status).toBe('ACCEPTED');
+      // Changing the current local profile must not replace request evidence.
       await database.db
         .update(tables.account)
         .set({ defaultProfileRev: 55 })
@@ -987,11 +1010,8 @@ describe('mirror group intent application', () => {
           (notice) => JSON.parse(notice.content as string).member.account,
         ),
       ).toEqual([alice.account, bob.account]);
-      // The kick row reads the sticky established flag.
-      const kickFeeds = await feedRows(alice.id);
-      const kickRow = kickFeeds.find((f) => bodyOf(f).status === 'REVOKED');
-      expect(kickRow).toBeDefined();
-      expect((kickRow!.body as any).established).toBe(true);
+      // Departure is a membership operation, not a request conclusion.
+      expect(await requestRows(alice.id)).toEqual(acceptedHistory);
     },
   );
 

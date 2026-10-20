@@ -289,7 +289,6 @@ export class GroupDisbandMembershipRevocationService {
         memberAccount: member.account,
         profileNamespaceId: row.profileNamespaceId,
         localMemberId: row.localMemberId,
-        projectionDirections: row.projectionDirections,
       },
     };
   }
