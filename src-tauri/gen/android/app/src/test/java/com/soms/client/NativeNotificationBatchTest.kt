@@ -9,7 +9,7 @@ class NativeNotificationBatchTest {
       "previews":[
         {"seq":6,"createdAt":"2026-09-09T00:00:00.000Z","sender":{"account":"peer","domain":"example.test"},"senderName":"Peer","status":"MODERATION_REMOVAL","avatarIndex":0},
         {"seq":5,"createdAt":"2026-09-09T00:00:00.000Z","sender":{"account":"peer","domain":"example.test"},"senderName":"Peer","status":"USER_RETRACTION","avatarIndex":0}
-      ]}]}""", arrayOf(byteArrayOf(0, -1)), 4L)
+      ]}]}""", arrayOf(byteArrayOf(0, -1)), "b70b8f27-293e-42d1-86d4-24055d649480")
 
     @Test
     fun native_metadata_preserves_count_identity_binary_images_and_tomb_reasons() {

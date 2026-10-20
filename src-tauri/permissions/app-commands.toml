@@ -110,6 +110,11 @@ identifier = "allow-secure-clear-token"
 description = "Enables the secure_clear_token command (OS credential store)."
 commands.allow = ["secure_clear_token"]
 
+[[permission]]
+identifier = "allow-secure-clear-residual-token"
+description = "Clears a residual desktop credential only when no native login session is active."
+commands.allow = ["secure_clear_residual_token"]
+
 # Desktop SSE supervisor (Rust-owned /events stream). Desktop-only (Android owns SSE in Kotlin); these
 # commands are #[cfg(desktop)] in lib.rs, so the entries are inert on a mobile build.
 [[permission]]
@@ -288,6 +293,7 @@ permissions = [
   "allow-secure-set-token",
   "allow-secure-get-token",
   "allow-secure-clear-token",
+  "allow-secure-clear-residual-token",
   "allow-init-check-compat",
   "allow-init-validate-cert",
   "allow-init-compat-status",
