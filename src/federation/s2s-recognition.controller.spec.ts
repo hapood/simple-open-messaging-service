@@ -662,7 +662,9 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
           return selectChain(rows);
         }),
         update: vi.fn(() => ({
-          set: vi.fn(() => ({ where: vi.fn(() => namespaceUpdate()) })),
+          set: vi.fn((patch: unknown) => ({
+            where: vi.fn(() => namespaceUpdate(patch)),
+          })),
         })),
         insert: vi.fn((table: unknown) => ({
           values: vi.fn((values: unknown) => {
@@ -675,6 +677,12 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         })),
       },
     };
+    const transactionInsert = vi.fn(database.db.insert);
+    const transactionUpdate = vi.fn(database.db.update);
+    const transaction = vi.fn(async (run: (tx: unknown) => Promise<void>) =>
+      run({ insert: transactionInsert, update: transactionUpdate }),
+    );
+    Object.assign(database.db, { transaction });
     const doc = {
       protocolVersions: [1],
       roots: [
@@ -726,7 +734,16 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         }) => Promise<void>;
       }
     ).verifyInboundRecognize.bind(service);
-    return { service, verify, acceptInbound, reviewInsert, namespaceUpdate };
+    return {
+      service,
+      verify,
+      acceptInbound,
+      reviewInsert,
+      namespaceUpdate,
+      transaction,
+      transactionInsert,
+      transactionUpdate,
+    };
   }
 
   it('commits an ordinary first recognition without a review record', async () => {
@@ -814,7 +831,19 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         status: 'pending',
       }),
     );
-    expect(target.namespaceUpdate).toHaveBeenCalled();
+    expect(target.namespaceUpdate).toHaveBeenCalledExactlyOnceWith({
+      trustLevel: 'pending',
+      localServiceAvailable: true,
+      peerAcceptanceConfirmed: false,
+      remoteServiceReachable: false,
+    });
+    expect(target.transaction).toHaveBeenCalledOnce();
+    expect(target.transactionInsert).toHaveBeenCalledExactlyOnceWith(
+      tables.federationIdentityReview,
+    );
+    expect(target.transactionUpdate).toHaveBeenCalledExactlyOnceWith(
+      tables.identityNamespace,
+    );
   });
 
   it('keeps a live epoch arriving under a different domain pending despite a new coordinate', async () => {
@@ -849,6 +878,13 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       }),
     );
     expect(target.namespaceUpdate).toHaveBeenCalled();
+    expect(target.transaction).toHaveBeenCalledOnce();
+    expect(target.transactionInsert).toHaveBeenCalledExactlyOnceWith(
+      tables.federationIdentityReview,
+    );
+    expect(target.transactionUpdate).toHaveBeenCalledExactlyOnceWith(
+      tables.identityNamespace,
+    );
   });
   it('records a root rotation review when the group still contains the pin', async () => {
     const target = resolutionTarget({
@@ -920,6 +956,11 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     );
     // A rotation review leaves the pinned epoch untouched.
     expect(target.namespaceUpdate).not.toHaveBeenCalled();
+    expect(target.transaction).toHaveBeenCalledOnce();
+    expect(target.transactionInsert).toHaveBeenCalledExactlyOnceWith(
+      tables.federationIdentityReview,
+    );
+    expect(target.transactionUpdate).not.toHaveBeenCalled();
   });
 
   it('starts one async verifier per normalized domain and returns pending while it runs', async () => {

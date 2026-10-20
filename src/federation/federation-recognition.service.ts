@@ -489,7 +489,6 @@ export class FederationRecognitionService {
           arrivedAt: new Date().toISOString(),
         },
       });
-      await this.markReviewOpen(rootEpoch.id);
       return;
     }
 
@@ -631,44 +630,46 @@ export class FederationRecognitionService {
     claim: Record<string, unknown>;
   }): Promise<void> {
     const now = new Date();
-    await this.database.db
-      .insert(tables.federationIdentityReview)
-      .values({
-        kind: params.kind,
-        matchedNamespaceId: params.matchedNamespaceId,
-        nextDomain: params.nextDomain,
-        claimedRoot: params.claimedRoot,
-        claim: params.claim,
-        status: 'pending',
-        verifiedAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [tables.federationIdentityReview.matchedNamespaceId],
-        targetWhere: sql`${tables.federationIdentityReview.status} = 'pending'`,
-        set: {
+    await this.database.db.transaction(async (tx) => {
+      await tx
+        .insert(tables.federationIdentityReview)
+        .values({
+          kind: params.kind,
+          matchedNamespaceId: params.matchedNamespaceId,
           nextDomain: params.nextDomain,
           claimedRoot: params.claimedRoot,
           claim: params.claim,
+          status: 'pending',
           verifiedAt: now,
           updatedAt: now,
-        },
-      });
-  }
-
-  /** A domain re-binding review puts the matched epoch into the pending
-   *  lifecycle without disturbing its data-plane admission state beyond
-   *  peer-acceptance evidence; the wire answer stays pending. */
-  private async markReviewOpen(namespaceId: number): Promise<void> {
-    await this.database.db
-      .update(tables.identityNamespace)
-      .set({
-        trustLevel: 'pending',
-        localServiceAvailable: true,
-        peerAcceptanceConfirmed: false,
-        remoteServiceReachable: false,
-      })
-      .where(eq(tables.identityNamespace.id, namespaceId));
+        })
+        .onConflictDoUpdate({
+          target: [tables.federationIdentityReview.matchedNamespaceId],
+          targetWhere: sql`${tables.federationIdentityReview.status} = 'pending'`,
+          set: {
+            nextDomain: params.nextDomain,
+            claimedRoot: params.claimedRoot,
+            claim: params.claim,
+            verifiedAt: now,
+            updatedAt: now,
+          },
+        });
+      // Publish a domain review and its pending lifecycle together. A reader
+      // must never observe a committed review with the previous acceptance
+      // evidence. Keep review -> namespace lock order, matching admin decisions.
+      // Root rotation deliberately leaves the predecessor epoch untouched.
+      if (params.kind === 'domain-rebind') {
+        await tx
+          .update(tables.identityNamespace)
+          .set({
+            trustLevel: 'pending',
+            localServiceAvailable: true,
+            peerAcceptanceConfirmed: false,
+            remoteServiceReachable: false,
+          })
+          .where(eq(tables.identityNamespace.id, params.matchedNamespaceId));
+      }
+    });
   }
 
   async acceptInbound(
