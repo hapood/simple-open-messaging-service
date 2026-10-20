@@ -450,7 +450,7 @@ test('never acts as the remote recipient of an outgoing request', () => {
   assert.equal(decision.requestAuthor, alice);
   assert.equal(decision.requestSubject, bob);
   assert.equal(decision.actor, decision.selectedAuthor);
-  assert.deepEqual(decision.decisionOptions, ['REVOKE_RELATIONSHIP']);
+  assert.deepEqual(decision.decisionOptions, ['WITHDRAW_REQUEST']);
 });
 
 test('random request rejection does not wait for an incoming projection', async () => {
@@ -875,6 +875,9 @@ test('admits a remote group application with the observed group profile', async 
           account: '!group',
           domain: 'bravo.test',
           name: 'Remote group',
+          // Provisioning records only whether an avatar was requested, not
+          // its retained reference. The remote resolve supplies the snapshot.
+          avatar: true,
         },
       },
     },

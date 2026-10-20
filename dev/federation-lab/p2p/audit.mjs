@@ -88,6 +88,7 @@ async function readNodeIntentRows(client) {
         AND pair."endpointANamespaceId" = intent."authorNamespaceId"
         THEN 'A' ELSE 'B' END AS authorside,
       intent."status" AS status,
+      intent."requestId"::text AS requestid,
       intent."expiresAt" AS expiresat,
       pair."endpointAType" AS endpointatype,
       pair."endpointAAccount" AS endpointaaccount,
@@ -155,6 +156,7 @@ function normalizeNodeIntentRows(rows, users) {
       author,
       subject,
       status: row.status,
+      requestId: row.requestid ?? null,
       expiresAt,
     });
   }

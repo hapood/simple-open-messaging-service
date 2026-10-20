@@ -122,8 +122,16 @@ describe('three-node group wire convergence', () => {
     await post(appA, alice.token, 'group/invite', {
       groupId: originThread,
       users: [
-        { account: bob.account, namespaceId: homeBOnA },
-        { account: carol.account, namespaceId: homeCOnA },
+        {
+          account: bob.account,
+          namespaceId: homeBOnA,
+          snapshot: { displayName: 'Member B', avatar: null },
+        },
+        {
+          account: carol.account,
+          namespaceId: homeCOnA,
+          snapshot: { displayName: 'Member C', avatar: null },
+        },
       ],
     });
     const mirrors: number[] = [];
@@ -141,8 +149,26 @@ describe('three-node group wire convergence', () => {
         },
         { timeout: 20_000, interval: 100 },
       );
+      const invitation = await vi.waitFor(
+        async () => {
+          const row = await remote.database.query.relationshipRequest.findFirst(
+            {
+              where: and(
+                eq(tables.relationshipRequest.kind, 'GROUP_INVITATION'),
+                eq(tables.relationshipRequest.authorAccount, group),
+                eq(tables.relationshipRequest.receiverAccount, person.account),
+                eq(tables.relationshipRequest.receiverNamespaceId, 0),
+                eq(tables.relationshipRequest.status, 'REQUESTED'),
+              ),
+            },
+          );
+          expect(row).toBeDefined();
+          return row!;
+        },
+        { timeout: 20_000, interval: 100 },
+      );
       const accepted = await post(remote, person.token, 'group/join-request', {
-        groupId: mirror.id,
+        requestId: invitation.id.toString(),
       });
       await waitForAcceptedDurableTask(remote.database, accepted);
       await vi.waitFor(

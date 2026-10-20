@@ -192,7 +192,14 @@ export async function executeReferenceWithdrawalScenario({
           throw new Error(
             `reference setup invitation is not visible: manager=${Boolean(managerProjection)} applicant=${Boolean(applicantProjection)} intent=${applicantRelationship?.groupIntent ?? null}`,
           );
-        return { projection: applicantProjection };
+        const observedFacts = observeUserGroup(
+          current.groups,
+          applicant,
+          planned,
+        );
+        if (!observedFacts.groupRequestId)
+          throw new Error('reference setup invitation round is not visible');
+        return { projection: applicantProjection, observedFacts };
       },
     });
     snapshot = await execute({
@@ -200,6 +207,7 @@ export async function executeReferenceWithdrawalScenario({
       actor: applicant.address,
       group: planned.address,
       groupThreadId: invited.value.projection.threadId,
+      observedFacts: invited.value.observedFacts,
       scenario: 'REFERENCE_WITHDRAWAL_SETUP',
     });
     const joined = await waitForScenarioSnapshot({

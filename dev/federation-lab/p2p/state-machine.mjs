@@ -28,7 +28,7 @@ function pickCategory(random, entries, facts) {
 export function p2pActionOptions(facts) {
   if (facts.state === 'NONE') return [{ type: 'SEND_REQUEST' }];
   if (facts.state === 'OUTGOING_PENDING')
-    return [{ type: 'REVOKE_RELATIONSHIP' }];
+    return [{ type: 'WITHDRAW_REQUEST' }];
   if (facts.state === 'FRIEND')
     return [
       { type: 'REVOKE_RELATIONSHIP' },

@@ -15,6 +15,7 @@ import {
   federationThreadSyncState,
   federationThreadHistoryGap,
   groupAccount as group,
+  profileTable,
   messageThread,
   accountThreadState,
 } from '../src/database/schema.js';
@@ -437,9 +438,18 @@ describe('federation directed-state boundaries', () => {
       .insert(group)
       .values({
         account: `!boundary-${suffix}`,
+        defaultProfileRev: 1,
         updatedAt: new Date(),
       })
       .returning({ id: group.id });
+    await database.db.insert(profileTable).values({
+      account: `!boundary-${suffix}`,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      profileRev: 1,
+      displayName: 'Boundary Group',
+      avatar: '',
+    });
     const [thread] = await database.db
       .insert(messageThread)
       .values({

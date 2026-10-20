@@ -193,16 +193,14 @@ export async function executeForwardRelayScenario({
     await record(left, '/relationship/request', {
       account: right.account,
       namespaceId: rightNamespaceId,
-      displayName: resolvedRight.user.name,
-      ...(resolvedRight.user.avatar
-        ? { avatar: resolvedRight.user.avatar }
-        : {}),
+      snapshot: {
+        displayName: resolvedRight.user.name,
+        avatar: resolvedRight.user.avatar || null,
+      },
     });
-    await waitForIncoming(right, left, timeoutMs);
-    const leftNamespaceId = await namespaceId(right, left);
+    const incoming = await waitForIncoming(right, left, timeoutMs);
     await record(right, '/relationship/accept', {
-      account: left.account,
-      namespaceId: leftNamespaceId,
+      requestId: incoming.requestId,
     });
     return eventually(
       `friendship ${left.address}/${right.address}`,

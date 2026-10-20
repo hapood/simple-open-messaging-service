@@ -99,7 +99,7 @@ test('queue drain reports failed tasks immediately, including when no pending ta
   }
 });
 
-test('wait helpers use incoming state-feed and resolved profile observations', async () => {
+test('wait helpers use received request history and resolved profile observations', async () => {
   const initiator = {
     node: { name: 'alpha' },
     account: 'alice',
@@ -110,30 +110,27 @@ test('wait helpers use incoming state-feed and resolved profile observations', a
     node: { name: 'bravo' },
     address: 'bob@bravo.test',
     account: 'bob',
-    queryStateFeed: async () => ({
-      stateFeedEndId: 7,
-      scannedThrough: 7,
-      hasMore: false,
-      items: [
-        {
-          eventType: 'RELATIONSHIP_INTENT',
-          account: 'alice',
-          domain: 'alpha.test',
-          subjectAccount: 'bob',
-          body: {
-            direction: 'INCOMING',
+    post: async (path, body) => {
+      assert.equal(path, '/relationship/requests');
+      assert.equal(body.bucket, 'RECEIVED');
+      return {
+        items: [
+          {
+            id: '9',
+            kind: 'FRIEND',
             status: 'REQUESTED',
-            expiresAt: Date.now() + 60_000,
-            peer: { account: 'alice', name: 'Alice' },
+            author: { account: 'alice', namespaceId: 3 },
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
           },
-        },
-      ],
-    }),
+        ],
+      };
+    },
   };
-  assert.equal(
-    (await waitForIncoming(receiver, initiator, 1_000)).relationship,
-    'INCOMING_PENDING',
-  );
+  assert.deepEqual(await waitForIncoming(receiver, initiator, 1_000), {
+    relationship: 'INCOMING_PENDING',
+    requestId: '9',
+    user: { account: 'alice' },
+  });
 
   const resolver = {
     resolveFederatedUser: async () => ({
@@ -146,7 +143,7 @@ test('wait helpers use incoming state-feed and resolved profile observations', a
   );
 });
 
-test('waitForIncoming reads a same-node request from the client state feed', async () => {
+test('waitForIncoming ignores closed, foreign, and expired received rounds', async () => {
   const initiator = {
     node: { name: 'alpha' },
     account: 'alice',
@@ -157,83 +154,35 @@ test('waitForIncoming reads a same-node request from the client state feed', asy
     node: { name: 'alpha' },
     account: 'bob',
     address: 'bob@alpha.test',
-    queryStateFeed: async () => ({
-      stateFeedEndId: 7,
-      scannedThrough: 7,
-      hasMore: false,
+    post: async () => ({
       items: [
         {
-          eventType: 'RELATIONSHIP_INTENT',
-          account: 'alice',
-          domain: 'local',
-          subjectAccount: 'bob',
-          body: {
-            direction: 'INCOMING',
-            status: 'REQUESTED',
-            expiresAt: Date.now() + 60_000,
-            peer: { account: 'alice' },
-          },
+          id: '10',
+          kind: 'FRIEND',
+          status: 'REJECTED',
+          author: { account: 'alice' },
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        {
+          id: '11',
+          kind: 'FRIEND',
+          status: 'REQUESTED',
+          author: { account: 'carol' },
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        {
+          id: '12',
+          kind: 'FRIEND',
+          status: 'REQUESTED',
+          author: { account: 'alice' },
+          expiresAt: new Date(Date.now() - 60_000).toISOString(),
         },
       ],
     }),
-    resolveFederatedUser: async () => {
-      throw new Error('same-node lookup must not use federated resolution');
-    },
   };
 
-  assert.deepEqual(await waitForIncoming(receiver, initiator, 1_000), {
-    relationship: 'INCOMING_PENDING',
-    user: { account: 'alice' },
-  });
-});
-
-test('waitForIncoming scans subsequent state-feed pages', async () => {
-  const initiator = {
-    node: { name: 'alpha' },
-    account: 'alice',
-    domain: 'alpha.test',
-    address: 'alice@alpha.test',
-  };
-  const afterValues = [];
-  const receiver = {
-    node: { name: 'alpha' },
-    account: 'bob',
-    address: 'bob@alpha.test',
-    queryStateFeed: async ({ after }) => {
-      afterValues.push(after);
-      if (after === 0) {
-        return {
-          stateFeedEndId: 9,
-          scannedThrough: 5,
-          hasMore: true,
-          items: [],
-        };
-      }
-      return {
-        stateFeedEndId: 9,
-        scannedThrough: 9,
-        hasMore: false,
-        items: [
-          {
-            eventType: 'RELATIONSHIP_INTENT',
-            account: 'alice',
-            domain: 'local',
-            subjectAccount: 'bob',
-            subjectDomain: 'local',
-            body: {
-              direction: 'INCOMING',
-              status: 'REQUESTED',
-              expiresAt: Date.now() + 60_000,
-            },
-          },
-        ],
-      };
-    },
-  };
-
-  assert.equal(
-    (await waitForIncoming(receiver, initiator, 1_000)).relationship,
-    'INCOMING_PENDING',
+  await assert.rejects(
+    () => waitForIncoming(receiver, initiator, 50),
+    /timed out waiting for bob@alpha.test incoming invite from alice@alpha.test/,
   );
-  assert.deepEqual(afterValues, [0, 5]);
 });

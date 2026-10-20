@@ -151,7 +151,7 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
   let preflight;
   if (operation.type === 'REQUEST_GROUP_JOIN') {
     endpoint = '/relationship/request';
-    let snapshot = profileSnapshot(operation.observedFacts.group);
+    let snapshot;
     if (groupDomain !== actor.node.domain) {
       const resolved = await resolveWithRetry(
         actor,
@@ -169,6 +169,8 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
         endpoint: '/user/resolve-federated-stream',
         target: operation.group,
       };
+    } else {
+      snapshot = profileSnapshot(operation.observedFacts.group);
     }
     body = {
       account: address.account,

@@ -54,5 +54,7 @@ export function observeDirectedPair(snapshot, selectedAuthor, selectedSubject) {
     threadId: nodeSnapshot.pairs.threadIds?.[pair] ?? null,
     outgoingIntent: outgoing?.status ?? null,
     incomingIntent: incoming?.status ?? null,
+    outgoingRequestId: outgoing?.requestId ?? null,
+    incomingRequestId: incoming?.requestId ?? null,
   };
 }

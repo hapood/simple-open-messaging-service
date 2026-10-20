@@ -83,7 +83,7 @@ async function readNodeGroupRows(client) {
                  WHEN pair."endpointAAccount" = intent."authorAccount"
                    AND pair."endpointANamespaceId" = intent."authorNamespaceId"
                  THEN 'A' ELSE 'B' END AS "authorSide",
-               intent."status", intent."expiresAt"
+               intent."status", intent."expiresAt", intent."requestId"::text AS "requestId"
         FROM "RelationshipPair" pair
         LEFT JOIN "IdentityNamespace" ns_a ON ns_a."id" = pair."endpointANamespaceId"
         LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = pair."endpointBNamespaceId"
@@ -227,7 +227,9 @@ function normalizeNode(node, rows, p2pNode) {
     };
     if (row.authorSide) {
       const authorIsGroup = (row.authorSide === 'A') === groupOnA;
-      relationship[authorIsGroup ? 'groupIntent' : 'userIntent'] = row.status;
+      const direction = authorIsGroup ? 'group' : 'user';
+      relationship[`${direction}Intent`] = row.status;
+      relationship[`${direction}RequestId`] = row.requestId ?? null;
     }
     group.relationships.set(memberAddress, relationship);
   }
@@ -343,6 +345,7 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
     user,
     group: {
       ...plannedGroup,
+      ...(group ? { name: group.name, avatar: group.avatar } : {}),
       dissolved: group?.dissolved ?? false,
       threadId: group?.threadId ?? null,
       localGroupId: group?.groupId ?? null,
@@ -351,6 +354,8 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
     membershipActive,
     groupIntent: relationship?.groupIntent ?? null,
     userIntent: relationship?.userIntent ?? null,
+    groupRequestId: relationship?.groupRequestId ?? null,
+    userRequestId: relationship?.userRequestId ?? null,
     inviteCandidates,
     pendingApplications,
     pendingInvitations,

@@ -40,9 +40,11 @@ beforeAll(async () => {
     INSERT INTO "RelationshipIntent" ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
       status, "profileNamespaceId", "profileRev", "requestedAt", "messageEndSeq", "tombstoneEndSeq")
       VALUES ('remote', 91, 'owner', 0, 'ACCEPTED', 0, 1, now(), 0, 0);
-    INSERT INTO "GroupRequestProjection" ("threadId", "memberAccount", "profileNamespaceId",
-      "memberProfileRev", direction, "feedId", status, "requestedAt", "expiresAt")
-      VALUES (301, 'remote', 91, 1, 'APPLICATION', 1, 'REQUESTED', now(), now() + interval '1 day');
+    INSERT INTO "RelationshipRequest" (id, kind, "authorAccount", "authorNamespaceId",
+      "receiverAccount", "receiverNamespaceId", "authorProfileNamespaceId", "authorProfileRev",
+      status, note, "requestedAt", "expiresAt")
+      VALUES (9007199254740993, 'GROUP_APPLICATION', 'remote', 91, '!native', 0,
+        0, 1, 'REQUESTED', '', now(), now() + interval '1 day');
     INSERT INTO "Message" ("threadId", seq, "originSeq", "contentType", content, "updatedAt", "creatorAccount", "publisherNamespaceId", "profileNamespaceId", "profileRev", "payloadDigest")
       VALUES (302, 1, 1, 'PURE_TEXT', '{"text":"group"}', now(), 'remote', 91, 0, 1, repeat('a', 64)),
              (303, 1, NULL, 'PURE_TEXT', '{"text":"p2p"}', now(), 'owner', 0, 0, 1, repeat('b', 64));
@@ -73,7 +75,8 @@ it('reads local groups, mirrors, addressed members and separate P2P evidence on 
     requests: [
       {
         memberAddress: 'remote@bravo.test',
-        feedId: 1,
+        requestId: '9007199254740993',
+        direction: 'APPLICATION',
       },
     ],
   });

@@ -28,7 +28,10 @@ function groupFacts(overrides = {}) {
   };
 }
 
-test('keeps the existing P2P transition surface', () => {
+test('separates pending request withdrawal from established relationship revocation', () => {
+  assert.deepEqual(p2pActionOptions({ state: 'OUTGOING_PENDING' }), [
+    { type: 'WITHDRAW_REQUEST' },
+  ]);
   assert.deepEqual(p2pActionOptions({ state: 'NONE' }), [
     { type: 'SEND_REQUEST' },
   ]);

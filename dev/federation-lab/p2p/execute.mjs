@@ -157,42 +157,31 @@ export async function waitForTaskQueueIdle({
   throw new Error(`timed out waiting for ${description}`);
 }
 
+/** Incoming rounds live in the receiver's permanent request history (the
+ * RECEIVED bucket); the retired client intent-feed event rows no longer carry
+ * them. A live FRIEND round from the initiator marks the pending invite. */
 export async function waitForIncoming(receiver, initiator, timeoutMs) {
   return waitFor(
     `${receiver.address} incoming invite from ${initiator.address}`,
     timeoutMs,
     async () => {
-      let after = 0;
-      let through;
-      for (;;) {
-        const page = await receiver.queryStateFeed({
-          mode: 'full',
-          after,
-          take: 200,
-          through,
-        });
-        through ??= page.stateFeedEndId;
-        const item = page.items.find(
-          (candidate) =>
-            candidate.eventType === 'RELATIONSHIP_INTENT' &&
-            candidate.account === initiator.account &&
-            candidate.subjectAccount === receiver.account &&
-            candidate.body?.direction === 'INCOMING' &&
-            candidate.body?.status === 'REQUESTED' &&
-            candidate.body?.expiresAt > Date.now(),
-        );
-        if (item) {
-          return {
-            relationship: 'INCOMING_PENDING',
-            user: item.body.peer,
-          };
-        }
-        if (!page.hasMore) return undefined;
-        if (page.scannedThrough <= after) {
-          throw new Error('client state-feed cursor did not advance');
-        }
-        after = page.scannedThrough;
-      }
+      const page = await receiver.post('/relationship/requests', {
+        bucket: 'RECEIVED',
+        take: 50,
+      });
+      const item = page?.items?.find(
+        (candidate) =>
+          candidate.kind === 'FRIEND' &&
+          candidate.status === 'REQUESTED' &&
+          candidate.author?.account === initiator.account &&
+          Date.parse(candidate.expiresAt) > Date.now(),
+      );
+      if (!item) return undefined;
+      return {
+        relationship: 'INCOMING_PENDING',
+        requestId: item.id,
+        user: { account: initiator.account },
+      };
     },
   );
 }

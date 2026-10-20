@@ -262,9 +262,15 @@ test('reference scenario creates a cross-node member when random coverage has no
         snapshot.groups.bravo.groups.get(address).relationships.set(bob, {
           active: false,
           groupIntent: 'REQUESTED',
+          groupRequestId: '9007199254740993',
           userIntent: null,
         });
       } else if (operation.type === 'ACCEPT_GROUP_INVITATION') {
+        assert.equal(
+          operation.observedFacts.groupRequestId,
+          '9007199254740993',
+        );
+        assert.equal(operation.observedFacts.observedOn, 'bravo');
         for (const node of ['alpha', 'bravo']) {
           const group = snapshot.groups[node].groups.get(address);
           group.roster.push({ address: bob, role: 'MEMBER' });

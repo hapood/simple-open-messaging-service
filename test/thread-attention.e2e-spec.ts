@@ -344,11 +344,15 @@ describe('transactional thread attention', () => {
       ThreadFeedHeadWriter.advanceInTx(tx, userId, target),
     );
     expect((await state()).threadFeedId).toBe(published.threadFeedId);
-    const old = await db.pool.query(
-      'SELECT count(*)::integer AS n FROM "ClientStateFeed" WHERE "eventType" = $1',
-      ['THREAD_CONTENT_HEAD'],
-    );
-    expect(old.rows[0].n).toBe(0);
+    // Thread attention belongs solely to the thread feed, not the personal
+    // request-head feed. Publishing thread heads must not allocate either a
+    // row or a head in ClientStateFeed.
+    expect(await db.db.query.clientStateFeed.findMany()).toEqual([]);
+    const personalHead = await db.db.query.account.findFirst({
+      where: eq(account.id, userId),
+      columns: { clientStateFeedEndId: true },
+    });
+    expect(personalHead?.clientStateFeedEndId).toBe(0);
   });
 
   it('rolls back heads and their feed allocation together', async () => {
