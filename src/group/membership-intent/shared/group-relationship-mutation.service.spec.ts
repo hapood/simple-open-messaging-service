@@ -56,9 +56,11 @@ describe('GroupRelationshipMutationService', () => {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
-              { groupAccount: '!group', authorityNamespaceId: 0 },
-            ]),
+            limit: vi
+              .fn()
+              .mockResolvedValue([
+                { groupAccount: '!group', authorityNamespaceId: 0 },
+              ]),
           }),
         }),
       }),

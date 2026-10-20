@@ -1,9 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq, gt, gte, lt, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, lt, lte } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import {
   account,
-  clientStateFeed,
   relationshipIntent,
   relationshipRequest,
 } from '../../database/schema.js';

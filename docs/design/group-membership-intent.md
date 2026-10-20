@@ -30,8 +30,9 @@ The implementation is split by authorship and ingress:
   side B to an authoritative local group.
 - `received/mirror-group-membership-intent.service.ts` applies a peer group's
   side A to a local mirror.
-- `shared/` owns composed acceptance/revocation SQL, pair state, projection
-  fan-out, and pair minting used by more than one side.
+- `shared/` owns composed acceptance/revocation domain SQL (intent directions
+  are written beforehand through the shared authored-intent writers), pair
+  state, and pair minting used by more than one side.
 
 Files under `authored/` may author only a locally owned direction. Files under
 `received/` validate and persist a peer-owned wire snapshot; they must not
@@ -134,14 +135,21 @@ re-read after the locks. Account and pair advisory keys use complete normalized
 addresses. The pair lock protects both intents and pair-derived state; an
 account lock is acquired only for account-owned state that the command mutates.
 
-The composed statement makes authored intent, pair activation, roster/meta,
-audience, system message, projections, client/peer feed rows, and task admission
-atomic. SQL CTE order is expressed by data dependencies and `RETURNING`, never
+The authored intent directions and the request-round effects run as their own
+statements first, written through the shared authored-intent and request
+transaction capabilities. The composed domain statement then makes pair
+activation, roster/meta, audience, system message, client/peer feed rows, and
+task admission atomic; it reads the intent rows back instead of embedding their
+writes. SQL CTE order is expressed by data dependencies and `RETURNING`, never
 by textual position. A missing result row after validated locks is an invariant
 failure.
 
 ## Projection and wake ownership
 
+- Incoming and outgoing request rounds live in `RelationshipRequest` plus the
+  client state feed, owned by the request transaction capability; exact-round
+  decisions are validated under the business locks (`STALE_REQUEST`/`EXPIRED`
+  instead of idempotent success).
 - A local recipient feed row is written in the business transaction and woken
   directly after commit.
 - A peer relationship-intent row is written in the same transaction; the peer

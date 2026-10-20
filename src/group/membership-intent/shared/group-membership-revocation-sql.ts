@@ -20,7 +20,8 @@ export interface GroupMembershipRevocationInput {
   author: { account: string; namespaceId: number };
   receiver: { account: string; namespaceId: number };
   /** Alternate validated writer used by received peer intents: the wire
-   * snapshot replaces the locally derived authored write. */
+   * snapshot replaces the locally derived authored write. Consumed by
+   * `groupMembershipRevocationIntentWrite`. */
   authoredSql?: SQL;
   /** Optional explicit cause; absent callers use the authored side and the
    * still-open projection direction to classify the terminal feed. */
@@ -32,11 +33,32 @@ function accountFanoutScopeKey(threadId: number, accountId: number): string {
   return JSON.stringify(['ACCOUNT_THREAD_FANOUT', threadId, accountId]);
 }
 
-/** One composed statement for a REVOKED decision. The pair's active-to-inactive
- * transition gates the MEMBER_DEPART fact, GROUP_LEFT message, and departure fan-out;
- * an inactive application rejection has none of these effects. Sibling CTEs
- * share the pre-statement snapshot, so federated audience closure excludes this
- * pair explicitly. */
+/** The authored REVOKED direction, written before the domain statement in the
+ * owning transaction: either the locally authored writer or a received peer
+ * intent's validated wire snapshot. The domain statement reads the row back. */
+export function groupMembershipRevocationIntentWrite(
+  input: GroupMembershipRevocationInput,
+): SQL {
+  return (
+    input.authoredSql ??
+    authoredIntentWriteSql({
+      author: input.author,
+      receiver: input.receiver,
+      threadId: input.threadId,
+      status: 'REVOKED',
+      note: '',
+      requestedAt: null,
+      expiresAt: null,
+    })
+  );
+}
+
+/** One composed domain statement for a REVOKED decision; the intent direction
+ * is written beforehand by `groupMembershipRevocationIntentWrite` in the same
+ * transaction. The pair's active-to-inactive transition gates the MEMBER_DEPART
+ * fact, GROUP_LEFT message, and departure fan-out; an inactive application
+ * rejection has none of these effects. Sibling CTEs share the pre-statement
+ * snapshot, so federated audience closure excludes this pair explicitly. */
 export function groupMembershipRevocationSql(
   input: GroupMembershipRevocationInput,
 ): SQL {
@@ -78,27 +100,11 @@ export function groupMembershipRevocationSql(
       profileRev: sql`COALESCE(${memberProfileRev}, 0)::integer`,
     })})`;
   return sql`
-    WITH authored AS (
-      ${
-        input.authoredSql ??
-        authoredIntentWriteSql({
-          author: input.author,
-          receiver: input.receiver,
-          threadId: input.threadId,
-          status: 'REVOKED',
-          note: '',
-          requestedAt: null,
-          expiresAt: null,
-        })
-      }
-    ), revocation AS MATERIALIZED (
-      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
-      UNION ALL
+    WITH revocation AS MATERIALIZED (
       SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.author.account} AND "authorNamespaceId" = ${input.author.namespaceId}
         AND "receiverAccount" = ${input.receiver.account} AND "receiverNamespaceId" = ${input.receiver.namespaceId}
-        AND NOT EXISTS (SELECT 1 FROM authored)
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = false, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${input.pairId} AND "threadId" = ${input.threadId}
@@ -174,13 +180,16 @@ export function groupMembershipRevocationSql(
       RETURNING ta.id
     ) ${publishPeer ? sql`, ${peerRecipient(input)}` : sql.empty()}
     SELECT v.status, v.note,
-      EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM depart_fact) AS "departed",
       EXISTS (SELECT 1 FROM audience_close) AS "audienceChanged",
       (SELECT seq FROM system_message) AS "systemMessageSeq"
-      ${publishPeer ? sql`, (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-        (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"` : sql.empty()}
+      ${
+        publishPeer
+          ? sql`, (SELECT "userId" FROM recipient_result) AS "recipientUserId",
+        (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"`
+          : sql.empty()
+      }
     FROM revocation v
     CROSS JOIN (SELECT count(*) FROM seq_alloc) thread_barrier
   `;

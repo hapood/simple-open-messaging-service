@@ -34,9 +34,7 @@ import {
   type MirrorMembershipStateRow,
 } from './mirror-membership-state-sql.js';
 import { mirrorMembershipRequestSql } from './mirror-membership-request-sql.js';
-import {
-  mirrorMembershipActivationSql,
-} from './mirror-membership-acceptance-sql.js';
+import { mirrorMembershipActivationSql } from './mirror-membership-acceptance-sql.js';
 import { mirrorMembershipRevocationSql } from './mirror-membership-revocation-sql.js';
 import { writeMirrorLocalGroupLeftInTx } from '../shared/mirror-local-group-left.js';
 import {
@@ -330,14 +328,13 @@ export class MirrorGroupMembershipIntentService {
       // incoming view resolves the group through the wire author-profile
       // coordinates. A mirrored remote-authority thread has no local manager
       // watermarks to advance.
-      const effects =
-        await this.memberMutations.writeGroupRequestEffectsInTx(
-          tx,
-          threadId,
-          { account: memberAccount, namespaceId: 0 },
-          'REQUESTED',
-          'INVITATION',
-        );
+      const effects = await this.memberMutations.writeGroupRequestEffectsInTx(
+        tx,
+        threadId,
+        { account: memberAccount, namespaceId: 0 },
+        'REQUESTED',
+        'INVITATION',
+      );
       clientUpdates.push(...effects.clientUpdates);
       return { routed: 'recorded-request' };
     }
@@ -640,5 +637,4 @@ export class MirrorGroupMembershipIntentService {
     if (!row) throw new Error('mirror group thread disappeared');
     return row;
   }
-
 }

@@ -1,8 +1,11 @@
 # Business mutation SQL pattern
 
-Status: agreed implementation standard for business-mutation code.
-The [group membership intent implementation](./group-membership-intent.md) is
-the first reference implementation.
+Status: transaction ownership, domain boundaries, and optional SQL composition.
+The former fixed four-phase/single-Apply-statement target is retired. Reducing
+round trips is an optimization, not a requirement to combine unrelated owners.
+The [group membership intent implementation](./group-membership-intent.md)
+currently mixes composed domain writes with shared request capabilities; this
+document does not claim that every existing writer has finished extraction.
 
 The [task responsibility and lock index](./durable-task-responsibilities-and-locks.md)
 records each current task's responsibility, business scope, and execution reference.
@@ -139,24 +142,54 @@ locks. A SELECT before a lock may locate identity, but cannot authorize the
 mutation. Do not combine a waiting advisory-lock call and authorization reads
 into one ordinary SQL statement and assume its snapshot refreshes after waiting.
 
-## Four business phases
+## Relationship and request ownership
 
-| Phase                   | Responsibility                                                                                                                                                               |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Authorize and select | One SQL validates the actor, target, request/intent validity, current business state, and update feasibility. Return the local/federated branch and its required identities. |
-| 2. Apply                | One composed SQL performs the branch's canonical writes and immediate projections. Return the business result and directly affected peer, if any.                            |
-| 3. Admit                | One SQL determines whether new fanout work is required and replaces eligible PENDING work under the existing task contract.                                                  |
-| 4. Insert               | Insert one task row when required; skip when unnecessary. Do not create a task for every recipient.                                                                          |
+[Server-owned request rounds](./server-owned-request-projections.md) use
+`RelationshipRequest` for permanent request history and `RelationshipIntent`
+for directed relationship authority. P2P and group commands share request
+admission and lifecycle primitives; a request record cannot grant membership.
+Exact-ID decisions validate the linked REQUESTED intent, round kind, complete
+endpoints, both deadlines and inactive pair under the owning business locks.
+A closed or replaced round returns STALE_REQUEST, not successful idempotence.
 
-Complete required allocator preparation before writes or triggers allocate feed
-positions. Transaction control and necessary identity/lock preparation are
-additional statements. Four phases are the target structure, not permission to
-remove correctness checks or claim four total round trips.
+`RequestTransactionCapability` owns request storage, immutable presentation,
+list queries and personal incoming heads. It does not implement membership
+activation or author protocol facts on behalf of a caller. The owning command
+coordinates intent transition, request conclusion and domain effects in the
+same transaction. Group manager counters remain separate coordinates from
+personal request IDs and are delivered through the existing thread fan-out.
 
-The single-task model applies to the established fanout responsibility of the
-business flow. Preserve its semantics when applying the pattern elsewhere;
-do not force unrelated tasks into an invented combined executor merely to fit
-the statement count.
+The extraction boundary is explicit: remaining roster, Meta, message sequence,
+system-message, audience and content fan-out code may stay coupled to each
+other. Once extracted, those helpers must not read/write intent or request
+records or reconstruct request lifecycle events. They consume validated
+transition data from the owner. Wrapping an unchanged all-in-one SQL statement
+in a renamed helper does not satisfy this boundary. Existing composed intent
+writers require further extraction; their continued presence is not a reason
+to duplicate request admission or lifecycle rules.
+
+## Transaction phases, not a statement budget
+
+1. Locate stable identities, acquire business locks, and authorize against a
+   fresh post-lock statement snapshot.
+2. Validate the exact request round when applicable and select the permitted
+   domain transition. Do not reinterpret a stale request action as kick/leave.
+3. Apply shared intent/request writes and domain-specific effects through
+   explicit helpers using the same transaction. Preserve locally owned
+   reciprocal conclusions; never overwrite a remote author's intent.
+4. Admit the required durable work under its existing coalescing and claim
+   contract, commit, then deliver captured wake hints.
+
+Each phase may use multiple statements. Prepare allocators before any write or
+trigger allocates positions. Do not merge unrelated task types or move their
+recipient enumeration into the command merely to reduce statement count.
+
+A transaction supplies atomic commit/rollback, not automatic race or deadlock
+freedom. Multiple statements on one connection still require correct business
+locks, snapshot semantics, allocator order and commit-time authorization.
+Conversely, a single large CTE statement is not a substitute for these rules.
+Measure total client-issued statements, database time and transaction wall time
+before claiming a performance improvement.
 
 ## SQL composition
 
@@ -188,9 +221,10 @@ into the mutation or redesign the executor as part of this refactor.
 
 For group join acceptance specifically:
 
-- The business SQL writes Group Meta once and authors the group's ACK in the
-  relationship intent. It also writes the directed ACK into the applicant
-  peer's state feed. It does not author the applicant's intent.
+- The command coordinates the group's ACK, request-round conclusion and
+  Group Meta effects in one transaction. A directed ACK is also published to
+  the applicant's peer when remote. The manager never authors a remote member's
+  direction; member-side acceptance authors its own local direction.
 - Admit the local and federation thread fan-out tasks with the complete current
   message and tombstone coordinates. Their executors attach the latest
   canonical Meta coordinate to the thread head.
@@ -214,7 +248,8 @@ business handler.
 
 Apply this pattern one complete business flow at a time. Review the replacement,
 switch its production entry, and remove the old writer. Do not retain a dual-write
-or compatibility adapter; the migration assumes an empty database.
+or compatibility adapter. Add deployed schema changes through new migrations;
+never rewrite a migration already applied to a deployed database.
 
 Verify canonical state and immediate feed effects, invalid/stale requests,
 branch-specific configuration behavior, idempotency, and transaction rollback.

@@ -428,7 +428,7 @@ task coalescing, and optimistic client correction semantics.
 
 - **Body**: `{ groupId, users: [{ account, namespaceId }] }` — author one GROUP invitation per valid namespace-bound user. Friendship is not an invitation prerequisite. The server resolves each target to its authoritative identity without selecting an identity copied from another peer's group. Namespace `0` selects local users. Duplicate normalized targets are coalesced; the synchronous response reports `invited` and `skipped` targets with rejection details.
 
-### Group request projections
+### Group request rounds
 
 - `POST /group/join-requests` and `POST /group/invitations` use the shared newest-first request-page
   contract: `{ groupId, before?, take? }`. The caller must be an active OWNER or ADMIN; rows are
@@ -440,8 +440,13 @@ task coalescing, and optimistic client correction semantics.
   `{ groupId, requestId }`.
 - `POST /group/join-request` accepts the caller's received invitation round by `{ requestId }`
   alone and returns `{ status: "OK", threadId }` for the joined group thread.
-- Manager decisions execute their authored business transaction synchronously and return `OK`,
-  `STALE_REQUEST`/`EXPIRED` for closed rounds, or an HTTP-200 business rejection.
+- `POST /group/invitation/decline` declines the caller's received invitation round by
+  `{ requestId }` alone; `POST /group/join-request/withdraw` withdraws the caller's own pending
+  application round by `{ requestId }` alone. Both return `{ status: "OK", threadId }`.
+- Every decision settles the exact round through the authored membership state machines (pair
+  activation, roster/meta facts, system messages, thread fan-out) with an exact-round gate under
+  the business locks, and returns `OK`, `STALE_REQUEST`/`EXPIRED` for closed rounds, or an
+  HTTP-200 business rejection.
 - These lists read the permanent server-owned round records written in the owning intent's
   transaction. They are not membership authority.
 

@@ -36,9 +36,7 @@ import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { GroupRole } from '../src/database/enums.js';
 import { GroupService } from '../src/group/group.service.js';
-import {
-  GroupAuthoredMembershipIntentService,
-} from '../src/group/membership-intent/authored/group-authored-membership-intent.service.js';
+import { GroupAuthoredMembershipIntentService } from '../src/group/membership-intent/authored/group-authored-membership-intent.service.js';
 import { MemberAuthoredGroupMembershipIntentService } from '../src/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
 import { GroupRosterRoleService } from '../src/group/roster-role/group-roster-role.service.js';
 import { withBusinessLockCapture } from './business-lock-capture.js';
@@ -468,9 +466,17 @@ describe('group join decision', () => {
       ).toEqual(
         [
           [f.group.account, decision],
-          [f.applicant.account, 'REQUESTED'],
+          [f.applicant.account, decision],
         ].sort(),
       );
+      if (decision === 'ACCEPTED')
+        // The folded application direction carries no deadline: an accepted
+        // member must never be swept out by the request-expiry pass.
+        expect(
+          result.intents.find(
+            (intent) => intent.authorAccount === f.applicant.account,
+          ),
+        ).toMatchObject({ status: 'ACCEPTED', expiresAt: null });
       expect(result.requests).toHaveLength(1);
       expect(result.application).toMatchObject({
         kind: 'GROUP_APPLICATION',
@@ -506,11 +512,12 @@ describe('group join decision', () => {
     'activates a federated applicant (history=$history, existingFloor=$existingFloor)',
     async ({ history, existingFloor }) => {
       const notifications: Array<{ namespaceIds: number[] }> = [];
-      vi.spyOn(services.federation, 'pushStateFeedNamespaces').mockImplementation(
-        async (namespaceIds) => {
-          notifications.push({ namespaceIds: [...namespaceIds] });
-        },
-      );
+      vi.spyOn(
+        services.federation,
+        'pushStateFeedNamespaces',
+      ).mockImplementation(async (namespaceIds) => {
+        notifications.push({ namespaceIds: [...namespaceIds] });
+      });
       const prefix = `join-remote-${++sequence}`;
       const owner = await seedUser(app, `${prefix}-owner`);
       const created = await services.groups.createNewGroup({
@@ -840,12 +847,16 @@ describe('group join decision', () => {
     expect(outcomes.every((result) => result.status === 'fulfilled')).toBe(
       true,
     );
-    const rejected = outcomes.find(
+    // The serializing loser re-reads the folded application direction: the
+    // approval completed the membership, so it reports a satisfied no-op
+    // (P2P parity) instead of a misleading expiry rejection. The exact-round
+    // HTTP gate would report STALE_REQUEST for the same race.
+    const noOp = outcomes.find(
       (result) =>
-        result.status === 'fulfilled' && result.value.status === 'REJECTED',
+        result.status === 'fulfilled' && result.value.status === 'NO_OP',
     );
-    expect(rejected).toMatchObject({
-      value: { status: 'REJECTED', code: BusinessCode.INVITE_EXPIRED },
+    expect(noOp).toMatchObject({
+      value: { status: 'NO_OP', reason: 'ALREADY_MEMBER' },
     });
     const result = await state(f);
     expect(result.pair?.active).toBe(true);
@@ -1343,7 +1354,9 @@ describe('group join decision', () => {
     const push = vi
       .spyOn(services.federation, 'pushStateFeedNamespaces')
       .mockResolvedValue(undefined);
-    const transaction = capturedDatabase.db.transaction.bind(capturedDatabase.db);
+    const transaction = capturedDatabase.db.transaction.bind(
+      capturedDatabase.db,
+    );
     const failure = vi
       .spyOn(capturedDatabase.db, 'transaction')
       .mockImplementation(async (callback) =>
@@ -1780,7 +1793,7 @@ describe('group join decision', () => {
     ).toEqual(
       [
         [rejected.group.account, 'REVOKED'],
-        [rejected.applicant.account, 'REQUESTED'],
+        [rejected.applicant.account, 'REVOKED'],
       ].sort(),
     );
     expect(after.roster).toBeUndefined();
@@ -1968,7 +1981,7 @@ describe('group join decision', () => {
     ).toEqual(
       [
         [f.group.account, 'ACCEPTED'],
-        [f.applicant.account, 'REQUESTED'],
+        [f.applicant.account, 'ACCEPTED'],
       ].sort(),
     );
     expect(result.roster).toMatchObject({ role: 'MEMBER' });
@@ -2322,7 +2335,7 @@ describe('group join decision', () => {
     ).toEqual(
       [
         [g.group.account, 'ACCEPTED'],
-        [g.applicant.account, 'REQUESTED'],
+        [g.applicant.account, 'ACCEPTED'],
       ].sort(),
     );
     expect(

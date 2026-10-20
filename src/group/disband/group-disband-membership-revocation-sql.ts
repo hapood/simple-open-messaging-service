@@ -2,9 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { AccountSubjectAddress } from '../../user/account-address.js';
 import { groupStateSql } from '../shared/group-state.js';
 import { authoredIntentWriteSql } from '../../common/sql/authored-relationship-intent-sql.js';
-import {
-  peerIntentFeedWriteSql,
-} from '../../common/sql/relationship-intent-recipient-feed-sql.js';
+import { peerIntentFeedWriteSql } from '../../common/sql/relationship-intent-recipient-feed-sql.js';
 
 /** Disband sweep command: depart one member of an already-dissolved local
  * group. The member is addressed directly (the sweep enumerates pairs, not
@@ -51,63 +49,66 @@ export function groupDisbandMembershipRevocationLocatorSql(input: {
   `;
 }
 
-/** One composed statement for the disband sweep's per-member departure. The
- * dissolution boundary is the parent's GROUP_DISSOLVED message; the sweep is
- * deliberately silent — it writes no message, no watermark, and no thread
- * fan-out (the dissolved group keeps its last roster). The parent sweep
- * captures each active member's boundary while admitting that member's child.
- * It authors no
- * reverse task (the group authors both intent sides itself). The intent
- * revocation, the projection flip, the audience close, and the recipient
- * writes run for every still-pending or active pair the full sweep hands over;
- * a fully revoked pair is filtered upstream. Sibling CTEs cannot observe one
- * another's writes, so every read-back derives from the statement's own
- * RETURNING chains. */
+/** The disband sweep's authored REVOKED directions, written before the domain
+ * statement in the owning transaction. The group direction always carries the
+ * dissolution profile revision; the local member direction joins it only for a
+ * locally hosted member — a remote member's home folds its own direction from
+ * the dissolution boundary. */
+export function groupDisbandMembershipRevocationIntentWrites(
+  input: GroupDisbandMembershipRevocationInput,
+): SQL[] {
+  const sideA = authoredIntentWriteSql({
+    author: { account: input.groupAccount, namespaceId: 0 },
+    profileRev: input.groupProfileRev,
+    receiver: {
+      account: input.memberAccount,
+      namespaceId: input.profileNamespaceId,
+    },
+    threadId: input.threadId,
+    status: 'REVOKED',
+    note: '',
+    requestedAt: null,
+    expiresAt: null,
+  });
+  if (input.profileNamespaceId !== 0) return [sideA];
+  const sideB = authoredIntentWriteSql({
+    author: {
+      account: input.memberAccount,
+      namespaceId: input.profileNamespaceId,
+    },
+    receiver: { account: input.groupAccount, namespaceId: 0 },
+    threadId: input.threadId,
+    status: 'REVOKED',
+    note: '',
+    requestedAt: null,
+    expiresAt: null,
+  });
+  return [sideA, sideB];
+}
+
+/** One composed domain statement for the disband sweep's per-member departure;
+ * the intent directions are written beforehand by
+ * `groupDisbandMembershipRevocationIntentWrites` in the same transaction, and
+ * the statement reads the group direction back. The dissolution boundary is
+ * the parent's GROUP_DISSOLVED message; the sweep is deliberately silent — it
+ * writes no message, no watermark, and no thread fan-out (the dissolved group
+ * keeps its last roster). The parent sweep captures each active member's
+ * boundary while admitting that member's child. It authors no reverse task
+ * (the group authors both intent sides itself). The intent revocation, the
+ * audience close, and the peer recipient write run for every still-pending or
+ * active pair the full sweep hands over; a fully revoked pair is filtered
+ * upstream. */
 export function groupDisbandMembershipRevocationSql(
   input: GroupDisbandMembershipRevocationInput,
 ): SQL {
   const localMember = input.profileNamespaceId === 0;
   return sql`
-    WITH ${
-      localMember
-        ? sql`authored_b AS (
-      ${authoredIntentWriteSql({
-        author: {
-          account: input.memberAccount,
-          namespaceId: input.profileNamespaceId,
-        },
-        receiver: { account: input.groupAccount, namespaceId: 0 },
-        threadId: input.threadId,
-        status: 'REVOKED',
-        note: '',
-        requestedAt: null,
-        expiresAt: null,
-      })}
-    ), `
-        : sql``
-    }authored AS (
-      ${authoredIntentWriteSql({
-        author: { account: input.groupAccount, namespaceId: 0 },
-        profileRev: input.groupProfileRev,
-        receiver: {
-          account: input.memberAccount,
-          namespaceId: input.profileNamespaceId,
-        },
-        threadId: input.threadId,
-        status: 'REVOKED',
-        note: '',
-        requestedAt: null,
-        expiresAt: null,
-      })}
-    ), revocation AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
-      UNION ALL
+    WITH revocation AS MATERIALIZED (
       SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
         AND "receiverAccount" = ${input.memberAccount}
         AND "receiverNamespaceId" = ${input.profileNamespaceId}
-        AND NOT EXISTS (SELECT 1 FROM authored)
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = false, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${input.pairId} AND "threadId" = ${input.threadId}
@@ -127,12 +128,8 @@ export function groupDisbandMembershipRevocationSql(
       RETURNING ta.id
     ) ${localMember ? sql.empty() : sql`, ${peerRecipient(input)}`}
     SELECT v.status, v.note,
-      EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM audience_close) AS "audienceChanged"
-      ${localMember ? sql.empty() : sql`,
-        (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-        (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"`}
     FROM revocation v
   `;
 }

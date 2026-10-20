@@ -31,6 +31,7 @@ import {
 } from '../membership-intent/shared/group-membership-state-sql.js';
 import { lockGroupMemberIntentRowsInTx } from '../membership-intent/shared/group-member-intent-lock.js';
 import {
+  groupDisbandMembershipRevocationIntentWrites,
   groupDisbandMembershipRevocationLocatorSql,
   groupDisbandMembershipRevocationSql,
   type GroupDisbandMembershipRevocationInput,
@@ -297,20 +298,16 @@ export class GroupDisbandMembershipRevocationService {
     context: ValidatedRevocation,
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Set<number>> {
+    for (const write of groupDisbandMembershipRevocationIntentWrites(
+      context.input,
+    ))
+      await context.tx.execute(write);
     const result = await context.tx.execute<{
-      intentChanged: boolean;
       pairChanged: boolean;
       audienceChanged: boolean;
-      recipientUserId: number | null;
-      recipientFeedId: string | null;
     }>(groupDisbandMembershipRevocationSql(context.input));
     const row = result.rows[0];
     if (!row) throw new Error('disband revocation update disappeared');
-    if (row.recipientUserId !== null && row.recipientFeedId !== null)
-      clientUpdates.push({
-        userId: row.recipientUserId,
-        feedId: Number(row.recipientFeedId),
-      });
     if (row.pairChanged && context.localMemberId !== null)
       clientUpdates.push(
         ...(await captureThreadStateUpdatesInTx(context.tx, [

@@ -29,10 +29,15 @@ export function groupAuthoredMembershipRequestSql(
     WITH authored AS (
       ${authoredIntentWriteSql({
         author: { account: input.groupAccount, namespaceId: 0 },
-        receiver: { account: input.targetAccount, namespaceId: input.targetNamespaceId },
+        receiver: {
+          account: input.targetAccount,
+          namespaceId: input.targetNamespaceId,
+        },
         threadId: input.threadId,
-        status: 'REQUESTED', note: input.note,
-        requestedAt: input.requestedAt, expiresAt: input.expiresAt,
+        status: 'REQUESTED',
+        note: input.note,
+        requestedAt: input.requestedAt,
+        expiresAt: input.expiresAt,
         snapshot: input.snapshot,
       })}
     ), request_state AS MATERIALIZED (
@@ -60,8 +65,12 @@ export function groupAuthoredMembershipRequestSql(
     SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM audience_open) AS "audienceChanged"
-      ${remote ? sql`, (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-        (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"` : sql.empty()}
+      ${
+        remote
+          ? sql`, (SELECT "userId" FROM recipient_result) AS "recipientUserId",
+        (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"`
+          : sql.empty()
+      }
     FROM request_state v
   `;
 }

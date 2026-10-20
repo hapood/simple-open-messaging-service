@@ -27,10 +27,12 @@ import {
 } from '../authored/group-authored-membership-authorization-sql.js';
 import { receivedMemberMembershipRequestSql } from './received-member-membership-request-sql.js';
 import {
+  groupMembershipAcceptanceIntentWrites,
   groupMembershipAcceptanceSql,
   type GroupMembershipAcceptanceInput,
 } from '../shared/group-membership-acceptance-sql.js';
 import {
+  groupMembershipRevocationIntentWrite,
   groupMembershipRevocationSql,
   type GroupMembershipRevocationInput,
 } from '../shared/group-membership-revocation-sql.js';
@@ -119,8 +121,7 @@ export class RemoteMemberMembershipIntentService {
     } catch (error) {
       this.logger.warn('remote member intent client wake failed', error);
     }
-    if (peers.size > 0)
-      void this.federation.pushStateFeedNamespaces(peers);
+    if (peers.size > 0) void this.federation.pushStateFeedNamespaces(peers);
     return { routed: result.routed };
   }
 
@@ -540,6 +541,8 @@ export class RemoteMemberMembershipIntentService {
         },
       ),
     };
+    for (const write of groupMembershipAcceptanceIntentWrites(input))
+      await tx.execute(write);
     const result = await tx.execute<{
       canonicalRosterChanged: boolean;
       audienceChanged: boolean;
@@ -605,8 +608,13 @@ export class RemoteMemberMembershipIntentService {
         group: { account: context.group.groupAccount, namespaceId: 0 },
       }),
     };
+    // The wire writer's guarded RETURNING reports whether this delivery
+    // actually moved the member direction; a replayed item leaves it untouched.
+    const intentWrite = await tx.execute<{ status: string }>(
+      groupMembershipRevocationIntentWrite(input),
+    );
+    const intentChanged = intentWrite.rows.length > 0;
     const result = await tx.execute<{
-      intentChanged: boolean;
       pairChanged: boolean;
       departed: boolean;
       audienceChanged: boolean;
@@ -622,7 +630,7 @@ export class RemoteMemberMembershipIntentService {
       (context.row.groupIntentStatus === 'REQUESTED' &&
         context.row.groupIntentExpiresAt !== null &&
         new Date(context.row.groupIntentExpiresAt).getTime() > Date.now());
-    if (row.pairChanged || (row.intentChanged && groupDirectionEffective)) {
+    if (row.pairChanged || (intentChanged && groupDirectionEffective)) {
       // The member's revoke concludes a still-positive group direction even
       // when the pair was only pending; departure effects require pairChanged.
       await this.concludeGroupDirectionInTx(tx, context);

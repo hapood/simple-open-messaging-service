@@ -1,4 +1,5 @@
 import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
+import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
 import type { RequestTransactionCapability } from '../../../relationship/request/request-transaction.contract.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
@@ -587,41 +588,13 @@ export class UserIntentService {
       const withdrawing = exact.decision === 'WITHDRAW';
       const author = withdrawing ? actor : target;
       const receiver = withdrawing ? target : actor;
-      const [intent] = await tx
-        .select()
-        .from(relationshipIntent)
-        .where(
-          and(
-            eq(relationshipIntent.authorAccount, author.account),
-            eq(relationshipIntent.authorNamespaceId, author.namespaceId),
-            eq(relationshipIntent.receiverAccount, receiver.account),
-            eq(relationshipIntent.receiverNamespaceId, receiver.namespaceId),
-          ),
-        );
-      const [round] = await tx
-        .select()
-        .from(relationshipRequest)
-        .where(eq(relationshipRequest.id, exact.requestId));
-      if (
-        row.pairActive ||
-        !intent ||
-        intent.status !== 'REQUESTED' ||
-        intent.requestId !== exact.requestId ||
-        !round ||
-        round.kind !== 'FRIEND' ||
-        round.status !== 'REQUESTED' ||
-        round.authorAccount !== author.account ||
-        round.authorNamespaceId !== author.namespaceId ||
-        round.receiverAccount !== receiver.account ||
-        round.receiverNamespaceId !== receiver.namespaceId
-      )
-        return { requestDecisionStatus: 'STALE_REQUEST' };
-      if (
-        !intent.expiresAt ||
-        intent.expiresAt.getTime() <= base.validationTime ||
-        round.expiresAt.getTime() <= base.validationTime
-      )
-        return { requestDecisionStatus: 'EXPIRED' };
+      const gate = await validateRequestDecisionInTx(tx, {
+        flow: { kind: 'FRIEND', author, receiver },
+        requestId: exact.requestId,
+        pairActive: row.pairActive,
+        asOf: new Date(base.validationTime),
+      });
+      if (gate) return { requestDecisionStatus: gate.status };
     }
 
     const context =

@@ -194,11 +194,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
     ).resolves.toEqual({ audienceChanged: true, threadFanoutAdmitted: true });
 
     expect(audience.open).toHaveBeenCalledWith(target.tx, 9, 7, 12n);
-    expect(target.projectCurrentInTx).toHaveBeenCalledWith(
-      target.tx,
-      9,
-      7,
-    );
+    expect(target.projectCurrentInTx).toHaveBeenCalledWith(target.tx, 9, 7);
     expect(target.projectCurrentInTx.mock.invocationCallOrder[0]).toBeLessThan(
       target.enqueueCurrentThreadFanoutsInTx.mock.invocationCallOrder[0],
     );
@@ -219,10 +215,6 @@ describe('AuthoritativeMembershipFinalizerService', () => {
       }),
     ).resolves.toEqual({ audienceChanged: false, threadFanoutAdmitted: true });
 
-    expect(target.projectCurrentInTx).toHaveBeenCalledWith(
-      target.tx,
-      9,
-      7,
-    );
+    expect(target.projectCurrentInTx).toHaveBeenCalledWith(target.tx, 9, 7);
   });
 });

@@ -4,11 +4,14 @@ import {
   type MemberMembershipRequestStateInput,
 } from '../shared/member-membership-request-statement.js';
 
-export interface ReceivedMemberMembershipRequestInput extends MemberMembershipRequestStateInput {
+export interface ReceivedMemberMembershipRequestInput
+  extends MemberMembershipRequestStateInput {
   authoredSql: SQL;
 }
 
 /** Received applications contain no sender-local target snapshot. */
-export function receivedMemberMembershipRequestSql(input: ReceivedMemberMembershipRequestInput) {
+export function receivedMemberMembershipRequestSql(
+  input: ReceivedMemberMembershipRequestInput,
+) {
   return memberMembershipRequestStatement(input, input.authoredSql);
 }

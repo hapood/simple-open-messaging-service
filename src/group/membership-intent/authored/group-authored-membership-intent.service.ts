@@ -8,6 +8,7 @@ import {
   type ThreadContentLock,
 } from '../../../common/locks/thread-content-lock.js';
 import {
+  groupMembershipAcceptanceIntentWrites,
   groupMembershipAcceptanceSql,
   type GroupMembershipAcceptanceInput,
 } from '../shared/group-membership-acceptance-sql.js';
@@ -19,6 +20,7 @@ import {
   type GroupMembershipAuthorizationRow,
 } from './group-authored-membership-authorization-sql.js';
 import {
+  groupMembershipRevocationIntentWrite,
   groupMembershipRevocationSql,
   type GroupMembershipRevocationInput,
 } from '../shared/group-membership-revocation-sql.js';
@@ -30,7 +32,10 @@ import { admitGroupMembershipProjectionFanoutInTx } from '../shared/group-member
 import { mintGroupMemberPairInTx } from '../shared/group-member-pair-mint.js';
 import { lockGroupMemberIntentRowsInTx } from '../shared/group-member-intent-lock.js';
 import { Logger } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
+import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
+import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
 import type { RequestDecision } from '../../../../shared/relationship-request.js';
 import { GroupRole } from '../../../database/enums.js';
 import { BusinessCode } from '../../../common/business-code.js';
@@ -44,7 +49,7 @@ import type {
   DatabaseService,
   DatabaseTransaction,
 } from '../../../database/database.service.js';
-import { relationshipPair, relationshipIntent, relationshipRequest } from '../../../database/schema.js';
+import { relationshipPair } from '../../../database/schema.js';
 import type {
   ClientStateFeedService,
   PendingClientStateFeedUpdate,
@@ -260,6 +265,17 @@ export class GroupAuthoredMembershipIntentService {
     params: GroupAuthoredMembershipIntentCommand,
     requestDecision?: { requestId: bigint; decision: RequestDecision },
   ): Promise<ValidatedDecision | GroupAuthoredMembershipIntentResult> {
+    if (
+      requestDecision &&
+      (params.decision === 'REQUESTED' ||
+        params.scope === 'MEMBER' ||
+        (params.scope === 'APPLICATION'
+          ? !['ACCEPT', 'REJECT'].includes(requestDecision.decision)
+          : requestDecision.decision !== 'WITHDRAW') ||
+        params.decision !==
+          (requestDecision.decision === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED'))
+    )
+      return { status: 'STALE_REQUEST' };
     if (params.decision === 'REQUESTED')
       return this.lockAndValidateRequestInTx(tx, params);
     return this.lockAndValidateExistingTargetInTx(tx, params, requestDecision);
@@ -290,6 +306,7 @@ export class GroupAuthoredMembershipIntentService {
         }),
       )
     ).rows[0];
+    if (!candidate && requestDecision) return { status: 'STALE_REQUEST' };
     if (!candidate)
       return this.reject(
         params.scope === 'MEMBER' ? 'TARGET_NOT_FOUND' : 'INTENT_NOT_FOUND',
@@ -366,12 +383,24 @@ export class GroupAuthoredMembershipIntentService {
     );
     if (!row || row.namespaceId !== 0)
       throw new Error('group decision requires an authoritative group');
+    if (!row.authorized)
+      return this.reject(
+        'FORBIDDEN',
+        BusinessCode.GROUP_FORBIDDEN,
+        'only active group managers may handle requests',
+      );
     if (requestDecision && params.scope !== 'MEMBER') {
-      const gate = await this.validateExactRequestRoundInTx(tx, {
-        group: { account: row.account, namespaceId: 0 },
-        member,
-        scope: params.scope,
-        requestDecision,
+      const group = { account: row.account, namespaceId: 0 };
+      const application = params.scope === 'APPLICATION';
+      const gate = await validateRequestDecisionInTx(tx, {
+        flow: {
+          kind: application ? 'GROUP_APPLICATION' : 'GROUP_INVITATION',
+          author: application ? member : group,
+          receiver: application ? group : member,
+        },
+        requestId: requestDecision.requestId,
+        pairActive: row.pairActive,
+        asOf: new Date(),
       });
       if (gate) return gate;
     }
@@ -581,9 +610,12 @@ export class GroupAuthoredMembershipIntentService {
       );
     // Entry states: a pending application, an outstanding invitation whose
     // invitee already acked, or an already-completed command (silent no-op).
-    // Side B REVOKED is equally a no-op; a pair-active member is already satisfied
-    // — checked after the application gate, so the loser of a duplicate approval
-    // still reports NOT_FOUND instead of masquerading as a satisfied no-op.
+    // Side B REVOKED is equally a no-op; a pair-active member is already
+    // satisfied — after the application gate, so a pending direction under an
+    // active pair (a crossed invitation the invitee acked) still reports the
+    // expiry rather than masquerading as a satisfied no-op. A duplicate
+    // approval instead finds the folded ACCEPTED direction and reports
+    // ALREADY_MEMBER, matching the P2P acceptance parity.
     if (row.memberIntentStatus === 'REVOKED')
       return Promise.resolve({ status: 'NO_OP', reason: 'ALREADY_REVOKED' });
     if (row.memberIntentStatus === 'REQUESTED' && !row.applicationPending)
@@ -728,7 +760,7 @@ export class GroupAuthoredMembershipIntentService {
     };
     const action = row.pairActive
       ? ('KICK' as const)
-      : row.applicationPending
+      : params.scope === 'APPLICATION'
         ? ('REJECT' as const)
         : ('WITHDRAW' as const);
 
@@ -758,73 +790,6 @@ export class GroupAuthoredMembershipIntentService {
         },
       },
     });
-  }
-
-  /** Exact-round admission for manager-side HTTP decisions. ACCEPT and REJECT
-   * settle the member-authored application direction (member author, group
-   * receiver); WITHDRAW settles the group's own invitation (group author,
-   * member receiver) — the opposite endpoint pairing from the member-side
-   * gate. Runs under the locks this validation already holds, so a replaced
-   * or concluded round cannot be decided by a stale id. */
-  private async validateExactRequestRoundInTx(
-    tx: DatabaseTransaction,
-    scope: {
-      group: { account: string; namespaceId: number };
-      member: { account: string; namespaceId: number };
-      scope: 'APPLICATION' | 'INVITATION';
-      requestDecision: { requestId: bigint; decision: RequestDecision };
-    },
-  ): Promise<{ status: 'STALE_REQUEST' | 'EXPIRED' } | undefined> {
-    const { requestDecision } = scope;
-    const applicationSide = scope.scope === 'APPLICATION';
-    const author = applicationSide ? scope.member : scope.group;
-    const receiver = applicationSide ? scope.group : scope.member;
-    const kind = applicationSide ? 'GROUP_APPLICATION' : 'GROUP_INVITATION';
-    const [round] = await tx
-      .select({
-        status: relationshipRequest.status,
-        expiresAt: relationshipRequest.expiresAt,
-      })
-      .from(relationshipRequest)
-      .where(
-        and(
-          eq(relationshipRequest.id, requestDecision.requestId),
-          eq(relationshipRequest.kind, kind),
-          eq(relationshipRequest.authorAccount, author.account),
-          eq(relationshipRequest.authorNamespaceId, author.namespaceId),
-          eq(relationshipRequest.receiverAccount, receiver.account),
-          eq(relationshipRequest.receiverNamespaceId, receiver.namespaceId),
-        ),
-      );
-    const [intent] = await tx
-      .select({
-        requestId: relationshipIntent.requestId,
-        status: relationshipIntent.status,
-        expiresAt: relationshipIntent.expiresAt,
-      })
-      .from(relationshipIntent)
-      .where(
-        and(
-          eq(relationshipIntent.authorAccount, author.account),
-          eq(relationshipIntent.authorNamespaceId, author.namespaceId),
-          eq(relationshipIntent.receiverAccount, receiver.account),
-          eq(relationshipIntent.receiverNamespaceId, receiver.namespaceId),
-        ),
-      );
-    if (
-      round?.status !== 'REQUESTED' ||
-      intent?.status !== 'REQUESTED' ||
-      intent.requestId !== requestDecision.requestId
-    )
-      return { status: 'STALE_REQUEST' };
-    const now = Date.now();
-    if (
-      round.expiresAt.getTime() <= now ||
-      intent.expiresAt === null ||
-      intent.expiresAt.getTime() <= now
-    )
-      return { status: 'EXPIRED' };
-    return undefined;
   }
 
   /** REQUESTED entry validation. `req + req/ack = ack`: a live application or an
@@ -963,6 +928,8 @@ export class GroupAuthoredMembershipIntentService {
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<number, bigint>> {
     const { tx } = context;
+    for (const write of groupMembershipAcceptanceIntentWrites(context.input))
+      await tx.execute(write);
     const result = await tx.execute<{
       canonicalRosterChanged: boolean;
       audienceChanged: boolean;
@@ -974,13 +941,11 @@ export class GroupAuthoredMembershipIntentService {
     const row = result.rows[0];
     if (!row) throw new Error('group membership acceptance update disappeared');
     if (row.invalidPeerHead) throw new Error('conflicting peer content head');
-    // The composed statement admitted the thread fan-outs; the applicant's own
-    // intent feed row is a one-person notification fact and wakes directly.
-    if (row.recipientUserId !== null && row.recipientFeedId !== null)
-      clientUpdates.push({
-        userId: row.recipientUserId,
-        feedId: Number(row.recipientFeedId),
-      });
+    // Participant updates ride the thread feed, not the retired client intent feed.
+    if (context.localMemberId !== null)
+      clientUpdates.push(
+        ...(await captureThreadStateUpdatesInTx(tx, [context.localMemberId])),
+      );
     // The manager's ACK concludes the pending application round, or is a
     // group-side no-op after the invitee already completed the invitation.
     await this.relationshipMutations.writeGroupRequestEffectsInTx(
@@ -1003,10 +968,10 @@ export class GroupAuthoredMembershipIntentService {
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<number, bigint>> {
     const { tx } = context;
+    await tx.execute(groupMembershipRevocationIntentWrite(context.input));
     const result = await tx.execute<{
       requestId: string;
       status: string;
-      intentChanged: boolean;
       pairChanged: boolean;
       departed: boolean;
       audienceChanged: boolean;
@@ -1016,11 +981,6 @@ export class GroupAuthoredMembershipIntentService {
     }>(groupMembershipRevocationSql(context.input));
     const row = result.rows[0];
     if (!row) throw new Error('group membership revocation update disappeared');
-    if (row.recipientUserId !== null && row.recipientFeedId !== null)
-      clientUpdates.push({
-        userId: row.recipientUserId,
-        feedId: Number(row.recipientFeedId),
-      });
     // Explicit manager-side terminal actions:
     // - REJECT: rejects a pending application (request -> REJECTED)
     // - WITHDRAW: cancels the group's own live invitation (request -> WITHDRAWN)
@@ -1047,6 +1007,21 @@ export class GroupAuthoredMembershipIntentService {
       context.member.namespaceId !== 0 && row.recipientFeedId !== null
         ? new Map([[context.member.namespaceId, BigInt(row.recipientFeedId)]])
         : new Map();
+    if (context.action === 'REJECT' && context.localMemberId !== null) {
+      // The pair and both directions are already locked. Conclude the local
+      // requester without re-entering the group mutation/lock orchestration.
+      await tx.execute(
+        authoredIntentWriteSql({
+          author: context.member,
+          receiver: { account: context.authorization.account, namespaceId: 0 },
+          threadId: context.params.threadId,
+          status: 'REVOKED',
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+        }),
+      );
+    }
     if (row.pairChanged && context.localMemberId !== null) {
       const conclusion =
         await this.relationshipMutations.writeMemberRelationshipIntentInTx(
@@ -1080,16 +1055,7 @@ export class GroupAuthoredMembershipIntentService {
     const row = result.rows[0];
     if (!row)
       throw new Error('group-authored membership request update disappeared');
-    if (
-      row.recipientUserId !== null &&
-      row.recipientUserId !== undefined &&
-      row.recipientFeedId !== null &&
-      row.recipientFeedId !== undefined
-    )
-      clientUpdates.push({
-        userId: row.recipientUserId,
-        feedId: Number(row.recipientFeedId),
-      });
+
     // Managers are not woken here: their per-manager notification is the
     // projection fan-out task's job — the executor advances each manager's
     // direction watermarks, which rides the thread feed and wakes them.

@@ -230,7 +230,10 @@ export class GroupRelationshipMutationService {
           : membership.request.status === 'REVOKED'
             ? (clientRequestStatus ?? 'WITHDRAWN')
             : membership.request.status,
-        membership.request.status === 'ACCEPTED' ? 'INVITATION' : 'APPLICATION',
+        membership.request.status === 'ACCEPTED' ||
+          clientRequestDirection === 'INCOMING'
+          ? 'INVITATION'
+          : 'APPLICATION',
         membership.request.status === 'REQUESTED',
         options.snapshot,
       );
@@ -275,7 +278,6 @@ export class GroupRelationshipMutationService {
       initialRole,
       expectedAuthorization,
       clientRequestStatus,
-      clientRequestDirection,
     } = options;
     if (status !== 'REVOKED' && (await isGroupDissolvedInTx(tx, threadId)))
       return new Map<number, bigint>();
@@ -480,18 +482,12 @@ export class GroupRelationshipMutationService {
       .from(tables.relationshipIntent)
       .where(
         and(
-          eq(
-            tables.relationshipIntent.authorAccount,
-            flow.author.account,
-          ),
+          eq(tables.relationshipIntent.authorAccount, flow.author.account),
           eq(
             tables.relationshipIntent.authorNamespaceId,
             flow.author.namespaceId,
           ),
-          eq(
-            tables.relationshipIntent.receiverAccount,
-            flow.receiver.account,
-          ),
+          eq(tables.relationshipIntent.receiverAccount, flow.receiver.account),
           eq(
             tables.relationshipIntent.receiverNamespaceId,
             flow.receiver.namespaceId,

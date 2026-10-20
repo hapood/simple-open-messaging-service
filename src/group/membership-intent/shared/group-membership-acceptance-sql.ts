@@ -13,46 +13,90 @@ export interface GroupMembershipAcceptanceInput {
   profileNamespaceId: number;
   note: string;
   acceptedAt: Date;
-  /** Which manager projection rows flip to ACCEPTED: the group's own ACK
-   * accepts an application, the member's ACK completes an invitation. */
   /** The member's ACK authors the member direction as well: it is the only
    * writer in this business family of a member-direction ACCEPTED, and
    * `join_source` reads the written row back so the roster fact sees this
-   * statement's own profile revision. */
+   * round's profile revision. */
   memberAck?: boolean;
   /** Alternate validated writer for that side B ACK: a received peer intent
    * substitutes the wire snapshot (profileRev and heads are the origin's, not
-   * locally derivable). */
+   * locally derivable). Consumed by `groupMembershipAcceptanceIntentWrites`. */
   memberAuthoredSql?: SQL;
 }
 
-/** Shared CTE contract: accepted_intent, pair_change, roster_plan, meta_head,
- * seq_alloc and system_message. Input identities and locks are validated by the
- * transaction owner. Only side A is authored here — plus side B for the
- * member's own ACK (`authorMemberSide`). */
-function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
-  const memberAuthored = input.memberAck
-    ? sql`member_authored AS (
-      ${input.memberAuthoredSql ?? authoredIntentWriteSql({ author: { account: input.memberAccount, namespaceId: input.profileNamespaceId }, receiver: { account: input.groupAccount, namespaceId: 0 }, threadId: input.threadId, status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
-    ), `
-    : sql``;
-  const memberSideRead = input.memberAck
-    ? sql`
-      UNION ALL
-      SELECT p.active, t."curSeq", t."authorizationEpoch",
-        m.note, m."requestedAt", m."expiresAt",
-        m."profileRev", m."messageEndSeq", m."tombstoneEndSeq"
-      FROM member_authored m
-      JOIN "RelationshipPair" p ON p.id = ${input.pairId}
-      JOIN "MessageThread" t ON t.id = ${input.threadId}`
-    : sql``;
-  // Sibling CTEs read the pre-statement snapshot, so the table branch yields to
-  // the written row whenever this statement authored side B itself.
-  const tableReadGuard = input.memberAck
-    ? sql` AND NOT EXISTS (SELECT 1 FROM member_authored)`
-    : sql``;
+/** Authored ACCEPTED directions, written before the domain statement in the
+ * owning transaction. Side A is the group's ACK. Side B is added for the
+ * member's own ACK (`memberAuthoredSql` substitutes a received peer intent's
+ * validated wire snapshot), and — with P2P reverse-upgrade parity — for a
+ * manager's ACK of a **local** application: the applicant direction is
+ * promoted in place (status/expiresAt only; its note, requestedAt and profile
+ * reference survive). A remote applicant is never written here; its home
+ * folds the direction from the wire ACK (mirror activation promote). Each
+ * write runs as its own statement; the domain statement then reads the
+ * committed rows back. */
+export function groupMembershipAcceptanceIntentWrites(
+  input: GroupMembershipAcceptanceInput,
+): SQL[] {
+  const sideA = authoredIntentWriteSql({
+    author: { account: input.groupAccount, namespaceId: 0 },
+    receiver: {
+      account: input.memberAccount,
+      namespaceId: input.profileNamespaceId,
+    },
+    threadId: input.threadId,
+    status: 'ACCEPTED',
+    note: input.note,
+    requestedAt: input.acceptedAt,
+    expiresAt: null,
+  });
+  if (input.memberAck) {
+    const sideB =
+      input.memberAuthoredSql ??
+      authoredIntentWriteSql({
+        author: {
+          account: input.memberAccount,
+          namespaceId: input.profileNamespaceId,
+        },
+        receiver: { account: input.groupAccount, namespaceId: 0 },
+        threadId: input.threadId,
+        status: 'ACCEPTED',
+        note: input.note,
+        requestedAt: input.acceptedAt,
+        expiresAt: null,
+      });
+    return [sideA, sideB];
+  }
+  if (input.profileNamespaceId === 0)
+    return [sideA, localApplicantPromotionSql(input)];
+  return [sideA];
+}
+
+/** The manager-ACK promotion of a local application direction, mirroring the
+ * P2P reverse upgrade: a still-live REQUESTED application collapses to
+ * ACCEPTED without touching its note, requestedAt or profile coordinates, so
+ * the applicant's own record stays its author's history. */
+function localApplicantPromotionSql(
+  input: GroupMembershipAcceptanceInput,
+): SQL {
   return sql`
-    ${memberAuthored}join_source AS MATERIALIZED (
+      UPDATE "RelationshipIntent" SET
+        status = 'ACCEPTED'::"RelationshipIntentStatus",
+        "expiresAt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "authorAccount" = ${input.memberAccount} AND "authorNamespaceId" = 0
+        AND "receiverAccount" = ${input.groupAccount} AND "receiverNamespaceId" = 0
+        AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
+    `;
+}
+
+/** Shared CTE contract: join_source, accepted_intent, pair_change, roster_plan,
+ * meta_head, seq_alloc and system_message. Input identities and locks are
+ * validated by the transaction owner, and both intent directions are already
+ * written by `groupMembershipAcceptanceIntentWrites` in this transaction, so
+ * this statement owns domain effects only and reads the intent rows back. */
+function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
+  return sql`
+    join_source AS MATERIALIZED (
       SELECT p.active AS "wasActive", t."curSeq", t."authorizationEpoch",
         b.note AS "requestNote", b."requestedAt", b."expiresAt",
         b."profileRev" AS "memberProfileRev", b."messageEndSeq" AS "sourceMessageEndSeq",
@@ -61,17 +105,12 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       JOIN "RelationshipIntent" b
         ON b."authorAccount" = ${input.memberAccount} AND b."authorNamespaceId" = ${input.profileNamespaceId}
           AND b."receiverAccount" = ${input.groupAccount} AND b."receiverNamespaceId" = 0
-      WHERE p.id = ${input.pairId} AND t.id = ${input.threadId}${tableReadGuard}${memberSideRead}
-    ), authored_intent AS (
-      ${authoredIntentWriteSql({ author: { account: input.groupAccount, namespaceId: 0 }, receiver: { account: input.memberAccount, namespaceId: input.profileNamespaceId }, threadId: input.threadId, status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
+      WHERE p.id = ${input.pairId} AND t.id = ${input.threadId}
     ), accepted_intent AS MATERIALIZED (
-      SELECT status, "profileRev", note, "requestedAt", "expiresAt" FROM authored_intent
-      UNION ALL
       SELECT status, "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
         AND "receiverAccount" = ${input.memberAccount} AND "receiverNamespaceId" = ${input.profileNamespaceId}
-        AND NOT EXISTS (SELECT 1 FROM authored_intent)
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = true, established = true, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${input.pairId} AND NOT active AND EXISTS (SELECT 1 FROM accepted_intent)
@@ -299,8 +338,10 @@ function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
     )`;
 }
 
-/** One parameterized statement; CTE output dependencies connect the common and address-specific parts.
- * The roster effect admits the local and federation thread fan-outs in the same
+/** One parameterized domain statement; the intent directions are written
+ * beforehand by the shared authored-intent writers in the same transaction.
+ * CTE output dependencies connect the common and address-specific parts. The
+ * roster effect admits the local and federation thread fan-outs in the same
  * statement (forward heads only; the executor reconciles the Meta coordinate). */
 export function groupMembershipAcceptanceSql(
   input: GroupMembershipAcceptanceInput,
@@ -318,10 +359,14 @@ export function groupMembershipAcceptanceSql(
       federation: true,
     })}
     SELECT i.status, i."profileRev", i.note, i."requestedAt", i."expiresAt",
-      ${input.profileNamespaceId !== 0 ? sql`
+      ${
+        input.profileNamespaceId !== 0
+          ? sql`
         (SELECT "feedId" FROM recipient_result) AS "recipientFeedId",
         (SELECT "userId" FROM recipient_result) AS "recipientUserId",
-        COALESCE((SELECT invalid FROM recipient_result), false) AS "invalidPeerHead",` : sql.empty()}
+        COALESCE((SELECT invalid FROM recipient_result), false) AS "invalidPeerHead",`
+          : sql.empty()
+      }
       p."memberChanged" AS "canonicalRosterChanged", EXISTS (SELECT 1 FROM audience_change) AS "audienceChanged",
       h."metaEndId"::text AS "groupMetaFeedEndId",
       (SELECT seq FROM system_message) AS "systemMessageSeq"
