@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../../database/database.service.js';
 import {
@@ -87,7 +87,9 @@ export class RelationshipRequestServiceImpl extends RelationshipRequestService {
         targetId,
       );
       if (result.status === 'READ_AHEAD') {
-        throw new Error('requestReadId exceeds incoming requestEndId');
+        throw new BadRequestException(
+          'requestReadId exceeds incoming requestEndId',
+        );
       }
       if (result.status === 'CHANGED') {
         effectsToDeliver = [...result.effects.clientUpdates];
