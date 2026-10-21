@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="https://hapood.github.io/simple-open-messaging-service/"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a.svg"></a>
   <img alt="SOMS 0.1.0 alpha 0" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.0-7c3aed.svg">
   <a href="spec/v1/README.md"><img alt="SOMFP v1 final-review draft" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.0-e95420.svg"></a>
