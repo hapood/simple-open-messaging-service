@@ -28,7 +28,6 @@ const sse = { notifyProfileNamespaceChange: vi.fn() };
 
 interface FakeRootRow {
   id: number;
-  domain: string;
   rootPublicKey: string;
   rootPrivateKey: string;
   notBefore: Date;
@@ -40,7 +39,7 @@ interface FakeRootRow {
 
 interface FakeSigningKeyRow {
   rootId: number;
-  keyId: string;
+  keyName: string;
   publicKey: string;
   privateKey: string;
   createdAt: Date;
@@ -49,10 +48,10 @@ interface FakeSigningKeyRow {
 }
 
 interface FakeSigningStateRow {
-  domain: string;
-  currentKeyId: string;
+  id: number;
+  currentKeyName: string;
   plannedSwitchAt: Date | null;
-  plannedSuccessorKeyId: string | null;
+  plannedSuccessorKeyName: string | null;
   updatedAt: Date;
 }
 
@@ -62,6 +61,7 @@ interface FakeHandle {
   getKeys: () => FakeSigningKeyRow[];
   getState: () => FakeSigningStateRow | undefined;
   setKeys: (rows: FakeSigningKeyRow[]) => void;
+  setDomain: (domain: string) => void;
 }
 
 /** Rebuilds the SQL text of a Drizzle `sql` fragment; interpolated values appear
@@ -175,9 +175,7 @@ function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
             const ids = fakeRootsById(condition);
             const updates = values as Partial<FakeRootRow>;
             roots = roots.map((root) =>
-              updates.domain !== undefined ||
-              ids.length === 0 ||
-              ids.includes(root.id)
+              ids.length === 0 || ids.includes(root.id)
                 ? { ...root, ...updates }
                 : root,
             );
@@ -205,6 +203,10 @@ function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
     setKeys: (rows) => {
       keys = rows;
     },
+    setDomain: (domain) => {
+      if (!localNamespace) throw new Error('local namespace is missing');
+      localNamespace = { ...localNamespace, domain };
+    },
   };
 }
 
@@ -219,6 +221,7 @@ describe('KeypairService database-backed identity', () => {
   let originalValues: Record<string, string | undefined>;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     process.env.SOMS_DOMAIN = 'node-a.example';
     nextRootId = 1;
     originalValues = Object.fromEntries(
@@ -256,19 +259,21 @@ describe('KeypairService database-backed identity', () => {
     const root = fake.getRoots()[0];
     const key = fake.getKeys()[0];
     const state = fake.getState();
-    expect(root?.domain).toBe('node-a.example');
+    expect(root).not.toHaveProperty('domain');
+    expect(service.getIdentityDomain()).toBe('node-a.example');
     expect(root?.rootPublicKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
     expect(root?.rootPrivateKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
     expect(root?.claimable).toBe(true);
     expect(key?.rootId).toBe(root?.id);
-    expect(key?.keyId).toMatch(/^node-a\.example\/k-[A-Za-z0-9_-]{20}$/);
+    expect(key?.keyName).toMatch(/^k-[A-Za-z0-9_-]{20}$/);
     expect(state).toMatchObject({
-      domain: 'node-a.example',
-      currentKeyId: key?.keyId,
+      id: 0,
+      currentKeyName: key?.keyName,
       plannedSwitchAt: null,
-      plannedSuccessorKeyId: null,
+      plannedSuccessorKeyName: null,
     });
-    expect(service.getKeyId()).toBe(key?.keyId);
+    expect(state).not.toHaveProperty('domain');
+    expect(service.getKeyId()).toBe(`node-a.example/${key?.keyName}`);
     expect(service.getRootPublicKeyB64()).toBe(root?.rootPublicKey);
 
     // The published group has exactly this root; the certificate names it and
@@ -278,7 +283,7 @@ describe('KeypairService database-backed identity', () => {
     expect(group[0]?.ed25519).toBe(root?.rootPublicKey);
     const certificates = service.getSigningKeyCertificates();
     expect(certificates).toHaveLength(1);
-    expect(certificates[0]?.keyId).toBe(key?.keyId);
+    expect(certificates[0]?.keyId).toBe(`node-a.example/${key?.keyName}`);
     expect(certificates[0]?.root).toBe(root?.rootPublicKey);
     expect(
       verifySigningCertificate(certificates[0]!, service.getRootPublicKeyB64()),
@@ -345,7 +350,9 @@ describe('KeypairService database-backed identity', () => {
     expect(() => service.getKeyId()).toThrow(BusinessException);
   });
 
-  it('re-binds a changed SOMS_DOMAIN while preserving the root identity', async () => {
+  it('re-binds a changed SOMS_DOMAIN without changing keys or validity', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
     const fake = fakeDatabase();
     const service = new KeypairService(
       fake.database,
@@ -355,6 +362,12 @@ describe('KeypairService database-backed identity', () => {
     await service.initialize();
     const rootPublicKey = service.getRootPublicKeyB64();
     const previousKeyId = service.getKeyId();
+    const rootsBefore = structuredClone(fake.getRoots());
+    const keysBefore = structuredClone(fake.getKeys());
+    const stateBefore = structuredClone(fake.getState());
+    const certificateBefore = service.getSigningKeyCertificates()[0]!;
+    service.onModuleDestroy();
+    vi.clearAllMocks();
     process.env.SOMS_DOMAIN = 'node-b.example';
 
     const changed = new KeypairService(
@@ -370,6 +383,30 @@ describe('KeypairService database-backed identity', () => {
     expect(changed.getKeyId()).toMatch(/^node-b\.example\/k-/);
     expect(changed.getKeyId()).not.toBe(previousKeyId);
     expect(changed.getSigningKeyCertificates()).toHaveLength(1);
+    expect(fake.getRoots()).toEqual(rootsBefore);
+    expect(fake.getKeys()).toEqual(keysBefore);
+    expect(fake.getState()).toEqual(stateBefore);
+    const certificateAfter = changed.getSigningKeyCertificates()[0]!;
+    expect(certificateAfter).toEqual({
+      ...certificateBefore,
+      keyId: `node-b.example/${keysBefore[0]!.keyName}`,
+      authorizationSignature: expect.any(String),
+    });
+    expect(certificateAfter.authorizationSignature).not.toBe(
+      certificateBefore.authorizationSignature,
+    );
+    expect(verifySigningCertificate(certificateAfter, rootPublicKey)).toBe(
+      true,
+    );
+    expect(
+      verifySigningCertificate(
+        {
+          ...certificateAfter,
+          authorizationSignature: certificateBefore.authorizationSignature,
+        },
+        rootPublicKey,
+      ),
+    ).toBe(false);
     expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledWith(
       expect.anything(),
       0,
@@ -379,6 +416,133 @@ describe('KeypairService database-backed identity', () => {
       { publisherNamespaceId: 0, profileNamespaceId: 0 },
     );
     expect(sse.notifyProfileNamespaceChange).not.toHaveBeenCalled();
+  });
+
+  it('preserves a prepublished successor and switches on the original schedule after renaming', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    setRotationTimings();
+    const fake = fakeDatabase();
+    const first = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
+    await first.initialize();
+    vi.setSystemTime(1_700_000_000_420);
+    await first.maintain();
+    const stateBefore = structuredClone(fake.getState());
+    const keysBefore = structuredClone(fake.getKeys());
+    const certificatesBefore = first.getSigningKeyCertificates();
+    expect(stateBefore?.plannedSuccessorKeyName).not.toBeNull();
+    first.onModuleDestroy();
+
+    process.env.SOMS_DOMAIN = 'node-b.example';
+    const renamed = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
+    await renamed.initialize();
+    expect(fake.getState()).toEqual(stateBefore);
+    expect(fake.getKeys()).toEqual(keysBefore);
+    const certificatesAfter = renamed.getSigningKeyCertificates();
+    expect(certificatesAfter).toHaveLength(2);
+    for (const [index, certificate] of certificatesAfter.entries()) {
+      expect(certificate).toMatchObject({
+        ...certificatesBefore[index],
+        keyId: certificatesBefore[index]!.keyId.replace(
+          'node-a.example/',
+          'node-b.example/',
+        ),
+        authorizationSignature: expect.any(String),
+      });
+      expect(verifySigningCertificate(certificate, certificate.root)).toBe(
+        true,
+      );
+    }
+
+    vi.setSystemTime(1_700_000_000_505);
+    await renamed.maintain();
+    expect(renamed.getKeyId()).toBe(
+      `node-b.example/${stateBefore!.plannedSuccessorKeyName}`,
+    );
+    expect(fake.getKeys()).toEqual(keysBefore);
+    expect(fake.getState()?.plannedSuccessorKeyName).toBeNull();
+    renamed.onModuleDestroy();
+  });
+
+  it('does not reannounce the same domain and restores the same certificate when renamed back', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    const fake = fakeDatabase();
+    const boot = async () => {
+      const service = new KeypairService(
+        fake.database,
+        changes as never,
+        sse as never,
+      );
+      await service.initialize();
+      service.onModuleDestroy();
+      return service;
+    };
+    const original = await boot();
+    const certificateBefore = original.getSigningKeyCertificates();
+    const keysBefore = structuredClone(fake.getKeys());
+    vi.clearAllMocks();
+    await boot();
+    expect(changes.recordNamespaceChangeInTx).not.toHaveBeenCalled();
+    expect(changes.recordClientChangeInTx).not.toHaveBeenCalled();
+
+    process.env.SOMS_DOMAIN = 'node-b.example';
+    await boot();
+    process.env.SOMS_DOMAIN = 'node-a.example';
+    const restored = await boot();
+    expect(restored.getSigningKeyCertificates()).toEqual(certificateBefore);
+    expect(fake.getKeys()).toEqual(keysBefore);
+    expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledTimes(2);
+    expect(changes.recordClientChangeInTx).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads the namespace-0 domain rather than using configuration during maintenance', async () => {
+    const fake = fakeDatabase();
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
+    await service.initialize();
+    const originalKey = structuredClone(fake.getKeys());
+    fake.setDomain('persisted.example');
+    process.env.SOMS_DOMAIN = 'unrelated.example';
+    await service.maintain();
+    expect(service.getIdentityDomain()).toBe('persisted.example');
+    expect(service.getKeyId()).toBe(
+      `persisted.example/${originalKey[0]!.keyName}`,
+    );
+    expect(fake.getKeys()).toEqual(originalKey);
+    service.onModuleDestroy();
+  });
+
+  it('never exposes retained private root keys in administration responses', async () => {
+    const fake = fakeDatabase();
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
+    await service.initialize();
+    const roots = service.getRootEpochs();
+    expect(roots).toHaveLength(1);
+    expect(roots[0]).not.toHaveProperty('rootPrivateKey');
+    expect(roots[0]).toMatchObject({
+      domain: 'node-a.example',
+      rootPublicKey: fake.getRoots()[0]!.rootPublicKey,
+    });
+    expect(JSON.stringify(roots)).not.toContain(
+      fake.getRoots()[0]!.rootPrivateKey,
+    );
+    service.onModuleDestroy();
   });
 
   it('rotates signing keys through plan and switch while retaining the predecessor', async () => {
@@ -394,7 +558,7 @@ describe('KeypairService database-backed identity', () => {
     await service.initialize();
 
     const firstKey = fake.getKeys()[0]!;
-    expect(service.getKeyId()).toBe(firstKey.keyId);
+    expect(service.getKeyId()).toBe(`node-a.example/${firstKey.keyName}`);
     expect(service.getSigningKeyCertificates()).toHaveLength(1);
 
     // Entering the rotation window plans a successor without switching.
@@ -402,7 +566,7 @@ describe('KeypairService database-backed identity', () => {
     await service.maintain();
     const secondKey = fake
       .getKeys()
-      .find((key) => key.keyId !== firstKey.keyId)!;
+      .find((key) => key.keyName !== firstKey.keyName)!;
     expect(secondKey.notBefore.getTime()).toBe(1_700_000_000_420);
     expect(secondKey.notAfter.getTime() - secondKey.notBefore.getTime()).toBe(
       600,
@@ -410,17 +574,17 @@ describe('KeypairService database-backed identity', () => {
     const plannedState = fake.getState();
     // plannedSwitchAt = max(current.notAfter - retention, now + skew) = t0+500
     expect(plannedState?.plannedSwitchAt?.getTime()).toBe(1_700_000_000_500);
-    expect(plannedState?.plannedSuccessorKeyId).toBe(secondKey.keyId);
-    expect(service.getKeyId()).toBe(firstKey.keyId);
+    expect(plannedState?.plannedSuccessorKeyName).toBe(secondKey.keyName);
+    expect(service.getKeyId()).toBe(`node-a.example/${firstKey.keyName}`);
     expect(service.getSigningKeyCertificates()).toHaveLength(2);
 
     // After the planned switch the successor is the only new-request signer; the
     // predecessor remains published for verification.
     vi.setSystemTime(1_700_000_000_505);
     await service.maintain();
-    expect(service.getKeyId()).toBe(secondKey.keyId);
-    expect(fake.getState()?.currentKeyId).toBe(secondKey.keyId);
-    expect(fake.getState()?.plannedSuccessorKeyId).toBeNull();
+    expect(service.getKeyId()).toBe(`node-a.example/${secondKey.keyName}`);
+    expect(fake.getState()?.currentKeyName).toBe(secondKey.keyName);
+    expect(fake.getState()?.plannedSuccessorKeyName).toBeNull();
     expect(service.getSigningKeyCertificates()).toHaveLength(2);
     expect(
       service
@@ -434,8 +598,8 @@ describe('KeypairService database-backed identity', () => {
     // material included — while publication drops it.
     vi.setSystemTime(1_700_000_000_610);
     await service.maintain();
-    expect(fake.getKeys().map((key) => key.keyId)).toEqual(
-      expect.arrayContaining([firstKey.keyId, secondKey.keyId]),
+    expect(fake.getKeys().map((key) => key.keyName)).toEqual(
+      expect.arrayContaining([firstKey.keyName, secondKey.keyName]),
     );
     expect(service.getSigningKeyCertificates()).toHaveLength(1);
   }, 20_000);
@@ -468,13 +632,17 @@ describe('KeypairService database-backed identity', () => {
     expect(service.getStatus()).toEqual({ available: true });
     expect(service.getRootPublicKeyB64()).toBe(rootPublicKey);
     expect(service.getKeyId()).not.toBe(originalKeyId);
-    expect(fake.getKeys().map((key) => key.keyId)).toContain(originalKeyId);
+    expect(
+      fake.getKeys().map((key) => `node-a.example/${key.keyName}`),
+    ).toContain(originalKeyId);
     const certificates = service.getSigningKeyCertificates();
     expect(certificates).toHaveLength(1);
     expect(verifySigningCertificate(certificates[0]!, rootPublicKey)).toBe(
       true,
     );
-    expect(fake.getState()?.currentKeyId).toBe(certificates[0]?.keyId);
+    expect(`node-a.example/${fake.getState()?.currentKeyName}`).toBe(
+      certificates[0]?.keyId,
+    );
   }, 20_000);
 
   it('rejects signing outside the current key validity interval', async () => {

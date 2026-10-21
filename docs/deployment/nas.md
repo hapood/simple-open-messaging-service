@@ -11,8 +11,10 @@ published deployment documentation.
 The NAS Docker Compose example runs PostgreSQL, applies database migrations, and starts the full SOMS
 image containing the application and its Caddy TLS edge.
 
-The example is a launch template. Copy it to an operator-owned directory so its `.env`, generated
-state, Firebase files, and backups remain outside the Git checkout.
+The example is a single-file launch template: all operator configuration lives in
+`docker-compose.yml`. No `.env`, external Caddyfile, or `.conf` file is required; the image generates
+its internal Caddyfile from the container environment. Copy the template to an operator-owned
+directory so credentials, generated state, Firebase files, and backups remain outside the Git checkout.
 
 The NAS profile publishes one HTTPS/federation port, normally `7667`, and obtains a trusted DNS-01
 certificate. It can advertise a second real LAN hostname for networks without hairpin NAT; it does
@@ -58,57 +60,66 @@ forwards these variables. No proxy address is built into the script.
 
 ```bash
 sudo install -d -m 0750 -o "$(id -u)" -g "$(id -g)" /opt/soms
-cp -r deploy/nas/. /opt/soms/
+install -m 0600 deploy/nas/docker-compose.yml /opt/soms/docker-compose.yml
 cd /opt/soms
-cp .env.example .env
-chmod 600 .env
 sudo install -d -m 0750 -o 1000 -g 1000 data
 ```
 
-Copy the directory contents so the hidden `.env.example` is included. The deployment directory will
-contain `docker-compose.yml`, `.env`, and a generated `data/` directory. PostgreSQL uses the
-Compose-managed `postgres-data` volume. The app runs as UID/GID `1000:1000`; its bind-mounted
+The deployment directory will contain the private `docker-compose.yml` and a generated `data/`
+directory. PostgreSQL uses the Compose-managed `postgres-data` volume. The app runs as UID/GID `1000:1000`; its bind-mounted
 `data/` directory must be writable by that identity. Otherwise Docker can create a root-owned
 directory on first start and the app cannot write keys or Caddy state. For rootless Docker or user
 namespace remapping, use the corresponding mapped host ownership.
 
-## 3. Configure `.env`
+## 3. Configure `docker-compose.yml`
 
-Set these values before the first start:
+Edit the copied YAML, not the repository template. Set these values before the first start:
 
-| Variable                   | Purpose                                                                                              |
-| -------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `SOMS_DOMAIN`              | Federation identity used in handles such as `@alice@example.com`                                     |
-| `SOMS_WEB_DOMAIN`          | Browser and native-client entry hostname; it may equal `SOMS_DOMAIN`                                 |
-| `PGPASSWORD`               | Password used to initialize PostgreSQL                                                               |
-| `ADMIN_BOOTSTRAP_PASSWORD` | Creates the bootstrap `admin` account/role when it is absent; does not reset an existing password    |
-| `CLOUDFLARE_API_TOKEN`     | Default DNS-01 credential with `Zone:Zone:Read` and `Zone:DNS:Edit` permissions for the managed zone |
+| Variable                   | Purpose                                                                                                     |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `SOMS_DOMAIN`              | Federation identity used in handles such as `@alice@example.com`                                            |
+| `SOMS_WEB_DOMAIN`          | Browser and native-client entry hostname; it may equal `SOMS_DOMAIN`                                        |
+| `PGPASSWORD`               | Password under `x-database-environment`, shared through YAML anchors by PostgreSQL, migrations, and the app |
+| `ADMIN_BOOTSTRAP_PASSWORD` | Creates the bootstrap `admin` account/role when it is absent; does not reset an existing password           |
+| `CLOUDFLARE_API_TOKEN`     | Default DNS-01 credential with `Zone:Zone:Read` and `Zone:DNS:Edit` permissions for the managed zone        |
 
 The Cloudflare permissions match the [Caddy Cloudflare provider requirements](https://github.com/caddy-dns/cloudflare#configuration).
 Use lowercase hostnames without a scheme, port, or path for the domain fields. `SOMS_WEB_DOMAIN`
 defaults to `SOMS_DOMAIN` when omitted; `SOMS_LAN_DOMAIN` is optional and can be removed when a
-separate LAN entry is unnecessary.
+separate LAN entry is unnecessary. Application and DNS-provider settings belong under
+`services.app.environment`, where both the startup renderer and Caddy can read them.
+
+Database settings live under `x-database-environment`. YAML anchors reuse the database name, user,
+and password for all three services; set each value only once. PostgreSQL receives them as
+`POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`, while migrations and the app receive the
+corresponding `PG*` variables.
 
 Generate unique database and administrator passwords. Changing `PGPASSWORD` after PostgreSQL has
-initialized its volume does not rotate the database role; changing only `.env` instead makes the
+initialized its volume does not rotate the database role; changing only the YAML instead makes the
 app and migration credentials disagree with PostgreSQL. Rotate the role password and update the
-deployment configuration together. Single-quote dotenv secrets containing `$` to prevent Compose
-interpolation.
+deployment configuration together. Treat the YAML as a secret: keep mode 0600 and do not commit or
+share an operator-configured copy.
 
-```dotenv
-SOMS_DOMAIN=example.com
-SOMS_WEB_DOMAIN=soms.example.com
-SOMS_LAN_DOMAIN=soms-lan.example.com
-SOMS_TLS_MODE=single-port
-SOMS_ADMIN_ACCESS=lan
-SOMS_PORT=7667
+Quote string values. Compose interpolates dollar signs even inside single-quoted YAML strings:
+write `$$` for each literal `$` in a password or token. For example, `'prefix$$suffix'` passes
+`prefix$suffix` to the container. Native Caddy placeholders such as `{env.CLOUDFLARE_API_TOKEN}`
+need no escaping. No shell environment variables or `.env` file are needed by this template.
+
+The relevant app environment entries look like this:
+
+```yaml
+SOMS_DOMAIN: example.com
+SOMS_WEB_DOMAIN: soms.example.com
+SOMS_LAN_DOMAIN: soms-lan.example.com
+SOMS_TLS_MODE: single-port
+SOMS_ADMIN_ACCESS: lan
 ```
 
-Keep `SOMS_TLS_MODE=single-port` and `SOMS_PORT=7667` for this profile. `SOMS_PORT` changes only
-Docker's host mapping: the [client-origin code](../../src/common/origin.ts) still advertises port
-7667 for the native shell and WebAuthn. Changing the mapping alone is not a supported custom-port
-deployment. `standard` mode also needs published ports 80/443, which this NAS Compose file does not
-provide; `disabled` is plain HTTP for local testing.
+Keep `SOMS_TLS_MODE: single-port` and both published ports at `7667` for this profile. The
+[client-origin code](../../src/common/origin.ts) advertises port 7667 for the native shell and
+WebAuthn. Changing Docker's host mapping alone is not a supported custom-port deployment.
+`standard` mode also needs published ports 80/443, which this NAS Compose file does not provide;
+`disabled` is plain HTTP for local testing.
 
 Other fields in the example:
 
@@ -127,7 +138,7 @@ Other fields in the example:
 | `SOMS_TURN_TTL`                     | TURN credential lifetime in seconds; use a positive value, default `3600`                            |
 
 All configured domains must share a registrable DNS zone. Configure public or split-horizon DNS so
-the LAN hostname reaches the NAS internally. Publish TCP and UDP for `SOMS_PORT` so internet clients
+the LAN hostname reaches the NAS internally. Publish TCP and UDP port `7667` so internet clients
 and federation peers can reach the service; administrator routes remain restricted to private-range
 clients by `SOMS_ADMIN_ACCESS=lan`.
 
@@ -143,7 +154,7 @@ For Cloudflare, use DNS-only (gray-cloud) records for these direct endpoints. Po
 supported by the [standard Cloudflare HTTP/HTTPS proxy](https://developers.cloudflare.com/fundamentals/reference/network-ports/).
 
 To enable federation, also publish the mandatory SOMFP SRV record. Its target must be a hostname,
-not an IP address, and its port must match `SOMS_PORT`. For the example configuration above:
+not an IP address, and its port must match the published port, `7667`. For the example configuration above:
 
 ```dns
 _somfp._tcp.example.com. 300 IN SRV 0 0 7667 example.com.
@@ -156,16 +167,17 @@ records for reachable IPv6 instead. The selected endpoint must present a trusted
 valid for `SOMS_DOMAIN`. Omitting the SRV record means the server does not publish a Federation v1
 service, although its web client can still be reachable.
 
-Choose the DNS provider explicitly in `.env`. The Cloudflare example is:
+Choose the DNS provider explicitly under `services.app.environment`. The Cloudflare example is:
 
-```dotenv
-CADDY_DNS_DIRECTIVE="dns cloudflare {env.CLOUDFLARE_API_TOKEN}"
-CLOUDFLARE_API_TOKEN=your-token
+```yaml
+CADDY_DNS_DIRECTIVE: 'dns cloudflare {env.CLOUDFLARE_API_TOKEN}'
+CLOUDFLARE_API_TOKEN: 'your-token'
 ```
 
 Use native `{env.NAME}` references; the script validates that variables are set and Caddy reads their
 values at runtime. Credentials are not inserted into the generated Caddyfile. Other providers have
-examples in `.env.example`; their module must support the referenced environment placeholders.
+commented examples in `docker-compose.yml`; their module must support the referenced environment
+placeholders. Add their credential variables to the app environment, not to the migration service.
 
 Optional Firebase downloads use fixed paths—put the private
 service-account credential at `data/firebase-service-account.json` and the Android client configuration
@@ -192,17 +204,35 @@ after migration succeeds. First-time DNS-01 certificate issuance normally takes 
 Caddy state persists in `data/`.
 
 Use `config --quiet` for validation: plain `docker compose config` prints resolved credentials.
-After editing `.env`, run `docker compose up -d` to recreate affected containers; `docker compose
-restart` alone does not reload their environment.
+This checks Compose syntax, not whether required passwords, domains, or DNS credentials are filled
+in and valid. Fill them before starting; the template leaves secrets empty intentionally.
+After editing `docker-compose.yml`, run `docker compose up -d` to recreate affected containers;
+`docker compose restart` alone does not reload their environment.
 
 Once TLS is ready, open the configured web origin. Sign in at `/admin` with account `admin` and the
 bootstrap password, then replace the credential. For this example the LAN admin URL is
 `https://soms-lan.example.com:7667/admin/`. An empty `ADMIN_BOOTSTRAP_PASSWORD` permits startup
 but does not create an administrator.
 
+## Migrating an Existing `.env` Deployment
+
+Back up the existing configuration first. In the same deployment directory, merge the new Compose
+template with the values from the old `.env`: database settings go under `x-database-environment`,
+and application and DNS-provider settings go under `services.app.environment`. Preserve any extra
+operator settings explicitly; they are no longer injected through `env_file`. Convert literal dollar
+signs to `$$` when moving values into YAML, and keep the configured YAML mode 0600.
+
+Keep the deployment directory, Compose project name, `data/` mount, and PostgreSQL volume unchanged
+so the new configuration reuses existing state. Do not change the database credentials or run
+`docker compose down -v`. Validate with `docker compose config --quiet`, then apply with
+`docker compose up -d` and check the migration status and app logs. The old `.env` is no longer
+needed after a successful migration; remove it from the deployment directory and protect any backup
+as a secret. If it also contained Compose controls such as `COMPOSE_PROJECT_NAME`, preserve the
+same project name explicitly on future invocations (for example with `docker compose -p <name>`).
+
 ## Updates and Backups
 
-Back up `.env`, `docker-compose.yml`, `data/`, and PostgreSQL before updating. The following application-owned identity files are
+Back up the private `docker-compose.yml`, `data/`, and PostgreSQL before updating. The following application-owned identity files are
 generated on first use and reused on subsequent starts:
 
 | File                       | Purpose                                                      |
@@ -223,8 +253,9 @@ After taking the backup, pull the intended source revision, rebuild `soms:latest
 `./scripts/build-image.sh`, and run `docker compose up -d` from the deployment directory. Check the
 migration exit status and app logs.
 
-Keep the copied `docker-compose.yml` aligned with the source revision when templates change, but
-preserve secrets in `.env`. `docker compose down` retains PostgreSQL unless `-v` is supplied; never use
+When templates change, merge their changes into the operator-owned `docker-compose.yml` while
+preserving its credentials, domains, and other local settings. Do not overwrite it with an unconfigured
+repository template. `docker compose down` retains PostgreSQL unless `-v` is supplied; never use
 `down -v` for a normal update.
 
 The [federation specification](../../spec/README.md) defines server identity, pinned keys, peer

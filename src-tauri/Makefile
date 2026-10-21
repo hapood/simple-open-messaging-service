@@ -39,7 +39,7 @@
 # Host prerequisites (all on PATH): Rust toolchain + 4 android targets (rustup target add
 # aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android), Android SDK
 # with NDK r27b (27.1.12297006) — ANDROID_HOME set, JDK 17, tauri-cli 2.11.4 (cargo install tauri-cli),
-# Node (for the frontend `npm run build` in ../web), and adb (for `make install`/`run`).
+# Node (for the frontend `npm run build:native` in ../web), and adb (for `make install`/`run`).
 
 # Anchor every path to this Makefile's own location so it runs identically regardless of CWD:
 # MAKE_DIR = the directory holding this file (.../src-tauri/), ROOT = the repo root.
@@ -69,7 +69,7 @@ MULTI_ABIS := aarch64 armv7
 # armeabi-v7a) for Play-Store-style per-device distribution.
 VARIANTS   := $(if $(ABI),$(ABI),$(if $(SPLIT),$(MULTI_ABIS) universal,universal))
 # Skip the merged-SPA `ng build` when it is already built (WEB_BUILD=0). The APK bundles the SPA
-# (frontendDist → web/dist/web/browser); updates require installing a new app package.
+# (frontendDist → web/dist/native/browser); updates require installing a new app package.
 WEB_BUILD  ?= 1
 # Versioned APKs (gitignored) land under dist/<platform>/ — Android here (dist/android/). Raw gradle
 # output stays under gen/android/app/build (ignored in-tree by gen/android/.gitignore). Future desktop
@@ -130,13 +130,15 @@ define do_build
 	@for t in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android; do \
 	  rustup target list --installed 2>/dev/null | grep -qx "$$t" || { echo "✗ missing rust target $$t — run: rustup target add $$t"; exit 1; }; \
 	done
-	@# Frontend build (host-side): the merged SPA (frontendDist → web/dist/web/browser). The APK bundles
+	@# Frontend build (host-side): the merged SPA (frontendDist → web/dist/native/browser). The APK bundles
 	@# it as the only web frontend. Build it on the host first, then blank beforeBuildCommand
 	@# (cargo line below)
 	@# so tauri doesn't re-run npm. tauri.conf.json stays the spec. Debug builds compile the SPA in the
 	@# Angular "development" configuration (sourcemaps on, unminified) so the webview JS is debuggable;
 	@# release uses "production".
-	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --configuration $(if $(filter 1,$(E2E_TESTING)),automation,$(if $(filter debug,$(1)),development,production)))
+	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build:native -- --configuration $(if $(filter 1,$(E2E_TESTING)),automation,$(if $(filter debug,$(1)),development,production)))
+	@# Validate even when reusing output (WEB_BUILD=0). Native CSP forbids the Angular JIT compiler.
+	npm --prefix $(ROOT)/web run verify:native
 	@# Stable debug keystore (one-time): gitignored in-tree (gen/android/.gitignore: *.keystore), so it
 	@# persists across builds and pins the debug signature (no more uninstall-per-rebuild). No-op once
 	@# present.
@@ -228,9 +230,12 @@ define do_macos
 	@# Notarization additionally needs APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID — unset for local use.
 	@if [ -n "$$APPLE_SIGNING_IDENTITY" ]; then echo "▶ macOS universal · signing with APPLE_SIGNING_IDENTITY ($$APPLE_SIGNING_IDENTITY)"; \
 	 else echo "▶ macOS universal · ad-hoc signing (signingIdentity \"-\" — local/personal use)"; fi
-	@# beforeBuildCommand (npm --prefix web run build) runs natively on this host, so we let Tauri run it
+	@# beforeBuildCommand (npm --prefix web run build:native) runs natively on this host, so we let Tauri run it
 	@# directly — EXCEPT WEB_BUILD=0 blanks it (dev: web served live).
-	@cfg=; [ "$(WEB_BUILD)" != 1 ] && cfg='--config {"build":{"beforeBuildCommand":""}}'; \
+	@cfg=; if [ "$(WEB_BUILD)" != 1 ]; then \
+	  npm --prefix $(ROOT)/web run verify:native || exit $$?; \
+	  cfg='--config {"build":{"beforeBuildCommand":""}}'; \
+	fi; \
 	cargo tauri build --target universal-apple-darwin $$cfg
 	@mkdir -p $(MAC_DIST_DIR); set -e; \
 	dmg=$$(ls $(MAC_BUNDLE)/dmg/*.dmg 2>/dev/null | head -1); \

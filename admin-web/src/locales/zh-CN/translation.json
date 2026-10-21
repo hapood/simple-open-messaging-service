@@ -509,7 +509,7 @@
     },
     "selfCheck": {
       "title": "S2S 握手自检",
-      "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/somfp、密钥一致性、签名回环与时钟偏移。每项网络检查按解析出的每个 IP 独立执行（SRV→DDNS 或多 A/AAAA 记录）。",
+      "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/somfp、密钥一致性、签名回环与时钟偏移。网络探测真实发起，按 SRV 目标 × 解析出的每个 IP 逐端点执行，且只走生产对端使用的 HTTPS 路径；不安全 dev 模式（allowInsecureHttp）下自动跳过网络探测。",
       "entry": "握手自检",
       "ntpServer": "参考时钟 (NTP)",
       "dnsResolver": "DNS 解析器",
@@ -518,7 +518,7 @@
       "copyJson": "复制 JSON",
       "placeholder": "选择参考时钟与 DNS 解析器，然后运行检测。",
       "target": "目标",
-      "noSrv": "无 SRV，用 apex",
+      "noSrv": "未解析到 SRV，无法确定联邦端点",
       "runAt": "运行时间",
       "totalDuration": "总耗时",
       "primaryIssue": "首要问题",
@@ -573,8 +573,14 @@
         "createdAt": "创建时间",
         "ageDays": "密龄(天)",
         "record": "SRV记录",
+        "records": "SRV 记录集",
         "resolvedHost": "主机",
         "resolvedPort": "端口",
+        "targets": "探测目标",
+        "endpoints": "端点",
+        "error": "错误",
+        "documentsConsistent": "文档一致",
+        "publishedKeyFound": "已发布密钥命中",
         "addresses": "地址",
         "authority": "authority",
         "verified": "已验证",
@@ -582,6 +588,9 @@
         "dnsResolver": "解析器",
         "offsetSec": "偏移(秒)",
         "roundTripMs": "往返(毫秒)",
+        "clockSkewBudgetMs": "时钟偏差预算(毫秒)",
+        "warnSec": "警告阈值(秒)",
+        "failSec": "失败阈值(秒)",
         "host": "主机",
         "port": "端口",
         "originTls": "源站TLS",
@@ -626,6 +635,7 @@
         "arrivedAt": "到达时间"
       },
       "kind": {
+        "identity-reset": "身份连续性中断",
         "domain-rebind": "域名重绑定",
         "root-rotation": "根密钥轮换"
       },
@@ -636,10 +646,14 @@
       },
       "approve": "审核通过",
       "reject": "拒绝",
-      "predecessorCheck": "前置密钥校验",
-      "predecessorOk": "对端成功解开基于固定根密钥的密封挑战",
-      "predecessorFailed": "前置密钥校验未通过，请查看详情",
-      "confirmApprove": "确认通过该{{kind}}到达？固定密钥将在单次提交内切换，普通流量随后重新收敛。",
+      "confirmApprove": "确认通过该{{kind}}到达？根密钥轮换会先自动验证对端持有前任根私钥，再更新绑定。普通流量随后重新收敛。",
+      "new-peer": "作为新 peer 接纳",
+      "replace-identity": "替换原有身份",
+      "confirm": {
+        "new-peer": "确认归档旧 namespace，并在下次验证握手后作为新 peer 接纳？历史关系仍隔离在旧 namespace 下。",
+        "replace-identity": "确认在没有前任根证明的情况下替换身份？对方将继承原 namespace 和关联关系，请仅在独立确认身份后操作。"
+      },
+      "epochDrifted": "受审身份纪元已变动（pin 更换或已退役），无法审核通过。",
       "confirmReject": "确认拒绝该{{kind}}到达？当前固定的身份纪元将保持不变。"
     }
   },

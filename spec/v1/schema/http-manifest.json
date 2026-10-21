@@ -21,7 +21,8 @@
       "successStatus": [200],
       "requestMediaType": "application/json",
       "requestSchema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
-      "responseSchema": "urn:somfp:v1:identity#/$defs/recognizeResult"
+      "responseSchema": "urn:somfp:v1:identity#/$defs/recognizeResult",
+      "responseEnvelope": true
     },
     {
       "id": "health",
@@ -29,7 +30,8 @@
       "path": "/s2s/v1/health",
       "authentication": "status-http-message-signature",
       "successStatus": [200],
-      "responseSchema": "urn:somfp:v1:identity#/$defs/healthResult"
+      "responseSchema": "urn:somfp:v1:identity#/$defs/healthResult",
+      "responseEnvelope": true
     },
     {
       "id": "verify",

@@ -1,14 +1,17 @@
 import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
-import { DiscoveryService } from '../federation/discovery.service.js';
+import {
+  DiscoveryService,
+  type WellKnownDoc,
+} from '../federation/discovery.service.js';
 import { SignatureService } from '../federation/signature.service.js';
 import { FederationTransportConfigService } from '../federation/federation-transport-config.service.js';
 import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
@@ -18,13 +21,17 @@ import { sealBox } from '../federation/sealed-box.js';
 
 export interface AdminIdentityReviewView extends Record<string, unknown> {
   id: number;
-  kind: 'domain-rebind' | 'root-rotation';
+  kind: 'domain-rebind' | 'root-rotation' | 'identity-reset';
   matchedNamespaceId: number;
   matchedDomain: string;
   nextDomain: string;
   claimedRoot: string;
   claim: Record<string, unknown>;
   status: 'pending' | 'approved' | 'rejected';
+  /** Computed at query time: whether the reviewed binding still matches the
+   *  live epoch (decide() enforces the same condition with distinct failure
+   *  codes before applying any decision). */
+  epochMatched: boolean;
   verifiedAt: Date;
   reviewedAt: Date | null;
   createdAt: Date;
@@ -51,6 +58,18 @@ export interface AdminReviewDecisionResult {
   activeNamespaceId: number | null;
 }
 
+/** Query-time identity matching only. Approval policy (including whether
+ * a halt may be cleared) is checked separately inside the decision transaction.
+ * Historical reviews remain visible even when their epoch no longer matches. */
+const reviewEpochMatched = sql`COALESCE(
+  ns.active AND ns."retiredAt" IS NULL AND
+  CASE WHEN rev.kind = 'domain-rebind'
+    THEN ns."rootPublicKey" = rev."claimedRoot"
+      AND ns.domain = rev.claim ->> 'previousDomain'
+    ELSE ns."rootPublicKey" = rev.claim ->> 'previousRoot'
+      AND ns.domain = rev."nextDomain"
+  END, false)`;
+
 const normalizeDomain = (value: string): string =>
   value.trim().toLowerCase().replace(/\.+$/, '');
 
@@ -62,7 +81,6 @@ export class FederationNamespaceAdminService {
     private readonly profileNamespaceFeed: ProfileNamespaceFeedService,
     private readonly profileNamespaceRefresh: ProfileNamespaceRefreshService,
     private readonly sse: SseService,
-    @Optional() private readonly recognition?: FederationRecognitionService,
     @Optional() private readonly discovery?: DiscoveryService,
     @Optional() private readonly signature?: SignatureService,
     @Optional()
@@ -100,6 +118,7 @@ export class FederationNamespaceAdminService {
     const result = await this.database.db.execute<AdminIdentityReviewView>(sql`
       SELECT rev.id, rev.kind, rev."matchedNamespaceId", ns.domain AS "matchedDomain",
              rev."nextDomain", rev."claimedRoot", rev.claim, rev.status,
+             ${reviewEpochMatched} AS "epochMatched",
              rev."verifiedAt", rev."reviewedAt", rev."createdAt"
       FROM "FederationIdentityReview" rev
       JOIN "IdentityNamespace" ns ON ns.id = rev."matchedNamespaceId"
@@ -109,51 +128,14 @@ export class FederationNamespaceAdminService {
     return result.rows;
   }
 
-  /** Continuity check for a pending rotation review (Peer Recognition 4.5):
-   *  seal a fresh nonce under the pinned predecessor root and ask the
-   *  peer's sealed-challenge service to open it. A correct opening proves
-   *  the peer still possesses the predecessor root's private key at check
-   *  time. Read-only with respect to review state; the administrator
-   *  decides whether the evidence supports approval. */
-  async predecessorCheck(reviewId: number): Promise<{
+  /** Approval-time possession proof under the captured predecessor root. */
+  private async challengePredecessor(review: AdminIdentityReviewView): Promise<{
     reviewId: number;
     checkedRoot: string;
     ok: boolean;
     detail: string;
   }> {
-    if (!Number.isSafeInteger(reviewId) || reviewId <= 0) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'reviewId must be a positive integer',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const review = (
-      await this.database.db.transaction((tx) =>
-        this.selectReviews(tx, sql`rev.id = ${reviewId}`),
-      )
-    )[0];
-    if (!review) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'identity review not found',
-        HttpStatus.NOT_FOUND,
-      );
-    }
-    if (review.status !== 'pending') {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_ROOT_CHANGE_REJECTED,
-        'identity review has already been decided',
-        HttpStatus.CONFLICT,
-      );
-    }
-    if (review.kind !== 'root-rotation') {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'predecessor continuity check applies to root-rotation reviews only',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+    const reviewId = review.id;
     const checkedRoot = review.claim.previousRoot as string | undefined;
     if (!checkedRoot || !/^[A-Za-z0-9+/]{43}=$/.test(checkedRoot)) {
       throw new BusinessException(
@@ -210,12 +192,13 @@ export class FederationNamespaceAdminService {
         | undefined;
       if (response.status === 200 && payload?.code === 0) {
         const opened = payload.data?.value;
+        const expected = Buffer.from(nonce, 'utf8').toString('base64');
         return {
           reviewId,
           checkedRoot,
-          ok: opened === nonce,
+          ok: opened === expected,
           detail:
-            opened === nonce
+            opened === expected
               ? 'the peer opened the sealed challenge under the pinned predecessor root'
               : 'the peer answered without the expected plaintext',
         };
@@ -238,10 +221,52 @@ export class FederationNamespaceAdminService {
     }
   }
 
-  async approve(reviewId: number): Promise<AdminReviewDecisionResult> {
-    const decision = await this.decide(reviewId, 'approved');
-    void this.recognition?.recognize(decision.domain).catch(() => undefined);
-    return decision;
+  async approve(
+    reviewId: number,
+    resolution?: 'new-peer' | 'replace-identity',
+  ): Promise<AdminReviewDecisionResult> {
+    if (!Number.isSafeInteger(reviewId) || reviewId <= 0) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'reviewId must be a positive integer',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    // Capture evidence without retaining row locks during outbound I/O. The
+    // decision transaction revalidates this snapshot before applying changes.
+    const review = await this.database.db.transaction((tx) =>
+      this.lockReview(tx, reviewId),
+    );
+    if (
+      review.kind === 'identity-reset' ? !resolution : resolution !== undefined
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'identity-reset requires an explicit new-peer or replace-identity decision',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (!this.discovery) {
+      throw new BusinessException(
+        BusinessCode.INTERNAL,
+        'federation discovery is unavailable',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    // Fetch and validate the certificate set before acquiring decision locks.
+    // Installing it with the binding avoids a hidden re-handshake prerequisite.
+    const document = await this.discovery.fetchWellKnown(review.nextDomain);
+    if (review.kind === 'root-rotation') {
+      const proof = await this.challengePredecessor(review);
+      if (!proof.ok) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_ROOT_CHANGE_REJECTED,
+          `predecessor continuity check failed: ${proof.detail}`,
+          HttpStatus.CONFLICT,
+        );
+      }
+    }
+    return this.decide(reviewId, 'approved', review, document, resolution);
   }
 
   async reject(reviewId: number): Promise<AdminReviewDecisionResult> {
@@ -251,6 +276,9 @@ export class FederationNamespaceAdminService {
   private async decide(
     reviewId: number,
     decision: 'approved' | 'rejected',
+    checkedReview?: AdminIdentityReviewView,
+    document?: WellKnownDoc,
+    resolution?: 'new-peer' | 'replace-identity',
   ): Promise<AdminReviewDecisionResult> {
     if (!Number.isSafeInteger(reviewId) || reviewId <= 0) {
       throw new BusinessException(
@@ -261,6 +289,22 @@ export class FederationNamespaceAdminService {
     }
     const outcome = await this.database.db.transaction(async (tx) => {
       const review = await this.lockReview(tx, reviewId);
+      if (
+        decision === 'approved' &&
+        (!checkedReview ||
+          review.kind !== checkedReview.kind ||
+          review.matchedNamespaceId !== checkedReview.matchedNamespaceId ||
+          review.matchedDomain !== checkedReview.matchedDomain ||
+          review.nextDomain !== checkedReview.nextDomain ||
+          review.claimedRoot !== checkedReview.claimedRoot ||
+          !isDeepStrictEqual(review.claim, checkedReview.claim))
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_ROOT_CHANGE_REJECTED,
+          'identity review changed during approval; retry with current evidence',
+          HttpStatus.CONFLICT,
+        );
+      }
       const namespace = (
         await tx.execute<{
           id: number;
@@ -294,7 +338,7 @@ export class FederationNamespaceAdminService {
         );
       }
       if (
-        (review.kind === 'root-rotation' &&
+        (review.kind !== 'domain-rebind' &&
           namespace.rootPublicKey !==
             (review.claim.previousRoot as string | undefined)) ||
         (review.kind === 'domain-rebind' &&
@@ -307,9 +351,79 @@ export class FederationNamespaceAdminService {
         );
       }
 
+      if (
+        decision === 'approved' &&
+        (!namespace.active ||
+          namespace.domain !==
+            (review.kind === 'domain-rebind'
+              ? review.claim.previousDomain
+              : review.nextDomain))
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+          'the identity binding changed during approval',
+          HttpStatus.CONFLICT,
+        );
+      }
+      if (decision === 'approved' && review.kind === 'identity-reset') {
+        const state = await tx.execute<{ haltCode: number | null }>(sql`
+          SELECT "haltCode" FROM "IdentityNamespace" WHERE id = ${namespace.id}
+        `);
+        if (
+          !namespace.active ||
+          namespace.domain !== review.nextDomain ||
+          namespace.trustLevel !== 'halted' ||
+          state.rows[0]?.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+            'identity-reset no longer matches the halted binding',
+            HttpStatus.CONFLICT,
+          );
+        }
+      }
+      if (decision === 'approved') {
+        const now = Date.now();
+        if (
+          !document ||
+          !document.roots.some(
+            (root) =>
+              root.ed25519 === review.claimedRoot &&
+              root.notBefore <= now &&
+              now < root.notAfter,
+          ) ||
+          !document.keys.some(
+            (key) =>
+              key.root === review.claimedRoot &&
+              key.notBefore <= now &&
+              now < key.notAfter,
+          )
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_BAD_SIGNATURE,
+            'the approved binding has no currently valid signing certificate',
+            HttpStatus.UNAUTHORIZED,
+          );
+        }
+      }
       let activeNamespaceId: number | null = namespace.id;
       const clientChangeIds: bigint[] = [];
-      if (decision === 'approved' && review.kind === 'domain-rebind') {
+      const newPeer = decision === 'approved' && resolution === 'new-peer';
+      if (newPeer) {
+        await tx.execute(sql`UPDATE "IdentityNamespace"
+          SET active = false, "retiredAt" = now() WHERE id = ${namespace.id}`);
+        activeNamespaceId = null;
+        await this.profileNamespaceFeed.recordNamespaceChangeInTx(
+          tx,
+          namespace.id,
+        );
+        clientChangeIds.push(
+          await this.profileNamespaceFeed.recordClientChangeInTx(tx, {
+            publisherNamespaceId: namespace.id,
+            profileNamespaceId: 0,
+          }),
+        );
+      } else if (decision === 'approved' && review.kind === 'domain-rebind') {
         activeNamespaceId = await this.applyDomainRebind(
           tx,
           review,
@@ -335,6 +449,70 @@ export class FederationNamespaceAdminService {
         activeNamespaceId = namespace.id;
       }
 
+      if (
+        decision === 'approved' &&
+        review.kind === 'identity-reset' &&
+        !newPeer
+      ) {
+        // Explicit administrator identity replacement overrides this identity
+        // contradiction only; independently blocked peers were rejected above.
+        const coordinate = review.claim.senderAssignedLocalNamespaceId;
+        if (
+          coordinate !== null &&
+          coordinate !== undefined &&
+          (typeof coordinate !== 'number' ||
+            !Number.isSafeInteger(coordinate) ||
+            coordinate <= 0)
+        ) {
+          throw new BusinessException(
+            BusinessCode.VALIDATION_FAILED,
+            'invalid reviewed namespace coordinate',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        await tx.execute(sql`UPDATE "IdentityNamespace" SET
+          "haltCode" = NULL, "haltReason" = NULL, "haltedAt" = NULL,
+          "peerAssignedLocalNamespaceId" = ${coordinate ?? null},
+          "trustLevel" = CASE WHEN "localServiceAvailable" AND "peerAcceptanceConfirmed"
+            THEN 'available' ELSE 'establishing' END
+          WHERE id = ${namespace.id}`);
+      }
+      if (decision === 'approved' && document && !newPeer) {
+        const certificates = document.keys.filter(
+          (key) => key.root === review.claimedRoot,
+        );
+        await tx.execute(sql`
+          INSERT INTO "S2SKeyCache"
+            (domain, "namespaceId", "keyId", "publicKey", root,
+             "notBefore", "notAfter", "authorizationSignature")
+          VALUES ${sql.join(
+            certificates.map(
+              (key) => sql`(
+              ${review.nextDomain}, ${namespace.id}, ${key.keyId}, ${key.ed25519},
+              ${key.root}, ${new Date(key.notBefore)}, ${new Date(key.notAfter)},
+              ${key.authorizationSignature}
+            )`,
+            ),
+            sql`, `,
+          )}
+        `);
+      }
+      if (decision === 'approved' && !newPeer) {
+        // Verified discovery (and predecessor proof for root rotation) proves
+        // current reachability, not a new reciprocal acceptance. Never revive
+        // an independently halted peer or invent missing acceptance evidence.
+        await tx.execute(sql`
+          UPDATE "IdentityNamespace"
+          SET "trustLevel" = CASE
+                WHEN "localServiceAvailable" AND "peerAcceptanceConfirmed"
+                THEN 'available' ELSE "trustLevel" END,
+              "remoteServiceReachable" = true,
+              "lastSuccessAt" = now(),
+              "degradedAt" = NULL,
+              "degradationReason" = NULL
+          WHERE id = ${namespace.id} AND active = true AND "trustLevel" <> 'halted'
+        `);
+      }
       await tx.execute(sql`
         UPDATE "FederationIdentityReview"
         SET status = ${decision}, "reviewedAt" = now(), "updatedAt" = now()
@@ -357,13 +535,14 @@ export class FederationNamespaceAdminService {
           afterCommit: () => {
             if (wakeAt !== undefined)
               this.sse.notifyProfileNamespaceChange(wakeAt);
-            this.profileNamespaceRefresh.scheduleRefresh(
-              {
-                publisherNamespaceId: namespace.id,
-                profileNamespaceId: 0,
-              },
-              0n,
-            );
+            if (!newPeer)
+              this.profileNamespaceRefresh.scheduleRefresh(
+                {
+                  publisherNamespaceId: namespace.id,
+                  profileNamespaceId: 0,
+                },
+                0n,
+              );
           },
         };
       }
@@ -394,17 +573,11 @@ export class FederationNamespaceAdminService {
         HttpStatus.CONFLICT,
       );
     }
-    // Re-binding keeps the same epoch: the pin stays, the domain binding and
-    // availability state move to the arrival domain.
+    // Re-binding changes the address of the same peer, not its established
+    // acceptance or lifecycle. New-domain certificates are resolved afresh.
     await tx.execute(sql`
       UPDATE "IdentityNamespace"
-      SET domain = ${review.nextDomain},
-          "trustLevel" = 'establishing',
-          "peerAcceptanceConfirmed" = false,
-          "remoteServiceReachable" = false,
-          "lastSuccessAt" = NULL,
-          "degradedAt" = NULL,
-          "degradationReason" = NULL
+      SET domain = ${review.nextDomain}
       WHERE id = ${namespace.id}
     `);
     await tx.execute(sql`
@@ -444,22 +617,13 @@ export class FederationNamespaceAdminService {
         HttpStatus.CONFLICT,
       );
     }
-    // Review-approved in-place root replacement: nsids are lifelong, so the
-    // epoch row keeps its id and every business fact bound to it; only the
-    // pinned key moves. Availability state resets exactly like a re-bind so
-    // probes re-establish reachability before the peer is served again, and
-    // the partial unique index on "rootPublicKey" re-checks the swap at
-    // commit time.
+    // Approval changes the credential of the same peer. Keep acceptance and
+    // lifecycle evidence; no reciprocal handshake is required. The unique
+    // root index still checks the swap, and stale certificates are removed.
     await tx.execute(sql`
       UPDATE "IdentityNamespace"
       SET "rootPublicKey" = ${review.claimedRoot},
-          "identityPinnedAt" = now(),
-          "trustLevel" = 'establishing',
-          "peerAcceptanceConfirmed" = false,
-          "remoteServiceReachable" = false,
-          "lastSuccessAt" = NULL,
-          "degradedAt" = NULL,
-          "degradationReason" = NULL
+          "identityPinnedAt" = now()
       WHERE id = ${namespace.id}
     `);
     await tx.execute(sql`
@@ -510,6 +674,7 @@ export class FederationNamespaceAdminService {
     const result = await tx.execute<AdminIdentityReviewView>(sql`
       SELECT rev.id, rev.kind, rev."matchedNamespaceId", ns.domain AS "matchedDomain",
              rev."nextDomain", rev."claimedRoot", rev.claim, rev.status,
+             ${reviewEpochMatched} AS "epochMatched",
              rev."verifiedAt", rev."reviewedAt", rev."createdAt"
       FROM "FederationIdentityReview" rev
       JOIN "IdentityNamespace" ns ON ns.id = rev."matchedNamespaceId"

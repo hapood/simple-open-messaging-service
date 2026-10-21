@@ -971,7 +971,7 @@ CREATE TABLE public."FederationIdentityReview" (
     "verifiedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationIdentityReview_kind_check" CHECK (((kind)::text = ANY ((ARRAY['domain-rebind'::character varying, 'root-rotation'::character varying])::text[]))),
+    CONSTRAINT "FederationIdentityReview_kind_check" CHECK (((kind)::text = ANY ((ARRAY['domain-rebind'::character varying, 'root-rotation'::character varying, 'identity-reset'::character varying])::text[]))),
     CONSTRAINT "FederationIdentityReview_matchedNamespace_check" CHECK (("matchedNamespaceId" > 0)),
     CONSTRAINT "FederationIdentityReview_reviewed_check" CHECK ((((status)::text = 'pending'::text) = ("reviewedAt" IS NULL))),
     CONSTRAINT "FederationIdentityReview_status_check" CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[])))
@@ -996,6 +996,51 @@ CREATE SEQUENCE public."FederationIdentityReview_id_seq"
 --
 
 ALTER SEQUENCE public."FederationIdentityReview_id_seq" OWNED BY public."FederationIdentityReview".id;
+
+
+--
+-- Name: FederationIdentityConflict; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."FederationIdentityConflict" (
+    id integer NOT NULL,
+    domain character varying(63) NOT NULL,
+    "rootPublicKey" character varying(44) NOT NULL,
+    "namespaceId" integer NOT NULL,
+    "namespaceDomain" character varying(63) NOT NULL,
+    "namespaceRoot" character varying(44) NOT NULL,
+    code integer NOT NULL,
+    reason character varying(255) NOT NULL,
+    "verifiedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+
+--
+-- Name: FederationIdentityConflict_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public."FederationIdentityConflict_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: FederationIdentityConflict_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public."FederationIdentityConflict_id_seq" OWNED BY public."FederationIdentityConflict".id;
+
+
+--
+-- Name: FederationIdentityConflict; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationIdentityConflict" ALTER COLUMN id SET DEFAULT nextval('public."FederationIdentityConflict_id_seq"'::regclass);
 
 
 --
@@ -1305,7 +1350,6 @@ ALTER SEQUENCE public."IdentityNamespace_id_seq" OWNED BY public."IdentityNamesp
 
 CREATE TABLE public."LocalFederationRoot" (
     id integer NOT NULL,
-    domain character varying(63) NOT NULL,
     "rootPublicKey" character varying(44) NOT NULL,
     "rootPrivateKey" character varying(44) NOT NULL,
     "notBefore" timestamp(3) with time zone NOT NULL,
@@ -1343,13 +1387,14 @@ ALTER SEQUENCE public."LocalFederationRoot_id_seq" OWNED BY public."LocalFederat
 --
 
 CREATE TABLE public."LocalFederationSigningKey" (
-    "keyId" character varying(127) NOT NULL,
+    "keyName" character varying(64) NOT NULL,
     "publicKey" character varying(44) NOT NULL,
     "privateKey" character varying(44) NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "notBefore" timestamp(3) with time zone NOT NULL,
     "notAfter" timestamp(3) with time zone NOT NULL,
     "rootId" integer NOT NULL,
+    CONSTRAINT "LocalFederationSigningKey_name_check" CHECK ((("keyName")::text ~ '^[A-Za-z0-9._-]{1,64}$'::text)),
     CONSTRAINT "LocalFederationSigningKey_validity_check" CHECK (("notBefore" < "notAfter"))
 );
 
@@ -1359,12 +1404,13 @@ CREATE TABLE public."LocalFederationSigningKey" (
 --
 
 CREATE TABLE public."LocalFederationSigningState" (
-    domain character varying(63) NOT NULL,
-    "currentKeyId" character varying(127) NOT NULL,
+    id integer DEFAULT 0 NOT NULL,
+    "currentKeyName" character varying(64) NOT NULL,
     "plannedSwitchAt" timestamp(3) with time zone,
-    "plannedSuccessorKeyId" character varying(127),
+    "plannedSuccessorKeyName" character varying(64),
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "LocalFederationSigningState_plan_check" CHECK ((("plannedSwitchAt" IS NULL) = ("plannedSuccessorKeyId" IS NULL)))
+    CONSTRAINT "LocalFederationSigningState_id_check" CHECK ((id = 0)),
+    CONSTRAINT "LocalFederationSigningState_plan_check" CHECK ((("plannedSwitchAt" IS NULL) = ("plannedSuccessorKeyName" IS NULL)))
 );
 
 
@@ -2415,6 +2461,14 @@ ALTER TABLE ONLY public."FederationIdentityReview"
 
 
 --
+-- Name: FederationIdentityConflict FederationIdentityConflict_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationIdentityConflict"
+    ADD CONSTRAINT "FederationIdentityConflict_pkey" PRIMARY KEY (id);
+
+
+--
 -- Name: FederationThreadHistoryGap FederationThreadHistoryGap_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2539,7 +2593,7 @@ ALTER TABLE ONLY public."LocalFederationRoot"
 --
 
 ALTER TABLE ONLY public."LocalFederationSigningKey"
-    ADD CONSTRAINT "LocalFederationSigningKey_pkey" PRIMARY KEY ("keyId");
+    ADD CONSTRAINT "LocalFederationSigningKey_pkey" PRIMARY KEY ("keyName");
 
 
 --
@@ -2547,7 +2601,7 @@ ALTER TABLE ONLY public."LocalFederationSigningKey"
 --
 
 ALTER TABLE ONLY public."LocalFederationSigningState"
-    ADD CONSTRAINT "LocalFederationSigningState_pkey" PRIMARY KEY (domain);
+    ADD CONSTRAINT "LocalFederationSigningState_pkey" PRIMARY KEY (id);
 
 
 --
@@ -2965,6 +3019,12 @@ CREATE UNIQUE INDEX "FederatedMessageTombstone_target_key" ON public."FederatedM
 
 CREATE UNIQUE INDEX "FederationIdentityReview_one_pending_per_namespace_key" ON public."FederationIdentityReview" USING btree ("matchedNamespaceId") WHERE ((status)::text = 'pending'::text);
 
+--
+-- Name: FederationIdentityConflict_domain_root_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "FederationIdentityConflict_domain_root_key" ON public."FederationIdentityConflict" USING btree (domain, "rootPublicKey");
+
 
 --
 -- Name: FederationThreadHistoryGap_interval_key; Type: INDEX; Schema: public; Owner: -
@@ -3089,7 +3149,7 @@ CREATE INDEX "IdentityNamespace_trustLevel_idx" ON public."IdentityNamespace" US
 -- Name: LocalFederationRoot_one_claimable_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "LocalFederationRoot_one_claimable_key" ON public."LocalFederationRoot" USING btree (domain) WHERE (claimable = true);
+CREATE UNIQUE INDEX "LocalFederationRoot_one_claimable_key" ON public."LocalFederationRoot" USING btree (claimable) WHERE (claimable = true);
 
 
 --
@@ -3613,6 +3673,14 @@ ALTER TABLE ONLY public."FederationIdentityReview"
 
 
 --
+-- Name: FederationIdentityConflict FederationIdentityConflict_namespace_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationIdentityConflict"
+    ADD CONSTRAINT "FederationIdentityConflict_namespace_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
+
+
+--
 -- Name: FederationThreadHistoryGap FederationThreadHistoryGap_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3729,7 +3797,7 @@ ALTER TABLE ONLY public."LocalFederationSigningKey"
 --
 
 ALTER TABLE ONLY public."LocalFederationSigningState"
-    ADD CONSTRAINT "LocalFederationSigningState_current_key_fkey" FOREIGN KEY ("currentKeyId") REFERENCES public."LocalFederationSigningKey"("keyId") ON DELETE RESTRICT;
+    ADD CONSTRAINT "LocalFederationSigningState_current_key_fkey" FOREIGN KEY ("currentKeyName") REFERENCES public."LocalFederationSigningKey"("keyName") ON DELETE RESTRICT;
 
 
 --
@@ -3737,7 +3805,7 @@ ALTER TABLE ONLY public."LocalFederationSigningState"
 --
 
 ALTER TABLE ONLY public."LocalFederationSigningState"
-    ADD CONSTRAINT "LocalFederationSigningState_successor_key_fkey" FOREIGN KEY ("plannedSuccessorKeyId") REFERENCES public."LocalFederationSigningKey"("keyId") ON DELETE SET NULL;
+    ADD CONSTRAINT "LocalFederationSigningState_successor_key_fkey" FOREIGN KEY ("plannedSuccessorKeyName") REFERENCES public."LocalFederationSigningKey"("keyName") ON DELETE SET NULL;
 
 
 --

@@ -508,7 +508,7 @@
     },
     "selfCheck": {
       "title": "S2S Handshake Self-Check",
-      "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/somfp, key consistency, signature loopback and clock skew. Each network check is run per resolved IP (SRV→DDNS or multi-A/AAAA).",
+      "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/somfp, key consistency, signature loopback and clock skew. Real network probes run per SRV target and per resolved IP, over exactly the HTTPS path production peers use; in insecure dev mode (allowInsecureHttp) network probes are skipped.",
       "entry": "Self-check",
       "ntpServer": "Reference clock (NTP)",
       "dnsResolver": "DNS resolver",
@@ -517,7 +517,7 @@
       "copyJson": "Copy JSON",
       "placeholder": "Pick a reference clock and DNS resolver, then run the probe set.",
       "target": "Target",
-      "noSrv": "no SRV, apex",
+      "noSrv": "SRV unresolved; no federation endpoint determined",
       "runAt": "Run at",
       "totalDuration": "Total",
       "primaryIssue": "Primary issue",
@@ -572,8 +572,14 @@
         "createdAt": "createdAt",
         "ageDays": "age (days)",
         "record": "SRV record",
+        "records": "SRV records",
         "resolvedHost": "host",
         "resolvedPort": "port",
+        "targets": "probe targets",
+        "endpoints": "endpoints",
+        "error": "error",
+        "documentsConsistent": "documents consistent",
+        "publishedKeyFound": "published key found",
         "addresses": "addresses",
         "authority": "authority",
         "verified": "verified",
@@ -581,6 +587,9 @@
         "dnsResolver": "resolver",
         "offsetSec": "offset (s)",
         "roundTripMs": "round-trip (ms)",
+        "clockSkewBudgetMs": "clock-skew budget (ms)",
+        "warnSec": "warn threshold (s)",
+        "failSec": "fail threshold (s)",
         "host": "host",
         "port": "port",
         "originTls": "origin TLS",
@@ -625,6 +634,7 @@
         "arrivedAt": "Arrived"
       },
       "kind": {
+        "identity-reset": "Identity discontinuity",
         "domain-rebind": "Domain re-bind",
         "root-rotation": "Root rotation"
       },
@@ -635,10 +645,14 @@
       },
       "approve": "Approve",
       "reject": "Reject",
-      "predecessorCheck": "Predecessor check",
-      "predecessorOk": "The peer opened the sealed challenge under the pinned root",
-      "predecessorFailed": "The predecessor check failed; inspect the detail line",
-      "confirmApprove": "Approve this {{kind}} arrival? The pin swaps in one commit and ordinary traffic re-converges afterwards.",
+      "confirmApprove": "Approve this {{kind}} arrival? Root rotation automatically verifies predecessor-key possession before changing the binding. Ordinary traffic re-converges afterwards.",
+      "new-peer": "Accept as new peer",
+      "replace-identity": "Replace existing identity",
+      "confirm": {
+        "new-peer": "Archive the old namespace and accept the next verified handshake as a new peer? Historical relationships remain isolated under the old namespace.",
+        "replace-identity": "Replace the old root without predecessor proof? This peer will inherit the existing namespace and its relationships. Approve only after independently confirming the peer identity."
+      },
+      "epochDrifted": "The reviewed epoch has drifted (pin changed or retired); approval is disabled.",
       "confirmReject": "Reject this {{kind}} arrival? The currently pinned epoch stays exactly as it is."
     }
   },

@@ -274,7 +274,7 @@ describe('Federation v1 protocol documentation', () => {
         displayName: 'Alice',
         bio: '',
         avatar: null,
-        ...(name === 'profile' ? { profileRev: 1, proof: 'challenge' } : {}),
+        ...(name === 'profile' ? { profileRev: 1, proof: 'Y2hhbGxlbmdl' } : {}),
       };
       expect(validate(profile)).toBe(true);
       expect(validate({ ...profile, domain: 'a.example' })).toBe(false);

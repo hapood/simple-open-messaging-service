@@ -1609,26 +1609,73 @@ export const relationshipRequest = pgTable(
     authorNamespaceId: integer().notNull(),
     receiverAccount: varchar({ length: 31 }).notNull(),
     receiverNamespaceId: integer().notNull(),
-    status: requestProjectionStatus().$type<RequestProjectionStatusValue>().notNull(),
+    status: requestProjectionStatus()
+      .$type<RequestProjectionStatusValue>()
+      .notNull(),
     authorProfileNamespaceId: integer().notNull(),
     authorProfileRev: integer().notNull(),
     snapshot: jsonb().$type<RequestSnapshot>(),
     note: varchar({ length: 255 }).notNull(),
-    requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }).notNull(),
-    expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }).notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+    requestedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    expiresAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
-    index('RelationshipRequest_author_page_idx').on(table.authorNamespaceId, table.authorAccount, table.createdAt.desc(), table.id.desc()),
-    index('RelationshipRequest_receiver_page_idx').on(table.receiverNamespaceId, table.receiverAccount, table.createdAt.desc(), table.id.desc()),
-    foreignKey({ columns: [table.authorNamespaceId], foreignColumns: [identityNamespace.id], name: 'RelationshipRequest_authorNamespaceId_fkey' }).onDelete('restrict'),
-    foreignKey({ columns: [table.receiverNamespaceId], foreignColumns: [identityNamespace.id], name: 'RelationshipRequest_receiverNamespaceId_fkey' }).onDelete('restrict'),
-    check('RelationshipRequest_kind_check', sql`(${table.kind} = 'FRIEND' AND ${table.authorAccount} NOT LIKE '!%' AND ${table.receiverAccount} NOT LIKE '!%') OR (${table.kind} = 'GROUP_APPLICATION' AND ${table.authorAccount} NOT LIKE '!%' AND ${table.receiverAccount} LIKE '!%') OR (${table.kind} = 'GROUP_INVITATION' AND ${table.authorAccount} LIKE '!%' AND ${table.receiverAccount} NOT LIKE '!%')`),
-    check('RelationshipRequest_endpoints_check', sql`${table.authorAccount} <> '' AND ${table.receiverAccount} <> '' AND (${table.authorAccount} <> ${table.receiverAccount} OR ${table.authorNamespaceId} <> ${table.receiverNamespaceId}) AND ${table.authorNamespaceId} >= 0 AND ${table.receiverNamespaceId} >= 0 AND (${table.authorNamespaceId} = 0 OR ${table.receiverNamespaceId} = 0)`),
-    check('RelationshipRequest_profile_check', sql`${table.authorProfileNamespaceId} >= 0 AND ${table.authorProfileRev} >= 0`),
-    check('RelationshipRequest_expiry_check', sql`${table.expiresAt} > ${table.requestedAt}`),
-    check('RelationshipRequest_snapshot_check', sql`(${table.authorNamespaceId} <> 0 AND ${table.snapshot} IS NULL) OR (${table.authorNamespaceId} = 0 AND ${table.snapshot} IS NOT NULL AND COALESCE(jsonb_typeof(${table.snapshot}) = 'object' AND (${table.snapshot} - 'displayName' - 'avatar') = '{}'::jsonb AND jsonb_typeof(${table.snapshot}->'displayName') = 'string' AND char_length(btrim(${table.snapshot}->>'displayName')) > 0 AND char_length(${table.snapshot}->>'displayName') <= 31 AND (${table.snapshot}->'avatar' = 'null'::jsonb OR (jsonb_typeof(${table.snapshot}->'avatar') = 'string' AND char_length(btrim(${table.snapshot}->>'avatar')) > 0)), false))`),
+    index('RelationshipRequest_author_page_idx').on(
+      table.authorNamespaceId,
+      table.authorAccount,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+    index('RelationshipRequest_receiver_page_idx').on(
+      table.receiverNamespaceId,
+      table.receiverAccount,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+    foreignKey({
+      columns: [table.authorNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'RelationshipRequest_authorNamespaceId_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.receiverNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'RelationshipRequest_receiverNamespaceId_fkey',
+    }).onDelete('restrict'),
+    check(
+      'RelationshipRequest_kind_check',
+      sql`(${table.kind} = 'FRIEND' AND ${table.authorAccount} NOT LIKE '!%' AND ${table.receiverAccount} NOT LIKE '!%') OR (${table.kind} = 'GROUP_APPLICATION' AND ${table.authorAccount} NOT LIKE '!%' AND ${table.receiverAccount} LIKE '!%') OR (${table.kind} = 'GROUP_INVITATION' AND ${table.authorAccount} LIKE '!%' AND ${table.receiverAccount} NOT LIKE '!%')`,
+    ),
+    check(
+      'RelationshipRequest_endpoints_check',
+      sql`${table.authorAccount} <> '' AND ${table.receiverAccount} <> '' AND (${table.authorAccount} <> ${table.receiverAccount} OR ${table.authorNamespaceId} <> ${table.receiverNamespaceId}) AND ${table.authorNamespaceId} >= 0 AND ${table.receiverNamespaceId} >= 0 AND (${table.authorNamespaceId} = 0 OR ${table.receiverNamespaceId} = 0)`,
+    ),
+    check(
+      'RelationshipRequest_profile_check',
+      sql`${table.authorProfileNamespaceId} >= 0 AND ${table.authorProfileRev} >= 0`,
+    ),
+    check(
+      'RelationshipRequest_expiry_check',
+      sql`${table.expiresAt} > ${table.requestedAt}`,
+    ),
+    check(
+      'RelationshipRequest_snapshot_check',
+      sql`(${table.authorNamespaceId} <> 0 AND ${table.snapshot} IS NULL) OR (${table.authorNamespaceId} = 0 AND ${table.snapshot} IS NOT NULL AND COALESCE(jsonb_typeof(${table.snapshot}) = 'object' AND (${table.snapshot} - 'displayName' - 'avatar') = '{}'::jsonb AND jsonb_typeof(${table.snapshot}->'displayName') = 'string' AND char_length(btrim(${table.snapshot}->>'displayName')) > 0 AND char_length(${table.snapshot}->>'displayName') <= 31 AND (${table.snapshot}->'avatar' = 'null'::jsonb OR (jsonb_typeof(${table.snapshot}->'avatar') = 'string' AND char_length(btrim(${table.snapshot}->>'avatar')) > 0)), false))`,
+    ),
   ],
 );
 
@@ -1646,7 +1693,7 @@ export const systemSetting = pgTable('SystemSetting', {
  * stored here unencrypted: database access control is the secret boundary. */
 /** Local root-identity epochs. Every epoch ever generated is retained forever —
  *  private key material included — because sealed challenges under retired roots
- *  must stay openable (Transport and Security 1.5). Exactly one row per domain is
+ *  must stay openable (Transport and Security 1.5). Exactly one local row is
  *  claimable: the root that authorizes new signing certificates and claims
  *  S2S-Root-Key right now. A rotated-out predecessor keeps its row and stays in
  *  the published roots group until unpublishedAt is set by an operator, after
@@ -1656,7 +1703,6 @@ export const localFederationRoot = pgTable(
   'LocalFederationRoot',
   {
     id: serial().primaryKey().notNull(),
-    domain: varchar({ length: 63 }).notNull(),
     rootPublicKey: varchar({ length: 44 }).notNull().unique(),
     rootPrivateKey: varchar({ length: 44 }).notNull(),
     notBefore: timestamp({
@@ -1681,7 +1727,7 @@ export const localFederationRoot = pgTable(
   },
   (table) => [
     uniqueIndex('LocalFederationRoot_one_claimable_key')
-      .on(table.domain)
+      .on(table.claimable)
       .where(sql`${table.claimable} = true`),
     check(
       'LocalFederationRoot_validity_check',
@@ -1694,17 +1740,17 @@ export const localFederationRoot = pgTable(
   ],
 );
 
-/** Local signing-key certificates under their authorizing root epoch. Exactly one key is
- *  selected for new outbound signatures at any instant (LocalFederationSigningState.currentKeyId).
- *  keyId is globally unique and permanently bound to one public key; rows are retained forever
- *  with their private material so sealed challenges under any historical key stay openable. */
+/** Local signing keys under their authorizing root epoch. Exactly one key is selected
+ *  for new outbound signatures. Stable key names contain no domain; wire KeyIds combine
+ *  IdentityNamespace(0).domain with keyName. Rows and private material are retained
+ *  forever so sealed challenges under any historical key stay openable. */
 export const localFederationSigningKey = pgTable(
   'LocalFederationSigningKey',
   {
     rootId: integer()
       .notNull()
       .references(() => localFederationRoot.id, { onDelete: 'restrict' }),
-    keyId: varchar({ length: 127 }).primaryKey().notNull(),
+    keyName: varchar({ length: 64 }).primaryKey().notNull(),
     publicKey: varchar({ length: 44 }).notNull(),
     privateKey: varchar({ length: 44 }).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1723,43 +1769,49 @@ export const localFederationSigningKey = pgTable(
   },
   (table) => [
     check(
+      'LocalFederationSigningKey_name_check',
+      sql`${table.keyName} ~ '^[A-Za-z0-9._-]{1,64}$'`,
+    ),
+    check(
       'LocalFederationSigningKey_validity_check',
       sql`${table.notBefore} < ${table.notAfter}`,
     ),
   ],
 );
 
-/** Single-row-per-domain local signing selection state. plannedSwitchAt/plannedSuccessorKeyId are
- * both null or both set; the planned switch is applied atomically by the key-lifecycle maintainer. */
+/** Singleton local signing selection state, independent of the current domain binding.
+ * plannedSwitchAt/plannedSuccessorKeyName are both null or both set; the planned
+ * switch is applied atomically by the key-lifecycle maintainer. */
 export const localFederationSigningState = pgTable(
   'LocalFederationSigningState',
   {
-    domain: varchar({ length: 63 }).primaryKey().notNull(),
-    currentKeyId: varchar({ length: 127 }).notNull(),
+    id: integer().primaryKey().default(0).notNull(),
+    currentKeyName: varchar({ length: 64 }).notNull(),
     plannedSwitchAt: timestamp({
       precision: 3,
       withTimezone: true,
       mode: 'date',
     }),
-    plannedSuccessorKeyId: varchar({ length: 127 }),
+    plannedSuccessorKeyName: varchar({ length: 64 }),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
+    check('LocalFederationSigningState_id_check', sql`${table.id} = 0`),
     foreignKey({
-      columns: [table.currentKeyId],
-      foreignColumns: [localFederationSigningKey.keyId],
+      columns: [table.currentKeyName],
+      foreignColumns: [localFederationSigningKey.keyName],
       name: 'LocalFederationSigningState_current_key_fkey',
     }).onDelete('restrict'),
     foreignKey({
-      columns: [table.plannedSuccessorKeyId],
-      foreignColumns: [localFederationSigningKey.keyId],
+      columns: [table.plannedSuccessorKeyName],
+      foreignColumns: [localFederationSigningKey.keyName],
       name: 'LocalFederationSigningState_successor_key_fkey',
     }).onDelete('set null'),
     check(
       'LocalFederationSigningState_plan_check',
-      sql`(${table.plannedSwitchAt} IS NULL) = (${table.plannedSuccessorKeyId} IS NULL)`,
+      sql`(${table.plannedSwitchAt} IS NULL) = (${table.plannedSuccessorKeyName} IS NULL)`,
     ),
   ],
 );
@@ -1773,7 +1825,7 @@ export const federationIdentityReview = pgTable(
   'FederationIdentityReview',
   {
     id: serial().primaryKey().notNull(),
-    /** 'domain-rebind' | 'root-rotation' */
+    /** 'domain-rebind' | 'root-rotation' | 'identity-reset' */
     kind: varchar({ length: 15 }).notNull(),
     matchedNamespaceId: integer()
       .notNull()
@@ -1809,7 +1861,7 @@ export const federationIdentityReview = pgTable(
     ),
     check(
       'FederationIdentityReview_kind_check',
-      sql`${table.kind} IN ('domain-rebind', 'root-rotation')`,
+      sql`${table.kind} IN ('domain-rebind', 'root-rotation', 'identity-reset')`,
     ),
     check(
       'FederationIdentityReview_status_check',
@@ -1818,6 +1870,45 @@ export const federationIdentityReview = pgTable(
     check(
       'FederationIdentityReview_reviewed_check',
       sql`(${table.status} = 'pending') = (${table.reviewedAt} IS NULL)`,
+    ),
+  ],
+);
+
+/** Verified identity-conflict conclusions keyed by the verified arrival
+ *  tuple: which (domain, root) arrival triggered which terminal code on
+ *  which namespace. Later arrivals of the same tuple are answered from
+ *  this persisted state while the namespace snapshot still matches; the
+ *  pin snapshot going stale (reset, retirement, re-binding) inerts the
+ *  row without deleting audit history. */
+export const federationIdentityConflict = pgTable(
+  'FederationIdentityConflict',
+  {
+    id: serial().primaryKey().notNull(),
+    /** Verified arrival domain. */
+    domain: varchar({ length: 63 }).notNull(),
+    /** Verified root the arrival claimed when the conclusion was reached. */
+    rootPublicKey: varchar({ length: 44 }).notNull(),
+    namespaceId: integer()
+      .notNull()
+      .references(() => identityNamespace.id, { onDelete: 'cascade' }),
+    /** Snapshot: the namespace's binding when the conclusion was recorded. */
+    namespaceDomain: varchar({ length: 63 }).notNull(),
+    /** Snapshot: the namespace's retained pin when the conclusion was recorded. */
+    namespaceRoot: varchar({ length: 44 }).notNull(),
+    /** Terminal wire code this conclusion serves (50015 / 50027). */
+    code: integer().notNull(),
+    reason: varchar({ length: 255 }).notNull(),
+    verifiedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('FederationIdentityConflict_domain_root_key').on(
+      table.domain,
+      table.rootPublicKey,
     ),
   ],
 );

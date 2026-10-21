@@ -8,16 +8,16 @@
 // WebView-remote-debug problem — the same one Ionic / Capacitor / Cordova hit, since they too serve
 // from a device-local origin the desktop DevTools can't reach.
 //
-// npm runs this automatically as `postbuild` after every `ng build`. The Makefile builds the web via
-// `npm run build -- --configuration <development|production>`: debug APKs emit sourcemaps (→ inlined
-// here), production does not (→ this script is a no-op). Idempotent — a comment already pointing at a
-// `data:` URI is left untouched, so a re-run (e.g. via the OTA bundle packager) is safe.
+// The shared one-shot build runner passes the target's browser directory after a successful build.
+// Development builds emit sourcemaps (inlined here); production normally does not. A comment already
+// pointing at a data: URI is left untouched, so repeating postprocessing is safe. Angular start/watch
+// keep their external sourcemaps: postprocessing must not race the dev server or rebuilds.
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const dir = join(here, '..', 'dist', 'web', 'browser');
+const dir = resolve(here, '..', process.argv[2] ?? 'dist/web/browser');
 
 if (!existsSync(dir)) {
   console.log('[inline-sourcemaps] no build output found — skipping');
@@ -51,14 +51,23 @@ for (const file of listFiles(dir)) {
     ? /\/\/#\s*sourceMappingURL=(\S+)/
     : /\/\*#\s*sourceMappingURL=([^\s*]+)\s*\*\//;
   const m = src.match(re);
-  if (!m) { skipped.push([rel, 'no sourceMappingURL comment']); continue; }
+  if (!m) {
+    skipped.push([rel, 'no sourceMappingURL comment']);
+    continue;
+  }
 
   const mapRef = m[1];
   // Already inlined on a prior run — leave it untouched (idempotent).
-  if (mapRef.startsWith('data:')) { skipped.push([rel, 'already inlined (data: URI)']); continue; }
+  if (mapRef.startsWith('data:')) {
+    skipped.push([rel, 'already inlined (data: URI)']);
+    continue;
+  }
 
   const mapPath = join(dirname(file), mapRef);
-  if (!existsSync(mapPath)) { skipped.push([rel, `referenced map not found: ${mapRef}`]); continue; }
+  if (!existsSync(mapPath)) {
+    skipped.push([rel, `referenced map not found: ${mapRef}`]);
+    continue;
+  }
 
   // Base64 alphabet is `$`-free, so the result is safe to use as a String.replace replacement.
   const dataUri = `data:application/json;charset=utf-8;base64,${readFileSync(mapPath).toString('base64')}`;
@@ -72,5 +81,5 @@ for (const [rel, reason] of skipped) {
   console.log(`[inline-sourcemaps] skipped ${rel} — ${reason}`);
 }
 console.log(
-  `[inline-sourcemaps] inlined ${inlined} map(s) into dist/web/browser (${skipped.length} file(s) skipped)`,
+  `[inline-sourcemaps] inlined ${inlined} map(s) into ${relative(join(here, '..'), dir)} (${skipped.length} file(s) skipped)`,
 );

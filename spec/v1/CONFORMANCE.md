@@ -76,6 +76,12 @@ observable requirements:
   first use and the predecessor remains valid after that first successor-signed
   request. The certificate validity intervals in a well-known document need not
   be contiguous; conformance does not require continuous certificate coverage.
+- A domain-only re-binding can retain the same root, signing key, `KeyName`, and
+  validity intervals. The publisher updates the domain in `keyId` and recomputes
+  its authorization signature; it may replace the old-domain representation
+  before expiration without performing key rotation. Receivers still require
+  reviewed domain adoption and match complete `keyId` values exactly. Returning
+  to an earlier domain must not reassign an old `keyId` to a different public key.
 - During certificate overlap, a receiver selects exactly the currently valid,
   root-authorized certificate named by the request's `keyid`. It does not try
   multiple certificates for one request or infer preference from discovery
@@ -92,9 +98,26 @@ observable requirements:
   disclosure failure uniformly returns `200 unavailable`, which preserves
   pins and acceptance, marks an accepted peer `degraded`, and does not halt
   it. A root rotation is adopted only after a rotation arrival that resolves
-  through the still-pinned root and administrator approval supported by a
-  sealed-challenge predecessor-key check; publishing a successor root alone
-  changes nothing.
+  through the still-pinned root and administrator approval; publishing a
+  successor root alone changes nothing.
+
+- Administration SHOULD check predecessor-key possession before approving a
+  root rotation. When using the sealed-challenge check, use a fresh challenge
+  at the proposed peer domain and bind the proof to the peer identity and
+  proposed predecessor/successor binding. A failed or mismatched answer is not
+  successful possession evidence. Temporary challenge failure alone MUST NOT
+  be classified as identity loss. Requiring a successful challenge as the sole
+  approval policy is not a universal conformance requirement.
+
+- An administrator-approved root rotation replaces the pinned root without
+  retiring the peer's subject namespace or changing either disclosed namespace
+  value. The receiver publishes the replacement bindings under the same
+  namespace; the rotating publisher announces its own change under namespace
+  `0`. Recognition and positive Health disclose the unchanged namespace after
+  rotation. Approval of root rotation or domain re-binding preserves existing
+  reciprocal acceptance and does not require a new handshake merely because
+  the binding changed. A destructive reset is distinct and must not reuse a
+  retired id.
 
 ## Synchronization and deletion checks
 

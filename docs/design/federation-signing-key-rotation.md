@@ -63,8 +63,8 @@ manually edited `active` flag:
 4. After the switch, retain the predecessor as verification-only: keep it
    published through its advertised `notAfter`, but never select it for a new
    outbound signature.
-5. After the predecessor's `notAfter`, stop publishing it and remove its private
-   material according to the local retention policy.
+5. After the predecessor's `notAfter`, stop publishing it but retain its private
+   material forever so sealed challenges under historical keys remain openable.
 
 The local implementation must never sign before `notBefore` or at/after
 `notAfter`. It must atomically persist lifecycle changes in one database
@@ -72,8 +72,8 @@ transaction so a restart or concurrent scheduler run cannot select two active
 keys or sign with a key outside its validity interval.
 
 The implementation stores the root public/private key, signing public/private
-keys, certificate validity intervals, `currentKeyId`, `plannedSwitchAt`, and
-`plannedSuccessorKeyId` in database tables. These state fields are local only:
+keys, certificate validity intervals, `currentKeyName`, `plannedSwitchAt`, and
+`plannedSuccessorKeyName` in database tables. These state fields are local only:
 they are not well-known fields and do not change the federation wire shape. The
 root private key is not used for ordinary HTTP request signing, but it is still
 required to authorize each signing-key certificate published in well-known.
@@ -85,6 +85,37 @@ IDs as opaque names, such as `<domain>/k-<base64url-random>`, where the `KeyName
 satisfies the protocol grammar and is never reused under the same root. The
 implementation must not derive key order, active status, or rotation
 relationships from the key name.
+
+### Domain binding is independent of key lifecycle
+
+`IdentityNamespace(id=0).domain` is the sole authoritative local-domain record.
+Local root rows contain no domain. Local signing keys use stable `keyName`
+primary keys, and the singleton signing-selection row (`id=0`) references those
+names rather than domain-qualified wire identifiers. Runtime snapshots query
+namespace 0, then construct each wire `keyId` as `<current-domain>/<keyName>` and
+compute its root authorization signature when publishing the certificate.
+
+Changing `SOMS_DOMAIN` and restarting updates namespace 0, local account change
+timestamps, and the namespace feeds in one lifecycle-locked transaction. It does
+not generate key material, extend validity, switch the selected signing key, or
+clear a pre-existing rotation plan. Ordinary time-driven maintenance still runs
+at startup and may independently advance a due plan. A same-domain restart emits
+no binding change. The re-binding helper accepts only the transaction and target
+domain; it reads the previous domain itself within that transaction.
+
+The new-domain certificate representation replaces the old-domain representation
+under the domain-change exception in Transport and Security, Section 1.4. Peers
+still review the new binding through Recognize. Cached or in-flight old-domain
+requests do not gain a new identity by matching only a key name or public key.
+Renaming back uses the same stable names; key names are never reused for another
+public key, including across retired roots.
+
+The base SQL schema and Drizzle schema define only this structure. Existing
+schemas and domain-qualified local key rows have no conversion or fallback path;
+installations using the earlier structure require a fresh database. No runtime
+domain-edit HTTP endpoint is introduced. Root-rotation administration remains a
+separate audited operation, without a new management-page entry point. Root
+history responses expose public metadata only, never private key material.
 
 Recommended initial timing defaults are:
 
@@ -216,13 +247,13 @@ refresh.
 
 The distinction between certificate failure and discovery failure is preserved:
 
-| Situation | Result | Local peer state |
-|---|---|---|
-| Well-known temporarily unavailable | Retryable `503 INTERNAL` on the common authentication path | retain pin; accepted peer is `degraded` |
-| Peer certificate unpublished/expired/not authorized | `401 FEDERATION_BAD_SIGNATURE` on the common authentication path; not a Health status object | retain pin; accepted peer is `degraded` |
-| Outbound Health receives `401 FEDERATION_BAD_SIGNATURE` | Recipient could not authenticate the local signer; this is not a Health status projection | retain pin and acceptance evidence; accepted peer is `degraded`; bounded diagnostics/retry |
-| Root differs from pinned root | identity mismatch / fatal halt | `halted` |
-| Positive Health `available` or `degraded` | acceptance + reachability evidence | `available` when all local gates hold |
+| Situation                                               | Result                                                                                       | Local peer state                                                                           |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Well-known temporarily unavailable                      | Retryable `503 INTERNAL` on the common authentication path                                   | retain pin; accepted peer is `degraded`                                                    |
+| Peer certificate unpublished/expired/not authorized     | `401 FEDERATION_BAD_SIGNATURE` on the common authentication path; not a Health status object | retain pin; accepted peer is `degraded`                                                    |
+| Outbound Health receives `401 FEDERATION_BAD_SIGNATURE` | Recipient could not authenticate the local signer; this is not a Health status projection    | retain pin and acceptance evidence; accepted peer is `degraded`; bounded diagnostics/retry |
+| Root differs from pinned root                           | identity mismatch / fatal halt                                                               | `halted`                                                                                   |
+| Positive Health `available` or `degraded`               | acceptance + reachability evidence                                                           | `available` when all local gates hold                                                      |
 
 A failed peer-key refresh never changes the pinned root. A normal signing-key
 rotation under that root never starts Recognize again for a peer whose acceptance
@@ -240,6 +271,11 @@ The implementation should cover at least:
 - strict `[notBefore, notAfter)` validation without receiver-side clock-skew
   grace;
 - restart recovery at each lifecycle boundary;
+- domain-only re-binding preserving root/signing material, stable names, validity,
+  and a pending switch, with verifiable new-domain certificate representations;
+- idempotent same-domain restart and rename-back without reassigning any key name;
+- lifecycle maintenance loading the domain from namespace 0 rather than configuration;
+- root history administration never returning private keys;
 - concurrent non-Health key misses producing one well-known request per peer;
 - inbound Health key misses failing on the common authentication path without
   initiating well-known discovery;

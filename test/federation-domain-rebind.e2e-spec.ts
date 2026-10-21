@@ -4,7 +4,16 @@ import request from 'supertest';
 import {
   identityNamespace,
   federationIdentityReview,
+  localFederationRoot,
+  localFederationSigningKey,
+  localFederationSigningState,
+  profileNamespaceFeed,
+  profileNamespaceChangeFeed,
 } from '../src/database/schema.js';
+import {
+  verifySigningCertificate,
+  type SigningKeyCertificate,
+} from '../src/federation/federation-certificate.js';
 
 import {
   bootFederationPair,
@@ -26,7 +35,8 @@ import {
  *
  *   1. alice@aaa.test resolves bob@bbb.test — recognition is confirmed on both peers.
  *   2. appB restarts with SOMS_DOMAIN=new-bbb.test — rebindLocalDomainInTx keeps the root
- *      epoch and issues a fresh domain-bound signing certificate.
+ *      epoch, signing keys, validity intervals, and lifecycle state; only the domain-bound
+ *      certificate representation and its root authorization signature change.
  *   3. appB's Recognize from the new domain is quarantined as a pending domain-rebind
  *      review; ordinary data-plane traffic from the new domain stays 401.
  *   4. A super-admin approves the review through the real admin HTTP surface — the epoch
@@ -168,8 +178,42 @@ describe('peer domain re-binding after a completed handshake', () => {
     await proxy?.close();
   });
 
-  it('re-binds the local domain on restart while keeping the root identity', async () => {
+  it('re-binds only the namespace and certificate representation while preserving all key state', async () => {
+    const readKeyState = async () => ({
+      roots: await appB.database
+        .select()
+        .from(localFederationRoot)
+        .orderBy(localFederationRoot.id),
+      keys: await appB.database
+        .select()
+        .from(localFederationSigningKey)
+        .orderBy(localFederationSigningKey.keyName),
+      state: await appB.database.select().from(localFederationSigningState),
+    });
+    const before = await readKeyState();
+    const oldDocument = (await fetch(
+      `http://127.0.0.1:${appB.port}/.well-known/somfp`,
+    ).then((response) => response.json())) as { keys: SigningKeyCertificate[] };
     await appB.restart({ domain: FED_DOMAIN_B_NEW });
+    expect(await readKeyState()).toEqual(before);
+    expect(
+      await appB.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.id, 0),
+      }),
+    ).toMatchObject({ domain: FED_DOMAIN_B_NEW });
+    expect(
+      await appB.database.query.profileNamespaceFeed.findFirst({
+        where: eq(profileNamespaceFeed.namespaceId, 0),
+      }),
+    ).toBeDefined();
+    expect(
+      await appB.database.query.profileNamespaceChangeFeed.findFirst({
+        where: and(
+          eq(profileNamespaceChangeFeed.publisherNamespaceId, 0),
+          eq(profileNamespaceChangeFeed.profileNamespaceId, 0),
+        ),
+      }),
+    ).toBeDefined();
 
     const response = await fetch(
       `http://127.0.0.1:${appB.port}/.well-known/somfp`,
@@ -178,16 +222,41 @@ describe('peer domain re-binding after a completed handshake', () => {
     expect(response.status).toBe(200);
     const doc = (await response.json()) as {
       roots: Array<{ ed25519: string }>;
-      keys: Array<{ keyId: string }>;
+      keys: SigningKeyCertificate[];
     };
-    // Fresh certificates are bound to the NEW domain (keyId is domain-bound), while the
-    // root epoch — the pinned identity — is unchanged.
-    expect(doc.keys.length).toBeGreaterThanOrEqual(1);
-    for (const key of doc.keys)
+    // Only the domain binding and authorization signatures change, not key material.
+    expect(doc.keys).toHaveLength(oldDocument.keys.length);
+    for (const key of doc.keys) {
       expect(key.keyId.startsWith(`${FED_DOMAIN_B_NEW}/`)).toBe(true);
+      const previous = oldDocument.keys.find(
+        (old) => old.ed25519 === key.ed25519,
+      )!;
+      expect(previous).toBeDefined();
+      expect(key).toEqual({
+        ...previous,
+        keyId: previous.keyId.replace(
+          `${FED_DOMAIN_B}/`,
+          `${FED_DOMAIN_B_NEW}/`,
+        ),
+        authorizationSignature: expect.any(String),
+      });
+      expect(key.authorizationSignature).not.toBe(
+        previous.authorizationSignature,
+      );
+      expect(verifySigningCertificate(key, pinned.rootPublicKey)).toBe(true);
+    }
     expect(
       doc.roots.some((root) => root.ed25519 === pinned.rootPublicKey),
     ).toBe(true);
+
+    const rootResponse = await request(appB.baseUrl)
+      .post('/api/v1/admin/federation/local-root-epochs')
+      .set('Cookie', adminCookieB);
+    expect(rootResponse.body.code).toBe(0);
+    for (const root of rootResponse.body.data) {
+      expect(root).not.toHaveProperty('rootPrivateKey');
+      expect(root.domain).toBe(FED_DOMAIN_B_NEW);
+    }
 
     // The receiver's pin is untouched by the peer's rename.
     expect(await peerRowOnA(FED_DOMAIN_B)).toMatchObject({
@@ -220,12 +289,11 @@ describe('peer domain re-binding after a completed handshake', () => {
       claimedRoot: pinned.rootPublicKey,
     });
 
-    // The matched epoch moves to the pending lifecycle: acceptance evidence is
-    // quarantined, not silently carried over to the new name.
-    expect(await peerRowOnA(FED_DOMAIN_B)).toMatchObject({
-      trustLevel: 'pending',
-      peerAcceptanceConfirmed: false,
-    });
+    // Review quarantines the proposed address, not the established peer's
+    // acceptance under its existing address.
+    const existing = await peerRowOnA(FED_DOMAIN_B);
+    expect(existing).toMatchObject({ peerAcceptanceConfirmed: true });
+    expect(existing!.trustLevel).not.toBe('pending');
 
     const blockedResolution = await resolveFromB();
     expect(blockedResolution.event).toBe('failed');
@@ -239,10 +307,7 @@ describe('peer domain re-binding after a completed handshake', () => {
       .set('Cookie', cookie);
     expect(approved.body.code).toBe(0);
 
-    const reboundAttempt = await recognizeFromB();
-    expect(reboundAttempt.status).toBe(200);
-    expect(reboundAttempt.body.code).toBe(0);
-
+    // Approval preserves acceptance without a fresh reciprocal Recognize.
     const rebound = await waitFor(
       async () => {
         const row = await peerRowOnA(FED_DOMAIN_B_NEW);

@@ -14,7 +14,7 @@ try {
   const node = federationLabNode(values.node ?? 'alpha');
   if (!node) throw new Error('unknown node');
   const account = values.account ?? (values.create ? `androidrestore${Date.now().toString(36)}` : null);
-  if (!account || !/^[a-z][a-z0-9]{2,30}$/.test(account)) throw new Error('invalid account');
+  if (!account || !/^[a-z][a-z0-9.]{2,30}$/.test(account)) throw new Error('invalid account');
   stage = 'admin-login';
   const admin = await LabAdminActor.login({
     node, password: (await readFile(process.env.SOMS_LAB_ADMIN_PASSWORD_FILE ?? '/dev/shm/soms-admin-pw', 'utf8')).trim(),

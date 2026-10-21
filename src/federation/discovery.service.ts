@@ -12,33 +12,24 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import {
-  isValidRootKeyEntry,
-  type RootKeyEntry,
-  type SigningKeyCertificate,
-  verifySigningCertificate,
-} from './federation-certificate.js';
+import type { SigningKeyCertificate } from './federation-certificate.js';
 import { loadFederationRuntimeConfig } from './federation.config.js';
-import { parseKeyId } from './key-id.js';
 import { continuousCoverageEnd } from './peer-key-coverage.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { KeypairService } from './keypair.service.js';
-import { selectFederationProtocolVersion } from './federation-protocol.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
+import { classifySomfpSrvRrset } from './srv-rrset.js';
+import {
+  normalizeFederationDomain,
+  validateWellKnownDocument,
+  type WellKnownDoc,
+} from './well-known-document.js';
 
-/** Minimum spacing between two well-known refresh attempts for one peer, shared by the
- *  inbound key-miss path and the maintenance entry point. */
+export type { WellKnownDoc } from './well-known-document.js';
+
+/** Minimum spacing between two well-known refresh attempts for one peer, shared by
+ *  the inbound key-miss path and the maintenance entry point. */
 const REFRESH_MIN_SPACING_MS = 30_000;
-const DOMAIN_RE =
-  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
-
-export interface WellKnownDoc {
-  software?: string;
-  protocolVersions: number[];
-  roots: RootKeyEntry[];
-  keys: SigningKeyCertificate[];
-  [key: string]: unknown;
-}
 
 /** The root a first-contact Recognize pins: the root authorizing a currently
  *  valid certificate. A B-mode rotation leaves exactly one such root; a group
@@ -152,37 +143,29 @@ export class DiscoveryService implements OnApplicationShutdown {
         { cause: error },
       );
     }
-    if (records.length === 0)
+    const rrset = classifySomfpSrvRrset(records);
+    if (rrset.kind === 'empty')
       throw new FederationDomainResolutionError(
         `${normalized} does not publish SOMFP SRV`,
       );
-    if (records.some((record) => record.name === '.')) {
-      if (records.length === 1)
-        throw new FederationDomainResolutionError(
-          `${normalized} explicitly disables SOMFP`,
-        );
+    if (rrset.kind === 'disabled')
       throw new FederationDomainResolutionError(
-        `${normalized} publishes an invalid mixed SRV RRset`,
+        `${normalized} explicitly disables SOMFP`,
       );
-    }
-    const valid = records.filter(
-      (record) =>
-        DOMAIN_RE.test(record.name.replace(/\.+$/, '').toLowerCase()) &&
-        record.port >= 1 &&
-        record.port <= 65_535 &&
-        record.priority >= 0 &&
-        record.priority <= 65_535 &&
-        record.weight >= 0 &&
-        record.weight <= 65_535,
+    if (rrset.kind === 'invalid')
+      throw new FederationDomainResolutionError(
+        rrset.reason === 'mixed'
+          ? `${normalized} publishes an invalid mixed SRV RRset`
+          : `${normalized} publishes an invalid SOMFP SRV RRset`,
+      );
+    const priority = Math.min(
+      ...rrset.records.map((record) => record.priority),
     );
-    if (valid.length !== records.length)
-      throw new FederationDomainResolutionError(
-        `${normalized} publishes an invalid SOMFP SRV RRset`,
-      );
-    const priority = Math.min(...valid.map((record) => record.priority));
-    const candidates = valid.filter((record) => record.priority === priority);
+    const candidates = rrset.records.filter(
+      (record) => record.priority === priority,
+    );
     const selected = this.weightedRecord(candidates);
-    const connectHost = selected.name.replace(/\.+$/, '').toLowerCase();
+    const connectHost = selected.host;
     const baseUrl =
       selected.port === 443
         ? `https://${normalized}`
@@ -274,75 +257,9 @@ export class DiscoveryService implements OnApplicationShutdown {
     }
   }
 
+  /** Peer-side document validation, shared with the admin self-check. */
   validateWellKnown(domain: string, value: unknown): WellKnownDoc {
-    const normalized = this.normalizeDomain(domain);
-    const doc = value as Partial<WellKnownDoc> | null;
-    const softwareValid =
-      doc?.software === undefined ||
-      (typeof doc.software === 'string' &&
-        Buffer.byteLength(doc.software) >= 1 &&
-        Buffer.byteLength(doc.software) <= 128 &&
-        !/[\u0000-\u001f\u007f-\u009f]/u.test(doc.software));
-    const now = Date.now();
-    if (
-      !doc ||
-      selectFederationProtocolVersion(doc.protocolVersions) !== 1 ||
-      !softwareValid ||
-      !Array.isArray(doc.roots) ||
-      doc.roots.length === 0 ||
-      !Array.isArray(doc.keys) ||
-      doc.keys.length === 0
-    ) {
-      throw new Error(`well-known ${normalized}: malformed v1 document`);
-    }
-    // Root group: unique canonical keys, sane intervals, and at least one
-    // currently valid root when the document is consumed.
-    const rootEntries = new Map<string, RootKeyEntry>();
-    for (const entry of doc.roots) {
-      if (!isValidRootKeyEntry(entry) || rootEntries.has(entry.ed25519)) {
-        throw new Error(`well-known ${normalized}: invalid roots group`);
-      }
-      rootEntries.set(entry.ed25519, entry);
-    }
-    if (
-      ![...rootEntries.values()].some(
-        (entry) => entry.notBefore <= now && now < entry.notAfter,
-      )
-    ) {
-      throw new Error(`well-known ${normalized}: no currently valid root`);
-    }
-    const ids = new Set<string>();
-    for (const certificate of doc.keys) {
-      const authorizing = rootEntries.get(certificate?.root as string);
-      if (
-        !certificate ||
-        typeof certificate.keyId !== 'string' ||
-        parseKeyId(certificate.keyId)?.domain !== normalized ||
-        ids.has(certificate.keyId) ||
-        !authorizing ||
-        // The certificate interval must be enclosed by its root's interval.
-        certificate.notBefore < authorizing.notBefore ||
-        certificate.notAfter > authorizing.notAfter ||
-        !verifySigningCertificate(certificate, certificate.root)
-      ) {
-        throw new Error(
-          `well-known ${normalized}: invalid signing certificate`,
-        );
-      }
-      ids.add(certificate.keyId);
-    }
-    if (
-      !doc.keys.some(
-        (certificate) =>
-          certificate.notBefore <= Date.now() &&
-          Date.now() < certificate.notAfter,
-      )
-    ) {
-      throw new Error(
-        `well-known ${normalized}: no currently valid signing key`,
-      );
-    }
-    return doc as WellKnownDoc;
+    return validateWellKnownDocument(domain, value);
   }
 
   /** Read-only cached-key lookup used by the inbound signature path. A miss is NOT
@@ -583,9 +500,6 @@ export class DiscoveryService implements OnApplicationShutdown {
   }
 
   private normalizeDomain(domain: string): string {
-    const normalized = domain.trim().toLowerCase().replace(/\.+$/, '');
-    if (!DOMAIN_RE.test(normalized))
-      throw new Error(`invalid domain ${domain}`);
-    return normalized;
+    return normalizeFederationDomain(domain);
   }
 }

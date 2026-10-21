@@ -40,6 +40,27 @@ describe('SignatureService (RFC 9421 + Ed25519)', () => {
     await expect(svc.verifyWithKey(req, headers, pub)).resolves.toBe(true);
   });
 
+  it('claims the sender root on Recognize independently of the recipient', async () => {
+    const { svc, pub } = makeService();
+    const senderRoot = Buffer.alloc(32, 4).toString('base64');
+    const recipientRoot = Buffer.alloc(32, 7).toString('base64');
+    for (const recipient of ['peer-b.test', 'peer-c.test']) {
+      const recognize = {
+        method: 'POST',
+        url: new URL(`https://${recipient}/s2s/v1/recognize`),
+        body: '{"namespaceId":7}',
+      };
+      const headers = await svc.signOutbound(recognize);
+      expect(headers['s2s-root-key']).toBe(senderRoot);
+      expect(headers['s2s-root-key']).not.toBe(recipientRoot);
+      expect(headers['signature-input']).toContain('keyid="aaa.com/key-1"');
+      expect(headers['signature-input']).not.toContain('s2s-root-key');
+      await expect(svc.verifyWithKey(recognize, headers, pub)).resolves.toBe(
+        true,
+      );
+    }
+  });
+
   it('preserves a fixed expiry when signing a later terminal retry', async () => {
     const { svc } = makeService();
     const expiry = 1_700_000_300;

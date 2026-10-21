@@ -144,8 +144,18 @@ make -C src-tauri apk-debug ABI=aarch64 WEB_BUILD=1 \
   src-tauri/dist/android/soms-0.1.0-alpha.0-debug-arm64-v8a.apk
 ```
 
-Use `WEB_BUILD=0` only after building the exact Web frontend to embed. Install
-with `-r` to preserve app data; never uninstall the APK for a routine test.
+Native frontend artifacts are isolated in `web/dist/native/browser`. Both debug
+and release builds use AOT: the native CSP intentionally forbids `unsafe-eval`,
+so an Angular JIT build cannot boot. The shared frontend build runner generates
+the push worker, compiles with AOT, validates native bundle metadata, then
+postprocesses source maps. `verify:native` rejects runtime Angular compilers before
+packaging. Browser/test output in `web/dist/web` and Playground output in
+`web/dist/playground` are not used by the native shell.
+
+Use `WEB_BUILD=0` only after building the exact native frontend to embed, for
+example `npm --prefix web run build:native -- --configuration development`.
+The Makefile validates reused output too. Install with `-r` to preserve app data;
+never uninstall the APK for a routine test.
 Use a fresh OTP and the stdin-fed flow to verify login on the newly installed
 APK. For a disposable lab user, a trusted issuer can authenticate the Alpha
 admin from `/dev/shm/soms-admin-pw`, create the user, issue one fresh code, and

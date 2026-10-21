@@ -4,7 +4,6 @@ import {
   approveFederationIdentityReview,
   federationPeerNamespaces,
   federationPendingIdentityReviews,
-  federationPredecessorCheck,
   getFederationPeer,
   localFederationRootEpochs,
   rejectFederationIdentityReview,
@@ -42,7 +41,6 @@ describe('federation admin API', () => {
     await federationPendingIdentityReviews();
     await approveFederationIdentityReview(7);
     await rejectFederationIdentityReview(7);
-    await federationPredecessorCheck(7);
     await localFederationRootEpochs();
     await rotateLocalFederationRoot();
     await unpublishLocalFederationRoot(3);
@@ -80,25 +78,20 @@ describe('federation admin API', () => {
     );
     expect(request).toHaveBeenNthCalledWith(
       7,
-      '/admin/federation/identity-reviews/7/predecessor-check',
-      {},
-    );
-    expect(request).toHaveBeenNthCalledWith(
-      8,
       '/admin/federation/local-root-epochs',
     );
     expect(request).toHaveBeenNthCalledWith(
-      9,
+      8,
       '/admin/federation/local-root-epochs/rotate',
       {},
     );
     expect(request).toHaveBeenNthCalledWith(
-      10,
+      9,
       '/admin/federation/local-root-epochs/3/unpublish',
       {},
     );
     expect(request).toHaveBeenNthCalledWith(
-      11,
+      10,
       '/admin/federation/self-check',
       {
         ntpServer: 'ntp.example',

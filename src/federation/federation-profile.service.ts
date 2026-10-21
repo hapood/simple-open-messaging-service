@@ -541,7 +541,7 @@ export class FederationProfileService {
   /** Fetch a peer account's public card, binding the answer to a possession
    *  proof (Profiles 2.1/3): the request carries a sealed challenge under the
    *  responder key named by `possession`, and the returned `proof` must equal
-   *  the sealed plaintext byte-for-byte.
+   *  the canonical padded base64 encoding of the sealed plaintext bytes.
    *
    *  - `PIN` challenges under this server's current handshake pin for the
    *    target domain: the proof ties the card to the identity this server
@@ -606,7 +606,7 @@ export class FederationProfileService {
     }
     // Byte-for-byte possession check (Profiles 2.1): a mismatch is a hostile
     // or broken responder, never a retryable condition.
-    if (fields.proof !== plaintext) {
+    if (fields.proof !== Buffer.from(plaintext, 'utf8').toString('base64')) {
       throw new S2sResponseError(
         `S2S profile from ${address.domain} failed the possession proof`,
         HttpStatus.OK,

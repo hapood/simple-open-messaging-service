@@ -136,7 +136,11 @@ Member items have stable key `(body.namespaceId, body.account)` in the group
 origin's namespace space. Their required, non-null `body.namespaceId` follows
 [Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation):
 the origin serializes its own members with `namespaceId: 0`; a foreign member
-carries the origin's positive namespace for that member's home identity.
+carries the positive namespace allocated by the origin for that member's
+home-server identity and disclosed to that home through Peer Recognition.
+This is not the namespace the home allocated for the origin, nor a namespace
+allocated by another receiver. Every receiver interprets the value in the
+origin's namespace space.
 A mirror resolves domains through the origin's namespace bindings; it recognizes its
 own local member when the `namespaceId` equals the
 peer-assigned namespace disclosed by the origin. Their required, non-null `profileRev` selects an
@@ -153,10 +157,20 @@ itself MUST NOT republish a member item or advance this feed. A member-authored
 group message carrying a different `namespaceId` and `profileRev` selects a replacement
 reference as specified below.
 
-The `MEMBER_UPSERT` that first makes a membership current MUST carry the exact
-`namespaceId` and `profileRev` selected by the effective member-authored join intent. The origin
-MUST NOT replace it with the member's default revision observed later while
-asynchronous work is pending. The greatest committed non-system message
+The `MEMBER_UPSERT` that first makes a membership current MUST preserve the
+member identity and exact `profileRev` selected by the effective
+member-authored join intent. Its `namespaceId` MUST use the origin's namespace
+for that identity as defined above, not copy the join intent's numeric value.
+The origin MUST NOT replace the selected revision with the member's default
+revision observed later while asynchronous work is pending.
+
+For example, home H publishes Alice's join intent with `namespaceId: 0` and
+`profileRev: 42`. If origin G allocated namespace `17` for H's identity, G's
+`MEMBER_UPSERT` carries `account: "alice"`, `namespaceId: 17`, and
+`profileRev: 42`. H and every other receiver interpret `17` in G's namespace
+space; joining does not allocate another namespace or require a new handshake.
+
+The greatest committed non-system message
 `seq` authored by that member in the current membership interval may select
 a different namespace and revision for a replacement member reference. A message need not
 wait for that replacement to be published, and a missed replacement may be

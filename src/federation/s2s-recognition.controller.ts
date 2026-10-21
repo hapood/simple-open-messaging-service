@@ -50,7 +50,8 @@ export class S2sRecognitionController {
       );
     }
     const senderAssignedLocalNamespaceId = this.assertRecognizeRequest(body);
-    return this.recognition.submitInboundRecognize({
+    const result = await this.recognition.submitInboundRecognize({
+      requestIp: req.ip,
       domain,
       keyId,
       claimedRoot,
@@ -59,6 +60,9 @@ export class S2sRecognitionController {
       senderAssignedLocalNamespaceId,
       signatureExpires: expires,
     });
+    return 'code' in result
+      ? result
+      : { code: 0, message: 'successful', data: result };
   }
 
   @Get('health')
@@ -101,8 +105,9 @@ export class S2sRecognitionController {
       if (status === 'unavailable') return this.unavailableHealth();
       await this.recognition.markReachable(context.domain);
       return {
-        status,
-        peerAssignedLocalNamespaceId: context.namespaceId,
+        code: 0,
+        message: 'successful',
+        data: { status, peerAssignedLocalNamespaceId: context.namespaceId },
       } as const;
     } catch {
       return this.unavailableHealth();
@@ -131,7 +136,11 @@ export class S2sRecognitionController {
   }
 
   private unavailableHealth() {
-    return { status: 'unavailable' } as const;
+    return {
+      code: 0,
+      message: 'successful',
+      data: { status: 'unavailable' },
+    } as const;
   }
 
   private assertRecognizeRequest(value: unknown): number | undefined {

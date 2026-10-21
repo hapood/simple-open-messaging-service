@@ -7,7 +7,10 @@ Review**, `1.0.0-draft.0`, wire major 1. This is not a release freeze or a claim
 of complete protocol conformance. Git history records implementation changes;
 this document describes the current scope, not a changelog.
 
-Automated tests are paused at the operator's request. The current Forward
+Unrelated automated suites remain paused at the operator's request. The operator
+subsequently authorized targeted root-rotation validation: 40 backend unit tests,
+9 admin client tests, and 20 PostgreSQL E2E tests passed. This scoped execution
+does not lift the pause for other work or imply release acceptance. The current Forward
 snapshot and shared-child rules have static TypeScript checks but have not been
 runtime-tested. Earlier successful runs do not validate these revisions.
 Browser end-to-end, Android/native devices, WebRTC, deployment, and final release
@@ -17,6 +20,33 @@ all interleavings safe.
 
 ## Identity and profiles
 
+- The protocol recommends (SHOULD) predecessor possession checking; our local
+  root-rotation approval policy requires a fresh sealed challenge under the review's
+  predecessor root. The challenge runs outside database row locks; approval
+  revalidates the captured review and current pin before committing. A failed
+  challenge or concurrent binding change cannot authorize a successor. The
+  separate admin check endpoint and its client controls have been removed;
+  approval automatically performs the proof. The federation sealed-challenge
+  service remains available. Targeted unit and PostgreSQL-backed concurrency
+  tests passed, including review changes during challenge and pin revalidation.
+- An approved peer root rotation preserves the existing namespace id and the
+  retained peer-assigned namespace. The approval updates the root binding and
+  records the Profile Namespace Feed change in the same transaction; it does
+  not rewrite message, member, or profile references. The rotating server's
+  own key lifecycle is separate and announces its binding change at namespace
+  `0`. Expanded root-rotation regression tests passed, including real dual-node
+  approval-time challenge, stable namespace disclosure, and binding-feed updates.
+- Root/domain approval preserves existing peer acceptance without scheduling
+  a new reciprocal handshake. Pending domain reviews do not erase acceptance
+  under the original binding. Approval installs the validated successor
+  certificate set atomically with the binding, review decision, reachability
+  update, and feed changes. Successful verification makes an already accepted,
+  locally prepared peer available, but does not create missing acceptance or
+  revive a halted peer. An immediate Health can authenticate using the installed
+  certificates without discovery. PostgreSQL fault-injection tests verify full
+  rollback on certificate insertion and final review-write failure. The
+  [alignment plan](./federation-contract-alignment-plan.md) records validation
+  scope and remaining boundary cases.
 - Messages, mentions, profiles, receipts, and client state use exact namespace
   coordinates. Binding lifecycle is local state, not a wire field.
 - Exact profile revisions are immutable. Identical direct/relayed copies may be

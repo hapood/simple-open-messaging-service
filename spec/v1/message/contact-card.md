@@ -92,7 +92,7 @@ RFC 4648 standard base64.
   "originCreatedAt": null,
   "createdAt": 1770000020000,
   "contentType": "CONTACT_CARD",
-  "content": "{\"account\":\"carol\",\"domain\":\"c.example\",\"publicKey\":\"A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\",\"displayName\":\"Carol\",\"bio\":\"Distributed systems enthusiast\",\"avatarDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+  "content": "{\"account\":\"carol\",\"avatarDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bio\":\"Distributed systems enthusiast\",\"displayName\":\"Carol\",\"domain\":\"c.example\",\"publicKey\":\"A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\"}",
   "assets": [
     {
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

@@ -19,6 +19,8 @@ import { ProfileNamespaceFeedService } from '../src/federation/profile-namespace
 import { ProfileNamespaceService } from '../src/federation/profile-namespace.service.js';
 import { FederationRecognitionService } from '../src/federation/federation-recognition.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
+import { SignatureService } from '../src/federation/signature.service.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
 
 describe('FederationRecognitionService atomic commit', () => {
   let mod: TestingModule;
@@ -163,7 +165,6 @@ describe('FederationRecognitionService atomic commit', () => {
       expect(
         await service()['readRecognizedInbound'](domain, rootPublicKey),
       ).toEqual({
-        ok: true,
         status: 'recognized',
         peerAssignedLocalNamespaceId: peer.id,
       });
@@ -228,6 +229,146 @@ describe('FederationRecognitionService atomic commit', () => {
     ).toEqual([]);
   });
 
+  it('pins the recipient root while signing Recognize under the sender root', async () => {
+    const senderRoot = Buffer.alloc(32, 8).toString('base64');
+    const predecessorRoot = Buffer.alloc(32, 9).toString('base64');
+    const signingKey = ed25519.utils.randomSecretKey();
+    const signature = new SignatureService({
+      getKeyId: () => 'sender.test/current',
+      getPrivateKey: () => signingKey,
+      getRootPublicKeyB64: () => senderRoot,
+    } as never);
+    const request = vi.fn(async (url: URL, init: RequestInit) => {
+      const peer = await activeNamespace();
+      expect(peer).toMatchObject({ rootPublicKey });
+      expect(init.body).toBe(JSON.stringify({ namespaceId: peer!.id }));
+      const headers = init.headers as Record<string, string>;
+      expect(headers['s2s-root-key']).toBe(senderRoot);
+      expect(headers['s2s-root-key']).not.toBe(rootPublicKey);
+      await expect(
+        signature.verifyWithKey(
+          { method: 'POST', url, body: init.body as string },
+          headers as Awaited<ReturnType<SignatureService['signOutbound']>>,
+          ed25519.getPublicKey(signingKey),
+        ),
+      ).resolves.toBe(true);
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          message: 'successful',
+          data: { status: 'pending' },
+        }),
+        { status: 200 },
+      );
+    });
+    const discovery = {
+      resolveBase: vi.fn().mockResolvedValue(`https://${domain}`),
+      fetchWellKnown: vi.fn().mockResolvedValue({
+        ...document,
+        roots: [
+          {
+            ed25519: predecessorRoot,
+            notBefore: 0,
+            notAfter: 253402300799999,
+          },
+          ...document.roots,
+        ],
+      }),
+      cacheDocument: vi.fn().mockResolvedValue(undefined),
+      acquireRequestSlot: vi.fn().mockResolvedValue(() => undefined),
+      request,
+    };
+    const recognition = new FederationRecognitionService(
+      database,
+      discovery as never,
+      signature,
+      { get: () => ({ callTimeoutSec: 12 }) } as never,
+      namespaceService(),
+      { emit: () => undefined } as never,
+    );
+    await recognition.recognize(domain);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(await activeNamespace()).toMatchObject({
+      rootPublicKey,
+      peerAcceptanceConfirmed: false,
+    });
+  });
+
+  it.each([false, true])(
+    'preserves the pin after certificate cutover (predecessor first: %s)',
+    async (predecessorFirst) => {
+      const peer = await seedActiveNamespace({
+        peerAssignedLocalNamespaceId: 901,
+        stateFeedPulledThrough: 42n,
+      });
+      const successorRoot = Buffer.alloc(32, 10).toString('base64');
+      const successor = { ...document.roots[0]!, ed25519: successorRoot };
+      const roots = predecessorFirst
+        ? [...document.roots, successor]
+        : [successor, ...document.roots];
+      const request = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: 0,
+            message: 'successful',
+            data: { status: 'pending' },
+          }),
+          { status: 200 },
+        ),
+      );
+      const discovery = {
+        resolveBase: vi.fn().mockResolvedValue(`https://${domain}`),
+        fetchWellKnown: vi.fn().mockResolvedValue({
+          ...document,
+          roots,
+          keys: document.keys.map((key) => ({ ...key, root: successorRoot })),
+        }),
+        cacheDocument: vi.fn().mockResolvedValue(undefined),
+        acquireRequestSlot: vi.fn().mockResolvedValue(() => undefined),
+        request,
+      };
+      const recognition = new FederationRecognitionService(
+        database,
+        discovery as never,
+        { signOutbound: vi.fn().mockResolvedValue({}) } as never,
+        { get: () => ({ callTimeoutSec: 12 }) } as never,
+        namespaceService(),
+        { emit: () => undefined } as never,
+      );
+      await expect(recognition.recognize(domain)).resolves.toMatchObject({
+        status: 'pending',
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(await activeNamespace()).toMatchObject({
+        id: peer.id,
+        rootPublicKey,
+        peerAssignedLocalNamespaceId: 901,
+        stateFeedPulledThrough: 42n,
+        trustLevel: 'available',
+        haltedAt: null,
+      });
+    },
+  );
+
+  it('halts outbound recognition when the full root group omits the pin', async () => {
+    const peer = await seedActiveNamespace();
+    const successorRoot = Buffer.alloc(32, 10).toString('base64');
+    await expect(
+      service()['prepareOutbound'](domain, {
+        ...document,
+        roots: [{ ...document.roots[0]!, ed25519: successorRoot }],
+        keys: document.keys.map((key) => ({ ...key, root: successorRoot })),
+      }),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+    });
+    expect(await activeNamespace()).toMatchObject({
+      id: peer.id,
+      rootPublicKey,
+      trustLevel: 'halted',
+    });
+  });
+
   it('keeps outbound recognition establishing until a retry receives OK', async () => {
     const request = vi.fn();
     const discovery = {
@@ -265,9 +406,9 @@ describe('FederationRecognitionService atomic commit', () => {
     request.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          ok: true,
-          status: 'recognized',
-          peerAssignedLocalNamespaceId: 37,
+          code: 0,
+          message: 'successful',
+          data: { status: 'recognized', peerAssignedLocalNamespaceId: 37 },
         }),
         { status: 200 },
       ),
@@ -297,8 +438,9 @@ describe('FederationRecognitionService atomic commit', () => {
         request: vi.fn().mockResolvedValue(
           new Response(
             JSON.stringify({
-              status,
-              peerAssignedLocalNamespaceId: 38,
+              code: 0,
+              message: 'successful',
+              data: { status, peerAssignedLocalNamespaceId: 38 },
             }),
             { status: 200 },
           ),

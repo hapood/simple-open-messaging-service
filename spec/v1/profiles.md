@@ -28,8 +28,9 @@ store; a positive value selects the namespace that publisher holds for a
 foreign identity. Responses do not carry `domain`; subject identity comes from
 the authenticated publisher, requested account, and profile namespace.
 
-Feed cursors, scan windows, modes, and byte ranges use query parameters in
-their own operations; profile reads have none.
+Profile reads do not use feed cursors, scan windows, modes, or byte ranges.
+The public current-profile lookup still requires `publicKey` and `challenge`
+as specified above.
 
 ## 1. Common request rules
 
@@ -39,8 +40,10 @@ Only unreserved characters `ALPHA / DIGIT / "-" / "." / "_" / "~"` appear
 unencoded; every other UTF-8 byte uses upper-case hexadecimal `%HH`.
 
 A group account's leading `!` is not an unreserved character, so its canonical
-path-segment representation is `%21`. For example, the decoded group account
-`!team` appears as `%21team`:
+path-segment representation is `%21`. The following path-only illustrations
+show the decoded group account `!team` as `%21team`; they are not complete
+requests. The public lookup additionally requires the `publicKey` and
+`challenge` query parameters of Section 3:
 
 ```http
 GET /s2s/v1/accounts/%21team
@@ -88,7 +91,8 @@ local account namespace.
 
 `proof` is the answer to the request's sealed challenge: the responder opens
 the `challenge` box with the private counterpart of the supplied `publicKey`
-and returns exactly the recovered plaintext. The lookup therefore doubles as
+and returns the recovered plaintext bytes as canonical padded base64 using
+the answer encoding of Transport and Security, Section 3.7. The lookup therefore doubles as
 a possession proof — the card is served by the holder of the named key's
 private counterpart, not merely by the current domain endpoint, so a
 temporary domain takeover that lost the key material cannot serve a
@@ -99,7 +103,7 @@ The caller controls the challenge semantics. The protocol does not require
 any particular plaintext; a caller MAY bind it to this lookup, for example
 by sealing the canonical JSON `{"account":"<account>","domain":"<domain>"}`,
 so the answer is specific to exactly this card. The caller MUST be able to
-compare the returned `proof` byte-for-byte with what it sealed, SHOULD seal
+compare the base64-decoded `proof` byte-for-byte with what it sealed, SHOULD seal
 a fresh value for each lookup, and SHOULD discard the value after
 comparing. The sealed-box construction is defined in
 [Transport and Security, Section 3.7](./transport-security.md#37-sealed-challenge-construction);
@@ -147,7 +151,8 @@ when the profile is currently public. Any `recognized signed` peer MAY query
 this public profile, but the query grants no P2P, group, message, media, or
 subsequent profile permission. A dissolved group is unavailable.
 
-The request MUST carry exactly two query parameters. `publicKey` is a
+The request MUST carry exactly two query parameters, in this order:
+`publicKey`, then `challenge`. `publicKey` is a
 `Base64Ed25519Key` naming one of the responder's published keys — current or
 retired — that the caller wants the card bound to; `challenge` is a
 `Base64SealedChallenge` sealed under that key (Transport and Security,
@@ -178,7 +183,7 @@ of these proofs for the exact requested `namespaceId` and `profileRev`:
   user's relationship counterpart; or
 - a current directed Relationship Intent authored by the requested account and
   addressed to the authenticated signer's account, with matching
-  `profileNamespaceId` and `profileRev`, whose status is `ACCEPTED` or an
+  `namespaceId` and `profileRev`, whose status is `ACCEPTED` or an
   unexpired `REQUESTED`.
 
 For message evidence, the publisher MUST find at least one non-system message

@@ -1,11 +1,12 @@
 import { Injectable, Logger, HttpStatus } from '@nestjs/common';
 import { Resolver } from 'node:dns/promises';
+import type { SrvRecord } from 'node:dns';
 import { connect as tlsConnect } from 'node:tls';
 import { connect as netConnect } from 'node:net';
 import { createSocket } from 'node:dgram';
 import { X509Certificate, type KeyObject, createHash } from 'node:crypto';
-import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import type { IncomingMessage } from 'node:http';
 import {
   connect as http2Connect,
   constants as http2Constants,
@@ -26,6 +27,11 @@ import {
   type FederationTransportConfig,
 } from '../federation/federation-transport-config.service.js';
 import { parseKeyId } from '../federation/key-id.js';
+import { classifySomfpSrvRrset } from '../federation/srv-rrset.js';
+import {
+  validateWellKnownDocument,
+  type WellKnownDoc,
+} from '../federation/well-known-document.js';
 
 type SelfCheckConfig = FederationRuntimeConfig &
   FederationTransportConfig & { domain: string };
@@ -123,53 +129,137 @@ export class FederationSelfCheckService {
       ),
     );
 
-    // --- B. DNS resolution (shared target for everything below) ---
-    const target = await this.resolveTarget(resolver, domain, config);
+    if (config.allowInsecureHttp) {
+      // Insecure dev mode is not the production wire: peers on it do not even consult
+      // SRV, so the external probe set would model a path no peer actually takes.
+      // checkConfig already surfaces the mode itself (warn in dev, fail in production).
+      for (const [key, group, title] of [
+        ['dns-srv', 'dns', 'SRV record _somfp._tcp'],
+        ['dns-a', 'dns', 'A records (IPv4)'],
+        ['dns-aaaa', 'dns', 'AAAA records (IPv6)'],
+        ['tls-public', 'tls', 'TLS certificate (per IP)'],
+        ['tls-loopback', 'tls', 'Local process loopback'],
+        ['well-known', 'well-known', '.well-known/somfp (per IP)'],
+        ['key-consistency', 'crypto', 'Published key consistency'],
+        ['sign-loopback', 'crypto', 'Signature loopback'],
+        ['clock-skew', 'clock', 'Clock skew (NTP)'],
+      ] as const) {
+        checks.push({
+          key,
+          group,
+          title,
+          status: 'skip',
+          detail:
+            'insecure dev mode (allowInsecureHttp) — the external probe set models the production HTTPS wire only',
+          blockedBy: 'config',
+          durationMs: 0,
+        });
+      }
+      return this.makeReport(
+        domain,
+        startedAt,
+        ntpServer,
+        { host: domain, port: 443, hasSrv: false },
+        checks,
+        opts,
+      );
+    }
+
+    // --- B. DNS resolution (shared targets for everything below) ---
+    const srv = await this.resolveSrvInfo(resolver, domain);
     checks.push(
       await this.runOne(
         { key: 'dns-srv', group: 'dns', title: 'SRV record _somfp._tcp' },
-        () => this.checkDnsSrv(domain, target),
+        () => this.checkDnsSrv(domain, srv),
       ),
     );
-    const v4 = await this.safeResolve(resolver, domain, target, 4);
-    const v6 = await this.safeResolve(resolver, domain, target, 6);
+    if (!srv.hasSrv) {
+      // Without mandatory SRV discovery, probing the domain directly would imply
+      // a fallback route that peers are not permitted to use.
+      for (const [key, group, title] of [
+        ['dns-a', 'dns', 'A records (IPv4)'],
+        ['dns-aaaa', 'dns', 'AAAA records (IPv6)'],
+        ['tls-public', 'tls', 'TLS certificate (per IP)'],
+        ['tls-loopback', 'tls', 'Local process loopback'],
+        ['well-known', 'well-known', '.well-known/somfp (per IP)'],
+        ['key-consistency', 'crypto', 'Published key consistency'],
+        ['sign-loopback', 'crypto', 'Signature loopback'],
+      ] as const) {
+        checks.push({
+          key,
+          group,
+          title,
+          status: 'skip',
+          detail: 'SRV unresolved; no federation endpoint to probe',
+          blockedBy: 'dns-srv',
+          durationMs: 0,
+        });
+      }
+      checks.push(
+        await this.runOne(
+          { key: 'clock-skew', group: 'clock', title: 'Clock skew (NTP)' },
+          () =>
+            this.checkClockSkew(ntpServer, config.signingKey.clockSkewBudgetMs),
+        ),
+      );
+      return this.makeReport(
+        domain,
+        startedAt,
+        ntpServer,
+        { host: domain, port: 443, hasSrv: false },
+        checks,
+        opts,
+      );
+    }
+    const perTarget = await Promise.all(
+      srv.targets.map(async (target) => ({
+        target,
+        v4: await this.safeResolve(resolver, target.host, 4),
+        v6: await this.safeResolve(resolver, target.host, 6),
+      })),
+    );
+    const v4 = perTarget.flatMap((p) => p.v4);
+    const v6 = perTarget.flatMap((p) => p.v6);
     checks.push(
       await this.runOne(
         { key: 'dns-a', group: 'dns', title: 'A records (IPv4)' },
-        () => this.checkDnsA(v4),
+        () => this.checkDnsA(v4, v6, perTarget),
       ),
     );
     checks.push(
       await this.runOne(
         { key: 'dns-aaaa', group: 'dns', title: 'AAAA records (IPv6)' },
-        () => this.checkDnsAaaa(v6),
+        () => this.checkDnsAaaa(v6, perTarget),
       ),
     );
-    const ips = [
-      ...v4.map((ip) => ({ ip, family: 4 as const })),
-      ...v6.map((ip) => ({ ip, family: 6 as const })),
-    ];
+    const endpoints = perTarget.flatMap((p) => [
+      ...p.v4.map((ip) => ({ ip, family: 4 as const, target: p.target })),
+      ...p.v6.map((ip) => ({ ip, family: 6 as const, target: p.target })),
+    ]);
 
-    // --- C. TLS (per IP) ---
-    const tlsProbes: IpTlsProbe[] = config.allowInsecureHttp
-      ? []
-      : await Promise.all(
-          ips.map((a) =>
-            this.probeTls(a.ip, a.family, target.host, target.port, config),
-          ),
-        );
+    // --- C. TLS (per endpoint; logical TLS name is always the federation domain) ---
+    const tlsProbes: IpTlsProbe[] = await Promise.all(
+      endpoints.map((e) =>
+        this.probeTls(
+          e.ip,
+          e.family,
+          domain,
+          e.target.port,
+          config,
+          `${e.target.host}:${e.target.port}`,
+        ),
+      ),
+    );
     checks.push(
       await this.runOne(
         { key: 'tls-public', group: 'tls', title: 'TLS certificate (per IP)' },
-        () => this.checkTlsPublic(ips, tlsProbes, target, config),
+        () => this.checkTlsPublic(endpoints, tlsProbes, srv, domain),
       ),
     );
     const publicReachableAny = tlsProbes.some((p) => p.reachable);
     const hasLocalTls = Boolean(process.env.TLS_CERT && process.env.TLS_KEY);
     const needsLoopback =
-      config.allowInsecureHttp ||
-      !hasLocalTls ||
-      (!publicReachableAny && ips.length > 0);
+      !hasLocalTls || (!publicReachableAny && endpoints.length > 0);
     checks.push(
       await this.runOne(
         { key: 'tls-loopback', group: 'tls', title: 'Local process loopback' },
@@ -180,17 +270,20 @@ export class FederationSelfCheckService {
       ),
     );
 
-    // --- D. .well-known (per IP) ---
+    // --- D. .well-known (per endpoint) ---
     const wkProbes: IpWellKnownProbe[] = await Promise.all(
-      ips.map((a) =>
+      endpoints.map((e) =>
         this.probeWellKnown(
-          a.ip,
-          a.family,
-          target.host,
-          target.port,
-          target.scheme,
+          e.ip,
+          e.family,
+          domain,
+          e.target.port,
           config,
-          tlsProbes.find((p) => p.ip === a.ip)?.cert?.alpn ?? null,
+          tlsProbes.find(
+            (p) =>
+              p.ip === e.ip && p.target === `${e.target.host}:${e.target.port}`,
+          )?.cert?.alpn ?? null,
+          `${e.target.host}:${e.target.port}`,
         ),
       ),
     );
@@ -201,11 +294,11 @@ export class FederationSelfCheckService {
           group: 'well-known',
           title: '.well-known/somfp (per IP)',
         },
-        () => this.checkWellKnown(ips, wkProbes),
+        () => this.checkWellKnown(endpoints, wkProbes),
       ),
     );
 
-    // --- E. crypto consistency (uses the first IP that returned a valid doc) ---
+    // --- E. crypto consistency (uses the first endpoint that returned a valid doc) ---
     const doc = wkProbes.find((p) => p.doc && p.keysValid)?.doc ?? null;
     checks.push(
       await this.runOne(
@@ -217,10 +310,15 @@ export class FederationSelfCheckService {
         () => this.checkKeyConsistency(domain, doc),
       ),
     );
+    const primary = srv.targets[0];
     checks.push(
       await this.runOne(
         { key: 'sign-loopback', group: 'crypto', title: 'Signature loopback' },
-        () => this.checkSignLoopback(doc, target.authority),
+        () =>
+          this.checkSignLoopback(
+            doc,
+            primary.port === 443 ? domain : `${domain}:${primary.port}`,
+          ),
       ),
     );
 
@@ -228,20 +326,37 @@ export class FederationSelfCheckService {
     checks.push(
       await this.runOne(
         { key: 'clock-skew', group: 'clock', title: 'Clock skew (NTP)' },
-        () => this.checkClockSkew(ntpServer),
+        () =>
+          this.checkClockSkew(ntpServer, config.signingKey.clockSkewBudgetMs),
       ),
     );
 
-    const summary = this.summarize(checks);
+    return this.makeReport(
+      domain,
+      startedAt,
+      ntpServer,
+      { host: primary.host, port: primary.port, hasSrv: true },
+      checks,
+      opts,
+    );
+  }
+
+  private makeReport(
+    domain: string,
+    startedAt: number,
+    ntpServer: string,
+    target: { host: string; port: number; hasSrv: boolean },
+    checks: SelfCheckCheck[],
+    opts: RunOptions,
+  ): SelfCheckReport {
     return {
       domain,
       runAt: startedAt,
       durationMs: Date.now() - startedAt,
-      summary,
+      summary: this.summarize(checks),
       target: {
         host: target.host,
         port: target.port,
-        scheme: target.scheme,
         hasSrv: target.hasSrv,
       },
       resolver: opts.dnsResolver ?? 'system',
@@ -358,79 +473,115 @@ export class FederationSelfCheckService {
 
   private async checkDnsSrv(
     domain: string,
-    target: ResolvedTarget,
+    srv: SrvResolution,
   ): Promise<CheckBody> {
-    if (!target.hasSrv) {
+    if (!srv.hasSrv) {
+      const detail = srv.srvError
+        ? `SRV lookup for _somfp._tcp.${domain} failed (${srv.srvError}) — cannot determine the federation endpoint; retry the DNS lookup`
+        : srv.rrsetError
+          ? `_somfp._tcp.${domain}: ${srv.rrsetError} — peers reject this RRset`
+          : `missing required _somfp._tcp.${domain} SRV record — peers cannot discover this federation service`;
       return {
-        status: 'warn',
-        detail: `no _somfp._tcp.${domain} SRV record — peers fall back to https://${domain}:443 (set SRV if not on :443)`,
+        status: 'fail',
+        detail,
         evidence: {
           domain,
-          record: null,
-          resolvedHost: target.host,
-          resolvedPort: target.port,
+          records: srv.records,
+          error: srv.srvError ?? srv.rrsetError,
         },
       };
     }
     return {
       status: 'ok',
-      detail: `SRV → ${target.host}:${target.port}`,
+      detail: `SRV → ${srv.targets.map((t) => `${t.host}:${t.port}`).join(', ')}`,
       evidence: {
         domain,
-        record: target.srvRecord,
-        resolvedHost: target.host,
-        resolvedPort: target.port,
+        records: srv.records,
+        targets: srv.targets.map((t) => `${t.host}:${t.port}`),
       },
     };
   }
 
-  private async checkDnsA(v4: string[]): Promise<CheckBody> {
-    if (v4.length === 0)
+  private async checkDnsA(
+    v4: string[],
+    v6: string[],
+    perTarget: {
+      target: { host: string; port: number };
+      v4: string[];
+      v6: string[];
+    }[],
+  ): Promise<CheckBody> {
+    const evidence = {
+      addresses: v4,
+      targets: perTarget.map(
+        (p) => `${p.target.host}: A=${p.v4.length} AAAA=${p.v6.length}`,
+      ),
+    };
+    const emptyTargets = perTarget.filter(
+      (p) => p.v4.length + p.v6.length === 0,
+    );
+    if (emptyTargets.length > 0)
       return {
         status: 'fail',
-        detail: 'no A records resolved',
-        evidence: { addresses: [] },
+        detail: `SRV target(s) without any A/AAAA records: ${emptyTargets
+          .map((p) => p.target.host)
+          .join(', ')}`,
+        evidence,
+      };
+    if (v4.length === 0)
+      return {
+        status: v6.length > 0 ? 'skip' : 'fail',
+        detail:
+          v6.length > 0
+            ? 'no A records (IPv6 is published)'
+            : 'neither A nor AAAA records resolved',
+        evidence,
       };
     return {
       status: 'ok',
       detail: `${v4.length} A record(s): ${v4.join(', ')}`,
-      evidence: { addresses: v4 },
+      evidence,
     };
   }
 
-  private async checkDnsAaaa(v6: string[]): Promise<CheckBody> {
+  private async checkDnsAaaa(
+    v6: string[],
+    perTarget: { target: { host: string }; v4: string[]; v6: string[] }[],
+  ): Promise<CheckBody> {
     if (v6.length === 0)
       return {
         status: 'skip',
         detail: 'no AAAA records (IPv6 not published)',
-        evidence: { addresses: [] },
+        evidence: {
+          addresses: [],
+          targets: perTarget.map(
+            (p) => `${p.target.host}: A=${p.v4.length} AAAA=${p.v6.length}`,
+          ),
+        },
       };
     return {
       status: 'ok',
       detail: `${v6.length} AAAA record(s): ${v6.join(', ')}`,
-      evidence: { addresses: v6 },
+      evidence: {
+        addresses: v6,
+        targets: perTarget.map(
+          (p) => `${p.target.host}: A=${p.v4.length} AAAA=${p.v6.length}`,
+        ),
+      },
     };
   }
 
   private async checkTlsPublic(
     ips: { ip: string; family: 4 | 6 }[],
     probes: IpTlsProbe[],
-    target: ResolvedTarget,
-    config: SelfCheckConfig,
+    srv: SrvResolution,
+    domain: string,
   ): Promise<CheckBody> {
-    if (config.allowInsecureHttp) {
-      return {
-        status: 'skip',
-        detail:
-          'allowInsecureHttp is ON — peers resolve http:// and do not validate a TLS cert',
-        evidence: { host: target.host, scheme: target.scheme },
-      };
-    }
     if (ips.length === 0) {
       return {
         status: 'fail',
         detail: 'no IPs resolved to probe',
-        evidence: { host: target.host, ips: [] },
+        evidence: { host: domain, ips: [] },
       };
     }
     const status = this.worst(probes.map((p) => p.status));
@@ -443,9 +594,9 @@ export class FederationSelfCheckService {
       status,
       detail,
       evidence: {
-        host: target.host,
-        sni: target.host,
-        port: target.port,
+        host: domain,
+        sni: domain,
+        endpoints: srv.targets.map((t) => `${t.host}:${t.port}`),
         ips: probes,
       },
     };
@@ -481,11 +632,28 @@ export class FederationSelfCheckService {
         detail: 'no IPs resolved to probe',
         evidence: { ips: [] },
       };
-    const status = this.worst(probes.map((p) => p.status));
+    // Every SRV target of one RRset must serve the same logical peer; a diverging
+    // discovery document means peers would observe different identities per target.
+    const identities = new Set(
+      probes
+        .filter((p) => p.doc)
+        .map((p) =>
+          JSON.stringify({
+            software: p.doc?.software ?? null,
+            keys: (p.doc?.keys ?? []).map((k) => k.keyId).sort(),
+          }),
+        ),
+    );
+    const consistent = identities.size <= 1;
+    const status = this.worst([
+      ...probes.map((p) => p.status),
+      ...(consistent ? [] : (['fail'] as SelfCheckStatus[])),
+    ]);
     const okCount = probes.filter((p) => p.status === 'ok').length;
     const sample = probes.find((p) => p.doc);
-    const detail =
-      okCount === probes.length
+    const detail = !consistent
+      ? 'SRV targets serve INCONSISTENT discovery documents — peers would observe different identities per target'
+      : okCount === probes.length
         ? `all ${probes.length} IP(s) serve a valid .well-known/somfp`
         : `${okCount}/${probes.length} IP(s) ok — see per-IP detail`;
     return {
@@ -496,6 +664,7 @@ export class FederationSelfCheckService {
         software: sample?.software ?? null,
         keyCount: sample?.keyCount ?? 0,
         keysValid: sample?.keysValid ?? false,
+        documentsConsistent: consistent,
       },
     };
   }
@@ -562,53 +731,96 @@ export class FederationSelfCheckService {
         evidence: { authority },
       };
     }
-    const ed = doc.keys[0].ed25519;
-    const pub = Uint8Array.from(Buffer.from(ed, 'base64'));
-    if (pub.length !== 32) {
-      return {
-        status: 'fail',
-        detail: `published key is not 32 bytes (${pub.length})`,
-        evidence: { authority },
-      };
-    }
     const req: SignedRequest = {
       method: 'POST',
       url: new URL(`https://${authority}/s2s/v1/recognize`),
       body: '{"probe":"self-check"}',
     };
     const headers = await this.signature.signOutbound(req);
+    const keyId =
+      headers['signature-input'].match(/keyid="([^"]+)"/)?.[1] ?? null;
+    if (!keyId) {
+      return {
+        status: 'fail',
+        detail: 'outbound signature carries no keyid — signer misconfigured',
+        evidence: { authority, keyId: null },
+      };
+    }
+    // Verify against the published key a peer would select for THIS request's keyid.
+    // keys[0] would false-fail during the normal rotation-overlap publication window.
+    const published = doc.keys.find((k) => k.keyId === keyId);
+    if (!published) {
+      return {
+        status: 'fail',
+        detail: `keyid ${keyId} is not in the published key set (rotation drift?)`,
+        evidence: { authority, keyId, publishedKeyFound: false },
+      };
+    }
+    const pub = Uint8Array.from(Buffer.from(published.ed25519, 'base64'));
+    if (pub.length !== 32) {
+      return {
+        status: 'fail',
+        detail: `published key for ${keyId} is not 32 bytes (${pub.length})`,
+        evidence: { authority, keyId },
+      };
+    }
     const ok = await this.signature.verifyWithKey(req, headers, pub);
     return {
       status: ok ? 'ok' : 'fail',
       detail: ok
-        ? `RFC 9421 sign→verify loop passes (authority=${authority})`
+        ? `RFC 9421 sign→verify loop passes (authority=${authority}, keyId=${keyId})`
         : 'sign→verify loop FAILED — keypair/signature implementation broken',
       evidence: {
         authority,
         verified: ok,
-        keyId: headers['signature-input'].match(/keyid="([^"]+)"/)?.[1] ?? null,
+        keyId,
+        publishedKeyFound: true,
       },
     };
   }
 
-  private async checkClockSkew(ntpServer: string): Promise<CheckBody> {
+  private async checkClockSkew(
+    ntpServer: string,
+    clockSkewBudgetMs: number,
+  ): Promise<CheckBody> {
     try {
       const { offsetSec, roundTripMs } = await this.queryNtp(ntpServer);
       const abs = Math.abs(offsetSec);
+      // Two independent constraints, stricter one wins: the wire-level window peers
+      // apply to signed Date headers, and the deployment's own rotation clock-skew
+      // budget (exceeding it silently voids the overlap guarantees).
+      const budgetSec = clockSkewBudgetMs / 1000;
+      const failSec = Math.min(
+        FederationSelfCheckService.CLOCK_FAIL_SEC,
+        budgetSec,
+      );
+      const warnSec = Math.min(
+        FederationSelfCheckService.CLOCK_WARN_SEC,
+        failSec,
+      );
+      const budgetBinding =
+        budgetSec <= FederationSelfCheckService.CLOCK_FAIL_SEC;
       let status: SelfCheckStatus = 'ok';
-      if (abs > FederationSelfCheckService.CLOCK_FAIL_SEC) status = 'fail';
-      else if (abs > FederationSelfCheckService.CLOCK_WARN_SEC) status = 'warn';
+      if (abs > failSec) status = 'fail';
+      else if (abs > warnSec) status = 'warn';
       const sign = offsetSec >= 0 ? '+' : '';
       return {
         status,
         detail:
           status === 'ok'
-            ? `clock offset ${sign}${offsetSec.toFixed(1)}s (within ±${FederationSelfCheckService.CLOCK_WARN_SEC}s)`
-            : `clock offset ${sign}${offsetSec.toFixed(1)}s — RFC 9421 Date header will be rejected by peers`,
+            ? `clock offset ${sign}${offsetSec.toFixed(1)}s (warn >${warnSec}s, fail >${failSec}s)`
+            : status === 'fail' && budgetBinding
+              ? `clock offset ${sign}${offsetSec.toFixed(1)}s — exceeds the configured clock-skew budget ${budgetSec}s; rotation overlap safety is compromised`
+              : status === 'fail'
+                ? `clock offset ${sign}${offsetSec.toFixed(1)}s — RFC 9421 Date header will be rejected by peers`
+                : `clock offset ${sign}${offsetSec.toFixed(1)}s — approaching the ${failSec}s limit`,
         evidence: {
           ntpServer,
           offsetSec: Number(offsetSec.toFixed(2)),
           roundTripMs,
+          clockSkewBudgetMs,
+          warnSec,
+          failSec,
         },
       };
     } catch (e) {
@@ -628,6 +840,7 @@ export class FederationSelfCheckService {
     host: string,
     port: number,
     config: SelfCheckConfig,
+    target: string,
   ): Promise<IpTlsProbe> {
     return new Promise((resolve) => {
       let settled = false;
@@ -636,6 +849,8 @@ export class FederationSelfCheckService {
         settled = true;
         resolve(r);
       };
+      const finish = (body: Omit<IpTlsProbe, 'target'>) =>
+        done({ ...body, target });
       const sock = tlsConnect(
         {
           host: ip, // dial the specific IP (SNI/hostname check still uses `host` below)
@@ -648,7 +863,7 @@ export class FederationSelfCheckService {
           const peer = sock.getPeerCertificate(true) as PeerCert | undefined;
           if (!peer || !peer.raw) {
             sock.destroy();
-            done({
+            finish({
               ip,
               family,
               reachable: true,
@@ -677,7 +892,7 @@ export class FederationSelfCheckService {
             status = 'warn';
             detail = `cert expires in ${cert.daysToExpiry}d (< ${FederationSelfCheckService.CERT_WARN_DAYS})`;
           }
-          done({
+          finish({
             ip,
             family,
             reachable: true,
@@ -695,7 +910,7 @@ export class FederationSelfCheckService {
       });
       sock.on('error', (err) => {
         const code = (err as NodeJS.ErrnoException).code;
-        done({
+        finish({
           ip,
           family,
           reachable: false,
@@ -713,48 +928,47 @@ export class FederationSelfCheckService {
     family: 4 | 6,
     host: string,
     port: number,
-    scheme: 'https' | 'http',
     config: SelfCheckConfig,
     negotiatedAlpn: string | null,
+    target: string,
   ): Promise<IpWellKnownProbe> {
-    if (scheme === 'https' && negotiatedAlpn === 'h2') {
-      return this.probeWellKnownHttp2(ip, family, host, port, config);
+    if (negotiatedAlpn === 'h2') {
+      return this.probeWellKnownHttp2(ip, family, host, port, config, target);
     }
     return new Promise((resolve) => {
-      const isTls = scheme === 'https';
       const baseOpts = {
         host: ip, // dial this specific IP …
         port,
         path: '/.well-known/somfp',
         method: 'GET',
         timeout: config.callTimeoutSec * 1000,
-        headers: { host, accept: 'application/json' }, // … but send Host: <public hostname>
+        headers: {
+          host: port === 443 ? host : `${host}:${port}`,
+          accept: 'application/json',
+        }, // … but send the logical federation authority, not the SRV target
       };
       const onRes = (res: IncomingMessage) =>
-        this.consumeWellKnownResponse(res, ip, family, resolve);
-      // Separate branches (not a ternary over the request fn) so each options object is checked against
-      // its own request signature — the TLS branch carries servername/rejectUnauthorized/ALPNProtocols.
-      const req = isTls
-        ? httpsRequest(
-            // servername/rejectUnauthorized/ALPNProtocols are TLS options valid at runtime on
-            // https.request; this @types/node RequestOptions union doesn't surface them, hence the cast.
-            {
-              ...baseOpts,
-              servername: host,
-              rejectUnauthorized: true,
-              // node:https is an HTTP/1.1 client. Advertising h2 here lets the server select a
-              // protocol this parser cannot consume (HPE_INVALID_CONSTANT).
-              ALPNProtocols: ['http/1.1'],
-            } as never,
-            onRes,
-          )
-        : httpRequest(baseOpts, onRes);
+        this.consumeWellKnownResponse(res, ip, family, host, target, resolve);
+      const req = httpsRequest(
+        // servername/rejectUnauthorized/ALPNProtocols are TLS options valid at runtime on
+        // https.request; this @types/node RequestOptions union doesn't surface them, hence the cast.
+        {
+          ...baseOpts,
+          servername: host,
+          rejectUnauthorized: true,
+          // node:https is an HTTP/1.1 client. Advertising h2 here lets the server select a
+          // protocol this parser cannot consume (HPE_INVALID_CONSTANT).
+          ALPNProtocols: ['http/1.1'],
+        } as never,
+        onRes,
+      );
       req.on('timeout', () => req.destroy(new Error('timeout')));
       req.on('error', (err) => {
         const code = (err as NodeJS.ErrnoException).code;
         resolve({
           ip,
           family,
+          target,
           reachable: false,
           status: 'fail',
           detail: `${code ?? err.message}`,
@@ -769,13 +983,14 @@ export class FederationSelfCheckService {
   }
 
   /** HTTP/2 branch selected from the TLS probe's ALPN result. It retains per-IP dialing while SNI and
-   *  :authority use the public hostname, matching what a real peer observes. */
+   *  :authority use the federation domain, matching what a real peer observes. */
   private probeWellKnownHttp2(
     ip: string,
     family: 4 | 6,
     host: string,
     port: number,
     config: SelfCheckConfig,
+    target: string,
   ): Promise<IpWellKnownProbe> {
     return new Promise((resolve) => {
       let settled = false;
@@ -816,7 +1031,8 @@ export class FederationSelfCheckService {
       const req = client.request({
         [http2Constants.HTTP2_HEADER_METHOD]: 'GET',
         [http2Constants.HTTP2_HEADER_PATH]: '/.well-known/somfp',
-        [http2Constants.HTTP2_HEADER_AUTHORITY]: host,
+        [http2Constants.HTTP2_HEADER_AUTHORITY]:
+          port === 443 ? host : `${host}:${port}`,
         accept: 'application/json',
       });
       const chunks: Buffer[] = [];
@@ -834,6 +1050,8 @@ export class FederationSelfCheckService {
           this.parseWellKnownResponse(
             ip,
             family,
+            host,
+            target,
             status,
             contentType,
             Buffer.concat(chunks).toString('utf8'),
@@ -846,6 +1064,7 @@ export class FederationSelfCheckService {
         done({
           ip,
           family,
+          target,
           reachable: false,
           status: 'fail',
           detail: `${code ?? err.message}`,
@@ -859,11 +1078,13 @@ export class FederationSelfCheckService {
     });
   }
 
-  /** Shared response consumer for the per-IP .well-known probe (used by both http and https branches). */
+  /** Shared response consumer for the per-IP .well-known probe (https branches). */
   private consumeWellKnownResponse(
     res: IncomingMessage,
     ip: string,
     family: 4 | 6,
+    domain: string,
+    target: string,
     resolve: (p: IpWellKnownProbe) => void,
   ): void {
     const chunks: Buffer[] = [];
@@ -877,6 +1098,8 @@ export class FederationSelfCheckService {
         this.parseWellKnownResponse(
           ip,
           family,
+          domain,
+          target,
           status,
           contentType,
           body,
@@ -889,6 +1112,8 @@ export class FederationSelfCheckService {
   private parseWellKnownResponse(
     ip: string,
     family: 4 | 6,
+    domain: string,
+    target: string,
     status: number,
     contentType: string,
     body: string,
@@ -897,6 +1122,7 @@ export class FederationSelfCheckService {
     const probe: IpWellKnownProbe = {
       ip,
       family,
+      target,
       reachable: true,
       status: 'ok',
       detail: '',
@@ -911,9 +1137,18 @@ export class FederationSelfCheckService {
       probe.detail = `HTTP ${status}`;
       return probe;
     }
-    let doc: WellKnownDoc;
+    // Same media-type contract our own peer-side fetch enforces: application/json,
+    // optionally with parameters. A bare or different type is a publisher violation.
+    if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
+      probe.status = 'fail';
+      probe.errorClass = 'http';
+      probe.detail = `Content-Type "${contentType || '(none)'}" — v1 requires application/json`;
+      probe.phase = 'response';
+      return probe;
+    }
+    let parsed: WellKnownDoc;
     try {
-      doc = JSON.parse(body) as WellKnownDoc;
+      parsed = JSON.parse(body) as WellKnownDoc;
     } catch (e) {
       probe.status = 'fail';
       probe.errorClass = 'parse';
@@ -921,24 +1156,25 @@ export class FederationSelfCheckService {
       probe.phase = 'parse';
       return probe;
     }
-    probe.doc = doc;
+    // Deep, peer-identical document validation: a violation here is what a peer's
+    // fetch+validate step would reject, so surface the exact reason per endpoint.
+    try {
+      probe.doc = validateWellKnownDocument(domain, parsed);
+    } catch (e) {
+      probe.status = 'fail';
+      probe.errorClass = 'parse';
+      probe.detail = `invalid document: ${(e as Error).message}`;
+      probe.phase = 'parse';
+      probe.keyCount = Array.isArray(parsed.keys) ? parsed.keys.length : 0;
+      return probe;
+    }
+    const doc = probe.doc;
     probe.software = doc.software ?? null;
-    probe.keyCount = Array.isArray(doc.keys) ? doc.keys.length : 0;
-    const keysValid =
-      Array.isArray(doc.keys) &&
-      doc.keys.every(
-        (k) =>
-          typeof k?.keyId === 'string' &&
-          typeof k?.ed25519 === 'string' &&
-          Buffer.from(k.ed25519, 'base64').length === 32,
-      );
-    probe.keysValid = keysValid;
+    probe.keyCount = doc.keys.length;
+    probe.keysValid = true;
     if (!doc.software || !doc.software.startsWith('soms/')) {
       probe.status = 'warn';
       probe.detail = `software="${doc.software ?? ''}" — expected a soms/ server (wrong target?)`;
-    } else if (!keysValid) {
-      probe.status = 'warn';
-      probe.detail = 'keys missing or not valid 32-byte ed25519';
     } else {
       probe.detail = `software=${doc.software}; ${probe.keyCount} key(s)`;
     }
@@ -1033,48 +1269,90 @@ export class FederationSelfCheckService {
     return r;
   }
 
-  /** Resolve the federation target (SRV → host:port, fallback apex:defaultPort) exactly as a peer would. */
-  private async resolveTarget(
+  /** Resolve and validate the full SRV RRset. Probing happens only when `hasSrv` is true;
+   *  a transient resolver failure and a definitive RRset problem are reported separately. */
+  private async resolveSrvInfo(
     resolver: Resolver,
     domain: string,
-    config: SelfCheckConfig,
-  ): Promise<ResolvedTarget> {
-    const scheme: 'https' | 'http' = config.allowInsecureHttp
-      ? 'http'
-      : 'https';
-    const defaultPort = scheme === 'https' ? 443 : 80;
-    let host = domain;
-    let port: number | undefined;
-    let srvRecord: string | null = null;
-    let hasSrv = false;
+  ): Promise<SrvResolution> {
+    const empty: SrvResolution = {
+      hasSrv: false,
+      srvError: null,
+      rrsetError: null,
+      records: [],
+      targets: [],
+    };
+    let raw;
     try {
-      const records = await resolver.resolveSrv(`_somfp._tcp.${domain}`);
-      if (records.length > 0) {
-        records.sort((a, b) => a.priority - b.priority || a.weight - b.weight);
-        const top = records[0];
-        host = top.name.replace(/\.+$/, '');
-        port = top.port;
-        srvRecord = `${top.priority} ${top.weight} ${top.port} ${top.name}`;
-        hasSrv = true;
-      }
-    } catch {
-      // ENOTFOUND etc. → fall back to apex; the probes below are the real liveness test.
+      raw = await resolver.resolveSrv(`_somfp._tcp.${domain}`);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const transient = code !== 'ENODATA' && code !== 'ENOTFOUND';
+      return {
+        ...empty,
+        srvError: transient ? (code ?? (error as Error).message) : null,
+      };
     }
-    const portNum = port ?? defaultPort;
-    const authority = portNum === defaultPort ? host : `${host}:${portNum}`;
-    return { scheme, host, port: portNum, authority, srvRecord, hasSrv };
+    const display = (record: SrvRecord) =>
+      `${record.priority} ${record.weight} ${record.port} ${record.name}`;
+    const rrset = classifySomfpSrvRrset(raw);
+    switch (rrset.kind) {
+      case 'empty':
+        return empty;
+      case 'disabled':
+        return {
+          ...empty,
+          rrsetError:
+            'sole "." target — the domain explicitly publishes no SOMFP service',
+          records: raw.map(display),
+        };
+      case 'invalid':
+        return {
+          ...empty,
+          rrsetError:
+            rrset.reason === 'mixed'
+              ? '"." mixed with other targets is an invalid SRV RRset'
+              : 'invalid SRV fields (target must be a hostname, not an IP literal; port 1–65535; priority/weight 0–65535)',
+          records: raw.map(display),
+        };
+      case 'targets': {
+        // Probe order: lowest-priority target first (the one peers select), then by host.
+        const minPriority = new Map<string, number>();
+        for (const record of rrset.records) {
+          const key = `${record.host}:${record.port}`;
+          minPriority.set(
+            key,
+            Math.min(minPriority.get(key) ?? 65_536, record.priority),
+          );
+        }
+        const targets = [...rrset.targets].sort(
+          (a, b) =>
+            (minPriority.get(`${a.host}:${a.port}`) ?? 0) -
+              (minPriority.get(`${b.host}:${b.port}`) ?? 0) ||
+            a.host.localeCompare(b.host),
+        );
+        const records = [...rrset.records]
+          .sort(
+            (a, b) => a.priority - b.priority || a.host.localeCompare(b.host),
+          )
+          .map((record) => record.display);
+        return {
+          ...empty,
+          hasSrv: true,
+          records,
+          targets,
+        };
+      }
+    }
   }
 
-  /** Resolve A (family=4) or AAAA (family=6) for the SRV target host; [] on any failure. */
+  /** Resolve A (family=4) or AAAA (family=6) for one SRV target host; [] on any failure. */
   private async safeResolve(
     resolver: Resolver,
-    domain: string,
-    target: ResolvedTarget,
+    host: string,
     family: 4 | 6,
   ): Promise<string[]> {
     try {
-      // Resolve the SRV target host (or apex domain). For an apex deploy the host == domain.
-      const host = target.hasSrv ? target.host : domain;
       return family === 4
         ? await resolver.resolve4(host)
         : await resolver.resolve6(host);
@@ -1091,12 +1369,7 @@ export class FederationSelfCheckService {
     alpn: string | false | null | undefined,
   ): CertInfo {
     const x = new X509Certificate(raw);
-    let sanMatched = true;
-    try {
-      x.checkHost(host);
-    } catch {
-      sanMatched = false;
-    }
+    const sanMatched = x.checkHost(host) !== undefined;
     const validToDate = new Date(x.validTo);
     const daysToExpiry = Math.floor(
       (validToDate.getTime() - Date.now()) / 86_400_000,
@@ -1312,7 +1585,6 @@ export interface SelfCheckReport {
   target: {
     host: string;
     port: number;
-    scheme: 'https' | 'http';
     hasSrv: boolean;
   };
   resolver: string;
@@ -1320,18 +1592,16 @@ export interface SelfCheckReport {
   checks: SelfCheckCheck[];
 }
 
-interface ResolvedTarget {
-  scheme: 'https' | 'http';
-  host: string;
-  port: number;
-  authority: string;
-  srvRecord: string | null;
+interface SrvResolution {
   hasSrv: boolean;
-}
-
-interface WellKnownDoc {
-  software?: string;
-  keys: { keyId: string; ed25519: string }[];
+  /** Transient resolver failure (timeout, SERVFAIL, …) — a retry may fix it. */
+  srvError: string | null;
+  /** Definitive RRset problem (sole "." or field violations) — peers reject the RRset. */
+  rrsetError: string | null;
+  /** `priority weight port name` exactly as published. */
+  records: string[];
+  /** Deduplicated connectable endpoints, lowest-priority first. */
+  targets: { host: string; port: number }[];
 }
 
 interface CertInfo {
@@ -1370,6 +1640,8 @@ interface ChainNode {
 interface IpTlsProbe {
   ip: string;
   family: 4 | 6;
+  /** `host:port` of the SRV target this connection was dialed through. */
+  target?: string | null;
   reachable: boolean;
   status: SelfCheckStatus;
   detail: string;
@@ -1383,6 +1655,8 @@ interface IpTlsProbe {
 interface IpWellKnownProbe {
   ip: string;
   family: 4 | 6;
+  /** `host:port` of the SRV target this connection was dialed through. */
+  target?: string | null;
   reachable: boolean;
   status: SelfCheckStatus;
   detail: string;

@@ -42,7 +42,7 @@ describe('S2sVerifyController', () => {
       publicKey: publicKeyB64,
       encryptedValue: seal(plaintext, publicKey),
     });
-    expect(result).toEqual({ value: plaintext });
+    expect(result).toEqual({ value: Buffer.from(plaintext).toString('base64') });
   });
 
   it('returns the recovered bytes verbatim without content validation', async () => {
@@ -55,7 +55,7 @@ describe('S2sVerifyController', () => {
       publicKey: publicKeyB64,
       encryptedValue: seal(plaintext, publicKey),
     });
-    expect(result.value).toBe(plaintext);
+    expect(result.value).toBe(Buffer.from(plaintext).toString('base64'));
   });
 
   it.each([

@@ -74,7 +74,7 @@ Corresponding outer message fields:
 ```json
 {
   "contentType": "IMAGE",
-  "content": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"width\":1600,\"height\":900,\"name\":\"photo.png\"}",
+  "content": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"height\":900,\"name\":\"photo.png\",\"width\":1600}",
   "assets": [
     {
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

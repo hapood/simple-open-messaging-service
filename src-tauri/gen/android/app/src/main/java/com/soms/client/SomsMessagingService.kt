@@ -96,11 +96,11 @@ class SomsMessagingService : FirebaseMessagingService() {
     }
 
     companion object {
-        const val CHANNEL_MESSAGES = "messages"
-        // v2 is intentional: setShowBadge() is immutable after channel creation, and older builds created
-        // "background" with the badge-enabled default.
+        const val CHANNEL_MESSAGES = "messages_v1"
+        // Channel ids carry a _v1 suffix so immutable attributes (IMPORTANCE, setShowBadge, sound,
+        // vibration) can be changed post-release by minting a _v2 id and deleting the old channel.
         const val CHANNEL_BACKGROUND = "background_sync_v1"
-        const val CHANNEL_DIAGNOSTICS = "diagnostics"
+        const val CHANNEL_DIAGNOSTICS = "diagnostics_v1"
         const val EXTRA_THREAD_ID = "soms_thread_id"
         const val EXTRA_SESSION_ID = "soms_session_id"
         const val EXTRA_API_ORIGIN = "soms_api_origin"
@@ -447,7 +447,7 @@ class SomsMessagingService : FirebaseMessagingService() {
          *
          *  Gotcha: Android pins a channel's importance + vibration at creation and REFUSES to raise either
          *  afterwards (recreating the SAME id also restores the old setting). So this IMPORTANCE_HIGH +
-         *  vibration take effect on a fresh install — if a prior build ever created "messages" lower, a
+         *  vibration take effect on a fresh install — if a prior build ever created "messages_v1" lower, a
          *  delete-and-reinstall of the app (or a channel-id bump) is the only reset. */
         internal fun ensureChannel(ctx: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return

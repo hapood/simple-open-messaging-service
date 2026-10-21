@@ -46,6 +46,7 @@ jobs:
 
       - name: Build and test web client
         run: |
+          npm run test:build --prefix web
           npm run build --prefix web
           npm test --prefix web
 

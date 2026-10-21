@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # All-in-one container supervisor (CMD of the `full` image): runs the node app (origin, :3000) and
 # Caddy (TLS edge, :7667) in ONE container. PID 1 is tini (compose `init: true`); this script is PID 2.
-# It is the default CMD; Compose has injected the deployment .env and the image entrypoint has already
-# validated it and rendered Caddy's internal configuration.
+# It is the default CMD; Compose has injected the container environment and the image entrypoint has
+# already validated it and rendered Caddy's internal configuration.
 #
 # Fail-fast: if EITHER process exits on its own, the container exits so compose `restart: unless-stopped`
 # recycles both. Caddy is stable; node is the more likely failure. "Either dies = container died" is the

@@ -5,7 +5,6 @@ import {
   federationPeerNamespaces,
   approveFederationIdentityReview,
   federationPendingIdentityReviews,
-  federationPredecessorCheck,
   rejectFederationIdentityReview,
   blockFederationPeer,
   unblockFederationPeer,
@@ -72,7 +71,17 @@ export function useFederationPendingIdentityReviews() {
 export function useApproveFederationIdentityReview() {
   const invalidate = useInvalidateFederation();
   return useMutation({
-    mutationFn: (reviewId: number) => approveFederationIdentityReview(reviewId),
+    mutationFn: (
+      decision:
+        | number
+        | { reviewId: number; resolution: 'new-peer' | 'replace-identity' },
+    ) =>
+      typeof decision === 'number'
+        ? approveFederationIdentityReview(decision)
+        : approveFederationIdentityReview(
+            decision.reviewId,
+            decision.resolution,
+          ),
     onSuccess: invalidate,
   });
 }
@@ -82,12 +91,6 @@ export function useRejectFederationIdentityReview() {
   return useMutation({
     mutationFn: (reviewId: number) => rejectFederationIdentityReview(reviewId),
     onSuccess: invalidate,
-  });
-}
-
-export function useFederationPredecessorCheck() {
-  return useMutation({
-    mutationFn: (reviewId: number) => federationPredecessorCheck(reviewId),
   });
 }
 

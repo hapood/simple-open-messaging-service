@@ -21,27 +21,32 @@ interpreted as described in RFC 2119 and RFC 8174.
 
 ## 1. Identity model constraints
 
-A publisher's namespace id for one federated identity is allocated when the
-identity first becomes locally known and is never reallocated. Exactly two
-mutations advance this feed:
+A publisher-scoped namespace id identifies one federated identity. The
+publisher MUST NOT reassign that id to another identity. Exactly two mutations
+advance this feed:
 
-1. a **new namespace item** — a first recognition, or a rebuild after a
+1. a **new namespace item** — a first recognition, or recognition after a
    destructive identity reset;
 2. a **replacement of an existing item's bindings** — an administrator-approved
-   root-public-key or domain change committed on the same namespace id.
+   root-public-key or domain change for the same namespace id.
 
-There is no automatic rotation and no successor namespace-id allocation. A
-consumer therefore resolves a namespace id through the publisher's current
-bindings and never through a namespace transition of its own; a reset-retired
-namespace id is never re-served with different bindings.
+An approved root rotation or domain re-binding MUST preserve the identity's
+namespace id. A publisher MUST NOT retire that namespace or allocate a
+successor namespace for either change. Root-key succession changes the key
+binding, not the subject namespace. A destructive reset instead retires the
+namespace; subsequent recognition MUST use a fresh id. The retired id MUST
+retain its last bindings and MUST NOT be re-served with different bindings.
 
-Namespace `0` denotes the publisher itself. An item with `namespaceId` `0`
-announces that the publisher's own public bindings changed — a root-public-key
-replacement or a domain move. The publisher follows its own identity model
-for these changes (a root replacement appends a new root epoch and disables
-the predecessor; a domain replacement swaps the binding directly); on the
-namespace layer both stay on id `0`, so a consumer simply expires its cached
-publisher row and re-queries `profile-namespaces/0`.
+Consumers MUST resolve a namespace through the publisher's bindings query;
+this feed does not authorize a consumer to replace an identity pin or invent
+a namespace transition.
+
+Namespace `0` denotes the publisher itself. A publisher changing its own
+public root key or domain MUST publish a binding-change item with
+`namespaceId: 0` and MUST continue to identify its own subjects with namespace
+`0`. A consumer expires the cached binding and re-queries
+`profile-namespaces/0`. Root adoption remains subject to Peer Recognition;
+observing this feed item does not grant approval.
 
 ## 2. Feed request and bootstrap
 

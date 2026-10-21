@@ -20,6 +20,35 @@ export const parsePeerErrorBody = (value: unknown): PeerErrorBody => {
   };
 };
 
+/** Strict closed-envelope parse of a peer error body. Returns null unless the
+ * body is exactly the common error envelope with a non-zero safe-integer
+ * `code` and a string `message`. Only this parse is admissible as evidence for
+ * lifecycle decisions such as a fatal hard stop; the lenient parse above
+ * stays available for diagnostics on junk bodies. */
+export const parseStrictPeerErrorEnvelope = (
+  value: unknown,
+): { code: number; message: string } | null => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  if (
+    Object.keys(raw).some((key) => !['code', 'message', 'data'].includes(key))
+  ) {
+    return null;
+  }
+  const { code, message } = raw;
+  if (
+    typeof code !== 'number' ||
+    !Number.isSafeInteger(code) ||
+    code === 0 ||
+    typeof message !== 'string'
+  ) {
+    return null;
+  }
+  return { code, message };
+};
+
 /** A failed S2S HTTP response or an HTTP 200 business result. */
 export class S2sResponseError extends Error {
   readonly status: number;

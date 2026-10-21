@@ -9,7 +9,7 @@
   "scripts": {
     "build": "npm run build:be",
     "build:be": "nest build && npm run build:migrations",
-    "build:fe": "npm run build:debug --prefix web && npm run build:debug --prefix admin-web",
+    "build:fe": "npm run build:development --prefix web && npm run build:development --prefix admin-web",
     "build:development": "npm run build:be && npm run build:fe",
     "build:migrations": "tsc -p tsconfig.migrations.json",
     "build:production": "node scripts/check-version-sync.mjs && npm run build && npm run build --prefix web && npm run build --prefix admin-web",

@@ -4,10 +4,10 @@
   "version": "0.1.0-alpha.0",
   "identifier": "com.soms.client",
   "build": {
-    "frontendDist": "../web/dist/web/browser",
+    "frontendDist": "../web/dist/native/browser",
     "devUrl": "http://localhost:4200",
     "beforeDevCommand": "npm --prefix web run start",
-    "beforeBuildCommand": "npm --prefix web run build -- --project web"
+    "beforeBuildCommand": "npm --prefix web run build:native"
   },
   "app": {
     "windows": [],

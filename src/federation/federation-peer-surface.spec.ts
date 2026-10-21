@@ -321,7 +321,7 @@ describe('thread-query FORBIDDEN convergence', () => {
 
 describe('FederationProfileService resource path', () => {
   const canonicalProof = (account: string, domain: string) =>
-    JSON.stringify({ account, domain });
+    Buffer.from(JSON.stringify({ account, domain })).toString('base64');
 
   it('percent-encodes the account and sends a possession challenge under the pinned root', async () => {
     const { profiles, peerHttp, pinnedRoot } = makeStubs();

@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { createHash, createPrivateKey, sign } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +57,48 @@ test('validates the release from an unrelated working directory', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /SOMFP v1 conformance package: PASS/);
 });
+
+for (const failure of ['body', 'signature-base', 'root-header']) {
+  test(`rejects a cryptographically valid vector with invalid ${failure}`, (t) => {
+    const directory = workspace(t);
+    const copy = join(directory, 'spec');
+    cpSync(releaseDirectory, copy, { recursive: true });
+    const path = join(copy, 'v1/schema/vectors/http-message-signature.json');
+    const vector = JSON.parse(readFileSync(path, 'utf8'));
+    if (failure === 'body') {
+      vector.request.body = '{"stateFeedEndId":"12"}';
+      const digest = `sha-256=:${createHash('sha256').update(vector.request.body).digest('base64')}:`;
+      vector.signatureBase = vector.signatureBase.replace(
+        vector.headers['content-digest'],
+        digest,
+      );
+      vector.headers['content-digest'] = digest;
+    } else if (failure === 'signature-base') {
+      vector.signatureBase = vector.signatureBase.replace(
+        'b.example',
+        'other.example',
+      );
+    } else {
+      delete vector.headers['s2s-root-key'];
+    }
+    const key = createPrivateKey({
+      key: Buffer.concat([
+        Buffer.from('302e020100300506032b657004220420', 'hex'),
+        Buffer.from(vector.privateKeyBase64, 'base64'),
+      ]),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    vector.headers.signature = `sig1=:${sign(null, Buffer.from(vector.signatureBase), key).toString('base64')}:`;
+    writeFileSync(path, JSON.stringify(vector));
+    const result = run(directory, ['--spec', copy], false);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(
+      result.stderr,
+      /signed operation body|does not reproduce|S2S-Root-Key/,
+    );
+  });
+}
 
 test('validates a real message-page vector including its parsed content', (t) => {
   const directory = workspace(t);

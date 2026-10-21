@@ -40,9 +40,7 @@
       "required": ["value"],
       "properties": {
         "value": {
-          "type": "string",
-          "minLength": 0,
-          "maxLength": 4096
+          "$ref": "urn:somfp:v1:common#/$defs/base64ChallengeAnswer"
         }
       },
       "additionalProperties": false
@@ -51,11 +49,8 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["ok", "status"],
+          "required": ["status"],
           "properties": {
-            "ok": {
-              "const": true
-            },
             "status": {
               "const": "pending"
             },
@@ -67,35 +62,13 @@
         },
         {
           "type": "object",
-          "required": ["ok", "status", "peerAssignedLocalNamespaceId"],
+          "required": ["status", "peerAssignedLocalNamespaceId"],
           "properties": {
-            "ok": {
-              "const": true
-            },
             "status": {
               "const": "recognized"
             },
             "peerAssignedLocalNamespaceId": {
               "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "required": ["ok", "status", "code", "message"],
-          "properties": {
-            "ok": {
-              "const": false
-            },
-            "status": {
-              "const": "failed"
-            },
-            "code": {
-              "$ref": "urn:somfp:v1:common#/$defs/safeInteger"
-            },
-            "message": {
-              "type": "string"
             }
           },
           "additionalProperties": false

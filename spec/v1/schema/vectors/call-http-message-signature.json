@@ -14,6 +14,7 @@
   "keyId": "a.example/key-1",
   "headers": {
     "content-type": "application/json",
+    "s2s-root-key": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
     "date": "Tue, 14 Nov 2023 22:13:20 GMT",
     "content-digest": "sha-256=:5Vam5Hnx5PiCFCTArcBqNj7xOJbq4ew+8MqnYTZLtDU=:",
     "signature-input": "sig1=(\"@method\" \"@path\" \"@query\" \"@authority\" \"date\" \"content-digest\");created=1700000000;expires=1700000300;keyid=\"a.example/key-1\";alg=\"ed25519\"",

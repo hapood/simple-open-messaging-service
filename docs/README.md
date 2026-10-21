@@ -16,6 +16,7 @@ and client behavior.
 - [Cross-platform AI E2E runner](./development/cross-platform-ai-e2e.md)
 - [Browser E2E reusable tools](./development/browser-e2e-tools.md)
 - [Federation implementation scope and acceptance](./development/federation-implementation-handoff.md)
+- [Federation contract and implementation alignment plan](./development/federation-contract-alignment-plan.md)
 
 ## Design
 

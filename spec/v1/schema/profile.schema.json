@@ -27,8 +27,7 @@
       "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
     },
     "proof": {
-      "type": "string",
-      "maxLength": 4096
+      "$ref": "urn:somfp:v1:common#/$defs/base64ChallengeAnswer"
     }
   },
   "additionalProperties": false

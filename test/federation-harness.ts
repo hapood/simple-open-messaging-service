@@ -191,7 +191,7 @@ export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
         throw new Error(
           'the card challenge does not open under the supplied key',
         );
-      return Buffer.from(opened).toString('utf8');
+      return Buffer.from(opened).toString('base64');
     },
   };
 }

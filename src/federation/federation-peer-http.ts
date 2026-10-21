@@ -4,6 +4,7 @@ import { DiscoveryService } from './discovery.service.js';
 import {
   FederationTransportError,
   parsePeerErrorBody,
+  parseStrictPeerErrorEnvelope,
   S2sResponseError,
 } from './federation-errors.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
@@ -274,6 +275,8 @@ export class FederationPeerHttp {
       // serving HTML error pages or junk stays diagnosable.
       this.logger.warn(`S2S ${where} returned HTTP ${status} with ${bodyNote}`);
     }
+    // Only a strictly parsed closed envelope may drive the fatal decision.
+    const strict = parseStrictPeerErrorEnvelope(raw);
     if (status === HttpStatus.SERVICE_UNAVAILABLE) {
       await this.recognition.markTransportDegraded(
         peerDomain,
@@ -282,12 +285,13 @@ export class FederationPeerHttp {
       );
     } else if (
       status === HttpStatus.CONFLICT &&
-      this.lifecycle.isFatalPeerCode(errorBody.code)
+      strict &&
+      this.lifecycle.isFatalPeerCode(strict.code)
     ) {
       await this.lifecycle.markPeerHalted(
         peerDomain,
-        errorBody.code,
-        errorBody.message,
+        strict.code,
+        strict.message,
       );
     }
     throw new S2sResponseError(

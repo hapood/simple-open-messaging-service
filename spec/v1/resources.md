@@ -13,7 +13,7 @@ the request construction and signature rules in
 [Transport and Security Section 3](./transport-security.md#3-request-construction-overview),
 and the status/code combinations in the [stable error registry](./errors.md#stable-code-registry).
 
-All three operations use the `recognized signed` authentication context. The
+Both operations use the `recognized signed` authentication context. The
 signature covers the complete path and raw query. Before reading a resource or
 returning success, the server MUST validate the signature, peer recognition,
 and the resource-specific authorization defined here.
@@ -181,6 +181,7 @@ is the path digest below. This request asks for the first five bytes:
 GET /s2s/v1/media/d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa?fromAccount=alice&fromDomain=b.example&toAccount=bob&seq=42 HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
+S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
 Range: bytes=0-4
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
@@ -309,9 +310,10 @@ failure rejects the entire bundle without retaining an authorizing partial graph
 GET /s2s/v1/forward-bundles/a1857d82c45ec933fedd5249a6d271a5e63d207f1c7ed55a60fd797cddf79b4a HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
+S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:slzsnwcoWsHW5o63VWAaCis5u/akBYIblV5PbwKoj6I2v8wcqIZ/hHnRfOiwTWkiTwpLGB/mUSWw9QZCGhp9BQ==:
+Signature: sig1=:lZ/YBT5wW+UAX2K/JkMK/b84kypjOuM9lFcNGp9oFWn5ky43VFZyAzNleMdzoTSxQQypSxFON6Ii/liekNS2Dg==:
 ```
 
 ```http

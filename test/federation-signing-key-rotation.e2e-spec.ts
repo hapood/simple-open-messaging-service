@@ -28,7 +28,7 @@ import {
  *   t0            bootstrap: key1 valid [t0, t0+30s)
  *   t0+14s        successor key2 planned + published (notAfter - prepub - retention)
  *   t0+22s        planned switch (max(notAfter - retention, plan-time + skew))
- *   t0+30s        key1 reaches its advertised notAfter: unpublished, row removed
+ *   t0+30s        key1 reaches its advertised notAfter: unpublished, row retained
  * Setup (boot + register + first resolution) completes well inside the t0+14s window, so the
  * first resolution always signs with key1; later phases are observed by polling.
  */
@@ -81,15 +81,20 @@ describe('database-backed signing-key rotation', () => {
     plannedSuccessorKeyId: string | null;
     keyRows: Array<{ keyId: string; notAfter: Date }>;
   }> {
-    const [state, rows] = await Promise.all([
+    const [state, rows, namespace] = await Promise.all([
       appA.database.query.localFederationSigningState.findFirst(),
       appA.database.query.localFederationSigningKey.findMany(),
+      appA.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.id, 0),
+      }),
     ]);
     return {
-      currentKeyId: state!.currentKeyId,
-      plannedSuccessorKeyId: state!.plannedSuccessorKeyId ?? null,
+      currentKeyId: `${namespace!.domain}/${state!.currentKeyName}`,
+      plannedSuccessorKeyId: state!.plannedSuccessorKeyName
+        ? `${namespace!.domain}/${state!.plannedSuccessorKeyName}`
+        : null,
       keyRows: rows.map((row) => ({
-        keyId: row.keyId,
+        keyId: `${namespace!.domain}/${row.keyName}`,
         notAfter: row.notAfter,
       })),
     };

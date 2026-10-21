@@ -458,7 +458,10 @@ async function validateErrorRegistry(): Promise<void> {
   }
 }
 
-async function validateSignatureVector(file: string): Promise<void> {
+async function validateSignatureVector(
+  file: string,
+  ajv: Ajv2020Instance,
+): Promise<void> {
   const vector = (await json(join(specDir, 'vectors', file))) as {
     privateKeyBase64: string;
     publicKeyBase64: string;
@@ -475,6 +478,28 @@ async function validateSignatureVector(file: string): Promise<void> {
     headers: Record<string, string>;
     signatureBase: string;
   };
+  const manifest = (await json(join(specDir, 'http-manifest.json'))) as {
+    operations: Array<{ method: string; path: string; requestSchema?: string }>;
+  };
+  const operation = manifest.operations.find(
+    (entry) =>
+      entry.method === vector.request.method &&
+      entry.path === vector.request.path,
+  );
+  const validateBody = operation?.requestSchema
+    ? ajv.getSchema(operation.requestSchema)
+    : undefined;
+  if (!validateBody || !validateBody(JSON.parse(vector.request.body))) {
+    throw new Error(`${file}: signed operation body is not conformant`);
+  }
+  const root = vector.headers['s2s-root-key'];
+  if (
+    !root ||
+    Buffer.from(root, 'base64').length !== 32 ||
+    Buffer.from(root, 'base64').toString('base64') !== root
+  ) {
+    throw new Error(`${file}: missing or malformed S2S-Root-Key`);
+  }
   const digest = `sha-256=:${createHash('sha256').update(vector.request.body).digest('base64')}:`;
   const privateKey = Buffer.from(vector.privateKeyBase64, 'base64');
   const signature = Buffer.from(
@@ -483,7 +508,17 @@ async function validateSignatureVector(file: string): Promise<void> {
   const encodedSignature = `sig1=:${signature.toString('base64')}:`;
   const expectedDate = new Date(vector.created * 1000).toUTCString();
   const expectedInput = `sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=${vector.created};expires=${vector.expires};keyid="${vector.keyId}";alg="ed25519"`;
+  const expectedBase = [
+    `"@method": ${vector.request.method}`,
+    `"@path": ${vector.request.path}`,
+    `"@query": ${vector.request.query}`,
+    `"@authority": ${vector.request.authority}`,
+    `"date": ${expectedDate}`,
+    `"content-digest": ${digest}`,
+    `"@signature-params": ${expectedInput.slice('sig1='.length)}`,
+  ].join('\n');
   if (
+    vector.signatureBase !== expectedBase ||
     vector.expires !== vector.created + 300 ||
     digest !== vector.headers['content-digest'] ||
     expectedDate !== vector.headers.date ||
@@ -531,8 +566,8 @@ async function main(): Promise<void> {
   await validateManifest(ajv);
   await validateErrorRegistry();
   await validateVectors(ajv);
-  await validateSignatureVector('http-message-signature.json');
-  await validateSignatureVector('call-http-message-signature.json');
+  await validateSignatureVector('http-message-signature.json', ajv);
+  await validateSignatureVector('call-http-message-signature.json', ajv);
   console.log('SOMFP v1 conformance package: PASS');
 }
 

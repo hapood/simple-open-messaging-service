@@ -4,7 +4,6 @@ import type {
   FederationPeerNamespacesResult,
   FederationPeerState,
   FederationPeerStateListResult,
-  FederationPredecessorCheckResult,
   FederationReviewDecisionResult,
   FederationRecognizeResult,
   LocalFederationRootEpoch,
@@ -78,10 +77,11 @@ export function federationPendingIdentityReviews(): Promise<
 
 export function approveFederationIdentityReview(
   reviewId: number,
+  resolution?: 'new-peer' | 'replace-identity',
 ): Promise<FederationReviewDecisionResult> {
   return request<FederationReviewDecisionResult>(
     `/admin/federation/identity-reviews/${reviewId}/approve`,
-    {},
+    resolution ? { resolution } : {},
   );
 }
 
@@ -90,17 +90,6 @@ export function rejectFederationIdentityReview(
 ): Promise<FederationReviewDecisionResult> {
   return request<FederationReviewDecisionResult>(
     `/admin/federation/identity-reviews/${reviewId}/reject`,
-    {},
-  );
-}
-
-/** Seal a fresh challenge under the pinned predecessor root and ask the peer
- *  to open it through its sealed-challenge service (rotation continuity). */
-export function federationPredecessorCheck(
-  reviewId: number,
-): Promise<FederationPredecessorCheckResult> {
-  return request<FederationPredecessorCheckResult>(
-    `/admin/federation/identity-reviews/${reviewId}/predecessor-check`,
     {},
   );
 }

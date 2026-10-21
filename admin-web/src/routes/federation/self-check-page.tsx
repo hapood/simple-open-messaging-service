@@ -234,7 +234,9 @@ export function SelfCheckPage() {
                 />
                 <Meta
                   label={t('federation.selfCheck.target')}
-                  value={`${report.target.scheme}://${report.target.host}:${report.target.port}${report.target.hasSrv ? '' : ` (${t('federation.selfCheck.noSrv')})`}`}
+                  value={report.target.hasSrv
+                    ? `https://${report.target.host}:${report.target.port}`
+                    : t('federation.selfCheck.noSrv')}
                   mono
                 />
                 <Meta

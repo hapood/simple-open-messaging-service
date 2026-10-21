@@ -151,7 +151,8 @@ icons/gen-android-foreground.sh   # needs rsvg-convert (librsvg)
 # Dev: starts `ng serve` (../web on :4200) via beforeDevCommand, then opens the webview against it.
 SOMS_API_ORIGIN=http://localhost:3000 cargo tauri dev
 
-# Release: runs `ng build` via beforeBuildCommand, bundles ../web/dist/web/browser as assets.
+# Release: runs `npm --prefix web run build:native` via beforeBuildCommand,
+# bundles ../web/dist/native/browser as assets (AOT, no runtime Angular compiler).
 cargo tauri build
 ```
 

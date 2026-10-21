@@ -109,15 +109,43 @@ npm run test:e2e
 npm run federation:conformance
 
 npm run build --prefix web
+npm run build:development --prefix web
+npm run test:build --prefix web
 npm test --prefix web
 
 npm run build --prefix admin-web
+npm run build:development --prefix admin-web
 npm test --prefix admin-web
 ```
 
 The root `build` command compiles only the backend and migration runner. `build:production` checks
-version synchronization, builds the backend and both optimized frontends, and packages the web
-client update bundle. `federation:conformance` validates the independently versioned protocol
-release and is not part of the development startup chain.
+version synchronization and builds the backend and both optimized frontends. `build:fe` builds both
+frontends using their `build:development` entry points. Frontend scripts use `development` rather
+than `debug`; native APK build types retain their `debug`/`release` names.
+
+The Angular client has these one-shot build entry points (run with `npm --prefix web run ...`):
+
+| Script              | Default configuration | Output                        |
+| ------------------- | --------------------- | ----------------------------- |
+| `build`             | `production`          | `web/dist/web/browser`        |
+| `build:development` | `development`         | `web/dist/web/browser`        |
+| `build:native`      | `production`          | `web/dist/native/browser`     |
+| `build:playground`  | `playground`          | `web/dist/playground/browser` |
+
+All four share the same build runner: generate and type-check the push worker, build with AOT,
+validate native artifacts when applicable, then inline emitted source maps in that target's output.
+Use `-- --configuration development` or `-- --configuration automation` with `build:native` for
+non-production builds. Additional Angular arguments such as `--base-href` are forwarded, but AOT,
+output paths, and native bundle metadata are owned by the build runner and cannot be overridden.
+`verify:native` separately validates reused native artifacts before packaging.
+
+`start` and `start:playground` share worker preparation and use Angular's development server.
+`watch` prepares the worker and delegates continuous builds to Angular. These long-running commands
+keep external source maps rather than running one-shot postprocessing against active rebuilds.
+Application builds default to AOT; the unit-test configuration explicitly uses JIT where required
+by the test runner. `test:build` exercises the build pipeline, native validation and map processing.
+
+`federation:conformance` validates the independently versioned protocol release and is not part of
+the development startup chain.
 
 See [AGENTS.md](../../AGENTS.md) for repository layout, coding conventions, and additional commands.

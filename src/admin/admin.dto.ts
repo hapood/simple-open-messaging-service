@@ -22,6 +22,13 @@ import { AdminRole } from '../database/enums.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
 import { IsDisplayName } from '../common/validators.js';
 
+export class AdminFederationReviewApproveDto {
+  @ApiPropertyOptional({ enum: ['new-peer', 'replace-identity'] })
+  @IsOptional()
+  @IsIn(['new-peer', 'replace-identity'])
+  resolution?: 'new-peer' | 'replace-identity';
+}
+
 export class AdminFederationHealthProbeDto {
   @ApiProperty({ example: 1 })
   @Type(() => Number)
@@ -392,11 +399,11 @@ export class AdminFederationBlockDto {
   note?: string;
 }
 
-/** Federation namespace reset confirmation. The normalized value must exactly match the path domain. */
-export class AdminFederationResetDto {
+/** Federation namespace retirement confirmation. The normalized value must exactly match the path domain. */
+export class AdminFederationRetireDto {
   @ApiProperty({
     example: 'peer.example',
-    description: 'Type the federation domain again to confirm reset',
+    description: 'Type the federation domain again to confirm retirement',
   })
   @IsString()
   @IsNotEmpty()

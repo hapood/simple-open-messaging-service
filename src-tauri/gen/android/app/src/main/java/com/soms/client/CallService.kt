@@ -470,8 +470,8 @@ class CallService : Service() {
         /** Stable notification id for the call (the ringing card + the ongoing card share it — one replaces
          *  the other; distinct from RealtimeService's 0x6). */
         private const val NOTIF_ID = 0x9
-        // v2 is intentional: older channels used Android's badge-enabled default, and setShowBadge cannot
-        // be changed after a channel has been submitted to NotificationManager.
+        // Channel ids carry a _v1 suffix so immutable attributes (IMPORTANCE, setShowBadge, sound,
+        // vibration) can be changed post-release by minting a _v2 id and deleting the old channel.
         private const val CHANNEL_ONGOING = "soms_calls_v1"
         private const val CHANNEL_INCOMING = "soms_calls_incoming_v1"
 

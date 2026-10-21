@@ -10,9 +10,9 @@
 > health privacy sections below remain current. The server's own root-epoch
 > model is untouched: an own root replacement still appends a new claimable
 > `LocalFederationRoot` epoch and disables the predecessor, and an own domain
-> replacement still swaps the binding directly; the deferred
-> own-identity-change feature will announce both with a `namespaceId` `0`
-> Profile Namespace Feed item. `POST /s2s/v1/verify` is now sealed-challenge
+> replacement still swaps the binding directly. The current root-rotation
+> implementation announces its own change with a `namespaceId` `0` Profile
+> Namespace Feed item. `POST /s2s/v1/verify` is now sealed-challenge
 > only; the namespace-id to bindings resolution it used to carry inline lives
 > on `GET /s2s/v1/profile-namespaces/:nsid`.
 

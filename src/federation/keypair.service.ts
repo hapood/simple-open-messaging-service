@@ -7,10 +7,13 @@ import {
 } from '@nestjs/common';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { randomBytes } from 'node:crypto';
-import { eq, gt, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { DatabaseService } from '../database/database.service.js';
+import {
+  DatabaseService,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
 import {
   account,
   identityNamespace,
@@ -28,7 +31,6 @@ import {
   type RootKeyEntry,
   type SigningKeyCertificate,
 } from './federation-certificate.js';
-import { parseKeyId } from './key-id.js';
 import type { S2SAddress } from './federation-address.js';
 import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
 import { openSealedBox } from './sealed-box.js';
@@ -46,7 +48,7 @@ export type LocalFederationIdentityStatus =
 
 /** In-memory view of one local signing-key row (epoch milliseconds everywhere). */
 interface LocalSigningKeyRow {
-  keyId: string;
+  keyName: string;
   rootId: number;
   publicKey: string;
   privateKey: string;
@@ -56,15 +58,27 @@ interface LocalSigningKeyRow {
 }
 
 /** In-memory view of one local root-identity epoch. */
-export interface LocalRootRow {
+interface LocalRootRow {
   id: number;
-  domain: string;
   rootPublicKey: string;
   rootPrivateKey: string;
   notBefore: number;
   notAfter: number;
   claimable: boolean;
   unpublishedAt: number | null;
+}
+
+/** Public administration view of a retained root epoch. Private material is never exposed. */
+export interface LocalRootEpochView {
+  id: number;
+  domain: string;
+  rootPublicKey: string;
+  notBefore: number;
+  notAfter: number;
+  claimable: boolean;
+  unpublishedAt: number | null;
+  signingKeyCount: number;
+  claimableKeyCount: number;
 }
 
 /** Result of an administrator-triggered root rotation. `clientChangeId` is
@@ -83,9 +97,9 @@ interface LocalKeySnapshot {
   roots: Map<number, LocalRootRow>;
   claimableRootId: number;
   keys: Map<string, LocalSigningKeyRow>;
-  currentKeyId: string;
+  currentKeyName: string;
   plannedSwitchAt: number | null;
-  plannedSuccessorKeyId: string | null;
+  plannedSuccessorKeyName: string | null;
 }
 
 /**
@@ -100,8 +114,6 @@ const b64 = (value: Uint8Array): string =>
   Buffer.from(value).toString('base64');
 const fromB64 = (value: string): Uint8Array =>
   Uint8Array.from(Buffer.from(value, 'base64'));
-const normalizeDomain = (domain: string): string =>
-  domain.trim().toLowerCase().replace(/\.+$/, '');
 const isValidAt = (
   key: { notBefore: number; notAfter: number },
   now: number,
@@ -233,7 +245,8 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
   }
 
   getKeyId(): string {
-    return this.activeSigningKey().keyId;
+    const key = this.activeSigningKey();
+    return `${this.getIdentityDomain()}/${key.keyName}`;
   }
 
   getPrivateKey(): Uint8Array {
@@ -269,9 +282,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
 
   /** All local root epochs, including unpublished ones, for the admin console.
    *  Never served on the wire. */
-  getRootEpochs(): Array<
-    LocalRootRow & { signingKeyCount: number; claimableKeyCount: number }
-  > {
+  getRootEpochs(): LocalRootEpochView[] {
     this.assertAvailable();
     const snapshot = this.snapshot!;
     return [...snapshot.roots.values()]
@@ -282,7 +293,13 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         );
         const now = Date.now();
         return {
-          ...root,
+          id: root.id,
+          rootPublicKey: root.rootPublicKey,
+          notBefore: root.notBefore,
+          notAfter: root.notAfter,
+          claimable: root.claimable,
+          unpublishedAt: root.unpublishedAt,
+          domain: snapshot.identityDomain,
           signingKeyCount: keys.length,
           claimableKeyCount: keys.filter(
             (key) =>
@@ -307,14 +324,11 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
     return [...snapshot.keys.values()]
       .filter((key) => {
         const root = snapshot.roots.get(key.rootId);
-        return (
-          root !== undefined &&
-          root.claimable &&
-          key.notAfter > now &&
-          parseKeyId(key.keyId)?.domain === snapshot.identityDomain
-        );
+        return root !== undefined && root.claimable && key.notAfter > now;
       })
-      .sort((a, b) => a.notBefore - b.notBefore || (a.keyId < b.keyId ? -1 : 1))
+      .sort(
+        (a, b) => a.notBefore - b.notBefore || (a.keyName < b.keyName ? -1 : 1),
+      )
       .map((key) => this.toCertificate(key, snapshot));
   }
 
@@ -345,7 +359,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
 
   /** Validate and open one card lookup challenge (Profiles 2.1/3): the
    *  `publicKey` names a retained key, `challenge` is a sealed box under it.
-   *  Returns the recovered plaintext exactly; throws the wire-mapped
+   *  Returns canonical padded base64 of the recovered bytes; throws the wire-mapped
    *  business errors for unrecognized keys and malformed challenges. */
   openCardChallenge(publicKey: string, challenge: string): string {
     if (
@@ -379,7 +393,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         HttpStatus.BAD_REQUEST,
       );
     }
-    return Buffer.from(opened).toString('utf8');
+    return Buffer.from(opened).toString('base64');
   }
 
   /**
@@ -393,10 +407,9 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
    */
   async rotateRoot(): Promise<RootRotationResult> {
     this.assertAvailable();
-    const domain = this.snapshot!.identityDomain;
     const rotation = await this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
-      const snapshot = await this.reloadSnapshot(tx, domain);
+      const snapshot = await this.reloadSnapshot(tx);
       if (!snapshot) throw new Error('local identity rows disappeared');
       const previous = this.claimableRootOf(snapshot);
       const now = Date.now();
@@ -406,7 +419,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       const rootNotAfter = now + this.config.rootKey.lifetimeMs;
       // Release the previous epoch's claim before inserting the replacement:
       // the partial unique index LocalFederationRoot_one_claimable_key allows at
-      // most one claimable root per domain, and both statements share this
+      // most one claimable local root, and both statements share this
       // transaction, so committed state always has exactly one claimable epoch.
       await tx
         .update(localFederationRoot)
@@ -415,7 +428,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       const [insertedRoot] = await tx
         .insert(localFederationRoot)
         .values({
-          domain,
           rootPublicKey: rootPublicKeyB64,
           rootPrivateKey: b64(rootPrivateKey),
           notBefore: new Date(now),
@@ -426,7 +438,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       if (!insertedRoot) throw new Error('root epoch insert returned no row');
       const initial = this.generateSigningKey(
         insertedRoot.id,
-        domain,
         now,
         Math.min(now + this.config.signingKey.lifetimeMs, rootNotAfter),
       );
@@ -434,15 +445,14 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       await tx
         .update(localFederationSigningState)
         .set({
-          currentKeyId: initial.keyId,
+          currentKeyName: initial.keyName,
           plannedSwitchAt: null,
-          plannedSuccessorKeyId: null,
+          plannedSuccessorKeyName: null,
           updatedAt: new Date(now),
         })
-        .where(eq(localFederationSigningState.domain, domain));
-      const next = await this.reloadSnapshot(tx, domain);
+        .where(eq(localFederationSigningState.id, 0));
+      const next = await this.reloadSnapshot(tx);
       if (!next) throw new Error('local identity rows disappeared');
-      this.snapshot = next;
       // The replacement is a binding change of namespace 0 — this server
       // itself: publish it on the shared s2s feed (peers re-pull
       // /profile-namespaces/0 for the new root public key) and record the
@@ -462,11 +472,15 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         newRootId: insertedRoot.id,
         newRootPublicKey: rootPublicKeyB64,
         clientChangeId,
+        snapshot: next,
       };
     });
+    this.snapshot = rotation.snapshot;
     this.sse.notifyProfileNamespaceChange(rotation.clientChangeId);
     return {
-      ...rotation,
+      previousRootId: rotation.previousRootId,
+      newRootId: rotation.newRootId,
+      newRootPublicKey: rotation.newRootPublicKey,
       clientChangeId: rotation.clientChangeId.toString(),
     };
   }
@@ -478,10 +492,9 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
    */
   async unpublishRoot(rootId: number): Promise<void> {
     this.assertAvailable();
-    const domain = this.snapshot!.identityDomain;
-    await this.database.db.transaction(async (tx) => {
+    const next = await this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
-      const snapshot = await this.reloadSnapshot(tx, domain);
+      const snapshot = await this.reloadSnapshot(tx);
       if (!snapshot) throw new Error('local identity rows disappeared');
       const root = snapshot.roots.get(rootId);
       if (!root) throw new Error(`root epoch ${rootId} does not exist`);
@@ -497,9 +510,11 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         .update(localFederationRoot)
         .set({ unpublishedAt: new Date() })
         .where(eq(localFederationRoot.id, rootId));
-      const next = await this.reloadSnapshot(tx, domain);
-      if (next) this.snapshot = next;
+      const reloaded = await this.reloadSnapshot(tx);
+      if (!reloaded) throw new Error('local identity rows disappeared');
+      return reloaded;
     });
+    this.snapshot = next;
   }
 
   private tick(): Promise<void> {
@@ -541,10 +556,10 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
     const events: number[] = [];
     const claimableRoot = this.claimableRootOf(snapshot);
     events.push(claimableRoot.notAfter);
-    const current = snapshot.keys.get(snapshot.currentKeyId);
+    const current = snapshot.keys.get(snapshot.currentKeyName);
     if (current) {
       events.push(current.notAfter);
-      if (!snapshot.plannedSuccessorKeyId) {
+      if (!snapshot.plannedSuccessorKeyName) {
         events.push(
           current.notAfter -
             (this.config.signingKey.successorPrepublicationMs +
@@ -567,12 +582,12 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
   private async bootstrapOrLoad(): Promise<boolean> {
     // Configuration is only the startup input. Once this transaction commits,
     // namespace 0 is the authoritative local-domain record for runtime reads.
-    const domain = normalizeDomain(this.config.domain);
-    return this.database.db.transaction(async (tx) => {
+    const domain = this.config.domain;
+    const loaded = await this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
       const localNamespace = await tx.query.identityNamespace.findFirst({
         where: eq(identityNamespace.id, 0),
-        columns: { domain: true },
+        columns: { id: true },
       });
       if (!localNamespace) {
         await tx.insert(identityNamespace).values({
@@ -581,88 +596,44 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
           rootPublicKey: null,
           identityPinnedAt: null,
         });
-      } else if (normalizeDomain(localNamespace.domain) !== domain) {
-        await this.rebindLocalDomainInTx(tx, localNamespace.domain, domain);
+      } else {
+        await this.rebindLocalDomainInTx(tx, domain);
       }
-      const snapshot = await this.reloadSnapshot(tx, domain);
-      if (snapshot) {
-        this.snapshot = snapshot;
-        return true;
-      }
-
-      const foreignRoot = await tx.query.localFederationRoot.findFirst();
-      if (foreignRoot && normalizeDomain(foreignRoot.domain) !== domain) {
-        this.disable(
-          `SOMS_DOMAIN=${domain} does not match the database identity domain=${foreignRoot.domain}`,
-        );
-        return false;
-      }
+      const snapshot = await this.reloadSnapshot(tx);
+      if (snapshot) return snapshot;
 
       if (await this.hasFederationHistory(tx)) {
         this.disable(
           'federation history exists but the local root-identity rows are missing; restore the database from backup',
         );
-        return false;
+        return null;
       }
-      this.snapshot = await this.generateIdentity(tx, domain);
+      const generated = await this.generateIdentity(tx);
       this.logger.warn(
         'Generated a new database-backed S2S identity. BACK THE DATABASE UP — root-key loss requires every peer to approve this server again',
       );
-      return true;
+      return generated;
     });
+    if (!loaded) return false;
+    this.snapshot = loaded;
+    return true;
   }
 
   /**
-   * Applies a configured local-domain change without changing the root identity.
-   * A fresh signing certificate is mandatory because KeyId is domain-bound.
-   * Namespace/feed changes and current local subject addresses commit together;
-   * retained old keys remain available only to the sealed-challenge oracle.
+   * Changes only the local namespace binding and its announcements. Key material,
+   * validity intervals, and rotation plans are independent of domain changes.
+   * Wire KeyIds and root authorization signatures use the current namespace domain.
    */
   private async rebindLocalDomainInTx(
-    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
-    previousDomain: string,
+    tx: DatabaseTransaction,
     nextDomain: string,
   ): Promise<void> {
-    const roots = await tx.query.localFederationRoot.findMany();
-    const state = await tx.query.localFederationSigningState.findFirst();
-    if ((roots.length === 0) !== (state === undefined)) {
-      throw new Error('local root identity and signing state are inconsistent');
-    }
-    if (roots.length > 0 && state) {
-      const claimable = roots.filter((root) => root.claimable);
-      if (claimable.length !== 1) {
-        throw new Error('local identity must have exactly one claimable root');
-      }
-      const root = claimable[0]!;
-      const now = Date.now();
-      const rootNotAfter = root.notAfter.getTime();
-      if (rootNotAfter <= now) {
-        throw new Error(
-          'the claimable root epoch has expired; rotate it before changing SOMS_DOMAIN',
-        );
-      }
-      const replacement = this.generateSigningKey(
-        root.id,
-        nextDomain,
-        now,
-        Math.min(now + this.config.signingKey.lifetimeMs, rootNotAfter),
-      );
-      await this.insertSigningKey(tx, replacement);
-      await tx
-        .update(localFederationSigningState)
-        .set({
-          domain: nextDomain,
-          currentKeyId: replacement.keyId,
-          plannedSwitchAt: null,
-          plannedSuccessorKeyId: null,
-          updatedAt: new Date(now),
-        })
-        .where(eq(localFederationSigningState.domain, state.domain));
-      await tx
-        .update(localFederationRoot)
-        .set({ domain: nextDomain })
-        .where(gt(localFederationRoot.id, 0));
-    }
+    const localNamespace = await tx.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.id, 0),
+      columns: { domain: true },
+    });
+    if (!localNamespace) throw new Error('local namespace is missing');
+    if (localNamespace.domain === nextDomain) return;
 
     await tx
       .update(identityNamespace)
@@ -678,25 +649,29 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       profileNamespaceId: 0,
     });
     this.logger.warn(
-      `Re-bound local federation domain ${previousDomain} -> ${nextDomain}; peers must confirm the new domain through Recognize and Health`,
+      `Re-bound local federation domain ${localNamespace.domain} -> ${nextDomain}; peers must confirm the new domain through Recognize and Health`,
     );
   }
 
   /** Reload every root epoch and signing-key row; null when the tables are empty. */
   private async reloadSnapshot(
-    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
-    domain: string,
+    tx: DatabaseTransaction,
   ): Promise<LocalKeySnapshot | null> {
+    const localNamespace = await tx.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.id, 0),
+      columns: { domain: true },
+    });
+    if (!localNamespace) throw new Error('local namespace is missing');
     const roots = await tx.query.localFederationRoot.findMany();
     const keys = await tx.query.localFederationSigningKey.findMany();
-    const state = await tx.query.localFederationSigningState.findFirst();
+    const state = await tx.query.localFederationSigningState.findFirst({
+      where: eq(localFederationSigningState.id, 0),
+    });
     const rootRows = new Map<number, LocalRootRow>();
     let claimableRootId: number | null = null;
     for (const row of roots) {
-      if (normalizeDomain(row.domain) !== domain) continue;
       rootRows.set(row.id, {
         id: row.id,
-        domain: row.domain,
         rootPublicKey: row.rootPublicKey,
         rootPrivateKey: row.rootPrivateKey,
         notBefore: row.notBefore.getTime(),
@@ -715,14 +690,14 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
     if (claimableRootId === null) {
       throw new Error('no claimable root epoch found');
     }
-    if (!state || normalizeDomain(state.domain) !== domain) {
+    if (!state) {
       throw new Error('local signing selection state is missing');
     }
     const keyRows = new Map<string, LocalSigningKeyRow>();
     for (const row of keys) {
       if (!rootRows.has(row.rootId)) continue;
-      keyRows.set(row.keyId, {
-        keyId: row.keyId,
+      keyRows.set(row.keyName, {
+        keyName: row.keyName,
         rootId: row.rootId,
         publicKey: row.publicKey,
         privateKey: row.privateKey,
@@ -731,17 +706,17 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         notAfter: row.notAfter.getTime(),
       });
     }
-    if (!keyRows.has(state.currentKeyId)) {
+    if (!keyRows.has(state.currentKeyName)) {
       throw new Error('current signing key row is missing');
     }
     if (
-      state.plannedSuccessorKeyId &&
-      !keyRows.has(state.plannedSuccessorKeyId)
+      state.plannedSuccessorKeyName &&
+      !keyRows.has(state.plannedSuccessorKeyName)
     ) {
       throw new Error('planned successor signing key row is missing');
     }
-    if (state.plannedSuccessorKeyId) {
-      const successor = keyRows.get(state.plannedSuccessorKeyId)!;
+    if (state.plannedSuccessorKeyName) {
+      const successor = keyRows.get(state.plannedSuccessorKeyName)!;
       if (
         state.plannedSwitchAt === null ||
         successor.notBefore + this.config.signingKey.clockSkewBudgetMs >
@@ -750,25 +725,24 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         throw new Error('planned switch violates the clock-skew budget');
       }
     }
-    if (keyRows.get(state.currentKeyId)!.rootId !== claimableRootId) {
+    if (keyRows.get(state.currentKeyName)!.rootId !== claimableRootId) {
       throw new Error(
         'current signing key is not authorized by the claimable root',
       );
     }
     return {
-      identityDomain: domain,
+      identityDomain: localNamespace.domain,
       roots: rootRows,
       claimableRootId,
       keys: keyRows,
-      currentKeyId: state.currentKeyId,
+      currentKeyName: state.currentKeyName,
       plannedSwitchAt: state.plannedSwitchAt?.getTime() ?? null,
-      plannedSuccessorKeyId: state.plannedSuccessorKeyId ?? null,
+      plannedSuccessorKeyName: state.plannedSuccessorKeyName ?? null,
     };
   }
 
   private async generateIdentity(
-    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
-    domain: string,
+    tx: DatabaseTransaction,
   ): Promise<LocalKeySnapshot> {
     const now = Date.now();
     const rootNotAfter = now + this.config.rootKey.lifetimeMs;
@@ -779,7 +753,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
     const [insertedRoot] = await tx
       .insert(localFederationRoot)
       .values({
-        domain,
         rootPublicKey: rootPublicKeyB64,
         rootPrivateKey: b64(rootPrivateKey),
         notBefore: new Date(now),
@@ -791,42 +764,21 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
 
     const initial = this.generateSigningKey(
       insertedRoot.id,
-      domain,
       now,
       Math.min(now + this.config.signingKey.lifetimeMs, rootNotAfter),
     );
     await this.insertSigningKey(tx, initial);
     await tx.insert(localFederationSigningState).values({
-      domain,
-      currentKeyId: initial.keyId,
+      id: 0,
+      currentKeyName: initial.keyName,
       plannedSwitchAt: null,
-      plannedSuccessorKeyId: null,
+      plannedSuccessorKeyName: null,
       updatedAt: new Date(now),
     });
 
-    return {
-      identityDomain: domain,
-      roots: new Map([
-        [
-          insertedRoot.id,
-          {
-            id: insertedRoot.id,
-            domain,
-            rootPublicKey: rootPublicKeyB64,
-            rootPrivateKey: b64(rootPrivateKey),
-            notBefore: now,
-            notAfter: rootNotAfter,
-            claimable: true,
-            unpublishedAt: null,
-          },
-        ],
-      ]),
-      claimableRootId: insertedRoot.id,
-      keys: new Map([[initial.keyId, initial]]),
-      currentKeyId: initial.keyId,
-      plannedSwitchAt: null,
-      plannedSuccessorKeyId: null,
-    };
+    const snapshot = await this.reloadSnapshot(tx);
+    if (!snapshot) throw new Error('local identity rows disappeared');
+    return snapshot;
   }
 
   /** Advances the signing-key rotation lifecycle: due switches, recovery from an
@@ -835,11 +787,10 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
    *  double-switch. Expired key rows are never deleted: retained key history
    *  keeps sealed challenges openable forever. */
   private async maintainRotation(): Promise<void> {
-    const domain = this.snapshot?.identityDomain;
-    if (!domain) throw new Error('local identity has not been loaded');
-    await this.database.db.transaction(async (tx) => {
+    if (!this.snapshot) throw new Error('local identity has not been loaded');
+    const next = await this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
-      const snapshot = await this.reloadSnapshot(tx, domain);
+      const snapshot = await this.reloadSnapshot(tx);
       if (!snapshot) throw new Error('local identity rows disappeared');
       const claimableRoot = this.claimableRootOf(snapshot);
       if (claimableRoot.notAfter <= Date.now()) {
@@ -848,22 +799,16 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         );
       }
       const keys = snapshot.keys;
-      const state = {
-        currentKeyId: snapshot.currentKeyId,
-        plannedSwitchAt: snapshot.plannedSwitchAt,
-        plannedSuccessorKeyId: snapshot.plannedSuccessorKeyId,
-      };
-
       const now = Date.now();
-      let currentKeyId = state.currentKeyId;
-      let plannedSwitchAt = state.plannedSwitchAt;
-      let plannedSuccessorKeyId = state.plannedSuccessorKeyId;
+      let currentKeyName = snapshot.currentKeyName;
+      let plannedSwitchAt = snapshot.plannedSwitchAt;
+      let plannedSuccessorKeyName = snapshot.plannedSuccessorKeyName;
       let changed = false;
 
-      const currentKey = keys.get(currentKeyId);
+      const currentKey = keys.get(currentKeyName);
       if (!currentKey) throw new Error('current signing key row is missing');
-      const successorKey = plannedSuccessorKeyId
-        ? keys.get(plannedSuccessorKeyId)
+      const successorKey = plannedSuccessorKeyName
+        ? keys.get(plannedSuccessorKeyName)
         : undefined;
       const successorUsable =
         successorKey !== undefined &&
@@ -878,12 +823,12 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       const currentExpired = !isValidAt(currentKey, now);
 
       if (switchDue || (currentExpired && successorUsable)) {
-        currentKeyId = successorKey!.keyId;
+        currentKeyName = successorKey!.keyName;
         plannedSwitchAt = null;
-        plannedSuccessorKeyId = null;
+        plannedSuccessorKeyName = null;
         changed = true;
         this.logger.log(
-          `Switched local S2S signing key to ${currentKeyId} under the unchanged root`,
+          `Switched local S2S signing key to ${currentKeyName} under the unchanged root`,
         );
       } else if (currentExpired) {
         // No valid successor either (for example after a long outage): recover under the
@@ -891,7 +836,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         // and accept it because the pinned root still authorizes it.
         const recovery = this.generateSigningKey(
           claimableRoot.id,
-          domain,
           now,
           Math.min(
             now + this.config.signingKey.lifetimeMs,
@@ -899,13 +843,13 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
           ),
         );
         await this.insertSigningKey(tx, recovery);
-        keys.set(recovery.keyId, recovery);
-        currentKeyId = recovery.keyId;
+        keys.set(recovery.keyName, recovery);
+        currentKeyName = recovery.keyName;
         plannedSwitchAt = null;
-        plannedSuccessorKeyId = null;
+        plannedSuccessorKeyName = null;
         changed = true;
         this.logger.warn(
-          `Current signing key expired without a valid successor; generated recovery key ${recovery.keyId}`,
+          `Current signing key expired without a valid successor; generated recovery key ${recovery.keyName}`,
         );
       } else if (
         successorKey &&
@@ -914,15 +858,15 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       ) {
         // A plan whose successor can no longer serve is void; replan below.
         plannedSwitchAt = null;
-        plannedSuccessorKeyId = null;
+        plannedSuccessorKeyName = null;
         changed = true;
         this.logger.warn(
           'Voided a local signing-key plan whose successor is no longer usable',
         );
       }
 
-      if (!plannedSuccessorKeyId) {
-        const current = keys.get(currentKeyId)!;
+      if (!plannedSuccessorKeyName) {
+        const current = keys.get(currentKeyName)!;
         const remaining = current.notAfter - now;
         if (
           remaining <=
@@ -931,7 +875,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         ) {
           const successor = this.generateSigningKey(
             claimableRoot.id,
-            domain,
             now,
             Math.min(
               now + this.config.signingKey.lifetimeMs,
@@ -939,15 +882,15 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
             ),
           );
           await this.insertSigningKey(tx, successor);
-          keys.set(successor.keyId, successor);
-          plannedSuccessorKeyId = successor.keyId;
+          keys.set(successor.keyName, successor);
+          plannedSuccessorKeyName = successor.keyName;
           plannedSwitchAt = Math.max(
             current.notAfter - this.config.signingKey.predecessorRetentionMs,
             now + this.config.signingKey.clockSkewBudgetMs,
           );
           changed = true;
           this.logger.log(
-            `Planned S2S signing-key switch to ${successor.keyId} at ${new Date(plannedSwitchAt).toISOString()}`,
+            `Planned S2S signing-key switch to ${successor.keyName} at ${new Date(plannedSwitchAt).toISOString()}`,
           );
         }
       }
@@ -956,25 +899,26 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         await tx
           .update(localFederationSigningState)
           .set({
-            currentKeyId,
+            currentKeyName,
             plannedSwitchAt:
               plannedSwitchAt === null ? null : new Date(plannedSwitchAt),
-            plannedSuccessorKeyId,
+            plannedSuccessorKeyName,
             updatedAt: new Date(now),
           })
-          .where(eq(localFederationSigningState.domain, domain));
+          .where(eq(localFederationSigningState.id, 0));
       }
 
-      this.snapshot = {
-        identityDomain: domain,
+      return {
+        identityDomain: snapshot.identityDomain,
         roots: snapshot.roots,
         claimableRootId: snapshot.claimableRootId,
         keys,
-        currentKeyId,
+        currentKeyName,
         plannedSwitchAt,
-        plannedSuccessorKeyId,
+        plannedSuccessorKeyName,
       };
     });
+    this.snapshot = next;
   }
 
   private toCertificate(
@@ -983,7 +927,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
   ): SigningKeyCertificate {
     const root = snapshot.roots.get(key.rootId)!;
     const unsigned = {
-      keyId: key.keyId,
+      keyId: `${snapshot.identityDomain}/${key.keyName}`,
       ed25519: key.publicKey,
       root: root.rootPublicKey,
       notBefore: key.notBefore,
@@ -1001,12 +945,12 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async insertSigningKey(
-    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
+    tx: DatabaseTransaction,
     key: LocalSigningKeyRow,
   ): Promise<void> {
     await tx.insert(localFederationSigningKey).values({
       rootId: key.rootId,
-      keyId: key.keyId,
+      keyName: key.keyName,
       publicKey: key.publicKey,
       privateKey: key.privateKey,
       createdAt: new Date(key.createdAt),
@@ -1017,16 +961,15 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
 
   private generateSigningKey(
     rootId: number,
-    domain: string,
     notBefore: number,
     notAfter: number,
   ): LocalSigningKeyRow {
     const privateKey = ed25519.utils.randomSecretKey();
     const publicKey = ed25519.getPublicKey(privateKey);
     // Opaque KeyName satisfying the KeyId grammar; never reused under the same root.
-    const keyId = `${domain}/k-${randomBytes(15).toString('base64url')}`;
+    const keyName = `k-${randomBytes(15).toString('base64url')}`;
     return {
-      keyId,
+      keyName,
       rootId,
       publicKey: b64(publicKey),
       privateKey: b64(privateKey),
@@ -1037,7 +980,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async hasFederationHistory(
-    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
+    tx: DatabaseTransaction,
   ): Promise<boolean> {
     const result = await tx.execute<{ hasHistory: boolean }>(sql`
       SELECT
@@ -1055,7 +998,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
   private activeSigningKey(): LocalSigningKeyRow {
     this.assertAvailable();
     const snapshot = this.snapshot!;
-    const key = snapshot.keys.get(snapshot.currentKeyId);
+    const key = snapshot.keys.get(snapshot.currentKeyName);
     if (!key) {
       throw new BusinessException(
         BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
@@ -1068,7 +1011,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
     if (!isValidAt(key, now) || !isValidAt(root, now)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
-        `current signing key ${key.keyId} is outside its validity interval`,
+        `current signing key ${key.keyName} is outside its validity interval`,
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }

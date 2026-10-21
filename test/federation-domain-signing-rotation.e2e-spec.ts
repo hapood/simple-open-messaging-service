@@ -4,6 +4,7 @@ import request from 'supertest';
 import {
   federationIdentityReview,
   identityNamespace,
+  localFederationSigningKey,
 } from '../src/database/schema.js';
 import {
   bootFederationPair,
@@ -107,7 +108,13 @@ describe('federation domain and signing-certificate rotation together', () => {
     await proxy?.close();
   });
 
-  it('requires domain approval when the peer changes domain and signing certificate', async () => {
+  it('requires domain approval even when independent key-expiry recovery changes the signing key', async () => {
+    // Force an independent lifecycle event. Renaming alone must never generate keys.
+    await appB.stop();
+    await appB.database
+      .update(localFederationSigningKey)
+      .set({ notAfter: new Date() })
+      .where(eq(localFederationSigningKey.publicKey, oldSigningKey));
     await appB.restart({ domain: NEW_DOMAIN });
     const document = await fetch(
       `http://127.0.0.1:${appB.port}/.well-known/somfp`,

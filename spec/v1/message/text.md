@@ -120,8 +120,8 @@ even when submitted by B or served from B's mirror. A consumer MUST NOT resolve
   },
   "seq": 57,
   "profileRev": 9,
-  "originSeq": null,
-  "originCreatedAt": null,
+  "originSeq": 23,
+  "originCreatedAt": 1770000004000,
   "createdAt": 1770000005000,
   "quoteTarget": {
     "seq": 42
@@ -133,7 +133,13 @@ even when submitted by B or served from B's mirror. A consumer MUST NOT resolve
 }
 ```
 
-In this example the publisher assigned namespace `12` to the peer hosting `bob`. The `quoteDigest` is an illustrative retained target digest, not a hash of the reply text.
+This is the processing-receipt copy of Bob's reply returned to Bob's home.
+The publisher assigned namespace `12` to the peer hosting `bob`. Bob's home
+originally published the reply at `seq: 23`, `createdAt: 1770000004000`;
+the publisher stored its copy at `seq: 57`, `createdAt: 1770000005000`.
+`quoteTarget.seq: 42` addresses the quoted message in the current publisher's
+thread. The `quoteDigest` is an illustrative retained target digest, not a
+hash of the reply text.
 
 ## 6. Required rejections
 

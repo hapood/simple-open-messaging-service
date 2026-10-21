@@ -194,6 +194,25 @@
       ]
     },
     {
+      "name": "health success envelope",
+      "schema": "urn:somfp:v1:common#/$defs/successEnvelope",
+      "values": [
+        {
+          "code": 0,
+          "message": "successful",
+          "data": { "status": "unavailable" }
+        },
+        {
+          "code": 0,
+          "message": "successful",
+          "data": {
+            "status": "available",
+            "peerAssignedLocalNamespaceId": 7
+          }
+        }
+      ]
+    },
+    {
       "name": "feed head wake-up",
       "schema": "urn:somfp:v1:identity#/$defs/feedHeadHint",
       "value": {
@@ -715,7 +734,7 @@
           "height": 1
         },
         "profileRev": 1,
-        "proof": "{\"account\":\"alice\",\"domain\":\"a.example\"}"
+        "proof": "eyJhY2NvdW50IjoiYWxpY2UiLCJkb21haW4iOiJhLmV4YW1wbGUifQ=="
       }
     },
     {
@@ -930,46 +949,32 @@
       }
     },
     {
-      "name": "recognize result states",
+      "name": "recognize success data states",
       "schema": "urn:somfp:v1:identity#/$defs/recognizeResult",
       "values": [
         {
-          "ok": true,
           "status": "recognized",
           "peerAssignedLocalNamespaceId": 7
         },
         {
-          "ok": true,
           "status": "pending",
           "message": "verification in progress"
-        },
-        {
-          "ok": false,
-          "status": "failed",
-          "code": 50001,
-          "message": "verification failed"
         }
       ]
     },
     {
-      "name": "recognize result",
-      "schema": "urn:somfp:v1:identity#/$defs/recognizeResult",
+      "name": "recognize success envelope",
+      "schema": "urn:somfp:v1:common#/$defs/successEnvelope",
       "values": [
         {
-          "ok": true,
-          "status": "pending",
-          "message": "verification in progress"
+          "code": 0,
+          "message": "successful",
+          "data": { "status": "pending" }
         },
         {
-          "ok": true,
-          "status": "recognized",
-          "peerAssignedLocalNamespaceId": 7
-        },
-        {
-          "ok": false,
-          "status": "failed",
-          "code": 50029,
-          "message": "root rotation rejected"
+          "code": 0,
+          "message": "successful",
+          "data": { "status": "recognized", "peerAssignedLocalNamespaceId": 7 }
         }
       ]
     },
@@ -988,7 +993,7 @@
       "schema": "urn:somfp:v1:identity#/$defs/verifyResult",
       "values": [
         {
-          "value": "{\"account\":\"alice\",\"domain\":\"a.example\"}"
+          "value": "eyJhY2NvdW50IjoiYWxpY2UiLCJkb21haW4iOiJhLmV4YW1wbGUifQ=="
         }
       ]
     }

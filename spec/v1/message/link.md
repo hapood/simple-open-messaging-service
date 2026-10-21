@@ -48,7 +48,7 @@ This is a closed schema. `url`, `title`, and `description` are always required. 
   "originCreatedAt": null,
   "createdAt": 1770000010000,
   "contentType": "LINK",
-  "content": "{\"url\":\"https://example.com/article\",\"title\":\"Example article\",\"description\":\"A short summary\",\"siteName\":\"\",\"favicon\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+  "content": "{\"description\":\"A short summary\",\"favicon\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"siteName\":\"\",\"title\":\"Example article\",\"url\":\"https://example.com/article\"}",
   "assets": [
     {
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

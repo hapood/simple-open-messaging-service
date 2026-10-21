@@ -7,6 +7,8 @@ const state = vi.hoisted(() => ({
   isSuper: false,
   trustLevel: 'available',
   haltCode: null as number | null,
+  reviewEpochMatched: true,
+  reviewKind: 'root-rotation',
 }));
 const block = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 const unblock = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
@@ -21,15 +23,6 @@ const approveReview = vi.hoisted(() => ({
 const rejectReview = vi.hoisted(() => ({
   isPending: false,
   mutateAsync: vi.fn(),
-}));
-const predecessorCheck = vi.hoisted(() => ({
-  isPending: false,
-  mutateAsync: vi.fn().mockResolvedValue({
-    reviewId: 7,
-    checkedRoot: 'root-a',
-    ok: true,
-    detail: 'opened',
-  }),
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 const confirmMock = vi.hoisted(() => vi.fn());
@@ -88,13 +81,14 @@ vi.mock('@/hooks/use-federation', () => ({
       reviews: [
         {
           id: 7,
-          kind: 'root-rotation',
+          kind: state.reviewKind,
           matchedNamespaceId: 12,
           matchedDomain: 'peer.test',
           nextDomain: 'peer.test',
           claimedRoot: 'root-b',
           claim: { previousRoot: 'root-a' },
           status: 'pending',
+          epochMatched: state.reviewEpochMatched,
           verifiedAt: null,
           reviewedAt: null,
           createdAt: null,
@@ -105,13 +99,14 @@ vi.mock('@/hooks/use-federation', () => ({
   }),
   useApproveFederationIdentityReview: () => approveReview,
   useRejectFederationIdentityReview: () => rejectReview,
-  useFederationPredecessorCheck: () => predecessorCheck,
   useBlockFederationPeer: () => block,
   useUnblockFederationPeer: () => unblock,
   useRecognizeFederationPeer: () => recognize,
 }));
 
-function renderPage() {
+function renderPage(options?: { epochMatched?: boolean }) {
+  if (options?.epochMatched !== undefined)
+    state.reviewEpochMatched = options.epochMatched;
   return render(
     <MemoryRouter initialEntries={['/federation/peer.test']}>
       <Routes>
@@ -126,6 +121,8 @@ describe('PeerDetailPage authorization', () => {
     state.isSuper = false;
     state.trustLevel = 'available';
     state.haltCode = null;
+    state.reviewEpochMatched = true;
+    state.reviewKind = 'root-rotation';
     block.mutateAsync.mockReset().mockResolvedValue(undefined);
     unblock.mutateAsync.mockReset().mockResolvedValue(undefined);
     recognize.mutateAsync.mockReset().mockResolvedValue({
@@ -136,12 +133,6 @@ describe('PeerDetailPage authorization', () => {
     toast.error.mockReset();
     approveReview.mutateAsync.mockReset().mockResolvedValue(undefined);
     rejectReview.mutateAsync.mockReset().mockResolvedValue(undefined);
-    predecessorCheck.mutateAsync.mockReset().mockResolvedValue({
-      reviewId: 7,
-      checkedRoot: 'root-a',
-      ok: true,
-      detail: 'opened',
-    });
     confirmMock.mockReset().mockReturnValue(true);
   });
 
@@ -185,23 +176,11 @@ describe('PeerDetailPage authorization', () => {
     expect(toast.success).toHaveBeenCalledWith('federation.toast.blocked');
   });
 
-  it('lets a super administrator run the predecessor check and approve a pending rotation review', async () => {
+  it('lets a super administrator approve a pending rotation without a separate check action', async () => {
     state.isSuper = true;
     renderPage();
 
     fireEvent.click(screen.getByText('federation.detail.tabNamespaces'));
-
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: 'federation.reviews.predecessorCheck',
-      }),
-    );
-    await waitFor(() =>
-      expect(predecessorCheck.mutateAsync).toHaveBeenCalledWith(7),
-    );
-    expect(toast.success).toHaveBeenCalledWith(
-      'federation.reviews.predecessorOk',
-    );
 
     fireEvent.click(
       screen.getByRole('button', { name: 'federation.reviews.approve' }),
@@ -212,6 +191,56 @@ describe('PeerDetailPage authorization', () => {
     expect(toast.success).toHaveBeenCalledWith(
       'federation.toast.reviewApproved',
     );
+  });
+
+  it.each(['new-peer', 'replace-identity'] as const)(
+    'offers explicit identity decision %s',
+    async (resolution) => {
+      state.isSuper = true;
+      state.reviewKind = 'identity-reset';
+      renderPage();
+      fireEvent.click(screen.getByText('federation.detail.tabNamespaces'));
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: `federation.reviews.${resolution}`,
+        }),
+      );
+      await waitFor(() =>
+        expect(approveReview.mutateAsync).toHaveBeenCalledWith({
+          reviewId: 7,
+          resolution,
+        }),
+      );
+    },
+  );
+
+  it('disables approval when the reviewed epoch has drifted from the live pin', async () => {
+    state.isSuper = true;
+    renderPage({ epochMatched: false });
+
+    fireEvent.click(screen.getByText('federation.detail.tabNamespaces'));
+
+    const approve = screen.getByRole('button', {
+      name: 'federation.reviews.approve',
+    });
+    expect(approve).toBeDisabled();
+    fireEvent.click(approve);
+    expect(approveReview.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('reports approval failure without showing success when automatic proof fails', async () => {
+    state.isSuper = true;
+    approveReview.mutateAsync.mockRejectedValueOnce(
+      new Error('predecessor continuity check failed'),
+    );
+    renderPage();
+    fireEvent.click(screen.getByText('federation.detail.tabNamespaces'));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'federation.reviews.approve' }),
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalledOnce());
+    expect(approveReview.mutateAsync).toHaveBeenCalledWith(7);
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it('lets a super administrator reject a pending rotation review without changing the pin', async () => {

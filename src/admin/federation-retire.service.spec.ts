@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
-import { FederationResetService } from './federation-reset.service.js';
+import { FederationRetireService } from './federation-retire.service.js';
 
-describe('FederationResetService', () => {
+describe('FederationRetireService', () => {
   it('previews the retained history owned by the active namespace', async () => {
     const execute = vi
       .fn()
@@ -33,7 +33,7 @@ describe('FederationResetService', () => {
         transaction: vi.fn((run: (value: typeof tx) => unknown) => run(tx)),
       },
     };
-    const service = new FederationResetService(
+    const service = new FederationRetireService(
       database as never,
       {} as never,
       {
@@ -56,7 +56,7 @@ describe('FederationResetService', () => {
     expect(database.db.transaction).toHaveBeenCalledOnce();
   });
 
-  it('rejects reset unless an identity-mismatch halted peer has an active namespace', async () => {
+  it('rejects retire unless an identity-mismatch halted peer has an active namespace', async () => {
     const tx = {
       execute: vi.fn().mockResolvedValue({
         rows: [
@@ -74,7 +74,7 @@ describe('FederationResetService', () => {
         transaction: vi.fn((run: (value: typeof tx) => unknown) => run(tx)),
       },
     };
-    const service = new FederationResetService(
+    const service = new FederationRetireService(
       database as never,
       {} as never,
       {
@@ -117,7 +117,7 @@ describe('FederationResetService', () => {
       const namespaces = {
         retireActiveInTx: vi.fn().mockResolvedValue({ namespaceId: 12 }),
       };
-      const service = new FederationResetService(
+      const service = new FederationRetireService(
         database as never,
         namespaces as never,
         {
@@ -140,7 +140,7 @@ describe('FederationResetService', () => {
         domain: 'peer.example',
         archivedNamespaceId: 12,
         activeNamespaceId: null,
-        status: 'reset',
+        status: 'retire',
         clientChangeId: 1n,
       });
       expect(namespaces.retireActiveInTx).toHaveBeenCalledWith(

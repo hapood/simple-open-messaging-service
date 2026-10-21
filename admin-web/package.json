@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "build:debug": "tsc -b && vite build --mode development --sourcemap --minify=false",
+    "build:development": "npm run build -- --mode development --sourcemap --minify=false",
     "lint": "oxlint",
     "test": "vitest run",
     "test:watch": "vitest",

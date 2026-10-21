@@ -868,9 +868,10 @@ POST /s2s/v1/call HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
-Content-Digest: sha-256=:<base64 digest of the exact body below>:
+S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
+Content-Digest: sha-256=:5Vam5Hnx5PiCFCTArcBqNj7xOJbq4ew+8MqnYTZLtDU=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:<Ed25519 signature>:
+Signature: sig1=:y1SUIdFIzCUFImKmlzx+FGEXURckBJ0iTG3W/jdxA7im1bsAd2i+1my7pAJYGZsl1gq+YQZfHuzywHjjV/a1Cg==:
 
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"incoming","mediaType":"AUDIO","payload":{"callerAccount":"alice","calleeAccount":"bob"}}
 ```

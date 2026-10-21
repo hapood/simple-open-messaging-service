@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -8,7 +8,6 @@ import {
   useFederationPeerNamespaces,
   useApproveFederationIdentityReview,
   useRejectFederationIdentityReview,
-  useFederationPredecessorCheck,
   useBlockFederationPeer,
   useUnblockFederationPeer,
   useRecognizeFederationPeer,
@@ -93,8 +92,7 @@ function feedProgressStatus(
   pulled: string | null,
   end: string,
 ): { key: FeedProgressStatusKey; lag: bigint } {
-  if (pulled === null)
-    return { key: 'federation.feed.notStarted', lag: 1n };
+  if (pulled === null) return { key: 'federation.feed.notStarted', lag: 1n };
   const lag = nonNegativeDiff(end, pulled);
   return {
     key: lag === 0n ? 'federation.feed.caughtUp' : 'federation.feed.behind',
@@ -123,10 +121,6 @@ export function PeerDetailPage() {
   const recognize = useRecognizeFederationPeer();
   const approveReview = useApproveFederationIdentityReview();
   const rejectReview = useRejectFederationIdentityReview();
-  const predecessorCheck = useFederationPredecessorCheck();
-  const [predecessorResult, setPredecessorResult] = useState<
-    string | undefined
-  >(undefined);
   const isSuper = useIsSuperAdmin();
   const { data: quotaNodes, isLoading: quotaLoading } = useQuotaNodes();
   const quotaNode = quotaNodes?.find((node) => node.domain === d);
@@ -162,15 +156,21 @@ export function PeerDetailPage() {
 
   const onDecideReview = async (
     reviewId: number,
-    kind: 'domain-rebind' | 'root-rotation',
+    kind: 'domain-rebind' | 'root-rotation' | 'identity-reset',
     decision: 'approved' | 'rejected',
+    resolution?: 'new-peer' | 'replace-identity',
   ) => {
     if (
       !window.confirm(
         decision === 'approved'
-          ? t('federation.reviews.confirmApprove', {
-              kind: t(`federation.reviews.kind.${kind}`),
-            })
+          ? t(
+              resolution
+                ? `federation.reviews.confirm.${resolution}`
+                : 'federation.reviews.confirmApprove',
+              {
+                kind: t(`federation.reviews.kind.${kind}`),
+              },
+            )
           : t('federation.reviews.confirmReject', {
               kind: t(`federation.reviews.kind.${kind}`),
             }),
@@ -180,23 +180,14 @@ export function PeerDetailPage() {
     }
     try {
       if (decision === 'approved') {
-        await approveReview.mutateAsync(reviewId);
+        await approveReview.mutateAsync(
+          resolution ? { reviewId, resolution } : reviewId,
+        );
         toast.success(t('federation.toast.reviewApproved'));
       } else {
         await rejectReview.mutateAsync(reviewId);
         toast.success(t('federation.toast.reviewRejected'));
       }
-    } catch (e) {
-      toast.error(formatApiError(e));
-    }
-  };
-
-  const onPredecessorCheck = async (reviewId: number) => {
-    try {
-      const result = await predecessorCheck.mutateAsync(reviewId);
-      setPredecessorResult(`${result.ok ? '✓' : '✗'} ${result.detail}`);
-      if (result.ok) toast.success(t('federation.reviews.predecessorOk'));
-      else toast.warning(t('federation.reviews.predecessorFailed'));
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -436,7 +427,7 @@ export function PeerDetailPage() {
                                 )}
                               </TableCell>
                               <TableCell className="max-w-96 break-all font-mono text-xs text-muted-foreground">
-                                {review.kind === 'root-rotation'
+                                {review.kind !== 'domain-rebind'
                                   ? `${String(review.claim.previousRoot ?? '—')} → ${review.claimedRoot}`
                                   : `${review.claimedRoot} @ ${review.nextDomain}`}
                               </TableCell>
@@ -446,20 +437,6 @@ export function PeerDetailPage() {
                               <TableCell className="text-right">
                                 {review.status === 'pending' && isSuper ? (
                                   <div className="flex justify-end gap-2">
-                                    {review.kind === 'root-rotation' ? (
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() =>
-                                          onPredecessorCheck(review.id)
-                                        }
-                                        disabled={predecessorCheck.isPending}
-                                      >
-                                        {t(
-                                          'federation.reviews.predecessorCheck',
-                                        )}
-                                      </Button>
-                                    ) : null}
                                     <Button
                                       size="sm"
                                       variant="outline"
@@ -474,19 +451,61 @@ export function PeerDetailPage() {
                                     >
                                       {t('federation.reviews.reject')}
                                     </Button>
-                                    <Button
-                                      size="sm"
-                                      onClick={() =>
-                                        onDecideReview(
-                                          review.id,
-                                          review.kind,
-                                          'approved',
-                                        )
-                                      }
-                                      disabled={approveReview.isPending}
-                                    >
-                                      {t('federation.reviews.approve')}
-                                    </Button>
+                                    {review.kind === 'identity-reset' ? (
+                                      <>
+                                        {(
+                                          [
+                                            'new-peer',
+                                            'replace-identity',
+                                          ] as const
+                                        ).map((resolution) => (
+                                          <Button
+                                            key={resolution}
+                                            size="sm"
+                                            disabled={
+                                              approveReview.isPending ||
+                                              !review.epochMatched
+                                            }
+                                            onClick={() =>
+                                              onDecideReview(
+                                                review.id,
+                                                review.kind,
+                                                'approved',
+                                                resolution,
+                                              )
+                                            }
+                                          >
+                                            {t(
+                                              `federation.reviews.${resolution}`,
+                                            )}
+                                          </Button>
+                                        ))}
+                                      </>
+                                    ) : (
+                                      <Button
+                                        size="sm"
+                                        onClick={() =>
+                                          onDecideReview(
+                                            review.id,
+                                            review.kind,
+                                            'approved',
+                                          )
+                                        }
+                                        disabled={
+                                          approveReview.isPending ||
+                                          !review.epochMatched
+                                        }
+                                        title={
+                                          review.epochMatched
+                                            ? undefined
+                                            : t(
+                                                'federation.reviews.epochDrifted',
+                                              )
+                                        }
+                                      >
+                                        {t('federation.reviews.approve')}
+                                      </Button>
+                                    )}
                                   </div>
                                 ) : null}
                               </TableCell>
@@ -495,11 +514,6 @@ export function PeerDetailPage() {
                         </TableBody>
                       </Table>
                     </div>
-                    {predecessorResult ? (
-                      <div className="mt-3 break-all font-mono text-xs text-muted-foreground">
-                        {predecessorResult}
-                      </div>
-                    ) : null}
                   </CardContent>
                 </Card>
               ) : null}

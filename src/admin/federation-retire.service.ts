@@ -7,7 +7,7 @@ import { FederationNamespaceService } from '../federation/federation-namespace.s
 import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
 import { SseService } from '../gateway/sse.service.js';
 
-export interface FederationResetPreview {
+export interface FederationRetirePreview {
   domain: string;
   activeNamespaceId: number;
   haltReason: string | null;
@@ -19,15 +19,15 @@ export interface FederationResetPreview {
   warning: string;
 }
 
-export interface FederationResetResult {
+export interface FederationRetireResult {
   domain: string;
   archivedNamespaceId: number;
   activeNamespaceId: null;
-  status: 'reset';
+  status: 'retire';
 }
 
 type PreviewCounts = Omit<
-  FederationResetPreview,
+  FederationRetirePreview,
   'domain' | 'activeNamespaceId' | 'haltReason' | 'warning'
 >;
 
@@ -36,7 +36,7 @@ const normalizeDomain = (value: string): string =>
 
 /** Retires one verified peer identity without deleting any identity-derived history. */
 @Injectable()
-export class FederationResetService {
+export class FederationRetireService {
   constructor(
     private readonly database: DatabaseService,
     private readonly namespaces: FederationNamespaceService,
@@ -44,7 +44,7 @@ export class FederationResetService {
     private readonly sse: SseService,
   ) {}
 
-  async preview(domain: string): Promise<FederationResetPreview> {
+  async preview(domain: string): Promise<FederationRetirePreview> {
     const normalized = this.requireDomain(domain);
     return this.database.db.transaction(async (tx) => {
       const peerResult = await tx.execute<{
@@ -60,7 +60,7 @@ export class FederationResetService {
         FOR NO KEY UPDATE
       `);
       const peer = peerResult.rows[0];
-      this.assertResettable(peer, normalized);
+      this.assertRetirable(peer, normalized);
       const namespaceId = peer.id;
       const result = await tx.execute<PreviewCounts>(sql`
         WITH remote_users AS (
@@ -94,14 +94,14 @@ export class FederationResetService {
                OR "endpointBNamespaceId" = ${namespaceId}) AS "relationshipCount"
       `);
       const counts = result.rows[0];
-      if (!counts) throw new Error('federation reset preview returned no row');
+      if (!counts) throw new Error('federation retire preview returned no row');
       return {
         domain: normalized,
         activeNamespaceId: namespaceId,
         haltReason: peer.haltReason,
         ...counts,
         warning:
-          'Reset retires the active namespace. Historical users, threads, relationships, and messages are retained.',
+          'Retiring archives the active namespace. Historical users, threads, relationships, and messages are retained.',
       };
     });
   }
@@ -109,7 +109,7 @@ export class FederationResetService {
   async start(
     domain: string,
     confirmDomain: string,
-  ): Promise<FederationResetResult> {
+  ): Promise<FederationRetireResult> {
     const normalized = this.requireDomain(domain);
     if (this.requireDomain(confirmDomain) !== normalized) {
       throw new BusinessException(
@@ -131,13 +131,13 @@ export class FederationResetService {
           AND active = true
         FOR NO KEY UPDATE
       `);
-      this.assertResettable(peerResult.rows[0], normalized);
+      this.assertRetirable(peerResult.rows[0], normalized);
       const archived = await this.namespaces.retireActiveInTx(tx, normalized);
-      // Broadcast the retirement: a reset is a client-visible change to the
+      // Broadcast the retirement: retiring is a client-visible change to the
       // peer's own binding (the nsid-0 pair in this publisher's space), so
       // publish it on the shared feed and tell every device to re-resolve —
       // mirroring the admin re-bind / root-rotation paths. Devices that hold
-      // the pre-reset domain then converge to the ARCHIVED status.
+      // the pre-retirement domain then converge to the ARCHIVED status.
       await this.profileNamespaceFeed.recordNamespaceChangeInTx(
         tx,
         archived.namespaceId,
@@ -151,7 +151,7 @@ export class FederationResetService {
         domain: normalized,
         archivedNamespaceId: archived.namespaceId,
         activeNamespaceId: null,
-        status: 'reset' as const,
+        status: 'retire' as const,
         clientChangeId,
       };
     });
@@ -159,7 +159,7 @@ export class FederationResetService {
     return result;
   }
 
-  private assertResettable(
+  private assertRetirable(
     peer:
       | {
           id: number;
@@ -186,7 +186,7 @@ export class FederationResetService {
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-        `only an identity-mismatch halted peer with an active namespace can be reset: ${domain}`,
+        `only an identity-mismatch halted peer with an active namespace can be retired: ${domain}`,
         HttpStatus.CONFLICT,
       );
     }

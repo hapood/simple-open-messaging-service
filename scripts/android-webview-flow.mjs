@@ -95,6 +95,12 @@ async function launchApp(adbPath) {
 
 async function findWebViewSocket(adbPath) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
+    const pid = (await adb(adbPath, ['shell', 'pidof', PACKAGE_NAME]).catch(() => '')).trim();
+    if (pid && /^\d+$/.test(pid)) {
+      const targetSocket = `webview_devtools_remote_${pid}`;
+      const stdout = await adb(adbPath, ['shell', 'cat', '/proc/net/unix']);
+      if (stdout.includes(`@${targetSocket}`)) return targetSocket;
+    }
     const stdout = await adb(adbPath, ['shell', 'cat', '/proc/net/unix']);
     const sockets = stdout
       .split('\n')

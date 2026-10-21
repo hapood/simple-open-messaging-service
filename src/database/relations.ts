@@ -23,6 +23,7 @@ import {
   diagnosticsReport,
   forwardBundleDependency,
   forwardBundleAsset,
+  federationIdentityConflict,
   federationIdentityReview,
   identityNamespace,
   federationThreadHistoryGap,
@@ -34,6 +35,16 @@ export const federationIdentityReviewRelations = relations(
   ({ one }) => ({
     matchedNamespace: one(identityNamespace, {
       fields: [federationIdentityReview.matchedNamespaceId],
+      references: [identityNamespace.id],
+    }),
+  }),
+);
+
+export const federationIdentityConflictRelations = relations(
+  federationIdentityConflict,
+  ({ one }) => ({
+    namespace: one(identityNamespace, {
+      fields: [federationIdentityConflict.namespaceId],
       references: [identityNamespace.id],
     }),
   }),

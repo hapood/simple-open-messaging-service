@@ -27,8 +27,8 @@ const MAX_BOX_CHARS = 8192;
  * GET /s2s/v1/profile-namespaces/:nsid.
  *
  * The oracle is stateless by design: replay protection is the caller's fresh
- * challenge, not server memory. The recovered plaintext is returned exactly as
- * recovered — the responder MUST NOT interpret, validate, or reject it by
+ * challenge, not server memory. The recovered plaintext bytes are returned as canonical
+ * padded base64 — the responder MUST NOT interpret, validate, or reject it by
  * content — and callers are expected to compare-and-discard, never store.
  */
 @Public()
@@ -88,7 +88,7 @@ export class S2sVerifyController {
         'the sealed challenge does not open under the supplied key',
       );
     }
-    return { value: Buffer.from(opened).toString('utf8') };
+    return { value: Buffer.from(opened).toString('base64') };
   }
 
   private malformed(message: string): BusinessException {

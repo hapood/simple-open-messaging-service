@@ -18,7 +18,8 @@ import {
   AdminListFederationPeersDto,
   AdminFederationBlockDto,
   AdminFederationSelfCheckDto,
-  AdminFederationResetDto,
+  AdminFederationRetireDto,
+  AdminFederationReviewApproveDto,
   AdminFederationIdentityRecoverDto,
   AdminFederationMessageProvenanceDto,
   AdminFederationHealthProbeDto,
@@ -27,7 +28,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { FederationPeerLifecycle } from '../federation/federation-peer-lifecycle.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
-import { FederationResetService } from './federation-reset.service.js';
+import { FederationRetireService } from './federation-retire.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
 import { KeypairService } from '../federation/keypair.service.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
@@ -53,7 +54,7 @@ export class AdminFederationController {
   constructor(
     private readonly peerLifecycle: FederationPeerLifecycle,
     private readonly selfCheckService: FederationSelfCheckService,
-    private readonly resetService: FederationResetService,
+    private readonly retireService: FederationRetireService,
     private readonly namespaceAdmin: FederationNamespaceAdminService,
     private readonly keypair: KeypairService,
     private readonly recognition: FederationRecognitionService,
@@ -151,26 +152,21 @@ export class AdminFederationController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/federation/identity-reviews/:id/predecessor-check')
-  @ApiOperation({
-    summary:
-      'Seal a fresh challenge under the pinned predecessor root and ask the peer to open it (rotation continuity evidence)',
-  })
-  async predecessorCheck(@Param('id') id: string) {
-    return this.namespaceAdmin.predecessorCheck(this.requireReviewId(id));
-  }
-
-  @UseGuards(AdminAuthGuard, AdminRolesGuard)
-  @Roles(AdminRole.SUPER_ADMIN)
   @Audit('federation.identity_review_approve', { targetType: 'identityReview' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/identity-reviews/:id/approve')
   @ApiOperation({
-    summary: 'Approve a pending peer identity review',
+    summary:
+      'Approve a pending peer identity review (root rotation verifies predecessor possession automatically)',
   })
-  async approveIdentityReview(@Param('id') id: string) {
-    return this.namespaceAdmin.approve(this.requireReviewId(id));
+  async approveIdentityReview(
+    @Param('id') id: string,
+    @Body() dto: AdminFederationReviewApproveDto,
+  ) {
+    return this.namespaceAdmin.approve(
+      this.requireReviewId(id),
+      dto.resolution,
+    );
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -200,31 +196,30 @@ export class AdminFederationController {
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
   @HttpCode(HttpStatus.OK)
-  @Post('admin/federation/peers/:domain/reset-preview')
+  @Post('admin/federation/peers/:domain/retire-preview')
   @ApiOperation({
-    summary:
-      'Preview the namespace retired by an identity-mismatch halted peer reset (read-only)',
+    summary: 'Preview the namespace a peer retirement will archive (read-only)',
   })
-  async resetPreview(@Param('domain') domain: string) {
-    return this.resetService.preview(domain);
+  async retirePreview(@Param('domain') domain: string) {
+    return this.retireService.preview(domain);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
-  @Audit('federation.peer.reset_start', {
+  @Audit('federation.peer.retire_start', {
     targetType: 'peer',
     targetParam: 'domain',
   })
   @HttpCode(HttpStatus.OK)
-  @Post('admin/federation/peers/:domain/reset')
+  @Post('admin/federation/peers/:domain/retire')
   @ApiOperation({
     summary: 'Retire the active namespace of an identity-mismatch halted peer',
   })
-  async resetPeer(
+  async retirePeer(
     @Param('domain') domain: string,
-    @Body() dto: AdminFederationResetDto,
+    @Body() dto: AdminFederationRetireDto,
   ) {
-    return this.resetService.start(domain, dto.confirmDomain);
+    return this.retireService.start(domain, dto.confirmDomain);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

@@ -38,7 +38,7 @@ import { AdminDiagnosticsController } from '../diagnostics/diagnostics-admin.con
 import { LoggerModule } from '../logger/logger.module.js';
 import { LogViewerController } from '../logger/log-viewer.controller.js';
 import { RateLimitMonitoringController } from './rate-limit-monitoring.controller.js';
-import { FederationResetService } from './federation-reset.service.js';
+import { FederationRetireService } from './federation-retire.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
 import { MessageModule } from '../message/message.module.js';
 import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
@@ -97,7 +97,7 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     AdminAuthGuard,
     AdminRolesGuard,
     FederationSelfCheckService,
-    FederationResetService,
+    FederationRetireService,
     FederationNamespaceAdminService,
     DashboardService,
     AuditTargetLabelService,

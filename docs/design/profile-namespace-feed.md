@@ -29,8 +29,8 @@ third-party profile verification and friend-add identity continuity.
    mutations exist: a **new namespace item** is added (first recognition, or
    rebuild after reset), and the **review mechanism replaces an existing
    item's** root-certificate or domain binding in place — `applyDomainRebind`
-   already keeps the id, and the root-change approval changes from "insert a
-   successor epoch row" to "update `rootPublicKey` on the same row". There
+   already keeps the id, and root-change approval updates `rootPublicKey`
+   on that same row without inserting a successor namespace. There
    is no automatic rotation. This supersedes the peer-rotation row-insert
    described in
    [`federation-root-identity-model.md`](./federation-root-identity-model.md);
@@ -38,15 +38,13 @@ third-party profile verification and friend-add identity continuity.
    re-recognition after a reset allocates a fresh id.
 2. **Certificate and domain are mutable bindings on a stable nsid.** What
    expires is the resolved domain/root for an nsid, never the nsid itself.
-3. **The local server's own identity change is out of scope** (deferred
-   feature), and it follows the server's own identity model rather than the
-   peer review flow: a root replacement appends a new `LocalFederationRoot`
-   epoch and marks the predecessor unclaimable (the predecessor stays
-   published until peers adopt), while a domain replacement swaps the binding
-   directly. Both stay on namespace id `0` at the namespace layer, so when
-   the feature lands each change publishes one feed item with
-   `namespaceId` `0`, and consumers expire the cached publisher row
-   (`ProfileNamespace` row with `profileNamespaceId = 0`).
+3. **The local server's own key lifecycle is separate.** A root replacement
+   appends a new `LocalFederationRoot` epoch and marks the predecessor
+   unclaimable (the predecessor stays published until peers adopt), while a
+   domain replacement swaps the binding directly. Neither changes namespace
+   id `0`. `KeypairService.rotateRoot` records the namespace-`0` feed item and
+   client `(0, 0)` change in its rotation transaction. Consumers expire the
+   cached publisher binding rather than renumbering any subject reference.
 4. Feed entries are publisher-scoped nsids, like every `namespaceId` on the
    wire ([`spec/v1/protocol.md`](../../spec/v1/protocol.md) Section 6.2.1).
    Because ids are stable, no per-caller translation exists or is needed.

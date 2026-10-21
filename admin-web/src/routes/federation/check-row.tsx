@@ -77,6 +77,11 @@ function TlsIpBlock({ probe }: { probe: SelfCheckIpTlsProbe }) {
         <Badge variant="outline" className="h-5 font-mono text-[10px]">
           v{probe.family}
         </Badge>
+        {probe.target && (
+          <span className="font-mono text-[10px] text-muted-foreground">
+            {probe.target} →
+          </span>
+        )}
         <span className="font-mono text-xs">{probe.ip}</span>
         <meta.Icon className={cn('size-3.5 shrink-0', meta.tone)} />
         <span className="flex-1 truncate text-xs text-muted-foreground">
@@ -127,6 +132,11 @@ function WkIpBlock({ probe }: { probe: SelfCheckIpWellKnownProbe }) {
         <Badge variant="outline" className="h-5 font-mono text-[10px]">
           v{probe.family}
         </Badge>
+        {probe.target && (
+          <span className="font-mono text-[10px] text-muted-foreground">
+            {probe.target} →
+          </span>
+        )}
         <span className="font-mono text-xs">{probe.ip}</span>
         <meta.Icon className={cn('size-3.5 shrink-0', meta.tone)} />
         <span className="flex-1 whitespace-normal text-xs text-muted-foreground">
@@ -183,19 +193,29 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
       return (
         <KvList
           entries={[
-            ['record', ev.record],
-            ['resolvedHost', ev.resolvedHost],
-            ['resolvedPort', ev.resolvedPort],
+            ['records', ev.records],
+            ['targets', ev.targets],
+            ['error', ev.error],
           ]}
         />
       )
     case 'dns-a':
     case 'dns-aaaa':
-      return <KvList entries={[['addresses', ev.addresses]]} />
+      return (
+        <KvList
+          entries={[
+            ['addresses', ev.addresses],
+            ['targets', ev.targets],
+          ]}
+        />
+      )
     case 'tls-public': {
       const ips = (ev.ips ?? []) as SelfCheckIpTlsProbe[]
+      const endpoints = Array.isArray(ev.endpoints)
+        ? ev.endpoints.join(', ')
+        : ''
       const host = ev.host
-        ? `host=${String(ev.host)} · sni=${String(ev.host)} · port=${String(ev.port ?? '')}`
+        ? `sni=${String(ev.host)}${endpoints ? ` · endpoints=${endpoints}` : ''}`
         : ''
       return (
         <div className="flex flex-col gap-2">
@@ -204,8 +224,8 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
               {host}
             </div>
           )}
-          {ips.map((p) => (
-            <TlsIpBlock key={p.ip} probe={p} />
+          {ips.map((p, i) => (
+            <TlsIpBlock key={`${p.target ?? ''}:${p.ip}:${i}`} probe={p} />
           ))}
         </div>
       )
@@ -214,8 +234,8 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
       const ips = (ev.ips ?? []) as SelfCheckIpWellKnownProbe[]
       return (
         <div className="flex flex-col gap-2">
-          {ips.map((p) => (
-            <WkIpBlock key={p.ip} probe={p} />
+          {ips.map((p, i) => (
+            <WkIpBlock key={`${p.target ?? ''}:${p.ip}:${i}`} probe={p} />
           ))}
         </div>
       )
@@ -253,6 +273,9 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['ntpServer', ev.ntpServer],
             ['offsetSec', ev.offsetSec],
             ['roundTripMs', ev.roundTripMs],
+            ['clockSkewBudgetMs', ev.clockSkewBudgetMs],
+            ['warnSec', ev.warnSec],
+            ['failSec', ev.failSec],
           ]}
         />
       )

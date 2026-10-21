@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { HttpStatus } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import * as tables from '../database/schema.js';
@@ -51,7 +52,6 @@ describe('S2sRecognitionController Health privacy projection', () => {
       }),
       acceptInbound: vi.fn(),
       submitInboundRecognize: vi.fn().mockResolvedValue({
-        ok: true,
         status: 'pending',
         message: 'verification in progress',
       }),
@@ -90,7 +90,9 @@ describe('S2sRecognitionController Health privacy projection', () => {
     discovery.getCachedPublicKey.mockResolvedValue(null);
 
     await expect(controller.health(healthRequest)).resolves.toEqual({
-      status: 'unavailable',
+      code: 0,
+      message: 'successful',
+      data: { status: 'unavailable' },
     });
     expect(discovery.getCachedPublicKey).toHaveBeenCalledWith(
       'peer.example',
@@ -106,7 +108,9 @@ describe('S2sRecognitionController Health privacy projection', () => {
     const { controller, discovery } = target({ namespaceRows: [] });
 
     await expect(controller.health(healthRequest)).resolves.toEqual({
-      status: 'unavailable',
+      code: 0,
+      message: 'successful',
+      data: { status: 'unavailable' },
     });
     expect(discovery.getCachedPublicKey).not.toHaveBeenCalled();
     expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
@@ -117,7 +121,9 @@ describe('S2sRecognitionController Health privacy projection', () => {
     verify.extractHeaders.mockReturnValue({ 's2s-root-key': 'not-base64' });
 
     await expect(controller.health(healthRequest)).resolves.toEqual({
-      status: 'unavailable',
+      code: 0,
+      message: 'successful',
+      data: { status: 'unavailable' },
     });
     expect(discovery.getCachedPublicKey).not.toHaveBeenCalled();
   });
@@ -134,7 +140,9 @@ describe('S2sRecognitionController Health privacy projection', () => {
     );
 
     await expect(controller.health(healthRequest)).resolves.toEqual({
-      status: 'unavailable',
+      code: 0,
+      message: 'successful',
+      data: { status: 'unavailable' },
     });
     expect(recognition.queryHealth).not.toHaveBeenCalled();
     expect(recognition.markReachable).not.toHaveBeenCalled();
@@ -146,7 +154,9 @@ describe('S2sRecognitionController Health privacy projection', () => {
     recognition.hasPreparedPeer.mockResolvedValue(false);
 
     await expect(controller.health(healthRequest)).resolves.toEqual({
-      status: 'unavailable',
+      code: 0,
+      message: 'successful',
+      data: { status: 'unavailable' },
     });
     expect(verify.verifyWithPublicKey).toHaveBeenCalledOnce();
     expect(recognition.queryHealth).not.toHaveBeenCalled();
@@ -159,8 +169,9 @@ describe('S2sRecognitionController Health privacy projection', () => {
     recognition.queryHealth.mockResolvedValue('degraded');
 
     await expect(controller.health(healthRequest)).resolves.toEqual({
-      status: 'degraded',
-      peerAssignedLocalNamespaceId: 12,
+      code: 0,
+      message: 'successful',
+      data: { status: 'degraded', peerAssignedLocalNamespaceId: 12 },
     });
 
     expect(recognition.queryHealth).toHaveBeenCalledBefore(
@@ -225,14 +236,21 @@ describe('S2sRecognitionController Health privacy projection', () => {
     const { controller, discovery, recognition } = target();
 
     await expect(
-      controller.recognize({} as never, { namespaceId: 5 }),
+      controller.recognize(
+        {
+          ip: '192.0.2.42',
+          headers: { 'x-forwarded-for': '198.51.100.99' },
+        } as never,
+        { namespaceId: 5 },
+      ),
     ).resolves.toEqual({
-      ok: true,
-      status: 'pending',
-      message: 'verification in progress',
+      code: 0,
+      message: 'successful',
+      data: { status: 'pending', message: 'verification in progress' },
     });
     expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
     expect(recognition.submitInboundRecognize).toHaveBeenCalledWith({
+      requestIp: '192.0.2.42',
       domain: 'peer.example',
       keyId: 'peer.example/key-2',
       claimedRoot: TEST_ROOT_KEY,
@@ -497,8 +515,9 @@ describe('FederationRecognitionService health transitions', () => {
       request: vi.fn(async () => ({
         status: 200,
         json: async () => ({
-          status: 'available',
-          peerAssignedLocalNamespaceId: 44,
+          code: 0,
+          message: 'successful',
+          data: { status: 'available', peerAssignedLocalNamespaceId: 44 },
         }),
       })),
     };
@@ -536,10 +555,50 @@ describe('FederationRecognitionService health transitions', () => {
 });
 
 describe('FederationRecognitionService inbound Recognize result states', () => {
-  function subject(review?: Record<string, unknown> | null) {
+  /** Harness for the staged answer path: the recognized / halted / retired
+   *  lookups are dispatched by their projected columns, and the three
+   *  selects (domain epoch, root epoch, review) are queued in call order. */
+  function subject(
+    options: {
+      review?: Record<string, unknown> | null;
+      domainEpoch?: unknown[];
+      rootEpoch?: unknown[];
+      reviewRows?: unknown[];
+      recognizedPeer?: Record<string, unknown> | null;
+      haltedPeer?: Record<string, unknown> | null;
+      retiredIdentity?: Record<string, unknown> | null;
+    } = {},
+  ) {
+    const selectRows = [
+      [], // Persisted verified conflicts.
+      options.domainEpoch ?? [],
+      options.rootEpoch ?? [],
+      options.reviewRows ?? (options.review ? [options.review] : []),
+    ];
+    let selectCall = 0;
     const database = {
       db: {
-        select: vi.fn(() => selectChain(review ? [review] : [])),
+        select: vi.fn(() => {
+          const rows = selectRows[Math.min(selectCall, selectRows.length - 1)]!;
+          selectCall += 1;
+          return selectChain(rows);
+        }),
+        query: {
+          identityNamespace: {
+            findFirst: vi.fn(
+              async (args?: { columns?: Record<string, unknown> }) => {
+                const columns = Object.keys(args?.columns ?? {});
+                if (columns.includes('peerAcceptanceConfirmed'))
+                  return options.recognizedPeer ?? null;
+                if (columns.includes('haltCode'))
+                  return options.haltedPeer ?? null;
+                if (columns.length === 1 && columns[0] === 'id')
+                  return options.retiredIdentity ?? null;
+                return null;
+              },
+            ),
+          },
+        },
       },
     };
     const service = new FederationRecognitionService(
@@ -573,14 +632,102 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     's2s-root-key': TEST_ROOT_KEY,
   };
 
-  it('returns pending when an open review is waiting for administrator approval', async () => {
+  it('refuses an arrival claiming a retired identity root without re-verification', async () => {
+    const { service, verify } = subject({ retiredIdentity: { id: 5 } });
+
+    await expect(
+      service.submitInboundRecognize({
+        requestIp: '192.0.2.1',
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      }),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_PEER_BLOCKED,
+    });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('refuses a retired identity even when a stale review still matches the domain', async () => {
     const { service, verify } = subject({
-      kind: 'domain-rebind',
-      status: 'pending',
+      retiredIdentity: { id: 5 },
+      review: {
+        kind: 'root-rotation',
+        status: 'rejected',
+        claim: { previousRoot: OTHER_ROOT_KEY },
+      },
     });
 
     await expect(
       service.submitInboundRecognize({
+        requestIp: '192.0.2.1',
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      }),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_PEER_BLOCKED,
+    });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('answers a recognized arrival even while a review for another root is open', async () => {
+    const { service, verify, database } = subject({
+      recognizedPeer: {
+        id: 7,
+        peerAssignedLocalNamespaceId: 9,
+        peerAcceptanceConfirmed: true,
+        localServiceAvailable: true,
+        trustLevel: 'available',
+      },
+      // An open rotation review for a different claimed root must not mask
+      // the committed relationship of the still-pinned root.
+      review: {
+        kind: 'root-rotation',
+        status: 'pending',
+        claim: { previousRoot: OTHER_ROOT_KEY },
+      },
+    });
+
+    await expect(
+      service.submitInboundRecognize({
+        requestIp: '192.0.2.1',
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      }),
+    ).resolves.toEqual({
+      status: 'recognized',
+      peerAssignedLocalNamespaceId: 7,
+    });
+    expect(verify).not.toHaveBeenCalled();
+    expect(database.db.select).not.toHaveBeenCalled();
+  });
+
+  it('returns pending when an open review is waiting for administrator approval', async () => {
+    const { service, verify } = subject({
+      rootEpoch: [
+        { id: 7, domain: 'old.example', peerAssignedLocalNamespaceId: null },
+      ],
+      review: {
+        kind: 'domain-rebind',
+        status: 'pending',
+        claim: { previousDomain: 'old.example' },
+      },
+    });
+
+    await expect(
+      service.submitInboundRecognize({
+        requestIp: '192.0.2.1',
         domain: 'Peer.Example.',
         keyId: 'peer.example/key-1',
         claimedRoot: TEST_ROOT_KEY,
@@ -589,7 +736,6 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         signatureExpires: Math.floor(Date.now() / 1000) + 300,
       }),
     ).resolves.toEqual({
-      ok: true,
       status: 'pending',
       message: 'waiting for administrator approval',
     });
@@ -598,12 +744,24 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
 
   it('returns the rotation rejection code for a rejected root-rotation review', async () => {
     const { service, verify } = subject({
-      kind: 'root-rotation',
-      status: 'rejected',
+      domainEpoch: [
+        {
+          id: 7,
+          domain: 'peer.example',
+          rootPublicKey: OTHER_ROOT_KEY,
+          peerAssignedLocalNamespaceId: null,
+        },
+      ],
+      review: {
+        kind: 'root-rotation',
+        status: 'rejected',
+        claim: { previousRoot: OTHER_ROOT_KEY },
+      },
     });
 
     await expect(
       service.submitInboundRecognize({
+        requestIp: '192.0.2.1',
         domain: 'peer.example',
         keyId: 'peer.example/key-1',
         claimedRoot: TEST_ROOT_KEY,
@@ -612,8 +770,6 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         signatureExpires: Math.floor(Date.now() / 1000) + 300,
       }),
     ).resolves.toEqual({
-      ok: false,
-      status: 'failed',
       code: BusinessCode.FEDERATION_ROOT_CHANGE_REJECTED,
       message: 'root rotation rejected by administrator review',
     });
@@ -622,12 +778,19 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
 
   it('returns the re-binding rejection code for a rejected domain-rebind review', async () => {
     const { service, verify } = subject({
-      kind: 'domain-rebind',
-      status: 'rejected',
+      rootEpoch: [
+        { id: 7, domain: 'old.example', peerAssignedLocalNamespaceId: null },
+      ],
+      review: {
+        kind: 'domain-rebind',
+        status: 'rejected',
+        claim: { previousDomain: 'old.example' },
+      },
     });
 
     await expect(
       service.submitInboundRecognize({
+        requestIp: '192.0.2.1',
         domain: 'peer.example',
         keyId: 'peer.example/key-1',
         claimedRoot: TEST_ROOT_KEY,
@@ -636,12 +799,47 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         signatureExpires: Math.floor(Date.now() / 1000) + 300,
       }),
     ).resolves.toEqual({
-      ok: false,
-      status: 'failed',
       code: BusinessCode.FEDERATION_DOMAIN_CHANGE_REJECTED,
       message: 'domain re-binding rejected by administrator review',
     });
     expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('does not serve a rejection recorded for a different origin pin', async () => {
+    // The review was recorded when the epoch pinned a different root; the
+    // live pin has since moved, so this arrival is a fresh proposal and must
+    // be re-verified instead of inheriting the old rejection.
+    const { service, verify } = subject({
+      domainEpoch: [
+        {
+          id: 7,
+          domain: 'peer.example',
+          rootPublicKey: OTHER_ROOT_KEY,
+          peerAssignedLocalNamespaceId: null,
+        },
+      ],
+      review: {
+        kind: 'root-rotation',
+        status: 'rejected',
+        claim: { previousRoot: 'stale-origin-root' },
+      },
+    });
+
+    await expect(
+      service.submitInboundRecognize({
+        requestIp: '192.0.2.1',
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      }),
+    ).resolves.toEqual({
+      status: 'pending',
+      message: 'verification in progress',
+    });
+    expect(verify).toHaveBeenCalledOnce();
   });
 
   /** Database mock for verifyInboundRecognize resolution paths: rows for the
@@ -680,7 +878,11 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     const transactionInsert = vi.fn(database.db.insert);
     const transactionUpdate = vi.fn(database.db.update);
     const transaction = vi.fn(async (run: (tx: unknown) => Promise<void>) =>
-      run({ insert: transactionInsert, update: transactionUpdate }),
+      run({
+        insert: transactionInsert,
+        update: transactionUpdate,
+        select: () => selectChain(options.domainEpoch ?? []),
+      }),
     );
     Object.assign(database.db, { transaction });
     const doc = {
@@ -745,6 +947,45 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       transactionUpdate,
     };
   }
+
+  it('halts and opens an identity-reset review when the verified group dropped the pin', async () => {
+    const target = resolutionTarget({
+      domainEpoch: [
+        {
+          id: 7,
+          domain: 'peer.example',
+          rootPublicKey: OTHER_ROOT_KEY,
+          peerAssignedLocalNamespaceId: null,
+        },
+      ],
+    });
+    await expect(
+      target.verify({
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      }),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+    });
+    expect(target.reviewInsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'identity-reset',
+        matchedNamespaceId: 7,
+        claimedRoot: TEST_ROOT_KEY,
+      }),
+    );
+    expect(target.namespaceUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trustLevel: 'halted',
+        haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+      }),
+    );
+    expect(target.transaction).toHaveBeenCalledOnce();
+  });
 
   it('commits an ordinary first recognition without a review record', async () => {
     const target = resolutionTarget({ domainEpoch: [], rootEpoch: [] });
@@ -831,19 +1072,12 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         status: 'pending',
       }),
     );
-    expect(target.namespaceUpdate).toHaveBeenCalledExactlyOnceWith({
-      trustLevel: 'pending',
-      localServiceAvailable: true,
-      peerAcceptanceConfirmed: false,
-      remoteServiceReachable: false,
-    });
+    expect(target.namespaceUpdate).not.toHaveBeenCalled();
     expect(target.transaction).toHaveBeenCalledOnce();
     expect(target.transactionInsert).toHaveBeenCalledExactlyOnceWith(
       tables.federationIdentityReview,
     );
-    expect(target.transactionUpdate).toHaveBeenCalledExactlyOnceWith(
-      tables.identityNamespace,
-    );
+    expect(target.transactionUpdate).not.toHaveBeenCalled();
   });
 
   it('keeps a live epoch arriving under a different domain pending despite a new coordinate', async () => {
@@ -877,14 +1111,14 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         }),
       }),
     );
-    expect(target.namespaceUpdate).toHaveBeenCalled();
+    // The pending review quarantines the proposed address only; the existing
+    // peer's acceptance and admission stay untouched.
+    expect(target.namespaceUpdate).not.toHaveBeenCalled();
     expect(target.transaction).toHaveBeenCalledOnce();
     expect(target.transactionInsert).toHaveBeenCalledExactlyOnceWith(
       tables.federationIdentityReview,
     );
-    expect(target.transactionUpdate).toHaveBeenCalledExactlyOnceWith(
-      tables.identityNamespace,
-    );
+    expect(target.transactionUpdate).not.toHaveBeenCalled();
   });
   it('records a root rotation review when the group still contains the pin', async () => {
     const target = resolutionTarget({
@@ -963,8 +1197,8 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     expect(target.transactionUpdate).not.toHaveBeenCalled();
   });
 
-  it('starts one async verifier per normalized domain and returns pending while it runs', async () => {
-    const { service, verify } = subject(null);
+  it('answers pending immediately and coalesces concurrent arrivals into one verifier', async () => {
+    const { service, verify } = subject();
     let release!: () => void;
     verify.mockReturnValue(
       new Promise<void>((resolve) => {
@@ -972,6 +1206,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       }),
     );
     const params = {
+      requestIp: '192.0.2.1',
       domain: 'Peer.Example.',
       keyId: 'peer.example/key-1',
       claimedRoot: TEST_ROOT_KEY,
@@ -981,12 +1216,10 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     };
 
     await expect(service.submitInboundRecognize(params)).resolves.toEqual({
-      ok: true,
       status: 'pending',
       message: 'verification in progress',
     });
     await expect(service.submitInboundRecognize(params)).resolves.toEqual({
-      ok: true,
       status: 'pending',
       message: 'verification in progress',
     });
@@ -996,6 +1229,307 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       domain: 'peer.example',
     });
     release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it('answers a signature refusal only for the exact failed request evidence', async () => {
+    const { service, verify } = subject();
+    verify.mockRejectedValue(
+      new BusinessException(
+        BusinessCode.FEDERATION_BAD_SIGNATURE,
+        'signature verification failed',
+        HttpStatus.UNAUTHORIZED,
+      ),
+    );
+    const params = {
+      requestIp: '192.0.2.1',
+      domain: 'peer.example',
+      keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
+      signedRequest,
+      headers: recognizeHeaders,
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+    };
+
+    await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+      status: 'pending',
+      message: 'verification in progress',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+      code: BusinessCode.FEDERATION_BAD_SIGNATURE,
+      message: 'signature verification failed',
+    });
+    expect(verify).toHaveBeenCalledOnce();
+  });
+
+  it('re-verifies the coordinate after the cooled window expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, verify } = subject();
+      verify.mockRejectedValue(
+        new BusinessException(
+          BusinessCode.FEDERATION_BAD_SIGNATURE,
+          'signature verification failed',
+          HttpStatus.UNAUTHORIZED,
+        ),
+      );
+      const params = {
+        requestIp: '192.0.2.1',
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      };
+
+      await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+        status: 'pending',
+        message: 'verification in progress',
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+        code: BusinessCode.FEDERATION_BAD_SIGNATURE,
+        message: 'signature verification failed',
+      });
+      expect(verify).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000 + 1_000);
+      await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+        status: 'pending',
+        message: 'verification in progress',
+      });
+      expect(verify).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  function arrival(
+    requestIp = '192.0.2.1',
+    signature = recognizeHeaders.signature,
+  ) {
+    return {
+      requestIp,
+      domain: 'peer.example',
+      keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
+      signedRequest,
+      headers: { ...recognizeHeaders, signature },
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+    };
+  }
+
+  it('does not let a forged signature refuse fresh evidence from another IP', async () => {
+    const { service, verify } = subject();
+    verify.mockRejectedValueOnce(
+      new BusinessException(
+        BusinessCode.FEDERATION_BAD_SIGNATURE,
+        'bad signature',
+        HttpStatus.UNAUTHORIZED,
+      ),
+    );
+    await service.submitInboundRecognize(arrival());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A fresh signature from the same IP is pending (rate limited), never
+    // misclassified as the earlier request's bad signature.
+    expect(
+      await service.submitInboundRecognize(
+        arrival('192.0.2.1', 'sig1=:fresh:'),
+      ),
+    ).toMatchObject({ status: 'pending' });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(
+      await service.submitInboundRecognize(
+        arrival('192.0.2.2', 'sig1=:fresh:'),
+      ),
+    ).toMatchObject({ status: 'pending' });
+    expect(verify).toHaveBeenCalledTimes(2);
+  });
+
+  it('reserves one IP slot atomically across concurrent distinct requests', async () => {
+    const { service, verify } = subject();
+    verify.mockReturnValue(new Promise<void>(() => undefined));
+    await Promise.all([
+      service.submitInboundRecognize(arrival()),
+      service.submitInboundRecognize(
+        arrival('::ffff:192.0.2.1', 'sig1=:different:'),
+      ),
+    ]);
+    expect(verify).toHaveBeenCalledOnce();
+  });
+
+  it('does not delay committed recognition because the IP is cooling down', async () => {
+    const target = subject();
+    await target.service.submitInboundRecognize(arrival());
+    target.database.db.query.identityNamespace.findFirst.mockImplementation(
+      async (args) =>
+        args?.columns?.peerAcceptanceConfirmed
+          ? {
+              id: 7,
+              peerAssignedLocalNamespaceId: 9,
+              peerAcceptanceConfirmed: true,
+              localServiceAvailable: true,
+              trustLevel: 'available',
+            }
+          : null,
+    );
+    expect(await target.service.submitInboundRecognize(arrival())).toEqual({
+      status: 'recognized',
+      peerAssignedLocalNamespaceId: 7,
+    });
+    expect(target.verify).toHaveBeenCalledOnce();
+  });
+
+  it('bounds both FIFO maps and independently sweeps expired one-off entries', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service } = subject();
+      const state = service as unknown as {
+        inboundRecognizeIps: Map<string, number>;
+        inboundRecognizeRefusals: Map<
+          string,
+          { code: BusinessCode; message: string; expiresAt: number }
+        >;
+        insertInboundCache: <T>(
+          cache: Map<string, T>,
+          key: string,
+          value: T,
+        ) => void;
+      };
+      for (let i = 0; i <= 4096; i++) {
+        state.insertInboundCache(
+          state.inboundRecognizeIps,
+          String(i),
+          Date.now() + 600_000,
+        );
+        state.insertInboundCache(state.inboundRecognizeRefusals, String(i), {
+          code: BusinessCode.FEDERATION_BAD_SIGNATURE,
+          message: 'bad',
+          expiresAt: Date.now() + 600_000,
+        });
+      }
+      expect(state.inboundRecognizeIps.size).toBe(4096);
+      expect(state.inboundRecognizeRefusals.size).toBe(4096);
+      expect(state.inboundRecognizeIps.has('0')).toBe(false);
+      expect(state.inboundRecognizeRefusals.has('0')).toBe(false);
+      expect(state.inboundRecognizeIps.keys().next().value).toBe('1');
+      await vi.advanceTimersByTimeAsync(600_000);
+      service.cleanupInboundRecognizeCaches();
+      expect(state.inboundRecognizeIps.size).toBe(0);
+      expect(state.inboundRecognizeRefusals.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores a verifier completion after its run was superseded', async () => {
+    const { service, verify } = subject();
+    let fail!: (error: unknown) => void;
+    verify.mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    await service.submitInboundRecognize(arrival());
+    const state = service as unknown as {
+      inboundRecognizeInFlight: Map<string, Promise<void>>;
+      inboundRecognizeRefusals: Map<string, unknown>;
+    };
+    const key = state.inboundRecognizeInFlight.keys().next().value!;
+    const newer = Promise.resolve();
+    state.inboundRecognizeInFlight.set(key, newer);
+    fail(
+      new BusinessException(
+        BusinessCode.FEDERATION_BAD_SIGNATURE,
+        'obsolete',
+        HttpStatus.UNAUTHORIZED,
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(state.inboundRecognizeRefusals.size).toBe(0);
+    expect(state.inboundRecognizeInFlight.get(key)).toBe(newer);
+  });
+
+  it('does not cache transient failures but keeps the IP verification cooldown', async () => {
+    const { service, verify } = subject();
+    verify.mockRejectedValue(new Error('well-known fetch timed out'));
+    const params = {
+      requestIp: '192.0.2.1',
+      domain: 'peer.example',
+      keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
+      signedRequest,
+      headers: recognizeHeaders,
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+    };
+
+    await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+      status: 'pending',
+      message: 'verification in progress',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+      status: 'pending',
+      message: 'verification in progress',
+    });
+    expect(verify).toHaveBeenCalledOnce();
+    await expect(
+      service.submitInboundRecognize({ ...params, requestIp: '192.0.2.2' }),
+    ).resolves.toMatchObject({ status: 'pending' });
+    expect(verify).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers a durably halted relationship with the fatal conflict synchronously', async () => {
+    const database = {
+      db: {
+        select: vi.fn(() => selectChain([])),
+        query: {
+          identityNamespace: {
+            findFirst: vi
+              .fn()
+              .mockResolvedValueOnce(null)
+              .mockResolvedValueOnce({
+                haltCode: BusinessCode.FEDERATION_PEER_BLOCKED,
+              }),
+          },
+        },
+      },
+    };
+    const service = new FederationRecognitionService(
+      database as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const verify = vi
+      .spyOn(
+        service as unknown as {
+          verifyInboundRecognize: (params: unknown) => Promise<void>;
+        },
+        'verifyInboundRecognize',
+      )
+      .mockResolvedValue(undefined);
+
+    await expect(
+      service.submitInboundRecognize({
+        requestIp: '192.0.2.1',
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      }),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_PEER_BLOCKED,
+      status: 409,
+    });
+    expect(verify).not.toHaveBeenCalled();
   });
 });
 
@@ -1045,6 +1579,51 @@ describe('FederationRecognitionService Recognize HTTP classification', () => {
     expect(degraded).toHaveBeenCalledOnce();
     expect(halted).not.toHaveBeenCalled();
   });
+
+  it('does not halt when the fatal code rides a non-closed envelope', async () => {
+    const { handle, degraded, halted } = subject();
+
+    await expect(
+      handle(
+        'peer.example',
+        Response.json(
+          {
+            code: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+            message: 'root mismatch',
+            forged: true,
+          },
+          { status: 409 },
+        ),
+      ),
+    ).rejects.toThrow('HTTP 409');
+
+    expect(halted).not.toHaveBeenCalled();
+    expect(degraded).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    BusinessCode.FEDERATION_DOMAIN_CONFLICT,
+    BusinessCode.FEDERATION_DOMAIN_CHANGE_REJECTED,
+    BusinessCode.FEDERATION_ROOT_CHANGE_REJECTED,
+  ])(
+    'does not halt for the operation-level code %s even on HTTP 409',
+    async (code) => {
+      const { handle, degraded, halted } = subject();
+
+      await expect(
+        handle(
+          'peer.example',
+          Response.json(
+            { code, message: 'operation refused' },
+            { status: 409 },
+          ),
+        ),
+      ).rejects.toThrow('HTTP 409');
+
+      expect(halted).not.toHaveBeenCalled();
+      expect(degraded).not.toHaveBeenCalled();
+    },
+  );
 
   it('halts only for HTTP 409 paired with a registered fatal code', async () => {
     const { handle, degraded, halted } = subject();

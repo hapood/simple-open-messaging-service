@@ -265,13 +265,16 @@ export interface FederationPeerStateListResult {
  *  rotation arrival awaiting decision. */
 export interface FederationIdentityReview {
   id: number;
-  kind: 'domain-rebind' | 'root-rotation';
+  kind: 'domain-rebind' | 'root-rotation' | 'identity-reset';
   matchedNamespaceId: number;
   matchedDomain: string;
   nextDomain: string;
   claimedRoot: string;
   claim: Record<string, unknown>;
   status: 'pending' | 'approved' | 'rejected';
+  /** Computed by the server at query time: whether the reviewed binding
+   *  still matches the live epoch. A drifted review cannot be approved. */
+  epochMatched: boolean;
   verifiedAt: number;
   reviewedAt: number | null;
   createdAt: number;
@@ -332,13 +335,6 @@ export interface FederationRecognizeResult {
   domain: string;
   status: 'pending' | 'recognized';
   message?: string;
-}
-
-export interface FederationPredecessorCheckResult {
-  reviewId: number;
-  checkedRoot: string;
-  ok: boolean;
-  detail: string;
 }
 
 // ─── Federated peer daily quotas (POST /admin/quota/nodes) ───
@@ -450,6 +446,8 @@ export interface SelfCheckChainNode {
 export interface SelfCheckIpTlsProbe {
   ip: string;
   family: 4 | 6;
+  /** `host:port` of the SRV target this connection was dialed through. */
+  target?: string | null;
   reachable: boolean;
   status: SelfCheckStatus;
   detail: string;
@@ -463,6 +461,8 @@ export interface SelfCheckIpTlsProbe {
 export interface SelfCheckIpWellKnownProbe {
   ip: string;
   family: 4 | 6;
+  /** `host:port` of the SRV target this connection was dialed through. */
+  target?: string | null;
   reachable: boolean;
   status: SelfCheckStatus;
   detail: string;
@@ -496,7 +496,6 @@ export interface SelfCheckReport {
   target: {
     host: string;
     port: number;
-    scheme: 'https' | 'http';
     hasSrv: boolean;
   };
   resolver: string;
