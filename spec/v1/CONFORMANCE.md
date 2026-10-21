@@ -80,7 +80,7 @@ observable requirements:
   validity intervals. The publisher updates the domain in `keyId` and recomputes
   its authorization signature; it may replace the old-domain representation
   before expiration without performing key rotation. Receivers still require
-  reviewed domain adoption and match complete `keyId` values exactly. Returning
+  validated domain adoption under local policy and match complete `keyId` values exactly. Returning
   to an earlier domain must not reassign an old `keyId` to a different public key.
 - During certificate overlap, a receiver selects exactly the currently valid,
   root-authorized certificate named by the request's `keyid`. It does not try
@@ -88,39 +88,45 @@ observable requirements:
   document order.
 - The public current-profile lookup carries the `publicKey` and `challenge`
   query parameters, and the `proof` member is the recovered plaintext of the
-  sealed challenge; the sealed-challenge verification and namespace identity
-  service opens challenges under retained keys and discloses namespace pins
-  without server-side challenge state.
+  sealed challenge. The separate `/verify` operation opens challenges under
+  retained keys without server-side challenge state. The namespace bindings
+  query resolves publisher-scoped namespace bindings; it does not answer
+  challenges or mutate the consumer's identity pins.
 - Normal signing-key rotation under the pinned root preserves recognition,
   peer acceptance, cursors, mirrors, and authorization. It does not restart
   Recognize for an already accepted peer.
 - Health emits no error envelope: every authentication, resolution, and
   disclosure failure uniformly returns `200 unavailable`, which preserves
   pins and acceptance, marks an accepted peer `degraded`, and does not halt
-  it. A root rotation is adopted only after a rotation arrival that resolves
-  through the still-pinned root and administrator approval; publishing a
-  successor root alone changes nothing.
+  it. A root rotation is adopted only after a validated rotation arrival that
+  resolves through the still-pinned root and a local adoption decision;
+  publishing a successor root alone changes nothing. Adoption policy,
+  additional evidence, review procedures, refusal retention, and retry
+  scheduling are implementation choices, not conformance requirements.
 
-- Administration SHOULD check predecessor-key possession before approving a
-  root rotation. When using the sealed-challenge check, use a fresh challenge
-  at the proposed peer domain and bind the proof to the peer identity and
-  proposed predecessor/successor binding. A failed or mismatched answer is not
-  successful possession evidence. Temporary challenge failure alone MUST NOT
-  be classified as identity loss. Requiring a successful challenge as the sole
-  approval policy is not a universal conformance requirement.
-
-- An administrator-approved root rotation replaces the pinned root without
+- An accepted root rotation replaces the pinned root without
   retiring the peer's subject namespace or changing either disclosed namespace
   value. The receiver publishes the replacement bindings under the same
   namespace; the rotating publisher announces its own change under namespace
   `0`. Recognition and positive Health disclose the unchanged namespace after
-  rotation. Approval of root rotation or domain re-binding preserves existing
+  rotation. Adoption of root rotation or domain re-binding preserves existing
   reciprocal acceptance and does not require a new handshake merely because
   the binding changed. A destructive reset is distinct and must not reuse a
   retired id.
 
 ## Synchronization and deletion checks
 
+- Group Meta item IDs, published end coordinates (including State Feed heads),
+  and page scan boundaries do not exceed `9007199254740990`. Recovery can use
+  `9007199254740991` as the exclusive `resumeBefore` without overflow.
+- Profile Namespace Feed bootstrap without `after` is a normal page from zero,
+  not an unpaginated dump. Consumers commit only `scannedThrough`, atomically
+  with invalidation effects, and retain the first page's `feedEndId` as the
+  fixed drain target even if subsequent pages disclose a newer end.
+- Group Meta bounded drains fix coordinates, not a cross-page snapshot.
+  Compaction may remove superseded items during the drain; subsequent delta
+  synchronization observes replacements above the fixed bound. An incomplete
+  full drain does not alter the committed projection or cursor.
 - An effective one-way intent permits passive history queries before a thread
   head exists. Confirmation publishes an initialization head after the authored
   `ACCEPTED` acknowledgement, even when message and deletion bounds are unchanged.
@@ -150,8 +156,8 @@ observable requirements:
 
 ## Group announcement checks
 
-- A new or upgraded group establishes its current `GROUP_ANNOUNCEMENT`
-  projection before serving the feed. Publishing, editing, and clearing are
+- A new group establishes its initial `GROUP_ANNOUNCEMENT` projection with
+  `text: null` before serving the feed. Publishing, editing, and clearing are
   origin-authorized owner/admin mutations, serialized with authorization at
   commit time; mirrors cannot author canonical replacements.
 - A publish followed by an edit and clear uses strictly increasing coordinates
@@ -167,9 +173,11 @@ observable requirements:
   returned by an earlier page is applied even if the origin later replaces it
   above the fixed boundary; subsequent delta synchronization applies that
   update. A failed full drain changes neither committed state nor cursor.
-- An announcement-only mutation durably schedules the existing thread-head
-  publication path with a newer Group Meta bound and unchanged message and
-  deletion bounds. A lost hint is recoverable through normal reconciliation.
+- An announcement-only mutation remains discoverable through the applicable
+  confirmed audiences' thread heads, including after crash recovery, with a
+  newer Group Meta bound and unchanged message and deletion bounds. A lost hint
+  is recoverable through normal reconciliation; no particular publication
+  mechanism is required.
 - Revocation denies further announcement reads; reauthorization uses full
   recovery at the new visibility floor. Neither revocation nor dissolution
   requires a terminal announcement clear.

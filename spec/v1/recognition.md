@@ -21,35 +21,18 @@ The sole protocol meaning of B returning `recognized` is:
 
 > B has authenticated A, recognized A's pinned identity, and prepared to receive A's Federation traffic.
 
-Recognize is a prompt notification, not an indispensable proof channel. A
-valid `recognized` result and a valid positive Health response from B provide
-A with the same protocol evidence that B recognizes A and is prepared to
-receive from A. Neither proves user, group, message, or operation-specific
-authorization. A `pending` result is only a receipt that B accepted the
-recognition attempt for asynchronous validation or local review; it is not
-identity, domain-control, signature, namespace, or peer-acceptance evidence.
-
-For A to send ordinary data to B, two recognition decisions and current
-reachability are required:
-
-```text
-A recognizes B  ── A validates and pins B's identity and prepares its local path
-B recognizes A  ── A receives B's Recognize recognized result, B's Recognize, or positive Health
-```
-
-After A's local recognition decision commits but before B's acceptance is
-known, A is `establishing`. Once B's acceptance is proven, A is `available`
-while current authenticated reachability exists and `degraded` while it does
-not. A lost Recognize `recognized` result does not require another Recognize if positive
-Health supplies the same B-acceptance evidence. Recognize does not exchange
-feed cursors or initialize business mirrors.
+Recognize is a prompt notification, not an indispensable proof channel or
+business-authorization grant. Section 3 defines the recognition and reachability
+facts required for traffic; Section 9 defines Health as an alternative source
+of peer-acceptance evidence. Neither operation exchanges feed cursors or
+initializes business mirrors.
 
 Recognize is also the arrival operation for domain re-binding. A server whose
 public domain has changed calls Recognize, signed from the new domain, on
 peers that still hold its pinned root identity. The recipient resolves the
 signer by root identity rather than by domain alone and discloses the
-namespace it holds for the caller. Section 4.4 defines the arrival and its
-verification; Section 11 keeps its activation administrative.
+namespace it holds for the caller. Sections 4.4–4.6 define arrival validation,
+implementation-selected adoption policy, and results.
 
 ## 2. Operation overview
 
@@ -70,7 +53,7 @@ Both operations carry the `S2S-Root-Key` header required by [Transport and Secur
 type EmptyRequest = Record<string, never>;
 
 /** The positive namespace the sender allocated for the recipient's
-    identity; preserved across approved root and domain changes. */
+    identity; preserved across accepted root and domain changes. */
 interface SenderAssignedLocalNamespaceRequest {
   namespaceId: PositiveSafeInteger;
 }
@@ -87,15 +70,6 @@ type RecognizeResult =
       status: 'recognized';
       peerAssignedLocalNamespaceId: PositiveSafeInteger;
     };
-
-type HealthResult =
-  | {
-      status: 'available' | 'degraded';
-      peerAssignedLocalNamespaceId: PositiveSafeInteger;
-    }
-  | {
-      status: 'unavailable';
-    };
 ```
 
 The objects listed here are closed. Every listed field is required unless marked
@@ -103,8 +77,7 @@ optional; duplicate and unknown fields are forbidden. Recognize returns these
 result objects inside the common success envelope (`code: 0`, diagnostic
 `message`, and `data`) defined in Core Section 7.2. Every failure uses the common
 error envelope, not an additional Recognize result variant. Health returns the
-same success envelope with `HealthResult` data; its uniform `unavailable`
-projection is defined in Section 9 and is not an error.
+same success envelope with the `HealthResult` data defined in Section 9.
 
 The request member `namespaceId` carries the sender-assigned local namespace:
 the positive namespace the sender allocated for the recipient's identity.
@@ -119,7 +92,7 @@ The caller retains it per recipient: it identifies the caller's local
 identities as mirrored by the responder
 ([protocol.md Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation))
 and selects receipt and self-subject processing there. Both disclosed namespace
-values MUST remain unchanged across an administrator-approved root rotation or
+values MUST remain unchanged across an accepted root rotation or
 domain re-binding. A new root key does not create a new subject namespace.
 Only destructive identity reset retires the existing namespace; recognition
 after that retirement MUST allocate a fresh namespace and MUST NOT reuse the
@@ -129,7 +102,7 @@ retired value.
 `recognized` is the only success result that carries peer-acceptance evidence
 and discloses `peerAssignedLocalNamespaceId`. `pending` means the responder
 has accepted the attempt for asynchronous validation or local review,
-including a rotation or re-binding arrival awaiting administrator approval.
+including a rotation or re-binding arrival awaiting a local adoption decision.
 A `pending` result MUST
 NOT include `peerAssignedLocalNamespaceId`, carries no identity or acceptance
 evidence, and the caller MUST NOT begin ordinary traffic from it. A definitive
@@ -138,10 +111,6 @@ Section 7's result categories and the registered stable `code`; `message` is
 diagnostic only. Refusing a proposed binding change is an HTTP `200`
 operation-level error result, not peer-acceptance evidence and not a
 relationship halt.
-
-`HealthResult` discloses `peerAssignedLocalNamespaceId` only together with
-`available` or `degraded`, where the responder already discloses recognition;
-the privacy-preserving `unavailable` result carries no namespace.
 
 ## 3. Recognition and reachability state model
 
@@ -163,7 +132,7 @@ failure cause as a lifecycle value:
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `unrecognized` | No usable pinned/recognition identity exists.                                                                                                                              |
 | `establishing` | Local recognition and receive-path preparation have committed, but peer acceptance has not yet been proven. Identity validation before that commit remains `unrecognized`. |
-| `pending`      | Validation or administrator review has not yet produced peer acceptance. This state cannot authorize ordinary traffic and is not peer-acceptance evidence.                 |
+| `pending`      | Validation or local admission policy has not yet produced peer acceptance. This state cannot authorize ordinary traffic and is not peer-acceptance evidence.                 |
 | `available`    | Local recognition and peer acceptance are both proven, and current authenticated reachability exists without unresolved transport degradation.                             |
 | `degraded`     | Local recognition and peer acceptance are both proven, but current reachability is absent or a retryable transport or service failure occurred.                            |
 | `halted`       | Verifiable hard-failure evidence exists; automatic Recognize, Health retries, and data-plane communication stop pending local administrator action.                        |
@@ -175,13 +144,10 @@ traffic possible without repeating recognition.
 
 A node MUST retain outside the lifecycle the original evidence and reason causing `halted`, such as a stable HTTP error from the target peer, a local policy block, pinned-root contradiction, or absence of a common version. Each cause retains its distinct wire error and security meaning but is not a lifecycle state. A node MAY retain diagnostic text for `pending`, but the text has no wire semantics. An implementation MUST NOT persist Health's `unavailable` result as a same-named lifecycle state.
 
-Health's `available | degraded | unavailable` is a privacy projection of the
-responder's acceptance and receive readiness for the requester, not a copy of
-either server's bilateral peer lifecycle. A valid `available` or `degraded` response supplies
-peer-acceptance evidence equivalent to Recognize `recognized` and current reachability
-evidence. It MUST NOT cause the requester to enter `halted`. An ordinary
-operation MUST NOT authorize solely from a lifecycle label. Admission also
-requires valid identity, version, policy, and business authorization.
+Health's privacy projection is distinct from this bilateral lifecycle; its
+response and consumption rules are defined in Section 9. An ordinary operation
+MUST NOT authorize solely from a lifecycle label. Admission also requires valid
+identity, version, policy, and business authorization.
 
 Local `available` is calculated as:
 
@@ -200,9 +166,9 @@ available =
 stateDiagram-v2
     [*] --> unrecognized
     unrecognized --> establishing: pin, recognize, and prepare local path
-    establishing --> pending: async verification or administrator review
-    pending --> degraded: administrator approval without current reachability
-    pending --> available: administrator approval with current reachability
+    establishing --> pending: validation or local decision outstanding
+    pending --> degraded: peer acceptance without current reachability
+    pending --> available: peer acceptance with current reachability
     pending --> halted: fatal authenticated conflict
     establishing --> available: peer acceptance and current reachability
     establishing --> degraded: peer acceptance without current reachability
@@ -240,7 +206,7 @@ Operation gates are calculated separately from lifecycle:
 | Operation class                                     | Required gate                                                                                                                                                                                                                                                              |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `recognize`                                         | bootstrap signed and its admission rule; no existing lifecycle required                                                                                                                                                                                                    |
-| `health`                                            | status signed; authentication, resolution, and status/privacy failures uniformly project as `200 unavailable`, except the generic transport-level rate limit allowed in Section 9.1                                                                                        |
+| `health`                                            | status signed; authentication and privacy projection follow Section 9.1; no error-envelope or transport-level rate-limit response exception is defined                                                                                        |
 | `feed-heads`                                        | The recipient's local recognition and prepared lightweight receive path, with a valid signer identity                                                                                                                                                                      |
 | Ordinary recognized data sent by the local node     | Local recognition and prepared path, peer acceptance proven by valid Recognize `recognized`, inbound Recognize, or positive Health, current authenticated reachability without unresolved degradation, compatible version and policy, and operation-specific authorization |
 | Ordinary recognized data received from the peer     | The recipient's local recognition and prepared path, valid signer identity, compatible version and policy, and operation-specific authorization; the sender's earlier Recognize delivery is not a separate receive gate                                                    |
@@ -265,9 +231,7 @@ does not by itself prove peer acceptance to its recipient.
 Local receive readiness is distinct from lifecycle `available`: the former
 means this server can receive from a locally recognized signer; the latter
 additionally requires peer acceptance and current reachability for its own
-ordinary outbound traffic. Both positive Health results mean that the
-requester's identity is pinned and locally recognized by the responder and
-the responder's receive path is prepared.
+ordinary outbound traffic.
 
 ## 4. Identity verification, recognition, and pinning
 
@@ -326,7 +290,7 @@ Recognize, or B's valid `available` or `degraded` Health result.
 
 Every root public key — in `roots`, in `keys[].root`, in `S2S-Root-Key`, and in a sealed challenge — MUST be strictly decoded as RFC 4648 padded base64. Non-canonical base64, invalid padding, and trailing data MUST be rejected, and the result MUST be exactly 32 bytes. When first recognizing the signer, the recipient MUST atomically store the claimed root with that recognition decision; the pin is one root public key, never the whole group.
 
-On every later well-known read of an established peer, the pinned root MUST remain present in the fetched `roots` group byte for byte, and the receiver MUST keep authenticating requests only against certificates authorized by the pinned root. A group that no longer contains the pin is an identity contradiction, not rotation: the node MUST retain the old pin, record the identity-contradiction reason, enter `halted`, revoke `available`, and reject the ordinary data plane. The sole exception is an administrator-approved root rotation completed through Section 4.5, including its recommended predecessor-key possession check. Normal addition, overlap, expiration, and removal of root-authorized signing certificates MUST NOT clear recognition or acceptance evidence.
+On every later well-known read of an established peer, the pinned root MUST remain present in the fetched `roots` group byte for byte, and the receiver MUST keep authenticating requests only against certificates authorized by the pinned root. A group that no longer contains the pin is an identity contradiction, not rotation: the node MUST retain the old pin, record the identity-contradiction reason, enter `halted`, revoke `available`, and reject the ordinary data plane. The sole exception is a root rotation accepted under Sections 4.5 and 4.6. Normal addition, overlap, expiration, and removal of root-authorized signing certificates MUST NOT clear recognition or acceptance evidence.
 
 ### 4.4 Root-identity resolution, domain re-binding, and rotation arrivals
 
@@ -360,7 +324,8 @@ reuse its key material and certificate validity intervals, publishing `keyId`
 values under the new domain with recomputed root authorization signatures as
 defined in Transport and Security, Section 1.3. A receiver MUST NOT require the
 signing public key to differ from the old-domain certificate. A valid certificate
-under the new domain does not bypass the following re-binding review.
+under the new domain does not bypass the following binding checks or the local
+adoption decision.
 
 For a domain re-binding arrival, the recipient MUST additionally:
 
@@ -373,29 +338,12 @@ For a domain re-binding arrival, the recipient MUST additionally:
    contradiction: the caller presents the pinned key together with a
    relationship coordinate inconsistent with the one it assigned before, and
    the recipient fails closed with `FEDERATION_IDENTITY_MISMATCH`. An absent
-   value is not an identity failure; the recipient records the arrival with
-   the sender-assigned local namespace noted absent. A caller MUST include
+   value is not an identity failure. A caller MUST include
    the member whenever its local store has allocated a namespace for the
    recipient.
 3. Reject with `FEDERATION_DOMAIN_CONFLICT` when the signer domain is bound to
-   another peer or is under review for another peer.
-4. Record review state for the matched peer and signer domain together with an
-   audit fact. Until administrator approval, the arrival MUST NOT disclose a
-   namespace, commit peer acceptance, change ordinary data-plane admission, or
-   activate the re-binding.
-5. Return `RecognizeResult` with `status: 'pending'` while review is open.
-   After approval, a later Recognize attempt for the same signer may return
-   `recognized` with the peer-assigned namespace. After rejection, a later
-   Recognize attempt returns the operation-level error result
-   `FEDERATION_DOMAIN_CHANGE_REJECTED`.
-
-Administration of a recorded re-binding is local (Section 11): approval
-re-binds the pinned identity to the new domain. Approval MUST preserve existing
-recognition and peer-acceptance facts and MUST NOT require a new reciprocal
-handshake solely because the domain changed. Rejection MUST surface to the
-peer as the operation-level error result
-`FEDERATION_DOMAIN_CHANGE_REJECTED` on a later arrival for that domain; the
-existing relationship is not halted by the refusal.
+   another peer or reserved for another peer's pending proposal.
+4. Apply the adoption and result rules in Section 4.6.
 
 A domain re-binding arrival proves three facts together: possession of the
 pinned root-authorized signing key, control of the new domain's discovery
@@ -416,69 +364,57 @@ successor-root-authorized certificate that the hostname-verified well-known
 fetch validates, and a fetched group that still contains the root the
 recipient has pinned.
 
-The recipient resolves a rotation arrival as follows:
+The recipient MUST validate a rotation arrival as follows:
 
-1. Authenticate the request under the bootstrap rules of Section 4.1: the
-   claimed successor root must be a currently valid entry of the fetched
-   group, and the signing certificate must be authorized by it and valid.
+1. Authenticate the request under the bootstrap rules: the claimed successor
+   root MUST be a currently valid entry of the fetched group, and the signing
+   certificate MUST be authorized by it and valid.
 2. Match the fetched group against the local pins: exactly one pinned,
-   unretired root of the matched namespace must appear in the group as a
-   currently valid entry. No match is an ordinary identity mismatch under
-   the rules already given, not a rotation.
-3. When the request carries the `namespaceId` member, the Section 4.4
-   coordinate-consistency rule applies unchanged, and
-   `FEDERATION_DOMAIN_CONFLICT` still applies when the signer domain is
-   bound to another peer or under review for another peer.
-4. Record a rotation review for the matched namespace — the claimed root,
-   the fetched group snapshot, and the signer domain together, as one
-   review fact — and return `pending`. An incoherent arrival (a group
-   without the pin, a certificate not authorized by the claimed root)
-   never reaches this step; it fails authentication or resolves as an
-   identity mismatch under the rules already given.
-5. Until administrator approval, the recipient MUST keep authenticating the
-   signer only against the pinned root's certificates, MUST NOT disclose a
-   namespace, and MUST NOT commit acceptance. Ordinary signed requests
-   claiming the successor root fail authentication with HTTP `401` for the
-   same reason. After approval, the receiver MUST replace the pinned root
-   with the claimed root and update the domain binding to the approved
-   arrival domain as one externally indivisible binding change. The receiver
-   MUST preserve the matched namespace and both disclosed namespace values;
-   it MUST NOT retire the namespace or allocate a successor namespace because
-   of the rotation. Recognition facts, cursors, mirrors, and authorizations
-   carry over. Approval MUST NOT require a new reciprocal handshake solely
-   because the root changed. The receiver MUST publish the binding change for that same
-   namespace through the Profile Namespace Feed; the rotating publisher's
-   own binding change uses namespace `0` in its feed. A later Recognize may
-   then return `recognized` with the unchanged
-   `peerAssignedLocalNamespaceId`. After rejection, a later Recognize
-   attempt returns the operation-level error result
-   `FEDERATION_ROOT_CHANGE_REJECTED`; the pin
-   and namespace remain unchanged, successor-root traffic stays
-   unauthenticated, and the relationship continues only under the
-   predecessor-root authentication rules or through an explicit local reset.
+   unretired root of the matched namespace MUST appear in the group as a
+   currently valid entry. No match is an identity mismatch under the rules
+   above, not a rotation.
+3. Apply the namespace-consistency and domain-conflict checks of Section 4.4,
+   then the adoption and result rules in Section 4.6.
 
-A rotation arrival for a signer with no pinned root is not a rotation: it
-is ordinary first recognition under Section 4.2.
+A signer with no pinned identity follows ordinary first recognition under
+Section 4.2 rather than rotation.
 
-A rotation arrival proves control of a signing key authorized by the successor
-root and publication of a group containing the still-pinned predecessor,
-obtained from the signer's domain over hostname-verified TLS. Publishing the
-predecessor public key does not prove possession of its private key.
-Before approving a rotation, the recipient SHOULD verify possession of the
-pinned predecessor root's private key through the sealed-challenge service of
-Section 12 at the proposed peer domain. When using this check, it MUST use a
-fresh challenge and require the exact expected answer. The proof MUST apply to
-the same peer identity, proposed domain, predecessor root, and successor root
-being approved; a proof for a different proposed binding MUST NOT be treated as
-a successful check. A failed or unavailable challenge provides no possession
-evidence and temporary inability to complete it does not itself establish
-identity loss. Whether alternative evidence is sufficient for approval is a
-local administrative policy; publishing the predecessor public key alone is
-not proof of possession. A server
-whose predecessor private key is compromised MUST rotate and have each peer
-approve the rotation, after which signatures under the predecessor are
-worthless even though the key leaked. Administration of a recorded rotation
-is local (Section 11).
+A validated rotation arrival proves control of a successor-authorized signing
+key and publication of a group containing the predecessor public key at the
+hostname-verified domain. It does not prove possession of the predecessor
+private key. Additional continuity evidence is a local adoption-policy choice;
+Section 12 provides a sealed-challenge operation if the implementation uses it.
+
+### 4.6 Identity-change adoption and results
+
+Adoption policy is implementation-defined. A receiver MAY accept, defer, or
+reject a validated domain re-binding or root rotation proposal according to
+local policy. The protocol does not prescribe decision procedures, additional
+evidence, review records, refusal retention, or retry scheduling. This policy
+freedom does not waive the authentication and binding checks above.
+
+For each Recognize response:
+
+- When validation or a local adoption decision is outstanding, the receiver
+  MUST return `pending`, without a
+  namespace or new acceptance evidence. Until adoption, the receiver MUST
+  retain the existing binding and MUST NOT authorize ordinary traffic under
+  the proposed binding. Ordinary requests claiming an unadopted successor root
+  fail authentication with HTTP `401`.
+- Acceptance MUST atomically update the domain binding and, for rotation, the
+  root pin before returning `recognized` under Section 5.2. The receiver MUST
+  preserve the subject namespace, both disclosed namespace values, recognition
+  and peer-acceptance facts, cursors, mirrors, and authorizations. It MUST NOT
+  require a new reciprocal handshake solely because the binding changed.
+  It MUST publish the changed bindings for that namespace through the Profile
+  Namespace Feed; the changing publisher uses namespace `0` in its own feed.
+- Rejection MUST use `FEDERATION_DOMAIN_CHANGE_REJECTED` or
+  `FEDERATION_ROOT_CHANGE_REJECTED`, respectively, in the common HTTP `200`
+  error envelope. The rejection MUST NOT replace the existing binding, create
+  acceptance evidence, or by itself enter `halted`.
+
+A repeated request MUST NOT duplicate adoption effects. These rules do not
+create a rejection-notification endpoint or a required polling mechanism.
 
 ## 5. Recognize request and successful commit
 
@@ -498,7 +434,7 @@ sender-assigned local namespace
 {"namespaceId":7}
 ```
 
-carrying the namespace id A allocated for B's identity. An approved root
+carrying the namespace id A allocated for B's identity. An accepted root
 rotation or domain re-binding MUST NOT change this value.
 The Recognize body carries no rotation-specific member: a sender that has
 rotated its root sends the same two shapes, claims and signs under the
@@ -535,9 +471,9 @@ After all validation and policy checks succeed, B MUST atomically complete the f
 
 These steps apply only to a `recognized` result. A `pending` result MUST NOT
 execute them before responding; a domain re-binding arrival (Section 4.4) or
-an unapproved root rotation arrival (Section 4.5) MUST NOT disclose the
-peer-assigned namespace or create acceptance evidence until administrator
-approval.
+an unadopted root rotation arrival (Section 4.5) MUST NOT disclose the
+peer-assigned namespace or create acceptance evidence before adoption under
+Section 4.6.
 
 The first bootstrap Recognize establishes B's local recognition of A and A's
 recognition of B together. B therefore has both recognition decisions and
@@ -580,8 +516,8 @@ recoverable as one externally indivisible commit. A may adopt B's acceptance
 evidence only after receiving HTTP `200`, strictly validating the
 `recognized` response shape above, and confirming that the response came from
 the same TLS connection and authority as the request. A `pending` result adopts
-no acceptance, exposes no namespace, and only tells A to retry recognition with
-backoff. A non-zero error result adopts no acceptance and is classified by its
+no acceptance and exposes no namespace. It permits a later Recognize to obtain
+an updated result; identity-change retry policy remains local under Section 4.6. A non-zero error result adopts no acceptance and is classified by its
 HTTP status and stable `code`. A timeout or a network error cannot substitute for acceptance evidence,
 but a later valid positive Health result can. A peer with acceptance still
 unknown remains `establishing` and may retry recognition.
@@ -598,8 +534,8 @@ absence or lost response is not a separate admission failure. The first request
 and `recognized` result already give both peers the reciprocal acceptance
 evidence needed for ordinary traffic, subject to current reachability and
 business authorization. Health can provide the same acceptance evidence after
-an uncertain response. B SHOULD send a reverse Recognize after administrator
-approval promotes a pending domain re-binding to an accepted relationship.
+an uncertain response. Notification timing after identity-change adoption is a
+local policy choice.
 
 ## 6. Complete sequence
 
@@ -652,10 +588,10 @@ The application-level idempotency coordinate for Recognize is `(signerRootKey, r
 - First `pending`: accept the attempt for asynchronous validation or review without creating acceptance evidence or disclosing a namespace.
 - First `recognized`: commit local recognition, receive readiness, and the requester's explicit recognition assertion before returning the result.
 - Duplicate request with the same root identity: MUST NOT reset the first-recognition time, cursor, mirror, or application authorization; return the current `pending`, `recognized`, or definitive error result for that attempt.
-- Domain re-binding arrival duplicates: idempotent. A repeated arrival while the same target is under review returns `pending` without resetting prior recognition facts; a newer arrival from a different domain replaces the pending target if local policy permits.
-- Same domain with a different root: MUST NOT replace the pin automatically.
-  A valid rotation arrival under Section 4.5 enters review without changing the
-  pin; arrivals that do not satisfy that exception MUST fail as an identity
+- Identity-change arrival duplicates follow Section 4.6 without resetting prior recognition facts.
+- Same domain with a different root: MUST NOT replace the pin merely because
+  the domain matches. A valid rotation arrival under Section 4.5 is subject to the local adoption
+  decision; arrivals that do not satisfy that exception MUST fail as an identity
   mismatch.
 - Concurrent Recognize and Health: MAY commit independently. A valid `recognized` result and a valid positive Health result are equivalent peer-acceptance evidence; the final recognition and reachability state MUST equal a valid serial ordering.
 - Lost response: retain facts already committed by the recipient. The sender MAY obtain peer acceptance through positive Health or safely retry Recognize while acceptance remains unknown.
@@ -682,7 +618,7 @@ the categories above.
 
 Each HTTP retry uses the same JSON application semantics but MUST regenerate `Date`, `created`, `expires`, and the HTTP signature. The body contains neither time nor nonce, so its bytes and `Content-Digest` MAY remain unchanged across retries.
 
-A rotation review that is already open stays pending; a repeated rotation arrival re-enters the same review idempotently. Rotation arrivals fail closed on ordinary authentication errors without halting the peer: they are one attempt's outcome, not an identity contradiction.
+Rotation arrivals fail closed on ordinary authentication errors without halting the peer: they are one attempt's outcome, not an identity contradiction.
 
 ## 8. Pending, failed, and error handling
 
@@ -691,8 +627,8 @@ In this section, A is the Recognize requester and B is the recipient. B validate
 ### 8.1 Recipient B: validation, local state, and response
 
 B answers immediately from the recognition result currently available,
-without waiting for network verification or administrator review. Incomplete
-verification or review yields `pending`. B MUST commit the effects in
+without waiting for network verification or a local adoption decision. Incomplete
+verification or an outstanding decision yields `pending`. B MUST commit the effects in
 Section 5.2 before disclosing `recognized`. A known refusal or irrecoverable
 error uses the corresponding category in Section 7 and the common error
 envelope. Background completion does not change a response already sent.
@@ -713,8 +649,8 @@ Recognize result categories.
 | A is already halted for an identity contradiction                         |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Remain `halted`                                                                                                                                                                     |
 | Arrival sender-assigned local namespace conflicts with the recorded value |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the pin, record the identity contradiction, and enter `halted`                                                                                                               |
 | Arrival signer domain bound to or pending on another peer                 |  200 | `FEDERATION_DOMAIN_CONFLICT`              | Record no re-binding; retain all pins, recognition, and lifecycle                                                                                                                   |
-| Administration rejected the pending re-binding for this domain            |  200 | `FEDERATION_DOMAIN_CHANGE_REJECTED`       | Retain the current binding, namespace, and acceptance; retry and refusal-retention policy are implementation choices                                                           |
-| Administration rejected the pending root rotation for this signer         |  200 | `FEDERATION_ROOT_CHANGE_REJECTED`         | Retain the current pin, namespace, acceptance, and lifecycle; retry and refusal-retention policy are implementation choices                                                    |
+| Local policy rejected the domain re-binding proposal            |  200 | `FEDERATION_DOMAIN_CHANGE_REJECTED`       | Retain the current binding, namespace, and acceptance; retry and refusal-retention policy are implementation choices                                                           |
+| Local policy rejected the root rotation proposal         |  200 | `FEDERATION_ROOT_CHANGE_REJECTED`         | Retain the current pin, namespace, acceptance, and lifecycle; retry and refusal-retention policy are implementation choices                                                    |
 
 When returning any error envelope, B MUST NOT create
 acceptance evidence or open the lightweight gate because of this request.
@@ -734,11 +670,11 @@ A has committed local recognition and is `establishing` if B's acceptance is not
 | HTTP `200` with valid `status: 'recognized'`                          | Adopt B's acceptance and current reachability; become `available` if other gates hold | Ordinary traffic may begin subject to authorization                                                                        |
 | Timeout, DNS/connect failure, TLS interruption, or truncated response | Acceptance remains unknown unless already proven; reachability is absent              | Retain the pin; obtain a positive Health result or retry Recognize with backoff                                            |
 | HTTP `503`                                                            | Same as a retryable transport failure                                                 | Retain the pin and back off                                                                                                |
-| HTTP `200` with valid `status: 'pending'`                             | Do not adopt acceptance, reachability, or namespace evidence                          | Retry Recognize with bounded backoff; keep the ordinary data plane closed                                                  |
+| HTTP `200` with valid `status: 'pending'`                             | Do not adopt acceptance, reachability, or namespace evidence                          | Adopt no new traffic grant; if retrying, use bounded backoff. Identity-change scheduling follows Section 4.6.                                                  |
 | HTTP `200` with a valid non-zero common error envelope                | Do not adopt acceptance; classify as an operation error, not HTTP `409` halt evidence | Apply the registered code's operation-level rule; an unknown code fails only this operation                                |
 | HTTP `200` + `FEDERATION_DOMAIN_CONFLICT` (`50027`)                   | Retain pins and the current binding                                                   | Stop re-binding attempts for that domain; local administration decides                                                     |
-| HTTP `200` + `FEDERATION_DOMAIN_CHANGE_REJECTED` (`50028`)            | Retain the current binding, namespace, and acceptance                                 | Stop automatic retries of the rejected proposal; any retry requires local administration                                   |
-| HTTP `200` + `FEDERATION_ROOT_CHANGE_REJECTED` (`50029`)              | Retain the current pin, namespace, acceptance, and lifecycle                          | Do not automatically initiate or repeat the administrator-triggered root rotation; any retry requires local administration |
+| HTTP `200` + `FEDERATION_DOMAIN_CHANGE_REJECTED` (`50028`)            | Retain the current binding, namespace, and acceptance                                 | Whether and when to retry the rejected proposal are implementation choices.                                   |
+| HTTP `200` + `FEDERATION_ROOT_CHANGE_REJECTED` (`50029`)              | Retain the current pin, namespace, acceptance, and lifecycle                          | Whether and when to retry the rejected proposal are implementation choices. |
 | HTTP `200` with an invalid body                                       | Do not adopt acceptance from this response                                            | Record a protocol-response error; do not retry tightly                                                                     |
 | Malformed, bad signature, or binding violation                        | Retain pin and previously proven acceptance                                           | Stop identical automatic retries until corrected                                                                           |
 | HTTP `409` + `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`                | `halted`; retain version reason                                                       | Stop automatic communication; do not downgrade                                                                             |
@@ -746,21 +682,13 @@ A has committed local recognition and is `establishing` if B's acceptance is not
 | HTTP `409` + `FEDERATION_IDENTITY_MISMATCH`                           | `halted`; retain old pin                                                              | Fail closed and stop automatic communication                                                                               |
 | A directly verifies that B's root differs from its pin                | `halted`; retain independent security evidence                                        | Do not treat the contradiction as a network error                                                                          |
 
-An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer; on Recognize, a definitive signature or published-key failure is delivered as the HTTP `200` cooled-refusal result, never as an authenticated-route `401`. `FEDERATION_DOMAIN_CONFLICT`, `FEDERATION_DOMAIN_CHANGE_REJECTED`, and `FEDERATION_ROOT_CHANGE_REJECTED` are HTTP `200` operation-level results: each refuses only the proposed binding change, preserves the existing relationship's pins, namespace, acceptance, and lifecycle, without prescribing the retry policy for that proposal. Only HTTP `409` with a registered fatal code, plus a pinned-root conflict directly verified by A, triggers `halted`. A root rotation is administrator-triggered; v1 defines no automatic retry or initiation policy for it. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST follow the classification rules in the [Stable Error Registry](./errors.md#http-layer), but MUST NOT replace or delete a root pin without an identity contradiction.
+An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer; on Recognize, a definitive signature or published-key failure is delivered as the HTTP `200` cooled-refusal result, never as an authenticated-route `401`. `FEDERATION_DOMAIN_CONFLICT`, `FEDERATION_DOMAIN_CHANGE_REJECTED`, and `FEDERATION_ROOT_CHANGE_REJECTED` are HTTP `200` operation-level results: each refuses only the proposed binding change, preserves the existing relationship's pins, namespace, acceptance, and lifecycle, without prescribing the retry policy for that proposal. Only HTTP `409` with a registered fatal code, plus a pinned-root conflict directly verified by A, triggers `halted`. Identity-change adoption and result handling follow Section 4.6. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST follow the classification rules in the [Stable Error Registry](./errors.md#http-layer), but MUST NOT replace or delete a root pin without an identity contradiction.
 
 ### 8.3 Lost responses and recognition convergence
 
-If A's Recognize reached B and B committed `recognized` but the response was
-lost, B has already accepted A.
-A remains `establishing` while B's acceptance is unknown to A. A valid
-positive Health response from B supplies the same acceptance evidence as
-the lost `recognized` result; no additional Recognize notification is required. An optional
-reverse Recognize from B also supplies that evidence.
-
-If the request never reached B and B has not independently recognized A,
-Health returns `unavailable` and cannot manufacture acceptance. A MAY retry
-the original Recognize with bounded backoff. Existing pins and acceptance
-evidence MUST survive uncertain delivery and temporary network failures.
+See [Section 6.1](#61-recovery-after-a-lost-first-recognized-result) for the lost
+response sequence and recovery paths. Uncertain delivery follows the
+recognition-preserving lifecycle rules in Section 3.
 
 ### 8.4 Blocklist
 
@@ -785,6 +713,23 @@ Content-Type: application/json
 
 ## 9. Health query and privacy
 
+Health returns the common success envelope with this closed `data` union:
+
+```ts
+type HealthResult =
+  | {
+      status: 'available' | 'degraded';
+      peerAssignedLocalNamespaceId: PositiveSafeInteger;
+    }
+  | {
+      status: 'unavailable';
+    };
+```
+
+All listed fields are required; unknown fields are forbidden. `unavailable`
+carries no namespace. The namespace in either positive result has the meaning
+defined in Section 2.
+
 Health queries the reachability and privacy-safe status of a known peer; it is not an application keepalive. Trigger timing, initial delay, cadence, and stopping conditions are local concerns. Automatic queries SHOULD use bounded, jittered backoff and MUST NOT create tight polling or traffic amplification.
 
 When A queries B, its Health request has no query and exactly zero body bytes. It MUST NOT send
@@ -794,7 +739,11 @@ MUST include `Cache-Control: no-store`.
 
 ### 9.1 Recipient B: validating the request and producing the privacy projection
 
-B MUST validate the Health request with the common parsing, digest, certificate-validity, `keyid` selection, root-key resolution, and signature-verification rules defined in transport-security.md, resolving the signer by the request's `S2S-Root-Key` against already available pinned identity and certificate state. Health MUST NOT emit any error envelope: a request that fails size bounds, parsing, the signature profile, digest validation, root or certificate resolution, or signature verification — and, after successful authentication, every signer whose local peer relationship is not recognized, prepared, authorized, or safely disclosable — uniformly receives HTTP `200` with `unavailable`. A non-`200` response is not a Health result. This uniform projection is deliberate: Health answers reveal neither whether a signer is known nor why a request failed. Inbound Health authentication MUST NOT initiate well-known discovery merely to answer the query, even for a known peer. Health processing MUST NOT replace the root pin because of the query.
+B MUST authenticate the request under the cache-only Health rules in
+[Transport and Security, Section 3.5](./transport-security.md#35-validation-order-and-failure-boundaries).
+Authentication failure returns the uniform `unavailable` response below. After
+successful authentication, B applies the readiness and privacy checks in this
+section. Health MUST NOT establish first recognition or replace the root pin.
 
 B MUST return exactly one of the following closed objects:
 
@@ -819,10 +768,8 @@ B MUST return exactly one of the following closed objects:
 ```
 
 These are success-envelope responses: `code: 0` reports that the status query
-was answered and discloses nothing about why the peer is not available. Health
-MUST NOT emit an error envelope: a non-`200` or malformed response is not a
-Health result. The requester handles it as unavailable-like reachability
-failure under Section 9.2, never as acceptance or fatal identity evidence.
+was answered and discloses nothing about why the peer is not available.
+Health MUST NOT emit an error envelope.
 
 Only when the request validates against A's identity pinned and locally
 recognized by B, B's ordinary and lightweight receive paths are prepared,
@@ -836,7 +783,7 @@ it does not require B to have already received A's reciprocal acceptance:
 
 The `peerAssignedLocalNamespaceId` disclosure is the same value B's Recognize
 response carries for A: the namespace B allocated for A's identity.
-An approved root rotation or domain re-binding MUST NOT change that value in
+An accepted root rotation or domain re-binding MUST NOT change that value in
 either response. A positive Health result refreshes A's retained disclosure;
 it does not itself authorize namespace retirement, replacement, or identity
 reset.
@@ -848,7 +795,11 @@ The following cases MUST uniformly return HTTP `200` with `{"status":"unavailabl
 - A reset is in progress, or another identity or version state cannot safely be disclosed.
 - Any other local connection state that cannot safely be disclosed.
 
-For all cases above, the recipient MUST return exactly the same unavailable object and MUST NOT disclose the specific reason through HTTP status, error code, additional fields, or diagnostics. Implementations SHOULD minimize obvious response-timing differences and MUST rate-limit by source, domain, and globally. The protocol defines exactly one Health response — the HTTP `200` status envelope above; any non-`200` or unparseable response is not a Health result. Under Section 9.2 it affects only reachability, preserves pins and acceptance evidence, and MUST NOT trigger `halted`.
+For authentication failures and all cases above, the recipient MUST return the
+same unavailable object and MUST NOT disclose the specific reason through HTTP
+status, error code, additional fields, or diagnostics. Implementations SHOULD
+minimize obvious response-timing differences and MUST rate-limit by source,
+domain, and globally without changing this response contract.
 
 This `unavailable` result is only an external privacy projection; it does not erase B's handling of the actual local cause. For example, if B confirms a root conflict using independent hostname-verified HTTPS evidence, B still MUST retain the old pin, record the reason, and enter `halted`, while returning `200 unavailable` to A's Health query.
 
@@ -860,16 +811,13 @@ This `unavailable` result is only an external privacy projection; it does not er
 | Valid `unavailable`                                                     | Treat current reachability as absent; retain pins and acceptance evidence. Remain `establishing` if acceptance is unknown, otherwise become or remain `degraded`                                    |
 | Timeout, network error, HTTP `503`, invalid body, or any other response | Treat reachability like `unavailable`; adopt no assertion from the response                                                                                                                         |
 
-A receiving valid `available` or `degraded` MUST recognize that B accepts A
-and is prepared to receive A's Federation traffic. This is the same
-peer-acceptance evidence as valid Recognize `recognized`; a previously lost `recognized` result does
-not require an idempotent notification retry after this Health result.
-
 A MUST NOT infer B's actual reason from `unavailable`, nor enter `halted`
-solely because of that result: every authentication, disclosure, and
-transient failure projects to the same word by design. A later Health retry
-requires a newly constructed request; a failed signed request MUST NOT be
-retried unchanged after its signature window has passed. Refreshing A's copy
+solely because of that result. A non-`200` or malformed response is not a Health
+result; its unavailable-like classification, including the prohibition on
+halting for a fatal code returned to Health, follows the
+[Stable Error Registry](./errors.md#shared-validation-failure-mapping).
+A later Health retry requires a newly constructed request; a failed signed
+request MUST NOT be retried unchanged after its signature window has passed. Refreshing A's copy
 of B's well-known does not directly refresh B's copy of A's signing keys.
 B's copy of A's signing keys is maintained by the certificate set persisted
 at recognition time (Section 5.2), by B's outbound Health overlap refresh,
@@ -896,11 +844,8 @@ invent peer acceptance. The positive Health assertion defined in Section 9.2
 is the explicit acceptance path; ordinary authenticated communication supplies
 reachability alone.
 
-When B sends an optional reverse Recognize and receives A's valid
-`recognized` result, B MAY omit an additional Health call: that result already
-proves A's acceptance and current reachability. When the first `recognized`
-result is lost, A MAY instead rely on B's positive Health result for the same
-acceptance evidence.
+Existing valid acceptance and reachability evidence requires no additional
+Health call. Recovery after a lost Recognize response follows Section 6.1.
 
 ## 10. Complete HTTP construction examples
 
@@ -1038,20 +983,22 @@ Signature: sig1=:s4ZNPXgRlXNeLtD9O+FZfjCPaYsUJrS/4Xp4ezUCztsjlYLBH7S6HvPJ7dUA8dm
 {}
 ```
 
-The recipient authenticates `key-2` against the fetched group, finds its pinned root `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=` still present in `roots`, records a rotation review for the matched namespace, and answers:
+The recipient authenticates `key-2` against the fetched group, finds its pinned root `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=` still present in `roots`, defers adoption under its local policy, and answers:
 
 ```json
 {
   "code": 0,
   "message": "successful",
-  "data": { "status": "pending", "message": "root rotation review opened" }
+  "data": { "status": "pending", "message": "root rotation decision pending" }
 }
 ```
 
-Ordinary traffic signed under `key-2` stays unauthenticated (HTTP `401`) until the recipient's administration approves the rotation, at which point a later Recognize returns `recognized` with the unchanged `peerAssignedLocalNamespaceId`. In this example, the reviewing administration verifies continued possession of the predecessor root's private key through the sealed-challenge service of Section 12 before approving.
+Ordinary traffic signed under `key-2` stays unauthenticated (HTTP `401`) until
+the recipient adopts the rotation under Section 4.6. After adoption, Recognize
+returns `recognized` with the unchanged `peerAssignedLocalNamespaceId`.
 
-A rejected domain re-binding answers the next arrival for that domain with
-the operation-level HTTP `200` error envelope:
+A domain re-binding rejected by local policy returns the operation-level
+HTTP `200` error envelope:
 
 ```json
 {
@@ -1081,29 +1028,9 @@ Ordinary network failure, service restart, SRV change, or signing-key rotation u
 
 Diagnosis, approval, recovery, reset, and re-recognition after `halted` are local administrative actions. Federation v1 defines no endpoint, interaction, or automation policy for them. The protocol safety floor is that communication MUST NOT resume automatically before explicit administrative handling, and a new root MUST NOT automatically inherit the old identity's recognition facts or application authorizations.
 
-A domain re-binding recorded through a Recognize arrival is likewise local
-administration. Approving it re-binds the pinned identity, its peer record,
-and future discovery to the new domain without retiring the namespace and
-without resetting recognition facts, cursors, mirrors, authorizations, or the
-disclosed peer-assigned namespace. Rejecting it MUST surface to the peer as
-`FEDERATION_DOMAIN_CHANGE_REJECTED` on its next arrival for that domain.
-
-A root rotation recorded through a rotation arrival (Section 4.5) is local
-administration of the same kind. The recipient SHOULD verify continued
-possession of the pinned predecessor root's private key through the
-sealed-challenge service of Section 12 before approving, as described in
-Section 4.5. Approval MUST apply
-the binding change and namespace-preservation rules of Section 4.5: the root
-pin changes, but the subject namespace and disclosed namespace values do not.
-Recognition facts, cursors, mirrors, and authorizations carry over. Rejecting
-it MUST surface to the peer as
-`FEDERATION_ROOT_CHANGE_REJECTED` on its next arrival as an operation-level
-result: the pin and lifecycle are retained, and nothing is halted by the
-rejection itself. The publisher keeps the predecessor root entry — but no
-predecessor-authorized certificates — published until every recognized peer
-has accepted the rotation or the rotation is abandoned (Transport and
-Security, Section 1.5). The protocol defines no automation, queueing, or
-multi-party coordination for any of these decisions.
+Normal identity-change adoption is distinct from recovery after `halted` or a
+destructive reset. Section 4.6 defines its implementation-selected policy and
+binding invariants; it does not require an administrative workflow.
 
 ## 12. Sealed-challenge verification service
 

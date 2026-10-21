@@ -145,7 +145,7 @@
           "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
         },
         "groupMetaFeedEndId": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:somfp:v1:group-meta#/$defs/feedBoundary"
         }
       },
       "additionalProperties": false

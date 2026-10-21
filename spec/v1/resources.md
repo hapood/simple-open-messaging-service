@@ -51,13 +51,6 @@ An HTTP `200` business error still uses the JSON error envelope. Consumers
 MUST classify it by `Content-Type` and envelope before interpreting it as a
 resource response.
 
-## 2. Profile reads
-
-[Profiles](./profiles.md) defines current public profile lookup and exact
-profile lookup authorized by messages, Group Meta, or Relationship Intent.
-State Feed and Group Meta carry profile references but do not publish display
-profile bytes. v1 defines no fuzzy user search or account-enumeration operation.
-
 ## 3. Media resources
 
 ### 3.1 Operation and authorization coordinate
@@ -227,33 +220,17 @@ reference, or current recognition is insufficient.
 
 ### 4.2 Successful response and invariants
 
-Success `data` is the closed `ForwardWireBundle` defined by
-[FORWARD Message and Bundle, Section 3](./message/forward.md#3-bundle-schema), with these additional invariants:
+Success `data` is the complete, closed `ForwardWireBundle` defined by
+[FORWARD Message and Bundle, Section 3](./message/forward.md#3-bundle-schema).
+Its digest and graph invariants follow [Section 4](./message/forward.md#4-bundle-graph-and-local-ids),
+asset and count rules follow [Section 5](./message/forward.md#5-display-snapshots-quotes-and-assets),
+and complete-closure validation and commit follow [Section 8](./message/forward.md#8-fetch-validation-and-commit).
 
-- `id` equals the path `bundleId` and is the digest of the canonical body. A `children[].id` is not an independent query target.
-- `children` is the flat set of all nested child bundles and has unique IDs in
-  this response. Multiple messages MAY share a child digest without duplicating
-  its body in `children`. Bundle dependencies MUST be acyclic; self-cycles and mutual
-  cycles MUST be rejected. The flat representation does not exempt dependencies
-  from cycle validation.
-- Each bundle has an independent message-ID space. `quoteTargetId`, when positive, resolves
-  only within its enclosing `messages` array.
-- The publisher MUST return its previously published closure in full. v1 sets
-  no common byte, child-count, or message-count maximum. A consumer MAY decline
-  it under finite local limits but MUST NOT commit a partial closure or block
-  the outer FORWARD message/query cursor.
-- `assets` is the deduplicated union of all assets referenced by the root and
-  child messages and profile snapshots.
-- Counts are derived, not wire fields. Message-count limits count every child
-  reference occurrence recursively, even when its body is shared; depth follows
-  the longest reference path. Asset counts use the deduplicated manifest.
-- The consumer retains the binding between the closure and the outer FORWARD
-  message through which it was discovered.
-
-A closure is an immutable snapshot. Repeated successful reads of a
-`bundleId` from the same publisher MUST be semantically identical. Binary
-assets are not embedded; they use the media operation and the exact coordinate
-of the outer FORWARD message.
+The response `id` MUST equal the path `bundleId`. The publisher MUST return its
+previously published closure in full; repeated successful reads of a `bundleId`
+from the same publisher MUST be semantically identical. Binary assets use the
+media operation and the exact coordinate of the outer FORWARD message under
+Section 4.3, not independent child-bundle requests.
 
 ### 4.3 Closure asset retrieval
 
@@ -298,11 +275,9 @@ digest-based retrieval from another publisher.
 - Shared failures follow the error registry.
 
 `NOT_FOUND` is not a message deletion signal and MUST NOT create, propagate, or
-imply a tombstone. A saved summary or partial closure MUST NOT be presented as
-the complete bundle. The consumer validates the entire closed shape, flat
-reference closure, local message-ID scopes, its local finite limits, and every
-descriptor before one atomic commit. A dependency cycle or any other validation
-failure rejects the entire bundle without retaining an authorizing partial graph.
+imply a tombstone. Failed or incomplete closure validation follows
+[FORWARD Message and Bundle, Section 8](./message/forward.md#8-fetch-validation-and-commit);
+an HTTP success does not waive those requirements.
 
 ### 4.5 Minimal example
 

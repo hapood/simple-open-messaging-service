@@ -65,8 +65,8 @@ RFC 4648 standard base64.
   outer `assets`; no other digest may appear there. When `avatarDigest` is
   absent, `assets` MUST be empty.
 - The avatar uses the same encoded-size, non-empty-image, and decoded-pixel
-  constraints as the public profile avatar in [Resources, Section
-  3.2](../resources.md#32-range-requests-and-successful-responses). Because the avatar is fetched as image bytes rather than embedded as Base64, its `BlobDescriptor.bytes` MUST be
+  constraints as `InlineProfileAvatar` in [Core Protocol, Section
+  6.2](../protocol.md#62-shared-federation-types). Because the avatar is fetched as image bytes rather than embedded as Base64, its `BlobDescriptor.bytes` MUST be
   in the inclusive range 1–786,432. A consumer MUST verify the actual byte
   count, digest, image decoding, real dimensions, and the 512-pixel maximum
   for each dimension

@@ -172,10 +172,8 @@ the unwanted states itself before responding, and the protocol permits that.
 
 ## 7. Relationship to other operations
 
-This operation reads only retained content digests. It does not read the
-message query, tombstone, state, or profile feeds, and answers from it MUST NOT
-be used to advance, invalidate, or revalidate any cursor, relationship, or
-recognition fact. It is not a substitute for
+Answers from this operation MUST NOT be used to advance, invalidate, or
+revalidate any cursor, relationship, or recognition fact. It is not a substitute for
 [Message Query](./message-feed.md) authorization: a `yes` does not authorize
 the requester to receive the message, and a `no` does not revoke an existing
 authorization.

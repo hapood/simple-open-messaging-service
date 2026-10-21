@@ -2,7 +2,7 @@
 
 Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
-This document defines the outer wire shape, origin coordinates, idempotency rules, and processing receipts shared by every message in a federation message query. See the [Message overview](../message.md#4-contenttype) and its topic documents for each parsed `contentType` shape, and [Message Query](../message-feed.md) for pagination semantics.
+This document defines the outer wire shape, origin coordinates, idempotency rules, and processing receipts shared by every message in a federation message query. See the [Message overview](../message.md#2-contenttype) and its topic documents for each parsed `contentType` shape, and [Message Query](../message-feed.md) for pagination semantics.
 
 ## 1. Wire types
 
@@ -284,12 +284,17 @@ The absence of an observed receipt does not prove processing failure and cannot 
 1. Validate the thread, its matching author reference, query sequence, and every
    outer field.
 2. Parse and validate `content` according to `contentType`.
-3. Validate that `assets` exactly matches the set of content digests.
+3. Validate that `assets` exactly matches the set of content digests and enforce
+   local size limits from `assets[].bytes` before download. Enforce local quotas
+   against actual arrays and descriptors, not remotely supplied derivable counts.
 4. Receive idempotently using the direct-origin identity and preserve the
    coordinate association.
 5. Resolve referenced resources using the exact message authorization and
    digest binding; resource completion may occur after message-coordinate
    acceptance.
 6. Apply accepted items without fabricating resource availability or authority.
+   Make each accepted message durably recoverable before committing its query
+   cursor. No particular database transaction, work queue, or storage model is
+   required.
 
 One invalid message or a later resource failure MUST NOT permanently block other messages on the same page or the cursor, and MUST NOT leave a partial write that could be treated as a valid message, resource-authorization proof, or other application fact.

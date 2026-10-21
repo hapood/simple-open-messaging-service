@@ -39,7 +39,10 @@ window.
 Both modes use the common feed paging contract. A bounded drain fixes `through`
 on its first page and MUST reuse that value on every later page. Initial full
 synchronization starts with `after=0`; delta starts with the last atomically
-committed `scannedThrough`.
+committed `scannedThrough`. The fixed bound limits coordinates, not a frozen
+cross-page snapshot: each page uses its own consistent source snapshot. The
+source need not retain superseded items for an active drain or maintain a
+drain session. Compaction and subsequent delta convergence follow Sections 3–4.
 
 The authenticated peer MUST have at least one effective source-authored
 group-to-member `REQUESTED` or `ACCEPTED` direction whose member belongs to that
@@ -126,6 +129,13 @@ interface GroupMetaMemberBody {
 It is strictly increasing, never reused, and independent of every other group.
 `THREAD_CONTENT_HEAD.groupMetaFeedEndId`, `after`, `through`, `scannedThrough`, and
 `groupMetaFeedEndId` use this same non-negative safe-integer coordinate space.
+A publisher MUST NOT allocate `feedId` greater than `9007199254740990`
+(`SafeInteger - 1`). Published `groupMetaFeedEndId`, including the coordinate
+carried by State Feed, and page `scannedThrough` MUST also be at most that
+value. The remaining safe-integer value is reserved for the exclusive recovery
+boundary `resumeBefore = groupMetaFeedEndId + 1`. Request cursors `after` and
+`through` and recovery boundaries MUST NOT exceed `SafeInteger`; their wire
+representations remain unchanged.
 Closing and later restoring one peer's authorization does not reset the group
 coordinate space or create a peer-specific copy. Reauthorization advances that
 audience's delta visibility floor instead.
@@ -220,14 +230,12 @@ new group's feed. Publishing, editing, and clearing replace this same stable
 key with a newly allocated `feedId` from the existing group allocator. Clearing
 MUST publish `text: null`; it MUST NOT delete the projection or emit `MEMBER_DEPART`.
 The latest projection, including a clear, MUST be retained for full recovery.
-An existing group adopting this contract MUST establish its current announcement
-(or `null`) before serving the extended feed.
 
 Only the group origin authors this fact. It MUST authorize the initiating user
 as a current `OWNER` or `ADMIN` at commit time; origin policy MAY further
 restrict editing. The local command API is outside this protocol. Mirrors MUST
-NOT author or forward announcement mutations as canonical facts. The origin
-commits the replacement and durable thread-head fan-out work atomically.
+NOT author or forward announcement mutations as canonical facts. Announcement
+publication follows the durable head-publication requirements in Section 5.
 Announcement changes advance `groupMetaFeedEndId` and publish through the same
 confirmed-audience head path even when message and tombstone bounds are
 unchanged. They MUST NOT allocate a message sequence or mutate membership,
@@ -342,11 +350,16 @@ replacement full drain succeeds atomically.
 
 ## 5. State-feed dependency
 
-The origin commits a canonical Group Meta item once, then asynchronously
-replaces each authorized audience's `THREAD_CONTENT_HEAD`. Its
-`groupMetaFeedEndId` MUST identify a committed position in the canonical group
-feed at publication time. The
-receiver first commits relationship and group identity dependencies and
+The origin MUST publish each canonical Group Meta change through the applicable
+confirmed audiences' `THREAD_CONTENT_HEAD` projections under State Feed Section 6.
+A head's `groupMetaFeedEndId` MUST identify a committed position in the canonical
+group feed at publication time. A committed change MUST remain discoverable
+through a head covering at least that coordinate, including after a crash and
+recovery, while the audience remains authorized for head publication. The
+protocol does not prescribe synchronous updates, queued work, or another
+publication mechanism.
+
+The receiver first commits relationship and group identity dependencies and
 durably admits a Group Meta drain through `groupMetaFeedEndId` with the
 state-feed item. It MUST NOT expose dependent group content until that drain has
 committed. The coordinate is not roster data and cannot itself add or remove a

@@ -247,9 +247,20 @@ MUST NOT be made.
 
 ## 8. Fetch, validation, and commit
 
-A consumer MUST validate the complete bundle's closed shape, reference closure, local IDs, actual counts, and asset set before saving it within one commit boundary. It MUST NOT save a partial bundle that could participate in display or resource authorization.
+A consumer MUST validate the complete bundle's closed shape, digests, reference
+closure, local IDs, actual counts, and asset descriptors before accepting it
+within one atomic commit boundary. A cycle or any other validation failure
+rejects the entire bundle; the consumer MUST NOT retain an authorizing partial
+graph or present a saved summary or partial closure as the complete bundle.
 
-Bundle and CAS requests are always bound to the outer FORWARD message through which the bundle was discovered. A media request uses that message's thread, author, authoritative-publisher `seq`, and digest. A child ID, display snapshot, bundle-local message ID, or quote target MUST NOT be used as an authorization coordinate.
+v1 sets no common byte, child-count, or message-count maximum. A consumer MAY
+decline a closure under finite local limits, using the actual counts defined
+in Section 5, but MUST NOT commit a partial closure or block the outer FORWARD
+message/query cursor.
+
+The consumer MUST retain the binding between the closure and the outer FORWARD
+message through which it was discovered. Resource authorization and media-query
+coordinate derivation follow [Resources, Sections 4.1 and 4.3](../resources.md#4-forward-bundles).
 
 ## 9. Required rejections
 

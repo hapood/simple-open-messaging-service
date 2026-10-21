@@ -85,26 +85,26 @@ The following table is the complete v1 surface. Its synchronization surface cont
 
 All four signed contexts use the same HTTP Message Signature profile but have different authorization boundaries:
 
-- **bootstrap signed** applies only to `recognize`. The receiver may accept the
-  attempt and return `pending` before asynchronous well-known fetch, signature
-  validation, root resolution, sender-assigned local namespace validation, or administrator
-  review completes. `pending` carries no namespace and creates no acceptance
-  evidence. Only a later `recognized` result proves that the receiver has
-  obtained the signer domain's current well-known document, validated the root,
-  signing-key certificate, HTTP signature, and domain binding, then committed
-  local recognition, receive readiness, and the requester's explicit
-  recognition assertion as one externally indivisible effect. A signer whose
-  domain is not currently bound is resolved by root identity before any new
-  peer is allocated: a root that byte-for-byte matches one pinned, unretired
-  namespace bound to another domain is a domain re-binding arrival. The
-  receiver keeps that arrival pending for administrator review; approval allows
-  a later `recognized` result, and rejection returns `failed` with the stable
-  rejection code. recognition.md defines the arrival, its sender-assigned
-  local namespace, and
-  the review outcomes.
-- **status signed** applies only to `health`. Common HTTP Message Signature authentication, including signing-certificate validity, is enforced before the Health status handler; any authentication or resolution failure uniformly returns the privacy-safe `unavailable` result instead of a stable-registry error envelope. After authentication succeeds, the receiver evaluates the authenticated signer's existing pinned identity and locally recognized/prepared receive-path state. Such a peer MAY receive `available` or `degraded`; either result proves the receiver accepts the requester and is prepared to receive its traffic, equivalent to Recognize `recognized`. A successfully authenticated query also refreshes reachability. An authenticated signer that is not recognized, prepared, authorized, or safely disclosable uniformly receives privacy-safe `unavailable`; the query MUST NOT trigger first recognition.
-- **lightweight signed** applies only to `feed-heads`. The recipient MUST locally recognize the signer and have a prepared lightweight receive path. Recognize `recognized` is one prompt way to communicate that readiness; positive Health provides equivalent evidence. This context does not authorize another data-plane operation.
-- **recognized signed** requires a pinned and locally recognized signer, a prepared receive path, a currently valid signing-key certificate, compatible version and policy state, and the operation's own business authorization. The sender separately requires evidence that the recipient accepts it, supplied by Recognize `recognized`, inbound Recognize, or positive Health, and current authenticated reachability. A receiver MUST NOT require delivery of the requester's earlier Recognize notification or reject solely because its cached availability view is `degraded`. Signature authentication precedes business authorization, so every successfully authenticated request refreshes reachability even when later validation rejects that operation. `halted` remains a hard protocol or policy gate whose specific cause is retained outside the lifecycle. calls.md further defines safe termination of an existing active call binding.
+- **bootstrap signed** applies only to `recognize`. It uses discovery-backed
+  identity validation rather than requiring an existing recognition grant.
+  [Peer Recognition, Sections 4–5](./recognition.md#4-identity-verification-recognition-and-pinning)
+  define arrival validation, identity-change adoption, and the commit boundary;
+  its Section 7 defines immediate results while validation is outstanding.
+- **status signed** applies only to `health`. It uses existing identity and
+  certificate state under [Transport and Security, Section 3.5](./transport-security.md#35-validation-order-and-failure-boundaries),
+  followed by the privacy-safe status projection in
+  [Peer Recognition, Section 9](./recognition.md#9-health-query-and-privacy).
+  It does not establish first recognition.
+- **lightweight signed** applies only to `feed-heads`. The recipient MUST locally
+  recognize the signer and have a prepared lightweight receive path. This
+  context does not authorize another data-plane operation.
+- **recognized signed** requires a pinned and locally recognized signer, a
+  prepared receive path, a currently valid signing-key certificate, compatible
+  version and policy state, and the operation's own business authorization.
+  Sender and receiver admission follow
+  [Peer Recognition, Section 3](./recognition.md#3-recognition-and-reachability-state-model).
+  [Calls](./calls.md) additionally defines safe termination of an existing
+  active call binding.
 
 A hard gate MUST preserve the specific wire result that caused `halted` and MUST NOT collapse it into a generic “untrusted” error. A policy block uses `FEDERATION_PEER_BLOCKED`, an identity contradiction uses the appropriate identity error, and version incompatibility uses `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`. These causes share a lifecycle that stops automatic communication but retain distinct reasons and security meaning.
 
@@ -112,18 +112,10 @@ A hard gate MUST preserve the specific wire result that caused `halted` and MUST
 
 A path absent from this complete surface is not part of Federation v1. [Peer Recognition](./recognition.md) defines the fields, bidirectional state, pinning, retry, and privacy rules for `recognize` and `health`, including the domain re-binding arrival carried by `recognize`.
 
-The local peer lifecycle is the closed enum `unrecognized`, `establishing`, `pending`, `available`, `degraded`, or `halted`. It is distinct from the privacy projection `available | degraded | unavailable` returned by Health:
-
-- `unrecognized` means there is no usable pinned/recognition identity.
-- `establishing` means local recognition and receive-path preparation have committed, but the peer's acceptance of this node has not yet been proven.
-- `pending` means asynchronous verification or administrator review has not yet produced peer acceptance; it cannot authorize ordinary traffic.
-- `available` means local recognition and peer acceptance are proven, and current authenticated reachability exists without unresolved transport degradation.
-- `degraded` means local recognition and peer acceptance are proven, but current reachability is absent or has a retryable failure.
-- `halted` is the uniform, non-automatically-recoverable state after a verifiable hard failure. The specific HTTP error or local security cause is retained separately for administrator action.
-
-`available` and `degraded` record proven reciprocal recognition together with current reachability quality. A positive Health result carries the responder's acceptance assertion defined in recognition.md; its privacy projection need not equal the responder's bilateral lifecycle. Ordinary-operation gates MUST be calculated from pinned identity, local recognition and receive readiness, peer acceptance, reachability, version, policy, and business authorization; a lifecycle label alone is insufficient.
-
-Before returning Recognize `recognized`, a receiver MUST atomically recognize the signer, accept its explicit recognition assertion, and prepare its receive path, including `feed-heads`. Reverse Recognize is optional. Before sending Recognize, a server MUST pin and locally recognize the peer and prepare its receive path. Without peer-acceptance evidence it is `establishing`; existing acceptance preserves `degraded` or `available` according to reachability. recognition.md defines the exact commit boundaries and race timing.
+[Peer Recognition, Section 3](./recognition.md#3-recognition-and-reachability-state-model)
+is the sole definition of recognition facts, the closed peer lifecycle, and
+operation gates. Its Section 9 defines Health's distinct privacy projection.
+A lifecycle label alone is not authorization.
 
 ## 4. Well-known discovery and keys
 
@@ -447,15 +439,32 @@ operation.
 
 ### 9.2 Common feed rules
 
-State Feed permits omitting `after` to query its current available window. The source then returns `FEDERATION_FEED_CURSOR_UNAVAILABLE` with both `resumeAfter` and `resumeBefore` and no page. A request omitting `after` MUST NOT carry another page parameter. `resumeAfter` is the feed's forward bootstrap base and `resumeBefore` is one greater than `stateFeedEndId`. Draining from that base MUST reconstruct the complete current projection, including every current `THREAD_CONTENT_HEAD`.
+Bootstrap, request parameters, and page shapes are defined by
+[State Feed, Sections 1–2](./state-feed.md#1-request-and-bootstrap),
+[Group Meta Feed, Sections 1–2](./group-meta.md#1-request), and
+[Profile Namespace Feed, Sections 2–3](./profile-namespace-feed.md#2-feed-request-and-bootstrap).
+Their omitted-`after` behavior is operation-specific.
 
-State Feed permits optional `take` and the inclusive feed-ID upper bound `through`. `take` is only the consumer's suggested scan count; the source SHOULD consider it but MAY choose another page size according to service capacity. Consecutive pagination with `through` MUST keep the value unchanged. It limits only the read window and is not an acknowledgement, deletion, or historical-degradation operation. The source does not retain a consumer ACK or cursor. A page returns `scannedThrough`, `stateFeedEndId`, and `hasMore`.
+Consecutive pagination with `through` MUST keep the value unchanged. It limits
+only the read window and is not an acknowledgement, deletion, or
+historical-degradation operation. The source does not retain a consumer ACK or
+cursor.
 
 Every feed-ID window is open on the left and closed on the right. `after=A&through=T` means `(A, T]`: `A` has already been committed by the consumer and is excluded, while `T` is included as the drain bound. A page actually completes `(after, scannedThrough]`, so `feedId === scannedThrough` is included and `feedId === after` MUST NOT be applied again. Omitting `through` means only that the request uses the source's frozen current `*FeedEndId`; it does not change the interval rule. HTTP byte ranges, time intervals, and other non-feed coordinates are outside this convention.
 
 Applying a page and adopting its cursor position MUST be atomic from the protocol's perspective. A repeated page MUST be idempotent. An empty page may still advance through `scannedThrough`. The source does not validate whether `after` equals the preceding page; the consumer ensures its local cursor never moves backward. Feed IDs need only strictly increase, not remain contiguous. `scannedThrough` and the next item ID MAY cross arbitrarily large deleted or unallocated gaps.
 
-Feed retention is operation-specific. State Feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group Meta MUST retain the latest `MEMBER_UPSERT` needed for every current roster member, its current group-profile and announcement projections (including an explicit announcement clear), and the mutations required by active bounded drains. Message query has an independent serviceable window. A publisher SHOULD retain each referenced author-profile snapshot while any message referencing it remains serviceable to a peer. If the snapshot is unavailable, the degradation rules in [Profiles, Section 7](./profiles.md#7-retention-and-degradation) apply. Tombstone facts remain permanent even when loss of authorization removes their current thread-content projection.
+Retention and compaction are operation-specific: see
+[State Feed, Sections 1–2](./state-feed.md#1-request-and-bootstrap),
+[Group Meta Feed, Sections 2–4](./group-meta.md#2-page-and-coordinates), and
+[Profile Namespace Feed, Section 3](./profile-namespace-feed.md#3-page-and-compaction).
+A bounded drain is not a promise to preserve superseded projections across
+pages. Message query has an independent serviceable window. A publisher SHOULD
+retain each referenced author-profile snapshot while any message referencing it
+remains serviceable to a peer. If the snapshot is unavailable, the degradation
+rules in [Profiles, Section 7](./profiles.md#7-retention-and-degradation) apply.
+Tombstone facts remain permanent even when loss of authorization removes their
+current thread-content projection.
 
 The closed `feed-heads` body contains exactly `stateFeedEndId` and
 `profileNamespaceFeedEndId`; both are required. The authenticated signer
@@ -489,10 +498,9 @@ At startup and during periodic reconciliation, even without a hint, a consumer M
 
 A **forward reconciliation round** is one bounded attempt to incorporate a
 lightweight hint or a periodic reconciliation observation. The consumer first
-drains State Feed to one fixed inclusive `through` target. A larger hint received
-during that drain creates subsequent work and MUST NOT enlarge the active page
-sequence. Every retry retains the original `through`; each response's
-`scannedThrough` is progress toward that fixed target, not a replacement target.
+drains State Feed to the fixed inclusive target selected under Section 9.2.
+Every retry retains the original `through`; each response's `scannedThrough`
+is progress toward that fixed target, not a replacement target.
 
 The round is a coordination and retry scope, not an atomic transaction and not
 a source-side session. A transport failure MUST NOT roll back an already
@@ -562,11 +570,15 @@ Media content carries only explicit digests, not publisher display or download U
 
 ## 10. Identity continuity and reset requirements
 
-This section defines the security baseline that Recognize and subsequent identity continuity MUST NOT cross. [Federation v1 Peer Recognition](./recognition.md) defines the empty Recognize body, bidirectional confirmation, failure retries, privacy-safe Health status, and atomic transitions.
+The root identity is the long-lived continuity anchor; a signing key is a
+rotatable request-signing key authorized by that root. Ordinary transport
+degradation MUST preserve identity pins, acceptance evidence, and
+synchronization state. It MUST NOT automatically repeat recognition once peer
+acceptance is proven or rewrite the initial recognition time. Recognition
+establishment and recovery after uncertain delivery follow
+[Peer Recognition](./recognition.md), not a new identity lifecycle.
 
-Initial recognition establishes both local identity decisions and pins both root public keys. Recognize carries a prompt notification; valid Recognize `recognized` and positive Health are equivalent evidence that the responder accepts the requester. Neither operation exchanges cursors or initializes business mirrors. The root identity is the long-lived continuity anchor; a signing key is only a request-signing key authorized by that root and rotatable online under Section 4. Ordinary transport degradation MUST preserve identity pins, acceptance evidence, and synchronization state. It MUST NOT automatically repeat recognition once peer acceptance is proven or rewrite the initial recognition time.
-
-Any contradiction with a pinned root identity MUST retain the old pin, record the reason, and atomically enter fail-closed `halted`. The current domain controller, a signing key not authorized by the pinned root, deletion of a peer row, or ordinary rediscovery cannot inherit old authorization. The single sanctioned path to a new pinned root is a completed rotation under [Transport and Security, Section 1.5](./transport-security.md#15-root-key-rotation): a Recognize arrival whose fetched group still contains the pinned root, followed by local administrator approval. Administration SHOULD verify predecessor-key possession through a sealed challenge ([Peer Recognition, Section 12](./recognition.md#12-sealed-challenge-verification-service)); requiring that check is a local approval policy.
+Any contradiction with a pinned root identity MUST retain the old pin, record the reason, and atomically enter fail-closed `halted`. The current domain controller, a signing key not authorized by the pinned root, deletion of a peer row, or ordinary rediscovery cannot inherit old authorization. The single sanctioned path to a new pinned root is a rotation accepted under [Transport and Security, Section 1.5](./transport-security.md#15-root-key-rotation) and [Peer Recognition, Sections 4.5–4.6](./recognition.md#45-root-rotation-arrival). The receiver validates the arrival and applies its implementation-selected adoption policy; the protocol does not prescribe an approval workflow.
 
 Diagnostics, recovery, reset, or renewed recognition after `halted` are local administrative behavior; v1 defines no endpoint or workflow for them. Communication MUST NOT resume automatically before explicit administrator action. A root that was never linked through a verified rotation MUST NOT inherit recognition facts or business authorization from the old identity.
 

@@ -3,6 +3,17 @@
   "$id": "urn:somfp:v1:group-meta",
   "title": "GET /s2s/v1/group-meta response data",
   "$defs": {
+    "feedId": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740990
+    },
+    "feedBoundary": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740990,
+      "description": "Published Group Meta end or scan boundary; SafeInteger is reserved for resumeBefore."
+    },
     "upsertBody": {
       "type": "object",
       "required": ["account", "role", "namespaceId", "profileRev"],
@@ -50,7 +61,7 @@
       "required": ["feedId", "operation"],
       "properties": {
         "feedId": {
-          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+          "$ref": "#/$defs/feedId"
         },
 
         "operation": { "type": "string" }
@@ -81,7 +92,7 @@
           "required": ["feedId", "operation", "body"],
           "properties": {
             "feedId": {
-              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "#/$defs/feedId"
             },
             "operation": { "const": "GROUP_PROFILE" },
             "body": { "$ref": "#/$defs/profileBody" }
@@ -93,7 +104,7 @@
           "required": ["feedId", "operation", "body"],
           "properties": {
             "feedId": {
-              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+              "$ref": "#/$defs/feedId"
             },
             "operation": { "const": "GROUP_ANNOUNCEMENT" },
             "body": { "$ref": "#/$defs/announcementBody" }
@@ -117,10 +128,10 @@
     "mode": { "enum": ["full", "delta"] },
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "scannedThrough": {
-      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+      "$ref": "#/$defs/feedBoundary"
     },
     "groupMetaFeedEndId": {
-      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+      "$ref": "#/$defs/feedBoundary"
     },
     "hasMore": { "type": "boolean" }
   },

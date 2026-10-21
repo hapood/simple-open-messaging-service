@@ -1,6 +1,36 @@
 {
   "vectors": [
     {
+      "name": "Group Meta item variants reject the reserved recovery coordinate",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "values": [
+        { "feedId": 9007199254740991, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
+        { "feedId": 9007199254740991, "operation": "MEMBER_DEPART", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 1 } },
+        { "feedId": 9007199254740991, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
+        { "feedId": 9007199254740991, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } }
+      ]
+    },
+    {
+      "name": "Group Meta page rejects the reserved coordinate as its end",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": { "account": "!team", "mode": "delta", "items": [], "scannedThrough": 9007199254740990, "groupMetaFeedEndId": 9007199254740991, "hasMore": false }
+    },
+    {
+      "name": "Group Meta page rejects the reserved coordinate as scan progress",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": { "account": "!team", "mode": "delta", "items": [], "scannedThrough": 9007199254740991, "groupMetaFeedEndId": 9007199254740990, "hasMore": false }
+    },
+    {
+      "name": "State Feed head rejects the reserved Group Meta recovery coordinate",
+      "schema": "urn:somfp:v1:state-feed#/$defs/groupThreadContentHeadBody",
+      "value": { "messageEndSeq": 0, "tombstoneEndSeq": 0, "groupMetaFeedEndId": 9007199254740991 }
+    },
+    {
+      "name": "shared safe integer rejects negative values",
+      "schema": "urn:somfp:v1:common#/$defs/safeInteger",
+      "value": -1
+    },
+    {
       "name": "legacy top-level message author coordinates are rejected",
       "schema": "urn:somfp:v1:message-query#/$defs/message",
       "value": {

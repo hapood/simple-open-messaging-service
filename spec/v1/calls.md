@@ -2,13 +2,6 @@
 
 Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
-This unreleased v1 draft contract revision requires answer correlation
-and generation-bound endpoint ICE. It replaces the earlier RC call contract with
-no legacy fallback; `/s2s/v1/call` and federation major 1 remain unchanged under
-this pre-release revision policy. Deployment MUST coordinate servers and all
-supported endpoints. Publication metadata is updated as part of coordinated RC
-publication, not by independently changing this profile's major version.
-
 This document defines normative requirements. Examples and the explicitly
 non-normative operational defaults illustrate those requirements without
 adding to them.
@@ -575,18 +568,18 @@ The offer producer MUST assign its signal ID before asynchronous sending. The
 answer producer MUST retain the received offer identity through buffering,
 media-permission retries, and SDP application, and capture it as `inReplyTo` when
 creating the answer. IDs and correlation MUST survive relay and retry unchanged.
-Endpoint delivery MUST preserve `inReplyTo`; staged retrieval MUST retain offer
-IDs and return staged answers as `{ id, payload, inReplyTo }` or an equivalent
-local representation preserving all three values.
+Endpoint delivery MUST preserve each signal's ID, payload, and answer
+`inReplyTo` association. Local APIs and storage representations are not
+prescribed.
 
 For a NEW answer, after role and stage checks the server MUST verify that
 `inReplyTo` equals the latest admitted caller offer ID in this call and that no
 logical answer has yet been admitted for that offer. Unknown, cross-call,
 superseded references and a second answer with a new ID return HTTP 400
-`FEDERATION_MALFORMED` (the local API uses its call-transition error). Invalid
-answers MUST NOT enter deduplication or overwrite staged bodies. Correlation
-metadata MUST be retained separately from staged bodies: clearing initial setup
-on connection MUST NOT erase offer/answer association needed for renegotiation.
+`FEDERATION_MALFORMED`. Invalid answers MUST NOT enter deduplication or replace
+an accepted answer. The server MUST preserve the offer/answer association needed
+for subsequent correlation checks, including renegotiation; cleanup of temporary
+data MUST NOT invalidate those checks.
 Server admission does not prove successful endpoint SDP application or stability.
 
 Endpoints MUST apply an answer only if `inReplyTo` matches the active local offer,

@@ -14,7 +14,10 @@ by [Profiles](./profiles.md).
 The closed query contains optional `after`, `take`, and `through`.
 `after` is an exclusive non-negative decimal cursor. `take` is a positive
 safe-integer suggestion. `through` is an inclusive bound and MUST be at least
-`after`. `take` and `through` require `after`.
+`after`. `take` and `through` require `after`. The source SHOULD consider the
+suggested `take` but MAY choose another page size according to service capacity.
+Bounded pagination and cursor commit follow
+[Core Protocol, Sections 9.2–9.3](./protocol.md#92-common-feed-rules).
 
 When `after` is omitted, the source returns
 `FEDERATION_FEED_CURSOR_UNAVAILABLE { resumeAfter, resumeBefore }` and no
@@ -136,6 +139,9 @@ hosted by the receiver. Group/group relationships are invalid. Each direction is
 controlled exclusively by its author; a receiver MUST NOT invent or publish a
 transition on the author's behalf. `ACCEPTED` is a durable acknowledgement of a
 request flow, not a second request and not a transport acknowledgement.
+
+`note` MUST be a string containing at most 255 Unicode code points. An empty
+string is permitted.
 
 Every positive direction (`REQUESTED` or `ACCEPTED`) MUST carry both
 `messageEndSeq` and `tombstoneEndSeq` as non-null, inclusive, non-negative
@@ -367,7 +373,9 @@ at a greater State Feed `feedId`, sampling a fresh latest sequence pair. The
 consumer applies relationship and roster dependencies before exposing content
 from their thread targets, regardless of placement within one fetched page.
 
-A malformed item is isolated according to the common permanent-item rules.
+Within an otherwise valid ordered page, malformed items MUST be skipped without
+applying their effects or blocking later items or advancement to the validated
+`scannedThrough` boundary.
 Accepting a State Feed page MUST atomically preserve its Group Meta target and
 advance its State Feed cursor; failure to preserve either accepts neither.
 Group Meta retrieval is asynchronous and MUST NOT be a prerequisite for that
@@ -375,10 +383,8 @@ State Feed progress. A failed Group Meta retrieval MUST NOT roll back or block
 the State Feed cursor. The consumer MUST retain the target for retry and MUST
 NOT expose dependent group content until the required Group Meta progress has
 been accepted.
-Hints may be lost, repeated, or reordered; startup and periodic reconciliation
-must drain from the durable local cursor. The consumer retains the maximum
-observed pending `stateFeedEndId`; an older hint never moves pending, active, or
-committed progress backward.
+Hint handling, startup draining, and periodic reconciliation follow
+[Core Protocol, Section 9.2](./protocol.md#92-common-feed-rules).
 
 Removing a current state-feed projection allocates no deletion item unless the
 event's own state machine defines a durable terminal fact, such as

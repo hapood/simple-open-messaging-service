@@ -138,16 +138,6 @@
         "quoteTarget": ["quoteDigest"],
         "quoteDigest": ["quoteTarget"]
       },
-      "allOf": [
-        {
-          "if": { "required": ["quoteTarget"] },
-          "then": {
-            "properties": {
-              "contentType": { "not": { "const": "SYSTEM" } }
-            }
-          }
-        }
-      ],
       "additionalProperties": false
     }
   },

@@ -3,6 +3,82 @@
   "description": "Non-wire state-machine vectors. Cursor values are exclusive committed positions.",
   "cases": [
     {
+      "name": "namespace bootstrap commits pages rather than the disclosed end",
+      "initialCursors": { "profileNamespace": "0" },
+      "steps": [
+        {
+          "request": "profile-namespace-feed",
+          "responseItems": [{ "namespaceId": 7, "feedId": "2" }],
+          "responseEnd": "9",
+          "responseScannedThrough": "2",
+          "hasMore": true,
+          "commit": true
+        },
+        {
+          "request": "profile-namespace-feed",
+          "after": "2",
+          "through": "9",
+          "responseItems": [{ "namespaceId": 8, "feedId": "9" }],
+          "responseEnd": "11",
+          "responseScannedThrough": "9",
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "an omitted after is evaluated as zero and may return a partial page",
+        "the first page commits invalidation effects and cursor 2, not cursor 9",
+        "the bootstrap target remains 9 when a later page discloses end 11",
+        "completion commits cursor 9 and leaves end 11 for subsequent work"
+      ]
+    },
+    {
+      "name": "Group Meta compaction during a bounded full drain converges through delta",
+      "steps": [
+        {
+          "request": "group-meta",
+          "mode": "full",
+          "after": 0,
+          "through": 10,
+          "responseItems": [{ "feedId": 4, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } }],
+          "responseScannedThrough": 4,
+          "hasMore": true,
+          "commit": false
+        },
+        {
+          "action": "compact-member-replacement",
+          "replacedFeedId": 8,
+          "replacement": { "feedId": 11, "operation": "MEMBER_UPSERT", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 2 } }
+        },
+        {
+          "request": "group-meta",
+          "mode": "full",
+          "after": 4,
+          "through": 10,
+          "responseItems": [],
+          "responseScannedThrough": 10,
+          "hasMore": false,
+          "commit": true
+        },
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "after": 10,
+          "through": 11,
+          "responseItems": [{ "feedId": 11, "operation": "MEMBER_UPSERT", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 2 } }],
+          "responseScannedThrough": 11,
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "the full drain retains through 10, not a snapshot of every item visible at its start",
+        "the source need not preserve superseded item 8 for the active drain",
+        "full completion atomically applies the accumulated roster containing alice and cursor 10",
+        "delta restores bob from replacement 11 without a source-side drain session"
+      ]
+    },
+    {
       "name": "full scan without announcement removes the previous projection before delta",
       "initialCursors": { "groupMeta": 4 },
       "steps": [
@@ -85,7 +161,7 @@
       "assertions": [
         "drain target is 9",
         "the first page belongs to the drain",
-        "state sweep is allowed only after cursor equals 9"
+        "the bounded State Feed drain completes only after its committed cursor equals 9"
       ]
     },
     {
@@ -131,7 +207,7 @@
     {
       "name": "message query retry results never move cursor or peer lifecycle",
       "initialCursors": { "messageQuery": "40" },
-      "initialPeerLifecycle": "healthy",
+      "initialPeerLifecycle": "available",
       "steps": [
         {
           "request": "messages",
@@ -150,7 +226,7 @@
       ],
       "assertions": [
         "message query cursor remains 40",
-        "peer lifecycle remains healthy"
+        "peer lifecycle remains available"
       ]
     },
     {
@@ -321,7 +397,18 @@
           "request": "group-meta",
           "mode": "delta",
           "departedMembers": ["bob@b.example"],
-          "departBodyAbsent": true,
+          "responseItems": [
+            {
+              "feedId": 5,
+              "operation": "MEMBER_DEPART",
+              "body": {
+                "account": "bob",
+                "namespaceId": 7,
+                "role": "MEMBER",
+                "profileRev": 3
+              }
+            }
+          ],
           "commit": true
         },
         {

@@ -128,10 +128,6 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9+/]{86}==$"
     },
-    "base64UrlNonce": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{22,128}$"
-    },
     "base64ChallengeAnswer": {
       "description": "Canonical RFC 4648 padded base64 of 0–4096 recovered plaintext bytes, including zero pad bits. Empty plaintext is the empty string.",
       "type": "string",
@@ -146,12 +142,8 @@
     },
     "safeInteger": {
       "type": "integer",
-      "minimum": -9007199254740991,
+      "minimum": 0,
       "maximum": 9007199254740991
-    },
-    "ulid": {
-      "type": "string",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
     },
     "canonicalUuid": {
       "type": "string",

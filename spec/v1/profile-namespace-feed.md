@@ -27,10 +27,10 @@ advance this feed:
 
 1. a **new namespace item** — a first recognition, or recognition after a
    destructive identity reset;
-2. a **replacement of an existing item's bindings** — an administrator-approved
+2. a **replacement of an existing item's bindings** — an accepted
    root-public-key or domain change for the same namespace id.
 
-An approved root rotation or domain re-binding MUST preserve the identity's
+An accepted root rotation or domain re-binding MUST preserve the identity's
 namespace id. A publisher MUST NOT retire that namespace or allocate a
 successor namespace for either change. Root-key succession changes the key
 binding, not the subject namespace. A destructive reset instead retires the
@@ -46,7 +46,7 @@ public root key or domain MUST publish a binding-change item with
 `namespaceId: 0` and MUST continue to identify its own subjects with namespace
 `0`. A consumer expires the cached binding and re-queries
 `profile-namespaces/0`. Root adoption remains subject to Peer Recognition;
-observing this feed item does not grant approval.
+observing this feed item does not authorize adoption.
 
 ## 2. Feed request and bootstrap
 
@@ -56,12 +56,20 @@ decimal cursor, `take` a positive safe-integer suggestion, and `through` an
 inclusive bound that MUST be at least `after`. `take` and `through` require
 `after`.
 
-Unlike State Feed, an omitted `after` is not an error: the source serves every
-current compacted item from `0` together with its current feed end, and the
-consumer initializes its cursor directly from the response. The zero fallback
-is performed by the sender; this feed defines no `resumeAfter` /
-`resumeBefore` envelope and no cursor-unavailable recovery. An `after` greater
-than the current `feedEndId` is malformed.
+Unlike State Feed, an omitted `after` is not an error: the publisher MUST treat
+it as `after=0` and return a normal page under Section 3. Bootstrap MAY span
+multiple pages; the publisher need not return every current item in one
+response. Omission still forbids `take` and `through`. This feed defines no
+`resumeAfter` / `resumeBefore` envelope and no cursor-unavailable recovery.
+An `after` greater than the current `feedEndId` is malformed.
+
+The consumer MUST use the first successful bootstrap page's `feedEndId` as the
+fixed inclusive `through` for the remainder of that drain. The first page is
+part of the drain. On each successful page commit, the consumer MUST adopt only
+`scannedThrough` as its cursor, atomically with the page's invalidation effects;
+it MUST NOT jump to `feedEndId` while that boundary remains unscanned. Subsequent
+pages use `after=scannedThrough` and the unchanged `through`. A later observed
+feed end creates subsequent work, not a larger active drain target.
 
 ## 3. Page and compaction
 
@@ -146,4 +154,4 @@ interface ProfileNamespaceBindings {
 The bindings are display and vouching data only. They never mutate the
 consumer's identity pins, admission state, or message authentication, which
 remain governed exclusively by
-[Peer Recognition](./recognition.md) and its review mechanism.
+[Peer Recognition](./recognition.md) and its binding and adoption rules.
