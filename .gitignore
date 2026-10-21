@@ -1,6 +1,6 @@
 # compiled output
 /dist
-/node_modules
+node_modules/
 /.angular/
 
 # Logs — global *.log catch-all + npm debug (npm is the only package manager here; no pnpm/yarn/lerna)
