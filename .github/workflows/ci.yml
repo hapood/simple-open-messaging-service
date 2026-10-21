@@ -39,7 +39,7 @@ jobs:
 
       - name: Build and test server
         run: |
-          npm run version:check
+          node scripts/check-version-sync.mjs
           npm run build
           npm test
           npm run federation:conformance
