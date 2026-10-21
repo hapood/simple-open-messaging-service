@@ -18,8 +18,6 @@
 </p>
 
 <p align="center">
-  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live UI playground (client-only demo) — no server required</strong></a>
-  ·
   <a href="spec/README.md">Federation specification</a>
   ·
   <a href="docs/development/local-development.md">Development setup</a>
@@ -29,6 +27,10 @@
 
 <p align="center">
   <img src="docs/design/assets/playground-preview.png" alt="SOMS Web Client Preview" width="850">
+</p>
+
+<p align="center">
+  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live playground</strong></a> — client-only demo.
 </p>
 
 > [!IMPORTANT]
