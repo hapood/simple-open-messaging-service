@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live UI playground — no server required</strong></a>
+  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live UI playground (client-only demo) — no server required</strong></a>
   ·
   <a href="spec/README.md">Federation specification</a>
   ·
@@ -27,10 +27,12 @@
   <a href="docs/deployment/nas.md">NAS deployment</a>
 </p>
 
+<p align="center">
+  <img src="docs/design/assets/playground-preview.png" alt="SOMS Web Client Preview" width="850">
+</p>
+
 > [!IMPORTANT]
-> SOMS `0.1.0-alpha.0` is under active development and has not published its first stable release.
-> The independently versioned federation protocol is currently `v1.0.0-draft.0` — **Draft, Final Review**.
-> It is undergoing closeout review, not frozen or certified interoperable; corrections remain possible before release.
+> SOMS `0.1.0-alpha.0` and the federation protocol (`v1.0.0-draft.0`) are under active development; the wire contract remains subject to closeout revisions prior to stable release.
 
 ## Why SOMS?
 
@@ -66,27 +68,44 @@ console remain fully self-hostable.
   previews, unread state, mute, pin, and history clearing
 - Images, video, audio, files, avatars, and access-controlled media storage
 - OTP and QR sign-in with per-device sessions, sliding inactivity expiry, and remote revocation; registration
-  and password sign-in are temporarily hidden in the client UI
+  and password sign-in are temporarily hidden in the client UI during alpha
 - Real-time delivery over SSE, Web Push and FCM notifications, plus missed-message summaries
 - One-to-one audio/video calls with WebRTC signaling and optional TURN credentials
 - Administration console with RBAC, audit logs, quotas, diagnostics, federation controls, 2FA, and
   WebAuthn
 - Responsive, installable web client with a shared Tauri shell for native platform integrations
 
+## Quick Start
+
+### Local Development
+
+Prerequisites: Node.js 24+, npm, PostgreSQL, and Caddy.
+
+```bash
+# Clone repository and install dependencies
+git clone https://github.com/hapood/simple-open-messaging-service.git
+cd simple-open-messaging-service
+npm install && npm install --prefix web && npm install --prefix admin-web
+
+# Configure environment
+cp .env.example .env
+
+# Run development servers (in separate terminals)
+npm run dev:be   # Backend & federation lab
+npm run dev:fe   # Web client with HMR
+```
+
+For full environment setup, database migrations, and testing workflows, see the [local development guide](docs/development/local-development.md).
+
 ## Deployment
 
 SOMS ships as a self-contained Docker stack with PostgreSQL, automatic migrations, the application,
-and a Caddy TLS edge. The first published deployment guide covers the NAS profile: administration
-stays on the home LAN while the client and federation endpoint can be reached from the internet.
+and a Caddy TLS edge.
 
-| Profile | Documentation status | Intended environment                                                       | Example                            |
-| ------- | -------------------- | -------------------------------------------------------------------------- | ---------------------------------- |
-| NAS     | **Published**        | Home LAN administration with a publicly reachable client                   | [`deploy/nas/`](deploy/nas/)       |
-| Public  | In progress          | Internet-facing server with standard HTTPS ports and public administration | [`deploy/public/`](deploy/public/) |
-
-The [NAS deployment guide](docs/deployment/nas.md) explains how to build the image, configure the NAS
-profile, initialize the administrator, obtain DNS-01 certificates, verify the deployment, and update
-it safely. The public-server deployment guide is still being written.
+| Profile | Status        | Intended environment                                                       | Guide / Compose                                                    |
+| ------- | ------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| NAS     | **Published** | Home LAN administration with a publicly reachable client                   | [NAS guide](docs/deployment/nas.md) · [`deploy/nas/`](deploy/nas/) |
+| Public  | In progress   | Internet-facing server with standard HTTPS ports and public administration | [`deploy/public/`](deploy/public/)                                 |
 
 ## Platform Roadmap
 
@@ -94,24 +113,21 @@ SOMS uses one Angular client and a Tauri 2 native shell, keeping the core experi
 allowing platform-specific capabilities such as notifications, secure storage, media handling, and
 calls.
 
-| Platform  | Status         | Distribution                                                                                    |
-| --------- | -------------- | ----------------------------------------------------------------------------------------------- |
-| Web / PWA | **Released**   | Runs in modern desktop and mobile browsers                                                      |
-| Android   | In development | Tauri application with native calling and FCM integration                                       |
-| Windows   | Planned        | Tauri desktop application                                                                       |
-| macOS     | Planned        | Tauri desktop application                                                                       |
-| Linux     | Planned        | Tauri desktop application                                                                       |
-| iOS       | Deferred       | Development is paused because App Store distribution is not currently practical for the project |
-
-The roadmap describes delivery priority, not protocol compatibility. Any conforming client can use a
-SOMS server through its documented APIs.
+| Platform  | Status                | Distribution                                              |
+| --------- | --------------------- | --------------------------------------------------------- |
+| Web / PWA | **Available** (Alpha) | Runs in modern desktop and mobile browsers                |
+| Android   | In development        | Tauri application with native calling and FCM integration |
+| Windows   | Planned               | Tauri desktop application                                 |
+| macOS     | Planned               | Tauri desktop application                                 |
+| Linux     | Planned               | Tauri desktop application                                 |
+| iOS       | Deferred              | Paused due to App Store distribution constraints          |
 
 ## Architecture
 
 ```text
- Web / PWA ───────┐                         ┌──── Web / PWA
- Android (Tauri) ─┼─ HTTPS + SSE ─ SOMS ───┼──── Android (Tauri)
- Desktop (Tauri) ─┘               server   └──── Third-party clients
+ Web / PWA ────────────────┐                         ┌──── Web / PWA
+ Android (Tauri) ──────────┼─ HTTPS + SSE ─ SOMS ───┼──── Android (Tauri)
+ Desktop (Tauri, planned) ─┘               server   └──── Third-party clients
                                       │
                                 signed SOMFP v1
                                       │
@@ -121,7 +137,7 @@ SOMS server through its documented APIs.
 | Layer                     | Technology                                                             |
 | ------------------------- | ---------------------------------------------------------------------- |
 | API and federation server | NestJS 11, Fastify, Drizzle ORM, PostgreSQL                            |
-| User client               | Angular 20, Signals, RxJS, Angular CDK/Material primitives             |
+| User client               | Angular 22, Signals, RxJS, Angular CDK/Material primitives             |
 | Native applications       | Tauri 2 with platform integrations in Rust/Kotlin                      |
 | Administration console    | React 19 and Vite                                                      |
 | Real-time and calls       | SSE, Web Push, FCM, WebRTC, optional TURN                              |
@@ -133,17 +149,17 @@ documented in the [HTTP API reference](docs/api/api.md).
 
 ## Documentation
 
-| Topic                     | Entry point                                                                                                                 |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Documentation             | [Documentation index](docs/README.md)                                                                                       |
-| Development               | [Local initialization and development](docs/development/local-development.md) · [Repository conventions](AGENTS.md)         |
-| Federation protocol       | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
-| Server architecture       | [Architecture](docs/overview/architecture.md) · [Database model](docs/overview/database.md)                                 |
-| APIs                      | [Client/admin HTTP API](docs/api/api.md) · [Federation HTTP surface](spec/v1/protocol.md#3-federation-v1-http-surface)      |
-| Deployment and federation | [NAS deployment](docs/deployment/nas.md) · [Federation specification](spec/README.md)                                       |
-| Operations                | [Rate limiting](docs/operations/rate-limiting.md)                                                                           |
-| Native client             | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/platform/android/calls.md)                                    |
-| Security and governance   | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |
+| Topic                   | Entry point                                                                                                                 |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Documentation           | [Documentation index](docs/README.md)                                                                                       |
+| Development             | [Local initialization and development](docs/development/local-development.md) · [Repository conventions](AGENTS.md)         |
+| Federation protocol     | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
+| Server architecture     | [Architecture](docs/overview/architecture.md) · [Database model](docs/overview/database.md)                                 |
+| APIs                    | [Client/admin HTTP API](docs/api/api.md) · [Federation HTTP surface](spec/v1/protocol.md#3-federation-v1-http-surface)      |
+| Deployment              | [NAS deployment](docs/deployment/nas.md) · [Public server (in progress)](deploy/public/)                                    |
+| Operations              | [Rate limiting](docs/operations/rate-limiting.md)                                                                           |
+| Native client           | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/platform/android/calls.md)                                    |
+| Security and governance | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |
 
 ## License
 
