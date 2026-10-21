@@ -22,10 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -35,10 +35,13 @@ jobs:
         run: npm ci --prefix web
 
       - name: Build static playground
-        run: npm run build:playground --prefix web -- --base-href /simple-open-chat-service/
+        run: npm run build:playground --prefix web -- --base-href /simple-open-messaging-service/
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          # Create the Pages site on first run; a no-op once it exists.
+          enablement: true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
