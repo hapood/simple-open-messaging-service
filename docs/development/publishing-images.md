@@ -2,9 +2,9 @@
 
 The [Container image workflow](../../.github/workflows/image.yml) publishes the application to
 `ghcr.io/hapood/simple-open-messaging-service` independently of Android signing and APK releases.
-It reuses the [application verification workflow](../../.github/workflows/verify.yml), then builds
-and checks each architecture on a native GitHub-hosted runner. Only after both architectures pass
-does it assemble and update the multi-platform tags.
+It reuses the [application verification workflow](../../.github/workflows/verify.yml) and builds
+and checks each architecture on a native GitHub-hosted runner in parallel. Only after application
+verification and both architectures pass does it assemble and update the multi-platform tags.
 
 ## Tags
 

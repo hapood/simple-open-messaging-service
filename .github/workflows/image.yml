@@ -63,7 +63,7 @@ jobs:
     uses: ./.github/workflows/verify.yml
 
   build:
-    needs: [prepare, verify]
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -140,7 +140,7 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: [prepare, build]
+    needs: [prepare, verify, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
