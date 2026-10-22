@@ -41,9 +41,7 @@ function intentItem(status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED') {
       note: '',
       requestedAt: status === 'REVOKED' ? null : requestedAt,
       expiresAt: status === 'REQUESTED' ? expiresAt : null,
-      ...(status === 'REVOKED'
-        ? {}
-        : { messageEndSeq: 0, tombstoneEndSeq: 0 }),
+      ...(status === 'REVOKED' ? {} : { messageEndSeq: 0, tombstoneEndSeq: 0 }),
     },
   };
 }
@@ -52,16 +50,22 @@ describe('FederationStateFeedConsumerService relationship profile prefetch', () 
   it.each(['REQUESTED', 'ACCEPTED'] as const)(
     'prefetches the peer profile for %s intents while disclosure is live',
     async (status) => {
-      const { service, receivedUserIntents } = createService('recorded-request');
+      const { service, receivedUserIntents } =
+        createService('recorded-request');
       const db = tx();
 
-      const result = await service.applyPageInTx(db as never, 'remote.test', 5, {
-        items: [intentItem(status)],
-        scannedThrough: '10',
-        stateFeedEndId: '10',
-        profileNamespaceFeedEndId: '0',
-        hasMore: false,
-      });
+      const result = await service.applyPageInTx(
+        db as never,
+        'remote.test',
+        5,
+        {
+          items: [intentItem(status)],
+          scannedThrough: '10',
+          stateFeedEndId: '10',
+          profileNamespaceFeedEndId: '0',
+          hasMore: false,
+        },
+      );
 
       expect(receivedUserIntents.applyInTx).toHaveBeenCalledWith(
         db,

@@ -629,9 +629,7 @@ function makeStubs() {
             return [{ rootPublicKey: PINNED_ROOT }];
           if (source === messageThread) {
             const row = await store.messageThread.findUnique();
-            return row
-              ? [{ type: row.groupUser ? 'GROUP' : 'P2P' }]
-              : [];
+            return row ? [{ type: row.groupUser ? 'GROUP' : 'P2P' }] : [];
           }
           if (source === threadAudience)
             return [

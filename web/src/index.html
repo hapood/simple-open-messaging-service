@@ -11,8 +11,36 @@
        Synchronous (classic, no defer) so it runs during head parsing, before <body> paints. ThemeService /
        LanguageService re-assert and own these attributes at runtime after boot. -->
     <script src="/boot.js"></script>
-    <title>SOMS</title>
+    <title>SOMS — Self-Hosted, Federated Chat Platform</title>
     <base href="/" />
+    <meta
+      name="description"
+      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."
+    />
+    <meta
+      name="keywords"
+      content="self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
+    />
+
+    <!-- Open Graph / Social Media -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://hapood.github.io/simple-open-messaging-service/" />
+    <meta property="og:title" content="SOMS — Self-Hosted, Federated Chat Platform" />
+    <meta
+      property="og:description"
+      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+    />
+    <meta property="og:image" content="https://hapood.github.io/simple-open-messaging-service/social-preview.png" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://hapood.github.io/simple-open-messaging-service/" />
+    <meta name="twitter:title" content="SOMS — Self-Hosted, Federated Chat Platform" />
+    <meta
+      name="twitter:description"
+      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+    />
+    <meta name="twitter:image" content="https://hapood.github.io/simple-open-messaging-service/social-preview.png" />
     <!-- Scale locked (`minimum-scale=maximum-scale=1`, `user-scalable=no`): disables the browser's
        pinch-to-zoom and double-tap-to-zoom so the SPA behaves as a native shell, not a zoomable page.
        On Android this is reinforced authoritatively at the engine layer in MainActivity.onWebViewCreate

@@ -8,6 +8,7 @@ and client behavior.
 
 - [Local development](./development/local-development.md)
 - [NAS deployment](./deployment/nas.md)
+- [Building the Docker image](./development/building-the-image.md)
 - [Architecture](./overview/architecture.md)
 - [Database model](./overview/database.md)
 - [Client and administration API](./api/api.md)

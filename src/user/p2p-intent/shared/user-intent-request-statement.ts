@@ -14,7 +14,10 @@ export interface UserIntentRequestStateInput extends UserIntentFeedInput {
  * authors the actor's intent; a peer-hosted target receives the actor's direction
  * with the thread head snapshot. No activation, no audience, no system
  * message: friendship effects wait for the confirm/accept paths. */
-export function userIntentRequestStatement(input: UserIntentRequestStateInput, intentWrite: SQL): SQL {
+export function userIntentRequestStatement(
+  input: UserIntentRequestStateInput,
+  intentWrite: SQL,
+): SQL {
   const remote = input.targetNamespaceId !== 0;
   return sql`
     WITH authored AS (

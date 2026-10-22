@@ -219,7 +219,9 @@ describe('MessageService.commitOutboundBatch staged quote', () => {
       stageContent: JSON.stringify({ _quoteTargetSeq: 4 }),
       quoteTarget: quoteTargetRow(),
     });
-    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]);
+    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [
+      { digest: FILE_DIGEST, payload: payload() },
+    ]);
     expect(result?.newlyPromoted).toBe(true);
     const content = JSON.parse(result!.message.content as string);
     expect(content).toMatchObject({
@@ -238,7 +240,9 @@ describe('MessageService.commitOutboundBatch staged quote', () => {
       stageContent: JSON.stringify({ _quoteTargetSeq: 4 }),
       quoteTarget: quoteTargetRow(),
     });
-    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]);
+    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [
+      { digest: FILE_DIGEST, payload: payload() },
+    ]);
     const content = ((await messageReturning())[0] as { content: string })
       .content;
     expect(result!.message.payloadDigest).toBe(
@@ -265,7 +269,9 @@ describe('MessageService.commitOutboundBatch staged quote', () => {
       quoteTarget: target,
     });
     await expect(
-      svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]),
+      svc.commitOutboundBatch(clientMessageId, undefined, [
+        { digest: FILE_DIGEST, payload: payload() },
+      ]),
     ).rejects.toThrow('quoted message not found');
   });
 
@@ -276,13 +282,17 @@ describe('MessageService.commitOutboundBatch staged quote', () => {
       clearedSeq: 4,
     });
     await expect(
-      svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]),
+      svc.commitOutboundBatch(clientMessageId, undefined, [
+        { digest: FILE_DIGEST, payload: payload() },
+      ]),
     ).rejects.toThrow('quoted message not found');
   });
 
   it('promotes without a quote lookup when no quote was staged', async () => {
     const { svc, inserts } = harness({ stageContent: '{}' });
-    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]);
+    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [
+      { digest: FILE_DIGEST, payload: payload() },
+    ]);
     expect(result?.newlyPromoted).toBe(true);
     const content = JSON.parse(result!.message.content as string);
     expect(content.quote).toBeUndefined();

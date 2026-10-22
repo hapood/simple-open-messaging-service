@@ -66,7 +66,10 @@ export class FederationThreadAccessService {
     }
   }
 
-  async assertThreadExists(threadId: number, peerDomain: string): Promise<void> {
+  async assertThreadExists(
+    threadId: number,
+    peerDomain: string,
+  ): Promise<void> {
     await this.database.db.transaction(async (tx) => {
       await this.namespaces.captureActiveInTx(tx, peerDomain);
       await this.assertResponseWritable(tx, threadId, peerDomain);

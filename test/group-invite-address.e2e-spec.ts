@@ -89,7 +89,10 @@ describe('group invitations by public address', () => {
     const accountsBefore = await database.db.select().from(tables.account);
     const result = await controller.inviteUsers(req, {
       groupId: 9,
-      users: [{ ...address, snapshot }, { ...address, snapshot }],
+      users: [
+        { ...address, snapshot },
+        { ...address, snapshot },
+      ],
     });
     // The controller dedupes addresses and delegates each unique one to the
     // group intent family, which owns friend resolution under its locks.
@@ -103,7 +106,9 @@ describe('group invitations by public address', () => {
       target: address,
     });
     expect(decoy.namespaceId).not.toBe(direct.namespaceId);
-    expect(await database.db.select().from(tables.account)).toEqual(accountsBefore);
+    expect(await database.db.select().from(tables.account)).toEqual(
+      accountsBefore,
+    );
 
     const rejection = {
       status: 'REJECTED',

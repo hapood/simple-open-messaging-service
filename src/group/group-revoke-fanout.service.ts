@@ -70,10 +70,7 @@ export class GroupRevokeFanoutService {
           denial.expectedAuthorizationEpoch
         )
           return false;
-        if (
-          group.namespaceId !== 0 &&
-          group.namespaceId !== denial.namespaceId
-        )
+        if (group.namespaceId !== 0 && group.namespaceId !== denial.namespaceId)
           return false;
       }
       const next = await tx.execute<{

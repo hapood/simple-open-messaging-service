@@ -797,7 +797,9 @@ export class ResumableUploadService {
         const stageRow = await this.database.db.query.pendingMedia.findFirst({
           where: eq(pendingMedia.clientMessageId, clientMessageId),
         });
-        const stage = stageRow ? requireOutboundPendingMedia(stageRow) : undefined;
+        const stage = stageRow
+          ? requireOutboundPendingMedia(stageRow)
+          : undefined;
         if (
           !stage ||
           !(await this.messages.isAuthoredBy(

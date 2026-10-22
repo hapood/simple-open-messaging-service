@@ -176,7 +176,12 @@ describe('sequential resumable uploads', () => {
   it('cancels one upload, removes its artifacts and stage, and rejects further writes', async () => {
     const clientMessageId = randomUUID();
     const bytes = Buffer.from('cancel this upload');
-    await messages.stageMedia(userId, threadId, 'FILE' as never, clientMessageId);
+    await messages.stageMedia(
+      userId,
+      threadId,
+      'FILE' as never,
+      clientMessageId,
+    );
     const request = {
       clientMessageId,
       partId: randomUUID(),

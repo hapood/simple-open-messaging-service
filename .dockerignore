@@ -10,8 +10,12 @@
 /web/dist
 /admin-web/dist
 # Tauri/Android build tree (src-tauri/target ~5GB of Rust artifacts, gen/android) — irrelevant to
-# the server image; excluding it keeps the build context tiny.
-/src-tauri
+# the server image; excluding it keeps the build context tiny. The three version manifests are the
+# exception: the server-build stage's version-consistency gate reads them.
+/src-tauri/*
+!/src-tauri/tauri.conf.json
+!/src-tauri/Cargo.toml
+!/src-tauri/Cargo.lock
 /.git
 /.env
 /.env.local
@@ -21,5 +25,22 @@
 /deploy/data
 /coverage
 /test
+# Local lab state, agent/tool state, and generated reports — never read by any build stage.
+# dev/federation-lab alone carries ~85MB of runtime databases and diagnostic runs.
+/dev
+/.angular
+/.e2e-build
+/.tmp
+/tmp
+/test-results
+/docs
+/spec
+/tools
+/deploy
+/.github
+/.pi
+/.claude
+# Machine-local build wrappers may contain internal proxy addresses.
+/scripts/*.local.sh
 /Dockerfile
 /.dockerignore

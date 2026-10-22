@@ -66,11 +66,7 @@ export class FederationMessageTombstoneFeedService {
     return this.database.db.transaction(
       async (tx) => {
         const { threadId, address, groupQueryDirection } =
-          await resolveAuthorizedFederationThreadInTx(
-            tx,
-            namespaceId,
-            demand,
-          );
+          await resolveAuthorizedFederationThreadInTx(tx, namespaceId, demand);
         const currentEnd = await this.readAdvertisedDeletionEnd(
           tx,
           namespaceId,

@@ -26,11 +26,7 @@ export class FederationThreadContentHeadService {
     namespaceId: number,
     threadId: number,
   ): Promise<boolean> {
-    const projection = await this.readProjectionInTx(
-      tx,
-      namespaceId,
-      threadId,
-    );
+    const projection = await this.readProjectionInTx(tx, namespaceId, threadId);
     if (!projection) return false;
     await this.stateFeed.writeManyInTx(tx, [
       {

@@ -276,7 +276,6 @@ export class FederationThreadReverseRoundExecutorService {
     if (
       dependency.threadId !== message.threadId ||
       dependency.peerDomain !== message.peerDomain ||
-
       dependency.peerToken.domain !== message.peerToken.domain ||
       dependency.peerToken.namespaceId !== message.peerToken.namespaceId ||
       dependency.peerToken.rootPublicKey !== message.peerToken.rootPublicKey

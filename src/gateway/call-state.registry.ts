@@ -53,8 +53,7 @@ export class CallStateRegistry {
     peerNamespaceId: number,
   ): void {
     const cur = this.byUser.get(userId);
-    if (cur)
-      this.byUser.set(userId, { ...cur, peerAccount, peerNamespaceId });
+    if (cur) this.byUser.set(userId, { ...cur, peerAccount, peerNamespaceId });
   }
 
   clear(userId: number): void {

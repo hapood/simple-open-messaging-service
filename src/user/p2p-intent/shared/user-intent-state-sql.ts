@@ -1,7 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../../database/database.service.js';
 
-
 /** One P2P endpoint identity. The domain is carried for feed keys and
  * display only — locality is always judged by namespaceId === 0. Pairs
  * persist no per-endpoint domain or namespace; the remote endpoint's
@@ -43,8 +42,6 @@ export function pairPeerNamespaceId(
 
 /** ClientStateFeedService.compactionKey's exact shape, keyed by the canonical
  * pair side — never by the command actor (the mixed-writer lesson). */
-
-
 
 /** Lock the canonical P2P pair row, minting it when absent. Side A is the
  * local endpoint for a mixed pair, and the pair stores one peer namespace.

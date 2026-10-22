@@ -7,10 +7,7 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import {
-  messageThread,
-  accountThreadState,
-} from '../database/schema.js';
+import { messageThread, accountThreadState } from '../database/schema.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
 

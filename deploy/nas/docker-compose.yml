@@ -3,13 +3,17 @@
 # Compose interpolates dollar signs even in quoted YAML values. Write $$ for a literal $.
 
 # Database credentials are defined once and shared by PostgreSQL, migrations, and the app.
-# Set a strong password before the first start. Changing it here does not rotate an existing role.
+# Set a strong password before the first start: edit the PGPASSWORD line below directly (the file
+# stays the single source of truth) or export SOMS_DB_PASSWORD. An unedited file refuses to start
+# instead of initializing a passwordless database. Ambient PGPASSWORD values from the host shell
+# are deliberately NOT read (SOMS_DB_PASSWORD is the only injection channel). Changing the
+# password here does not rotate an existing role.
 x-database-environment: &database-environment
   PGHOST: postgres
   PGPORT: '5432'
   PGDATABASE: &database-name soms
   PGUSER: &database-user timescale
-  PGPASSWORD: &database-password ''
+  PGPASSWORD: &database-password "${SOMS_DB_PASSWORD:?set a strong database password (edit the PGPASSWORD line or export SOMS_DB_PASSWORD)}"
 
 services:
   postgres:
@@ -30,7 +34,7 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: soms:latest
+    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
     environment:
       <<: *database-environment
     depends_on:
@@ -40,7 +44,7 @@ services:
     restart: 'no'
 
   app:
-    image: soms:latest
+    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
     environment:
       <<: *database-environment
       # Federation identity, used in handles such as @alice@example.com.

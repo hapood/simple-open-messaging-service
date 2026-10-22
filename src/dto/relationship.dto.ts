@@ -1,4 +1,7 @@
-import { IsRequestSnapshot, RequestSnapshotDto } from './request-snapshot.dto.js';
+import {
+  IsRequestSnapshot,
+  RequestSnapshotDto,
+} from './request-snapshot.dto.js';
 import { ApiProperty } from '@nestjs/swagger';
 import { RequestDecisionDto, IsRequestId } from './relationship-request.dto.js';
 import {

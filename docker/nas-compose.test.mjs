@@ -22,17 +22,24 @@ const options = {
   skip: compose ? false : 'Docker Compose v2+ is required (no daemon needed)',
 };
 
-function resolveConfig(source = template) {
+function composeConfig(source, env) {
   const directory = mkdtempSync(join(tmpdir(), 'soms-nas-compose-'));
   try {
     const path = join(directory, 'docker-compose.yml');
     writeFileSync(path, source, { mode: 0o600 });
-    // No .env exists in this isolated deployment. Host values must not override the YAML.
-    const [command, args] = compose;
-    const result = spawnSync(
+    // No .env exists in this isolated deployment. Ambient host values must not leak into the
+    // YAML; SOMS_DB_PASSWORD is the one sanctioned channel for the database password.
+    // host-spawn does not inherit the caller's environment: forward exactly the variables the
+    // harness sets (and no others) so the sanitized env above is what Compose actually observes.
+    const forwarded = 'PGPASSWORD,SOMS_DOMAIN,SOMS_ENV_FILE,SOMS_DB_PASSWORD';
+    const [command, baseArgs] = compose;
+    const args =
+      command === 'host-spawn'
+        ? ['-no-pty', '-env', forwarded, ...baseArgs]
+        : baseArgs;
+    return spawnSync(
       command,
-      [
-        ...args,
+      [...args,
         '--env-file',
         '/dev/null',
         '--project-directory',
@@ -46,24 +53,51 @@ function resolveConfig(source = template) {
       {
         cwd: directory,
         encoding: 'utf8',
-        env: {
-          ...process.env,
-          PGPASSWORD: 'unrelated-host-password',
-          SOMS_DOMAIN: 'unrelated-host.example',
-          SOMS_ENV_FILE: 'missing.env',
-        },
+        env,
       },
     );
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stderr.trim(), '', 'Unexpected Compose warning');
-    return JSON.parse(result.stdout);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 }
 
+function baseEnv() {
+  return {
+    ...process.env,
+    PGPASSWORD: 'unrelated-host-password',
+    SOMS_DOMAIN: 'unrelated-host.example',
+    SOMS_ENV_FILE: 'missing.env',
+  };
+}
+
+function resolveConfig(source = template) {
+  const result = composeConfig(source, {
+    ...baseEnv(),
+    SOMS_DB_PASSWORD: 'fixture-from-harness',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr.trim(), '', 'Unexpected Compose warning');
+  return JSON.parse(result.stdout);
+}
+
 test(
-  'NAS configuration resolves without an env file or host configuration',
+  'unedited template refuses to start without a database password',
+  options,
+  () => {
+    const env = baseEnv();
+    delete env.SOMS_DB_PASSWORD;
+    const result = composeConfig(template, env);
+    assert.notEqual(
+      result.status,
+      0,
+      'expected Compose to reject the unedited template',
+    );
+    assert.match(result.stderr, /SOMS_DB_PASSWORD/);
+  },
+);
+
+test(
+  'NAS configuration resolves without an env file and ignores ambient host values',
   options,
   () => {
     const { services } = resolveConfig();
@@ -76,7 +110,12 @@ test(
       assert.equal(service.env_file, undefined);
     }
     assert.equal(services.app.environment.SOMS_DOMAIN, 'example.com');
-    assert.equal(services.postgres.environment.POSTGRES_PASSWORD, '');
+    // The sanctioned SOMS_DB_PASSWORD channel provides the password; the ambient PGPASSWORD
+    // from the harness environment must not leak into the resolved configuration.
+    assert.equal(
+      services.postgres.environment.POSTGRES_PASSWORD,
+      'fixture-from-harness',
+    );
     assert.equal(
       services.app.depends_on.migrate.condition,
       'service_completed_successfully',
@@ -98,7 +137,7 @@ test(
         'PGUSER: &database-user custom_user',
       )
       .replace(
-        "PGPASSWORD: &database-password ''",
+        /PGPASSWORD: &database-password .*/,
         () => "PGPASSWORD: &database-password 'fixture-$$token:#'",
       );
     const { services } = resolveConfig(source);

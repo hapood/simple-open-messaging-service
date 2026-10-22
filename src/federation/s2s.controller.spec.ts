@@ -85,7 +85,11 @@ function target() {
     getIdentityDomain: vi.fn().mockReturnValue('local.example'),
     openCardChallenge: vi
       .fn()
-      .mockReturnValue(Buffer.from('{"account":"alice","domain":"local.example"}').toString('base64')),
+      .mockReturnValue(
+        Buffer.from('{"account":"alice","domain":"local.example"}').toString(
+          'base64',
+        ),
+      ),
   };
   const messageProvenance = {
     query: vi.fn(),
@@ -181,7 +185,9 @@ describe('S2sController public account profiles', () => {
       bio: '',
       avatar: null,
       profileRev: 5,
-      proof: Buffer.from('{"account":"alice","domain":"local.example"}').toString('base64'),
+      proof: Buffer.from(
+        '{"account":"alice","domain":"local.example"}',
+      ).toString('base64'),
     });
     expect(profiles.getLocalAccountProfile).toHaveBeenCalledWith({
       account: 'alice',

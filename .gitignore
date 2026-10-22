@@ -87,3 +87,6 @@ dev/federation-lab/local/
 # Pi local package cache and session state; project configuration may still be tracked.
 /.pi/npm/
 /.pi/subagent-history.json
+
+# Machine-local build wrapper scripts (proxy environment + delegation); keep them out of the repo.
+/scripts/*.local.sh

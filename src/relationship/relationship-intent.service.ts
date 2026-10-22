@@ -1,4 +1,7 @@
-import { parseRequestSnapshot, type RequestSnapshot } from '../../shared/request-snapshot.js';
+import {
+  parseRequestSnapshot,
+  type RequestSnapshot,
+} from '../../shared/request-snapshot.js';
 import { authoredIntentWriteSql } from '../common/sql/authored-relationship-intent-sql.js';
 import { groupStateSql } from '../group/shared/group-state.js';
 import {

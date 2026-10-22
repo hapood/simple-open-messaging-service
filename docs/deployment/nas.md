@@ -1,6 +1,9 @@
 # NAS Deployment
 
-This published guide covers deployment on a NAS or another host inside a home LAN. Administrator
+> [!NOTE]
+> This deployment profile and guide are currently in progress / under development. Public container images are not published yet. To run SOMS, build the Docker image locally from source as described in the [image build guide](../development/building-the-image.md).
+
+This guide covers deployment on a NAS or another host inside a home LAN. Administrator
 routes accept private-range clients only, while the web client and federation endpoint can be made
 reachable from the internet through the configured public hostname and port.
 
@@ -22,7 +25,7 @@ not use a self-signed certificate.
 
 ## Requirements
 
-- Docker Engine with Docker Compose v2, Buildx Bake, and Node.js for the build script
+- Docker Engine with Docker Compose v2
 - A registered domain whose DNS zone you control; a normal registrable domain is sufficient
 - A DNS-01 provider credential; Cloudflare is the default example
 - A publicly reachable deployment host: devices outside the home network must be able to connect to
@@ -38,23 +41,22 @@ Verify this prerequisite from outside the home network. Publishing a port in Doc
 binds it on the NAS; it does not create router port forwarding, open an upstream firewall, or bypass
 CGNAT.
 
-## 1. Build the Image
+## 1. The Image
 
-From the repository root:
+The Compose file references the published registry image, pinned to an exact version:
 
-```bash
-./scripts/build-image.sh
+```yaml
+    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
 ```
 
-The script invokes the repository's Buildx Bake graph and creates `soms:<version>` and `soms:latest`.
-The runtime and compiler bases are internal, cached build targets: they are rebuilt when their inputs
-change and do not need to be published or preinstalled locally. The Compose example references
-`soms:latest`; `docker compose up` does not build it automatically.
+`docker compose up -d` pulls it automatically; `docker compose pull` fetches it ahead of time.
+Versions track the repository's release tags (`v<version>`). The `migrate` and `app` services pin
+the same version — set both lines together before the first start and on every update.
 
-The script inherits exported `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` variables (and their
-lowercase forms). It uses host networking so a proxy on the Docker host's loopback is reachable.
-In Distrobox without a local Docker CLI, it invokes the host Docker CLI through `host-spawn` and
-forwards these variables. No proxy address is built into the script.
+> **Not published yet.** No release tag exists so far, so the registry image is not available.
+> Until the first release, build the image locally — see
+> [Building the Docker image](../development/building-the-image.md) — and substitute your local
+tag (for example `soms:latest`) in both `image:` lines.
 
 ## 2. Copy the NAS Example
 
@@ -79,7 +81,7 @@ Edit the copied YAML, not the repository template. Set these values before the f
 | -------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `SOMS_DOMAIN`              | Federation identity used in handles such as `@alice@example.com`                                            |
 | `SOMS_WEB_DOMAIN`          | Browser and native-client entry hostname; it may equal `SOMS_DOMAIN`                                        |
-| `PGPASSWORD`               | Password under `x-database-environment`, shared through YAML anchors by PostgreSQL, migrations, and the app |
+| `PGPASSWORD`               | Database password on the `x-database-environment` anchor line, shared by PostgreSQL, migrations, and the app; the shipped placeholder makes an unedited file refuse to start |
 | `ADMIN_BOOTSTRAP_PASSWORD` | Creates the bootstrap `admin` account/role when it is absent; does not reset an existing password           |
 | `CLOUDFLARE_API_TOKEN`     | Default DNS-01 credential with `Zone:Zone:Read` and `Zone:DNS:Edit` permissions for the managed zone        |
 
@@ -92,7 +94,11 @@ separate LAN entry is unnecessary. Application and DNS-provider settings belong 
 Database settings live under `x-database-environment`. YAML anchors reuse the database name, user,
 and password for all three services; set each value only once. PostgreSQL receives them as
 `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`, while migrations and the app receive the
-corresponding `PG*` variables.
+corresponding `PG*` variables. The template's `PGPASSWORD` line carries a required-variable
+placeholder, so an unedited file refuses to start with a clear Compose error instead of
+initializing a passwordless database: replace the line with the literal password (the recommended
+form — the file stays the single source of truth) or export `SOMS_DB_PASSWORD` before
+`docker compose`. An ambient `PGPASSWORD` from the host shell is deliberately not read.
 
 Generate unique database and administrator passwords. Changing `PGPASSWORD` after PostgreSQL has
 initialized its volume does not rotate the database role; changing only the YAML instead makes the
@@ -214,6 +220,84 @@ bootstrap password, then replace the credential. For this example the LAN admin 
 `https://soms-lan.example.com:7667/admin/`. An empty `ADMIN_BOOTSTRAP_PASSWORD` permits startup
 but does not create an administrator.
 
+## Running a Second Instance on the Same Host
+
+Each SOMS instance is one deployment directory with its own `docker-compose.yml`, its own `data/`
+bind mount, and its own database. Only one instance can publish host port `7667`; give any
+additional instance a distinct published host port (for example `7668`) while the container port
+stays `7667`, and keep `SOMS_TLS_MODE: single-port`:
+
+```yaml
+    ports:
+      - target: 7667
+        published: '7668'
+        protocol: tcp
+      - target: 7667
+        published: '7668'
+        protocol: udp
+```
+
+The [client-origin code](../../src/common/origin.ts) advertises the canonical port 7667, so an
+instance on a different published port must additionally override the WebAuthn origins to the
+real port; regular sign-in and the web client are unaffected:
+
+```yaml
+      SOMS_WEBAUTHN_ALLOWED_ORIGINS: 'https://soms.example.org:7668,https://soms-lan.example.org:7668'
+```
+
+Give each instance independent database name, credentials, domains, and DNS-provider credentials;
+the DNS-01 provider must be able to answer for each instance's zone.
+
+## Sharing an External PostgreSQL Instance
+
+The template can also deploy against an existing PostgreSQL container instead of starting its own.
+Remove the `postgres` service and the `volumes:` block, point the database anchor at the shared
+container, join both remaining services to the shared container's Docker network, and pin the
+image so a registry is never consulted:
+
+```yaml
+x-database-environment: &database-environment
+  PGHOST: shared-postgres         # the shared container's resolvable name on that network
+  PGPORT: '5432'
+  PGDATABASE: &database-name soms_instance2
+  PGUSER: &database-user soms_instance2
+  PGPASSWORD: &database-password '<password>'
+
+services:
+  migrate:
+    image: soms:latest
+    pull_policy: never
+    environment:
+      <<: *database-environment
+    networks: [shared-db]
+    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']
+    restart: 'no'
+  app:
+    image: soms:latest
+    pull_policy: never
+    environment:
+      <<: *database-environment
+      # ...domains, TLS, and app settings exactly as in the standard template...
+    networks: [shared-db]
+    # ...depends_on / volumes / ports / restart exactly as in the standard template...
+
+networks:
+  shared-db:
+    external: true
+    name: shared-postgres_default # the Docker network of the shared PostgreSQL container
+```
+
+Create the dedicated database and role once on the shared instance — one pair per SOMS deployment,
+so instances share hardware but never rows:
+
+```sql
+CREATE ROLE soms_instance2 LOGIN PASSWORD '<password>';
+CREATE DATABASE soms_instance2 OWNER soms_instance2;
+```
+
+The shared instance is outside this template's lifecycle: its updates, backups, port exposure, and
+credential strength are the operator's responsibility and apply to every database it hosts.
+
 ## Migrating an Existing `.env` Deployment
 
 Back up the existing configuration first. In the same deployment directory, merge the new Compose
@@ -249,9 +333,17 @@ do not regenerate keys as part of a routine update. The directory may also conta
 operator-provided `data/firebase-service-account.json` secret and public Android client configuration
 at `data/google-services.json`, plus persistent Caddy state under `data/caddy/`.
 
-After taking the backup, pull the intended source revision, rebuild `soms:latest` with
-`./scripts/build-image.sh`, and run `docker compose up -d` from the deployment directory. Check the
-migration exit status and app logs.
+After taking the backup, set both `image:` lines in the deployment's `docker-compose.yml` to the
+new version, run `docker compose pull` and `docker compose up -d`, then check the migration exit
+status and app logs.
+
+During the alpha phase the SQL baseline may be rewritten between builds. When the existing
+database predates such a rewrite, the migration guard stops the upgrade with
+`applied migration was modified: 0000_base` — the checksum mismatch is exactly the situation the
+guard exists for, and the migrate service offers no bypass. The supported alpha path is to reset
+the database (`docker compose down -v`; identity files under `data/` are untouched, but all
+database content is lost) and let the migrate service initialize the schema fresh. Snapshot the
+database first when its content matters.
 
 When templates change, merge their changes into the operator-owned `docker-compose.yml` while
 preserving its credentials, domains, and other local settings. Do not overwrite it with an unconfigured

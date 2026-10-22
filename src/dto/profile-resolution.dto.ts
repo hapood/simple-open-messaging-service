@@ -52,7 +52,6 @@ export class ProfileResolutionDto {
   @Type(() => ProfileResolutionTargetDto)
   target!: ProfileResolutionTargetDto;
 
-
   @ApiPropertyOptional()
   @ValidateIf(
     (value: ProfileResolutionDto) => value.lookup === 'GROUP_MEMBER_PROFILE',

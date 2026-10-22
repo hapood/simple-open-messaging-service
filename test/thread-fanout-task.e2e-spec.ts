@@ -404,11 +404,7 @@ describe('transactional thread fanout queue', () => {
     await f.handler.execute(f.task);
     expect(
       f.heads.projectCurrentInTx.mock.calls.map((call) => call[1]),
-    ).toEqual([
-      f.namespaces[0],
-      f.namespaces[1],
-      f.namespaces[1],
-    ]);
+    ).toEqual([f.namespaces[0], f.namespaces[1], f.namespaces[1]]);
     expect(f.events.emit).toHaveBeenCalledTimes(2);
     expect(
       (

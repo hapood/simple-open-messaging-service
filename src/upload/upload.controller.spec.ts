@@ -88,8 +88,9 @@ describe('UploadController type-agnostic upload (batch-commit model)', () => {
   });
 
   it('fails the stage when there is no pending send for the clientMessageId', async () => {
-    const { controller, messageService, uploadService, resumable, req } =
-      setup({ intent: null });
+    const { controller, messageService, uploadService, resumable, req } = setup(
+      { intent: null },
+    );
     await expect(controller.upload(req)).rejects.toMatchObject({
       bizCode: BusinessCode.VALIDATION_FAILED,
     });

@@ -552,5 +552,3 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
     );
   });
 });
-
-

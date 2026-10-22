@@ -199,8 +199,7 @@ export class FederationThreadMetaRoundExecutorService {
         after,
         through,
       });
-      const items = page.items
-        .map((item) => validateItem(item, 'full'));
+      const items = page.items.map((item) => validateItem(item, 'full'));
       const reachedBoundary = !page.hasMore;
       snapshot.push(...items);
       if (reachedBoundary) {

@@ -11,9 +11,7 @@ import { ClientStateFeedService } from '../src/client-state-feed/client-state-fe
 import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
-import {
-  RemoteMemberMembershipIntentService,
-} from '../src/group/membership-intent/received/remote-member-membership-intent.service.js';
+import { RemoteMemberMembershipIntentService } from '../src/group/membership-intent/received/remote-member-membership-intent.service.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
 
 const PEER_DOMAIN = `remote-member-${process.pid}.example`;

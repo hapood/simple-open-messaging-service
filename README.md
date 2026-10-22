@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>Simple Open Messaging Service</strong><br>
-  A self-hosted, federated chat platform for the web and native devices.
+  A lightweight, federated chat platform for the web and native devices.<br>
+  <em>Modern, open-source, and built for complete data ownership.</em>
 </p>
 
 <p align="center">
@@ -26,7 +27,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/design/assets/playground-preview.png" alt="SOMS Web Client Preview" width="850">
+  <img src="docs/design/assets/playground-preview.png" alt="SOMS Web Client Preview - Self-Hosted Federated Chat UI" width="850">
 </p>
 
 <p align="center">
@@ -77,6 +78,16 @@ console remain fully self-hostable.
   WebAuthn
 - Responsive, installable web client with a shared Tauri shell for native platform integrations
 
+### SOMS at a Glance
+
+| Feature | SOMS | Traditional Self-Hosted Chat | Centralized SaaS |
+| :--- | :--- | :--- | :--- |
+| **Data Ownership** | 100% self-hosted on your own hardware / VPS | Self-hosted (isolated silo) | Third-party cloud provider |
+| **Federation** | Built-in via open SOMFP protocol | None (island) | Walled garden |
+| **Architecture** | Lightweight NestJS + Fastify + Angular + Tauri | Often heavy JVM or monolithic | Proprietary infrastructure |
+| **Calling** | Peer-to-peer WebRTC audio/video | Often requires external bridges | Proprietary calling stack |
+| **Cross-Platform** | Web PWA + shared Tauri shell (Android, Desktop) | Disjointed clients | Official native apps |
+
 ## Quick Start
 
 ### Local Development
@@ -106,7 +117,7 @@ and a Caddy TLS edge.
 
 | Profile | Status        | Intended environment                                                       | Guide / Compose                                                    |
 | ------- | ------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| NAS     | **Published** | Home LAN administration with a publicly reachable client                   | [NAS guide](docs/deployment/nas.md) · [`deploy/nas/`](deploy/nas/) |
+| NAS     | In progress   | Home LAN administration with a publicly reachable client                   | [NAS guide](docs/deployment/nas.md) · [`deploy/nas/`](deploy/nas/) |
 | Public  | In progress   | Internet-facing server with standard HTTPS ports and public administration | [`deploy/public/`](deploy/public/)                                 |
 
 ## Platform Roadmap
@@ -158,7 +169,7 @@ documented in the [HTTP API reference](docs/api/api.md).
 | Federation protocol     | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
 | Server architecture     | [Architecture](docs/overview/architecture.md) · [Database model](docs/overview/database.md)                                 |
 | APIs                    | [Client/admin HTTP API](docs/api/api.md) · [Federation HTTP surface](spec/v1/protocol.md#3-federation-v1-http-surface)      |
-| Deployment              | [NAS deployment](docs/deployment/nas.md) · [Public server (in progress)](deploy/public/)                                    |
+| Deployment              | [NAS deployment (in progress)](docs/deployment/nas.md) · [Public server (in progress)](deploy/public/)                                    |
 | Operations              | [Rate limiting](docs/operations/rate-limiting.md)                                                                           |
 | Native client           | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/platform/android/calls.md)                                    |
 | Security and governance | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |

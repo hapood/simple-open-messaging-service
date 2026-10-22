@@ -231,9 +231,7 @@ describe('UploadService.resolveStagedPart — family gating by staged intent', (
     expect(payload.h).toBe(20);
     expect(payload.mimeType).toBeUndefined();
     expect(payload.name).toBe('photo.png');
-    expect(payload.digest).toBe(
-      createHash('sha256').update(PNG).digest('hex'),
-    );
+    expect(payload.digest).toBe(createHash('sha256').update(PNG).digest('hex'));
     expect(overrideContentType).toBeUndefined();
   });
 
@@ -311,7 +309,9 @@ describe('UploadService.landStagedPart — idempotent CAS landing', () => {
     expect(await svc.landStagedPart(src, digest)).toBe('landed');
     expect(svc.casShardExists(digest)).toBe(true);
     expect(
-      await readFile(join(root!, digest.slice(0, 2), digest.slice(2, 4), digest)),
+      await readFile(
+        join(root!, digest.slice(0, 2), digest.slice(2, 4), digest),
+      ),
     ).toEqual(body);
 
     // A second landing of the identical digest is a no-op dedup.

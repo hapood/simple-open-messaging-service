@@ -40,7 +40,9 @@ describe('incoming request read watermark', () => {
       await lockBusinessAccountsInTx(tx, [
         { account: 'invite-reader', profileNamespaceId: 0 },
       ]);
-      await tx.update(account).set({ requestEndId: BigInt(endId) })
+      await tx
+        .update(account)
+        .set({ requestEndId: BigInt(endId) })
         .where(eq(account.id, seeded.id));
       expect(await stateFeed.publishRequestHeadInTx(tx, seeded.id)).toBe(1);
     });
@@ -76,10 +78,16 @@ describe('incoming request read watermark', () => {
     });
     const owner = await database.db.query.account.findFirst({
       where: eq(account.id, seeded.id),
-      columns: { clientStateFeedEndId: true, requestEndId: true, requestReadId: true },
+      columns: {
+        clientStateFeedEndId: true,
+        requestEndId: true,
+        requestReadId: true,
+      },
     });
     expect(owner).toEqual({
-      clientStateFeedEndId: 2, requestEndId: BigInt(endId), requestReadId: BigInt(endId),
+      clientStateFeedEndId: 2,
+      requestEndId: BigInt(endId),
+      requestReadId: BigInt(endId),
     });
 
     // Preserve the existing future-watermark rejection contract. This is an
@@ -89,13 +97,21 @@ describe('incoming request read watermark', () => {
       .set(auth)
       .send({ requestReadId: (BigInt(endId) + 1n).toString() })
       .expect(400);
-    expect(await database.db.query.account.findFirst({
-      where: eq(account.id, seeded.id),
-      columns: { clientStateFeedEndId: true, requestEndId: true, requestReadId: true },
-    })).toEqual(owner);
-    expect(await database.db.query.clientStateFeed.findMany({
-      where: eq(clientStateFeed.userId, seeded.id),
-      orderBy: [desc(clientStateFeed.feedId)],
-    })).toEqual(versions);
+    expect(
+      await database.db.query.account.findFirst({
+        where: eq(account.id, seeded.id),
+        columns: {
+          clientStateFeedEndId: true,
+          requestEndId: true,
+          requestReadId: true,
+        },
+      }),
+    ).toEqual(owner);
+    expect(
+      await database.db.query.clientStateFeed.findMany({
+        where: eq(clientStateFeed.userId, seeded.id),
+        orderBy: [desc(clientStateFeed.feedId)],
+      }),
+    ).toEqual(versions);
   });
 });

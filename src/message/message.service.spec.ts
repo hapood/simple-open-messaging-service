@@ -135,7 +135,10 @@ describe('stripMessageId author projection namespace', () => {
     // The creator keeps the stored subject namespace so clients can join
     // roster members and profile caches in the publisher-scoped space.
     expect(ownSubject.creator).toEqual({ account: 'alice', namespaceId: 0 });
-    expect(foreignSubject.creator).toEqual({ account: 'alice', namespaceId: 7 });
+    expect(foreignSubject.creator).toEqual({
+      account: 'alice',
+      namespaceId: 7,
+    });
     expect(ownSubject.profileNamespaceId).toBe(0);
     expect(foreignSubject.profileNamespaceId).toBe(7);
     expect(ownSubject.publisherNamespaceId).toBe(7);

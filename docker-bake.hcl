@@ -6,6 +6,10 @@ variable "NODE_IMAGE" {
   default = "node:24-bookworm-slim"
 }
 
+variable "CADDY_BUILDER_IMAGE" {
+  default = "caddy:2.11-builder"
+}
+
 variable "BUILD_NETWORK" {
   default = "default"
 }
@@ -50,6 +54,7 @@ target "runtime-base" {
   dockerfile = "Dockerfile.base"
   args = {
     NODE_IMAGE = NODE_IMAGE
+    CADDY_BUILDER_IMAGE = CADDY_BUILDER_IMAGE
     GOPROXY    = GOPROXY
     GOSUMDB    = GOSUMDB
     HTTP_PROXY = HTTP_PROXY

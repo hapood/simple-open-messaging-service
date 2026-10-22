@@ -1,10 +1,7 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import {
-  account as accountTable,
-  profileTable,
-} from '../database/schema.js';
+import { account as accountTable, profileTable } from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';

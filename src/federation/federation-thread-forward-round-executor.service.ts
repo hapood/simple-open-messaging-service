@@ -417,7 +417,6 @@ export class FederationThreadForwardRoundExecutorService {
         if (
           dependency.threadId !== response.threadId ||
           dependency.peerDomain !== response.peerDomain ||
-
           dependency.peerToken.domain !== response.peerToken.domain ||
           dependency.peerToken.namespaceId !== response.peerToken.namespaceId ||
           dependency.peerToken.rootPublicKey !==

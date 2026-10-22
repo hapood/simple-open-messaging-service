@@ -28,11 +28,15 @@ async function fixture(row: ActivePeerByThreadRow | undefined) {
         provide: DatabaseService,
         useValue: {
           db: {
-            transaction: async <T>(work: (value: typeof tx) => Promise<T>) => work(tx),
+            transaction: async <T>(work: (value: typeof tx) => Promise<T>) =>
+              work(tx),
           },
         },
       },
-      { provide: ClientStateFeedService, useValue: { notifyFeedUpdates: vi.fn() } },
+      {
+        provide: ClientStateFeedService,
+        useValue: { notifyFeedUpdates: vi.fn() },
+      },
       { provide: PeerStateFeedService, useValue: {} },
       { provide: FederationNamespaceService, useValue: {} },
       {
@@ -41,21 +45,35 @@ async function fixture(row: ActivePeerByThreadRow | undefined) {
       },
       {
         provide: UserIntentService,
-        inject: [DatabaseService, ClientStateFeedService, PeerStateFeedService,
-          FederationStateFeedPushService, FederationNamespaceService],
+        inject: [
+          DatabaseService,
+          ClientStateFeedService,
+          PeerStateFeedService,
+          FederationStateFeedPushService,
+          FederationNamespaceService,
+        ],
         useFactory: (
           database: DatabaseService,
           clientFeed: ClientStateFeedService,
           peerFeed: PeerStateFeedService,
           federation: FederationStateFeedPushService,
           namespaces: FederationNamespaceService,
-        ) => new UserIntentService(database, clientFeed, peerFeed, federation, namespaces, {} as never),
+        ) =>
+          new UserIntentService(
+            database,
+            clientFeed,
+            peerFeed,
+            federation,
+            namespaces,
+            {} as never,
+          ),
       },
     ],
   }).compile();
   const service = module.get(UserIntentService);
   const executeInTx = vi.spyOn(service, 'executeInTx').mockResolvedValue({
-    outcome: { status: 'APPLIED' }, peers: new Map(),
+    outcome: { status: 'APPLIED' },
+    peers: new Map(),
   });
   return { module, service, executeInTx, tx };
 }
@@ -69,8 +87,9 @@ describe('thread-keyed established relationship revocation', () => {
   ])('rejects a missing, inactive or non-owned relationship', async (row) => {
     const f = await fixture(row);
     try {
-      expect(await f.service.endEstablishedRelationship({ userId: 1, threadId: 12 }))
-        .toMatchObject({ status: 'REJECTED', reason: 'INTENT_NOT_FOUND' });
+      expect(
+        await f.service.endEstablishedRelationship({ userId: 1, threadId: 12 }),
+      ).toMatchObject({ status: 'REJECTED', reason: 'INTENT_NOT_FOUND' });
       expect(f.executeInTx).not.toHaveBeenCalled();
     } finally {
       await f.module.close();
@@ -79,21 +98,34 @@ describe('thread-keyed established relationship revocation', () => {
 
   it.each([
     { row: activePair, target: { account: 'bob', namespaceId: 0 } },
-    { row: { ...activePair, actorAccount: 'bob' }, target: { account: 'alice', namespaceId: 0 } },
-    { row: { ...activePair, endpointBNamespaceId: 8 }, target: { account: 'bob', namespaceId: 8 } },
-  ])('delegates the exact peer and captured thread/epoch fence', async ({ row, target }) => {
-    const f = await fixture(row);
-    try {
-      expect(await f.service.endEstablishedRelationship({ userId: 1, threadId: 12 }))
-        .toEqual({ status: 'APPLIED' });
-      expect(f.executeInTx).toHaveBeenCalledExactlyOnceWith(
-        f.tx,
-        { userId: 1, decision: 'REVOKED', target },
-        [],
-        { establishedRelationship: { threadId: 12, epoch: 7 } },
-      );
-    } finally {
-      await f.module.close();
-    }
-  });
+    {
+      row: { ...activePair, actorAccount: 'bob' },
+      target: { account: 'alice', namespaceId: 0 },
+    },
+    {
+      row: { ...activePair, endpointBNamespaceId: 8 },
+      target: { account: 'bob', namespaceId: 8 },
+    },
+  ])(
+    'delegates the exact peer and captured thread/epoch fence',
+    async ({ row, target }) => {
+      const f = await fixture(row);
+      try {
+        expect(
+          await f.service.endEstablishedRelationship({
+            userId: 1,
+            threadId: 12,
+          }),
+        ).toEqual({ status: 'APPLIED' });
+        expect(f.executeInTx).toHaveBeenCalledExactlyOnceWith(
+          f.tx,
+          { userId: 1, decision: 'REVOKED', target },
+          [],
+          { establishedRelationship: { threadId: 12, epoch: 7 } },
+        );
+      } finally {
+        await f.module.close();
+      }
+    },
+  );
 });

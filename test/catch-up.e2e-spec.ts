@@ -12,10 +12,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { withMessageDigest } from './support/message-fixture.js';
 import request from 'supertest';
 import { DatabaseService } from '../src/database/database.service';
-import {
-  message,
-  messageThread,
-} from '../src/database/schema';
+import { message, messageThread } from '../src/database/schema';
 import { ContentType } from '../src/database/enums.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';

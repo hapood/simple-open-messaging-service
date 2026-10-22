@@ -10,8 +10,9 @@
 # frontends (web at /, admin at /admin/) + reverse-proxies /api/* and /uploads/* to the app. See
 # docker/init.sh (Caddyfile generation) + src/bootstrap.ts + Dockerfile.base (soms-base).
 
-# Base for the compile stages. Override via NODE_IMAGE if Docker Hub is unreachable:
-#   NODE_IMAGE=docker.m.daocloud.io/library/node:24-bookworm-slim ./scripts/build-image.sh
+# Base for the compile stages. Override via NODE_IMAGE if Docker Hub is unreachable (any reachable
+# registry mirror serving the same image):
+#   NODE_IMAGE=<registry-mirror>/library/node:24-bookworm-slim ./scripts/build-image.sh
 ARG NODE_IMAGE=node:24-bookworm-slim
 ARG SOMS_BASE=soms-base:latest
 ARG SOMS_BUILD_BASE=soms-build-base:latest
@@ -42,31 +43,43 @@ FROM ${SOMS_BUILD_BASE} AS server-build
 WORKDIR /build
 COPY package.json package-lock.json tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY tsconfig.migrations.json ./
-COPY scripts/migrate-db.ts ./scripts/migrate-db.ts
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
+# Version-consistency gate, identical to npm run build:production — every manifest must carry one
+# version. The files land at their canonical repo paths so the check script runs unmodified;
+# .dockerignore admits exactly these three src-tauri files into the build context.
+COPY web/package.json web/package-lock.json ./web/
+COPY admin-web/package.json admin-web/package-lock.json ./admin-web/
+COPY src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
+COPY scripts/check-version-sync.mjs scripts/migrate-db.ts ./scripts/
+RUN node scripts/check-version-sync.mjs
 COPY src ./src
 COPY shared ./shared
 RUN npm run build
+# Drop devDependencies; keep prod deps with the compiled argon2 .node + prebuilt sharp binaries.
+# Prune reads only package.json/package-lock.json/node_modules, so it runs BEFORE the scripts and
+# database COPYs below — editing a lab script or adding a migration SQL must not re-prune the tree.
+RUN npm prune --omit=dev
 COPY scripts ./scripts
 COPY database ./database
-# Drop devDependencies; keep prod deps with the compiled argon2 .node + prebuilt sharp binaries.
-RUN npm prune --omit=dev
 
 # ---- Stage 4: app image = soms-base (node + caddy) + the compiled app + the all-in-one supervisor ----
 # caddy comes from soms-base (Dockerfile.base), so building this image NEVER re-runs xcaddy — only the
 # web/admin/server stages above re-run when their source changes. Build soms-base first:
 #   docker build -t soms-base:latest -f Dockerfile.base .   (scripts/build-image.sh does this for you)
 FROM ${SOMS_BASE} AS runtime
+WORKDIR /app
+# ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
+# This RUN precedes ARG APP_VERSION on purpose: build-image.sh injects a new APP_VERSION on every
+# release, and any layer before the ARG would be invalidated by the bump — re-downloading ffmpeg
+# (and everything below) for each release.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 # App version, injected at build time (scripts/build-image.sh reads package.json). Surfaces in
 # `docker image inspect`, /client/compat (serverVersion), and /.well-known/somfp. Default "dev".
 ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version="${APP_VERSION}"
-WORKDIR /app
 ENV NODE_ENV=production APP_VERSION=${APP_VERSION}
-# ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
 # Secrets and runtime configuration are injected by Compose as environment variables, never baked in.
 # --chown=node:node so the non-root runtime user owns every file (node:*-slim ships uid-1000 `node`).
 COPY --chown=node:node package.json ./

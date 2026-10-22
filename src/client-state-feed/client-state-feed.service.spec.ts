@@ -106,29 +106,60 @@ describe('ClientStateFeedService', () => {
     vi.useRealTimers();
   });
 
-  it.each([false, true])('publishes only a complete changed request head (unchanged=%s)', async (unchanged) => {
-    const head = { requestEndId: '9007199254740993', requestReadId: '42' };
-    const lock = vi.fn().mockResolvedValue([{
-      requestEndId: 9007199254740993n, requestReadId: 42n,
-    }]);
-    const values = vi.fn().mockResolvedValue(undefined);
-    const tx = {
-      select: vi.fn()
-        .mockReturnValueOnce({ from: () => ({ where: () => ({ for: lock }) }) })
-        .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(unchanged ? [{ body: head }] : []) }) }) }) }),
-      update: vi.fn().mockReturnValue({ set: () => ({ where: () => ({
-        returning: () => Promise.resolve([{ feedId: 7 }]),
-      }) }) }),
-      insert: vi.fn().mockReturnValue({ values }),
-    };
-    const service = new ClientStateFeedService(undefined as never, undefined as never);
-    await expect(service.publishRequestHeadInTx(tx as never, 1)).resolves.toBe(unchanged ? null : 7);
-    expect(lock).toHaveBeenCalledExactlyOnceWith('no key update');
-    if (unchanged) {
-      expect(tx.update).not.toHaveBeenCalled();
-      expect(tx.insert).not.toHaveBeenCalled();
-    } else {
-      expect(values).toHaveBeenCalledExactlyOnceWith({ userId: 1, feedId: 7, body: head });
-    }
-  });
+  it.each([false, true])(
+    'publishes only a complete changed request head (unchanged=%s)',
+    async (unchanged) => {
+      const head = { requestEndId: '9007199254740993', requestReadId: '42' };
+      const lock = vi.fn().mockResolvedValue([
+        {
+          requestEndId: 9007199254740993n,
+          requestReadId: 42n,
+        },
+      ]);
+      const values = vi.fn().mockResolvedValue(undefined);
+      const tx = {
+        select: vi
+          .fn()
+          .mockReturnValueOnce({
+            from: () => ({ where: () => ({ for: lock }) }),
+          })
+          .mockReturnValueOnce({
+            from: () => ({
+              where: () => ({
+                orderBy: () => ({
+                  limit: () =>
+                    Promise.resolve(unchanged ? [{ body: head }] : []),
+                }),
+              }),
+            }),
+          }),
+        update: vi.fn().mockReturnValue({
+          set: () => ({
+            where: () => ({
+              returning: () => Promise.resolve([{ feedId: 7 }]),
+            }),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({ values }),
+      };
+      const service = new ClientStateFeedService(
+        undefined as never,
+        undefined as never,
+      );
+      await expect(
+        service.publishRequestHeadInTx(tx as never, 1),
+      ).resolves.toBe(unchanged ? null : 7);
+      expect(lock).toHaveBeenCalledExactlyOnceWith('no key update');
+      if (unchanged) {
+        expect(tx.update).not.toHaveBeenCalled();
+        expect(tx.insert).not.toHaveBeenCalled();
+      } else {
+        expect(values).toHaveBeenCalledExactlyOnceWith({
+          userId: 1,
+          feedId: 7,
+          body: head,
+        });
+      }
+    },
+  );
 });

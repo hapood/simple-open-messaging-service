@@ -4,34 +4,30 @@
 # names from a registry. The dedicated base scripts remain available for local inspection/debugging.
 #   ./scripts/build-image.sh
 #
-# Network: proxy variables are forwarded verbatim from the invoking environment. Host networking also
-# permits a build container to reach a system proxy bound to the host loopback; no proxy address or
-# port is defined here. NODE_IMAGE overrides the compile-stage base if Docker Hub is unreachable.
+# Network: builds run on the isolated default bridge. Proxy variables are forwarded VERBATIM from
+# the invoking environment — no address rewriting happens here, so a loopback proxy is only
+# reachable under BUILD_NETWORK=host; an address the build containers can reach is required
+# otherwise. NODE_IMAGE / CADDY_BUILDER_IMAGE override the base images if Docker Hub is unreachable.
+# CI invokes the Bake target directly and uses its own isolated default network.
 set -eu
+# This script takes no arguments; configuration is via environment variables (header above).
+# Fail fast instead of silently ignoring unexpected arguments.
+if [ "$#" -gt 0 ]; then
+  echo "unexpected argument(s): $* — configure via environment variables, or invoke docker buildx bake directly for raw flags." >&2
+  exit 2
+fi
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR/.."
+. "$SCRIPT_DIR/build-common.sh"
 
-# Distrobox installations may expose Docker only on the host. host-spawn does not inherit the
-# caller's environment by default, so forward only the build settings and standard proxy variables.
-run_docker() {
-  if command -v docker >/dev/null 2>&1; then
-    docker "$@"
-  elif command -v host-spawn >/dev/null 2>&1; then
-    host-spawn -no-pty -cwd "$PWD" \
-      -env APP_VERSION,NODE_IMAGE,BUILD_NETWORK,GOPROXY,GOSUMDB,BUILDKIT_PROGRESS,HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy \
-      docker "$@"
-  else
-    echo 'Docker CLI is required (locally or through host-spawn).' >&2
-    return 1
-  fi
-}
 VER=$(node -p "require('./package.json').version")
 NODE_IMAGE="${NODE_IMAGE:-node:24-bookworm-slim}"
+CADDY_BUILDER_IMAGE="${CADDY_BUILDER_IMAGE:-caddy:2.11-builder}"
+BUILD_NETWORK="${BUILD_NETWORK:-default}"
 
-echo "building soms:$VER (unified runtime-base + build-base + app graph)…"
-# Host networking preserves support for proxies bound to the developer machine's loopback. CI uses
-# Bake's default isolated network because it invokes the Bake target directly.
-APP_VERSION="$VER" NODE_IMAGE="$NODE_IMAGE" BUILD_NETWORK=host run_docker buildx bake app \
+echo "building soms:$VER (unified runtime-base + build-base + app graph; network: $BUILD_NETWORK)…"
+APP_VERSION="$VER" NODE_IMAGE="$NODE_IMAGE" CADDY_BUILDER_IMAGE="$CADDY_BUILDER_IMAGE" \
+  BUILD_NETWORK="$BUILD_NETWORK" run_docker buildx bake app \
   --allow=network.host \
   --set app.output=type=docker
 

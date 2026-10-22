@@ -72,9 +72,7 @@ describe('MessageService local system messages', () => {
     const tx = {
       query: {
         account: {
-          findFirst: vi
-            .fn()
-            .mockResolvedValue({ account: 'alice' }),
+          findFirst: vi.fn().mockResolvedValue({ account: 'alice' }),
         },
       },
       update,
@@ -190,9 +188,7 @@ describe('MessageService local system messages', () => {
     const tx = {
       query: {
         account: {
-          findFirst: vi
-            .fn()
-            .mockResolvedValue({ account: 'bob' }),
+          findFirst: vi.fn().mockResolvedValue({ account: 'bob' }),
         },
       },
       update: vi.fn(() => query),

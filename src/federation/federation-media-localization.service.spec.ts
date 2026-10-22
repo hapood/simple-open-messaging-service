@@ -75,9 +75,9 @@ describe('FederationMediaLocalizationService', () => {
         from: vi.fn().mockReturnValue({
           leftJoin: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ limit: threadLimit }),
+              where: vi.fn().mockReturnValue({ limit: threadLimit }),
+            }),
           }),
-        }),
         }),
       })
       .mockReturnValueOnce({
@@ -129,9 +129,9 @@ describe('FederationMediaLocalizationService', () => {
           leftJoin: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
               where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  { type: 'P2P', group: null },
-                ]),
+                limit: vi
+                  .fn()
+                  .mockResolvedValue([{ type: 'P2P', group: null }]),
               }),
             }),
           }),

@@ -24,6 +24,8 @@ export async function writeP2PClientRelationshipInTx(
   const recipients = await localAccountsForTargetsInTx(tx, [first, second]);
   return captureThreadStateUpdatesInTx(
     tx,
-    recipients.filter((owner) => owner.availability === 'AVAILABLE').map((owner) => owner.id),
+    recipients
+      .filter((owner) => owner.availability === 'AVAILABLE')
+      .map((owner) => owner.id),
   );
 }
