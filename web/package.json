@@ -12,6 +12,7 @@
     "verify:native": "node scripts/verify-native-build.mjs",
     "watch": "node scripts/start.mjs web watch",
     "test": "ng test",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:build": "node --test scripts/*.test.mjs",
     "icons:generate": "./scripts/gen-icons.sh",
     "gen:api": "npm ci --prefix tools/openapi-generator --workspaces=false && npm exec --prefix tools/openapi-generator -- openapi-typescript http://localhost:3000/api/v1/docs-json -o src/app/services/api-types.ts"

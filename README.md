@@ -71,10 +71,31 @@ central account authority. The server and administration console are self-hosted
 SOMS ships as a self-contained Docker stack with PostgreSQL, automatic migrations, the application,
 and a Caddy TLS edge.
 
-| Profile | Status      | Intended environment                                                       | Guide / Compose                                                    |
-| ------- | ----------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| NAS     | In progress | Home LAN administration with a publicly reachable client                   | [NAS guide](docs/deployment/nas.md) · [`deploy/nas/`](deploy/nas/) |
-| Public  | In progress | Internet-facing server with standard HTTPS ports and public administration | [`deploy/public/`](deploy/public/)                                 |
+The quickest path is the [**Compose configuration generator**][gen] in the live playground: pick a
+deployment environment (public server, home NAS, or custom), fill in domains and credentials, and
+download a ready-to-run `compose.yaml` with all editable settings grouped at the top of the file.
+The generator also emits the DNS records, ports, and verification commands for the chosen shape.
+
+Manual steps after downloading:
+
+```bash
+mkdir soms && cd soms   # place compose.yaml here
+mkdir data               # state lives here; back it up
+docker compose up -d
+docker compose logs -f app
+```
+
+Notes:
+
+- Admin access is chosen per deployment: private source IPs only (home NAS default) or public with
+  mandatory login (public server default). Both options exist on either shape.
+- The compose file contains plaintext credentials. Keep it private and out of version control.
+- Changing credential values in the file does not rotate existing database or admin passwords.
+
+For background on the two network shapes, certificate provisioning, and manual templates, see the
+[detailed deployment guide](docs/deployment/nas.md) and [`deploy/`](deploy/).
+
+[gen]: https://hapood.github.io/simple-open-messaging-service/#/deploy
 
 ## Platform Status
 

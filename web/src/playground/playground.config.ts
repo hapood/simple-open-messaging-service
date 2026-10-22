@@ -10,7 +10,7 @@ import {
 } from '@angular/common/http';
 import { playgroundHttp } from './playground-http.mock';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
-import { provideRouter } from '@angular/router';
+import { provideRouter, withHashLocation } from '@angular/router';
 import { MAT_SNACK_BAR_DEFAULT_OPTIONS } from '@angular/material/snack-bar';
 import {
   provideTransloco,
@@ -95,7 +95,27 @@ export const playgroundConfig: ApplicationConfig = {
         new WebdbStorage(() => null, lifecycle),
       deps: [SessionLifecycleService],
     },
-    provideRouter([]),
+    provideRouter(
+      [
+        {
+          path: '',
+          pathMatch: 'full',
+          loadComponent: () =>
+            import('./playground-root.component').then(
+              (m) => m.PlaygroundRootComponent,
+            ),
+        },
+        {
+          path: 'deploy',
+          loadComponent: () =>
+            import('./deployment/deployment-page.component').then(
+              (m) => m.DeploymentPageComponent,
+            ),
+        },
+        { path: '**', redirectTo: '' },
+      ],
+      withHashLocation(),
+    ),
     provideAnimationsAsync(),
     {
       provide: MediaSizeThresholdService,
