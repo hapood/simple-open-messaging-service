@@ -135,13 +135,16 @@ Other fields in the example:
 | `PGDATABASE`                        | Database name, `soms`                                                                                |
 | `PGUSER`                            | PostgreSQL role, `timescale`; the image is ordinary PostgreSQL, not TimescaleDB                      |
 | `DATABASE_POOL_MAX`                 | App connection-pool maximum, `10`; budget connections across all app replicas                        |
-| `LOG_LEVEL`                         | `warn` in this template; use `debug` for execution measurements                                      |
 | `EXECUTION_MEASUREMENT_SAMPLE_RATE` | `0` disables measurement; values in `(0, 1]` sample operations and need debug logging                |
 | `CADDY_DNS_DIRECTIVE`               | Required for TLS; template uses `dns cloudflare {env.CLOUDFLARE_API_TOKEN}`                          |
 | `SOMS_STUN_URLS`                    | Optional comma-separated STUN URLs                                                                   |
 | `SOMS_TURN_URLS`                    | Optional comma-separated TURN URLs; requires `SOMS_TURN_REST_SECRET`                                 |
 | `SOMS_TURN_REST_SECRET`             | Shared REST-authentication secret matching the external TURN server                                  |
 | `SOMS_TURN_TTL`                     | TURN credential lifetime in seconds; use a positive value, default `3600`                            |
+
+Log output starts at `error` on every backend restart. Change the output level in the admin
+console under Logs → Live tail; changes apply immediately to console, files, and the live viewer,
+and remain in memory only. Select `debug` or `trace` to include execution measurements.
 
 All configured domains must share a registrable DNS zone. Configure public or split-horizon DNS so
 the LAN hostname reaches the NAS internally. Publish TCP and UDP port `7667` so internet clients

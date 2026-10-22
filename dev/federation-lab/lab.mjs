@@ -290,7 +290,6 @@ function labEnvironment(node, peerRoutes) {
     LOG_DIR: join(runtimeDir, node.name, 'data', 'logs'),
     // Development defaults to compact execution summaries instead of printing every SQL statement.
     // Keep each value overridable for focused debugging and performance comparisons.
-    LOG_LEVEL: process.env.FED_LAB_LOG_LEVEL ?? 'debug',
     DATABASE_QUERY_LOG: process.env.DATABASE_QUERY_LOG ?? '0',
     EXECUTION_MEASUREMENT_SAMPLE_RATE:
       process.env.EXECUTION_MEASUREMENT_SAMPLE_RATE ?? '1',

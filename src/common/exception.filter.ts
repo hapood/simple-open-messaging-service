@@ -37,7 +37,7 @@ import {
 export class AllExceptionsFilter implements ExceptionFilter {
   // Class logger (not bare console) so Nest's configured log levels gate every tier: 5xx →
   // error, 4xx → warn, client disconnect → debug. Disconnects are therefore silent at the
-  // default 'log' level (see main.ts) and surface only under LOG_LEVEL=debug.
+  // default error threshold and surface when runtime output is set to debug or trace.
   private readonly logger = new Logger('AllExceptionsFilter');
 
   catch(exception: unknown, host: ArgumentsHost) {
@@ -47,7 +47,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     // Client disconnected mid-response (closed socket / aborted stream). Not a server fault and
     // the reply socket is gone, so the send below would be futile. Logged at debug — visible
-    // only under LOG_LEVEL=debug — so an SSE/streaming incident stays investigable without
+    // at debug or trace output — so an SSE/streaming incident stays investigable without
     // burying normal output under routine client churn.
     if (this.isClientDisconnect(exception)) {
       this.logger.debug(

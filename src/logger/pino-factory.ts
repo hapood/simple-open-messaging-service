@@ -4,27 +4,6 @@ import { LogStreamStore } from './log-stream-store.js';
 import { openRotatingDestination } from './log-rotator.js';
 
 /**
- * Translate a Nest-style LOG_LEVEL into a pino level. Nest's 'log' has no pino equivalent (nestjs-pino
- * maps the *method* name log→info), so the pino instance's own `level` must be a real pino level:
- * 'log'→'info', 'verbose'→'trace'. Development defaults to info for useful local feedback;
- * production defaults to warn to minimize steady-state logging overhead. An explicit, invalid value
- * still falls back to info so a configuration typo does not silently hide application logs.
- */
-function resolvePinoLevel(raw: string | undefined): pino.LevelWithSilent {
-  const v = (
-    raw ?? (process.env.NODE_ENV === 'production' ? 'warn' : 'log')
-  ).toLowerCase();
-  if (v === 'log') return 'info';
-  if (v === 'verbose') return 'trace';
-  if (
-    ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'].includes(v)
-  ) {
-    return v as pino.LevelWithSilent;
-  }
-  return 'info';
-}
-
-/**
  * Secret fields to redact from every log record (censor → '[REDACTED]'). Covers request headers
  * (Authorization / cookie / the media_token), DTO body fields (password variants), and credential-
  * shaped fields anywhere they might appear. pino's fast-redact `*` is a single-level wildcard (no
@@ -73,11 +52,11 @@ const REDACT_PATHS = [
  * and boot/crash diagnostics.
  */
 export function buildPino(store: LogStreamStore): pino.Logger {
-  const level = resolvePinoLevel(process.env.LOG_LEVEL);
   const isDev = process.env.NODE_ENV !== 'production';
 
   const baseOpts: pino.LoggerOptions = {
-    level,
+    // Process-local only: every new logger starts at error. Children inherit this threshold.
+    level: 'error',
     // ISO-8601 timestamps — human-readable, sortable, and timezone-aware for grep.
     timestamp: pino.stdTimeFunctions.isoTime,
     // pino's `base` REPLACES the default {pid, hostname}: pass pid + a service tag so records carry
@@ -101,10 +80,11 @@ export function buildPino(store: LogStreamStore): pino.Logger {
 
   return pino(
     baseOpts,
+    // Keep destinations open to every level; the root logger owns the mutable threshold.
     pino.multistream([
-      { level, stream: stdoutStream },
-      { level, stream: openRotatingDestination() },
-      { level, stream: store.asWritable() },
+      { level: 'trace', stream: stdoutStream },
+      { level: 'trace', stream: openRotatingDestination() },
+      { level: 'trace', stream: store.asWritable() },
     ]),
   );
 }

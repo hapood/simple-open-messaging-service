@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
 import { LogStreamStore, logStreamStore } from './log-stream-store.js';
 import { buildLoggerParams } from './logger-config.factory.js';
+import { LogLevelService } from './log-level.service.js';
 import { LogViewerService } from './log-viewer.service.js';
 
 /**
@@ -18,8 +19,8 @@ import { LogViewerService } from './log-viewer.service.js';
 @Module({
   imports: [
     PinoLoggerModule.forRootAsync({
-      // Runs during Nest's async init (after dotenv/config has loaded in main.ts), so LOG_LEVEL and
-      // the LOG_* knobs are visible. No injected deps — the store is imported directly.
+      // Runs during Nest's async init after dotenv/config has loaded the destination knobs.
+      // No injected deps — the store is imported directly.
       useFactory: () => buildLoggerParams(),
     }),
   ],
@@ -27,8 +28,9 @@ import { LogViewerService } from './log-viewer.service.js';
   // imports this module to consume LogViewerService (mirrors AdminDiagnosticsController / DiagnosticsModule).
   providers: [
     LogViewerService,
+    LogLevelService,
     { provide: LogStreamStore, useValue: logStreamStore },
   ],
-  exports: [LogStreamStore, LogViewerService],
+  exports: [LogStreamStore, LogViewerService, LogLevelService],
 })
 export class LoggerModule {}

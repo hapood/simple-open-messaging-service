@@ -657,6 +657,11 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 - `POST /admin/sessions` `{ skip?, take?, userId?, ip? }` · `/admin/sessions/purge` — system-wide session overview / one-click purge.
 - `POST /admin/audit` — `@Audit`-tagged action log (`AdminActionLog`).
 - `POST /admin/durable-tasks` — paginated durable-task execution history with status and search filters.
+- `POST /admin/logs/output-level` → `{ level }`; `POST /admin/logs/output-level/set`
+  `{ level }` changes the process-wide output threshold for console, files, and live logs.
+  Supported levels: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. The value stays in memory
+  and resets to `error` on every restart. The live stream returns all captured records;
+  historical log search retains its independent minimum-level filter.
 - Federation / quota admin: `AdminFederationController` (peer trust timeline), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
 
 ## Client Diagnostics

@@ -268,9 +268,10 @@ Every runner progress/error line is also appended with a UTC timestamp to
 and terminal errors. This file is written independently of the backend log level and remains
 available when the workload fails. Existing runs cannot recover terminal output that was not saved.
 
-The backend launcher defaults to `FED_LAB_LOG_LEVEL=debug`, disables per-statement SQL logs, and
-measures every annotated business operation and durable-task execution. This keeps development
-output focused on `execution_measurement` summaries rather than SQL text. Set
+Each backend starts with log output at `error`. Use each node's admin console under Logs → Live tail
+to change its output level in memory; a restart restores `error`. Select `debug` or `trace` to see
+`execution_measurement` summaries for annotated business operations and durable-task executions.
+The launcher disables per-statement SQL logs. Set
 `DATABASE_QUERY_LOG=1` for focused SQL debugging, or
 `EXECUTION_MEASUREMENT_SAMPLE_RATE=0` to benchmark without measurement. These values are captured
 when the backend starts; changing them requires restarting the backend processes.

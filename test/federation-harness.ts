@@ -341,11 +341,6 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
       SOMS_DATA_DIR: cfg.dataDir,
       LOG_DIR: join(cfg.dataDir, 'logs'),
       DATABASE_QUERY_LOG: '0',
-      // Keep routine subprocess SQL/access logs out of the test reporter. Set FED_E2E_DEBUG=1 when
-      // diagnosing a swallowed best-effort federation path to restore trace-level forwarding.
-      LOG_LEVEL:
-        process.env.FED_E2E_LOG_LEVEL ??
-        (process.env.FED_E2E_DEBUG === '1' ? 'verbose' : 'warn'),
       ...cfg.env,
     };
     const startedChild = fork(APP_MAIN, {

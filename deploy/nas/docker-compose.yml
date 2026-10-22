@@ -94,7 +94,6 @@ services:
       ADMIN_BOOTSTRAP_PASSWORD: ''
       # Budget the connection-pool maximum across all app replicas.
       DATABASE_POOL_MAX: '10'
-      LOG_LEVEL: warn
       # Measurements require debug logging; 0 disables them, (0, 1] samples operations.
       EXECUTION_MEASUREMENT_SAMPLE_RATE: '0'
       # Caddy and the API share this container; make that proxy boundary explicit.

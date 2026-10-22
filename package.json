@@ -19,7 +19,7 @@
     "build:android:e2e": "make -C src-tauri apk-e2e-debug",
     "dev:fe:built": "node dev/federation-lab/lab.mjs --frontend-only",
     "dev:reset": "node dev/federation-lab/reset.mjs",
-    "federation:test": "FED_LAB_LOG_LEVEL=info node dev/federation-lab/diagnostics/session.mjs --users-per-node=5 --groups-per-node=5 --operations=600 --operations-per-second=10 --concurrency=12 --round-size=10 --task-timeout-ms=120000 --progress-every=25 --convergence-timeout-ms=300000 --convergence-interval-ms=1000 --convergence-samples=3 --prefix=p2p --seed=random",
+    "federation:test": "node dev/federation-lab/diagnostics/session.mjs --users-per-node=5 --groups-per-node=5 --operations=600 --operations-per-second=10 --concurrency=12 --round-size=10 --task-timeout-ms=120000 --progress-every=25 --convergence-timeout-ms=300000 --convergence-interval-ms=1000 --convergence-samples=3 --prefix=p2p --seed=random",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "dead-code": "knip --production",
     "dead-code:files": "knip --production --files",
