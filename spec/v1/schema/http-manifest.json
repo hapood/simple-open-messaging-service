@@ -1,0 +1,227 @@
+{
+  "protocol": "Simple Open Messaging Federation Protocol",
+  "majorVersion": 1,
+  "s2sPrefix": "/s2s/v1",
+  "discoveryPath": "/.well-known/somfp",
+  "operations": [
+    {
+      "id": "wellKnown",
+      "method": "GET",
+      "path": "/.well-known/somfp",
+      "authentication": "public-tls",
+      "successStatus": [200],
+      "responseMediaType": "application/json",
+      "responseSchema": "urn:somfp:v1:discovery"
+    },
+    {
+      "id": "recognize",
+      "method": "POST",
+      "path": "/s2s/v1/recognize",
+      "authentication": "bootstrap-http-message-signature",
+      "successStatus": [200],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
+      "responseSchema": "urn:somfp:v1:identity#/$defs/recognizeResult",
+      "responseEnvelope": true
+    },
+    {
+      "id": "health",
+      "method": "GET",
+      "path": "/s2s/v1/health",
+      "authentication": "status-http-message-signature",
+      "successStatus": [200],
+      "responseSchema": "urn:somfp:v1:identity#/$defs/healthResult",
+      "responseEnvelope": true
+    },
+    {
+      "id": "verify",
+      "method": "POST",
+      "path": "/s2s/v1/verify",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:somfp:v1:identity#/$defs/verifyRequest",
+      "requestHeaders": [
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature"
+      ],
+      "responseSchema": "urn:somfp:v1:identity#/$defs/verifyResult",
+      "responseEnvelope": true
+    },
+    {
+      "id": "feedHeads",
+      "method": "POST",
+      "path": "/s2s/v1/feed-heads",
+      "authentication": "lightweight-http-message-signature",
+      "successStatus": [200],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:somfp:v1:identity#/$defs/feedHeadHint"
+    },
+    {
+      "id": "stateFeed",
+      "method": "GET",
+      "path": "/s2s/v1/state-feed",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/feedQuery",
+      "responseSchema": "urn:somfp:v1:state-feed",
+      "responseEnvelope": true
+    },
+    {
+      "id": "profileNamespaceFeed",
+      "method": "GET",
+      "path": "/s2s/v1/profile-namespace-feed",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/feedQuery",
+      "responseSchema": "urn:somfp:v1:profile-namespace-feed",
+      "responseEnvelope": true
+    },
+    {
+      "id": "profileNamespace",
+      "method": "GET",
+      "path": "/s2s/v1/profile-namespaces/:nsid",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/profileNamespaceParameters",
+      "responseSchema": "urn:somfp:v1:profile-namespace",
+      "responseEnvelope": true
+    },
+    {
+      "id": "groupMeta",
+      "method": "GET",
+      "path": "/s2s/v1/group-meta",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMetaQuery",
+      "responseSchema": "urn:somfp:v1:group-meta",
+      "responseEnvelope": true
+    },
+    {
+      "id": "accountEvidenceProfile",
+      "method": "GET",
+      "path": "/s2s/v1/account-profiles/:namespaceId/:account/:profileRev",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/accountEvidenceProfileParameters",
+      "responseSchema": "urn:somfp:v1:evidence-profile",
+      "responseEnvelope": true
+    },
+    {
+      "id": "groupMemberProfile",
+      "method": "GET",
+      "path": "/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",
+      "responseSchema": "urn:somfp:v1:evidence-profile",
+      "responseEnvelope": true
+    },
+    {
+      "id": "messageQuery",
+      "method": "GET",
+      "path": "/s2s/v1/messages",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
+      "responseSchema": "urn:somfp:v1:message-query",
+      "responseEnvelope": true,
+      "secondaryContentSchema": "urn:somfp:v1:message-content"
+    },
+    {
+      "id": "messageTombstoneQuery",
+      "method": "GET",
+      "path": "/s2s/v1/message-tombstones",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/messageTombstoneQuery",
+      "responseSchema": "urn:somfp:v1:message-tombstone-query",
+      "responseEnvelope": true
+    },
+    {
+      "id": "messageProvenance",
+      "method": "POST",
+      "path": "/s2s/v1/message-provenance",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:somfp:v1:message-provenance#/$defs/request",
+      "responseSchema": "urn:somfp:v1:message-provenance#/$defs/response",
+      "responseEnvelope": true
+    },
+    {
+      "id": "call",
+      "method": "POST",
+      "path": "/s2s/v1/call",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "requestMediaType": "application/json",
+      "requestHeaders": [
+        "Content-Type",
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature"
+      ],
+      "requestSchema": "urn:somfp:v1:call",
+      "responseEnvelope": true
+    },
+    {
+      "id": "userProfile",
+      "method": "GET",
+      "path": "/s2s/v1/accounts/:account",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/accountProfileParameters",
+      "requestHeaders": [
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature"
+      ],
+      "responseSchema": "urn:somfp:v1:profile",
+      "responseEnvelope": true
+    },
+    {
+      "id": "media",
+      "method": "GET",
+      "path": "/s2s/v1/media/:digest",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200, 206],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/mediaParameters",
+      "requestHeaders": [
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature",
+        "Range"
+      ],
+      "responseMediaType": "application/octet-stream",
+      "responseHeaders": [
+        "Content-Length",
+        "Accept-Ranges",
+        "Content-Range",
+        "Content-Digest"
+      ]
+    },
+    {
+      "id": "forwardBundle",
+      "method": "GET",
+      "path": "/s2s/v1/forward-bundles/:bundleId",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/forwardBundleParameters",
+      "requestHeaders": [
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature"
+      ],
+      "responseSchema": "urn:somfp:v1:forward-bundle",
+      "responseEnvelope": true
+    }
+  ],
+  "errorSchema": "urn:somfp:v1:error"
+}

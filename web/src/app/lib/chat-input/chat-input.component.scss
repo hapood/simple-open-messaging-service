@@ -1,0 +1,860 @@
+// ViewEncapsulation.None + ci- prefix (mirrors the playground's global pg- pattern). These styles load once
+// <app-chat-input> renders in either host. The bar is NOT absolutely positioned — it is visual chrome only;
+// each host positions the <app-chat-input> element (the playground's absolute+keyboardOffset wrapper,
+// production's flex column). position:relative on the bar anchors the emoji panel's bottom:100%.
+app-chat-input {
+  display: block;
+  container-type: inline-size;
+}
+
+// Full-width surface; the actual controls below are capped and centered independently.
+.ci-input-bar {
+  --ci-controls-max-width: 800px;
+  position: relative; // anchor for .ci-emoji-panel (bottom:100%); the backdrop is now a sibling, not a child
+  z-index: 4; // lift the bar (+ its panel, a stacking-context child) above the sibling .ci-backdrop (z-index:3)
+  min-height: 63px;
+  box-sizing: border-box;
+  display: block;
+  // Keyboard lift is a compositor-only transform (NOT padding/margin): the bar translates up by
+  // --kbd-lift-effective alongside the scroller, so neither the flex column nor the virtual-scroll kernel
+  // reflows on each frame (transform leaves clientHeight/scrollHeight/scrollTop untouched). --kbd-lift is
+  // set on the host (.msg-container / .pg-stage) by KbdOffsetDirective's host binding; --kbd-lift-effective
+  // (derived there) = max(0, --kbd-lift − --soms-safe-bottom) — the bar's own bottom padding already carries
+  // the safe-bottom to clear the gesture bar, so subtracting it here avoids an extra gap between the editor
+  // and the keyboard when it's open. API 30+ supplies --kbd-duration with the native animation endpoint;
+  // ordinary corrections retain the 60ms fallback that smooths sparse OEM WebView frames.
+  // No-op on desktop (--kbd-lift: 0). translateY(0px) is non-`none`, so it is a permanent
+  // stacking context / containing block for fixed descendants — which is exactly why the .ci-backdrop was
+  // re-parented out of the form.
+  transform: translateY(
+    calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px)))
+  );
+  transition: transform var(--kbd-duration, 60ms) ease-out;
+  // Bottom padding carries ONLY the static gesture-/navigation-bar inset (closed keyboard): the bar's own
+  // Composer background extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal
+  // strip). The keyboard region itself is covered by the translated bar + the IME, so there is no gap.
+  // --soms-safe-bottom is 0 on desktop/browser, so this resolves to the base 8px there.
+  padding: 8px 12px calc(8px + var(--soms-safe-bottom, 0px));
+  background: var(--im-composer-bar-bg);
+  border-top: 1px solid var(--app-border);
+}
+
+.ci-controls {
+  position: relative;
+  width: min(100%, 800px);
+  margin-inline: auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.ci-input-bar--compact {
+  .ci-input {
+    min-height: 36px;
+    max-height: 36px;
+  }
+}
+
+// Full-screen transparent backdrop: closes the emoji panel on any outside click. z-index below the panel (4).
+.ci-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  background: transparent;
+}
+
+// ── Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid ───────────────────────────
+// Floats above the bar on browser/PC. The Android-native modifier below turns it into an in-flow keyboard
+// replacement controlled through SomsShell. Every height-contributing value is integer px.
+.ci-emoji-panel {
+  position: absolute;
+  // Match the panel's lower-right corner to the emoji key's right edge. From the controls rail this skips
+  // the 48px send key, the 8px flex gap and the input capsule's 4px right padding; the 12px branch is the
+  // bar's inline padding when the rail fills a narrow composer.
+  right: max(72px, calc((100% - var(--ci-controls-max-width)) / 2 + 60px));
+  bottom: 100%;
+  width: min(360px, calc(100% - 24px));
+  height: 320px; // fixed panel height (tabs + scrollable grid)
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  z-index: 4;
+  // ALWAYS MOUNTED: every category grid renders once at component init, so opening + tab-switching are zero-DOM
+  // toggles. Hide via opacity + pointer-events — NOT display:none — so the grids stay painted and their emoji
+  // glyphs stay rasterized (first visit to any tab is as instant as any later one). visibility:hidden would NOT
+  // prerasterize (it skips paint) and a descendant visibility:visible would re-show through a closed panel, so
+  // it is ruled out here. pointer-events:none on the closed panel disables interaction for the whole subtree
+  // (no grid re-enables it), making a closed panel fully click-through.
+  opacity: 0;
+  pointer-events: none;
+  &--open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.ci-emoji-tabs {
+  flex: 0 0 40px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--app-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+.ci-emoji-tab {
+  flex: 0 0 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  line-height: 36px;
+  border-radius: var(--app-radius-sm);
+  cursor: pointer;
+  opacity: 0.5;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
+  &--active {
+    opacity: 1;
+    background: var(--app-hover);
+  }
+}
+.ci-emoji-tab--abc {
+  flex-basis: 48px;
+  width: 48px;
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 1;
+  color: var(--app-text);
+}
+// All category grids stack absolutely inside this relative anchor. It is the flex child that fills the panel
+// column below the tabs; each grid is position:absolute inset:0 filling it, so they overlap and only the active
+// one is shown — but every grid stays laid out + painted (its glyphs pre-rasterized). Each grid also keeps its
+// own scrollTop across switches.
+.ci-emoji-grids {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0; // permit the inner grid to scroll instead of growing the panel
+}
+.ci-emoji-backspace {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 3;
+  width: 48px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-bg-muted);
+  color: var(--app-text);
+}
+.ci-emoji-grid {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  align-content: start;
+  gap: 2px;
+  padding: 8px 8px 56px;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  // Inactive ⇒ transparent but still painted (opacity, not display/visibility, so glyphs stay rasterized). The
+  // active grid gets opacity:1 AND z-index:1 so it is the one that both shows and captures pointer events
+  // across the whole panel area — the inactive grids beneath never receive the click (the active grid on top
+  // grabs it first), which is why they need no pointer-events rule of their own.
+  opacity: 0;
+  &--active {
+    opacity: 1;
+    z-index: 1;
+  }
+}
+.ci-emoji {
+  height: 36px;
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 36px;
+  padding: 0;
+  border-radius: var(--app-radius-sm);
+  cursor: pointer;
+  transition:
+    background 0.1s,
+    transform 0.1s;
+  &:active {
+    background: var(--app-hover);
+    transform: scale(0.92);
+  }
+}
+
+.ci-action-capsule {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  overflow: visible;
+
+  &::before {
+    content: '';
+    position: absolute;
+    z-index: 0;
+    right: 0;
+    bottom: 0;
+    width: 40px;
+    height: 40px;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    border-radius: 20px;
+    background: transparent;
+    box-shadow: none;
+    transition:
+      height 520ms var(--app-ease-standard),
+      background 520ms var(--app-ease-standard),
+      border-color 520ms var(--app-ease-standard),
+      box-shadow 520ms var(--app-ease-standard);
+  }
+
+  &--linked {
+    &::before {
+      height: 80px;
+      border-color: var(--app-border);
+      background: var(--im-composer-input-bg);
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+    }
+  }
+}
+
+.ci-action-capsule--linked .ci-attach {
+  width: 40px;
+  height: 40px;
+  border-top: 0;
+  border-radius: 0 0 20px 20px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ci-link-action {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  bottom: 40px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 20px 20px 0 0;
+  background: transparent;
+  color: var(--app-brand);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(12px) scale(0.84);
+  transition:
+    opacity 420ms var(--app-ease-standard),
+    transform 420ms var(--app-ease-standard);
+
+  &--visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+
+  &--pending .ci-link-action-core {
+    animation: ci-link-core-breathe 1.45s ease-in-out infinite;
+  }
+
+  &--failed {
+    color: var(--app-danger, #c94242);
+    background: color-mix(in srgb, currentColor 9%, transparent);
+  }
+}
+
+.ci-link-action-core {
+  position: relative;
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  overflow: hidden;
+
+  img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+  }
+}
+
+@keyframes ci-link-core-breathe {
+  0%,
+  100% {
+    opacity: 0.52;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+// Native-aligned row: standalone attachment, input capsule (editor + emoji), round action.
+.ci-input-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: flex-end;
+  column-gap: 2px;
+  min-height: 48px;
+  box-sizing: border-box;
+  padding: 4px 4px 4px 10px;
+  background: var(--im-composer-input-bg);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition:
+    background 0.12s,
+    box-shadow 0.12s;
+  &:focus-within {
+    background: var(--im-composer-input-focus-bg);
+    box-shadow: 0 3px 12px color-mix(in srgb, #000 10%, transparent);
+  }
+}
+
+// Emoji icon inside the capsule.
+.ci-input-ico {
+  grid-column: 2;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--app-text-muted);
+  border-radius: var(--app-radius-pill);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+  &:hover {
+    background: var(--app-hover);
+    color: var(--app-text);
+  }
+  &.ci-input-ico--active {
+    background: color-mix(
+      in srgb,
+      var(--app-brand) 16%,
+      var(--im-composer-input-bg)
+    );
+    color: var(--app-brand);
+  }
+}
+
+.ci-attach {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--im-composer-input-bg);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 12%, transparent);
+  transition:
+    background 0.12s,
+    color 0.12s,
+    transform 0.1s;
+  &:hover {
+    background: var(--app-hover);
+    color: var(--app-text);
+  }
+  &.ci-attach--active {
+    background: color-mix(
+      in srgb,
+      var(--app-brand) 16%,
+      var(--im-composer-input-bg)
+    );
+    color: var(--app-brand);
+    box-shadow: none;
+  }
+  &:active {
+    transform: scale(0.94);
+  }
+}
+
+// Attachment mode replaces only the visible input capsule. The editor remains mounted underneath, preserving
+// its draft, selection and measured height; closing the tray restores it without composer or message-list
+// movement. Fixed rail offsets keep the attachment and send controls available on both sides.
+.ci-attach-drawer-shell {
+  position: absolute;
+  z-index: 5;
+  inset: 0 56px 0 48px;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 4px;
+  border: 0;
+  border-radius: 12px;
+  background: color-mix(
+    in srgb,
+    var(--app-brand) 5%,
+    var(--im-composer-input-bg)
+  );
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+  transform: scaleX(0.96);
+  transform-origin: left center;
+  transition:
+    opacity var(--app-motion-fast) var(--app-ease-enter),
+    transform var(--app-motion-fast) var(--app-ease-standard);
+  &--open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: scaleX(1);
+  }
+}
+
+// Recording replaces the same editor area as attachment mode without changing composer geometry.
+.ci-record-shell {
+  position: absolute;
+  z-index: 6;
+  inset: 0 56px 0 48px;
+  min-width: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: var(--im-composer-input-focus-bg);
+  color: var(--app-text);
+  opacity: 0;
+  pointer-events: none;
+  transform: scaleX(0.98);
+  transform-origin: right center;
+  transition:
+    opacity var(--app-motion-fast) var(--app-ease-enter),
+    transform var(--app-motion-fast) var(--app-ease-standard);
+
+  &--open {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+
+  &--cancelled {
+    color: var(--app-danger, #d33);
+  }
+}
+
+.ci-record-wave {
+  flex: 1 1 auto;
+  min-width: 24px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  overflow: hidden;
+  direction: ltr;
+  mask-image: linear-gradient(to right, transparent, #000 22%, #000);
+}
+
+.ci-record-track {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  overflow: hidden;
+}
+
+.ci-record-release-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: var(--app-font-weight-medium);
+  text-align: center;
+}
+
+.ci-record-wave-bar {
+  flex: 0 0 2px;
+  width: 2px;
+  height: 24px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.7;
+  transform: scaleY(var(--ci-wave-level));
+  transition: transform 80ms linear;
+}
+
+// The cancel target follows the mic key at the controls rail's right edge. It floats outside the composer
+// geometry, while pointer capture on the mic keeps the gesture continuous beneath this paint-only target.
+.ci-record-cancel-target {
+  position: absolute;
+  z-index: 7;
+  // Match and align with the 48px composer action below so the gesture target stays spatially stable.
+  right: 0;
+  bottom: 60px;
+  width: 48px;
+  height: 62px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 5px 4px;
+  border: 1px solid color-mix(in srgb, var(--app-danger, #d33) 28%, transparent);
+  border-radius: 18px;
+  background: var(--app-surface-elevated, var(--app-surface));
+  color: var(--app-danger, #d33);
+  box-shadow: 0 6px 18px color-mix(in srgb, #000 16%, transparent);
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.9);
+  transform-origin: bottom center;
+  transition:
+    opacity var(--app-motion-fast) var(--app-ease-enter),
+    color var(--app-motion-fast) var(--app-ease-standard),
+    background var(--app-motion-fast) var(--app-ease-standard),
+    transform var(--app-motion-fast) var(--app-ease-standard);
+
+  &--open {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  &--active {
+    background: var(--app-danger, #d33);
+    color: #fff;
+    transform: translateY(0) scale(1.08);
+  }
+}
+
+.ci-record-cancel-icon {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+
+  svg {
+    flex: none;
+    width: 18px;
+    height: 18px;
+  }
+}
+
+.ci-attach-drawer {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.ci-attach-option {
+  flex: 0 1 112px;
+  width: 112px;
+  min-width: 0;
+  height: 44px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-surface) 70%, transparent);
+  color: var(--app-text);
+  cursor: pointer;
+  box-sizing: border-box;
+  text-align: left;
+  transition:
+    background 120ms,
+    color 120ms;
+  &:hover {
+    background: var(--app-hover-strong, var(--app-hover));
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: -2px;
+  }
+  &:active .ci-attach-option-icon {
+    background: color-mix(in srgb, var(--app-brand) 18%, transparent);
+    transform: scale(0.94);
+  }
+}
+.ci-attach-option-icon {
+  flex: 0 0 28px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--app-radius-pill);
+  background: color-mix(in srgb, var(--app-brand) 10%, transparent);
+  color: var(--app-brand);
+  transition:
+    background 120ms,
+    transform 100ms;
+}
+.ci-attach-option-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: var(--app-font-weight-medium);
+}
+
+@container (max-width: 360px) {
+  .ci-attach-option {
+    flex-basis: 96px;
+    width: 96px;
+    gap: 4px;
+    padding-inline: 4px;
+  }
+  .ci-attach-option-icon {
+    flex-basis: 24px;
+    width: 24px;
+    height: 24px;
+  }
+  .ci-attach-option-label {
+    font-size: 12px;
+    line-height: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ci-attach-drawer-shell {
+    transition: none;
+  }
+  .ci-action-capsule,
+  .ci-link-action {
+    transition: none;
+    animation: none;
+  }
+  .ci-action-capsule::before {
+    transition: none;
+  }
+  .ci-link-action-core {
+    animation: none !important;
+  }
+  .ci-input {
+    transition: none;
+  }
+}
+
+// Grow with the editor from one line to five. Once the editor reaches its five-line cap, ProseMirror owns
+// the vertical overflow so its native selection scrolling keeps the caret visible.
+.ci-input {
+  grid-column: 1;
+  min-width: 0;
+  min-height: 36px;
+  max-height: 119px; // 5 × 21px line boxes + 14px vertical padding
+  box-sizing: border-box;
+  padding: 7px 6px;
+  overflow: hidden;
+  transition:
+    min-height 380ms var(--app-ease-standard),
+    max-height 380ms var(--app-ease-standard);
+}
+
+// The primary composer action stays blue in its idle send state; holding it switches to recording styling.
+.ci-send {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--app-radius-pill);
+  background: var(--im-composer-send-bg);
+  color: var(--im-composer-send-text);
+  box-shadow: 0 4px 14px
+    color-mix(in srgb, var(--im-composer-send-bg) 28%, transparent);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    transform 0.1s;
+  &:hover {
+    background: var(--im-composer-send-hover);
+    color: var(--im-composer-send-text);
+  }
+  &:active {
+    transform: scale(0.94);
+  }
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+.ci-send.ci-send--has-draft {
+  background: var(--im-composer-send-bg);
+  color: var(--im-composer-send-text);
+  box-shadow: 0 4px 14px
+    color-mix(in srgb, var(--im-composer-send-bg) 28%, transparent);
+  &:hover {
+    background: var(--im-composer-send-hover);
+    color: var(--im-composer-send-text);
+  }
+}
+
+// Tilt the horizontal Material send glyph into a conversational paper plane. Its filled mass settles toward
+// the lower-left after rotation, so apply a small optical correction toward the upper-right inside the fixed box.
+.ci-send-glyph {
+  transform: translate(1px, -1px) rotate(-28deg);
+}
+
+// Mic-button states (the empty-draft send key). Recording ⇒ brand red; slide-up cancel ⇒ muted grey.
+.ci-send.ci-send-recording {
+  background: #e53935;
+}
+.ci-send.ci-send-cancelled {
+  background: var(--app-text-muted);
+}
+
+// Dark mode keeps the same functional-blue action while using a theme-specific lighter blue token.
+[data-theme='dark'] .ci-send {
+  box-sizing: border-box;
+  border: 1px solid
+    color-mix(in srgb, var(--im-composer-send-bg) 72%, var(--app-border));
+  background: var(--im-composer-send-bg);
+  color: var(--im-composer-send-text);
+  box-shadow: 0 4px 16px
+    color-mix(in srgb, var(--im-composer-send-bg) 26%, transparent);
+
+  &:hover {
+    background: var(--im-composer-send-hover);
+    color: var(--im-composer-send-text);
+  }
+}
+
+[data-theme='dark'] .ci-send.ci-send--has-draft {
+  border-color: color-mix(
+    in srgb,
+    var(--im-composer-send-bg) 72%,
+    var(--app-border)
+  );
+  background: var(--im-composer-send-bg);
+  color: var(--im-composer-send-text);
+  box-shadow: 0 4px 16px
+    color-mix(in srgb, var(--im-composer-send-bg) 26%, transparent);
+
+  &:hover {
+    background: var(--im-composer-send-hover);
+    color: var(--im-composer-send-text);
+  }
+}
+
+[data-theme='dark'] .ci-send.ci-send-recording {
+  border-color: color-mix(in srgb, var(--app-danger) 48%, var(--app-border));
+  background: color-mix(in srgb, var(--app-danger) 18%, var(--app-active));
+  color: color-mix(in srgb, var(--app-danger) 84%, #fff 16%);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--app-danger) 16%, transparent);
+}
+
+[data-theme='dark'] .ci-send.ci-send-cancelled {
+  border-color: var(--app-border-strong);
+  background: var(--app-hover);
+  color: var(--app-text-muted);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
+}
+
+@container (min-width: 720px) {
+  .ci-input {
+    min-height: 56px;
+    max-height: 119px;
+  }
+}
+
+.ci-record-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border: none;
+  border-radius: 50%;
+  background: #e53935;
+  animation: ci-rec-pulse 1s ease-in-out infinite;
+}
+.ci-record-time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--app-text);
+}
+.ci-record-error {
+  position: absolute;
+  left: max(12px, calc((100% - 800px) / 2));
+  right: max(12px, calc((100% - 800px) / 2));
+  bottom: 100%;
+  margin-bottom: 4px;
+  height: 32px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: var(--app-danger, #d33);
+  color: #fff;
+  border-radius: var(--app-radius-sm);
+  font-size: 13px;
+  line-height: 20px;
+  z-index: 4;
+}
+@keyframes ci-rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}

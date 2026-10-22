@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./.e2e-build",
+    "rootDir": ".",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "incremental": false
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/federation-app.main.ts",
+    "test/federation-harness.ts",
+    "test/federation-proxy.ts",
+    "test/federation-test-helpers.ts"
+  ],
+  "exclude": ["src/**/*.spec.ts", "test/**/*.e2e-spec.ts"]
+}

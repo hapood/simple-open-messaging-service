@@ -1,0 +1,71 @@
+@use '../row-base' as *;
+
+.forward-card {
+  width: 280px;
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  transition: opacity 0.2s ease-out;
+  border: 0;
+  // This card is a real <button>. Desktop Chromium/WebKit can retain the native
+  // ButtonFace (black in a dark color scheme) unless its appearance is reset,
+  // even though the shared bubble class supplies a background. Mobile WebViews
+  // did not expose that native paint, which made the bug viewport-specific.
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--bubble-bg);
+  color: var(--bubble-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.forward-body {
+  height: 76px;
+  box-sizing: border-box;
+  padding: 10px 12px 8px;
+}
+
+.forward-card:disabled {
+  // A malformed/legacy card still renders its explanatory fallback. Do not let
+  // the desktop UA disabled-button palette hide that content.
+  opacity: 1;
+  color: var(--bubble-text);
+  -webkit-text-fill-color: currentColor;
+  cursor: default;
+}
+.forward-card:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
+}
+
+.forward-card.msg-sending {
+  opacity: 0.88;
+}
+
+.forward-title {
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.forward-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.forward-line {
+  min-width: 0;
+  color: var(--bubble-muted);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.forward-meta {
+  width: 100%;
+}

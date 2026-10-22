@@ -1,0 +1,1190 @@
+{
+  "common": {
+    "appName": "Admin Console",
+    "loading": "Loading…",
+    "noData": "No data",
+    "all": "All",
+    "yes": "Yes",
+    "no": "No",
+    "cancel": "Cancel",
+    "edit": "Edit",
+    "delete": "Delete",
+    "save": "Save",
+    "search": "Search",
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {{page}} / {{pages}}",
+    "loadFailed": "Load failed: {{message}}",
+    "operationFailed": "Operation failed",
+    "comingSoon": "Coming soon",
+    "neverExpires": "No expiry",
+    "trusted": "Trusted",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "workspace": "Operations workspace",
+    "client": {
+      "app": "Android",
+      "web": "Web",
+      "desktop": "Desktop"
+    }
+  },
+  "topBar": {
+    "toggleTheme": "Toggle theme",
+    "search": "Search",
+    "openNavigation": "Open navigation",
+    "closeNavigation": "Close navigation"
+  },
+  "search": {
+    "placeholder": "Search users, peers…",
+    "hint": "Type to search users and federation peers",
+    "empty": "No matches",
+    "section": {
+      "users": "Users",
+      "peers": "Federation peers"
+    }
+  },
+  "roles": {
+    "super": "Super Admin",
+    "admin": "Admin",
+    "viewer": "Viewer"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "users": "User Management",
+    "groups": "Groups",
+    "sessions": "Sessions",
+    "connections": "Live Connections",
+    "bans": "Ban Management",
+    "push": "Push Management",
+    "federation": "Federation",
+    "logs": "Logs",
+    "rateLimits": "Rate Limits",
+    "media": "Media Transfers",
+    "settings": "Settings",
+    "security": "My Account",
+    "durableTasks": "Durable Tasks",
+    "messageReports": "Message Reports",
+    "logout": "Log Out",
+    "group": {
+      "overview": "Common tasks",
+      "access": "Access & Activity",
+      "system": "System",
+      "account": "Account"
+    }
+  },
+  "quota": {
+    "title": "Daily Quotas",
+    "desc": "Shared traffic budgets for federated peer servers. Resets at 00:00 UTC.",
+    "empty": "No quota nodes.",
+    "local": "Local",
+    "peer": "Peer",
+    "edit": "Edit",
+    "peerTitle": "Traffic quotas",
+    "peerDesc": "Federated users share the active identity namespace's budgets.",
+    "disabled": "Disabled",
+    "noTrafficAccepted": "No traffic of this type is accepted",
+    "remaining": "{{count}} remaining",
+    "itemCaps": "Per-item media size limits",
+    "megabytes": "{{count}} MB",
+    "resetHint": "Daily usage resets at 00:00 UTC; changing a limit does not clear usage already recorded today.",
+    "status": {
+      "healthy": "Healthy",
+      "warning": "Near limit",
+      "exhausted": "Exhausted",
+      "disabled": "Capability off"
+    },
+    "source": {
+      "default": "Server default",
+      "custom": "Peer override",
+      "userCustom": "Customized"
+    },
+    "notApplicable": "Not applicable",
+    "invalid": "Enter a valid number greater than or equal to 0.",
+    "unavailable": "Quota information for this peer is currently unavailable.",
+    "health": {
+      "healthy": "Healthy",
+      "warning": "Near limit",
+      "exhausted": "Exhausted",
+      "unknown": "Unknown"
+    },
+    "editTitle": "Quota limits — {{domain}}",
+    "editHint": "Leave blank to use the server default; 0 disables that capability. Changes apply immediately without clearing today's usage.",
+    "placeholder": {
+      "default": "default"
+    },
+    "maxBytes": "Max {{cat}} (MB)",
+    "save": "Save",
+    "cancel": "Cancel",
+    "toast": {
+      "saved": "Quota limits saved"
+    },
+    "col": {
+      "node": "Node",
+      "messages": "Messages",
+      "files": "Files",
+      "requests": "Requests"
+    },
+    "breaker": {
+      "bannerTitle": "Quota circuit breakers tripped",
+      "bannerBody": "{{peers}} peer(s) + {{users}} user(s) are over a daily quota and paused. New pulls/sends for them are blocked until reset (00:00 UTC) or an admin adds quota.",
+      "review": "Review & add quota",
+      "none": "No tripped breakers",
+      "tripped": "Tripped",
+      "dimMsg": "Messages",
+      "dimFile": "Files",
+      "dimFileBytes": "File total size",
+      "continueTitle": "Add today's quota — {{entity}}",
+      "continueHint": "Additions stack on today's limit. 0 = no bump on that dimension.",
+      "addMsg": "Additional messages",
+      "addFile": "Additional file count",
+      "addFileBytes": "Additional file total size (MB)",
+      "needHint": "Need ≥ {{amount}} to unblock this dimension",
+      "apply": "Apply & resume",
+      "toastResumed": "Breaker cleared — traffic resumed",
+      "toastStillTripped": "Quota added; some dimensions still over the limit"
+    }
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "desc": "Monitor system health and get everyday admin work done.",
+    "autoRefresh": "Auto-refresh every 15s",
+    "mediaSub": "{{assets}} assets · {{live}} live",
+    "noRecentActions": "No admin actions recorded yet",
+    "quickActions": {
+      "title": "Quick tasks",
+      "desc": "Start with the admin tasks you use most.",
+      "users": "Manage users",
+      "usersDesc": "Find users, create accounts, or resolve access issues",
+      "connections": "View live connections",
+      "connectionsDesc": "Investigate online presence and unusual connections",
+      "selfCheck": "Run federation check",
+      "selfCheckDesc": "Verify domain, certificate, and federation reachability",
+      "settings": "System settings",
+      "settingsDesc": "Review instance configuration and runtime options"
+    },
+    "workflows": {
+      "title": "Get started",
+      "desc": "Your two most common areas of work, in one place.",
+      "health": {
+        "title": "Server health",
+        "desc": "Monitor this server and check connectivity with remote peers.",
+        "current": "Current server",
+        "currentDesc": "Live connections and status",
+        "peers": "Remote servers",
+        "peersDesc": "Review trust and health",
+        "check": "Run health check",
+        "checkDesc": "Test DNS, TLS, and connectivity"
+      },
+      "users": {
+        "title": "User management",
+        "desc": "Create accounts and quickly inspect or manage user status.",
+        "create": "Create user",
+        "createDesc": "Provision a new account now",
+        "manage": "Manage users",
+        "manageDesc": "Search, enable, or disable users",
+        "status": "View user status",
+        "statusDesc": "Inspect login and session activity"
+      }
+    },
+    "tile": {
+      "systemStatus": "System status",
+      "onlineNow": "Online now",
+      "onlineConnections": "Online connections",
+      "activeSessions": "Active sessions",
+      "federationHealth": "Federation health",
+      "storageUsage": "Media storage",
+      "recentActions": "Recent admin actions"
+    }
+  },
+  "language": {
+    "label": "Language",
+    "zhCN": "中文",
+    "en": "English"
+  },
+  "login": {
+    "title": "Admin Login",
+    "account": "Account",
+    "password": "Password",
+    "submit": "Log In",
+    "accountRequired": "Please enter the account",
+    "passwordRequired": "Please enter the password",
+    "failed": "Login failed",
+    "twoFactorTitle": "Two-Factor Verification",
+    "twoFactorHint": "Enter the 6-digit code from your authenticator app.",
+    "code": "Verification code",
+    "backupCode": "Backup code",
+    "verify": "Verify",
+    "useBackupCode": "Use a backup code instead",
+    "useAuthenticator": "Use the authenticator app instead",
+    "usePasskey": "Use a passkey instead",
+    "passkeyHint": "Confirm with your screen lock or security key.",
+    "backToPassword": "Back to password"
+  },
+  "users": {
+    "title": "User Management",
+    "create": "Create user",
+    "searchPlaceholder": "Search account",
+    "col": {
+      "id": "ID",
+      "account": "account",
+      "domain": "domain",
+      "foreigner": "Foreign",
+      "status": "Status",
+      "quota": "Quota",
+      "createdAt": "Created",
+      "actions": "Quick actions"
+    },
+    "status": {
+      "banned": "Banned",
+      "active": "Active"
+    },
+    "action": {
+      "unban": "Unban",
+      "ban": "Ban",
+      "forceLogout": "Force Logout",
+      "viewSessions": "View Sessions",
+      "issueLoginCode": "Issue login code",
+      "generateInitialPassword": "Generate initial password"
+    },
+    "toast": {
+      "unbanned": "Unbanned",
+      "banned": "Banned",
+      "forceLoggedOut": "Force logged out",
+      "batchDone": "Action applied to {{count}} user(s)",
+      "created": "User created"
+    },
+    "selected": "{{count}} selected",
+    "selectAll": "Select all",
+    "selectRow": "Select {{name}}",
+    "total": "{{count}} total",
+    "tabs": {
+      "users": "Users",
+      "operators": "Operators"
+    }
+  },
+  "userDetail": {
+    "back": "Back to users",
+    "notFound": "User not found",
+    "section": {
+      "profile": "Profile",
+      "groups": "Groups",
+      "sessions": "Active sessions",
+      "push": "Push devices"
+    },
+    "field": {
+      "domain": "Domain",
+      "foreigner": "Foreigner",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "bio": "Bio"
+    },
+    "group": {
+      "name": "Group",
+      "role": "Role",
+      "joined": "Joined"
+    },
+    "empty": {
+      "groups": "No group memberships",
+      "sessions": "No active sessions",
+      "push": "No push devices"
+    },
+    "push": {
+      "deviceId": "Device ID"
+    }
+  },
+  "userQuota": {
+    "title": "Personal quota",
+    "desc": "Applies only to this local account and is independent of federated-peer quotas. Resets daily at 00:00 UTC.",
+    "noActionsAccepted": "This account cannot use this capability",
+    "resetHint": "Daily usage resets at 00:00 UTC; changing a limit does not clear usage already recorded for this account today.",
+    "source": {
+      "default": "Account default",
+      "custom": "Personal override"
+    },
+    "editTitle": "Edit personal quota",
+    "editHint": "Leave blank to use the local-account default; 0 disables that capability for this account. Changes apply immediately without clearing today's usage."
+  },
+  "bans": {
+    "title": "Ban Management",
+    "desc": "Currently active login bans (IP, password-account, or one-time-code account — from the brute-force sliding window shared across login methods).",
+    "col": {
+      "type": "Type",
+      "value": "Value",
+      "until": "Expires",
+      "remaining": "Remaining"
+    },
+    "type": {
+      "ip": "IP",
+      "user": "Password",
+      "otp": "OTP"
+    },
+    "empty": "No active bans",
+    "unban": "Unban"
+  },
+  "sessions": {
+    "title": "Sessions",
+    "searchPlaceholder": "Filter by IP",
+    "desc": "Active sessions of all users (not revoked and not expired). {{count}} total.",
+    "purge": "Purge All",
+    "purgeTitle": "Purge all active sessions?",
+    "purgeBody": "This will revoke all {{count}} active sessions and force every user to re-login (access tokens expire immediately). This action cannot be undone.",
+    "purgeConfirm": "Confirm Purge",
+    "purged": "Purged all active sessions ({{count}} users forced to re-login)",
+    "purgeFailed": "Purge failed",
+    "revoke": "Revoke",
+    "revoked": "Session revoked — that device was forced to sign out",
+    "confirmRevoke": "Confirm revoke",
+    "col": {
+      "user": "User",
+      "client": "Client",
+      "device": "device",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "Created",
+      "lastActive": "Last active",
+      "expires": "Expires"
+    },
+    "empty": "No active sessions",
+    "tabs": {
+      "users": "User sessions",
+      "admins": "Admin sessions"
+    }
+  },
+  "connections": {
+    "title": "Live Connections",
+    "desc": "Currently online SSE real-time downlinks (in-memory, aggregated by user). Unlike Sessions: this only shows the long-lived connections held right now, not persistent login sessions.",
+    "updatedAt": "Updated at {{time}} (auto-refresh every 3s)",
+    "totalConn": "Total Connections",
+    "onlineUsers": "Online Users",
+    "col": {
+      "user": "User",
+      "count": "Connections",
+      "since": "Connected Since",
+      "duration": "Connected For"
+    },
+    "empty": "No online connections"
+  },
+  "adminSessions": {
+    "title": "Admin Sessions",
+    "searchPlaceholder": "Filter by IP",
+    "desc": "Active opaque administrator sessions, physically isolated from user sessions. {{count}} total. Revocation takes effect on the next request.",
+    "revoke": "Revoke",
+    "revoked": "Admin session revoked (its access remains valid for up to 15m)",
+    "revokeFailed": "Revoke failed",
+    "col": {
+      "admin": "Admin",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "Created",
+      "expires": "Expires"
+    },
+    "empty": "No active admin sessions"
+  },
+  "push": {
+    "title": "Push Management",
+    "desc": "Registered push device tokens (FCM / Web Push) + test push + transport config status.",
+    "searchPlaceholder": "Search by user / token / deviceId",
+    "transportLabel": "Transport status:",
+    "configured": "configured",
+    "notConfigured": "not configured",
+    "deviceCount": "{{count}} devices",
+    "col": {
+      "platform": "Platform",
+      "user": "User",
+      "token": "Token",
+      "lastSeen": "Last Active"
+    },
+    "test": "Test",
+    "send": "Send",
+    "empty": "No matching device tokens",
+    "range": "Items {{from}}-{{to}} of {{total}}",
+    "testDialogTitle": "Send Test Push",
+    "testDialogDesc": "Send a test notification to {{target}}'s {{platform}} (the device must be in the background to receive a system notification).",
+    "testDialogTargetUser": "user {{name}}",
+    "testDialogTargetDevice": "this device",
+    "testTitleLabel": "Title",
+    "testBodyLabel": "Body (optional)",
+    "testSent": "Test push sent",
+    "testFailed": "Send failed: {{reason}}",
+    "testFailedUnknown": "unknown reason",
+    "testDefaultTitle": "SOMS Test Push",
+    "deleted": "Deleted device token for {{name}}",
+    "platform": {
+      "ANDROID": "Android · FCM",
+      "IOS": "iOS · FCM",
+      "WEB": "Web Push"
+    },
+    "tabs": {
+      "devices": "Devices",
+      "config": "Transport config"
+    }
+  },
+  "federation": {
+    "title": "Federation",
+    "desc": "Peer servers and their Federation v1 bidirectional recognition lifecycle. Open a peer for recognition facts, reachability, and namespace state.",
+    "searchPlaceholder": "Search domain",
+    "namespaceFilterPlaceholder": "Namespace ID",
+    "tabs": {
+      "peers": "Peers",
+      "selfCheck": "Self-check"
+    },
+    "status": {
+      "all": "All",
+      "available": "Available",
+      "establishing": "Establishing",
+      "pending": "Pending review",
+      "degraded": "Degraded",
+      "unrecognized": "Unrecognized",
+      "halted": "Halted"
+    },
+    "col": {
+      "domain": "Domain",
+      "status": "Status",
+      "lastSuccess": "Last Success",
+      "degradations": "Degradations",
+      "feedProgress": "Feed progress",
+      "created": "Discovered"
+    },
+    "feed": {
+      "title": "Feed progress",
+      "state": "State feed",
+      "profileNamespace": "Profile namespace feed",
+      "notStarted": "Not started",
+      "caughtUp": "Caught up",
+      "behind": "{{count}} behind",
+      "pulled": "Pulled through",
+      "localOutboundEnd": "Local outbound end",
+      "observedEnd": "Observed end"
+    },
+    "action": {
+      "viewDetail": "View detail",
+      "recognize": "Recognize",
+      "confirmRecognize": "Start outbound recognition with this peer?",
+      "block": "Block",
+      "unblock": "Unblock"
+    },
+    "toast": {
+      "blocked": "Peer blocked — federation refused until unblocked",
+      "unblocked": "Peer unblocked — will re-handshake on next contact",
+      "recognized": "Recognition completed",
+      "recognitionPending": "Recognition started; waiting for peer verification or review",
+      "reviewApproved": "Identity review approved",
+      "reviewRejected": "Identity review rejected"
+    },
+    "total": "{{count}} peers",
+    "empty": "No federated peers",
+    "meta": {
+      "createdAt": "Discovered",
+      "activeNamespace": "Active namespace",
+      "none": "none",
+      "trustedAt": "Trusted since",
+      "lastSuccessAt": "Last successful contact",
+      "degradedAt": "Degraded at",
+      "degradationCount": "Degradation count",
+      "addedBy": "Set by",
+      "auto": "auto (init)",
+      "lastError": "Last failure"
+    },
+    "detail": {
+      "back": "Back to federation",
+      "notFound": "Peer not found",
+      "tabOverview": "Overview",
+      "tabNamespaces": "Namespaces",
+      "tabQuota": "Quotas"
+    },
+    "namespaces": {
+      "title": "Identity namespaces",
+      "empty": "No identity namespaces recorded for this peer",
+      "active": "active",
+      "col": {
+        "id": "Namespace",
+        "peerAssigned": "Peer-assigned local ns",
+        "pinnedAt": "Pinned at",
+        "retiredAt": "Retired at",
+        "rootKey": "Pinned root key"
+      },
+      "retired": "retired"
+    },
+    "selfCheck": {
+      "title": "S2S Handshake Self-Check",
+      "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/somfp, key consistency, signature loopback and clock skew. Real network probes run per SRV target and per resolved IP, over exactly the HTTPS path production peers use; in insecure dev mode (allowInsecureHttp) network probes are skipped.",
+      "entry": "Self-check",
+      "ntpServer": "Reference clock (NTP)",
+      "dnsResolver": "DNS resolver",
+      "run": "Run checks",
+      "rerun": "Re-run",
+      "copyJson": "Copy JSON",
+      "placeholder": "Pick a reference clock and DNS resolver, then run the probe set.",
+      "target": "Target",
+      "noSrv": "SRV unresolved; no federation endpoint determined",
+      "runAt": "Run at",
+      "totalDuration": "Total",
+      "primaryIssue": "Primary issue",
+      "blocked": "Blocked upstream",
+      "blockedCount": "{{count}} additional check(s) were not run because of this issue.",
+      "error": {
+        "HPE_INVALID_CONSTANT": "HTTP protocol parse failure: the response did not match the negotiated protocol"
+      },
+      "check": {
+        "config": "Local configuration",
+        "key-file": "Key file permissions",
+        "key-age": "Key creation time",
+        "dns-srv": "SRV record _somfp._tcp",
+        "dns-a": "A records (IPv4)",
+        "dns-aaaa": "AAAA records (IPv6)",
+        "tls-public": "TLS certificate (per IP)",
+        "tls-loopback": "Local process loopback",
+        "well-known": ".well-known/somfp (per IP)",
+        "key-consistency": "Published key consistency",
+        "sign-loopback": "Signature loopback",
+        "clock-skew": "Clock skew"
+      },
+      "status": {
+        "ok": "Passed",
+        "warn": "Warning",
+        "fail": "Failed",
+        "skip": "Skipped"
+      },
+      "group": {
+        "config": "Local configuration",
+        "dns": "DNS resolution",
+        "tls": "TLS certificate",
+        "well-known": ".well-known/somfp",
+        "crypto": "Key & signature",
+        "clock": "Clock skew"
+      },
+      "toast": {
+        "ok": "All checks passed",
+        "hasFails": "{{count}} check(s) failed — review below",
+        "copied": "Report copied to clipboard",
+        "copyFailed": "Copy failed"
+      },
+      "field": {
+        "domain": "domain",
+        "keyId": "keyId",
+        "allowInsecureHttp": "allowInsecureHttp",
+        "nodeEnv": "NODE_ENV",
+        "tlsConfigured": "local TLS",
+        "listenPort": "listen port",
+        "path": "path",
+        "mode": "file mode",
+        "createdAt": "createdAt",
+        "ageDays": "age (days)",
+        "record": "SRV record",
+        "records": "SRV records",
+        "resolvedHost": "host",
+        "resolvedPort": "port",
+        "targets": "probe targets",
+        "endpoints": "endpoints",
+        "error": "error",
+        "documentsConsistent": "documents consistent",
+        "publishedKeyFound": "published key found",
+        "addresses": "addresses",
+        "authority": "authority",
+        "verified": "verified",
+        "ntpServer": "NTP server",
+        "dnsResolver": "resolver",
+        "offsetSec": "offset (s)",
+        "roundTripMs": "round-trip (ms)",
+        "clockSkewBudgetMs": "clock-skew budget (ms)",
+        "warnSec": "warn threshold (s)",
+        "failSec": "fail threshold (s)",
+        "host": "host",
+        "port": "port",
+        "originTls": "origin TLS",
+        "keyIdDomain": "keyId domain",
+        "expectedDomain": "expected domain",
+        "keyMatch": "key matches",
+        "domainMatch": "domain matches",
+        "localPubB64": "local pub (b64)",
+        "localPubSha256": "local pub sha256",
+        "publishedPubB64": "published pub (b64)",
+        "publishedKeyCount": "published keys"
+      },
+      "cert": {
+        "show": "cert",
+        "hide": "hide",
+        "subject": "Subject",
+        "issuer": "Issuer",
+        "serial": "Serial",
+        "sigAlg": "Signature alg",
+        "pubKey": "Public key",
+        "validFrom": "Valid from",
+        "validTo": "Valid to",
+        "san": "SAN",
+        "keyUsage": "Key usage",
+        "alpn": "ALPN",
+        "sanMatched": "SAN match",
+        "fpSha256": "SHA-256",
+        "fpSha1": "SHA-1",
+        "daysLeft": "{{days}}d left",
+        "chainTitle": "Trust chain",
+        "chainComplete": "chain anchors at a trusted root",
+        "chainIncomplete": "chain does NOT reach a trusted root",
+        "section": "Certificate"
+      }
+    },
+    "reviews": {
+      "title": "Identity reviews",
+      "col": {
+        "kind": "Arrival",
+        "status": "Status",
+        "roots": "Identity change",
+        "arrivedAt": "Arrived"
+      },
+      "kind": {
+        "identity-reset": "Identity discontinuity",
+        "domain-rebind": "Domain re-bind",
+        "root-rotation": "Root rotation"
+      },
+      "status": {
+        "pending": "Awaiting review",
+        "approved": "Approved",
+        "rejected": "Rejected"
+      },
+      "approve": "Approve",
+      "reject": "Reject",
+      "confirmApprove": "Approve this {{kind}} arrival? Root rotation automatically verifies predecessor-key possession before changing the binding. Ordinary traffic re-converges afterwards.",
+      "new-peer": "Accept as new peer",
+      "replace-identity": "Replace existing identity",
+      "confirm": {
+        "new-peer": "Archive the old namespace and accept the next verified handshake as a new peer? Historical relationships remain isolated under the old namespace.",
+        "replace-identity": "Replace the old root without predecessor proof? This peer will inherit the existing namespace and its relationships. Approve only after independently confirming the peer identity."
+      },
+      "epochDrifted": "The reviewed epoch has drifted (pin changed or retired); approval is disabled.",
+      "confirmReject": "Reject this {{kind}} arrival? The currently pinned epoch stays exactly as it is."
+    }
+  },
+  "logs": {
+    "title": "System Logs",
+    "desc": "Live tail of the structured log stream — stdout, the rotating log file, and this viewer share one pipeline. New lines stream in real time; the server replays the most recent records on connect. Scroll up to pause auto-follow.",
+    "tabs": {
+      "live": "Live tail",
+      "history": "History",
+      "diagnostics": "Client diagnostics"
+    },
+    "allLevels": "All levels",
+    "clear": "Clear",
+    "jumpLatest": "Latest",
+    "waiting": "Waiting for logs…",
+    "lineCount": "{{count}} lines",
+    "searchPlaceholder": "Search message / context",
+    "truncated": "Scan limit reached — older matches exist",
+    "totalMatches": "{{count}} matches",
+    "emptyHistory": "No matching logs",
+    "col": {
+      "time": "Time",
+      "level": "Level",
+      "context": "Context",
+      "message": "Message"
+    },
+    "state": {
+      "connecting": "Connecting",
+      "open": "Live",
+      "reconnecting": "Reconnecting",
+      "closed": "Disconnected"
+    }
+  },
+  "createUser": {
+    "title": "Create user",
+    "account": "Account",
+    "accountHint": "1-30 chars: letters, digits, dot, underscore or hyphen; start with a letter or digit",
+    "name": "Display name",
+    "nameHint": "1 to 31 characters",
+    "password": "Initial password",
+    "passwordHint": "6-20 chars; letters, digits and .@!#$%^&*()",
+    "passwordRequired": "Password login is enabled; an initial password is required",
+    "confirm": "Create",
+    "success": "User {{account}} created",
+    "accountAlreadyExists": "Account already exists"
+  },
+  "issueLoginCode": {
+    "title": "Issue login code for {{name}}",
+    "warning": "A fresh one-time code will be shown once — copy it before closing. It's valid for the window set in Settings; other active codes and existing sessions are unaffected.",
+    "confirm": "Issue",
+    "codeLabel": "One-time login code (shown once)",
+    "note": "Hand it to the user now — it cannot be viewed again after closing.",
+    "validFor": "Valid for {{count}} minutes",
+    "expiresAt": "Expires at",
+    "copied": "Code copied",
+    "copyFailed": "Copy failed",
+    "success": "Login code issued"
+  },
+  "generateInitialPassword": {
+    "title": "Generate initial password for {{name}}",
+    "note": "This is a one-time initial password. The user will be forced to set their own on first login, and all existing sessions are revoked.",
+    "confirm": "Generate",
+    "passwordLabel": "Initial password (shown once)",
+    "copied": "Password copied",
+    "copyFailed": "Copy failed",
+    "success": "Initial password generated"
+  },
+  "loginCodes": {
+    "title": "Login codes",
+    "desc": "Admin-issued one-time login codes.",
+    "col": {
+      "status": "Status",
+      "issuedAt": "Issued",
+      "expiresAt": "Expires",
+      "consumedAt": "Consumed",
+      "consumedIp": "Consumed IP",
+      "device": "Device",
+      "session": "Resulting session"
+    },
+    "status": {
+      "pending": "Pending",
+      "consumed": "Consumed",
+      "expired": "Expired",
+      "revoked": "Revoked"
+    },
+    "empty": "No login codes",
+    "revoke": "Revoke",
+    "revokeConfirm": "Revoke this unused login code?",
+    "toast": {
+      "revoked": "Login code revoked"
+    }
+  },
+  "userSessions": {
+    "title": "Active sessions of {{name}}",
+    "loadFailed": "Load failed",
+    "empty": "No active sessions",
+    "appCount": "App sessions: {{count}}",
+    "revoke": "Revoke",
+    "revoked": "Session revoked — that device was forced to sign out",
+    "confirmRevoke": "Confirm revoke",
+    "canRevokeHint": "You can force any of these devices to sign out.",
+    "col": {
+      "device": "device",
+      "client": "Client",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "lastIp": "Last IP",
+      "created": "Created",
+      "lastActive": "Last active",
+      "expires": "Expires"
+    }
+  },
+  "durableTasks": {
+    "title": "Durable Tasks",
+    "desc": "Durable mutation and projection tasks, their ordering scope, execution state, and diagnostic details.",
+    "searchPlaceholder": "Search task type or scope key",
+    "empty": "No matching tasks",
+    "completed": "Completed",
+    "resultCode": "Result code",
+    "checkpoint": "Progress cursor",
+    "payload": "Payload",
+    "status": {
+      "ALL": "All",
+      "PENDING": "Pending",
+      "PROCESSING": "Processing",
+      "SUCCEEDED": "Succeeded",
+      "REJECTED": "Rejected",
+      "FAILED": "Failed",
+      "SUPERSEDED": "Superseded"
+    },
+    "col": {
+      "status": "Status",
+      "command": "Task",
+      "aggregate": "Scope",
+      "actor": "Actor",
+      "timing": "Timing",
+      "details": "Details"
+    }
+  },
+  "diagnosticReports": {
+    "desc": "Client-uploaded diagnostic log bundles (Rust logs + web console + version info) for field support.",
+    "searchPlaceholder": "Search by reporter name or account",
+    "empty": "No diagnostic reports",
+    "download": "Download bundle",
+    "downloadFailed": "Download failed",
+    "delete": "Delete",
+    "deleteConfirm": "Delete this diagnostic report?",
+    "deleteConfirmDesc": "The report row and its bundle file will be removed. This cannot be undone.",
+    "deleted": "Report deleted",
+    "col": {
+      "reporter": "Reporter",
+      "platform": "Platform",
+      "versions": "Versions",
+      "size": "Size",
+      "status": "Status",
+      "at": "When"
+    }
+  },
+  "media": {
+    "title": "Media Transfers",
+    "desc": "Read-only CAS storage totals and explicit controls for active federation downloads and client uploads.",
+    "refresh": "Refresh",
+    "tileDbBytes": "Stored (DB)",
+    "tileAssets": "Assets",
+    "assetStatusHint": "Live {{live}} / deleted {{deleted}}",
+    "tileOnDisk": "On disk",
+    "tileFiles": "CAS files",
+    "downloadsTitle": "Federation downloads",
+    "downloadsDesc": "Inspect durable inbound media jobs, retry failed downloads, or remove terminal job records.",
+    "downloadsEmpty": "No inbound federation download jobs",
+    "downloadSource": "Source",
+    "downloadMessage": "Message",
+    "downloadProgress": "Progress",
+    "downloadUpdated": "Last activity",
+    "downloadRetry": "Retry",
+    "downloadRetried": "Download retry started",
+    "downloadClean": "Clean",
+    "downloadCleanConfirm": "Remove this download job and its dependent staged jobs? This does not run global CAS garbage collection.",
+    "downloadCleaned": "Download job removed",
+    "uploadsTitle": "Client uploads",
+    "uploadsDesc": "Inspect or abort resumable client upload sessions.",
+    "uploadsEmpty": "No active upload sessions",
+    "uploadFile": "File",
+    "uploadOwner": "User",
+    "uploadProgress": "Progress",
+    "uploadUpdated": "Last activity",
+    "uploadAbort": "Abort",
+    "uploadAbortConfirm": "Abort the upload of {{name}}? Its temporary file will be deleted and the staged message will be marked failed.",
+    "uploadAborted": "Upload session aborted"
+  },
+  "admins": {
+    "title": "Admin Accounts",
+    "desc": "Manage who can sign in to the console and their role. Disabling or demoting revokes their sessions immediately.",
+    "add": "Add admin",
+    "addTitle": "Promote a user to admin",
+    "userIdLabel": "User ID",
+    "userIdHint": "Numeric id of an existing user to promote (find it on the Users page).",
+    "roleLabel": "Role",
+    "empty": "No admins",
+    "col": {
+      "account": "Admin",
+      "role": "Role",
+      "status": "Status",
+      "lastLogin": "Last login",
+      "twoFactor": "2FA"
+    },
+    "action": {
+      "disable": "Disable",
+      "enable": "Enable",
+      "reset2fa": "Reset 2FA"
+    },
+    "reset2faConfirm": "Reset two-factor for {{name}}? They will be able to sign in with their password only. Use this to recover a locked-out admin who lost their device.",
+    "toast": {
+      "created": "Admin created",
+      "disabled": "Admin disabled",
+      "enabled": "Admin enabled",
+      "role": "Role updated",
+      "reset2fa": "Two-factor reset"
+    }
+  },
+  "groups": {
+    "title": "Groups",
+    "desc": "Every group thread (local + federated) with member counts and origin.",
+    "searchPlaceholder": "Search group name / account",
+    "col": {
+      "name": "Group",
+      "members": "Members",
+      "origin": "Origin",
+      "lastMessage": "Last message",
+      "created": "Created"
+    },
+    "empty": "No groups",
+    "local": "local"
+  },
+  "settings": {
+    "title": "Settings",
+    "desc": "Operator-managed runtime configuration and deployment-owned server identity.",
+    "sections": {
+      "identity": "Server identity",
+      "identityDesc": "Deployment-owned identity and public addressing.",
+      "transport": "Federation transport",
+      "transportDesc": "Runtime concurrency and media-transfer controls.",
+      "quotas": "Default quotas",
+      "quotasDesc": "Baselines used when no account or peer override is configured.",
+      "security": "Security",
+      "securityDesc": "Authentication lifetimes and one-time credentials."
+    },
+    "transport": {
+      "title": "Federation request and media policy",
+      "desc": "Timeouts, peer-key cache lifetime, media range size, and retry limit. Changes apply immediately.",
+      "keyCacheTtl": "Key cache TTL (s)",
+      "connectTimeout": "Connect timeout (s)",
+      "callTimeout": "Call timeout (s)",
+      "mediaChunkBytes": "Media chunk bytes",
+      "mediaChunkTimeout": "Chunk timeout (s)",
+      "mediaChunkRetries": "Chunk retries",
+      "save": "Save transport policy",
+      "saved": "Federation transport settings saved"
+    },
+    "quotas": {
+      "userTitle": "Default local-user quotas",
+      "userDesc": "Daily defaults for local accounts. Per-user overrides continue to take precedence.",
+      "federationTitle": "Default federation quotas",
+      "federationDesc": "Daily defaults shared by peers without a custom override. Signal frames are global-only.",
+      "messages": "Messages",
+      "requests": "Requests",
+      "signals": "Signals",
+      "files": "Files",
+      "fileBytes": "File bytes",
+      "save": "Save defaults",
+      "userSaved": "Default user quotas saved",
+      "federationSaved": "Default federation quotas saved"
+    },
+    "sessions": {
+      "title": "Admin sessions",
+      "desc": "Existing sessions retain their absolute expiry; idle-timeout changes apply immediately.",
+      "lifetime": "Lifetime (hours)",
+      "idle": "Idle timeout (minutes; 0 disables)",
+      "save": "Save session policy",
+      "saved": "Admin session policy saved"
+    },
+    "identity": {
+      "title": "Server identity",
+      "desc": "This server's public domain — the federation identity (@user@domain).",
+      "set": "set",
+      "unset": "unset",
+      "envNote": "Set via SOMS_DOMAIN env (read-only)."
+    },
+    "otpTtl": {
+      "title": "One-time code validity",
+      "desc": "How long an admin-issued login code remains usable (minutes, 1–1440).",
+      "label": "Validity",
+      "minutes": "minutes",
+      "save": "Save",
+      "saved": "Validity updated"
+    },
+    "federationDownload": {
+      "title": "Federation attachment downloads",
+      "desc": "Limit background attachment transfers so one peer cannot saturate NAS disk or network IO.",
+      "global": "Global concurrency",
+      "perPeer": "Per-peer concurrency",
+      "chunkDigest": "Send CAS chunk digests (extra disk read; off by default)",
+      "save": "Save",
+      "saved": "Download concurrency limits updated"
+    },
+    "federationHttp": {
+      "title": "Federation HTTP concurrency",
+      "desc": "Limit ordinary S2S request concurrency with fair peer scheduling. Attachment downloads use separate limits.",
+      "global": "Global concurrency",
+      "perPeer": "Per-peer concurrency",
+      "save": "Save",
+      "saved": "Federation HTTP concurrency limits updated"
+    },
+    "federationHistoryAccess": {
+      "title": "Federation history access",
+      "desc": "Control whether newly authorized peers may query messages retained from before authorization. Existing authorizations are unchanged.",
+      "enabled": "Allow retained history for new authorizations",
+      "save": "Save",
+      "saved": "Federation history access updated"
+    },
+    "vapid": {
+      "title": "Web Push (VAPID)",
+      "desc": "The VAPID keypair authenticating this server to browser push services. Stored in the database; enabling/rotating requires no redeploy.",
+      "configured": "configured",
+      "notConfigured": "not configured",
+      "subject": "Contact (subject)",
+      "subjectPlaceholder": "mailto:admin@example.com (optional — defaults to mailto:noreply@soms.local)",
+      "publicKey": "Public key",
+      "privateKey": "Private key",
+      "privateHidden": "Private key: set (hidden — write-only)",
+      "updatedAt": "Updated",
+      "rotationWarning": "Generating or changing the keypair breaks existing Web Push subscriptions — browsers must re-subscribe.",
+      "generate": "Generate keypair",
+      "pasteExisting": "Paste existing keypair",
+      "regenerate": "Regenerate",
+      "clear": "Clear",
+      "save": "Save keypair",
+      "clearSuperOnly": "Clearing requires Super Admin",
+      "adminOnly": "Editing requires Admin+",
+      "generated": "New VAPID keypair generated",
+      "saved": "VAPID keypair saved",
+      "cleared": "VAPID keypair removed — Web Push disabled",
+      "copied": "Copied",
+      "copyFailed": "Copy failed"
+    },
+    "fcm": {
+      "title": "FCM client config (Android)",
+      "desc": "The Firebase client config the Android APK fetches at runtime so it ships without a bundled config. Place google-services.json on the server — this card is read-only status.",
+      "configured": "configured",
+      "notConfigured": "not configured",
+      "projectId": "Project ID",
+      "appId": "App ID",
+      "senderId": "Sender ID",
+      "fileHint": "Place google-services.json (Android app package com.soms.client) at data/google-services.json and restart the backend. The APK fetches the published fields at runtime.",
+      "sendLabel": "Send credential",
+      "sendHint": "configured by data/firebase-service-account.json (read-only here)."
+    },
+    "health": {
+      "title": "Health check",
+      "desc": "Validate the configured VAPID keypair (deterministic, no network). For live delivery, use the test push on the Push page.",
+      "run": "Run check",
+      "rerun": "Re-run",
+      "configured": "VAPID config stored",
+      "publicKeyValid": "Public key is a valid P-256 point",
+      "privateKeyValid": "Private key is a valid 32-byte scalar",
+      "pairMatches": "Public key matches private key",
+      "subjectValid": "Subject is a valid mailto/https URL",
+      "fcmConfigured": "FCM transport configured",
+      "firebaseClientConfigured": "FCM client config present (google-services.json on disk)",
+      "webPushConfigured": "Web Push ready",
+      "domain": "Domain:",
+      "toast": {
+        "ok": "VAPID config is healthy",
+        "hasIssues": "VAPID config has issues — see details"
+      }
+    }
+  },
+  "notFound": {
+    "code": "404",
+    "desc": "Page not found",
+    "back": "Back to User Management"
+  },
+  "routeError": {
+    "title": "Something went wrong",
+    "desc": "The administration console could not display this page. Reload it or return to the dashboard.",
+    "reload": "Reload page",
+    "home": "Back to dashboard"
+  },
+  "security": {
+    "title": "My Account",
+    "desc": "Manage your own sign-in security — two-factor authentication and recovery codes.",
+    "totp": {
+      "title": "Authenticator App",
+      "desc": "Require a rotating 6-digit code from Google / Microsoft Authenticator at every sign-in.",
+      "on": "On",
+      "off": "Off",
+      "enable": "Enable 2FA",
+      "disable": "Disable 2FA",
+      "regenerate": "Regenerate backup codes",
+      "notEnabledHint": "Add a second factor so a stolen password alone cannot sign in.",
+      "enabledAt": "Enabled",
+      "backupRemaining": "{{count}} backup code(s) left",
+      "backupWarning": "Store these one-time backup codes somewhere safe. Each works once if you lose your authenticator. They cannot be shown again.",
+      "copyAll": "Copy all",
+      "download": "Download",
+      "savedDone": "I've saved them, sign in again",
+      "enabledToast": "Two-factor enabled — sign in again to continue",
+      "disabledToast": "Two-factor disabled"
+    },
+    "passkey": {
+      "title": "Passkeys",
+      "desc": "A phishing-resistant second factor — confirm with your screen lock (Touch ID / Windows Hello) or a hardware key.",
+      "add": "Add a passkey",
+      "notAvailable": "Passkeys need a secure connection (HTTPS). Open the console over HTTPS to use them.",
+      "empty": "No passkeys yet.",
+      "backed": "Synced",
+      "single": "This device",
+      "lastUsed": "Last used {{when}}",
+      "never": "never",
+      "rename": "Rename",
+      "remove": "Remove",
+      "addedToast": "Passkey added",
+      "removedToast": "Passkey removed",
+      "reauthLabel": "Confirm your current password to add a passkey",
+      "nicknameLabel": "Label (optional)",
+      "nicknamePlaceholder": "e.g. MacBook Touch ID"
+    },
+    "setup": {
+      "title": "Enable two-factor",
+      "scanDesc": "Scan this QR with your authenticator app (Google / Microsoft Authenticator), then enter the 6-digit code it shows.",
+      "manualKey": "Or enter this key manually",
+      "codeLabel": "Enter the 6-digit code",
+      "enable": "Enable",
+      "qrAlt": "2FA enrollment QR code"
+    },
+    "disable": {
+      "title": "Disable two-factor",
+      "desc": "Confirm with your current password and a valid code. Your account will revert to password-only sign-in."
+    },
+    "regen": {
+      "title": "Regenerate backup codes",
+      "desc": "Confirm with a valid code. The previous backup codes stop working immediately."
+    }
+  },
+  "rateLimits": {
+    "title": "Authentication rate limits",
+    "desc": "Read-only aggregate metrics and conservative tuning hints for the last 24 hours; process restarts clear page history.",
+    "saved": "Rate-limit configuration saved",
+    "save": "Save policy",
+    "observe": "observe",
+    "fixedWindow": {
+      "title": "Fixed-window route policies",
+      "desc": "Exact request ceilings for high-frequency and abuse-sensitive routes. Changes apply immediately without changing the fixed-window algorithm.",
+      "policy": "Policy",
+      "limit": "Request limit",
+      "window": "Window (seconds)",
+      "save": "Save fixed-window policies",
+      "saved": "Fixed-window configuration saved"
+    },
+    "evaluated": "Requests",
+    "wouldBlock": "Would block",
+    "blocked": "Blocked",
+    "hitRatio": "Hit ratio",
+    "recentTrend": "Hits over the latest 12 intervals",
+    "dimension": "Dimension",
+    "rate": "Refill rate",
+    "burst": "Burst",
+    "advice": {
+      "disabled": "Policy is disabled; enable shadow observation or enforcement.",
+      "insufficient-sample": "Fewer than 1,000 requests observed; do not tune or promote from this sample alone.",
+      "stale": "No requests observed for 30 minutes; verify traffic, monitoring wiring, or a recent restart.",
+      "high-would-block": "High would-block ratio; inspect shared NAT and retries, then consider raising burst first.",
+      "high-block-rate": "High block ratio; distinguish attack traffic from false positives before tuning.",
+      "long-retry": "Retry delay reached 30 seconds; burst or refill rate may be too restrictive.",
+      "review-ready": "The sample is large with a low would-block ratio; ready for human rollout review."
+    }
+  },
+  "messageReports": {
+    "title": "Message reports",
+    "subtitle": "View reported message content. Remove a report or delete its message.",
+    "filter": "Filter reports",
+    "active": "Active reports",
+    "removed": "Removed reports",
+    "message": "Reported message",
+    "creator": "Sender",
+    "thread": "Conversation",
+    "updatedAt": "Last reported / removed",
+    "deleted": "This message has been deleted",
+    "empty": "No message reports",
+    "deleteMessage": "Delete message",
+    "deleteSelected": "Delete selected ({{count}})",
+    "selectAll": "Select all messages on this page",
+    "selectMessage": "Select message {{seq}}",
+    "dismiss": "Remove report",
+    "deleteConfirm": "Delete these messages?",
+    "deleteConfirmBody": "{{count}} message(s) will be deleted. This cannot be undone.",
+    "dismissConfirm": "Remove this report?",
+    "dismissConfirmBody": "The message stays available. A new report will reactivate this entry.",
+    "dismissed": "Report removed",
+    "messagesDeleted": "Deleted {{count}} message(s)",
+    "deletionFailed": "{{count}} deletion(s) failed. Please retry.",
+    "actionFailed": "Action failed. Try again."
+  },
+  "errors": {
+    "unauthenticated": "Unauthenticated",
+    "parseFailed": "Response parse failed",
+    "serverError": "Server is having trouble — please retry",
+    "biz": {
+      "validation": "Invalid input",
+      "notFound": "Not found",
+      "alreadyExists": "Already exists",
+      "unauthenticated": "Please sign in again",
+      "invalidCredentials": "Incorrect account or password",
+      "forbidden": "You don't have permission to perform this action",
+      "rateLimited": "Too many requests, please wait",
+      "refreshReuse": "Session changed, please sign in again",
+      "sessionRevoked": "Session ended, please sign in again",
+      "loginMethodDisabled": "This login method is not available",
+      "otpInvalid": "The one-time code is incorrect",
+      "otpExpired": "The one-time code has expired",
+      "otpConsumed": "The one-time code has already been used",
+      "passwordNotSet": "This account has no password set",
+      "mustChangePassword": "Please set your password first",
+      "twoFactorInvalid": "Invalid verification code",
+      "twoFactorChallengeExpired": "The verification session expired — please sign in again",
+      "twoFactorNotEnabled": "Two-factor is not enabled for this account",
+      "twoFactorAlreadyEnabled": "Two-factor is already enabled",
+      "webauthnNotAvailable": "Passkeys are not available on this connection (HTTPS required)",
+      "webauthnChallengeExpired": "The passkey session expired — please try again",
+      "webauthnVerificationFailed": "Passkey verification failed",
+      "internal": "Something went wrong",
+      "vapidInvalid": "VAPID keypair is invalid (malformed or mismatched)"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+<router-outlet />
+<app-update-banner />
+<app-debug-log-fab />
+@if (serverConfigDialog.visible()) {
+  <app-material-dialog [isShow]="true">
+    <div class="server-config-dialog-frame">
+      <app-server-config-page
+        [dialog]="true"
+        (closed)="serverConfigDialog.close()"
+      />
+    </div>
+  </app-material-dialog>
+}

@@ -1,0 +1,1191 @@
+{
+  "common": {
+    "appName": "Admin 控制台",
+    "loading": "加载中…",
+    "noData": "无数据",
+    "all": "全部",
+    "yes": "是",
+    "no": "否",
+    "cancel": "取消",
+    "edit": "编辑",
+    "delete": "删除",
+    "save": "保存",
+    "search": "搜索",
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {{page}} / {{pages}} 页",
+    "loadFailed": "加载失败：{{message}}",
+    "operationFailed": "操作失败",
+    "comingSoon": "敬请期待",
+    "neverExpires": "永不过期",
+    "trusted": "可信",
+    "copy": "复制",
+    "copied": "已复制",
+    "copyFailed": "复制失败",
+    "workspace": "运营工作台",
+    "client": {
+      "app": "安卓",
+      "web": "网页",
+      "desktop": "桌面"
+    }
+  },
+  "topBar": {
+    "toggleTheme": "切换主题",
+    "search": "搜索",
+    "openNavigation": "打开导航",
+    "closeNavigation": "关闭导航"
+  },
+  "search": {
+    "placeholder": "搜索用户、节点…",
+    "hint": "输入以搜索用户和联邦节点",
+    "empty": "无匹配",
+    "section": {
+      "users": "用户",
+      "peers": "联邦节点"
+    }
+  },
+  "roles": {
+    "super": "超级管理员",
+    "admin": "管理员",
+    "viewer": "只读"
+  },
+  "nav": {
+    "dashboard": "仪表盘",
+    "users": "用户管理",
+    "groups": "群组",
+    "sessions": "会话总览",
+    "connections": "实时连接",
+    "bans": "封禁管理",
+    "push": "推送管理",
+    "federation": "联邦",
+    "logs": "日志",
+    "rateLimits": "限流监控",
+    "media": "媒体传输",
+    "settings": "设置",
+    "security": "我的账户",
+    "durableTasks": "持久任务",
+    "messageReports": "消息举报",
+    "logout": "登出",
+    "group": {
+      "overview": "常用功能",
+      "access": "访问与活动",
+      "system": "系统",
+      "account": "账户"
+    }
+  },
+  "quota": {
+    "title": "每日配额",
+    "desc": "联邦对端服务器的共享流量额度。UTC 00:00 重置。",
+    "empty": "暂无配额节点。",
+    "local": "本机",
+    "peer": "对端",
+    "edit": "编辑",
+    "peerTitle": "流量配额",
+    "peerDesc": "该对端当前身份命名空间下的联邦用户共享以下额度。",
+    "disabled": "已禁用",
+    "noTrafficAccepted": "不接受此类流量",
+    "remaining": "剩余 {{count}}",
+    "itemCaps": "单个媒体大小上限",
+    "megabytes": "{{count}} MB",
+    "resetHint": "每日用量在 UTC 00:00 清零；修改上限不会清除今天已经产生的用量。",
+    "status": {
+      "healthy": "正常",
+      "warning": "接近上限",
+      "exhausted": "已耗尽",
+      "disabled": "能力关闭"
+    },
+    "source": {
+      "default": "服务器默认",
+      "custom": "对端自定义",
+      "userCustom": "已自定义"
+    },
+    "notApplicable": "不适用",
+    "invalid": "请输入大于或等于 0 的有效数值。",
+    "unavailable": "暂时无法获取该对端的配额信息。",
+    "health": {
+      "healthy": "正常",
+      "warning": "接近上限",
+      "exhausted": "已耗尽",
+      "unknown": "未知"
+    },
+    "editTitle": "配额上限 — {{domain}}",
+    "editHint": "留空表示使用服务器默认值；0 表示关闭该能力。修改即时生效，但不会清除今日用量。",
+    "placeholder": {
+      "default": "默认"
+    },
+    "maxBytes": "{{cat}} 上限 (MB)",
+    "save": "保存",
+    "cancel": "取消",
+    "toast": {
+      "saved": "配额已保存"
+    },
+    "col": {
+      "node": "节点",
+      "messages": "消息",
+      "files": "文件",
+      "requests": "请求"
+    },
+    "breaker": {
+      "bannerTitle": "配额熔断已触发",
+      "bannerBody": "{{peers}} 个联邦 peer + {{users}} 个用户已超出当日配额并被暂停。其新的拉取/发送已被拦截，直到次日 00:00 (UTC) 重置或管理员追加额度。",
+      "review": "查看并追加额度",
+      "none": "无熔断",
+      "tripped": "已熔断",
+      "dimMsg": "消息数",
+      "dimFile": "文件数",
+      "dimFileBytes": "文件总大小",
+      "continueTitle": "追加今日额度 — {{entity}}",
+      "continueHint": "追加值叠加到今日额度上。0 = 该维度不追加。",
+      "addMsg": "追加消息条数",
+      "addFile": "追加文件数",
+      "addFileBytes": "追加文件总大小 (MB)",
+      "needHint": "该维度至少需追加 {{amount}} 才能解除",
+      "apply": "应用并恢复",
+      "toastResumed": "熔断已解除 — 流量已恢复",
+      "toastStillTripped": "额度已追加；部分维度仍超限"
+    }
+  },
+  "dashboard": {
+    "title": "仪表盘",
+    "desc": "掌握系统状态，并快速处理日常管理任务。",
+    "autoRefresh": "每 15 秒自动刷新",
+    "mediaSub": "{{assets}} 个资源 · {{live}} 个存活",
+    "noRecentActions": "暂无管理员操作记录",
+    "quickActions": {
+      "title": "快捷任务",
+      "desc": "从最常用的管理操作开始。",
+      "users": "管理用户",
+      "usersDesc": "查找用户、创建账号或处理访问问题",
+      "connections": "查看在线连接",
+      "connectionsDesc": "排查当前在线状态与异常连接",
+      "selfCheck": "运行联邦自检",
+      "selfCheckDesc": "验证域名、证书和联邦可达性",
+      "settings": "系统设置",
+      "settingsDesc": "检查实例配置与运行参数"
+    },
+    "workflows": {
+      "title": "开始处理",
+      "desc": "最常用的两类工作集中在这里。",
+      "health": {
+        "title": "服务器健康",
+        "desc": "查看本机运行状态，检查与对端服务器的联通情况。",
+        "current": "当前服务器",
+        "currentDesc": "在线连接与实时状态",
+        "peers": "对端服务器",
+        "peersDesc": "查看信任及健康状态",
+        "check": "运行健康检查",
+        "checkDesc": "检查 DNS、TLS 与联通性"
+      },
+      "users": {
+        "title": "用户管理",
+        "desc": "从创建账号到检查状态，快速完成用户日常管理。",
+        "create": "新建用户",
+        "createDesc": "立即创建一个新账号",
+        "manage": "管理用户",
+        "manageDesc": "搜索、启用或停用用户",
+        "status": "查看用户状态",
+        "statusDesc": "检查登录与会话情况"
+      }
+    },
+    "tile": {
+      "systemStatus": "系统状态",
+      "onlineNow": "当前在线",
+      "onlineConnections": "在线连接",
+      "activeSessions": "活跃会话",
+      "federationHealth": "联邦健康",
+      "storageUsage": "媒体存储",
+      "recentActions": "近期管理员操作"
+    }
+  },
+  "language": {
+    "label": "语言",
+    "zhCN": "中文",
+    "en": "English"
+  },
+  "login": {
+    "title": "Admin 登录",
+    "account": "账户名",
+    "password": "密码",
+    "submit": "登录",
+    "accountRequired": "请输入账户名",
+    "passwordRequired": "请输入密码",
+    "failed": "登录失败",
+    "twoFactorTitle": "二次验证",
+    "twoFactorHint": "请输入身份验证器 App 上显示的 6 位数字代码。",
+    "code": "验证码",
+    "backupCode": "备用代码",
+    "verify": "验证",
+    "useBackupCode": "改用备用代码",
+    "useAuthenticator": "改用身份验证器",
+    "usePasskey": "改用通行密钥",
+    "passkeyHint": "使用屏幕锁定或安全密钥确认。",
+    "backToPassword": "返回密码步骤"
+  },
+  "users": {
+    "title": "用户管理",
+    "create": "新建用户",
+    "searchPlaceholder": "搜索 账户名",
+    "col": {
+      "id": "ID",
+      "account": "账户名",
+      "domain": "domain",
+      "foreigner": "外宾",
+      "status": "状态",
+      "quota": "额度",
+      "createdAt": "创建时间",
+      "actions": "快捷操作"
+    },
+    "status": {
+      "banned": "已封禁",
+      "active": "正常"
+    },
+    "action": {
+      "unban": "解禁",
+      "ban": "封禁",
+      "forceLogout": "强制下线",
+      "viewSessions": "查看会话",
+      "issueLoginCode": "签发登录码",
+      "generateInitialPassword": "生成初始密码"
+    },
+    "toast": {
+      "unbanned": "已解禁",
+      "banned": "已封禁",
+      "forceLoggedOut": "已强制下线",
+      "batchDone": "已对 {{count}} 个用户执行操作",
+      "created": "已创建用户"
+    },
+    "selected": "已选 {{count}} 项",
+    "selectAll": "全选",
+    "selectRow": "选择 {{name}}",
+    "total": "共 {{count}} 条",
+    "tabs": {
+      "users": "用户",
+      "operators": "管理员"
+    }
+  },
+  "userDetail": {
+    "back": "返回用户列表",
+    "notFound": "用户不存在",
+    "section": {
+      "profile": "资料",
+      "groups": "群组",
+      "sessions": "活跃会话",
+      "push": "推送设备"
+    },
+    "field": {
+      "domain": "域",
+      "foreigner": "境外",
+      "createdAt": "创建时间",
+      "updatedAt": "更新时间",
+      "bio": "简介"
+    },
+    "group": {
+      "name": "群组",
+      "role": "角色",
+      "joined": "加入时间"
+    },
+    "empty": {
+      "groups": "无群组成员关系",
+      "sessions": "无活跃会话",
+      "push": "无推送设备"
+    },
+    "push": {
+      "deviceId": "设备 ID"
+    }
+  },
+  "userQuota": {
+    "title": "个人额度",
+    "desc": "仅约束此本地账号；与联邦对端额度相互独立。每日 00:00 UTC 重置。",
+    "noActionsAccepted": "不允许此账号使用该能力",
+    "resetHint": "每日用量在 UTC 00:00 清零；修改上限不会清除该账号今天已经产生的用量。",
+    "source": {
+      "default": "账号默认",
+      "custom": "个人覆盖"
+    },
+    "editTitle": "编辑个人额度",
+    "editHint": "留空表示使用本地账号默认值；0 表示关闭该账号的对应能力。修改即时生效，但不会清除今日用量。"
+  },
+  "bans": {
+    "title": "封禁管理",
+    "desc": "当前生效的登录封禁（IP、密码账户或一次性登录码账户，由各登录方式共用的暴力破解滑窗产生）。",
+    "col": {
+      "type": "类型",
+      "value": "值",
+      "until": "解禁时间",
+      "remaining": "剩余"
+    },
+    "type": {
+      "ip": "IP",
+      "user": "密码",
+      "otp": "登录码"
+    },
+    "empty": "当前无封禁",
+    "unban": "解封"
+  },
+  "sessions": {
+    "title": "会话总览",
+    "searchPlaceholder": "按 IP 筛选",
+    "desc": "所有用户的活跃会话（未吊销且未过期）。共 {{count}} 条。",
+    "purge": "一键清理",
+    "purgeTitle": "清理所有活跃会话？",
+    "purgeBody": "将吊销全部 {{count}} 条活跃会话，所有用户被强制重登（access 立即失效）。此操作不可撤销。",
+    "purgeConfirm": "确认清理",
+    "purged": "已清理全部活跃会话（{{count}} 个用户被强制重登）",
+    "purgeFailed": "清理失败",
+    "revoke": "吊销",
+    "revoked": "已吊销该会话，该设备已被强制登出",
+    "confirmRevoke": "确认吊销",
+    "col": {
+      "user": "用户",
+      "client": "客户端",
+      "device": "device",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "创建",
+      "lastActive": "最近活跃",
+      "expires": "过期"
+    },
+    "empty": "无活跃会话",
+    "tabs": {
+      "users": "用户会话",
+      "admins": "管理员会话"
+    }
+  },
+  "connections": {
+    "title": "实时连接",
+    "desc": "当前在线的 SSE 实时下行连接（内存态，按用户聚合）。与「会话总览」不同：这里只看此刻挂着的长连接，不看持久的登录会话。",
+    "updatedAt": "更新于 {{time}}（每 3s 自动刷新）",
+    "totalConn": "总连接数",
+    "onlineUsers": "在线用户",
+    "col": {
+      "user": "用户",
+      "count": "连接数",
+      "since": "建连时刻",
+      "duration": "已连接"
+    },
+    "empty": "当前无在线连接"
+  },
+  "adminSessions": {
+    "title": "管理员会话",
+    "searchPlaceholder": "按 IP 筛选",
+    "desc": "管理员的活跃 opaque session，与普通用户会话物理隔离。共 {{count}} 条，吊销后下一次请求立即失效。",
+    "revoke": "吊销",
+    "revoked": "已吊销该管理员会话（其 access 15m 内仍有效）",
+    "revokeFailed": "吊销失败",
+    "col": {
+      "admin": "管理员",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "创建",
+      "expires": "过期"
+    },
+    "empty": "无活跃管理员会话"
+  },
+  "push": {
+    "title": "推送管理",
+    "desc": "已注册的推送设备 token（FCM / Web Push）+ 测试推送 + 通道配置状态。",
+    "searchPlaceholder": "按账户名 / token / deviceId 搜索",
+    "transportLabel": "通道状态：",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "deviceCount": "共 {{count}} 个设备",
+    "col": {
+      "platform": "平台",
+      "user": "用户",
+      "token": "Token",
+      "lastSeen": "最近活跃"
+    },
+    "test": "测试",
+    "send": "发送",
+    "empty": "无匹配的设备 token",
+    "range": "第 {{from}}-{{to}} 条 / 共 {{total}} 条",
+    "testDialogTitle": "发送测试推送",
+    "testDialogDesc": "向 {{target}} 的 {{platform}} 发送一条测试通知（设备需在后台才能收到系统通知）。",
+    "testDialogTargetUser": "用户 {{name}}",
+    "testDialogTargetDevice": "该设备",
+    "testTitleLabel": "标题",
+    "testBodyLabel": "正文（可选）",
+    "testSent": "测试推送已发送",
+    "testFailed": "发送失败：{{reason}}",
+    "testFailedUnknown": "未知原因",
+    "testDefaultTitle": "SOMS 测试推送",
+    "deleted": "已删除 {{name}} 的设备 token",
+    "platform": {
+      "ANDROID": "Android · FCM",
+      "IOS": "iOS · FCM",
+      "WEB": "Web Push"
+    },
+    "tabs": {
+      "devices": "设备",
+      "config": "传输配置"
+    }
+  },
+  "federation": {
+    "title": "联邦",
+    "desc": "对端服务器及其 Federation v1 双向认可生命周期。点开节点可查看认可事实、可达性与完整时间线。",
+    "searchPlaceholder": "搜索域名",
+    "namespaceFilterPlaceholder": "命名空间 ID",
+    "tabs": {
+      "peers": "节点",
+      "selfCheck": "自检"
+    },
+    "status": {
+      "all": "全部",
+      "available": "可用",
+      "establishing": "正在建立",
+      "pending": "待审核",
+      "degraded": "已降级",
+      "unrecognized": "未认可",
+      "halted": "已停机"
+    },
+    "col": {
+      "domain": "域名",
+      "status": "状态",
+      "quota": "额度状态",
+      "lastSuccess": "最近成功",
+      "degradations": "降级次数",
+      "feedProgress": "Feed 进度",
+      "created": "发现时间"
+    },
+    "feed": {
+      "title": "Feed 进度",
+      "state": "状态 Feed",
+      "profileNamespace": "Profile Namespace Feed",
+      "notStarted": "尚未开始",
+      "caughtUp": "已追平",
+      "behind": "落后 {{count}} 条",
+      "pulled": "已处理到",
+      "localOutboundEnd": "本地出站末尾",
+      "observedEnd": "已观测末尾"
+    },
+    "action": {
+      "viewDetail": "查看详情",
+      "recognize": "重新识别",
+      "confirmRecognize": "要向该对端发起联邦识别吗？",
+      "block": "屏蔽",
+      "unblock": "取消屏蔽"
+    },
+    "toast": {
+      "blocked": "已屏蔽该对端——在取消屏蔽前拒绝联邦",
+      "unblocked": "已取消屏蔽——下次连接将重新握手",
+      "recognized": "联邦识别已完成",
+      "recognitionPending": "联邦识别已发起，等待对端验证或审核",
+      "reviewApproved": "身份审核已通过",
+      "reviewRejected": "身份审核已拒绝"
+    },
+    "total": "共 {{count}} 个对端",
+    "empty": "暂无联邦对端",
+    "meta": {
+      "createdAt": "发现时间",
+      "activeNamespace": "当前命名空间",
+      "none": "无",
+      "trustedAt": "信任起始于",
+      "lastSuccessAt": "最近成功联系",
+      "degradedAt": "降级时间",
+      "degradationCount": "降级次数",
+      "addedBy": "操作者",
+      "auto": "自动（init）",
+      "lastError": "最近错误"
+    },
+    "detail": {
+      "back": "返回联邦",
+      "notFound": "节点不存在",
+      "tabOverview": "概览",
+      "tabNamespaces": "命名空间",
+      "tabQuota": "配额"
+    },
+    "namespaces": {
+      "title": "身份命名空间",
+      "empty": "该对端暂无身份命名空间记录",
+      "active": "当前",
+      "col": {
+        "id": "命名空间",
+        "peerAssigned": "对端分配本机 ns",
+        "pinnedAt": "固定时间",
+        "retiredAt": "退役时间",
+        "rootKey": "固定的根公钥"
+      },
+      "retired": "已退役"
+    },
+    "selfCheck": {
+      "title": "S2S 握手自检",
+      "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/somfp、密钥一致性、签名回环与时钟偏移。网络探测真实发起，按 SRV 目标 × 解析出的每个 IP 逐端点执行，且只走生产对端使用的 HTTPS 路径；不安全 dev 模式（allowInsecureHttp）下自动跳过网络探测。",
+      "entry": "握手自检",
+      "ntpServer": "参考时钟 (NTP)",
+      "dnsResolver": "DNS 解析器",
+      "run": "运行检查",
+      "rerun": "重新运行",
+      "copyJson": "复制 JSON",
+      "placeholder": "选择参考时钟与 DNS 解析器，然后运行检测。",
+      "target": "目标",
+      "noSrv": "未解析到 SRV，无法确定联邦端点",
+      "runAt": "运行时间",
+      "totalDuration": "总耗时",
+      "primaryIssue": "首要问题",
+      "blocked": "受上游阻断",
+      "blockedCount": "另有 {{count}} 项检查因该问题未执行。",
+      "error": {
+        "HPE_INVALID_CONSTANT": "HTTP 协议解析失败：响应与协商的协议不一致"
+      },
+      "check": {
+        "config": "本地配置",
+        "key-file": "密钥文件权限",
+        "key-age": "密钥创建时间",
+        "dns-srv": "SRV 记录 _somfp._tcp",
+        "dns-a": "A 记录（IPv4）",
+        "dns-aaaa": "AAAA 记录（IPv6）",
+        "tls-public": "TLS 证书（逐 IP）",
+        "tls-loopback": "本地进程回环",
+        "well-known": ".well-known/somfp（逐 IP）",
+        "key-consistency": "已发布密钥一致性",
+        "sign-loopback": "签名回环",
+        "clock-skew": "时钟偏移"
+      },
+      "status": {
+        "ok": "通过",
+        "warn": "警告",
+        "fail": "失败",
+        "skip": "跳过"
+      },
+      "group": {
+        "config": "本地配置",
+        "dns": "DNS 解析",
+        "tls": "TLS 证书",
+        "well-known": ".well-known/somfp",
+        "crypto": "密钥与签名",
+        "clock": "时钟偏移"
+      },
+      "toast": {
+        "ok": "全部检查通过",
+        "hasFails": "{{count}} 项失败——请查看下方",
+        "copied": "报告已复制到剪贴板",
+        "copyFailed": "复制失败"
+      },
+      "field": {
+        "domain": "域名",
+        "keyId": "keyId",
+        "allowInsecureHttp": "允许HTTP",
+        "nodeEnv": "NODE_ENV",
+        "tlsConfigured": "本地TLS",
+        "listenPort": "监听端口",
+        "path": "路径",
+        "mode": "文件权限",
+        "createdAt": "创建时间",
+        "ageDays": "密龄(天)",
+        "record": "SRV记录",
+        "records": "SRV 记录集",
+        "resolvedHost": "主机",
+        "resolvedPort": "端口",
+        "targets": "探测目标",
+        "endpoints": "端点",
+        "error": "错误",
+        "documentsConsistent": "文档一致",
+        "publishedKeyFound": "已发布密钥命中",
+        "addresses": "地址",
+        "authority": "authority",
+        "verified": "已验证",
+        "ntpServer": "NTP服务器",
+        "dnsResolver": "解析器",
+        "offsetSec": "偏移(秒)",
+        "roundTripMs": "往返(毫秒)",
+        "clockSkewBudgetMs": "时钟偏差预算(毫秒)",
+        "warnSec": "警告阈值(秒)",
+        "failSec": "失败阈值(秒)",
+        "host": "主机",
+        "port": "端口",
+        "originTls": "源站TLS",
+        "keyIdDomain": "keyId域",
+        "expectedDomain": "期望域",
+        "keyMatch": "密钥匹配",
+        "domainMatch": "域匹配",
+        "localPubB64": "本地公钥(b64)",
+        "localPubSha256": "本地公钥sha256",
+        "publishedPubB64": "发布公钥(b64)",
+        "publishedKeyCount": "已发布密钥数"
+      },
+      "cert": {
+        "show": "证书",
+        "hide": "收起",
+        "subject": "主体",
+        "issuer": "签发者",
+        "serial": "序列号",
+        "sigAlg": "签名算法",
+        "pubKey": "公钥",
+        "validFrom": "生效自",
+        "validTo": "到期",
+        "san": "SAN",
+        "keyUsage": "密钥用途",
+        "alpn": "ALPN",
+        "sanMatched": "SAN匹配",
+        "fpSha256": "SHA-256",
+        "fpSha1": "SHA-1",
+        "daysLeft": "剩{{days}}天",
+        "chainTitle": "信任链",
+        "chainComplete": "信任链锚定到可信根",
+        "chainIncomplete": "信任链未到达可信根",
+        "section": "证书"
+      }
+    },
+    "reviews": {
+      "title": "身份审核",
+      "col": {
+        "kind": "到达类型",
+        "status": "状态",
+        "roots": "身份变更",
+        "arrivedAt": "到达时间"
+      },
+      "kind": {
+        "identity-reset": "身份连续性中断",
+        "domain-rebind": "域名重绑定",
+        "root-rotation": "根密钥轮换"
+      },
+      "status": {
+        "pending": "待审核",
+        "approved": "已通过",
+        "rejected": "已拒绝"
+      },
+      "approve": "审核通过",
+      "reject": "拒绝",
+      "confirmApprove": "确认通过该{{kind}}到达？根密钥轮换会先自动验证对端持有前任根私钥，再更新绑定。普通流量随后重新收敛。",
+      "new-peer": "作为新 peer 接纳",
+      "replace-identity": "替换原有身份",
+      "confirm": {
+        "new-peer": "确认归档旧 namespace，并在下次验证握手后作为新 peer 接纳？历史关系仍隔离在旧 namespace 下。",
+        "replace-identity": "确认在没有前任根证明的情况下替换身份？对方将继承原 namespace 和关联关系，请仅在独立确认身份后操作。"
+      },
+      "epochDrifted": "受审身份纪元已变动（pin 更换或已退役），无法审核通过。",
+      "confirmReject": "确认拒绝该{{kind}}到达？当前固定的身份纪元将保持不变。"
+    }
+  },
+  "logs": {
+    "title": "系统日志",
+    "desc": "结构化日志的实时流——stdout、轮转日志文件与本查看器共用同一条管线。新日志实时流入；连接时服务端回放最近记录。向上滚动可暂停自动跟随。",
+    "tabs": {
+      "live": "实时流",
+      "history": "历史检索",
+      "diagnostics": "客户端诊断"
+    },
+    "allLevels": "全部级别",
+    "clear": "清空",
+    "jumpLatest": "最新",
+    "waiting": "等待日志…",
+    "lineCount": "{{count}} 行",
+    "searchPlaceholder": "搜索消息 / 上下文",
+    "truncated": "已达扫描上限——存在更早的匹配",
+    "totalMatches": "{{count}} 条匹配",
+    "emptyHistory": "无匹配日志",
+    "col": {
+      "time": "时间",
+      "level": "级别",
+      "context": "上下文",
+      "message": "消息"
+    },
+    "state": {
+      "connecting": "连接中",
+      "open": "实时",
+      "reconnecting": "重连中",
+      "closed": "已断开"
+    }
+  },
+  "createUser": {
+    "title": "新建用户",
+    "account": "账户名",
+    "accountHint": "1-30 位：字母、数字、点号、下划线或连字符，首位须为字母或数字",
+    "name": "显示名称",
+    "nameHint": "1 到 31 个字符",
+    "password": "初始密码",
+    "passwordHint": "6-20 位，允许字母数字和 .@!#$%^&*()",
+    "passwordRequired": "密码登录已启用，需设置初始密码",
+    "confirm": "创建",
+    "success": "已创建用户 {{account}}",
+    "accountAlreadyExists": "账号已存在"
+  },
+  "issueLoginCode": {
+    "title": "为 {{name}} 签发登录码",
+    "warning": "将生成并仅显示一次新的登录码——关闭前请复制。其有效期由「设置」中的有效期决定；不影响其他已签发的登录码和现有会话。",
+    "confirm": "签发",
+    "codeLabel": "一次性登录码（仅显示一次）",
+    "note": "请立即交给用户——关闭后将无法再次查看。",
+    "validFor": "有效期 {{count}} 分钟",
+    "expiresAt": "到期时间",
+    "copied": "登录码已复制",
+    "copyFailed": "复制失败",
+    "success": "登录码已签发"
+  },
+  "generateInitialPassword": {
+    "title": "为 {{name}} 生成初始密码",
+    "note": "该密码为一次性初始密码。用户首次登录后将被强制设置自己的密码；同时该用户所有现有会话会被吊销。",
+    "confirm": "生成",
+    "passwordLabel": "初始密码（仅显示一次）",
+    "copied": "密码已复制",
+    "copyFailed": "复制失败",
+    "success": "初始密码已生成"
+  },
+  "loginCodes": {
+    "title": "登录码",
+    "desc": "管理员签发的一次性登录码记录。",
+    "col": {
+      "status": "状态",
+      "issuedAt": "签发时间",
+      "expiresAt": "过期时间",
+      "consumedAt": "消费时间",
+      "consumedIp": "消费 IP",
+      "device": "设备",
+      "session": "产生的会话"
+    },
+    "status": {
+      "pending": "待使用",
+      "consumed": "已使用",
+      "expired": "已过期",
+      "revoked": "已撤销"
+    },
+    "empty": "暂无登录码",
+    "revoke": "撤销",
+    "revokeConfirm": "撤销此未使用的登录码？",
+    "toast": {
+      "revoked": "登录码已撤销"
+    }
+  },
+  "userSessions": {
+    "title": "{{name}} 的活跃会话",
+    "loadFailed": "加载失败",
+    "empty": "无活跃会话",
+    "appCount": "手机端会话：{{count}}",
+    "revoke": "吊销",
+    "revoked": "已吊销该会话，该设备已被强制登出",
+    "confirmRevoke": "确认吊销",
+    "canRevokeHint": "你可以强制登出其中任意一台设备。",
+    "col": {
+      "device": "device",
+      "client": "客户端",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "lastIp": "最近 IP",
+      "created": "创建",
+      "lastActive": "最近活跃",
+      "expires": "过期"
+    }
+  },
+  "durableTasks": {
+    "title": "持久任务",
+    "desc": "查看持久化变更与投影任务的顺序作用域、执行状态和诊断信息。",
+    "searchPlaceholder": "搜索任务类型或作用域键",
+    "empty": "没有匹配的任务",
+    "completed": "完成于",
+    "resultCode": "结果码",
+    "checkpoint": "进度游标",
+    "payload": "Payload",
+    "status": {
+      "ALL": "全部",
+      "PENDING": "等待中",
+      "PROCESSING": "执行中",
+      "SUCCEEDED": "成功",
+      "REJECTED": "已拒绝",
+      "FAILED": "失败",
+      "SUPERSEDED": "已覆盖"
+    },
+    "col": {
+      "status": "状态",
+      "command": "任务",
+      "aggregate": "作用域",
+      "actor": "操作者",
+      "timing": "时间",
+      "details": "详情"
+    }
+  },
+  "diagnosticReports": {
+    "desc": "客户端上报的诊断日志包（Rust 日志 + 网页控制台 + 版本信息），供现场支持使用。",
+    "searchPlaceholder": "按上报人姓名或账号搜索",
+    "empty": "暂无诊断上报",
+    "download": "下载日志包",
+    "downloadFailed": "下载失败",
+    "delete": "删除",
+    "deleteConfirm": "删除这条诊断上报？",
+    "deleteConfirmDesc": "将删除该上报记录及其日志包文件，此操作不可撤销。",
+    "deleted": "已删除",
+    "col": {
+      "reporter": "上报人",
+      "platform": "平台",
+      "versions": "版本",
+      "size": "大小",
+      "status": "状态",
+      "at": "时间"
+    }
+  },
+  "media": {
+    "title": "媒体传输",
+    "desc": "只读查看 CAS 存储总量，并显式管理联邦下载和客户端上传任务。",
+    "refresh": "刷新",
+    "tileDbBytes": "存储量（DB）",
+    "tileAssets": "资源数",
+    "assetStatusHint": "存活 {{live}} / 已删除 {{deleted}}",
+    "tileOnDisk": "磁盘占用",
+    "tileFiles": "CAS 文件",
+    "downloadsTitle": "联邦下载",
+    "downloadsDesc": "查看持久化的入站媒体任务，重试失败下载或移除终态任务记录。",
+    "downloadsEmpty": "没有入站联邦下载任务",
+    "downloadSource": "来源",
+    "downloadMessage": "消息",
+    "downloadProgress": "进度",
+    "downloadUpdated": "最近活动",
+    "downloadRetry": "重试",
+    "downloadRetried": "已开始重试下载",
+    "downloadClean": "清理记录",
+    "downloadCleanConfirm": "移除这个下载任务及其依赖的暂存任务？此操作不会执行全局 CAS 垃圾回收。",
+    "downloadCleaned": "下载任务已移除",
+    "uploadsTitle": "客户端上传",
+    "uploadsDesc": "查看或终止可恢复的客户端上传会话。",
+    "uploadsEmpty": "没有正在上传的会话",
+    "uploadFile": "文件",
+    "uploadOwner": "用户",
+    "uploadProgress": "进度",
+    "uploadUpdated": "最近活动",
+    "uploadAbort": "终止",
+    "uploadAbortConfirm": "确定终止 {{name}} 的上传吗？临时文件会被删除，关联消息会标记失败。",
+    "uploadAborted": "上传会话已终止"
+  },
+  "admins": {
+    "title": "管理员账号",
+    "desc": "管理可登录控制台的人员及其角色。禁用或降级会立即吊销其会话。",
+    "add": "添加管理员",
+    "addTitle": "将用户提升为管理员",
+    "userIdLabel": "用户 ID",
+    "userIdHint": "要提升的已有用户的数字 ID（在用户页查找）。",
+    "roleLabel": "角色",
+    "empty": "无管理员",
+    "col": {
+      "account": "管理员",
+      "role": "角色",
+      "status": "状态",
+      "lastLogin": "最近登录",
+      "twoFactor": "二次验证"
+    },
+    "action": {
+      "disable": "禁用",
+      "enable": "启用",
+      "reset2fa": "重置二次验证"
+    },
+    "reset2faConfirm": "重置 {{name}} 的二次验证？重置后该账号将仅凭密码登录。用于为丢失设备的被锁管理员解锁。",
+    "toast": {
+      "created": "已创建管理员",
+      "disabled": "已禁用管理员",
+      "enabled": "已启用管理员",
+      "role": "角色已更新",
+      "reset2fa": "二次验证已重置"
+    }
+  },
+  "groups": {
+    "title": "群组",
+    "desc": "所有群组会话（本地 + 联邦）及其成员数与来源。",
+    "searchPlaceholder": "搜索群组名称 / 账号",
+    "col": {
+      "name": "群组",
+      "members": "成员",
+      "origin": "来源",
+      "lastMessage": "最近消息",
+      "created": "创建时间"
+    },
+    "empty": "无群组",
+    "local": "本地"
+  },
+  "settings": {
+    "title": "设置",
+    "desc": "运维管理的运行时配置与部署所有的服务器身份。",
+    "sections": {
+      "identity": "服务器身份",
+      "identityDesc": "由部署配置持有的身份和公开地址。",
+      "transport": "联邦传输",
+      "transportDesc": "运行时并发与媒体传输控制。",
+      "quotas": "默认配额",
+      "quotasDesc": "未设置账户或节点覆盖值时使用的基线。",
+      "security": "安全",
+      "securityDesc": "认证有效期与一次性凭据。"
+    },
+    "transport": {
+      "title": "联邦请求与媒体策略",
+      "desc": "配置超时、节点公钥缓存时长、媒体分块大小和重试上限；修改立即生效。",
+      "keyCacheTtl": "公钥缓存 TTL（秒）",
+      "connectTimeout": "连接超时（秒）",
+      "callTimeout": "请求超时（秒）",
+      "mediaChunkBytes": "媒体分块字节数",
+      "mediaChunkTimeout": "分块超时（秒）",
+      "mediaChunkRetries": "分块重试次数",
+      "save": "保存传输策略",
+      "saved": "联邦传输设置已保存"
+    },
+    "quotas": {
+      "userTitle": "本地用户默认配额",
+      "userDesc": "本地账户每日默认值；单用户覆盖值仍然优先。",
+      "federationTitle": "联邦默认配额",
+      "federationDesc": "未自定义覆盖值的节点共享每日默认值；信令帧仅有全局值。",
+      "messages": "消息数",
+      "requests": "请求数",
+      "signals": "信令数",
+      "files": "文件数",
+      "fileBytes": "文件字节数",
+      "save": "保存默认值",
+      "userSaved": "用户默认配额已保存",
+      "federationSaved": "联邦默认配额已保存"
+    },
+    "sessions": {
+      "title": "管理员会话",
+      "desc": "已有会话保留原绝对过期时间；空闲超时修改立即生效。",
+      "lifetime": "有效期（小时）",
+      "idle": "空闲超时（分钟；0 表示禁用）",
+      "save": "保存会话策略",
+      "saved": "管理员会话策略已保存"
+    },
+    "identity": {
+      "title": "服务器身份",
+      "desc": "本服务器的公开域名——联邦身份（@user@domain）。",
+      "set": "已设置",
+      "unset": "未设置",
+      "envNote": "通过 SOMS_DOMAIN 环境变量设置（只读）。"
+    },
+    "otpTtl": {
+      "title": "一次性密码有效期",
+      "desc": "管理员签发的登录码保持可用的时间（分钟，1–1440）。",
+      "label": "有效期",
+      "minutes": "分钟",
+      "save": "保存",
+      "saved": "有效期已更新"
+    },
+    "federationDownload": {
+      "title": "联邦附件下载",
+      "desc": "限制后台附件下载并发，避免 NAS 的磁盘与网络被单个联邦节点占满。",
+      "global": "全局并发",
+      "perPeer": "单节点并发",
+      "chunkDigest": "发送 CAS 分块摘要（额外磁盘读取，默认关闭）",
+      "save": "保存",
+      "saved": "下载并发限制已更新"
+    },
+    "federationHttp": {
+      "title": "联邦 HTTP 并发",
+      "desc": "限制普通 S2S 请求的并发；节点间公平排队，附件下载使用独立限制。",
+      "global": "全局并发",
+      "perPeer": "单节点并发",
+      "save": "保存",
+      "saved": "联邦 HTTP 并发限制已更新"
+    },
+    "federationHistoryAccess": {
+      "title": "联邦历史访问",
+      "desc": "控制新授权的节点能否查询授权前仍由源端保留的消息；已有授权不会改变。",
+      "enabled": "允许新授权访问保留的历史消息",
+      "save": "保存",
+      "saved": "联邦历史访问设置已更新"
+    },
+    "vapid": {
+      "title": "Web Push（VAPID）",
+      "desc": "向浏览器推送服务认证本服务器的 VAPID 密钥对。存储于数据库，启用/轮换无需重新部署。",
+      "configured": "已配置",
+      "notConfigured": "未配置",
+      "subject": "联系地址（subject）",
+      "subjectPlaceholder": "mailto:admin@example.com（可选——默认 mailto:noreply@soms.local）",
+      "publicKey": "公钥",
+      "privateKey": "私钥",
+      "privateHidden": "私钥：已设置（隐藏——只写）",
+      "updatedAt": "更新于",
+      "rotationWarning": "生成或更改密钥对会使现有的 Web Push 订阅失效——浏览器需要重新订阅。",
+      "generate": "生成密钥对",
+      "pasteExisting": "粘贴已有密钥对",
+      "regenerate": "重新生成",
+      "clear": "清除",
+      "save": "保存密钥对",
+      "clearSuperOnly": "清除需要超级管理员",
+      "adminOnly": "编辑需要管理员及以上",
+      "generated": "已生成新的 VAPID 密钥对",
+      "saved": "VAPID 密钥对已保存",
+      "cleared": "VAPID 密钥对已移除——Web Push 已禁用",
+      "copied": "已复制",
+      "copyFailed": "复制失败"
+    },
+    "fcm": {
+      "title": "FCM 客户端配置（Android）",
+      "desc": "Android APK 运行时拉取的 Firebase 客户端配置，使 APK 不内置配置。请将 google-services.json 放在服务端——此处仅显示只读状态。",
+      "configured": "已配置",
+      "notConfigured": "未配置",
+      "projectId": "项目 ID",
+      "appId": "应用 ID",
+      "senderId": "发送方 ID",
+      "fileHint": "将 google-services.json（Android 应用包名 com.soms.client）放在 data/google-services.json 并重启后端。APK 运行时拉取已发布的字段。",
+      "sendLabel": "发送凭据",
+      "sendHint": "通过 data/firebase-service-account.json 配置（此处只读）。"
+    },
+    "health": {
+      "title": "健康检测",
+      "desc": "校验已配置的 VAPID 密钥对（确定性检测，无网络）。如需实测投递，请使用 Push 页面的测试推送。",
+      "run": "运行检测",
+      "rerun": "重新检测",
+      "configured": "VAPID 配置已存储",
+      "publicKeyValid": "公钥是有效的 P-256 点",
+      "privateKeyValid": "私钥是有效的 32 字节标量",
+      "pairMatches": "公钥与私钥匹配",
+      "subjectValid": "subject 是有效的 mailto/https URL",
+      "fcmConfigured": "FCM 传输已配置",
+      "firebaseClientConfigured": "FCM 客户端配置已就绪（服务端存在 google-services.json）",
+      "webPushConfigured": "Web Push 就绪",
+      "domain": "域名：",
+      "toast": {
+        "ok": "VAPID 配置健康",
+        "hasIssues": "VAPID 配置存在问题——见详情"
+      }
+    }
+  },
+  "notFound": {
+    "code": "404",
+    "desc": "页面不存在",
+    "back": "返回用户管理"
+  },
+  "routeError": {
+    "title": "页面出现错误",
+    "desc": "管理控制台无法显示此页面。你可以重新加载，或返回仪表盘。",
+    "reload": "重新加载",
+    "home": "返回仪表盘"
+  },
+  "security": {
+    "title": "我的账户",
+    "desc": "管理你自己的登录安全——二次验证与恢复码。",
+    "totp": {
+      "title": "身份验证器",
+      "desc": "每次登录时要求来自 Google / Microsoft 身份验证器的轮换 6 位数字代码。",
+      "on": "已开启",
+      "off": "未开启",
+      "enable": "启用二次验证",
+      "disable": "关闭二次验证",
+      "regenerate": "重新生成备用代码",
+      "notEnabledHint": "增加第二重验证，仅凭泄露的密码无法登录。",
+      "enabledAt": "启用时间",
+      "backupRemaining": "剩余 {{count}} 个备用代码",
+      "backupWarning": "请妥善保存这些一次性备用代码。当丢失身份验证器时每个可使用一次。它们无法再次显示。",
+      "copyAll": "全部复制",
+      "download": "下载",
+      "savedDone": "我已保存，重新登录",
+      "enabledToast": "二次验证已启用——请重新登录",
+      "disabledToast": "二次验证已关闭"
+    },
+    "passkey": {
+      "title": "通行密钥",
+      "desc": "防钓鱼的第二因素——使用屏幕锁定（Touch ID / Windows Hello）或硬件密钥确认。",
+      "add": "添加通行密钥",
+      "notAvailable": "通行密钥需要安全连接（HTTPS）。请通过 HTTPS 打开控制台后使用。",
+      "empty": "暂无通行密钥。",
+      "backed": "已同步",
+      "single": "本设备",
+      "lastUsed": "上次使用 {{when}}",
+      "never": "从未",
+      "rename": "重命名",
+      "remove": "删除",
+      "addedToast": "通行密钥已添加",
+      "removedToast": "通行密钥已删除",
+      "reauthLabel": "确认当前密码以添加通行密钥",
+      "nicknameLabel": "标签（可选）",
+      "nicknamePlaceholder": "例如：MacBook 触控 ID"
+    },
+    "setup": {
+      "title": "启用二次验证",
+      "scanDesc": "用身份验证器 App（Google / Microsoft Authenticator）扫描下方二维码，然后输入其显示的 6 位数字代码。",
+      "manualKey": "或手动输入此密钥",
+      "codeLabel": "输入 6 位数字代码",
+      "enable": "启用",
+      "qrAlt": "二次验证绑定二维码"
+    },
+    "disable": {
+      "title": "关闭二次验证",
+      "desc": "请用当前密码和有效验证码确认。账号将恢复为仅凭密码登录。"
+    },
+    "regen": {
+      "title": "重新生成备用代码",
+      "desc": "请用有效验证码确认。旧的备用代码将立即失效。"
+    }
+  },
+  "rateLimits": {
+    "title": "认证限流监控",
+    "desc": "只读展示最近 24 小时的聚合指标与保守调参建议；服务重启会清空页面历史。",
+    "saved": "限流配置已保存",
+    "save": "保存策略",
+    "observe": "仅观察",
+    "fixedWindow": {
+      "title": "固定窗口路由策略",
+      "desc": "为高频和滥用敏感路由设置精确请求上限。修改立即生效，不改变固定窗口算法。",
+      "policy": "策略",
+      "limit": "请求上限",
+      "window": "窗口（秒）",
+      "save": "保存固定窗口策略",
+      "saved": "固定窗口配置已保存"
+    },
+    "evaluated": "请求数",
+    "wouldBlock": "模拟拦截",
+    "blocked": "实际拦截",
+    "hitRatio": "命中率",
+    "recentTrend": "最近 12 个统计周期的命中次数",
+    "dimension": "维度",
+    "rate": "补充速率",
+    "burst": "突发容量",
+    "advice": {
+      "disabled": "策略已禁用；请启用 shadow 观察或 enforce 强制执行。",
+      "insufficient-sample": "样本不足 1,000 次，请勿仅凭当前数据调参或切换模式。",
+      "stale": "30 分钟内没有请求，请检查真实流量、监控接线或服务是否刚重启。",
+      "high-would-block": "模拟拦截比例较高；请检查共享 NAT 与客户端重试，优先评估提高突发容量。",
+      "high-block-rate": "实际拦截比例较高；调参前请先区分攻击流量和正常用户误伤。",
+      "long-retry": "重试时间达到 30 秒；突发容量或令牌补充速率可能过低。",
+      "review-ready": "样本量充足且模拟拦截率较低，可以进入人工上线审核。"
+    }
+  },
+  "messageReports": {
+    "title": "消息举报",
+    "subtitle": "查看被举报消息的原始内容，可移除举报或删除消息。",
+    "filter": "筛选举报",
+    "active": "有效举报",
+    "removed": "已移除举报",
+    "message": "被举报消息",
+    "creator": "发送者",
+    "thread": "会话",
+    "updatedAt": "最近举报 / 移除时间",
+    "deleted": "消息已被删除",
+    "empty": "暂无消息举报",
+    "deleteMessage": "删除消息",
+    "deleteSelected": "删除所选（{{count}}）",
+    "selectAll": "选择本页所有消息",
+    "selectMessage": "选择消息 {{seq}}",
+    "dismiss": "移除举报",
+    "deleteConfirm": "确认删除消息？",
+    "deleteConfirmBody": "将删除 {{count}} 条消息，此操作无法恢复。",
+    "dismissConfirm": "确认移除举报？",
+    "dismissConfirmBody": "消息将保留，再次举报时会重新激活这条记录。",
+    "dismissed": "举报已移除",
+    "messagesDeleted": "已删除 {{count}} 条消息",
+    "deletionFailed": "{{count}} 条消息删除失败，请重试。",
+    "actionFailed": "操作失败，请重试"
+  },
+  "errors": {
+    "unauthenticated": "未认证",
+    "parseFailed": "响应解析失败",
+    "serverError": "服务暂时不可用，请重试",
+    "biz": {
+      "validation": "输入有误",
+      "notFound": "未找到",
+      "alreadyExists": "已存在",
+      "unauthenticated": "请重新登录",
+      "invalidCredentials": "账号或密码错误",
+      "forbidden": "你没有权限执行此操作",
+      "rateLimited": "请求过于频繁，请稍候",
+      "refreshReuse": "登录状态已变更，请重新登录",
+      "sessionRevoked": "登录会话已结束，请重新登录",
+      "loginMethodDisabled": "该登录方式不可用",
+      "otpInvalid": "一次性登录码不正确",
+      "otpExpired": "一次性登录码已失效",
+      "otpConsumed": "一次性登录码已被使用",
+      "passwordNotSet": "该账号尚未设置密码",
+      "mustChangePassword": "请先设置密码",
+      "twoFactorInvalid": "验证码不正确",
+      "twoFactorChallengeExpired": "验证会话已过期——请重新登录",
+      "twoFactorNotEnabled": "该账号未启用二次验证",
+      "twoFactorAlreadyEnabled": "二次验证已启用",
+      "webauthnNotAvailable": "当前连接不可用通行密钥（需要 HTTPS）",
+      "webauthnChallengeExpired": "通行密钥会话已过期——请重试",
+      "webauthnVerificationFailed": "通行密钥验证失败",
+      "internal": "出错了",
+      "vapidInvalid": "VAPID 密钥对无效（格式错误或不匹配）"
+    }
+  }
+}

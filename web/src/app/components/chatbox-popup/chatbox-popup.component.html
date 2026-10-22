@@ -1,0 +1,25 @@
+@if (dialogs().length) {
+  <button
+    type="button"
+    class="chatbox-popup__backdrop"
+    (click)="cancelTop()"
+    [attr.aria-label]="'common.cancel' | transloco"
+  ></button>
+  @for (dialog of dialogs(); track dialog.id) {
+    <section
+      class="chatbox-popup__surface"
+      role="dialog"
+      aria-modal="true"
+      [attr.aria-label]="'common.dialog' | transloco"
+      [style.z-index]="$index + 1"
+      tabindex="-1"
+      cdkFocusInitial
+      [cdkTrapFocus]="$index === dialogs().length - 1"
+      [cdkTrapFocusAutoCapture]="$index === dialogs().length - 1"
+    >
+      <ng-container
+        *ngComponentOutlet="dialog.component; inputs: dialog.inputs"
+      />
+    </section>
+  }
+}

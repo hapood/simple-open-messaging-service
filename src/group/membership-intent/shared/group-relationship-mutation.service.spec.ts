@@ -1,0 +1,388 @@
+import { describe, expect, it, vi } from 'vitest';
+import { GroupRelationshipMutationService } from './group-relationship-mutation.service.js';
+
+process.env.SOMS_DOMAIN ??= 'chat.example';
+
+function queryResult<T>(value: T) {
+  const query: Record<string, unknown> = {};
+  for (const method of ['from', 'innerJoin', 'where', 'limit'])
+    query[method] = vi.fn(() => query);
+  query.then = (
+    resolve: (result: T) => unknown,
+    reject?: (reason: unknown) => unknown,
+  ) => Promise.resolve(value).then(resolve, reject);
+  return query;
+}
+
+describe('GroupRelationshipMutationService', () => {
+  it.each([{ feedAllocatorUserIds: [] }, { feedAllocatorUserIds: [7] }])(
+    'passes transaction and allocator locks through the group command lock ($feedAllocatorUserIds)',
+    async ({ feedAllocatorUserIds }) => {
+      const tx = {
+        select: vi.fn(() => queryResult([{ groupId: 9 }])),
+      } as never;
+      const relationshipIntents = {
+        lockGroupMutationInTx: vi.fn().mockResolvedValue({
+          id: 1n,
+          threadLock: {},
+        }),
+      };
+      const service = new GroupRelationshipMutationService(
+        relationshipIntents as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
+
+      await service.lockGroupMutationInTx(tx, 4, 7, [8], feedAllocatorUserIds);
+
+      expect(relationshipIntents.lockGroupMutationInTx).toHaveBeenCalledWith(
+        tx,
+        {
+          threadId: 4,
+          groupId: 9,
+          memberUserId: 7,
+          projectionUserIds: [8],
+          feedAllocatorUserIds,
+        },
+      );
+    },
+  );
+
+  it('applies request projections in the same caller transaction', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi
+              .fn()
+              .mockResolvedValue([
+                { groupAccount: '!group', authorityNamespaceId: 0 },
+              ]),
+          }),
+        }),
+      }),
+    } as never;
+    const requestCapability = {
+      concludeRequestInTx: vi.fn().mockResolvedValue({ status: 'CHANGED' }),
+    };
+    const service = new GroupRelationshipMutationService(
+      {} as never,
+      requestCapability as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    // When intent is missing, it exits cleanly without error
+    const effects = await service.writeGroupRequestEffectsInTx(
+      tx,
+      4,
+      { account: 'alice', namespaceId: 0 },
+      'ACCEPTED',
+      'INVITATION',
+      false,
+    );
+
+    expect(effects).toEqual({ created: false, clientUpdates: [] });
+  });
+
+  it('locks the remote-group peer allocator before publishing the protocol intent', async () => {
+    const requestedAt = new Date('2026-09-04T00:00:00.000Z');
+    const order: string[] = [];
+    const tx = {
+      select: vi
+        .fn()
+        .mockImplementationOnce(() => queryResult([{ groupId: 9 }]))
+        .mockImplementationOnce(() => queryResult([{ groupId: 9 }]))
+        .mockImplementation(() =>
+          queryResult([
+            {
+              id: 9,
+              account: '!remote-group',
+              namespaceId: 12,
+              name: 'Remote group',
+              avatar: '',
+              description: '',
+              profileRev: 4,
+            },
+          ]),
+        ),
+      query: {
+        account: {
+          findFirst: vi.fn().mockResolvedValue({
+            account: 'local-user',
+            namespaceId: 0,
+          }),
+        },
+      },
+    } as never;
+    const relationshipIntents = {
+      lockGroupMutationInTx: vi.fn().mockResolvedValue({
+        id: 1n,
+        threadLock: {},
+      }),
+    };
+    const stateFeed = {
+      lockOutboundStateFeedNamespacesInTx: vi
+        .fn()
+        .mockImplementation(async () => {
+          order.push('peer-lock');
+        }),
+      writeManyInTx: vi.fn().mockImplementation(async () => {
+        order.push('peer-write');
+        return new Map([['peer.example', 22n]]);
+      }),
+    };
+    const clientStateFeed = {
+      publishRequestHeadInTx: vi.fn(),
+    };
+    const groupRelationships = {
+      writeLockedAuthoredIntentInTx: vi.fn().mockResolvedValue({
+        request: {
+          status: 'REVOKED',
+          profileRev: 7,
+          note: '',
+          requestedAt,
+          expiresAt: null,
+        },
+        changed: true,
+        shouldBeActive: false,
+        active: false,
+        pairChanged: false,
+        canonicalRosterChanged: false,
+        audienceChanged: false,
+        threadFanoutAdmitted: false,
+      }),
+    };
+    const service = new GroupRelationshipMutationService(
+      relationshipIntents as never,
+      {} as never,
+      {} as never,
+      stateFeed as never,
+      clientStateFeed as never,
+      groupRelationships as never,
+    );
+    const clientFeedUpdates: Array<{ userId: number; feedId: number }> = [];
+
+    await expect(
+      service.writeMemberRelationshipIntentInTx(
+        tx,
+        4,
+        7,
+        'REVOKED',
+        clientFeedUpdates,
+      ),
+    ).resolves.toEqual(new Map([['peer.example', 22n]]));
+
+    expect(stateFeed.lockOutboundStateFeedNamespacesInTx).toHaveBeenCalledWith(
+      tx,
+      [{ namespaceId: 12 }],
+    );
+    expect(order).toEqual(['peer-lock', 'peer-write']);
+    expect(stateFeed.writeManyInTx).toHaveBeenCalledOnce();
+    expect(clientStateFeed.publishRequestHeadInTx).not.toHaveBeenCalled();
+    expect(clientFeedUpdates).toEqual([]);
+  });
+
+  it('reopens a dissolved mirror after a successfully authored positive intent', async () => {
+    const requestedAt = new Date('2026-09-14T00:00:00.000Z');
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn(() => ({ where }));
+    const tx = {
+      select: vi
+        .fn()
+        .mockImplementationOnce(() => queryResult([{ groupId: 9 }]))
+        .mockImplementation(() =>
+          queryResult([
+            {
+              id: 9,
+              account: '!remote-group',
+              namespaceId: 12,
+              name: 'Remote group',
+              avatar: '',
+              description: '',
+              profileRev: 4,
+            },
+          ]),
+        ),
+      query: {
+        account: {
+          findFirst: vi.fn().mockResolvedValue({
+            account: 'local-user',
+            namespaceId: 0,
+          }),
+        },
+      },
+      update: vi.fn(() => ({ set })),
+    } as never;
+    const relationshipIntents = {
+      lockGroupMutationInTx: vi.fn(),
+    };
+    const stateFeed = {
+      lockOutboundStateFeedNamespacesInTx: vi.fn(),
+      writeManyInTx: vi.fn().mockResolvedValue(new Map()),
+    };
+    const groupRelationships = {
+      writeLockedAuthoredIntentInTx: vi.fn().mockResolvedValue({
+        request: {
+          status: 'REQUESTED',
+          profileRev: 8,
+          note: 'join',
+          requestedAt,
+          expiresAt: new Date('2026-09-21T00:00:00.000Z'),
+        },
+        changed: true,
+        shouldBeActive: false,
+        active: false,
+        pairChanged: true,
+        canonicalRosterChanged: false,
+        audienceChanged: false,
+        threadFanoutAdmitted: false,
+      }),
+    };
+    const service = new GroupRelationshipMutationService(
+      relationshipIntents as never,
+      {} as never,
+      {} as never,
+      stateFeed as never,
+      { writeInTx: vi.fn().mockResolvedValue(null) } as never,
+      groupRelationships as never,
+    );
+
+    await service.writeMemberRelationshipIntentInTx(
+      tx,
+      4,
+      7,
+      'REQUESTED',
+      [],
+      'join',
+      {
+        allowDissolvedPositive: true,
+        snapshot: { displayName: 'Group at request time', avatar: null },
+        lockedGroupPair: { pairId: 1n, threadLock: {} as never },
+        validatedPairActive: false,
+      },
+    );
+
+    expect(set).toHaveBeenCalledWith({
+      groupDissolvedAt: null,
+      federationRoundsEnabled: true,
+      updatedAt: expect.any(Date),
+    });
+    expect(where).toHaveBeenCalled();
+    expect(relationshipIntents.lockGroupMutationInTx).not.toHaveBeenCalled();
+  });
+
+  it('stops a member-authored denial revoke when the locked epoch changed', async () => {
+    const tx = {
+      select: vi
+        .fn()
+        .mockImplementationOnce(() => queryResult([{ groupId: 9 }]))
+        .mockImplementationOnce(() =>
+          queryResult([{ groupId: 9, authorizationEpoch: 10 }]),
+        )
+        .mockImplementationOnce(() =>
+          queryResult([
+            {
+              id: 9,
+              account: '!group',
+              namespaceId: 5,
+            },
+          ]),
+        ),
+      query: {
+        account: {
+          findFirst: vi.fn().mockResolvedValue({
+            account: 'member',
+            namespaceId: 0,
+          }),
+        },
+      },
+    } as never;
+    const groupRelationships = { writeLockedAuthoredIntentInTx: vi.fn() };
+    const service = new GroupRelationshipMutationService(
+      {
+        lockGroupMutationInTx: vi.fn().mockResolvedValue({
+          id: 1n,
+          threadLock: {},
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      { lockOutboundStateFeedNamespacesInTx: vi.fn() } as never,
+      {} as never,
+      groupRelationships as never,
+    );
+
+    await expect(
+      service.writeMemberRelationshipIntentInTx(tx, 4, 7, 'REVOKED', [], '', {
+        expectedAuthorization: {
+          epoch: 9,
+          group: {
+            account: '!group',
+            namespaceId: 5,
+          },
+        },
+      }),
+    ).resolves.toEqual(new Map());
+    expect(
+      groupRelationships.writeLockedAuthoredIntentInTx,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('stops a group-authored denial revoke when the locked epoch changed', async () => {
+    const tx = {
+      select: vi
+        .fn()
+        .mockImplementationOnce(() => queryResult([{ groupId: 9 }]))
+        .mockImplementationOnce(() =>
+          queryResult([
+            {
+              groupId: 9,
+              groupAccount: '!group',
+              groupNamespaceId: 0,
+              authorizationEpoch: 10,
+            },
+          ]),
+        ),
+    } as never;
+    const groupRelationships = { writeLockedAuthoredIntentInTx: vi.fn() };
+    const service = new GroupRelationshipMutationService(
+      {
+        lockGroupMutationInTx: vi.fn().mockResolvedValue({
+          id: 1n,
+          threadLock: {},
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      groupRelationships as never,
+    );
+
+    await expect(
+      service.writeGroupRelationshipIntentInTx(
+        tx,
+        4,
+        { account: 'remote', namespaceId: 5 },
+        '',
+        'REVOKED',
+        [],
+        undefined,
+        {
+          expectedAuthorization: {
+            epoch: 9,
+            group: { account: '!group', namespaceId: 0 },
+          },
+        },
+      ),
+    ).resolves.toEqual(new Map());
+    expect(
+      groupRelationships.writeLockedAuthoredIntentInTx,
+    ).not.toHaveBeenCalled();
+  });
+});

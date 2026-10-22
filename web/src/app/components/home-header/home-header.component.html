@@ -1,0 +1,236 @@
+<div class="home-header">
+  <button
+    class="icon-btn avatar-btn"
+    (click)="openProfile()"
+    [attr.aria-label]="'nav.editProfileAria' | transloco"
+  >
+    <span class="avatar">
+      @if (sessionProfile(); as self) {
+        <app-demand-avatar
+          [type]="UserAvatarType.SELF"
+          [domainSource]="{ type: 'namespace', namespaceId: 0 }"
+          [name]="self.name"
+          [account]="self.account"
+        />
+      } @else {
+        <app-demand-avatar [type]="UserAvatarType.SELF" [loading]="true" />
+      }
+    </span>
+  </button>
+  @if (hasTransfers()) {
+    <div class="transfer-anchor">
+      <button
+        type="button"
+        class="transfer-status"
+        [class.transfer-status--uploads]="transferTasks().length > 0"
+        [class.failed]="transferFailedCount() + downloadFailedCount() > 0"
+        (click)="toggleTransferMenu()"
+        [attr.aria-expanded]="transferMenuOpen()"
+        [attr.aria-haspopup]="transferTasks().length > 0 ? 'dialog' : 'menu'"
+        [attr.aria-label]="'transfer.openDetails' | transloco"
+      >
+        @if (transferCount() + downloadActiveCount() > 0) {
+          <span class="transfer-metric" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 17V6M8 10l4-4 4 4M6 19h12" />
+            </svg>
+            <strong>{{ transferCount() + downloadActiveCount() }}</strong>
+          </span>
+        }
+        @if (transferFailedCount() + downloadFailedCount() > 0) {
+          <span
+            class="transfer-metric transfer-metric--failed"
+            aria-hidden="true"
+          >
+            <span>!</span>
+            <strong>{{ transferFailedCount() + downloadFailedCount() }}</strong>
+          </span>
+        }
+      </button>
+      @if (transferMenuOpen()) {
+        <div class="transfer-menu" role="menu">
+          @for (summary of transferSummaries(); track summary.threadId) {
+            <div class="transfer-menu-row" role="none">
+              <button
+                type="button"
+                class="transfer-menu-main"
+                role="menuitem"
+                (click)="openTransferThread(summary)"
+              >
+                <span class="transfer-thread-thumbs" aria-hidden="true">
+                  @for (
+                    task of tasksForThread(summary.threadId).slice(0, 2);
+                    track task.clientMessageId
+                  ) {
+                    <span
+                      class="transfer-thumb"
+                      [class.failed]="task.status === 'failed'"
+                    >
+                      @if (task.previewUrl) {
+                        <img [src]="task.previewUrl" alt="" />
+                      } @else {
+                        <span>{{ task.kind.slice(0, 1).toUpperCase() }}</span>
+                      }
+                    </span>
+                  }
+                </span>
+                <span class="transfer-thread-copy">
+                  <span class="transfer-thread-name">{{
+                    transferThreadName(summary)
+                  }}</span>
+                  <span
+                    class="transfer-thread-state"
+                    [class.failed]="summary.failed > 0"
+                  >
+                    @if (summary.failed > 0) {
+                      {{
+                        'transfer.failedCount'
+                          | transloco: { count: summary.failed }
+                      }}
+                    } @else if (summary.uploading === 0) {
+                      {{ 'transfer.completed' | transloco }}
+                    } @else if (summary.progress !== null) {
+                      {{
+                        'transfer.sendingProgress'
+                          | transloco
+                            : {
+                                completed: summary.completed,
+                                total: summary.total,
+                                progress: summary.progress,
+                              }
+                      }}
+                    } @else {
+                      {{
+                        'transfer.sendingOf'
+                          | transloco
+                            : {
+                                completed: summary.completed,
+                                total: summary.total,
+                              }
+                      }}
+                    }
+                  </span>
+                </span>
+              </button>
+              @if (summary.uploading > 0) {
+                <button
+                  type="button"
+                  class="transfer-row-action"
+                  (click)="cancelThread(summary.threadId, $event)"
+                  [attr.aria-label]="'transfer.cancel' | transloco"
+                >
+                  ×
+                </button>
+              }
+              @if (summary.failed > 0) {
+                <button
+                  type="button"
+                  class="transfer-row-action"
+                  (click)="retryThread(summary.threadId, $event)"
+                  [attr.aria-label]="'transfer.retry' | transloco"
+                >
+                  ↻
+                </button>
+              }
+            </div>
+          }
+          @for (task of downloadTasks(); track task.key) {
+            <div class="transfer-menu-row" role="none">
+              <button
+                type="button"
+                class="transfer-menu-main"
+                role="menuitem"
+                (click)="openDownloadThread(task.threadId)"
+              >
+                <span class="transfer-thread-thumbs" aria-hidden="true">
+                  <span
+                    class="transfer-thumb"
+                    [class.failed]="task.status === 'failed'"
+                  >
+                    @if (task.blobUrl) {
+                      <img [src]="task.blobUrl" alt="" />
+                    } @else {
+                      <span>↓</span>
+                    }
+                  </span>
+                </span>
+                <span class="transfer-thread-copy">
+                  <span class="transfer-thread-name">{{ task.name }}</span>
+                  <span
+                    class="transfer-thread-state"
+                    [class.failed]="task.status === 'failed'"
+                  >
+                    @if (task.status === 'failed') {
+                      {{ 'transfer.downloadFailed' | transloco }}
+                    } @else if (task.status === 'saved') {
+                      {{ 'transfer.saved' | transloco }}
+                    } @else if (task.status === 'loaded') {
+                      {{ 'transfer.loaded' | transloco }}
+                    } @else {
+                      {{
+                        downloadProgressText(
+                          task.loaded,
+                          task.total || task.expectedSize
+                        )
+                      }}
+                    }
+                  </span>
+                </span>
+              </button>
+              @if (task.status === 'downloading') {
+                <button
+                  type="button"
+                  class="transfer-row-action"
+                  (click)="cancelDownload(task.key, $event)"
+                  [attr.aria-label]="'transfer.cancelDownload' | transloco"
+                >
+                  ×
+                </button>
+              }
+            </div>
+          }
+        </div>
+      }
+    </div>
+  }
+  <div class="header-actions">
+    <button
+      class="icon-btn friend-btn"
+      (click)="openFriendRequests()"
+      [attr.aria-label]="'nav.friendRequests' | transloco"
+    >
+      <app-icon
+        [type]="AppIconType.FRIEND_REQUESTS"
+        [style]="{ width: '21px', height: '21px' }"
+      />
+      @if (friendReqBadge()) {
+        <span
+          class="friend-badge"
+          [attr.aria-label]="'nav.newFriendRequestsAria' | transloco"
+        ></span>
+      }
+    </button>
+    <button
+      class="icon-btn"
+      cdkOverlayOrigin
+      #moreTrigger="cdkOverlayOrigin"
+      (click)="toggleMoreMenu()"
+      [class.active]="moreMenuOpen()"
+      aria-haspopup="menu"
+      [attr.aria-expanded]="moreMenuOpen()"
+      [attr.aria-label]="'nav.moreAria' | transloco"
+    >
+      <app-icon
+        [type]="AppIconType.MORE"
+        [style]="{ width: '21px', height: '21px' }"
+      />
+    </button>
+  </div>
+  <app-chat-action-menu
+    [entries]="moreEntries()"
+    [origin]="moreTrigger"
+    [open]="moreMenuOpen()"
+    (select)="onSelect($event)"
+    (closed)="closeMoreMenu()"
+  />
+</div>

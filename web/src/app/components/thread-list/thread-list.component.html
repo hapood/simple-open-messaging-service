@@ -1,0 +1,149 @@
+<div class="thread-list" [attr.aria-busy]="status() === LoadStatus.LOADING">
+  @switch (status()) {
+    @case (LoadStatus.LOADING) {
+      <span class="thread-loading-status" role="status">{{
+        'common.loading' | transloco
+      }}</span>
+    }
+    @case (LoadStatus.ERROR) {
+      <app-empty-state
+        tone="error"
+        [title]="errorMsg()"
+        [subtitle]="'threadList.couldNotLoad' | transloco"
+        [ctaLabel]="'threadList.retry' | transloco"
+        (ctaClick)="genThreadList()"
+      />
+    }
+    @case (LoadStatus.READY) {
+      @if (filteredThreadList().length === 0) {
+        @if (isSearchEmpty()) {
+          <app-empty-state
+            [title]="'threadList.noMatchTitle' | transloco"
+            [subtitle]="'threadList.noMatchSub' | transloco"
+          />
+        } @else {
+          <app-empty-state
+            [title]="'threadList.emptyTitle' | transloco"
+            [subtitle]="'threadList.emptySub' | transloco"
+            [ctaLabel]="'threadList.addFriend' | transloco"
+            (ctaClick)="openFriendRequests()"
+          >
+            <!-- Unified brand mark (web/public/logo.svg) — the same single source the favicon / PWA /
+                 Tauri icons and <app-brand-logo> are generated from. Rendered as a bare <img> (mirroring
+                 brand-logo's internal .bl-mark) rather than <app-brand-logo> because this empty-state
+                 icon slot sizes its own content and must not inherit brand-logo's 16px mark→wordmark gap. -->
+            <img
+              src="/logo.svg"
+              width="40"
+              height="40"
+              alt=""
+              aria-hidden="true"
+            />
+          </app-empty-state>
+        }
+      } @else {
+        @for (thread of filteredThreadList(); track thread.threadId) {
+          @let resolvedDomain = avatarNamespaceId(thread) | namespaceDomain | async;
+          <button
+            type="button"
+            class="thread-item"
+            [attr.data-flip-key]="thread.threadId"
+            [class.active]="thread.threadId === openThreadId()"
+            [class.unread]="thread.unreadCount > 0"
+            [class.muted]="thread.muted"
+            [attr.aria-current]="
+              thread.threadId === openThreadId() ? 'true' : null
+            "
+            [attr.aria-label]="accessibleLabel(thread, resolvedDomain)"
+            (click)="onUsrTrdClick(thread)"
+          >
+            <span class="thread-avatar">
+              <app-demand-avatar
+                [type]="avatarType(thread)"
+                [name]="displayName(thread)"
+                [account]="avatarAccount(thread)"
+                [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(thread) }"
+                [profile]="avatarProfile(thread)"
+              ></app-demand-avatar>
+            </span>
+            <span class="thread-info">
+              <span class="thread-row">
+                <app-user-identity-label
+                  [account]="avatarAccount(thread)"
+                  [profileRef]="avatarProfile(thread)"
+                />
+                @if (thread.pinned) {
+                  <span
+                    class="thread-status-icon"
+                    [title]="'threadList.pinned' | transloco"
+                    aria-hidden="true"
+                  >
+                    <app-icon
+                      [type]="AppIconType.PIN"
+                      [style]="{ width: '14px', height: '14px' }"
+                    ></app-icon>
+                  </span>
+                }
+                <span class="thread-time">{{
+                  fmtTime(previewTime(thread))
+                }}</span>
+              </span>
+              <span class="thread-row">
+                @if (thread.blocked) {
+                  <span class="thread-blocked">
+                    <app-icon
+                      [type]="AppIconType.BLOCK"
+                      [style]="{ width: '14px', height: '14px' }"
+                    ></app-icon>
+                    <span>{{ 'threadList.blocked' | transloco }}</span>
+                  </span>
+                } @else {
+                  <span class="thread-msg">{{ previewText(thread) }}</span>
+                }
+                @if (thread.muted && !thread.blocked) {
+                  <span
+                    class="thread-status-icon"
+                    [title]="'threadList.muted' | transloco"
+                    aria-hidden="true"
+                  >
+                    <app-icon
+                      [type]="AppIconType.MUTE"
+                      [style]="{ width: '14px', height: '14px' }"
+                    ></app-icon>
+                  </span>
+                }
+                @if (hasUnreadJoinRequests(thread)) {
+                  <span
+                    class="join-request-badge"
+                    [title]="'group.joinRequests' | transloco"
+                    aria-hidden="true"
+                  >
+                    <app-icon
+                      [type]="AppIconType.GROUP_JOIN_REQUESTS"
+                      [style]="{ width: '14px', height: '14px' }"
+                    ></app-icon>
+                  </span>
+                }
+                @if (
+                  thread.unreadCount > 0 && thread.mentionUnread.length > 0
+                ) {
+                  <span
+                    class="mention-unread-badge"
+                    [title]="'threadList.mentionedYou' | transloco"
+                    aria-hidden="true"
+                    >&#64;</span
+                  >
+                }
+                @if (thread.unreadCount > 0) {
+                  <span class="unread-badge" aria-hidden="true">
+                    {{ thread.unreadCount >= 100 ? '99+' : thread.unreadCount }}
+                  </span>
+                }
+              </span>
+            </span>
+          </button>
+        }
+      }
+    }
+  }
+</div>

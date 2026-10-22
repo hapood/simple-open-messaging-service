@@ -1,0 +1,85 @@
+<div [appFitDialog]="fitOpts">
+  <app-page-header
+    [title]="'newGroup.title' | transloco"
+    [backDisabled]="submitting()"
+    (back)="onBack()"
+  />
+
+  <div class="panel">
+    <div class="avatar-section">
+      <div class="avatar-wrap">
+        <app-snapshot-avatar
+          [type]="UserAvatarType.GROUP"
+          [name]="name() || '?'"
+          [src]="pendingAvatar()"
+        ></app-snapshot-avatar>
+        <button
+          class="avatar-edit"
+          type="button"
+          (click)="fileInput.click()"
+          [disabled]="avatarUploading() || submitting()"
+          [attr.aria-label]="'newGroup.setPhotoAria' | transloco"
+        >
+          <span class="avatar-hint">
+            @if (avatarUploading()) {
+              <span class="spin"></span>
+            } @else {
+              {{ 'group.changeAvatarHint' | transloco }}
+            }
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <div class="fields">
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>{{ 'newGroup.groupNamePlaceholder' | transloco }}</mat-label>
+        <input
+          matInput
+          type="text"
+          autocomplete="off"
+          [disabled]="submitting()"
+          [ngModel]="name()"
+          (ngModelChange)="onNameInput($event)"
+          (keydown.enter)="confirm()"
+        />
+        <mat-hint align="end">{{ nameLength() }} / {{ NAME_MAX }}</mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>{{ 'newGroup.groupDescPlaceholder' | transloco }}</mat-label>
+        <textarea
+          matInput
+          rows="3"
+          [disabled]="submitting()"
+          [ngModel]="description()"
+          (ngModelChange)="onDescInput($event)"
+        ></textarea>
+        <mat-hint align="end">
+          {{ descriptionLength() }} / {{ DESC_MAX }}
+        </mat-hint>
+      </mat-form-field>
+    </div>
+
+    <div class="panel-actions">
+      <button
+        mat-flat-button
+        color="primary"
+        [disabled]="submitting() || avatarUploading() || !name().trim()"
+        (click)="confirm()"
+      >
+        {{
+          (submitting() ? 'newGroup.creating' : 'newGroup.create') | transloco
+        }}
+      </button>
+    </div>
+  </div>
+
+  <input
+    #fileInput
+    type="file"
+    accept="image/*"
+    hidden
+    (change)="pickAvatar($any($event.target))"
+  />
+</div>

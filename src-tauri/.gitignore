@@ -1,0 +1,13 @@
+/target
+# Tauri regenerates gen/schemas on build (capability JSON Schemas for IDE validation). gen/android
+# (the customized Android Studio project) IS tracked — Tauri's default — so native customizations
+# (FCM, Kotlin bridges, signing config) survive a fresh clone. In-tree ignores live in
+# gen/android/.gitignore (build outputs + keystores/secrets).
+/gen/schemas
+# Renamed, versioned APKs produced by `make apk*` land in dist/<platform>/ (e.g. dist/android/).
+# Raw gradle output lives under gen/android/app/build, ignored by gen/android/.gitignore.
+/dist
+# Firebase config — per-environment, downloaded from the Firebase console. Never committed.
+# Defense in depth: gen/android/.gitignore also ignores **/google-services.json in-tree.
+google-services.json
+

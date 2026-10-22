@@ -1,0 +1,144 @@
+:host {
+  display: block;
+  min-height: 100%;
+}
+
+// The page chrome inherits the themed <body> background (var(--app-bg)); every color
+// below is an --app-* / brand token, so light↔dark switches need no overrides here.
+.pnf {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 48px 24px 64px;
+  box-sizing: border-box;
+  text-align: center;
+  overflow: hidden;
+}
+
+// Soft brand-tinted halo behind the hero for depth. --app-brand-soft is a pale wash in
+// light and a brand-tinted translucent wash in dark, so it reads well in both.
+.pnf::before {
+  content: "";
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  width: 540px;
+  height: 540px;
+  max-width: 120vw;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--app-brand-soft) 0%, transparent 65%);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.pnf > * {
+  position: relative;
+  z-index: 1;
+}
+
+// ---- Hero illustration -----------------------------------------------------
+.pnf-art {
+  position: relative;
+  width: 132px;
+  height: 116px;
+  margin-bottom: 18px;
+}
+
+.pnf-bubble {
+  position: absolute;
+}
+
+.pnf-bubble--main {
+  left: 0;
+  bottom: 0;
+  filter: drop-shadow(0 16px 26px rgba(198, 60, 47, 0.3));
+}
+
+.pnf-bubble--ghost {
+  right: -6px;
+  top: -4px;
+  color: var(--app-text-faint);
+  opacity: 0.85;
+}
+
+// Gentle float, opt-in only for users who haven't requested reduced motion.
+@media (prefers-reduced-motion: no-preference) {
+  .pnf-bubble--main { animation: pnf-float 5s ease-in-out infinite; }
+  .pnf-bubble--ghost { animation: pnf-float 5s ease-in-out infinite 0.9s; }
+
+  @keyframes pnf-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-7px); }
+  }
+}
+
+// ---- Copy ------------------------------------------------------------------
+.pnf-code {
+  margin: 0;
+  font-size: clamp(72px, 16vw, 132px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -2px;
+  background: linear-gradient(135deg, var(--app-brand-accent) 0%, var(--app-brand) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.pnf-title {
+  margin: 16px 0 8px;
+  font-size: clamp(20px, 4vw, 26px);
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.pnf-desc {
+  max-width: 420px;
+  margin: 0 0 28px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--app-text-muted);
+}
+
+// ---- Actions ---------------------------------------------------------------
+.pnf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.pnf-btn {
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--app-radius-pill);
+  transition: background-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+
+  &:focus-visible { outline: 2px solid var(--app-brand); outline-offset: 3px; }
+  &:active { transform: translateY(1px); }
+}
+
+.pnf-btn--primary {
+  padding: 12px 26px;
+  border: 0;
+  background: var(--app-brand);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 6px 16px rgba(198, 60, 47, 0.3);
+
+  &:hover { background: var(--app-brand-hover); }
+}
+
+.pnf-btn--ghost {
+  padding: 12px 22px;
+  border: 1px solid var(--app-border-strong);
+  background: var(--app-surface);
+  color: var(--app-text);
+
+  &:hover { background: var(--app-hover); }
+}

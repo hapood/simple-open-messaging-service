@@ -1,0 +1,863 @@
+@use '../../assets/utils.scss' as *;
+@use '../../assets/chat-surface' as chat-surface;
+
+// fill-parent chain: host → wrapper → msg-container. Mobile full-screen popup
+// and desktop pane both rely on it to fill their container.
+:host {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+:host > div {
+  height: 100%;
+}
+
+.msg-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+  // Contain the keyboard-lift z-index choreography (header 2 / .ci-backdrop 3 / .ci-input-bar 4 / sticky
+  // pill 5) locally so the input bar's z-index can never leak above sibling-level chrome (e.g. a dialog or
+  // drawer overlapping this surface). isolation does NOT create a containing block for position:fixed (only
+  // transform/filter/will-change do), so the re-parented .ci-backdrop still anchors to the real viewport.
+  isolation: isolate;
+  // Shared header-height token: consumed here by the sticky-date overlay (must clear
+  // the header by exactly its height) AND by MessageHeaderComponent (.msg-header height).
+  // Defined on the positioning context so both the overlay and the header descendant
+  // read ONE value (no drift if the header height is later tuned). Inherited through
+  // the component boundary (CSS custom properties cross shadow/emulated borders). The value is the
+  // header's TOTAL occupied height: the 56px content row PLUS the status-bar safe-area inset
+  // (--soms-safe-top, injected by the native Android shell; 0 on desktop/browser). Both the header and
+  // the sticky-date pill thus grow in lockstep on a notched device, and MessageHeaderComponent consumes
+  // the inset as padding-top so its content row stays 56px while its --app-surface bg fills under the
+  // status bar (edge-to-edge, no seam).
+  --msg-header-h: calc(56px + var(--soms-safe-top, 0px));
+  // Sticky-date overlay top offset for <app-sticky-date-overlay> (inherits down to it): the header is a
+  // normal-flow flex child occupying the top --msg-header-h pixels, so the pill must clear exactly that.
+  --sd-top: var(--msg-header-h, 56px);
+  // Effective keyboard lift (safe-area-corrected) — shared with the playground stage via
+  // assets/utils.scss#kbd-lift-effective so the two can't drift. Consumed by the input bar + scroller lift.
+  @include kbd-lift-effective;
+  // Composer height is real scrollable space owned exclusively by the kernel tail cap. Web/PC publishes
+  // it locally on this container; Android publishes the same variable globally for the native component.
+  // Wallpaper: bg color + tiled doodle layered on the same element (an element's
+  // own background always paints behind its content, so no pseudo-element / z-index
+  // is needed). The parent container does not scroll with the viewport → the pattern
+  // acts as a fixed wallpaper that messages scroll over.
+  @include chat-surface.wallpaper;
+}
+.chat-call-banner {
+  padding-top: var(--soms-safe-top, 0px);
+}
+.msg-container:has(.chat-call-banner) {
+  --sd-top: calc(104px + var(--soms-safe-top, 0px));
+}
+
+// A touch browser may pan the layout viewport to reveal the focused editor even though visualViewport
+// already reports the keyboard occlusion. Shrink the complete chat surface there so the header stays at
+// the top and the absolutely-positioned composer naturally lands above the IME. Native Tauri deliberately
+// retains the transform-only path below to keep its virtual-scroll geometry stable during IME animation.
+.msg-container.kbd-offset--resize-host {
+  height: calc(100% - var(--kbd-lift-effective, 0px));
+  // Custom properties cross Angular component boundaries; ChatInput consumes this inside its own
+  // encapsulation scope, unlike a parent selector targeting `.ci-input-bar` directly.
+  --kbd-compositor-lift: 0px;
+}
+
+// The projected quote is a fixed first row inside the web composer. Extend the kernel tail reserve by the
+// same outer row height so the newest message and floating jump controls remain fully above the composer.
+.msg-container--has-compose-quote {
+  --soms-content-bottom-reserve: calc(
+    var(--soms-composer-height) + var(--soms-safe-bottom) + 34px
+  );
+}
+
+// Retained read-only history has no composer, but the final message still needs breathing room above the
+// viewport edge or system gesture area. Feed the spacing through the measured tail cap so the virtual-scroll
+// height model includes the complete base gap plus safe-area inset.
+.msg-container--friendship-ended {
+  --soms-content-bottom-reserve: calc(
+    16px + var(--soms-safe-bottom, 0px)
+  );
+}
+
+// Scroll viewport (kernel B manual compensation: overflow-anchor:none exclusively,
+// to stop the browser from fighting our scrollTop adjustments).
+.msg-viewport {
+  flex: 1 1 auto;
+  position: relative; // positioning context for the empty-state overlay
+  // Keyboard lift is a compositor-only transform (rigid with .ci-input-bar), NOT a viewport resize: the
+  // kernel measures offsetHeight/clientHeight/scrollHeight/scrollTop — all transform-invariant — so the
+  // ResizeObserver stays silent and no per-frame reflow/re-pin fires. Uses --kbd-lift-effective (set on
+  // .msg-container) — the raw --kbd-lift minus the safe-bottom the bar's own padding already covers — so
+  // no extra gap opens between the editor and the keyboard. The shared duration mirrors .ci-input-bar so
+  // both surfaces move as one rigid unit.
+  // translateY(0px) is a permanent stacking context — harmless (the only positioned descendant is the
+  // absolute skeleton, which rides the transform) and below the header (z-index:2) so lifted content slides
+  // UNDER the header.
+  transform: translateY(
+    calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px)))
+  );
+  transition: transform var(--kbd-duration, 60ms) ease-out;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-anchor: none;
+  outline: none;
+  scrollbar-width: none; // hide the scrollbar on every platform
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+// Content layer: normal document flow (relative-scroll architecture). Item blocks
+// stack and grow to natural height for the viewport to scroll. Bottom-aligned like the
+// playground's .pg-content: when content is SHORTER than the viewport (empty / few-message
+// thread) `justify-content: flex-end` pins the bubble(s) to the bottom (WhatsApp style); when
+// content ≥ viewport there is no free space, so normal top-to-bottom flow + scrolling are
+// unchanged. This shift changes offsetTop, NOT offsetHeight, so it is invisible to the kernel's
+// height model; `flex-shrink: 0` on the direct children guarantees flex never distorts a row's
+// measured height (the kernel's height-integrity invariant).
+.msg-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 100%;
+  & > * {
+    flex-shrink: 0;
+  }
+}
+
+// Browser/desktop composer uses the same floating geometry as the Android native composer. Its host no
+// longer consumes flex height; the measured tail cap reserves the real scroll range below the newest row.
+app-chat-input {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 4;
+}
+
+// A chatbox dialog visually replaces the composer, but both its DOM and measured geometry stay mounted until
+// the result callback has delivered its send intent. Collapsing it would publish a transient zero composer
+// height and move the virtual-scroll tail while the dialog opens.
+app-chat-input.msg-composer--dialog-hidden {
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+// One stable transport row per state. Angular creates it beside the viewport, then the component moves it
+// into the kernel's measured tail cap so it scrolls with the mounted window and contributes to total height.
+// The card and its thumbnail rail have fixed dimensions: individual completions only change paint.
+.msg-transfer-stack {
+  box-sizing: border-box;
+  padding: 6px max(16px, calc((100% - 800px) / 2 + 16px)) 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+// Match ordinary self-message rows: when the "show my avatar" header is enabled, reserve its
+// 40px slot plus 8px gap instead of letting the tail-cap cards occupy that space.
+:host-context([data-show-self-avatar='true']) .msg-transfer-stack {
+  padding-inline-end: calc(max(16px, calc((100% - 800px) / 2 + 16px)) + 48px);
+}
+
+.msg-transfer-line {
+  width: min(100%, 430px);
+  height: 76px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.msg-transfer-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 6px;
+}
+
+.msg-transfer-btn {
+  @include styless-button;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--app-brand) 38%, var(--app-border));
+  border-radius: var(--app-radius-pill);
+  background: var(--app-surface-elevated);
+  color: var(--app-brand);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  svg {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  &:hover {
+    background: var(--app-hover);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 1px;
+  }
+  &--cancel {
+    border-color: var(--app-border);
+    color: var(--app-text-muted);
+  }
+  &--retry {
+    border-color: color-mix(in srgb, var(--app-danger) 42%, var(--app-border));
+    color: var(--app-danger);
+  }
+}
+
+.msg-transfer-card {
+  height: 76px;
+  min-width: 0;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: 18px 38px;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 14px 5px 14px 14px;
+  background: var(--im-bubble-self);
+  color: var(--im-bubble-text);
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  overflow: hidden;
+  &--failed {
+    outline: 1px solid color-mix(in srgb, var(--app-danger) 55%, transparent);
+  }
+  &--interactive {
+    cursor: pointer;
+    transition:
+      transform 140ms ease,
+      box-shadow 140ms ease;
+    &:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: 2px;
+    }
+  }
+}
+
+.msg-transfer-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+.msg-transfer-count {
+  width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-transfer-thumbs {
+  height: 40px;
+  display: grid;
+  grid-template-columns: repeat(5, 38px);
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.msg-transfer-thumb {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  &--uploading {
+    border-color: color-mix(in srgb, var(--app-brand) 62%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-brand) 13%, transparent);
+    img,
+    .msg-transfer-file-icon {
+      filter: brightness(0.58);
+    }
+  }
+}
+
+.msg-transfer-file-icon {
+  --msg-transfer-file-color: #6b7280;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  color: #fff;
+  background: var(--msg-transfer-file-color);
+  svg {
+    width: 22px;
+    height: 22px;
+  }
+  span {
+    max-width: 32px;
+    overflow: hidden;
+    font-size: 7px;
+    line-height: 8px;
+    letter-spacing: 0.2px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  &--pdf {
+    --msg-transfer-file-color: #e53935;
+  }
+  &--doc {
+    --msg-transfer-file-color: #2b6cb0;
+  }
+  &--sheet {
+    --msg-transfer-file-color: #2e7d32;
+  }
+  &--slides {
+    --msg-transfer-file-color: #ef6c00;
+  }
+  &--archive {
+    --msg-transfer-file-color: #7b1fa2;
+  }
+  &--text {
+    --msg-transfer-file-color: #546e7a;
+  }
+}
+
+.msg-transfer-spinner {
+  position: absolute;
+  inset: 5px;
+  width: 28px;
+  height: 28px;
+  overflow: visible;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+  circle {
+    fill: none;
+    stroke-width: 2.5;
+  }
+  .msg-transfer-spinner-track {
+    stroke: rgba(255, 255, 255, 0.32);
+  }
+  .msg-transfer-spinner-value {
+    stroke: #fff;
+    stroke-dasharray: 62.832;
+    stroke-linecap: round;
+    transform: rotate(-90deg);
+    transform-origin: center;
+    transition: stroke-dashoffset 120ms linear;
+  }
+  text {
+    fill: #fff;
+    font-size: 7px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+}
+
+.msg-transfer-more {
+  color: var(--app-text-muted);
+}
+
+@media (max-width: 420px) {
+  .msg-transfer-stack {
+    padding-inline: 10px;
+  }
+  .msg-transfer-line {
+    width: 100%;
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 6px;
+  }
+  .msg-transfer-thumbs {
+    grid-template-columns: repeat(5, 38px);
+  }
+  .msg-transfer-thumb {
+    width: 38px;
+    height: 38px;
+  }
+}
+
+.msg-latest-layer {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 0;
+  height: 0;
+  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
+  transition: transform 60ms linear;
+}
+
+.msg-latest {
+  position: absolute;
+  // This is a chatbox navigation control, so anchor it to the chatbox edge rather than the
+  // narrower centered composer rail. Message rows can occupy the full pane on wide layouts.
+  right: 16px;
+  bottom: 14px;
+  min-width: 44px;
+  height: 44px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 11px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  background: var(--app-surface-elevated);
+  color: var(--app-text-muted);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
+  cursor: pointer;
+  animation: msg-latest-enter 160ms ease-out;
+  &:hover {
+    color: var(--app-text);
+    background: var(--app-hover);
+  }
+  &:active {
+    transform: scale(0.96);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 2px;
+  }
+}
+
+// The layer's zero-height anchor sits at the chat pane's layout bottom. The composer is deliberately
+// absolute, so it does not move that anchor upward; consume the same measured reserve as the tail cap
+// to keep this control 14px above the real browser/native composer (including the safe-area inset).
+// Blocked threads keep their banner in normal flex flow and therefore retain the plain 14px offset.
+.msg-container--has-floating-composer .msg-latest {
+  bottom: calc(14px + var(--soms-content-bottom-reserve, 0px));
+}
+
+.msg-unread-jump {
+  bottom: 66px;
+}
+
+.msg-container--has-floating-composer .msg-unread-jump {
+  bottom: calc(66px + var(--soms-content-bottom-reserve, 0px));
+}
+
+.msg-latest-count {
+  min-width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: var(--app-radius-pill);
+  background: var(--app-brand);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes msg-latest-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-latest {
+    animation: none;
+  }
+}
+
+// Top sentinel: retained for kernel-A routing / playground reuse. This component
+// does not pass onLoadMore, so the sentinel is a harmless placeholder.
+.msg-sentinel {
+  height: 1px;
+}
+
+// The sticky-date overlay is rendered by <app-sticky-date-overlay> (shared with the playground). Its top
+// offset reads --sd-top (set on .msg-container above = the header height).
+
+// Conversation-state banner: replaces the composer while preserving readable history.
+// Integer height (48px) keeps the flex-column measurement whole; sits in the input's normal-flow slot.
+.msg-blocked-banner {
+  flex: 0 0 auto;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  // Bottom padding carries the gesture-bar inset so the tap target clears the system bar; content-box
+  // height:48px keeps the centered text whole while the --app-hover background extends under the bar
+  // (seamless, mirroring .ci-input-bar). No keyboard in the blocked state, so a static inset suffices.
+  padding: 0 16px var(--soms-safe-bottom, 0px);
+  border: 0;
+  background: var(--app-hover);
+  color: var(--app-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+  border-top: 1px solid var(--app-border);
+}
+
+.msg-context-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.msg-context-menu {
+  position: fixed;
+  z-index: 21;
+  width: 192px;
+  box-sizing: border-box;
+  padding: 6px 0;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  background: var(--app-surface-elevated);
+  box-shadow: var(--app-shadow-2);
+  overflow: hidden;
+  button {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 40px;
+    padding: 0 16px;
+    border: 0;
+    background: transparent;
+    color: var(--app-text);
+    text-align: left;
+    font: inherit;
+    font-size: var(--app-font-size-body-small);
+    line-height: var(--app-line-height-body-small);
+    font-weight: var(--app-font-weight-regular);
+    cursor: pointer;
+    overflow: hidden;
+    white-space: nowrap;
+    gap: 12px;
+    .msg-context-menu__icon-placeholder,
+    > svg {
+      flex: 0 0 20px;
+      width: 20px;
+      height: 20px;
+    }
+    > svg {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    &.msg-context-menu__item--icon > svg {
+      fill: currentColor;
+      stroke: none;
+    }
+    span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    &:active {
+      background: var(--app-pressed);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: -2px;
+    }
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .msg-context-menu button:hover {
+    background: var(--app-hover);
+  }
+}
+
+.msg-selection-bar {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 5;
+  min-height: var(--app-header-expanded);
+  padding: 0 max(var(--app-space-3), calc((100% - 800px) / 2))
+    var(--soms-safe-bottom, 0px);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-1);
+  border-top: 1px solid var(--app-border);
+  background: var(--im-composer-bar-bg);
+  button {
+    min-width: var(--app-touch-target);
+    min-height: var(--app-touch-target);
+    padding: 0 var(--app-space-3);
+    border: 0;
+    border-radius: var(--app-radius-md);
+    background: transparent;
+    color: var(--app-text-muted);
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--app-space-0-5);
+    font: inherit;
+    font-size: var(--app-font-size-caption);
+    line-height: var(--app-line-height-caption);
+    font-weight: var(--app-font-weight-medium);
+    cursor: pointer;
+    transition:
+      color var(--app-motion-instant) var(--app-ease-standard),
+      background var(--app-motion-instant) var(--app-ease-standard);
+    svg {
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    &:active:not(:disabled) {
+      color: var(--app-text);
+      background: var(--app-pressed);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: -2px;
+    }
+    &:disabled {
+      color: var(--app-text-disabled);
+      opacity: var(--app-disabled-opacity);
+      cursor: default;
+    }
+  }
+  .msg-selection-close {
+    width: var(--app-touch-target);
+    padding: 0;
+    border-radius: var(--app-radius-pill);
+  }
+}
+
+.msg-selection-count {
+  min-width: var(--app-space-6);
+  color: var(--app-text);
+  font-size: var(--app-font-size-list-title);
+  line-height: var(--app-line-height-list-title);
+  font-weight: var(--app-font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-selection-spacer {
+  flex: 1 1 auto;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .msg-selection-bar button:hover:not(:disabled) {
+    color: var(--app-text);
+    background: var(--app-hover);
+  }
+}
+
+// Empty-thread hero placeholder (shown when init has settled with zero mounted items). It is an absolute
+// sibling of .msg-content inside .msg-viewport, so it stays OUT of the kernel's measured
+// height model entirely (totalH()/prefix-sum is unaffected). <app-empty-state> fills the overlay (:host
+// height:100%) and centers its column; the wallpaper shows through the transparent viewport. pointer-events:none
+// — the card holds no interactive element (the composer is the affordance), so the surface stays non-modal.
+.msg-empty-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  // The viewport is lifted with the composer when the on-screen keyboard opens. Keep the empty-state hero
+  // visually anchored to the chat pane by cancelling that parent transform; message rows still lift normally.
+  transform: translateY(var(--kbd-lift-effective, 0px));
+  transition: transform var(--kbd-duration, 60ms) ease-out;
+  // Gentle reveal so the card doesn't pop in once loading clears. Opacity-only (exempt from the integer-px
+  // height rule; the overlay is outside the kernel's measured model regardless). Honors reduced-motion.
+  animation: msg-empty-fade 180ms ease-out;
+}
+
+.msg-load-failed-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+}
+
+.msg-load-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 20px;
+  color: var(--app-warning);
+  background: color-mix(in srgb, var(--app-warning) 16%, var(--app-surface));
+  cursor: pointer;
+}
+
+.msg-load-retry-ring {
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 2.5px solid color-mix(in srgb, var(--app-warning) 24%, transparent);
+  border-top-color: var(--app-warning);
+  border-radius: 50%;
+  animation: msg-load-retry-spin 0.9s linear infinite;
+}
+
+@keyframes msg-load-retry-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes msg-empty-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-empty-overlay {
+    animation: none;
+  }
+}
+
+// Hero avatar — a sized wrapper around <app-demand-avatar> (its :host fills 100% of this box), the same pattern
+// as the thread-list's .thread-avatar. Integer 64px keeps the rendered box whole; larger than the list's 54px
+// for empty-state prominence (Material recommends prominent imagery in an empty state).
+.msg-empty-avatar {
+  display: block;
+  width: 64px;
+  height: 64px;
+}
+
+.msg-compose-quote {
+  position: relative;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 42px;
+  box-sizing: border-box;
+  margin: 2px 2px 2px 0;
+  padding: 5px 6px 5px 11px;
+  border-radius: 4px;
+  background: var(--im-composer-quote-bg);
+  overflow: hidden;
+
+  &::before {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--im-composer-quote-accent);
+    content: '';
+  }
+}
+
+.msg-compose-quote-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+  line-height: 15px;
+}
+.msg-compose-quote-copy strong {
+  color: var(--im-composer-quote-title);
+  font-weight: 500;
+}
+.msg-compose-quote-copy > span,
+.msg-compose-quote-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-compose-quote-copy > span {
+  color: var(--im-composer-quote-text);
+}
+.msg-compose-quote-avatar,
+.msg-compose-quote-image {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.msg-compose-quote-avatar {
+  border-radius: 50%;
+}
+.msg-compose-quote-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--im-composer-quote-close);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--im-composer-quote-close-hover-bg);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--im-composer-quote-accent);
+    outline-offset: 1px;
+  }
+
+  svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+  }
+}

@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:state-feed",
+  "title": "GET /s2s/v1/state-feed response data",
+  "$defs": {
+    "relationshipIntentBody": {
+      "type": "object",
+      "required": ["status", "namespaceId", "profileRev", "note", "requestedAt", "expiresAt"],
+      "properties": {
+        "status": {
+          "enum": ["REQUESTED", "ACCEPTED", "REVOKED"]
+        },
+        "namespaceId": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "profileRev": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "requestedAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "messageEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        },
+        "tombstoneEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {
+              "status": {
+                "const": "REQUESTED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "requestedAt": {
+                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+              },
+              "expiresAt": {
+                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {
+              "status": {
+                "const": "ACCEPTED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "requestedAt": {
+                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+              },
+              "expiresAt": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {
+              "status": {
+                "const": "REVOKED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "expiresAt": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["REQUESTED", "ACCEPTED"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["messageEndSeq", "tombstoneEndSeq"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "p2pThreadContentHeadBody": {
+      "type": "object",
+      "required": ["messageEndSeq", "tombstoneEndSeq"],
+      "properties": {
+        "messageEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        },
+        "tombstoneEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        }
+      },
+      "additionalProperties": false
+    },
+    "groupThreadContentHeadBody": {
+      "type": "object",
+      "required": ["messageEndSeq", "tombstoneEndSeq"],
+      "properties": {
+        "messageEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        },
+        "tombstoneEndSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadSequence"
+        },
+        "groupMetaFeedEndId": {
+          "$ref": "urn:somfp:v1:group-meta#/$defs/feedBoundary"
+        }
+      },
+      "additionalProperties": false
+    },
+    "itemBase": {
+      "type": "object",
+      "required": ["account", "eventType", "feedId", "body"],
+      "properties": {
+        "account": {
+          "$ref": "urn:somfp:v1:common#/$defs/account"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "feedId": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
+        },
+        "body": {
+          "type": "object"
+        }
+      }
+    },
+    "item": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "eventType": {
+              "const": "RELATIONSHIP_INTENT"
+            },
+            "peerAccount": {
+              "$ref": "urn:somfp:v1:common#/$defs/account"
+            },
+            "body": {
+              "$ref": "#/$defs/relationshipIntentBody"
+            }
+          },
+          "required": ["peerAccount"],
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+            },
+            "eventType": {
+              "const": "THREAD_CONTENT_HEAD"
+            },
+            "peerAccount": {
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+            },
+            "body": {
+              "$ref": "#/$defs/p2pThreadContentHeadBody"
+            }
+          },
+          "required": ["peerAccount"],
+          "unevaluatedProperties": false
+        },
+        {
+          "$ref": "#/$defs/itemBase",
+          "properties": {
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+            },
+            "eventType": {
+              "const": "THREAD_CONTENT_HEAD"
+            },
+            "body": {
+              "$ref": "#/$defs/groupThreadContentHeadBody"
+            }
+          },
+          "unevaluatedProperties": false
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "items",
+    "scannedThrough",
+    "stateFeedEndId",
+    "profileNamespaceFeedEndId",
+    "hasMore"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "scannedThrough": {
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+    },
+    "stateFeedEndId": {
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+    },
+    "profileNamespaceFeedEndId": {
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+    },
+    "hasMore": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

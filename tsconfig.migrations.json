@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "incremental": false,
+    "rootDir": "."
+  },
+  "files": ["scripts/migrate-db.ts"]
+}

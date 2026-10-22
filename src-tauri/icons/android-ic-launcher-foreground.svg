@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS adaptive icon foreground">
+  <!-- Android adaptive foreground: transparent 108dp canvas. The complete
+       artwork is scaled to 82%, yielding an approximately 54dp silhouette
+       inside the guaranteed 66dp safe zone. The background remains a separate
+       full-bleed launcher layer; do not add a mask, corner radius, or shadow. -->
+  <g transform="translate(54 54) scale(0.82) translate(-54 -54)">
+    <path
+      fill="#f8f4ec"
+      stroke="#ded6ca"
+      stroke-width="1.5"
+      d="M54 17 C76 17 93 32 93 52 C93 72 76 86 55 86 C48 86 41 85 35 82 L25 87 L28 76 C20 68 15 61 15 52 C15 32 32 17 54 17 Z"
+    />
+    <g transform="translate(1 -2)">
+      <path d="M34 68 V40 L54 57 L74 40 V68" fill="none" stroke="#19212a" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+      <g fill="#19212a">
+        <circle cx="34" cy="40" r="6.5" />
+        <circle cx="34" cy="68" r="6.5" />
+        <circle cx="74" cy="40" r="6.5" />
+        <circle cx="74" cy="68" r="6.5" />
+      </g>
+      <circle cx="54" cy="57" r="7" fill="#f04b3a" />
+    </g>
+  </g>
+</svg>

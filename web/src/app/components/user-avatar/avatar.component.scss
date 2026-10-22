@@ -1,0 +1,156 @@
+:host {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.avatar-federated-icon {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.avatar-federated-disc {
+  fill: var(--app-surface);
+}
+
+.avatar-federated-halo {
+  fill: none;
+  stroke: var(--app-surface);
+  stroke-width: 4px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.avatar-federated-globe {
+  fill: none;
+  stroke: var(--app-action-primary);
+  stroke-width: 2px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+:host-context([data-theme='dark']) {
+  .avatar-federated-disc {
+    fill: var(--app-surface-elevated);
+  }
+
+  .avatar-federated-halo {
+    stroke: var(--app-surface-elevated);
+  }
+
+  .avatar-federated-globe {
+    stroke: color-mix(in srgb, var(--app-action-primary) 78%, white);
+  }
+}
+
+.ua {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.group-avatar-badge {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  fill: var(--app-action-primary);
+  stroke: var(--app-surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+
+:host-context([data-theme='dark']) .group-avatar-badge {
+  stroke: var(--app-surface-elevated);
+}
+
+.ua.img {
+  object-fit: cover;
+  border-radius: 20%; // Matches the rx=20% rounded corners of the initial-letter SVG; real images stay rounded too
+}
+
+.ua text {
+  fill: #ffffff;
+  font-size: 40px;
+  font-weight: 600;
+}
+
+// Loading placeholder (rendered when the `loading` input is set) — a border-only glass tile with a
+// shimmering translucent sweep. Fills :host via width/height 100%; box-sizing:border-box keeps the 1px
+// frame from changing the parent's measured size (integer-pixel contract). The glass effect is the
+// translucent gradient + border alone — no backdrop-filter, since the placeholder sits on a solid
+// header/rail surface where blurring yields no visible change.
+.avatar-placeholder {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border-radius: 20%; // matches the rx=20% of the initial-letter SVG / .ua.img
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.16),
+    rgba(255, 255, 255, 0.04)
+  );
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  position: relative;
+  overflow: hidden;
+
+  // Shimmering highlight sweep — same cadence and band shape as the chat skeleton (.cb-sk-shimmer)
+  // so the two loading states read as one system. 200%-wide band, edge-to-edge, linear easing.
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(
+      100deg,
+      transparent 35%,
+      rgba(255, 255, 255, 0.45) 50%,
+      transparent 65%
+    );
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: avatar-ph-shimmer 1.6s linear infinite;
+  }
+}
+
+@keyframes avatar-ph-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-placeholder::after {
+    animation: none;
+  }
+}
+
+// Dark theme: glass on a dark surface — dim the additive whites so the tile stays subtle.
+:host-context([data-theme='dark']) .avatar-placeholder {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.1),
+    rgba(255, 255, 255, 0.02)
+  );
+  border-color: rgba(255, 255, 255, 0.14);
+
+  &::after {
+    background-image: linear-gradient(
+      100deg,
+      transparent 35%,
+      rgba(255, 255, 255, 0.3) 50%,
+      transparent 65%
+    );
+  }
+}

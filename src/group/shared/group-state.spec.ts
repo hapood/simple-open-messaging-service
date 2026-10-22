@@ -1,0 +1,34 @@
+import { and, eq } from 'drizzle-orm';
+import { QueryBuilder } from 'drizzle-orm/pg-core';
+import { describe, expect, it } from 'vitest';
+import { profileTable } from '../../database/schema.js';
+import { groupState, groupStateFields } from './group-state.js';
+
+describe('group presentation joins', () => {
+  it('qualifies projected identity and revision when joining an exact profile', () => {
+    const query = new QueryBuilder()
+      .select({
+        group: groupStateFields,
+        displayName: profileTable.displayName,
+      })
+      .from(groupState)
+      .innerJoin(
+        profileTable,
+        and(
+          eq(profileTable.account, groupStateFields.account),
+          eq(profileTable.publisherNamespaceId, 0),
+          eq(profileTable.profileNamespaceId, groupStateFields.namespaceId),
+          eq(profileTable.profileRev, groupStateFields.profileRev),
+        ),
+      )
+      .toSQL();
+    for (const field of ['account', 'profileNamespaceId', 'profileRev']) {
+      expect(query.sql).toContain(
+        field === 'profileNamespaceId'
+          ? '"Profile"."profileNamespaceId" = "group_state"."namespaceId"'
+          : `"Profile"."${field}" = "group_state"."${field}"`,
+      );
+    }
+    expect(query.sql).toContain('"Profile"."publisherNamespaceId" = $2');
+  });
+});

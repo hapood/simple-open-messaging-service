@@ -1,0 +1,20 @@
+// An <app-icon> renders a single atomic SVG glyph. Make the host an inline-flex box
+// that sits on the optical center of adjacent text — exactly what Material's own
+// <mat-icon> (and every icon library) does by pinning `vertical-align: middle`.
+// Without it the SVG defaults to `vertical-align: baseline`, so a glyph next to a
+// label inside a Material button label (.mdc-button__label, which is plain inline
+// flow, not flex) rides the text baseline and reads as misaligned — the login
+// "Server settings" and config "Test connection" buttons.
+//
+// `vertical-align` is ignored for flex/grid items (buttons, toolbars, pills, header
+// rows already center their icons via align-items), so this only changes the
+// icon-adjacent-to-text case — it cannot disturb the many icon slots that are
+// already centered by their parent. The host has no intrinsic size: it shrinks to
+// the SVG's bound width/height (always integer px via the [style] binding), so this
+// introduces no fractional-height drift.
+:host {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}

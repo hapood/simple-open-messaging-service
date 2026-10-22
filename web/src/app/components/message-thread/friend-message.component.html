@@ -1,0 +1,629 @@
+<div>
+  <div
+    class="msg-container"
+    [class.msg-container--has-floating-composer]="
+      !blockedPeer() &&
+      !friendshipEnded() &&
+      !nativeComposerOccluded() &&
+      (!nativeComposer.supported || nativeComposerActive())
+    "
+    [class.msg-container--has-compose-quote]="
+      !nativeComposer.supported && !!composingQuote()
+    "
+    [class.msg-container--friendship-ended]="friendshipEnded()"
+    #container
+    appKbdOffset
+    appComposerWidthSource
+    [appComposerWidthSourceActive]="nativeComposerActive()"
+    (pointerdown)="dismissContextMenuOnOutside($event)"
+  >
+    @if (showCallBanner()) {
+      <app-call-banner class="chat-call-banner"></app-call-banner>
+    }
+    <app-message-header
+      #msgHeader
+      [userMsgTrd]="userMsgTrd()"
+      (searchJump)="onSearchJump($event)"
+      [style.--soms-safe-top]="showCallBanner() ? '0px' : null"
+      [style.--msg-header-h]="showCallBanner() ? '56px' : null"
+    ></app-message-header>
+
+    @if (messageContextMenu(); as menu) {
+      <div class="msg-context-backdrop" aria-hidden="true"></div>
+      <div
+        class="msg-context-menu"
+        role="menu"
+        [style.left.px]="menu.x"
+        [style.top.px]="menu.y"
+      >
+        @if (canCancelSend(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            class="msg-context-menu__item--icon"
+            (click)="cancelContextSend()"
+            [attr.title]="'transfer.cancel' | transloco"
+          >
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360Z"
+              />
+            </svg>
+            <span>{{ 'transfer.cancel' | transloco }}</span>
+          </button>
+        }
+        @if (canCopyMessage(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            class="msg-context-menu__item--icon"
+            (click)="copyContextMessage()"
+            [attr.title]="'chat.selection.copy' | transloco"
+          >
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M360-240q-33 0-56.5-23.5T280-320v-560q0-33 23.5-56.5T360-960h440q33 0 56.5 23.5T880-880v560q0 33-23.5 56.5T800-240H360Zm0-80h440v-560H360v560ZM160-80q-33 0-56.5-23.5T80-160v-560h80v560h440v80H160Z"
+              />
+            </svg>
+            <span>{{ 'chat.selection.copy' | transloco }}</span>
+          </button>
+        }
+        @if (canQuote(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            class="msg-context-menu__item--icon"
+            (click)="quoteContextMessage()"
+            [attr.title]="'chat.selection.quote' | transloco"
+          >
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M760-160v-240q0-50-35-85t-85-35H273l144 144-57 56-240-240 240-240 57 56-144 144h367q83 0 141.5 58.5T840-400v240h-80Z"
+              />
+            </svg>
+            <span>{{ 'chat.selection.quote' | transloco }}</span>
+          </button>
+        }
+        @if (canDirectForward(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            class="msg-context-menu__item--icon"
+            (click)="openContextForwardDialog()"
+            [attr.title]="'chat.selection.forward' | transloco"
+          >
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"
+              />
+            </svg>
+            <span>{{ 'chat.selection.forward' | transloco }}</span>
+          </button>
+        }
+        @if (canMultiSelect(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            class="msg-context-menu__item--icon"
+            (click)="selectContextMessage()"
+            [attr.title]="'chat.selection.multiSelect' | transloco"
+          >
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M222-120 80-262l57-57 85 85 170-170 57 58-227 226Zm0-320L80-582l57-57 85 85 170-170 57 58-227 226Zm298 200v-80h360v80H520Zm0-320v-80h360v80H520Z"
+              />
+            </svg>
+            <span>{{ 'chat.selection.multiSelect' | transloco }}</span>
+          </button>
+        }
+        @if (canWithdrawOrReport(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            class="msg-context-menu__item--icon"
+            (click)="confirmContextModeration()"
+            [attr.title]="
+              (menu.targetItem.data.isSelf ? 'chat.withdraw' : 'chat.report')
+                | transloco
+            "
+          >
+            @if (menu.targetItem.data.isSelf) {
+              <svg viewBox="0 -960 960 960" aria-hidden="true">
+                <path
+                  d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360Z"
+                />
+              </svg>
+            } @else {
+              <svg viewBox="0 -960 960 960" aria-hidden="true">
+                <path
+                  d="M480-280q17 0 28.5-11.5T520-320q0-17-11.5-28.5T480-360q-17 0-28.5 11.5T440-320q0 17 11.5 28.5T480-280Zm-40-160h80v-240h-80v240ZM330-120 120-330v-300l210-210h300l210 210v300L630-120H330Zm34-80h232l164-164v-232L596-760H364L200-596v232l164 164Z"
+                />
+              </svg>
+            }
+            <span>{{
+              (menu.targetItem.data.isSelf ? 'chat.withdraw' : 'chat.report')
+                | transloco
+            }}</span>
+          </button>
+        }
+      </div>
+    }
+
+    <!-- (transitionend) recomputes the sticky-date pill when the keyboard-lift transform settles: the
+         transform fires no scroll event, so without this the pill would keep its pre-lift label until the
+         next scroll. The handler filters to the viewport's own `transform` (ignoring bubbled item transitions). -->
+    <div
+      class="msg-viewport"
+      [class.blocked]="blockedPeer()"
+      #viewport
+      tabindex="0"
+      role="region"
+      [attr.aria-label]="'chat.messageListAria' | transloco"
+      (transitionend)="onViewportTransitionEnd($event)"
+    >
+      <!-- A plain list, deliberately not role="log": virtual-window remounts must not cause assistive
+           technology to announce historical messages as if they were newly received. -->
+      <div class="msg-content" #content role="list">
+        <div class="msg-sentinel" #topSentinel></div>
+      </div>
+      @if (initialLoadFailed()) {
+        <div class="msg-load-failed-overlay">
+          <button
+            type="button"
+            class="msg-load-retry"
+            (click)="retryInitialLoad()"
+          >
+            <span class="msg-load-retry-ring" aria-hidden="true"></span>
+            <span>{{ 'common.historyLoadFailed' | transloco }}</span>
+          </button>
+        </div>
+      } @else if (!initialLoading() && threadEmpty()) {
+        <!-- Empty-thread hero placeholder (WhatsApp/Discord style): an overlay sibling of .msg-content, so it
+             NEVER enters the kernel's measured-height model
+             (totalH()/prefix-sum stays exact). Shown only once init has settled with zero mounted items — a
+             fresh friendship / new group / cleared history — and removed the instant the first message
+             (including an optimistic send) mounts. No CTA: the composer below is the affordance. -->
+        <div class="msg-empty-overlay">
+          <app-empty-state
+            [title]="emptyTitle()"
+            [subtitle]="emptyHintKey() | transloco"
+          >
+            <span class="msg-empty-avatar">
+              <app-demand-avatar
+                [type]="emptyAvatarType()"
+                [name]="emptyTitle()"
+                [account]="emptyAvatarAccount()"
+                [domainSource]="{ type: 'namespace', namespaceId: emptyAvatarNamespaceId() }"
+                [profile]="emptyAvatarProfile()"
+              >
+              </app-demand-avatar>
+            </span>
+          </app-empty-state>
+        </div>
+      }
+    </div>
+
+    <!-- The floating date pill always tracks the topmost visible message. Search now lives inside the
+         header (no added height), so it never collides with the pill and the pill stays visible during
+         search — preserving date context while jumping between matches. -->
+    <app-chatbox-sticky-overlays #stickyOverlays />
+
+    <div class="msg-latest-layer">
+      @if (unreadBoundaryAbove()) {
+        <button
+          type="button"
+          class="msg-latest msg-unread-jump"
+          (click)="scrollToUnread()"
+          [attr.aria-label]="'chat.jumpToUnreadAria' | transloco"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="22"
+            height="22"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M6 15l6-6 6 6"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      }
+      @if (!atBottom()) {
+        <button
+          type="button"
+          class="msg-latest"
+          (click)="scrollToLatest()"
+          [attr.aria-label]="
+            newMessageCount() > 0
+              ? ('chat.newMessagesAria'
+                | transloco: { count: newMessageCount() })
+              : ('chat.scrollToLatestAria' | transloco)
+          "
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="22"
+            height="22"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M6 9l6 6 6-6"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          @if (newMessageCount() > 0) {
+            <span class="msg-latest-count" aria-hidden="true">{{
+              newMessageLabel()
+            }}</span>
+          }
+        </button>
+      }
+    </div>
+
+    @if (sendingTransfers().length || failedTransfers().length) {
+      <div #transferStack class="msg-transfer-stack" aria-live="polite">
+        @if (sendingTransfers().length) {
+          <div class="msg-transfer-line">
+            <div class="msg-transfer-actions">
+              <button
+                type="button"
+                class="msg-transfer-btn msg-transfer-btn--cancel"
+                (click)="cancelUploadingTransfers()"
+                [attr.aria-label]="'transfer.cancel' | transloco"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+            <div
+              class="msg-transfer-card msg-transfer-card--interactive"
+              role="button"
+              tabindex="0"
+              (click)="openUploadDetails()"
+              (keydown.enter)="openUploadDetails()"
+              (keydown.space)="$event.preventDefault(); openUploadDetails()"
+              [attr.aria-label]="'transfer.openDetails' | transloco"
+            >
+              <div class="msg-transfer-head">
+                <span>{{
+                  'transfer.sendingCount'
+                    | transloco: { count: sendingTransfers().length }
+                }}</span>
+                <span class="msg-transfer-count">{{ uploadCountLabel() }}</span>
+              </div>
+              <div class="msg-transfer-thumbs">
+                @for (
+                  task of displayedSendingTransfers().slice(0, 4);
+                  track task.clientMessageId
+                ) {
+                  <span
+                    class="msg-transfer-thumb"
+                    [class.msg-transfer-thumb--uploading]="
+                      task.clientMessageId === currentUploadingTransferId()
+                    "
+                  >
+                    @if (task.previewUrl) {
+                      <img [src]="task.previewUrl" alt="" />
+                    } @else {
+                      <span
+                        class="msg-transfer-file-icon msg-transfer-file-icon--{{
+                          transferCategory(task.name)
+                        }}"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.6"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          @if (transferCategory(task.name) === 'unknown') {
+                            <path
+                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+                            />
+                            <path d="M14 3v5h5" />
+                            <path
+                              d="M10 11a2 2 0 1 1 3.3 1.5c-.8.6-1.3 1-1.3 2"
+                            />
+                            <path d="M12 18h.01" />
+                          } @else {
+                            <path
+                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+                            />
+                            <path d="M14 3v5h5" />
+                          }
+                        </svg>
+                        <span>{{ transferExt(task.name) }}</span>
+                      </span>
+                    }
+                    @if (
+                      task.clientMessageId === currentUploadingTransferId()
+                    ) {
+                      <svg
+                        class="msg-transfer-spinner"
+                        viewBox="0 0 28 28"
+                        role="progressbar"
+                        [attr.aria-label]="
+                          'transfer.sendingCount' | transloco: { count: 1 }
+                        "
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                        [attr.aria-valuenow]="
+                          transferProgress(task.loaded, task.size)
+                        "
+                      >
+                        <circle
+                          class="msg-transfer-spinner-track"
+                          cx="14"
+                          cy="14"
+                          r="10"
+                        />
+                        <circle
+                          class="msg-transfer-spinner-value"
+                          cx="14"
+                          cy="14"
+                          r="10"
+                          [style.stroke-dashoffset]="
+                            62.832 *
+                            (1 - transferProgress(task.loaded, task.size) / 100)
+                          "
+                        />
+                        <text x="14" y="14">
+                          {{ transferProgress(task.loaded, task.size) }}
+                        </text>
+                      </svg>
+                    }
+                  </span>
+                }
+                @if (sendingTransfers().length > 4) {
+                  <span class="msg-transfer-thumb msg-transfer-more"
+                    >+{{ sendingTransfers().length - 4 }}</span
+                  >
+                }
+              </div>
+            </div>
+          </div>
+        }
+        @if (failedTransfers().length) {
+          <div class="msg-transfer-line">
+            <div class="msg-transfer-actions">
+              @if (retryableFailedTransfers().length) {
+                <button
+                  type="button"
+                  class="msg-transfer-btn msg-transfer-btn--retry"
+                  (click)="retryFailedTransfers()"
+                  [attr.aria-label]="'transfer.retry' | transloco"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
+                  </svg>
+                </button>
+              }
+              <button
+                type="button"
+                class="msg-transfer-btn msg-transfer-btn--cancel"
+                (click)="cancelFailedTransfers()"
+                [attr.aria-label]="'transfer.cancel' | transloco"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+            <div
+              class="msg-transfer-card msg-transfer-card--failed msg-transfer-card--interactive"
+              role="button"
+              tabindex="0"
+              (click)="openUploadDetails()"
+              (keydown.enter)="openUploadDetails()"
+              (keydown.space)="$event.preventDefault(); openUploadDetails()"
+              [attr.aria-label]="'transfer.openDetails' | transloco"
+            >
+              <div class="msg-transfer-head">
+                <span>{{
+                  'transfer.failedCount'
+                    | transloco: { count: failedTransfers().length }
+                }}</span>
+                <span aria-hidden="true">!</span>
+              </div>
+              <div class="msg-transfer-thumbs">
+                @for (
+                  task of failedTransfers().slice(0, 4);
+                  track task.clientMessageId
+                ) {
+                  <span class="msg-transfer-thumb">
+                    @if (task.previewUrl) {
+                      <img [src]="task.previewUrl" alt="" />
+                    } @else {
+                      <span
+                        class="msg-transfer-file-icon msg-transfer-file-icon--{{
+                          transferCategory(task.name)
+                        }}"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.6"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          @if (transferCategory(task.name) === 'unknown') {
+                            <path
+                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+                            />
+                            <path d="M14 3v5h5" />
+                            <path
+                              d="M10 11a2 2 0 1 1 3.3 1.5c-.8.6-1.3 1-1.3 2"
+                            />
+                            <path d="M12 18h.01" />
+                          } @else {
+                            <path
+                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+                            />
+                            <path d="M14 3v5h5" />
+                          }
+                        </svg>
+                        <span>{{ transferExt(task.name) }}</span>
+                      </span>
+                    }
+                  </span>
+                }
+                @if (failedTransfers().length > 4) {
+                  <span class="msg-transfer-thumb msg-transfer-more"
+                    >+{{ failedTransfers().length - 4 }}</span
+                  >
+                }
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+    }
+
+    @if (selectionMode()) {
+      <div
+        class="msg-selection-bar"
+        role="toolbar"
+        [attr.aria-label]="'chat.selection.toolbar' | transloco"
+      >
+        <button
+          type="button"
+          class="msg-selection-close"
+          (click)="exitSelectionMode()"
+          [attr.aria-label]="'common.cancel' | transloco"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+        <span class="msg-selection-count">{{ selectedCount() }}</span>
+        <span class="msg-selection-spacer"></span>
+        <button
+          type="button"
+          [disabled]="selectedCount() === 0"
+          (click)="copySelectedMessages()"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 8h11v11H8zM5 16V5h11" />
+          </svg>
+          <span>{{ 'chat.selection.copy' | transloco }}</span>
+        </button>
+        <button
+          type="button"
+          [disabled]="selectedCount() === 0"
+          (click)="openSelectedForwardDialog()"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M14 5l7 7-7 7v-4c-5 0-8 1-11 4 1-6 4-10 11-10z" />
+          </svg>
+          <span>{{ 'chat.selection.forward' | transloco }}</span>
+        </button>
+      </div>
+    }
+
+    @if (dissolvedGroup()) {
+      <div class="msg-blocked-banner">
+        {{ 'chat.groupDissolvedBanner' | transloco }}
+      </div>
+    } @else if (friendshipEnded()) {
+      <!-- Retained P2P history is read-only: intentionally render no composer or replacement action. -->
+    } @else if (leftGroup()) {
+      <div class="msg-blocked-banner">
+        {{ 'chat.leftGroupBanner' | transloco }}
+      </div>
+    } @else if (blockedPeer()) {
+      <div class="msg-blocked-banner">
+        {{
+          (userMsgTrd()?.type === 'GROUP'
+            ? 'chat.blockedGroupBanner'
+            : 'chat.blockedContactBanner'
+          ) | transloco
+        }}
+      </div>
+    } @else if (sendPaused()) {
+      <div class="msg-blocked-banner">
+        {{ 'chat.quotaPausedBanner' | transloco }}
+      </div>
+    } @else {
+      @if (!nativeComposer.supported) {
+        <app-chat-input
+          [class.msg-composer--selection-hidden]="selectionMode()"
+          [class.msg-composer--dialog-hidden]="
+            dialogOpen() || nativeComposerOccluded()
+          "
+          [attr.aria-hidden]="
+            selectionMode() || dialogOpen() || nativeComposerOccluded()
+          "
+          [mentionsEnabled]="userMsgTrd()?.type === 'GROUP'"
+          [memberSearch]="searchMentionMembers"
+          [threadId]="threadId()"
+          (send)="onSendIntent($event)"
+        >
+          @if (composingQuote(); as quote) {
+            <div composer-prefix class="msg-compose-quote">
+              @if (quote.imageShape === 'avatar') {
+                <app-snapshot-avatar
+                  class="msg-compose-quote-avatar"
+                  [type]="quoteAvatarType(quote.imageIdentity)"
+                  [name]="quote.imageLabel"
+                  [account]="quote.imageIdentity"
+                  [src]="quote.image"
+                />
+              } @else if (quote.image) {
+                <img
+                  class="msg-compose-quote-image"
+                  [src]="assetUrl(quote.image)"
+                  alt=""
+                />
+              }
+              <span class="msg-compose-quote-copy">
+                @if (quote.author) {
+                  <strong>{{ quote.author }}</strong>
+                }
+                <span>{{ quote.body }}</span>
+              </span>
+              <button
+                type="button"
+                class="msg-compose-quote-close"
+                (click)="cancelQuote()"
+                [attr.aria-label]="'common.cancel' | transloco"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4-6.3-6.3-6.3 6.3-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"
+                  />
+                </svg>
+              </button>
+            </div>
+          }
+        </app-chat-input>
+      }
+    }
+
+    <app-chatbox-popup [threadId]="threadId()" />
+
+    @if (pasteOpen()) {
+      <app-paste-panel
+        [items]="pasteItems()"
+        (remove)="removePasteItem($event)"
+        (morePaste)="appendPanelPaste($event)"
+        (cancel)="cancelPaste()"
+        (confirm)="confirmPaste()"
+      />
+    }
+  </div>
+</div>

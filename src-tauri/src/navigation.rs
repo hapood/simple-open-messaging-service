@@ -1,0 +1,28 @@
+//! Webview navigation and system-browser boundaries.
+//!
+//! The main webview is privileged, so documents stay on the bundled application
+//! origin. User-facing links are opened by the operating system instead.
+
+/// Return whether a top-level document navigation may stay in the privileged webview.
+///
+/// Android routes this callback through
+/// `RustWebViewClient.shouldOverrideUrlLoading`, so the same policy applies on
+/// desktop and mobile.
+pub(crate) fn is_allowed(url: &reqwest::Url) -> bool {
+    let scheme = url.scheme();
+    let host = url.host_str().unwrap_or("");
+    scheme == "tauri" || scheme == "about" || host == "tauri.localhost"
+}
+
+/// Attempt to open a link-message target with the operating system's URL handler.
+#[tauri::command]
+pub(crate) async fn open_external_url(url: String, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+#[path = "tests/navigation_tests.rs"]
+mod tests;

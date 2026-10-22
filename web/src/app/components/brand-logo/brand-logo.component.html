@@ -1,0 +1,13 @@
+<div class="brand-logo">
+  <!-- The mark is the single shared source: web/public/logo.svg (same file the
+       favicon / PWA / Tauri icons are generated from). Referenced by absolute
+       path because <base href="/"> is root (same convention as group-watermark). -->
+  <img class="bl-mark" src="/logo.svg" [style.width.px]="size()" [style.height.px]="size()"
+    alt="SOMS logo" />
+  @if (wordmark()) {
+    <div class="bl-word">SOMS</div>
+  }
+  @if (tagline()) {
+    <div class="bl-tag">{{ tagline() }}</div>
+  }
+</div>

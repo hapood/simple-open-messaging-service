@@ -1,0 +1,116 @@
+<div class="msg-header">
+  @if (mode() === 'compact') {
+    <button
+      class="back-btn"
+      type="button"
+      (click)="goBack()"
+      [attr.aria-label]="
+        'chat.backUnreadAria' | transloco: { count: otherUnreadCount() }
+      "
+    >
+      <app-icon
+        [type]="AppIconType.BACK"
+        [style]="{ width: '28px', height: '28px' }"
+      ></app-icon>
+      @if (otherUnreadCount() > 0) {
+        <span class="back-unread" aria-hidden="true">{{
+          otherUnreadLabel()
+        }}</span>
+      }
+    </button>
+  }
+  @if (searchOpen()) {
+    <!-- Search takes over the header: it replaces the title row in-place (the header keeps its fixed
+         --msg-header-h height), so the viewport never resizes and the floating date pill keeps working
+         unchanged — no --sd-top adjustment, no collision. -->
+    <app-message-search
+      [threadId]="threadId()"
+      (jumpTo)="searchJump.emit($event)"
+      (close)="closeSearch()"
+    />
+  } @else {
+    <div class="msg-title">
+      <span class="msg-title-line">
+        <span class="msg-title-text" [title]="title()">{{ title() }}</span>
+        @if (groupMemberCount(); as count) {
+          <span
+            class="group-member-count"
+            [attr.aria-label]="'group.members' | transloco: { count }"
+            >({{ count }})</span
+          >
+        }
+        @if (announcement()?.text) {
+          <button
+            type="button"
+            class="announcement-button"
+            [class.unread]="announcementUnread()"
+            (click)="openAnnouncement()"
+            [attr.aria-label]="
+              (announcementUnread()
+                ? 'group.announcementUnread'
+                : 'group.announcement'
+              ) | transloco
+            "
+            [title]="'group.announcement' | transloco"
+          >
+            <app-icon
+              [type]="AppIconType.MEGAPHONE"
+              [style]="{ width: '18px', height: '18px' }"
+            />
+          </button>
+        }
+        <span class="thread-indicators">
+          @if (userMsgTrd()?.blocked) {
+            <app-icon
+              [type]="AppIconType.BLOCK"
+              [style]="{ width: '16px', height: '16px' }"
+              [attr.aria-label]="'threadList.blocked' | transloco"
+              [title]="'threadList.blocked' | transloco"
+            ></app-icon>
+          } @else if (userMsgTrd()?.muted) {
+            <app-icon
+              [type]="AppIconType.MUTE"
+              [style]="{ width: '16px', height: '16px' }"
+              [attr.aria-label]="'threadList.muted' | transloco"
+              [title]="'threadList.muted' | transloco"
+            ></app-icon>
+          }
+        </span>
+      </span>
+      @if (subtitle()) {
+        <span class="msg-subtitle" [title]="subtitle()">{{ subtitle() }}</span>
+      }
+    </div>
+    <div class="msg-actions">
+      @if (canCall()) {
+        <button
+          class="icon-btn"
+          type="button"
+          [disabled]="callActive()"
+          (click)="placeCall()"
+          [attr.aria-label]="'chat.callAria' | transloco"
+        >
+          <app-icon
+            [type]="AppIconType.PHONE"
+            [style]="{ width: '22px', height: '22px' }"
+          ></app-icon>
+        </button>
+      }
+      <button
+        class="icon-btn"
+        (click)="toggleMenu()"
+        [class.active]="moreExpanded()"
+        [attr.aria-expanded]="moreExpanded()"
+        [attr.aria-label]="'nav.moreAria' | transloco"
+      >
+        <app-icon
+          [type]="AppIconType.MORE"
+          [style]="{ width: '24px', height: '24px' }"
+        ></app-icon>
+        @if (hasUnreadJoinRequests()) {
+          <span class="more-badge" aria-hidden="true"></span>
+        }
+      </button>
+    </div>
+  }
+</div>

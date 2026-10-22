@@ -1,0 +1,17 @@
+<section class="contact-picker">
+  <header>{{ 'contactCard.choose' | transloco }}</header>
+  <div class="contact-picker-list">
+    @for (item of items(); track item.threadId) {
+      <button type="button" (click)="choose(item)">
+        <app-demand-avatar
+          [type]="avatarType(item)"
+          [name]="displayName(item)"
+          [account]="avatarAccount(item)"
+          [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
+          [profile]="avatarProfile(item)"
+        />
+        <span>{{ displayName(item) }}</span>
+      </button>
+    }
+  </div>
+</section>

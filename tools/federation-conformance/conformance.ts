@@ -1,0 +1,574 @@
+import { readdir, readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
+import { createHash } from 'node:crypto';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import Ajv2020Module, {
+  type AnySchema,
+  type ErrorObject,
+  type ValidateFunction,
+} from 'ajv/dist/2020.js';
+const {
+  values: { spec, schema, file },
+} = parseArgs({
+  options: {
+    spec: { type: 'string' },
+    schema: { type: 'string' },
+    file: { type: 'string' },
+  },
+  strict: true,
+  allowPositionals: false,
+});
+if (!spec) throw new Error('--spec must name the protocol release directory');
+const releaseSpecDir = resolve(spec);
+const normativeSpecDir = join(releaseSpecDir, 'v1');
+const specDir = join(normativeSpecDir, 'schema');
+const protocolVersion = 1;
+const federationApiPrefix = 's2s/v1';
+
+interface Vector {
+  name: string;
+  schema: string;
+  semantic?: string;
+  value?: unknown;
+  values?: unknown[];
+}
+
+// Ajv publishes this subpath as CommonJS while also exposing a typed `default` class. Under
+// NodeNext the outer default import is the CJS namespace, so select its typed inner default.
+const Ajv2020 = Ajv2020Module.default;
+type Ajv2020Instance = InstanceType<typeof Ajv2020>;
+
+function printErrors(errors: ErrorObject[] | null | undefined): string {
+  return (errors ?? [])
+    .map((error) => `${error.instancePath || '/'} ${error.message ?? ''}`)
+    .join('; ');
+}
+
+async function json(path: string): Promise<unknown> {
+  return JSON.parse(await readFile(path, 'utf8')) as unknown;
+}
+
+async function buildAjv(): Promise<Ajv2020Instance> {
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  const names = (await readdir(specDir)).filter((name) =>
+    name.endsWith('.schema.json'),
+  );
+  for (const name of names) {
+    ajv.addSchema((await json(join(specDir, name))) as AnySchema);
+  }
+  return ajv;
+}
+
+async function validateReleaseMetadata(): Promise<void> {
+  const release = (await json(join(releaseSpecDir, 'RELEASE.json'))) as {
+    protocol?: string;
+    abbreviation?: string;
+    version?: string;
+    major?: number;
+    status?: string;
+    reviewStage?: string;
+    language?: string;
+    authoritativeLanguage?: string;
+    normativeEntryPoint?: string;
+    licenseFile?: string;
+    conformance?: string;
+  };
+  const expected = {
+    protocol: 'Simple Open Messaging Federation Protocol',
+    abbreviation: 'SOMFP',
+    major: protocolVersion,
+    status: 'draft',
+    reviewStage: 'final-review',
+    language: 'en',
+    authoritativeLanguage: 'en',
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (release[key as keyof typeof release] !== value) {
+      throw new Error(`RELEASE.json has unexpected ${key}`);
+    }
+  }
+  if (
+    typeof release.version !== 'string' ||
+    !new RegExp(
+      `^${protocolVersion}\\.\\d+\\.\\d+-draft\\.(0|[1-9]\\d*)$`,
+    ).test(release.version)
+  ) {
+    throw new Error(
+      'RELEASE.json version must be a draft SemVer for the wire major',
+    );
+  }
+  for (const path of [
+    release.normativeEntryPoint,
+    release.licenseFile,
+    release.conformance,
+  ]) {
+    if (!path) throw new Error('RELEASE.json is missing a required path');
+    await readFile(join(releaseSpecDir, path));
+  }
+}
+
+function validateStrictVersions(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const versions = (value as { protocolVersions?: unknown }).protocolVersions;
+  return (
+    Array.isArray(versions) &&
+    versions.includes(protocolVersion) &&
+    versions.every(
+      (version, index) =>
+        Number.isSafeInteger(version) &&
+        version >= 1 &&
+        (index === 0 || version > versions[index - 1]),
+    )
+  );
+}
+
+function semanticValid(schema: string, value: unknown): boolean {
+  if (schema === 'urn:somfp:v1:message-provenance#/$defs/request') {
+    const request = value as {
+      queries: Array<{
+        thread: { account: string; peerAccount?: string };
+        seq: number;
+      }>;
+    };
+    const coordinates = new Set<string>();
+    return request.queries.every(({ thread, seq }) => {
+      const key = JSON.stringify([
+        thread.account,
+        thread.peerAccount ?? null,
+        seq,
+      ]);
+      if (coordinates.has(key)) return false;
+      coordinates.add(key);
+      return true;
+    });
+  }
+  if (schema === 'urn:somfp:v1:discovery') {
+    if (!validateStrictVersions(value)) return false;
+    const doc = value as {
+      roots: Array<{ ed25519: string; notBefore: number; notAfter: number }>;
+      keys: Array<{
+        keyId: string;
+        ed25519: string;
+        root: string;
+        notBefore: number;
+        notAfter: number;
+        authorizationSignature: string;
+      }>;
+    };
+    const roots = new Map(
+      doc.roots.map((root) => [
+        root.ed25519,
+        Buffer.from(root.ed25519, 'base64'),
+      ]),
+    );
+    const ids = new Set<string>();
+    return doc.keys.every((key) => {
+      const root = roots.get(key.root);
+      if (!root || ids.has(key.keyId) || key.notBefore >= key.notAfter)
+        return false;
+      ids.add(key.keyId);
+      const statement = JSON.stringify({
+        keyId: key.keyId,
+        ed25519: key.ed25519,
+        root: key.root,
+        usage: 'somfp-http-message-signature',
+        notBefore: key.notBefore,
+        notAfter: key.notAfter,
+      });
+      return ed25519.verify(
+        Buffer.from(key.authorizationSignature, 'base64'),
+        Buffer.from(statement),
+        root,
+      );
+    });
+  }
+  if (schema === 'urn:somfp:v1:state-feed') {
+    const page = value as {
+      hasMore?: boolean;
+      scannedThrough?: string;
+      stateFeedEndId?: string;
+      items?: Array<{ body?: Record<string, unknown> }>;
+    };
+    if (!page.hasMore && page.scannedThrough !== page.stateFeedEndId)
+      return false;
+    return (page.items ?? []).every(({ body = {} }) => {
+      if (body.status === 'REQUESTED')
+        return (
+          typeof body.requestedAt === 'number' &&
+          typeof body.expiresAt === 'number' &&
+          body.expiresAt > body.requestedAt &&
+          body.expiresAt - body.requestedAt <= 7 * 24 * 60 * 60 * 1000
+        );
+      if (body.status === 'ACCEPTED')
+        return typeof body.requestedAt === 'number' && body.expiresAt === null;
+      if (body.status === 'REVOKED') return body.expiresAt === null;
+      return true;
+    });
+  }
+  if (schema === 'urn:somfp:v1:message-query#/$defs/message') {
+    const message = value as {
+      originSeq: number | null;
+      originCreatedAt: number | null;
+      contentType: string;
+      content: string;
+    };
+    return (
+      ((message.originSeq === null && message.originCreatedAt === null) ||
+        (Number.isSafeInteger(message.originSeq) &&
+          message.originSeq! > 0 &&
+          Number.isSafeInteger(message.originCreatedAt) &&
+          message.originCreatedAt! >= 0)) &&
+      parsedContent(message.contentType, message.content) !== null
+    );
+  }
+  if (schema === 'urn:somfp:v1:message-query') {
+    const page = value as {
+      scannedThrough?: number;
+      messages?: Array<{
+        seq: number;
+        createdAt: number;
+        originSeq: number | null;
+        originCreatedAt: number | null;
+        contentType: string;
+        content: string;
+      }>;
+    };
+    if (page.scannedThrough === undefined) return false;
+    let previous: number | undefined;
+    return (page.messages ?? []).every((message) => {
+      const ordered = previous === undefined || message.seq > previous;
+      previous = message.seq;
+      return (
+        ordered &&
+        message.seq <= page.scannedThrough! &&
+        semanticValid('urn:somfp:v1:message-query#/$defs/message', message)
+      );
+    });
+  }
+  if (schema === 'urn:somfp:v1:message-tombstone-query') {
+    const page = value as {
+      scannedThrough?: number;
+      tombstones?: Array<{ deletionSeq: number }>;
+    };
+    if (page.scannedThrough === undefined) return false;
+    let previous: number | undefined;
+    return (page.tombstones ?? []).every((tombstone) => {
+      const ordered =
+        previous === undefined || tombstone.deletionSeq > previous;
+      previous = tombstone.deletionSeq;
+      return ordered && tombstone.deletionSeq <= page.scannedThrough!;
+    });
+  }
+  if (schema === 'urn:somfp:v1:group-meta') {
+    const page = value as {
+      mode?: string;
+      scannedThrough?: string;
+      groupMetaFeedEndId?: string;
+      items?: Array<{
+        feedId?: string;
+        operation?: string;
+      }>;
+    };
+    if (
+      page.scannedThrough === undefined ||
+      page.groupMetaFeedEndId === undefined ||
+      BigInt(page.scannedThrough) > BigInt(page.groupMetaFeedEndId)
+    )
+      return false;
+    let previousFeedId = 0n;
+    let fullProfileItems = 0;
+    let fullAnnouncementItems = 0;
+    for (const member of page.items ?? []) {
+      const feedId = BigInt(member.feedId!);
+      if (member.operation === 'GROUP_PROFILE') fullProfileItems += 1;
+      if (member.operation === 'GROUP_ANNOUNCEMENT') fullAnnouncementItems += 1;
+      if (
+        feedId <= previousFeedId ||
+        feedId > BigInt(page.scannedThrough) ||
+        (page.mode === 'full' &&
+          member.operation !== 'MEMBER_UPSERT' &&
+          member.operation !== 'GROUP_PROFILE' &&
+          member.operation !== 'GROUP_ANNOUNCEMENT')
+      )
+        return false;
+      previousFeedId = feedId;
+    }
+    // A bounded page can omit projections compacted above its upper bound.
+    return (
+      page.mode !== 'full' ||
+      (fullProfileItems <= 1 && fullAnnouncementItems <= 1)
+    );
+  }
+  if (schema === 'urn:somfp:v1:error') {
+    const error = value as {
+      code?: number;
+      data?: {
+        resumeAfter?: string | number;
+        resumeBefore?: string | number;
+      };
+    };
+    if (error.code !== 50019) return true;
+    return (
+      error.data?.resumeAfter !== undefined &&
+      error.data.resumeBefore !== undefined &&
+      typeof error.data.resumeAfter === typeof error.data.resumeBefore &&
+      BigInt(error.data.resumeBefore) > BigInt(error.data.resumeAfter)
+    );
+  }
+  return true;
+}
+
+let contentValidator: ValidateFunction | undefined;
+function parsedContent(contentType: string, encoded: string): unknown | null {
+  try {
+    const content = JSON.parse(encoded) as unknown;
+    return contentValidator?.({ contentType, content }) ? content : null;
+  } catch {
+    return null;
+  }
+}
+
+async function validateVectors(ajv: Ajv2020Instance): Promise<void> {
+  for (const [file, expected] of [
+    ['valid.json', true],
+    ['invalid.json', false],
+  ] as const) {
+    const document = (await json(join(specDir, 'vectors', file))) as {
+      vectors: Vector[];
+    };
+    for (const vector of document.vectors) {
+      const validate = ajv.getSchema(vector.schema);
+      if (!validate)
+        throw new Error(`${vector.name}: unknown schema ${vector.schema}`);
+      const values = vector.values ?? [vector.value];
+      for (const value of values) {
+        const shapeValid = validate(value);
+        const semantic = shapeValid && semanticValid(vector.schema, value);
+        if (semantic !== expected) {
+          throw new Error(
+            `${file} / ${vector.name}: expected ${expected}, shape=${shapeValid}, semantic=${semantic}; ${printErrors(validate.errors)}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
+  const manifest = (await json(join(specDir, 'http-manifest.json'))) as {
+    majorVersion: number;
+    s2sPrefix: string;
+    operations: Array<{
+      method: string;
+      path: string;
+      requestSchema?: string;
+      responseSchema?: string;
+      parameterSchema?: string;
+      secondaryContentSchema?: string;
+    }>;
+    errorSchema: string;
+  };
+  if (
+    manifest.majorVersion !== protocolVersion ||
+    manifest.s2sPrefix !== `/${federationApiPrefix}`
+  ) {
+    throw new Error('HTTP manifest version/prefix differs from code constants');
+  }
+  const expected = new Set([
+    'GET /.well-known/somfp',
+    'POST /s2s/v1/recognize',
+    'GET /s2s/v1/health',
+    'POST /s2s/v1/verify',
+    'POST /s2s/v1/feed-heads',
+    'GET /s2s/v1/state-feed',
+    'GET /s2s/v1/profile-namespace-feed',
+    'GET /s2s/v1/profile-namespaces/:nsid',
+    'GET /s2s/v1/group-meta',
+    'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
+    'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
+    'GET /s2s/v1/messages',
+    'GET /s2s/v1/message-tombstones',
+    'POST /s2s/v1/message-provenance',
+    'POST /s2s/v1/call',
+    'GET /s2s/v1/accounts/:account',
+    'GET /s2s/v1/media/:digest',
+    'GET /s2s/v1/forward-bundles/:bundleId',
+  ]);
+  const actual = new Set(
+    manifest.operations.map(
+      (operation) => `${operation.method} ${operation.path}`,
+    ),
+  );
+  if (
+    manifest.operations.length !== actual.size ||
+    expected.size !== actual.size ||
+    [...expected].some((item) => !actual.has(item))
+  ) {
+    throw new Error(
+      'HTTP manifest does not contain the exact Federation v1 surface',
+    );
+  }
+  const schemaIds = [
+    manifest.errorSchema,
+    ...manifest.operations.flatMap((operation) => [
+      operation.requestSchema,
+      operation.responseSchema,
+      operation.parameterSchema,
+      operation.secondaryContentSchema,
+    ]),
+  ].filter((id): id is string => !!id);
+  for (const id of schemaIds) {
+    if (!ajv.getSchema(id))
+      throw new Error(`HTTP manifest references unknown schema ${id}`);
+  }
+}
+
+async function validateErrorRegistry(): Promise<void> {
+  const markdown = await readFile(join(normativeSpecDir, 'errors.md'), 'utf8');
+  const heading = '## Stable code registry';
+  const start = markdown.indexOf(heading);
+  if (start < 0)
+    throw new Error('errors.md is missing the stable code registry');
+  const section = markdown.slice(start + heading.length).split('\n## ')[0];
+  const documented = new Map<number, string>();
+  for (const match of section.matchAll(
+    /^\|\s*(\d+)\s*\|\s*`([A-Z][A-Z0-9_]*)`\s*\|/gm,
+  )) {
+    const code = Number(match[1]);
+    if (documented.has(code))
+      throw new Error(`errors.md repeats stable code ${code}`);
+    documented.set(code, match[2]);
+  }
+  if (documented.size === 0)
+    throw new Error('errors.md stable code registry is empty');
+
+  const errorSchema = (await json(join(specDir, 'error.schema.json'))) as {
+    properties: { code: { enum: number[] } };
+  };
+  const schemaCodes = errorSchema.properties.code.enum;
+  const documentedCodes = [...documented.keys()];
+
+  const sameCodes = (left: number[], right: number[]) =>
+    left.length === right.length && left.every((code, i) => code === right[i]);
+  if (!sameCodes(documentedCodes, schemaCodes)) {
+    throw new Error(
+      `Federation v1 error code drift: errors.md=${documentedCodes.join(',')} schema=${schemaCodes.join(',')}`,
+    );
+  }
+}
+
+async function validateSignatureVector(
+  file: string,
+  ajv: Ajv2020Instance,
+): Promise<void> {
+  const vector = (await json(join(specDir, 'vectors', file))) as {
+    privateKeyBase64: string;
+    publicKeyBase64: string;
+    request: {
+      method: string;
+      path: string;
+      query: string;
+      authority: string;
+      body: string;
+    };
+    created: number;
+    expires: number;
+    keyId: string;
+    headers: Record<string, string>;
+    signatureBase: string;
+  };
+  const manifest = (await json(join(specDir, 'http-manifest.json'))) as {
+    operations: Array<{ method: string; path: string; requestSchema?: string }>;
+  };
+  const operation = manifest.operations.find(
+    (entry) =>
+      entry.method === vector.request.method &&
+      entry.path === vector.request.path,
+  );
+  const validateBody = operation?.requestSchema
+    ? ajv.getSchema(operation.requestSchema)
+    : undefined;
+  if (!validateBody || !validateBody(JSON.parse(vector.request.body))) {
+    throw new Error(`${file}: signed operation body is not conformant`);
+  }
+  const root = vector.headers['s2s-root-key'];
+  if (
+    !root ||
+    Buffer.from(root, 'base64').length !== 32 ||
+    Buffer.from(root, 'base64').toString('base64') !== root
+  ) {
+    throw new Error(`${file}: missing or malformed S2S-Root-Key`);
+  }
+  const digest = `sha-256=:${createHash('sha256').update(vector.request.body).digest('base64')}:`;
+  const privateKey = Buffer.from(vector.privateKeyBase64, 'base64');
+  const signature = Buffer.from(
+    ed25519.sign(new TextEncoder().encode(vector.signatureBase), privateKey),
+  );
+  const encodedSignature = `sig1=:${signature.toString('base64')}:`;
+  const expectedDate = new Date(vector.created * 1000).toUTCString();
+  const expectedInput = `sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=${vector.created};expires=${vector.expires};keyid="${vector.keyId}";alg="ed25519"`;
+  const expectedBase = [
+    `"@method": ${vector.request.method}`,
+    `"@path": ${vector.request.path}`,
+    `"@query": ${vector.request.query}`,
+    `"@authority": ${vector.request.authority}`,
+    `"date": ${expectedDate}`,
+    `"content-digest": ${digest}`,
+    `"@signature-params": ${expectedInput.slice('sig1='.length)}`,
+  ].join('\n');
+  if (
+    vector.signatureBase !== expectedBase ||
+    vector.expires !== vector.created + 300 ||
+    digest !== vector.headers['content-digest'] ||
+    expectedDate !== vector.headers.date ||
+    expectedInput !== vector.headers['signature-input'] ||
+    encodedSignature !== vector.headers.signature ||
+    !ed25519.verify(
+      signature,
+      new TextEncoder().encode(vector.signatureBase),
+      Buffer.from(vector.publicKeyBase64, 'base64'),
+    )
+  ) {
+    throw new Error(
+      `${file}: HTTP Message Signature vector does not reproduce exactly`,
+    );
+  }
+}
+
+async function main(): Promise<void> {
+  await validateReleaseMetadata();
+  const ajv = await buildAjv();
+  contentValidator = ajv.getSchema('urn:somfp:v1:message-content');
+  if (!contentValidator)
+    throw new Error('message content schema was not registered');
+  if (
+    (schema !== undefined) !== (file !== undefined) ||
+    schema === '' ||
+    file === ''
+  ) {
+    throw new Error(
+      '--schema and --file must be supplied together with nonempty values',
+    );
+  }
+  if (schema && file) {
+    const validate = ajv.getSchema(schema);
+    if (!validate) throw new Error(`unknown schema ${schema}`);
+    const value = await json(resolve(file));
+    if (!validate(value) || !semanticValid(schema, value)) {
+      throw new Error(
+        `input is not conformant: ${printErrors(validate.errors)}`,
+      );
+    }
+    console.log(`conformant: ${file} (${schema})`);
+    return;
+  }
+  await validateManifest(ajv);
+  await validateErrorRegistry();
+  await validateVectors(ajv);
+  await validateSignatureVector('http-message-signature.json', ajv);
+  await validateSignatureVector('call-http-message-signature.json', ajv);
+  console.log('SOMFP v1 conformance package: PASS');
+}
+
+await main();

@@ -1,0 +1,47 @@
+<div class="ap" [class.ap--failed]="failed()">
+  <button type="button" class="ap-btn" [class.ap-btn--playing]="playing()" (click)="toggle()"
+          [attr.aria-label]="playing() ? 'Pause' : 'Play'" [disabled]="inert()">
+    @if (playing()) {
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="6" y="5" width="4" height="14" rx="1" />
+        <rect x="14" y="5" width="4" height="14" rx="1" />
+      </svg>
+    } @else {
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M8 5v14l11-7z" />
+      </svg>
+    }
+  </button>
+  <div class="ap-body">
+    <button type="button" class="ap-wave" (click)="seek($event)"
+            [disabled]="inert()" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+            [attr.aria-valuenow]="progressPct()" aria-label="Seek voice message">
+      <span class="ap-wave-fill" [style.width.%]="progressPct()"></span>
+    </button>
+    <div class="ap-meta">
+      <span class="ap-dur">{{ durLabel() }}</span>
+      <span class="ap-meta-end">
+        @if (showUnplayed() && !played()) { <span class="ap-unplayed" aria-label="Unplayed"></span> }
+        <span>{{ time() }}</span>
+      </span>
+    </div>
+  </div>
+  <button type="button" class="ap-rate" (click)="cycleRate()"
+          [attr.aria-label]="'Playback speed ' + rate() + ' times'">{{ rate() }}×</button>
+  @if (showTransfer()) {
+    <span class="ap-transfer" [class.ap-transfer--indeterminate]="transferIndeterminate()"
+          [class.ap-transfer--download]="status() === MEDIA_STATUS.DOWNLOADING"
+          role="progressbar"
+          [attr.aria-label]="status() === MEDIA_STATUS.DOWNLOADING ? 'Audio download progress' : 'Audio upload progress'"
+          [attr.aria-valuenow]="transferProgress()">
+      <span [style.width.%]="transferProgress() ?? 32"></span>
+    </span>
+  }
+</div>
+<!-- No controls attr — the button + progress bar are the UI. preload="none" (NOT metadata): every visible
+     voice cell mounts one of these, and "metadata" would fire a network request per clip just to mount. The
+     duration label + progress denominator come from the `duration` INPUT (the message content), so nothing
+     needs the element's metadata until the user taps play (el.play() loads it then). -->
+<audio #audio class="ap-el" [src]="src()" preload="none"
+       (timeupdate)="onTimeUpdate()" (play)="onPlay()" (pause)="onPause()"
+       (ended)="onEnded()" (error)="onError()"></audio>

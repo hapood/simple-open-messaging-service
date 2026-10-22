@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:discovery",
+  "title": "GET /.well-known/somfp response for a v1-capable node",
+  "type": "object",
+  "required": ["protocolVersions", "roots", "keys"],
+  "properties": {
+    "software": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "protocolVersions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "contains": { "const": 1 },
+      "items": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+    },
+    "roots": {
+      "$ref": "#/$defs/rootGroup"
+    },
+    "keys": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "keyId",
+          "ed25519",
+          "root",
+          "notBefore",
+          "notAfter",
+          "authorizationSignature"
+        ],
+        "properties": {
+          "keyId": { "type": "string", "minLength": 3 },
+          "ed25519": {
+            "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+          },
+          "root": {
+            "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+          },
+          "notBefore": {
+            "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+          },
+          "notAfter": {
+            "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+          },
+          "authorizationSignature": {
+            "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Signature"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "rootKeyEntry": {
+      "type": "object",
+      "required": ["ed25519", "notBefore", "notAfter"],
+      "properties": {
+        "ed25519": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+        },
+        "notBefore": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        },
+        "notAfter": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rootGroup": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/rootKeyEntry" }
+    }
+  }
+}

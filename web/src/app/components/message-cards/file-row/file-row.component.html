@@ -1,0 +1,154 @@
+@if (showDate()) {
+  <app-msg-date-row [ms]="data().createdAtMs" />
+}
+
+<div
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+>
+  <span class="msg-highlight-layer" aria-hidden="true"></span>
+  @if (showAvatar() && side() === 'other') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+
+  @if (isFailed() || isSending()) {
+    <div class="msg-failed-actions">
+      @if (isFailed()) {
+        <button
+          type="button"
+          class="msg-action--retry"
+          (click)="retry.emit(data().msgId)"
+          [attr.aria-label]="'transfer.retry' | transloco"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
+          </svg>
+        </button>
+      }
+      <button
+        type="button"
+        class="msg-action--cancel"
+        (click)="cancel.emit(data().msgId)"
+        [attr.aria-label]="'transfer.cancel' | transloco"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
+    </div>
+  }
+  <div class="msg-col msg-{{ side() }}">
+    @if (showName()) {
+      <div class="msg-name msg-{{ side() }}">
+        {{ sender.name() || ('common.unknown' | transloco) }}
+      </div>
+    }
+    @if (data().quote; as quote) {
+      <app-msg-quote-block
+        [quote]="quote"
+        [isSelf]="data().isSelf"
+        (quoteJump)="quoteJump.emit($event)"
+      />
+    }
+    <div
+      class="msg-bubble msg-card msg-{{ side() }} msg-{{ pos() }} msg-file"
+      [class.msg-sending]="isSending()"
+    >
+      <div
+        class="msg-file-row"
+        role="button"
+        tabindex="0"
+        [attr.aria-label]="'chat.openFileAria' | transloco"
+        (click)="openFile.emit()"
+        (keydown.enter)="openFile.emit()"
+        (keydown.space)="$event.preventDefault(); openFile.emit()"
+      >
+        <span class="msg-file-ico msg-file-ico--{{ category() }}">
+          <svg
+            class="msg-file-svg"
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            @if (category() === 'unknown') {
+              <path
+                d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+              />
+              <path d="M14 3v5h5" />
+              <path d="M10 11a2 2 0 1 1 3.3 1.5c-.8.6-1.3 1-1.3 2" />
+              <path d="M12 18h.01" />
+            } @else {
+              <path
+                d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+              />
+              <path d="M14 3v5h5" />
+            }
+          </svg>
+          <span class="msg-file-ext">{{ ext() }}</span>
+        </span>
+        <span class="msg-file-meta">
+          <span class="msg-file-name" [title]="file()?.name ?? ''">{{
+            file()?.name || ('chat.fileFallback' | transloco)
+          }}</span>
+        </span>
+        <span class="msg-file-dl" aria-hidden="true">
+          @switch (data().mediaStatus ?? MEDIA_STATUS.READY) {
+            @case (MEDIA_STATUS.PENDING) {
+              <mat-icon>schedule</mat-icon>
+            }
+            @case (MEDIA_STATUS.DOWNLOADING) {
+              <mat-progress-spinner mode="indeterminate" [diameter]="20" />
+            }
+            @case (MEDIA_STATUS.FAILED) {
+              <mat-icon class="msg-file-dl-failed">cloud_off</mat-icon>
+            }
+            @default {
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            }
+          }
+        </span>
+      </div>
+
+      @if (statusTick()) {
+        @if (!isFailed()) {
+          <span
+            class="msg-status msg-status--{{ data().status }}"
+            aria-hidden="true"
+          ></span>
+        }
+      }
+      <div class="msg-file-footer msg-card-meta msg-{{ side() }}">
+        <span class="msg-file-size">{{ sizeText() }}</span>
+        <span class="msg-file-time">{{ data().time }}</span>
+      </div>
+    </div>
+  </div>
+
+  @if (showAvatar() && side() === 'self') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+</div>

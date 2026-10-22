@@ -1,0 +1,71 @@
+:host {
+  display: block;
+  min-width: 0;
+  max-width: 420px;
+}
+:host(.quote-self) {
+  margin-left: auto;
+}
+.msg-quote {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 1px;
+  width: 100%;
+  min-width: 0;
+  margin: 0 0 7px;
+  padding: 7px 9px 8px;
+  box-sizing: border-box;
+  border: 0;
+  border-left: 3px solid var(--bubble-accent, var(--chat-accent-incoming));
+  border-radius: 4px;
+  background: var(--bubble-subtle, var(--chat-subtle-incoming));
+  color: var(--bubble-text, var(--chat-text-incoming));
+  font-size: 12px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+:host(.quote-self) .msg-quote {
+  border-left-color: var(--bubble-accent, var(--chat-accent-outgoing));
+  background: var(--bubble-subtle, var(--chat-subtle-outgoing));
+}
+.msg-quote:not(button) {
+  cursor: default;
+}
+.msg-quote-copy {
+  display: grid;
+  grid-column: 1 / -1;
+  min-width: 0;
+  gap: 1px;
+}
+.msg-quote--visual .msg-quote-copy {
+  grid-column: 2;
+}
+.msg-quote-copy strong,
+.msg-quote-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 16px;
+}
+.msg-quote-copy strong {
+  font-weight: 500;
+}
+.msg-quote-copy > span {
+  min-width: 0;
+  color: var(--bubble-muted, var(--chat-meta-incoming));
+}
+.msg-quote-visual {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.msg-quote-avatar {
+  display: block;
+  border-radius: 50%;
+}
+.msg-quote-placeholder {
+  background: var(--app-active);
+}

@@ -1,0 +1,126 @@
+# soms-base — the rarely-rebuilt base layer: node + the xcaddy-compiled Caddy (76 buildable DNS-01
+# providers). The app image (Dockerfile) builds FROM this, so a normal code change does NOT re-run xcaddy
+# (the slow, network-heavy Go compile). Rebuild only when Caddy, a DNS provider, or the node base bumps —
+# scripts/build-image.sh builds this first; BuildKit cache makes it a near-instant no-op when unchanged.
+#   docker build -t soms-base:latest -f Dockerfile.base .
+# Network (mirror/proxy): see scripts/build-image.sh (NODE_IMAGE, GOPROXY, GOSUMDB).
+
+ARG NODE_IMAGE=node:24-bookworm-slim
+# Override via CADDY_BUILDER_IMAGE if Docker Hub is unreachable (same escape hatch as NODE_IMAGE,
+# any reachable registry mirror serving the same image):
+#   CADDY_BUILDER_IMAGE=<registry-mirror>/library/caddy:2.11-builder ./scripts/build-base.sh
+ARG CADDY_BUILDER_IMAGE=caddy:2.11-builder
+
+# ---- xcaddy: compile Caddy with the buildable DNS-01 providers baked in ----
+# An operator can then sign certs via their OWN DNS provider with ZERO rebuild — set CADDY_DNS_DIRECTIVE
+# (+ provider credentials) in .env. Caddy resolves {env.NAME} references at runtime.
+#
+# The list is the non-archived caddy-dns modules MINUS those that can't build today. Excluded:
+#   - archived: google-domains, lego-deprecated
+#   - not a provider: template
+#   - no resolvable version (0 git tags → 404 @latest on both goproxy.cn and proxy.golang.org, so xcaddy's
+#     `go get` dies "no matching versions"): autodns, nicrudons, totaluptime
+#   - stuck on the pre-1.0 libdns API: libdns v1.0 renamed the Record fields, and these never migrated,
+#     so they fail to compile against the libdns v1.x that Caddy + the migrated providers require (old and
+#     new API can't coexist in one binary): civo, ddnss, dinahosting, dnsexit, dnsmadeeasy, dnspod,
+#     dreamhost, exoscale, hexonet, hosttech, katapult, leaseweb, namedotcom, openstack-designate, vercel.
+#     Notably dnspod (Tencent DNSPod, unmaintained at v0.0.3) — Tencent users use `tencentcloud`/`edgeone`.
+# Re-add a line if a provider publishes a release / migrates to libdns v1. That leaves 76 buildable
+# providers today (Cloudflare + all China providers except dnspod + the other major ones).
+# Pin the Caddy patch explicitly: floating "latest" resolution broke when caddy-dns/unifi v1.0.6
+# started requiring caddy v2.11.7 while xcaddy resolved an older patch (xcaddy fails the build
+# rather than shipping a different core than requested). Bump this pin together with the builder
+# image tag when moving to a new minor line.
+FROM ${CADDY_BUILDER_IMAGE} AS caddy-build
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+# Go verifies every module against the checksum DB (GOSUMDB), default sum.golang.org. When GOPROXY is
+# goproxy.cn, sumdb lookups route through goproxy.cn's /sumdb/ proxy — which intermittently 504s under
+# the load of 76 providers' worth of transitive deps, failing the build mid-way on a single timeout.
+# Point GOSUMDB at Google's dedicated mirror instead: identical data, globally reachable, no flaky
+# intermediary. This is goproxy.cn's own recommended pairing. Overridable via --build-arg GOSUMDB=... .
+ARG GOSUMDB=sum.golang.google.cn
+ENV GOSUMDB=${GOSUMDB}
+RUN xcaddy build v2.11.7 \
+    --with github.com/caddy-dns/acmedns \
+    --with github.com/caddy-dns/acmeproxy \
+    --with github.com/caddy-dns/alidns \
+    --with github.com/caddy-dns/all-inkl \
+    --with github.com/caddy-dns/arvancloud \
+    --with github.com/caddy-dns/azure \
+    --with github.com/caddy-dns/bluecat \
+    --with github.com/caddy-dns/bunny \
+    --with github.com/caddy-dns/cloudflare \
+    --with github.com/caddy-dns/cloudns \
+    --with github.com/caddy-dns/conoha \
+    --with github.com/caddy-dns/desec \
+    --with github.com/caddy-dns/digitalocean \
+    --with github.com/caddy-dns/directadmin \
+    --with github.com/caddy-dns/dnsimple \
+    --with github.com/caddy-dns/dode \
+    --with github.com/caddy-dns/domainnameshop \
+    --with github.com/caddy-dns/duckdns \
+    --with github.com/caddy-dns/dynu \
+    --with github.com/caddy-dns/dynv6 \
+    --with github.com/caddy-dns/easydns \
+    --with github.com/caddy-dns/edgeone \
+    --with github.com/caddy-dns/gandi \
+    --with github.com/caddy-dns/gcore \
+    --with github.com/caddy-dns/glesys \
+    --with github.com/caddy-dns/godaddy \
+    --with github.com/caddy-dns/googleclouddns \
+    --with github.com/caddy-dns/he \
+    --with github.com/caddy-dns/hetzner \
+    --with github.com/caddy-dns/httpnet \
+    --with github.com/caddy-dns/huaweicloud \
+    --with github.com/caddy-dns/infomaniak \
+    --with github.com/caddy-dns/inwx \
+    --with github.com/caddy-dns/ionos \
+    --with github.com/caddy-dns/linode \
+    --with github.com/caddy-dns/loopia \
+    --with github.com/caddy-dns/luadns \
+    --with github.com/caddy-dns/mailinabox \
+    --with github.com/caddy-dns/metaname \
+    --with github.com/caddy-dns/mijnhost \
+    --with github.com/caddy-dns/mythicbeasts \
+    --with github.com/caddy-dns/namecheap \
+    --with github.com/caddy-dns/namesilo \
+    --with github.com/caddy-dns/nanelo \
+    --with github.com/caddy-dns/neoserv \
+    --with github.com/caddy-dns/netcup \
+    --with github.com/caddy-dns/netlify \
+    --with github.com/caddy-dns/netnod \
+    --with github.com/caddy-dns/nfsn \
+    --with github.com/caddy-dns/njalla \
+    --with github.com/caddy-dns/oraclecloud \
+    --with github.com/caddy-dns/ovh \
+    --with github.com/caddy-dns/parspack \
+    --with github.com/caddy-dns/porkbun \
+    --with github.com/caddy-dns/powerdns \
+    --with github.com/caddy-dns/pph \
+    --with github.com/caddy-dns/regery \
+    --with github.com/caddy-dns/regfish \
+    --with github.com/caddy-dns/rfc2136 \
+    --with github.com/caddy-dns/route53 \
+    --with github.com/caddy-dns/scaleway \
+    --with github.com/caddy-dns/selectel \
+    --with github.com/caddy-dns/servercow \
+    --with github.com/caddy-dns/simplydotcom \
+    --with github.com/caddy-dns/spaceship \
+    --with github.com/caddy-dns/tecnocratica \
+    --with github.com/caddy-dns/tencentcloud \
+    --with github.com/caddy-dns/thelittlehost \
+    --with github.com/caddy-dns/timeweb \
+    --with github.com/caddy-dns/transip \
+    --with github.com/caddy-dns/unifi \
+    --with github.com/caddy-dns/volcengine \
+    --with github.com/caddy-dns/vultr \
+    --with github.com/caddy-dns/websupport \
+    --with github.com/caddy-dns/wedos \
+    --with github.com/caddy-dns/westcn
+
+# ---- soms-base = node + the caddy binary (the app image adds the compiled app + scripts) ----
+FROM ${NODE_IMAGE}
+LABEL org.opencontainers.image.title="soms-base"
+COPY --from=caddy-build /usr/bin/caddy /usr/bin/caddy
+RUN chmod +x /usr/bin/caddy

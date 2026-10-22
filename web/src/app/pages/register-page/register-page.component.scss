@@ -1,0 +1,22 @@
+@use "../../assets/utils.scss" as *;
+
+.auth-shell {
+  @include auth-shell;
+}
+
+@include auth-compact-brand;
+
+// Tauri-only entry to the backend-URL dialog — mirrors the login page's action. Material button styles own
+// the look; here we only seat + center it
+// below the register form. Integer px per the CSS rule.
+.server-link {
+  align-self: center;
+  margin-top: 12px;
+}
+
+// See login-page.component.scss: <app-icon matButtonIcon> seats the gear in the button's leading-icon
+// slot (a flex child, geometrically centered), and Material's icon-spacing rule — which keys off
+// .mat-icon — must be mirrored for our custom host.
+.server-link app-icon {
+  margin-right: var(--mat-button-text-icon-spacing, 8px);
+}

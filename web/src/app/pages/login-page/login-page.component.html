@@ -1,0 +1,138 @@
+<div class="auth-shell" appAuthViewport>
+  <app-auth-brand aria-hidden="true"></app-auth-brand>
+  <main class="form-pane">
+    <app-auth-toolbar></app-auth-toolbar>
+
+    @if (!ready()) {
+      <!-- Splash-continuous loading: brand + Material spinner. Shown both while /config is in flight
+        (bridging the index.html app-splash so the window never paints a blank or partial frame) AND while
+        the page is the wrong destination and about to redirect — i.e. password is disabled and the backend
+        is fine, so the constructor bounces to otp/qr. Critically, NOTHING else renders here (no form, no
+        origin-banner, no method-switcher) until `ready()`, so under APP_OTP_AND_QR the login content can't
+        flash for a frame on the way out. Mirrors the app-splash (brand mark + 40px spinner) for one
+        continuous loading feel; the toolbar stays available so theme/language are reachable immediately. -->
+      <div class="auth-loading" role="status" aria-live="polite">
+        <app-brand-logo class="form-brand" [size]="80" />
+        <mat-progress-spinner mode="indeterminate" [diameter]="40" />
+        @if (isTauri()) {
+          <!-- Cancel the connection wait and return to the editable server dialog. The in-flight request
+            is generation-guarded, so a later server choice cannot publish stale config. -->
+          <button
+            mat-button
+            class="server-link app-secondary-action"
+            type="button"
+            (click)="cancelConnection()"
+          >
+            {{ 'common.cancel' | transloco }}
+          </button>
+        }
+      </div>
+    } @else {
+      <!-- Compact brand shown only where the side <app-auth-brand> panel is hidden (below the split
+        breakpoint), so every auth state keeps brand identity on the narrow Tauri shell / Android WebView.
+        Desktop owns the full panel; showing both there would be redundant. -->
+      <app-brand-logo class="form-brand" [size]="80" />
+      @if (isTauri() && configuredOrigins().length) {
+        <div class="origin-list" role="status">
+          @for (server of configuredOrigins(); track server.origin) {
+            <div
+              class="origin-banner"
+              [class.insecure]="server.insecure"
+              [class.muted]="configFailed()"
+              tabindex="0"
+            >
+              <app-icon
+                [type]="server.icon"
+                [style]="{ width: '16px', height: '16px' }"
+              />
+              <span class="origin-kind">{{ server.labelKey | transloco }}</span>
+              <span class="origin-host">{{ server.host }}</span>
+              <span class="origin-scheme">{{ server.scheme }}</span>
+            </div>
+          }
+        </div>
+      }
+      @if (configFailed()) {
+        <div class="login-error" role="alert">
+          <app-icon
+            class="login-error__icon"
+            [type]="AppIcon.REPORT"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+          <div class="login-error__body">
+            <p class="login-error__msg">
+              {{
+                (connectionCancelled()
+                  ? 'auth.connectionCancelled'
+                  : 'auth.serverUnreachable'
+                ) | transloco
+              }}
+            </p>
+            <div class="login-error__actions">
+              <button
+                mat-flat-button
+                color="primary"
+                type="button"
+                (click)="retry()"
+              >
+                <app-icon
+                  matButtonIcon
+                  [type]="AppIcon.REFRESH"
+                  [style]="{ width: '18px', height: '18px' }"
+                />
+                {{ 'common.retry' | transloco }}
+              </button>
+              <button
+                mat-stroked-button
+                type="button"
+                (click)="openServerConfigRoute()"
+              >
+                <app-icon
+                  matButtonIcon
+                  [type]="AppIcon.SETTINGS"
+                  [style]="{ width: '18px', height: '18px' }"
+                />
+                {{ 'auth.reconfigure' | transloco }}
+              </button>
+            </div>
+          </div>
+        </div>
+      }
+      @if (showPassword()) {
+        <app-login (onSuccess)="onSuccess($event)"></app-login>
+      }
+
+      <!-- Footer row below the form: login-method switchers on the LEFT (as .link-btn text links, matching
+        the OTP/QR pages), server-config link on the RIGHT (Tauri only). Shares the ready() gate with the
+        form; always mounted when shown so its reserved min-height holds the line even before /config
+        resolves the switchers — no init-time height jump. -->
+      <div class="auth-footer">
+        <div class="auth-footer__methods">
+          @if (canQr() || canOtp()) {
+            <app-auth-method-menu
+              [qr]="canQr()"
+              [otp]="canOtp()"
+              (qrSelected)="jumpToQr()"
+              (otpSelected)="jumpToOtp()"
+            />
+          }
+        </div>
+        @if (isTauri() && !configFailed()) {
+          <button
+            mat-button
+            class="server-link"
+            type="button"
+            (click)="reopenServerConfig()"
+          >
+            <app-icon
+              matButtonIcon
+              [type]="AppIcon.SETTINGS"
+              [style]="{ width: '18px', height: '18px' }"
+            />
+            {{ 'serverConfig.entry' | transloco }}
+          </button>
+        }
+      </div>
+    }
+  </main>
+</div>

@@ -1,0 +1,59 @@
+<form (ngSubmit)="register()" class="register-card">
+  <div class="progress-slot">
+    @if(isReging()){
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
+  </div>
+
+  <h1 class="register-title">{{ 'auth.registerTitle' | transloco }}</h1>
+  <p class="register-sub">{{ 'auth.registerSub' | transloco }}</p>
+
+  <div class="input-line">
+    <mat-form-field class="field" appearance="fill">
+      <mat-label>{{ 'auth.account' | transloco }}</mat-label>
+      <input matInput name="account" autocomplete="username" autofocus
+        [ngModel]="account()" (ngModelChange)="onAccountInput($event)">
+    </mat-form-field>
+    <div class="hint">{{accountHint()}}</div>
+  </div>
+
+  <div class="input-line">
+    <mat-form-field class="field" appearance="fill">
+      <mat-label>{{ 'auth.displayName' | transloco }}</mat-label>
+      <input matInput name="name" autocomplete="nickname"
+        [ngModel]="name()" (ngModelChange)="onNameInput($event)">
+    </mat-form-field>
+    <div class="hint">{{nameHint()}}</div>
+  </div>
+
+  <div class="input-line">
+    <mat-form-field class="field" appearance="fill">
+      <mat-label>{{ 'auth.password' | transloco }}</mat-label>
+      <input matInput name="password" autocomplete="new-password"
+        [type]="showPassword() ? 'text' : 'password'"
+        [ngModel]="password()" (ngModelChange)="onPasswordInput($event)">
+      <button mat-icon-button matSuffix type="button" (click)="togglePassword()"
+        [attr.aria-label]="(showPassword() ? 'auth.hidePassword' : 'auth.showPassword') | transloco">
+        <app-icon [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE" [style]="{ width: '20px', height: '20px' }" />
+      </button>
+    </mat-form-field>
+  </div>
+
+  <div class="input-line">
+    <mat-form-field class="field" appearance="fill">
+      <mat-label>{{ 'auth.passwordAgain' | transloco }}</mat-label>
+      <input matInput name="password2" autocomplete="new-password"
+        [type]="showPassword() ? 'text' : 'password'"
+        [ngModel]="password2()" (ngModelChange)="onPassword2Input($event)">
+    </mat-form-field>
+    <div class="hint">{{passwordHint()}}</div>
+  </div>
+
+  <div class="error" role="alert">{{resp()}}</div>
+
+  <button mat-flat-button color="primary" type="submit" class="submit-btn" [disabled]="isRegBtnDisabled()">{{ 'auth.signUp' | transloco }}</button>
+
+  <div class="alt-action">
+    {{ 'auth.registerAltQuestion' | transloco }}
+    <button type="button" class="link-btn" (click)="jumpToLogin()">{{ 'auth.loginBtn' | transloco }}</button>
+  </div>
+</form>

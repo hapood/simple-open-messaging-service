@@ -1,0 +1,30 @@
+<main class="pnf">
+  <!-- A closed padlock = the universal "access denied" symbol. Decorative, so aria-hidden
+       keeps it out of the a11y tree; the 403 code + "Access denied" heading carry the meaning. -->
+  <div class="pnf-art" aria-hidden="true">
+    <svg class="pnf-lock" width="120" height="124" viewBox="0 0 120 124" fill="none">
+      <defs>
+        <linearGradient id="padlockGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ef4444" />
+          <stop offset="1" stop-color="#dc2626" />
+        </linearGradient>
+      </defs>
+      <path d="M38 62V48a22 22 0 0 1 44 0v14"
+        stroke="url(#padlockGrad)" stroke-width="13" stroke-linecap="round" />
+      <rect x="24" y="60" width="72" height="56" rx="16" fill="url(#padlockGrad)" />
+      <circle cx="60" cy="84" r="7" fill="#ffffff" />
+      <path d="M55.5 88h9l-2.5 16h-4z" fill="#ffffff" />
+    </svg>
+  </div>
+
+  <p class="pnf-code">{{ 'forbidden.code' | transloco }}</p>
+  <h1 class="pnf-title">{{ 'forbidden.title' | transloco }}</h1>
+  <p class="pnf-desc">{{ 'forbidden.desc' | transloco }}</p>
+
+  <div class="pnf-actions">
+    <button type="button" class="pnf-btn pnf-btn--primary" (click)="goHome()">{{ 'forbidden.back' | transloco }}</button>
+    @if (canGoBack()) {
+      <button type="button" class="pnf-btn pnf-btn--ghost" (click)="goBack()">{{ 'forbidden.goBack' | transloco }}</button>
+    }
+  </div>
+</main>

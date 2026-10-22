@@ -1,0 +1,43 @@
+{
+	admin off
+}
+
+(built_edge) {
+	handle /push/*.js {
+		root * ./web/dist/web/browser
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	@backend path /api/* /uploads/* /s2s/* /.well-known/*
+	handle @backend {
+		reverse_proxy 127.0.0.1:{args.0}
+	}
+
+	@admin_root path /admin
+	redir @admin_root /admin/
+
+	handle_path /admin/* {
+		root * ./admin-web/dist
+		try_files {path} /index.html
+		file_server
+	}
+
+	handle {
+		root * ./web/dist/web/browser
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+http://:3101 {
+	import built_edge 3201
+}
+
+http://:3102 {
+	import built_edge 3202
+}
+
+http://:3103 {
+	import built_edge 3203
+}

@@ -1,0 +1,102 @@
+:host {
+  display: block;
+  width: 280px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.forward-card {
+  display: grid;
+  gap: 4px;
+  width: 280px;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 10px 0;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--im-bubble-other);
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  color: var(--im-bubble-text);
+}
+
+.forward-card__title {
+  margin: 0 0 4px;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forward-card__message {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 18px;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.forward-card__name {
+  flex: 0 0 auto;
+  max-width: 42%;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forward-card__summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0.72;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forward-card__more {
+  font-size: 12px;
+  line-height: 16px;
+  opacity: 0.6;
+}
+
+.forward-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 18px;
+  margin: 6px -10px 0;
+  padding: 2px 8px;
+  box-sizing: border-box;
+  border-radius: 0 0 16px 16px;
+  background: rgba(127, 127, 127, 0.16);
+  color: inherit;
+  font-size: 11px;
+  line-height: 14px;
+  opacity: 0.7;
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span:last-child {
+    flex: 0 0 auto;
+  }
+}
+
+.forward-card--compact {
+  gap: 4px;
+  padding: 8px 10px 0;
+
+  .forward-card__meta {
+    margin: 6px -10px 0;
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "protocol": "Simple Open Messaging Federation Protocol",
+  "abbreviation": "SOMFP",
+  "version": "1.0.0-draft.0",
+  "major": 1,
+  "status": "draft",
+  "reviewStage": "final-review",
+  "language": "en",
+  "authoritativeLanguage": "en",
+  "normativeEntryPoint": "v1/README.md",
+  "license": "MIT",
+  "licenseFile": "LICENSE",
+  "conformance": "v1/CONFORMANCE.md"
+}

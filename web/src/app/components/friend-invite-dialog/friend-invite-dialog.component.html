@@ -1,0 +1,61 @@
+<div class="invite-dialog">
+  <div class="dialog-body">
+    <div class="user-summary">
+      <div class="avatar">
+        <app-snapshot-avatar
+          [type]="user().isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER"
+          [name]="user().name"
+          [account]="user().account"
+          [src]="user().avatar"
+          [domainSource]="{ type: 'namespace', namespaceId: user().namespaceId }"
+        ></app-snapshot-avatar>
+      </div>
+      <div class="user-meta">
+        <div class="user-name">{{ displayUserName(user()) }}</div>
+        <div class="user-account">
+          {{ user().bio || ('friend.noBio' | transloco) }}
+        </div>
+      </div>
+    </div>
+
+    <label class="note-field">
+      <span>
+        {{
+          (user().isGroup ? 'friend.joinReasonLabel' : 'friend.reasonLabel')
+            | transloco
+        }}
+      </span>
+      <textarea
+        [ngModel]="note()"
+        (ngModelChange)="note.set($event)"
+        maxlength="255"
+        rows="4"
+        [placeholder]="
+          (user().isGroup ? 'friend.joinReasonPh' : 'friend.reasonPh')
+            | transloco
+        "
+        [disabled]="sending()"
+      ></textarea>
+      <span class="counter">{{ note().length }}/255</span>
+    </label>
+
+    @if (errorText()) {
+      <div class="error-text" role="alert">{{ errorText() }}</div>
+    }
+  </div>
+
+  <app-dialog-action-footer
+    [cancelLabel]="'common.cancel' | transloco"
+    [primaryLabel]="
+      (sending()
+        ? 'friend.sending'
+        : user().isGroup
+          ? 'friend.sendJoinRequest'
+          : 'friend.sendRequest'
+      ) | transloco
+    "
+    [primaryDisabled]="sending()"
+    (cancelled)="cancel()"
+    (confirmed)="send()"
+  />
+</div>

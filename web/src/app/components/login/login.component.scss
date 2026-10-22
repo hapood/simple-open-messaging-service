@@ -1,0 +1,89 @@
+@use "../../assets/utils.scss" as *;
+
+// Password form card — shared auth-card surface (mirrors the OTP / QR cards so all methods read as one).
+.login-card {
+  @include auth-card;
+}
+
+// Android shell only: the auth viewport measures the focused input against the native IME top and
+// publishes the minimum lift needed to retain a comfortable 24px gap (capped by the directive at 80px).
+:host-context(.auth-native-keyboard-open) .login-card {
+  transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
+  transition: transform 160ms ease-out;
+}
+
+.progress-slot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  border-radius: var(--app-radius-lg) var(--app-radius-lg) 0 0;
+}
+
+.login-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.login-sub {
+  margin: 6px 0 22px;
+  font-size: 14px;
+  color: var(--app-text-muted);
+}
+
+.field {
+  width: 100%;
+}
+
+.keep-cb {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+// One-line explanation under the desktop "Trust this device" toggle — the user is opting into a
+// permanent session, so the implication is spelled out (integer-px metrics per the project rule).
+.trust-hint {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+}
+
+.error-slot {
+  min-height: 44px;
+  padding: 8px 2px 0;
+  box-sizing: border-box;
+}
+
+.error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--mat-form-field-error-text-color);
+}
+
+.submit-btn {
+  width: 100%;
+  height: 44px;
+  font-size: 15px;
+}
+
+.alt-action {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--app-text-muted);
+}
+
+.link-btn {
+  @include auth-link;
+  // Gap after the inline "No account?" question text in .alt-action — the in-card register CTA sits
+  // inline with preceding text, unlike the footer switchers which stand alone.
+  margin-left: 4px;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}

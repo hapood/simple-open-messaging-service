@@ -1,0 +1,133 @@
+# SOMS NAS deployment. Edit this file, then run: docker compose up -d
+# This file contains secrets: keep it private and outside the Git checkout.
+# Compose interpolates dollar signs even in quoted YAML values. Write $$ for a literal $.
+
+# Database credentials are defined once and shared by PostgreSQL, migrations, and the app.
+# Set a strong password before the first start: edit the PGPASSWORD line below directly (the file
+# stays the single source of truth) or export SOMS_DB_PASSWORD. An unedited file refuses to start
+# instead of initializing a passwordless database. Ambient PGPASSWORD values from the host shell
+# are deliberately NOT read (SOMS_DB_PASSWORD is the only injection channel). Changing the
+# password here does not rotate an existing role.
+x-database-environment: &database-environment
+  PGHOST: postgres
+  PGPORT: '5432'
+  PGDATABASE: &database-name soms
+  PGUSER: &database-user timescale
+  PGPASSWORD: &database-password "${SOMS_DB_PASSWORD:?set a strong database password (edit the PGPASSWORD line or export SOMS_DB_PASSWORD)}"
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: *database-name
+      POSTGRES_USER: *database-user
+      POSTGRES_PASSWORD: *database-password
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # Expand the container's environment, not the Compose host's environment.
+      test:
+        ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
+    environment:
+      <<: *database-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']
+    restart: 'no'
+
+  app:
+    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
+    environment:
+      <<: *database-environment
+      # Federation identity, used in handles such as @alice@example.com.
+      SOMS_DOMAIN: example.com
+      # Public browser/native-client entry point; may equal SOMS_DOMAIN.
+      SOMS_WEB_DOMAIN: soms.example.com
+      # Optional real LAN hostname for networks without hairpin NAT. Remove if unnecessary.
+      # All configured domains must share a registrable DNS zone.
+      SOMS_LAN_DOMAIN: soms-lan.example.com
+      # Keep single-port and the published port 7667 for this NAS profile.
+      SOMS_TLS_MODE: single-port
+      # Only private-range source IPs may access /admin and /api/v1/admin.
+      SOMS_ADMIN_ACCESS: lan
+
+      # DNS-01 certificate provider. Keep native {env.NAME} references so Caddy reads
+      # credentials at runtime without writing them into its generated Caddyfile.
+      # Cloudflare token permissions: Zone:Zone:Read + Zone:DNS:Edit for the managed zone.
+      CADDY_DNS_DIRECTIVE: 'dns cloudflare {env.CLOUDFLARE_API_TOKEN}'
+      CLOUDFLARE_API_TOKEN: ''
+      # Other bundled providers (replace the directive above and add their variables here):
+      # AliDNS:
+      # CADDY_DNS_DIRECTIVE: |-
+      #   dns alidns {
+      #     access_key_id {env.ALIYUN_ACCESS_KEY_ID}
+      #     access_key_secret {env.ALIYUN_ACCESS_KEY_SECRET}
+      #   }
+      # ALIYUN_ACCESS_KEY_ID: ''
+      # ALIYUN_ACCESS_KEY_SECRET: ''
+      # Tencent Cloud:
+      # CADDY_DNS_DIRECTIVE: |-
+      #   dns tencentcloud {
+      #     secret_id {env.TENCENTCLOUD_SECRET_ID}
+      #     secret_key {env.TENCENTCLOUD_SECRET_KEY}
+      #   }
+      # TENCENTCLOUD_SECRET_ID: ''
+      # TENCENTCLOUD_SECRET_KEY: ''
+      # Route 53 reads credentials directly from its environment:
+      # CADDY_DNS_DIRECTIVE: 'dns route53'
+      # AWS_REGION: ''
+      # AWS_ACCESS_KEY_ID: ''
+      # AWS_SECRET_ACCESS_KEY: ''
+      # Provider syntax: https://github.com/caddy-dns/<provider>
+      # dnspod is not bundled; use tencentcloud or edgeone instead.
+
+      # Creates the bootstrap admin account/role when absent; does not reset its password.
+      # An empty value skips administrator creation.
+      ADMIN_BOOTSTRAP_PASSWORD: ''
+      # Budget the connection-pool maximum across all app replicas.
+      DATABASE_POOL_MAX: '10'
+      LOG_LEVEL: warn
+      # Measurements require debug logging; 0 disables them, (0, 1] samples operations.
+      EXECUTION_MEASUREMENT_SAMPLE_RATE: '0'
+      # Caddy and the API share this container; make that proxy boundary explicit.
+      TRUSTED_PROXY_CIDRS: '127.0.0.0/8,::1/128'
+
+      # Optional WebRTC connectivity. TURN is external infrastructure, not part of this stack.
+      # Set both TURN URLs and the REST secret, or neither. The secret must match the TURN server.
+      # SOMS_STUN_URLS: 'stun:turn.example.com:3478'
+      # SOMS_TURN_URLS: 'turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp'
+      # SOMS_TURN_REST_SECRET: ''
+      # SOMS_TURN_TTL: '3600'
+
+      # Optional Firebase downloads go in ./data using fixed names:
+      # firebase-service-account.json (private) and google-services.json (public client config).
+      # Leave SOMS_CONFIG_DIR and SOMS_DATA_DIR unset so all state stays in the mounted directory.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    init: true
+    stop_grace_period: 60s
+    volumes:
+      # Includes generated keys, Caddy state, and optional operator-provided Firebase files.
+      - ./data:/app/data
+    ports:
+      - target: 7667
+        published: '7667'
+        protocol: tcp
+      - target: 7667
+        published: '7667'
+        protocol: udp
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

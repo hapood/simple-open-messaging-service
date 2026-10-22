@@ -1,0 +1,109 @@
+// Shared primitives for the Settings surface — the root category list AND each category sub-page render
+// the same M3 "rounded surface card wrapping a mat-list" structure, so the rules live
+// here once and each settings component `@use`s it (Angular keeps the `@include`d classes scoped per
+// component; the `--app-*` tokens are global). All vertical metrics are integer px (project rule).
+
+/// Emits the group/card/label/value rules into the including component's scope.
+@mixin settings-groups {
+  .settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .settings-card {
+    background: var(--app-surface);
+    border-radius: var(--app-radius-lg);
+    overflow: hidden;
+    --mdc-outlined-card-outline-color: var(--app-border);
+  }
+
+  // Let the Material list fill the card; collapse the list's own outer padding so rows run edge-to-edge
+  // and the card border draws the outline. The MDC list-item surface inherits from the Material theme.
+  .settings-card .mat-mdc-list {
+    padding: 0;
+  }
+
+  // Trailing value sits in the MDC list-item __end slot; keep values muted and non-wrapping.
+  .meta {
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--app-text-muted);
+    text-align: right;
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hint {
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--app-text-muted);
+  }
+
+  // Accent hint — the "FCM active, FGS not needed" nudge under the foreground-service toggle.
+  .hint-accent {
+    color: var(--app-brand);
+  }
+
+  // Status pill — semantic-color readout for a row (FCM available, connection state, health). The base
+  // is muted; modifiers tint it. active=green (success), warn=amber (in-progress / connecting), error=red
+  // (failure). All three draw on theme-aware tokens with dark overrides, so they stay legible in dark mode.
+  .status-pill {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: var(--app-radius-pill);
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--app-text-muted);
+    background: var(--app-bg-muted);
+    border: 1px solid var(--app-border);
+    &.active {
+      color: var(--app-success);
+      background: var(--app-success-soft);
+      border-color: transparent;
+    }
+    &.warn {
+      color: var(--app-warning);
+      // No dedicated -soft token for warning; derive a subtle wash over the surface (adapts to dark).
+      background: color-mix(
+        in srgb,
+        var(--app-warning) 14%,
+        var(--app-surface)
+      );
+      border-color: transparent;
+    }
+    &.error {
+      color: var(--app-danger);
+      background: var(--app-danger-soft);
+      border-color: transparent;
+    }
+
+    // Trusted device — a permanent (revocation-only) session whose token lives in OS secure storage.
+    // Brand-tinted so a trusted device reads as privileged, distinct from a status readout.
+    &.trusted {
+      color: var(--app-brand);
+      background: var(--app-brand-soft);
+      border-color: transparent;
+    }
+  }
+
+  // Trailing cluster when a row has MORE than one trailing control (a status pill + an action button).
+  // Wrapped in a single <div matListItemMeta> so the whole group projects into the MDC list-item __end
+  // slot (multiple bare children would land in the primary content slot — the crooked-toggle bug).
+  .row-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  // Compact the Material text button in an action row so the trailing cluster stays tidy.
+  .check-btn {
+    --mat-button-text-label-text-color: var(--app-action-primary);
+    --mat-button-text-state-layer-color: var(--app-action-primary);
+    --mdc-text-button-label-text-size: 13px;
+    min-height: 32px;
+  }
+}

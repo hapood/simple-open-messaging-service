@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:evidence-profile",
+  "title": "Federation v1 exact evidence profile response data",
+  "type": "object",
+  "required": ["account", "displayName", "bio", "avatar"],
+  "properties": {
+    "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 31 },
+    "bio": { "type": "string", "maxLength": 120 },
+    "avatar": {
+      "oneOf": [
+        { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

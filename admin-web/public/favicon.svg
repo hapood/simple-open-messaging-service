@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS Admin">
+  <title>SOMS Admin</title>
+  <!-- Transparent Admin mark. The violet bubble distinguishes the console
+       from the warm-white consumer mark; enlarged artwork stays legible in
+       the browser tab and compact navigation. -->
+  <g transform="translate(54 54) scale(1.14) translate(-54 -54)">
+    <path
+      fill="#7c3aed"
+      d="M54 17 C76 17 93 32 93 52 C93 72 76 86 55 86 C48 86 41 85 35 82 L25 87 L28 76 C20 68 15 61 15 52 C15 32 32 17 54 17 Z"
+    />
+    <g transform="translate(1 -2)">
+      <path
+        d="M34 68 V40 L54 57 L74 40 V68"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="8"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <g fill="#ffffff">
+        <circle cx="34" cy="40" r="6.5" />
+        <circle cx="34" cy="68" r="6.5" />
+        <circle cx="74" cy="40" r="6.5" />
+        <circle cx="74" cy="68" r="6.5" />
+      </g>
+      <circle cx="54" cy="57" r="7" fill="#f04b3a" />
+    </g>
+  </g>
+</svg>

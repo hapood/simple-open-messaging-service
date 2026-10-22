@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:profile",
+  "title": "GET /s2s/v1/accounts/:account response data",
+  "type": "object",
+  "required": [
+    "account",
+    "displayName",
+    "bio",
+    "avatar",
+    "profileRev",
+    "proof"
+  ],
+  "properties": {
+    "account": {
+      "$ref": "urn:somfp:v1:common#/$defs/account"
+    },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 31 },
+    "bio": { "type": "string", "maxLength": 120 },
+    "avatar": {
+      "oneOf": [
+        { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
+        { "type": "null" }
+      ]
+    },
+    "profileRev": {
+      "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+    },
+    "proof": {
+      "$ref": "urn:somfp:v1:common#/$defs/base64ChallengeAnswer"
+    }
+  },
+  "additionalProperties": false
+}

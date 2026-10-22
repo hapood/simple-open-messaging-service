@@ -1,0 +1,69 @@
+// Absolutely positioned in the top-right of the auth shell's `.form-pane`
+// (the pane is made `position: relative` by the `auth-shell` mixin). A theme
+// cycle button + a language <mat-select> dropdown; the form card remains
+// centered below. All height-bearing values are integer px per the project's
+// integer-pixel rule.
+:host {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 1;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: var(--app-radius-md);
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+
+  &:hover {
+    background: var(--app-hover);
+    color: var(--app-text);
+  }
+  &:active { background: var(--app-active); }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 2px;
+  }
+}
+
+// Language <mat-select>. The trigger shows only the active language's native
+// name, wearing the same surface affordance as the theme toggle. A bare
+// <mat-select> carries no underline; the option panel renders in the global CDK
+// overlay, so it is never clipped by this host's corner.
+.lang-select {
+  display: inline-flex;
+  align-items: center;
+
+  ::ng-deep .mat-mdc-select-trigger {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 10px;
+    border-radius: var(--app-radius-md);
+    background: transparent;
+    color: var(--app-text-muted);
+    transition: background-color .15s ease, color .15s ease;
+  }
+  &:hover ::ng-deep .mat-mdc-select-trigger {
+    background: var(--app-hover);
+    color: var(--app-text);
+  }
+  &:active ::ng-deep .mat-mdc-select-trigger { background: var(--app-active); }
+}
+
+.lang-label {
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+}

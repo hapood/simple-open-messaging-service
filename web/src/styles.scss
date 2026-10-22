@@ -1,0 +1,841 @@
+@use '@angular/material' as mat;
+@use 'sass:map';
+@use 'photoswipe/dist/photoswipe.css';
+@use './app/assets/tokens';
+@use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
+@use './app/lib/chat-box/cb-skeleton'; // optional playground shimmer preview; globally available but not rendered by production MessageThread
+
+// Shared sticky-avatar handoff: retain the natural head's 40px layout slot while the viewport-level copy paints.
+// The marker lives on that exact avatar so a later group from the same sender remains visible.
+.msg-avatar.cb-sticky-avatar-source {
+  visibility: hidden;
+}
+
+// createMsgCbElement appends the pre-mounted tail handoff after Angular has created the row view. Because
+// that DOM node does not carry the row component's generated `_ngcontent-*` attribute, this contract must
+// be global (like the source marker above), not inside the encapsulated `_row-base.scss` partial.
+.msg-row > .msg-avatar.msg-avatar-tail {
+  position: absolute;
+  box-sizing: border-box;
+  bottom: 0;
+  left: var(--chat-timeline-inset-inline);
+  display: block;
+  width: 40px;
+  height: 40px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.msg-row.msg-self > .msg-avatar.msg-avatar-tail {
+  right: var(--chat-timeline-inset-inline);
+  left: auto;
+}
+
+.msg-row > .msg-avatar.msg-avatar-tail.cb-sticky-avatar-tail-visible {
+  visibility: visible;
+}
+
+// The unread boundary decorates the first real unread message; it is deliberately not a virtual source
+// item, so message cursors, sender grouping, albums, and previous-message avatar decisions stay untouched.
+.cb-unread-entry {
+  display: block;
+}
+
+.cb-unread-divider {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px max(16px, calc((100% - 800px) / 2 + 16px)) 8px;
+  // Keep enough brand tint to remain scannable without laying a saturated accent across the wallpaper.
+  // Mixing with semantic text/border tokens lets the divider settle naturally in both light and dark themes.
+  color: color-mix(in srgb, var(--app-text-muted) 68%, var(--app-brand));
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+
+  &::before,
+  &::after {
+    content: '';
+    flex: 1 1 auto;
+    height: 1px;
+    background: color-mix(in srgb, var(--app-border) 78%, var(--app-brand));
+  }
+
+  > span {
+    flex: 0 0 auto;
+    padding: 2px 10px;
+    border: 1px solid
+      color-mix(in srgb, var(--app-border) 82%, var(--app-brand));
+    border-radius: var(--app-radius-pill);
+    background: color-mix(
+      in srgb,
+      var(--app-surface-elevated) 90%,
+      var(--app-brand)
+    );
+  }
+}
+
+/* === M3 foundation. Semantic overrides below keep product chrome graphite. ===
+ * Material still needs a complete tonal palette even though product controls consume the
+ * semantic --app-* roles below. Use a true graphite primary palette here so component-local
+ * Material tokens never fall back to a saturated brand red. Red remains the error/danger role. */
+$graphite-palette: map.merge(
+  mat.$azure-palette,
+  (
+    0: #000000,
+    10: #17191c,
+    20: #25282c,
+    25: #303438,
+    30: #3b3f43,
+    35: #474b4f,
+    40: #53575b,
+    50: #6c7175,
+    60: #868b90,
+    70: #a1a6ab,
+    80: #bdc2c7,
+    90: #d9dde1,
+    95: #e8ebed,
+    98: #f4f5f6,
+    99: #f9fafb,
+    100: #ffffff,
+  )
+);
+
+$theme: mat.define-theme(
+  (
+    color: (
+      primary: $graphite-palette,
+      tertiary: $graphite-palette,
+    ),
+    typography: (
+      plain-family: (
+        '-apple-system',
+        'BlinkMacSystemFont',
+        'Segoe UI',
+        'Roboto',
+        'Helvetica',
+        'Arial',
+        system-ui,
+        sans-serif,
+      ),
+    ),
+    density: (
+      scale: 0,
+    ),
+  )
+);
+
+/* Dark M3 theme. Angular Material does NOT auto-flip on dark mode: its components
+ * read Material's own --mat-sys-* tokens, which are independent of the app's
+ * --app-* / --im-* tokens that _tokens.scss redefines under [data-theme="dark"].
+ * Without this, Material widgets (mat-form-field fill, mat-checkbox, mat-button,
+ * etc.) stay frozen in their light color scheme and glare against a dark surface
+ * — exactly the "ugly" login/register button + checkbox + inputs in dark mode.
+ * Mirrors the same selector ThemeService sets on <html>; colors-only (typography
+ * and density are identical across modes, so no point emitting them twice). */
+$dark-theme: mat.define-theme(
+  (
+    color: (
+      theme-type: dark,
+      primary: $graphite-palette,
+      tertiary: $graphite-palette,
+    ),
+  )
+);
+
+:root {
+  @include mat.all-component-themes($theme);
+  /* Keep the existing error color so login/register .error / .err-hint do not drift with the M3 error palette. */
+  --mat-form-field-error-text-color: #ba1a1a;
+}
+
+[data-theme='dark'] {
+  @include mat.all-component-colors($dark-theme);
+}
+
+/* Re-apply the product semantic roles after both Material theme emissions. The dark-theme mixin
+ * writes its own system colors, so without this later binding dark auth controls would bypass the
+ * graphite product tokens and use the generated palette directly. */
+:root,
+[data-theme='dark'] {
+  --mat-sys-primary: var(--app-brand);
+  --mat-sys-on-primary: var(--app-on-brand);
+  --mat-sys-primary-container: var(--app-brand-soft);
+  --mat-sys-on-primary-container: var(--app-on-brand-soft);
+  --mat-sys-secondary: var(--app-text-muted);
+  --mat-sys-on-secondary: var(--app-text-inverse);
+  --mat-sys-secondary-container: var(--app-hover);
+  --mat-sys-on-secondary-container: var(--app-text);
+
+  /* One application-level color contract for every Material binary switch. */
+  --mat-slide-toggle-selected-track-color: var(--app-toggle-active);
+  --mat-slide-toggle-selected-focus-track-color: var(--app-toggle-active);
+  --mat-slide-toggle-selected-hover-track-color: var(--app-toggle-active-hover);
+  --mat-slide-toggle-selected-pressed-track-color: var(
+    --app-toggle-active-hover
+  );
+  --mat-slide-toggle-selected-handle-color: var(--app-on-toggle-active);
+  --mat-slide-toggle-selected-focus-handle-color: var(--app-on-toggle-active);
+  --mat-slide-toggle-selected-hover-handle-color: var(--app-on-toggle-active);
+  --mat-slide-toggle-selected-pressed-handle-color: var(--app-on-toggle-active);
+  --mat-slide-toggle-selected-focus-state-layer-color: var(--app-toggle-active);
+  --mat-slide-toggle-selected-hover-state-layer-color: var(--app-toggle-active);
+  --mat-slide-toggle-selected-pressed-state-layer-color: var(
+    --app-toggle-active
+  );
+  --mat-slide-toggle-unselected-track-color: var(--app-border-strong);
+  --mat-slide-toggle-unselected-focus-track-color: var(--app-border-strong);
+  --mat-slide-toggle-unselected-hover-track-color: var(--app-text-faint);
+  --mat-slide-toggle-unselected-pressed-track-color: var(--app-text-faint);
+  --mat-slide-toggle-unselected-handle-color: var(--app-surface);
+  --mat-slide-toggle-unselected-focus-handle-color: var(--app-surface);
+  --mat-slide-toggle-unselected-hover-handle-color: var(--app-surface);
+  --mat-slide-toggle-unselected-pressed-handle-color: var(--app-surface);
+  --mat-slide-toggle-disabled-selected-track-color: var(--app-border-strong);
+  --mat-slide-toggle-disabled-unselected-track-color: var(--app-border-strong);
+  --mat-slide-toggle-disabled-selected-handle-color: var(--app-surface);
+  --mat-slide-toggle-disabled-unselected-handle-color: var(--app-surface);
+  --mat-slide-toggle-disabled-track-opacity: 0.6;
+  --mat-slide-toggle-disabled-selected-handle-opacity: 1;
+  --mat-slide-toggle-disabled-unselected-handle-opacity: 1;
+}
+
+/* === Rebind Material button colors to the app's brand/danger tokens ===
+ * Angular Material's generated tonal role is not the exact SOMS graphite control color,
+ * and `color="warn"` renders nothing distinct
+ * because the theme above defines no error palette. Rather than fight M3 tonal palettes, rebind the
+ * emitted button component tokens — scoped to the `.mat-primary` / `.mat-warn` classes the `color`
+ * input adds — to the app's existing design-system tokens. `--mat-button-*` tokens are read only by
+ * buttons, so scoping on `.mat-primary`/`.mat-warn` can't leak into other components. Light + dark
+ * both resolve correctly through semantic tokens. Hierarchy stays flat. */
+.mat-primary,
+.mat-primary.mat-mdc-button,
+.mat-primary.mat-mdc-unelevated-button,
+.mat-primary.mat-mdc-raised-button,
+.mat-primary.mat-mdc-outlined-button {
+  --mat-button-filled-container-color: var(--app-action-primary);
+  --mat-button-filled-label-text-color: var(--app-on-action-primary);
+  --mat-button-filled-state-layer-color: var(--app-on-action-primary);
+  --mat-button-text-label-text-color: var(--app-action-primary);
+  --mat-button-text-state-layer-color: var(--app-action-primary);
+  --mat-button-outlined-label-text-color: var(--app-action-primary);
+  --mat-button-outlined-outline-color: var(--app-action-primary);
+  --mat-button-outlined-state-layer-color: var(--app-action-primary);
+}
+
+.app-secondary-action,
+.app-secondary-action.mat-mdc-button,
+.app-secondary-action.mat-mdc-unelevated-button,
+.app-secondary-action.mat-mdc-raised-button,
+.app-secondary-action.mat-mdc-outlined-button {
+  --mat-button-text-label-text-color: var(--app-text-muted);
+  --mat-button-text-state-layer-color: var(--app-text-muted);
+  --mat-button-outlined-label-text-color: var(--app-text-muted);
+  --mat-button-outlined-outline-color: var(--app-border-strong);
+  --mat-button-outlined-state-layer-color: var(--app-text-muted);
+}
+
+.mat-warn,
+.mat-warn.mat-mdc-button,
+.mat-warn.mat-mdc-unelevated-button,
+.mat-warn.mat-mdc-raised-button,
+.mat-warn.mat-mdc-outlined-button {
+  --mat-button-filled-container-color: var(--app-danger);
+  --mat-button-filled-label-text-color: #fff;
+  --mat-button-filled-state-layer-color: #fff;
+  --mat-button-text-label-text-color: var(--app-danger);
+  --mat-button-text-state-layer-color: var(--app-danger);
+  --mat-button-outlined-label-text-color: var(--app-danger);
+  --mat-button-outlined-outline-color: var(--app-danger);
+  --mat-button-outlined-state-layer-color: var(--app-danger);
+}
+
+/* === Connection chip: registered <color> custom properties for Motion-driven morph. ===
+ * Registering <color> makes the browser (and Motion) interpolate these as colors instead of opaque
+ * strings — so the gradient stops (--g-from/--g-to) and icon color (--ic) animate smoothly, and the
+ * palette sources (--c-*) compute to concrete rgb() that Motion reads as interpolation targets.
+ * @property is a top-level at-rule and inherently global, so it lives here rather than in component CSS. */
+@property --g-from {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: #f5e9c8;
+}
+@property --g-to {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: #efd9a0;
+}
+@property --ic {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #b45309;
+}
+@property --c-amber-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #f5e9c8;
+}
+@property --c-amber-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #efd79a;
+}
+@property --c-green-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #d6f5e0;
+}
+@property --c-green-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #b3ecc8;
+}
+@property --c-red-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #f7d7d7;
+}
+@property --c-red-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #f0b6b6;
+}
+@property --c-amber {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #b45309;
+}
+@property --c-green {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #16a34a;
+}
+@property --c-red {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #dc2626;
+}
+@property --c-brand-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #e8e9ea;
+}
+@property --c-brand-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #d7d9db;
+}
+@property --c-brand {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #25282c;
+}
+
+/* === Shared `.tonal-chip` shell — the M3 treatment both top-center indicators wear. ===
+ * A two-stop <color>-var gradient (--g-from/--g-to) over the themed surface, M3 level-1 elevation, a
+ * pill shape, and currentColor text/icon. The connection chip (amber/green/red per state) and the update
+ * banner (brand color) each set their own --g-from/--g-to/--ic + --c-* palette on `:host`; this class
+ * supplies only the visual identity. Layout (height, padding, gap), interactivity (state layer, focus),
+ * and animation stay per-component — the chip is a <button> (interactive), the banner is a <div> with
+ * inner action buttons, so their affordances differ. */
+.tonal-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: none;
+  border-radius: 9999px;
+  background-color: var(--g-from);
+  background-image: linear-gradient(135deg, var(--g-from), var(--g-to));
+  color: var(--ic);
+  box-shadow:
+    0 1px 2px 0 rgba(0, 0, 0, 0.3),
+    0 1px 3px 1px rgba(0, 0, 0, 0.15);
+}
+
+/* LiveAnnouncer appends its status node directly under <body>. Keep a defensive structural rule here so
+ * connection recovery announcements never enter document flow or create a scrollbar, including during the
+ * first frame before CDK's runtime-loaded visually-hidden stylesheet is available. */
+.cdk-live-announcer-element.cdk-visually-hidden {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* === Auth language dropdown: keep options on a single line.
+ * The <mat-select> panel renders in the global CDK overlay (outside any
+ * component's view encapsulation), so this can't live in component SCSS. MDC
+ * ships `.mat-mdc-option .mdc-list-item__primary-text { white-space: normal }`,
+ * i.e. options wrap by default — which let "简体中文" break across two lines.
+ * Material menus treat each item as single-line, so we override to nowrap.
+ * Scoped by panelClass ("lang-panel") on AuthToolbarComponent's select so it
+ * only affects this one dropdown, not every select in the app. The panel's
+ * width itself is content-driven via [panelWidth]="null" on the select. */
+.lang-panel .mat-mdc-option .mdc-list-item__primary-text {
+  white-space: nowrap;
+}
+
+/* === Snackbar: lift the bottom-centered toast clear of the chat's bottom occupation. ===
+ * Every MatSnackBar renders in the global CDK overlay (outside any component's view encapsulation), so the
+ * lift can't live in component SCSS. Browser CDK overlays already follow the visible viewport bottom, so
+ * their offset contains composer + safe area only; NativeComposerService overrides the shared offset with
+ * composer + native keyboard surface + safe area. The +8px preserves Material's default visual gap. */
+.soms-snack-bar.mat-mdc-snack-bar-container {
+  margin-bottom: calc(
+    var(--soms-snackbar-bottom-offset, var(--soms-safe-bottom, 0px)) + 8px
+  );
+}
+
+/* Informational snackbars have no action, so neither their surface nor the CDK pane around it should
+ * consume taps. Interactive snackbars (for example the OTA update prompt) deliberately omit this class.
+ * The pane rule is necessary: disabling hit testing on the snackbar alone would leave its parent pane
+ * intercepting the same rectangle. */
+.cdk-overlay-pane:has(.soms-snack-bar--passive),
+.soms-snack-bar--passive {
+  pointer-events: none;
+}
+
+/* Semantic variants used by ToastService while retaining Material's standard snackbar structure. */
+.soms-snack-bar--warn.mat-mdc-snack-bar-container {
+  --mdc-snackbar-container-color: color-mix(
+    in srgb,
+    var(--app-warning) 28%,
+    #211b12
+  );
+  --mdc-snackbar-supporting-text-color: #fff;
+}
+
+.soms-snack-bar--info.mat-mdc-snack-bar-container {
+  --mdc-snackbar-container-color: var(--app-surface-inverse, #303034);
+  --mdc-snackbar-supporting-text-color: var(--app-on-surface-inverse, #fff);
+}
+
+/* PhotoSwipe is mounted inside GalleryViewerComponent, but creates its DOM
+ * imperatively, outside Angular's style encapsulation. Keep shell-specific
+ * safe-area and stacking rules global. */
+.soms-gallery-pswp {
+  --pswp-root-z-index: 0;
+}
+
+.soms-gallery-pswp .pswp__top-bar {
+  display: none;
+}
+
+/* === QR scanner overlay: make the app transparent so the native camera shows through. ===
+ * The barcode-scanner plugin is invoked with `windowed: true`, which calls webView.bringToFront() and
+ * sets the WebView background transparent — so the live CameraX preview is visible wherever the Angular
+ * markup is transparent. But <body> paints an opaque --app-bg (below) and the in-flow app (app-root and
+ * its descendants) is opaque too, which would otherwise block the camera. While the scanner is open,
+ * QrScannerService adds `qr-scanning` to <html>:
+ *   - body → transparent background (the camera is the background);
+ *   - app-root → opacity:0 (the whole in-flow app stops occluding the camera);
+ *   - every CDK overlay pane EXCEPT the scanner's own (.qr-scan-pane) → opacity:0, so any open dialog /
+ *     snackbar stops occluding the camera.
+ * opacity:0 — NOT visibility:hidden — is required here: the Android WebView composites a
+ * visibility:hidden element's layer as still-opaque, so the camera stays blocked; opacity:0 forces the
+ * layer alpha to 0 (verified empirically — setting the home app opacity:0 makes the feed appear). The
+ * scanner pane lives in the body-level CDK overlay container (a sibling of app-root, not a descendant),
+ * so it is unaffected and its scrim + cutout + chrome keep drawing over the live feed. Removed the
+ * instant the overlay disposes. */
+html.qr-scanning body {
+  background-color: transparent;
+}
+html.qr-scanning app-root {
+  opacity: 0;
+}
+html.qr-scanning .cdk-overlay-pane:not(.qr-scan-pane) {
+  opacity: 0;
+}
+
+/* === Video call overlay: same transparency treatment as qr-scanning, so the native remote video shows
+ * through the transparent call chrome. CallController mounts the remote SurfaceViewRenderer as a sibling
+ * view BEHIND the WebView + sets the WebView background TRANSPARENT (the barcode-scanner overlay technique);
+ * while a VIDEO call is active, CallOverlayService adds `in-video-call` to <html>:
+ *   - body → transparent background (the native remote video is the background);
+ *   - app-root → opacity:0 (the chat UI behind the call stops occluding the video);
+ *   - every CDK overlay pane EXCEPT the call's own (.call-pane) → opacity:0, so any open dialog / snackbar
+ *     stops occluding the video.
+ * `opacity:0` — NOT `visibility:hidden` — for the same reason as qr-scanning: the Android WebView composites a
+ * visibility:hidden layer as still-opaque, so the video stays blocked. The call pane (.call-pane) is a
+ * body-level sibling of app-root (NOT a descendant), so it is unaffected by the app-root rule and keeps
+ * drawing the chrome over the live video. AUDIO calls never set this class → the opaque .call-screen bg shows
+ * (the centered avatar layout). Removed the instant the call goes idle. */
+html.in-video-call body {
+  background-color: transparent;
+}
+html.in-video-call app-root {
+  opacity: 0;
+}
+html.in-video-call .cdk-overlay-pane:not(.call-pane) {
+  opacity: 0;
+}
+
+html,
+body {
+  height: 100%;
+  // Suppress Android WebView's default translucent-blue tap-highlight overlay. The property is
+  // inherited, so this one rule removes the flash on every <button>, [role="button"], and clickable
+  // host app-wide — interactive elements already declare their own themed press affordance (the
+  // connection chip's ::before state layer, the styless-button scale, etc.), so the native overlay
+  // only ever duplicated those as an ugly blue flash. No effect on desktop/browser.
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Keep the exact album cell that owns the context menu visibly anchored with the same inset-thumbnail
+ * treatment used by selection. The transform does not affect virtual-row measurements. */
+[data-message-id] .msg-media-cell {
+  transition: transform var(--app-motion-fast) var(--app-ease-standard);
+}
+
+.msg-media-cell.msg-media-cell--context-active {
+  transform: scale(0.92);
+  border-radius: 6px;
+}
+
+.msg-media-cell.msg-media-cell--context-active::after {
+  content: '';
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+// Shared CDK surface policy for transient modal overlays (file detail / invite detail). The overlay
+// service owns backdrop dismissal and focus lifecycle; hosted components render only their card/content.
+.cdk-overlay-backdrop.soms-overlay-backdrop {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+body {
+  margin: 0;
+  // Theme-aware defaults so unlabeled text and `currentColor` icons inherit a legible color
+  // on every theme, and overscroll/areas outside a component surface match the themed page bg.
+  color: var(--app-text);
+  background-color: var(--app-bg);
+  font-family: var(
+    --mat-app-text-font,
+    -apple-system,
+    BlinkMacSystemFont,
+    system-ui,
+    sans-serif
+  );
+}
+
+// App-shell splash (the inline spinner inside <app-root> in index.html). Pure HTML/CSS, shown on first
+// parse before Angular boots — so a freshly-created / reloading main window never flashes a blank frame
+// during the two-window handoff. Replaced when Angular replaces <app-root>'s content. Integer-px metrics
+// per the CSS rule (this is a fixed splash, not a measured-list item, but kept consistent).
+.active-page-message {
+  margin: 0;
+  padding: 32px;
+  line-height: 24px;
+  text-align: center;
+}
+
+.app-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100vh;
+  background: radial-gradient(
+      circle at 50% 42%,
+      color-mix(in srgb, var(--app-brand-soft) 42%, transparent),
+      transparent 32%
+    ),
+    var(--app-surface);
+}
+.app-splash__mark {
+  display: block;
+  width: 80px;
+  height: 80px;
+}
+.app-splash__spinner {
+  margin-top: 8px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 3px solid var(--app-border);
+  border-top-color: var(--app-text-muted);
+  animation: app-splash-spin 0.8s linear infinite;
+}
+.app-splash__word {
+  font-size: 28px;
+  line-height: 34px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--app-text);
+}
+@keyframes app-splash-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Message selection belongs to the virtual-row host, outside each dynamically-created component's
+ * emulated style scope. Keep the highlight height-neutral so the scroller's measurements remain exact. */
+[data-message-id].cb-message--selection-mode {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+[data-message-id].cb-message--pressing,
+[data-message-id].cb-message--context-active {
+  background: transparent;
+}
+
+[data-message-id].cb-message--pressing .msg-bubble {
+  transform: scale(0.98);
+}
+
+[data-message-id].cb-message--pressing .msg-bubble,
+[data-message-id][role='listitem'] .msg-bubble {
+  transition: transform var(--app-motion-instant) var(--app-ease-standard);
+}
+
+/* Reserve a real leading selection gutter instead of painting the control over the message content.
+ * Incoming avatar + bubble move together; outgoing messages stay pinned to the trailing edge because
+ * their row remains justify-content:flex-end. Padding is on the measured .msg-row, so the virtual list's
+ * ResizeObserver sees any legitimate text reflow caused by the narrower content width. */
+[data-message-id].cb-message--selection-mode .msg-row {
+  --msg-selection-center-offset: 3px;
+  position: relative;
+  padding-left: var(--app-space-10);
+}
+
+[data-message-id].cb-message--selection-mode
+  .msg-row.msg-self
+  .msg-highlight-layer {
+  left: var(--app-space-10);
+}
+
+[data-message-id].cb-message--selection-mode
+  .msg-row.msg-other
+  .msg-highlight-layer {
+  left: calc(var(--app-space-10) + 48px);
+}
+
+[data-message-id].cb-message--selection-mode .msg-row.msg-group-start {
+  --msg-selection-center-offset: 7px;
+}
+
+[data-message-id].cb-message--selection-mode .msg-row.msg-grp-body {
+  --msg-selection-center-offset: 1.5px;
+}
+
+/* The sender label is 13px high with a 2px bottom margin. Half of that fixed block must be added
+ * to the row midpoint for the selector to land on the bubble midpoint. */
+[data-message-id].cb-message--selection-mode .msg-row:has(.msg-name) {
+  --msg-selection-name-offset: 7.5px;
+}
+
+[data-message-id].cb-message--selection-mode .msg-row::before {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  left: var(--app-space-2);
+  top: calc(
+    50% + var(--msg-selection-center-offset) +
+      var(--msg-selection-name-offset, 0px)
+  );
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--app-border-strong);
+  border-radius: 50%;
+  box-sizing: border-box;
+  transform: translateY(-50%);
+  background: var(--app-surface);
+  pointer-events: none;
+  transition:
+    border-color var(--app-motion-fast) var(--app-ease-standard),
+    background var(--app-motion-fast) var(--app-ease-standard);
+}
+
+[data-message-id].cb-message--selection-mode .msg-row::after {
+  content: '';
+  position: absolute;
+  z-index: 4;
+  left: 18px;
+  top: calc(
+    50% + var(--msg-selection-center-offset) +
+      var(--msg-selection-name-offset, 0px)
+  );
+  width: 7px;
+  height: 4px;
+  border-left: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  transform: translate(-50%, -65%) rotate(-45deg);
+  pointer-events: none;
+}
+
+[data-message-id].cb-message--selected {
+  background: transparent;
+}
+
+/* Selection and jump use separate visual language: ordinary selected messages inset their bubble,
+ * while jump feedback is the only state that paints a transient color flash. Album selection remains
+ * cell-level below, so the enclosing album bubble must not scale as a second selection target. */
+[data-message-id].cb-message--selected:not(.cb-message--album) .msg-bubble {
+  transform: scale(0.92);
+}
+
+/* Keep the message owning an open context menu inset until the menu closes. This matches the
+ * cell-level context treatment above and makes the target unambiguous without changing row height. */
+[data-message-id].cb-message--context-active:not(.cb-message--album)
+  .msg-bubble {
+  transform: scale(0.92);
+}
+
+[data-message-id].cb-message--selected.cb-message--pressing {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-message-id] .msg-bubble {
+    transition: none;
+  }
+  [data-message-id].cb-message--pressing .msg-bubble {
+    transform: none;
+  }
+}
+
+[data-message-id].cb-message--selected .msg-row::before {
+  border-color: var(--app-brand);
+  background: var(--app-brand);
+}
+
+[data-message-id].cb-message--selected .msg-row::after {
+  border-color: var(--app-on-brand);
+}
+
+/* An album's row-level selector is tri-state. The short brand dash follows the familiar
+ * indeterminate-checkbox convention without changing the control's geometry. */
+[data-message-id].cb-message--partially-selected {
+  background: transparent;
+}
+
+[data-message-id].cb-message--partially-selected .msg-row::before {
+  border-color: var(--app-brand);
+  background: var(--app-surface);
+}
+
+[data-message-id].cb-message--partially-selected .msg-row::after {
+  width: 8px;
+  height: 0;
+  border-left: 0;
+  border-bottom: 2px solid var(--app-brand);
+  transform: translate(-50%, -50%);
+}
+
+/* In selection mode each album cell becomes an independent target. Selected media uses Telegram's
+ * inset-thumbnail treatment instead of a color wash; transforms keep the virtual-row measurements stable. */
+[data-message-id].cb-message--selection-mode.cb-message--album .msg-media-cell {
+  cursor: pointer;
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-select-indicator {
+  position: absolute;
+  z-index: 8;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 50%;
+  background: rgba(24, 28, 36, 0.34);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.24);
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  color: transparent;
+
+  svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell::after {
+  content: '';
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  background: transparent;
+  pointer-events: none;
+  transition: background var(--app-motion-fast) var(--app-ease-standard);
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell--selected
+  .msg-media-select-indicator {
+  border-color: var(--app-brand);
+  background: var(--app-brand);
+  color: var(--app-on-brand);
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell--selected::after {
+  background: transparent;
+}
+
+[data-message-id].cb-message--selection-mode.cb-message--album
+  .msg-media-cell--selected {
+  transform: scale(0.92);
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-message-id] .msg-media-cell {
+    transition: none;
+  }
+}
+// Selection is a paint-only composer swap: retain identical geometry/tail reservation while the action
+// toolbar overlays it, so entering multi-select cannot resize or re-anchor the message viewport.
+app-chat-input.msg-composer--selection-hidden {
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+// The reusable composer owns global (ViewEncapsulation.None) `.ci-*` styles, so its production-host
+// override must also live globally. Keep only the controls surfaced: the full-width bar is transparent,
+// allowing the conversation wallpaper/messages to remain visually continuous behind the floating capsule.
+.msg-container .ci-input-bar {
+  background: transparent;
+  border-top: 0;
+}
+
+/* Session details are a centered Material dialog on larger layouts and an M3-style
+   modal bottom sheet on compact layouts. This must be global because the CDK overlay
+   is mounted outside the settings component's encapsulation boundary. */
+@media (max-width: 719px) {
+  .cdk-overlay-pane.session-details-dialog {
+    align-self: flex-end;
+    width: 100% !important;
+    max-width: 100vw !important;
+  }
+
+  .session-details-dialog .mat-mdc-dialog-surface {
+    border-radius: 24px 24px 0 0;
+  }
+}

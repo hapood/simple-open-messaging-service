@@ -1,0 +1,408 @@
+// Unified media row (IMAGE / VIDEO / AUDIO). Reuses the shared row rules (@use row-base) + media-specific
+// grid/cell/overlay/meta-bar. Integer-pixel contract: every line-height + vertical padding is an integer
+// px so the bubble's offsetHeight stays a whole number (the kernel's height model).
+@use '../row-base' as *;
+
+// Full-bleed image/video surfaces look closer together than padded text bubbles at the same measured gap.
+// Keep text/voice rows on the 3px compact rhythm and give visual media a small optical correction.
+.msg-row.msg-grp-body.msg-row--full-bleed-media {
+  --msg-highlight-top: var(--chat-timeline-gap-compact-media);
+  padding-top: var(--chat-timeline-gap-compact-media);
+}
+
+// Media bubble: media flush to the edge (padding:0). The width is set inline by [style.width.px]=containerW
+// (single media narrows to the cell's computed width; album = full baseW) — no fixed width here, to avoid
+// fighting the inline binding. max-width clamps on narrow screens. When a meta bar is present (single
+// media) it adds flow height below the grid; the kernel measures the real offsetHeight either way.
+.msg-bubble.msg-media {
+  padding: 0;
+  min-height: 0;
+  max-width: 100%;
+  display: block; // override the text bubble's flex vertical-centering
+  overflow: hidden;
+  &::before {
+    display: none !important;
+  }
+}
+
+.msg-bubble.msg-media:not(.msg-media--audio) {
+  --bubble-bg: var(--chat-card-bg);
+  --bubble-text: var(--chat-card-text);
+  --bubble-muted: var(--app-text-muted);
+}
+
+.msg-media-grid {
+  position: relative;
+  width: 100%;
+  // Album gutters must not expose the sender bubble color. A neutral canvas keeps the 2px dividers
+  // visually consistent for self/other messages and across light/dark themes.
+  background: var(--app-surface, #fff);
+}
+
+// Compact attachment-card body; the sixth sheet becomes an ellipsis for groups larger than six.
+.msg-gallery-row {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  gap: 10px;
+  height: 62px;
+  padding: 10px 10px 8px;
+}
+
+.msg-gallery-icons {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  height: 40px;
+}
+
+.msg-gallery-icon {
+  align-items: center;
+  background: var(--app-surface-elevated);
+  border: 1px solid var(--app-border);
+  border-radius: 7px;
+  color: var(--app-text-muted);
+  display: inline-flex;
+  flex: 0 0 28px;
+  height: 36px;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.msg-gallery-thumbnail {
+  inset: 0;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.msg-gallery-title {
+  color: var(--chat-card-text);
+  flex: 1 1 auto;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+// Cell: absolute positioning; height locked to px by layoutAlbum before render.
+.msg-media-cell {
+  position: absolute;
+  overflow: hidden;
+  background: rgba(
+    127,
+    127,
+    127,
+    0.18
+  ); // placeholder gray (image pre-load; video error; audio cell)
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+// The selection check is always present in the cell markup because selection state belongs to the
+// virtual-row host outside this component. Keep it inert by default; the global selection-mode rule
+// promotes it to `display:grid` only while album selection is active.
+.msg-media-select-indicator {
+  display: none;
+}
+
+.msg-media-cell--image {
+  // An explicit opaque canvas prevents both gated images and the fractional edge of a decoded image
+  // from revealing the chat wallpaper.
+  background-color: var(--app-surface, #fff);
+}
+
+// Audio is a real message bubble, not a media placeholder. Match text-message ownership colors instead
+// of inheriting the generic neutral image/video card surface. Audio has no separate sender meta bar, so
+// the bubble itself must retain the outgoing/incoming ownership cue from row-base.
+.msg-media--audio .msg-media-grid,
+.msg-media .msg-media-cell--audio {
+  background: var(--bubble-bg);
+}
+
+.msg-media-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+app-audio-player {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+}
+
+// "Tap to load · {size}" placeholder for IMAGE cells over the user size threshold. Centered text over
+// the gray cell; pointer-events:none so the click reaches the cell div (which loads the image).
+.msg-media-tap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--app-text-muted);
+  background: radial-gradient(
+      circle at 50% 42%,
+      color-mix(in srgb, var(--app-brand) 9%, transparent),
+      transparent 38%
+    ),
+    color-mix(in srgb, var(--app-surface, #fff) 92%, var(--app-brand) 8%);
+  font-size: 12px;
+  line-height: 16px;
+  pointer-events: none;
+
+  svg {
+    width: clamp(24px, 16%, 40px);
+    height: auto;
+    aspect-ratio: 1;
+    color: var(--app-text-faint);
+    opacity: 0.8;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+}
+
+.msg-media-tap-spinner {
+  stroke-dasharray: 42 18;
+  animation: media-tap-spin 0.85s linear infinite;
+}
+
+.msg-media-download-progress {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border: 3px solid color-mix(in srgb, var(--app-brand) 28%, transparent);
+  border-top-color: var(--app-brand);
+  border-radius: 50%;
+  color: var(--app-text);
+  animation: media-tap-spin 0.85s linear infinite;
+
+  strong {
+    font-size: 12px;
+    font-weight: 600;
+    animation: media-tap-spin 0.85s linear infinite reverse;
+  }
+}
+
+.msg-media-download-progress--indeterminate {
+  border-color: color-mix(in srgb, var(--app-brand) 28%, transparent);
+  border-top-color: var(--app-brand);
+}
+
+@keyframes media-tap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+// <video> fills its cell — the browser renders the first frame (preload=metadata). object-fit:cover so
+// portrait/landscape both fill without gaps. pointer-events:none so clicks reach the cell div.
+.msg-media-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+// Centered ▶ play badge over video / audio cells (a dark circle with a CSS-triangle play glyph).
+.msg-media-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 44px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 50%;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  &::before {
+    content: '';
+    border-style: solid;
+    border-width: 9px 0 9px 14px;
+    border-color: transparent transparent transparent #fff;
+    margin-left: 4px; // optical centering of a play triangle
+  }
+}
+
+// Duration badge: bottom-LEFT dark pill (video / audio cells).
+.msg-media-dur {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 11px;
+  line-height: 14px;
+  border-radius: var(--app-radius-pill);
+  pointer-events: none;
+}
+
+// Size badge: bottom-RIGHT dark pill (every cell — image / video / audio). The send time moved to the
+// meta bar so this corner is free. Shows "unknown size" when the message carries no size (legacy
+// content created before Phase 1, or a probe failure). pointer-events:none → clicks reach the cell.
+.msg-media-size {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 1px 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 10px;
+  line-height: 12px;
+  border-radius: var(--app-radius-pill);
+  pointer-events: none;
+}
+
+// Bottom meta bar (EVERY media row — single OR album): media counts (left) + send time (right).
+// Narrow + on its own opaque surface background — a compact info strip
+// under the media, in the spirit of Telegram/WeChat's tight media captions. Integer-px line-heights.
+.msg-media-meta {
+  // Shared msg-card-meta owns sender color and typography.
+}
+
+.msg-media-meta-count {
+  display: flex;
+  gap: 6px;
+  opacity: 0.6;
+}
+.msg-media-meta-time {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+// Visual-media status tick: TOP-RIGHT over an image/video needs a dark contrast badge. Audio has an
+// opaque ownership-colored bubble, so it uses row-base's plain status glyph; keeping this badge there
+// would leave an empty dark circle after the confirmed check fades out.
+.msg-media:not(.msg-media--audio) .msg-status {
+  right: 6px;
+  top: 6px;
+  padding: 1px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 50%;
+  color: var(--app-success);
+  &.msg-status--failed {
+    color: var(--app-danger, #ff5252);
+  }
+}
+
+// Federated media localize status overlay (downloading spinner / failed cloud_off icon) — absolute,
+// fills the cell, HEIGHT-NEUTRAL (never changes the cell's measured height; the cell size is locked by
+// layoutAlbum before render). Sits above the image/video; pointer-events:none so clicks still reach the
+// cell div (open gallery → retry lives in the detail view, per the card-only-shows-status contract).
+.msg-media-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  pointer-events: none;
+}
+.msg-media-overlay-icon {
+  font-size: 28px;
+  width: 28px;
+  height: 28px;
+  color: var(--app-danger, #ff5252);
+}
+
+// Federated media status chip in the meta bar (downloading spinner / failed icon + label). Inline flex,
+// fixed to the meta bar's line-height — HEIGHT-NEUTRAL (never changes the meta bar's measured 18px).
+.msg-media-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--bubble-text);
+  .mat-icon {
+    font-size: 13px;
+    width: 13px;
+    height: 13px;
+    line-height: 13px;
+  }
+  &.msg-media-status--failed {
+    color: var(--app-danger, #ff5252);
+  }
+}
+
+// Passive download progress: message cards never own cancellation. The same task remains actionable in
+// the fullscreen viewer/global transfer surface; the row only paints its current state.
+.msg-media-progress {
+  position: absolute;
+  z-index: 4;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.24);
+  pointer-events: none;
+
+  > span {
+    display: block;
+    width: 0;
+    height: 100%;
+    background: var(--app-brand);
+    transition: width 120ms linear;
+  }
+}
+
+.msg-media-progress--indeterminate > span {
+  animation: media-download-indeterminate 1.1s ease-in-out infinite;
+}
+
+.msg-media-progress--failed > span {
+  width: 100%;
+  background: var(--app-danger, #ff5252);
+}
+
+@keyframes media-download-indeterminate {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+.msg-media-file {
+  align-items: center;
+  background: var(--mat-sys-surface-container, #eceff1);
+  color: var(--mat-sys-on-surface, #263238);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  inset: 0;
+  justify-content: center;
+  padding: 12px;
+  position: absolute;
+}
+
+.msg-media-file > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -1,0 +1,85 @@
+// Inline each source map into its .js / .css file as a base64 data: URI, so DevTools can read the map
+// straight from the script content — with NO separate network fetch. That fetch is what fails when
+// the SPA runs inside the Tauri Android shell: the bundle is served from the custom-protocol origin
+// `http://tauri.localhost/`, and edge://inspect / chrome://inspect (USB remote debug) pull source
+// maps through a network path that bypasses the WebView's custom-protocol handler, so the maps never
+// load and the console shows only `chunk-*.js:NN`. Inlining removes the fetch entirely (the data:
+// URI rides along inside the script), which is the community-standard fix for this exact
+// WebView-remote-debug problem — the same one Ionic / Capacitor / Cordova hit, since they too serve
+// from a device-local origin the desktop DevTools can't reach.
+//
+// The shared one-shot build runner passes the target's browser directory after a successful build.
+// Development builds emit sourcemaps (inlined here); production normally does not. A comment already
+// pointing at a data: URI is left untouched, so repeating postprocessing is safe. Angular start/watch
+// keep their external sourcemaps: postprocessing must not race the dev server or rebuilds.
+import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, relative, resolve } from 'node:path';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const dir = resolve(here, '..', process.argv[2] ?? 'dist/web/browser');
+
+if (!existsSync(dir)) {
+  console.log('[inline-sourcemaps] no build output found — skipping');
+  process.exit(0);
+}
+
+/** Recursively collect every file under `d`. Angular esbuild emits chunks flat at the dist root, but
+ *  walking keeps this correct should the output layout ever nest. */
+function listFiles(d) {
+  const out = [];
+  for (const ent of readdirSync(d, { withFileTypes: true })) {
+    const p = join(d, ent.name);
+    if (ent.isDirectory()) out.push(...listFiles(p));
+    else out.push(p);
+  }
+  return out;
+}
+
+let inlined = 0;
+const skipped = [];
+for (const file of listFiles(dir)) {
+  const isJs = file.endsWith('.js');
+  const isCss = file.endsWith('.css');
+  if (!isJs && !isCss) continue;
+
+  const rel = relative(dir, file);
+  const src = readFileSync(file, 'utf8');
+  // JS:  `//# sourceMappingURL=foo.js.map`
+  // CSS: `/*# sourceMappingURL=foo.css.map */`
+  const re = isJs
+    ? /\/\/#\s*sourceMappingURL=(\S+)/
+    : /\/\*#\s*sourceMappingURL=([^\s*]+)\s*\*\//;
+  const m = src.match(re);
+  if (!m) {
+    skipped.push([rel, 'no sourceMappingURL comment']);
+    continue;
+  }
+
+  const mapRef = m[1];
+  // Already inlined on a prior run — leave it untouched (idempotent).
+  if (mapRef.startsWith('data:')) {
+    skipped.push([rel, 'already inlined (data: URI)']);
+    continue;
+  }
+
+  const mapPath = join(dirname(file), mapRef);
+  if (!existsSync(mapPath)) {
+    skipped.push([rel, `referenced map not found: ${mapRef}`]);
+    continue;
+  }
+
+  // Base64 alphabet is `$`-free, so the result is safe to use as a String.replace replacement.
+  const dataUri = `data:application/json;charset=utf-8;base64,${readFileSync(mapPath).toString('base64')}`;
+  const replacement = isJs
+    ? `//# sourceMappingURL=${dataUri}`
+    : `/*# sourceMappingURL=${dataUri} */`;
+  writeFileSync(file, src.replace(re, replacement));
+  inlined++;
+}
+for (const [rel, reason] of skipped) {
+  console.log(`[inline-sourcemaps] skipped ${rel} — ${reason}`);
+}
+console.log(
+  `[inline-sourcemaps] inlined ${inlined} map(s) into ${relative(join(here, '..'), dir)} (${skipped.length} file(s) skipped)`,
+);

@@ -1,0 +1,85 @@
+@use '../../assets/utils.scss' as *;
+
+.avatar-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.crop {
+  display: block;
+  box-sizing: border-box;
+  width: min(288px, 72vw);
+  height: min(288px, 72vw);
+  border-radius: var(--app-radius-lg);
+  // Delineate the editable region now that the darkening mask is gone. Keep the
+  // outer box at 288px (box-sizing: border-box) so it stays aligned with the
+  // 288px controls row below; the border is a cropper affordance, not avatar
+  // decoration — rendered avatars elsewhere stay bare.
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  background: #000;
+  // the canvas owns pan/pinch gestures; the page must not scroll/zoom underneath
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-radius: var(--app-radius-lg);
+  font-size: 13px;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  width: min(288px, 72vw);
+}
+
+.gesture-hint {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+  text-align: center;
+}
+
+.zoom {
+  flex: 1;
+  accent-color: var(--app-brand);
+  cursor: pointer;
+}

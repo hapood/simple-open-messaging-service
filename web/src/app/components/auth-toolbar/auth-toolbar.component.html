@@ -1,0 +1,25 @@
+<button class="toggle" type="button" (click)="cycleTheme()"
+  [attr.aria-label]="'auth.themeAria' | transloco:{ label: themeLabel() }"
+  [title]="'auth.themeAria' | transloco:{ label: themeLabel() }">
+  <app-icon [type]="themeIcon()" [style]="{ width: '22px', height: '22px' }"></app-icon>
+</button>
+
+<!-- panelWidth=null decouples the dropdown width from this compact trigger:
+     mat-select defaults to panelWidth="auto", which pins the panel to the
+     trigger's pixel width. Here the trigger shows only the active language
+     (e.g. "English" ≈ 50px), so a 4-glyph label like "简体中文" wrapped inside
+     the option. null makes the overlay apply no width, so the panel sizes to
+     its widest option — the Material menu rule (menu width = longest item). -->
+<mat-select class="lang-select"
+  [panelWidth]="null"
+  panelClass="lang-panel"
+  [value]="lang()"
+  (selectionChange)="onLangChange($event)"
+  [attr.aria-label]="'auth.languageAria' | transloco:{ label: langLabel() }">
+  <mat-select-trigger>
+    <span class="lang-label">{{ langLabel() }}</span>
+  </mat-select-trigger>
+  @for (l of availableLangs; track l) {
+    <mat-option [value]="l">{{ langLabelOf(l) }}</mat-option>
+  }
+</mat-select>

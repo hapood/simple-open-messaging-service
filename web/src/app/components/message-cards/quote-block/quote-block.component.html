@@ -1,0 +1,53 @@
+@if (displayQuote(); as quote) {
+  <ng-template #copy>
+    @if (quote.imageShape === 'avatar') {
+      <app-snapshot-avatar
+        class="msg-quote-visual msg-quote-avatar"
+        [type]="avatarType()"
+        [name]="quote.imageLabel"
+        [account]="quote.imageIdentity"
+        [src]="quote.image"
+      />
+    } @else if (quote.image && gated()) {
+      <span
+        class="msg-quote-visual msg-quote-placeholder"
+        aria-hidden="true"
+      ></span>
+    } @else if (quote.image) {
+      <img class="msg-quote-visual" [src]="thumbnail()" alt="" />
+    }
+    <span class="msg-quote-copy">
+      @if (quote.author) {
+        <strong>{{ quote.author }}</strong>
+      }
+      @if (quote.contentType === 'GALLERY') {
+        <span>{{ 'chat.fileGroup' | transloco }}</span>
+      } @else {
+        <span>{{
+          quote.body ||
+            ((quote.status === 'NOT_FOUND'
+              ? 'chat.messageNotFound'
+              : 'chat.quoteNotFetched'
+            ) | transloco)
+        }}</span>
+      }
+    </span>
+  </ng-template>
+  @if (anchor(); as anchor) {
+    <button
+      type="button"
+      class="msg-quote"
+      [class.msg-quote--visual]="quote.imageShape === 'avatar' || quote.image"
+      (click)="quoteJump.emit(anchor)"
+    >
+      <ng-container [ngTemplateOutlet]="copy" />
+    </button>
+  } @else {
+    <div
+      class="msg-quote"
+      [class.msg-quote--visual]="quote.imageShape === 'avatar' || quote.image"
+    >
+      <ng-container [ngTemplateOutlet]="copy" />
+    </div>
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "extends": "../tsconfig.json",
+  // `test/` runs under vitest, whose esbuild/vite pipeline resolves extensionless relative
+  // imports ('../src/app.module') — valid at runtime but illegal under the API's NodeNext
+  // resolution. This sibling project gives the editor vitest-compatible resolution for the
+  // directory, the same way `web` / `admin-web` own their own configs; the root tsconfig.json
+  // excludes `test` accordingly, so no file belongs to both programs. It is editor/CI type-check
+  // only (noEmit) — vitest never reads an emit.
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "incremental": false,
+    "noEmit": true,
+    // Inherited `declaration: true` is a production-build concern: TS4053 (return
+    // types "cannot be named") is a declaration-emit rule and fires here only
+    // because src controllers enter this program transitively. Nothing is emitted.
+    "declaration": false,
+    "declarationMap": false
+  },
+  // The e2e graph imports src transitively, but only via imports — default file discovery
+  // doesn't apply across the directory boundary, so ambient augmentations (e.g.
+  // src/common/fastify-request-user.d.ts's FastifyRequest merging) would be missing and every
+  // `req.user` in an imported controller would false-error. Declaration files ride along.
+  "include": ["**/*", "../src/**/*.d.ts"],
+  // Must be restated: an inherited `exclude` is replaced wholesale only if the child defines
+  // its own — the base's `"test"` entry resolves to `../test` from here and would empty this
+  // project (TS18003).
+  "exclude": ["node_modules"]
+}

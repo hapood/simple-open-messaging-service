@@ -1,0 +1,8 @@
+# Reusable server compilation image. Native Node dependencies such as argon2 need a compiler
+# toolchain inside Linux/Node environment they target; keeping it here avoids downloading the
+# toolchain on every application build without adding it to the runtime image.
+ARG NODE_IMAGE=node:24-bookworm-slim
+
+FROM ${NODE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*

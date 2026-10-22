@@ -1,0 +1,265 @@
+import { describe, expect, it, vi } from 'vitest';
+import { BusinessException } from '../common/business.exception.js';
+import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
+
+function serviceWith(overrides?: {
+  pendingMedia?: unknown;
+  message?: unknown;
+  progress?: unknown;
+  progressRows?: unknown[];
+}) {
+  const returning = vi.fn().mockResolvedValue([{ id: 7n }]);
+  const where = vi.fn().mockReturnValue({ returning });
+  const set = vi.fn().mockReturnValue({ where });
+  const update = vi.fn().mockReturnValue({ set });
+  const deleteWhere = vi.fn().mockResolvedValue([]);
+  const remove = vi.fn().mockReturnValue({ where: deleteWhere });
+  const selectWhere = vi.fn().mockResolvedValue([
+    {
+      totalFiles: overrides?.progressRows?.length ?? 0,
+      completedFiles:
+        overrides?.progressRows?.filter(
+          (row) => (row as { status?: string }).status === 'SUCCEEDED',
+        ).length ?? 0,
+    },
+  ]);
+  const from = vi.fn().mockReturnValue({ where: selectWhere });
+  const select = vi.fn().mockReturnValue({ from });
+  const database = {
+    db: {
+      query: {
+        pendingMedia: {
+          findFirst: vi.fn().mockResolvedValue(overrides?.pendingMedia),
+        },
+        message: { findFirst: vi.fn().mockResolvedValue(overrides?.message) },
+        fileSyncProgress: {
+          findFirst: vi.fn().mockResolvedValue(overrides?.progress),
+          findMany: vi.fn().mockResolvedValue(overrides?.progressRows ?? []),
+        },
+      },
+      select,
+      update,
+      delete: remove,
+      transaction: vi.fn(),
+    },
+  };
+  database.db.transaction.mockImplementation(async (work) => work(database.db));
+  const fileSync = { runBatch: vi.fn().mockResolvedValue(undefined) };
+  const promoter = { promote: vi.fn().mockResolvedValue(null) };
+  const mediaRanges = { fetch: vi.fn() };
+  const sse = {
+    onMediaMessageDownloadProgress: vi.fn(),
+    hasMediaMessageProgressSubscriber: vi.fn().mockReturnValue(true),
+    completeMediaMessageDownloadProgress: vi.fn(),
+    completeMediaFileDownloadProgress: vi.fn(),
+  };
+  const service = new FederationInboundMediaBatchService(
+    database as never,
+    fileSync as never,
+    promoter as never,
+    mediaRanges as never,
+    sse as never,
+  );
+  return {
+    service,
+    database,
+    fileSync,
+    promoter,
+    mediaRanges,
+    sse,
+    set,
+  };
+}
+
+describe('FederationInboundMediaBatchService', () => {
+  it('rejects recovery for a batch outside the inbound durable queue', async () => {
+    const { service } = serviceWith();
+
+    await expect(service.recoverInboundBatch('missing')).rejects.toBeInstanceOf(
+      BusinessException,
+    );
+  });
+
+  it('promotes completed batches and recursively wakes quote dependents', async () => {
+    const { service, fileSync, promoter } = serviceWith();
+    promoter.promote
+      .mockResolvedValueOnce({
+        dependentBatchIds: ['quote-a', 'quote-b'],
+      })
+      .mockResolvedValue(null);
+    fileSync.runBatch.mockImplementation(
+      async (
+        _batchId: string,
+        _fetch: unknown,
+        promote: (batchId: string) => Promise<void>,
+      ) => promote('root'),
+    );
+
+    await service.runFileSyncBatch('root', vi.fn());
+
+    expect(promoter.promote).toHaveBeenNthCalledWith(1, 'root');
+    expect(promoter.promote).toHaveBeenNthCalledWith(2, 'quote-a');
+    expect(promoter.promote).toHaveBeenNthCalledWith(3, 'quote-b');
+  });
+
+  it('replays the persisted authorization route when retrying a stalled batch', async () => {
+    const batch = {
+      id: 11n,
+      batchId: 'batch-a',
+      direction: 'INBOUND',
+      messageId: 23n,
+      threadId: null,
+      creatorAccount: null,
+      contentType: null,
+      content: null,
+      clientMessageId: null,
+      originDomain: 'origin.example',
+      namespaceId: 3,
+      expectedAuthorizationEpoch: 4,
+      dependsOnOriginSeq: null,
+    };
+    const { service, fileSync, mediaRanges } = serviceWith({
+      pendingMedia: batch,
+      message: { originSeq: 91 },
+      progress: {
+        payload: {
+          fromAccount: 'alice',
+          fromDomain: 'origin.example',
+          toAccount: 'bob',
+        },
+      },
+    });
+    const chunks = (async function* () {
+      yield Buffer.from('data');
+    })();
+    mediaRanges.fetch.mockReturnValue(chunks);
+
+    await expect(service.retryInboundBatch('batch-a')).resolves.toEqual({
+      batchId: 'batch-a',
+      resetFiles: 1,
+    });
+    expect(fileSync.runBatch).toHaveBeenCalledOnce();
+    const fetchChunks = fileSync.runBatch.mock.calls[0]?.[1] as (
+      digest: string,
+      offset: number,
+    ) => AsyncIterable<Buffer>;
+
+    expect(fetchChunks('a'.repeat(64), 128)).toBe(chunks);
+    expect(mediaRanges.fetch).toHaveBeenCalledWith(
+      'origin.example',
+      'a'.repeat(64),
+      'alice',
+      'origin.example',
+      'bob',
+      91,
+      128,
+    );
+  });
+
+  it('closes message and file progress streams after a completed batch is promoted', async () => {
+    const { service, promoter, sse } = serviceWith({
+      pendingMedia: {
+        id: 11n,
+        batchId: 'batch-a',
+        direction: 'INBOUND',
+        messageId: 23n,
+        threadId: null,
+        creatorAccount: null,
+        contentType: null,
+        content: null,
+        clientMessageId: null,
+        originDomain: 'origin.example',
+        namespaceId: 3,
+        expectedAuthorizationEpoch: 4,
+        dependsOnOriginSeq: null,
+      },
+      message: { threadId: 8, seq: 13 },
+      progressRows: [
+        {
+          digest: 'a'.repeat(64),
+          status: 'SUCCEEDED',
+          bytesReceived: 10n,
+          bytesTotal: 100n,
+        },
+        {
+          digest: 'b'.repeat(64),
+          status: 'SUCCEEDED',
+          bytesReceived: 50n,
+          bytesTotal: 50n,
+        },
+      ],
+    });
+    promoter.promote.mockResolvedValue({ dependentBatchIds: [] });
+
+    await service.promotePendingMessage('batch-a');
+
+    expect(sse.completeMediaMessageDownloadProgress).toHaveBeenCalledWith({
+      threadId: 8,
+      seq: 13,
+      status: 'ready',
+      completedFiles: 2,
+      totalFiles: 2,
+      activeFile: null,
+    });
+    expect(sse.completeMediaFileDownloadProgress).not.toHaveBeenCalled();
+  });
+
+  it('retains a failed inbound task with its error after removing spent progress', async () => {
+    const batch = {
+      id: 11n,
+      batchId: 'batch-a',
+      direction: 'INBOUND',
+      status: 'downloading',
+      messageId: 23n,
+      threadId: null,
+      creatorAccount: null,
+      contentType: null,
+      content: null,
+      clientMessageId: null,
+      originDomain: 'origin.example',
+      namespaceId: 3,
+      expectedAuthorizationEpoch: 4,
+      dependsOnOriginSeq: null,
+    };
+    const { service, database, fileSync, sse, set } = serviceWith({
+      pendingMedia: batch,
+      message: { threadId: 8, seq: 13 },
+      progress: { errorKind: 'REMOTE_IO' },
+      progressRows: [
+        {
+          digest: 'a'.repeat(64),
+          status: 'DOWNLOADING',
+          bytesReceived: 10n,
+          bytesTotal: 100n,
+        },
+      ],
+    });
+    fileSync.runBatch.mockImplementation(
+      async (
+        _batchId: string,
+        _fetch: unknown,
+        _promote: unknown,
+        fail: (batchId: string) => Promise<void>,
+      ) => fail('batch-a'),
+    );
+
+    await service.runFileSyncBatch('batch-a', vi.fn());
+
+    expect(database.db.delete).toHaveBeenCalledOnce();
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        failReason: 'REMOTE_IO',
+      }),
+    );
+    expect(sse.completeMediaMessageDownloadProgress).toHaveBeenCalledWith({
+      threadId: 8,
+      seq: 13,
+      status: 'failed',
+      completedFiles: 0,
+      totalFiles: 1,
+      activeFile: null,
+    });
+    expect(sse.completeMediaFileDownloadProgress).not.toHaveBeenCalled();
+  });
+});

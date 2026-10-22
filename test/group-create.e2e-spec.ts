@@ -1,0 +1,81 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import request from 'supertest';
+import { eq } from 'drizzle-orm';
+import { BusinessCode } from '../src/common/business-code.js';
+import { DatabaseService } from '../src/database/database.service.js';
+import { relationshipPair } from '../src/database/schema.js';
+import { seedUserWithSession } from './seed.js';
+import { createTestApp } from './support/app';
+
+describe('group creation authorization', () => {
+  let app: NestFastifyApplication;
+  let database: DatabaseService;
+
+  beforeAll(async () => {
+    ({ app, database } = await createTestApp());
+  });
+
+  afterAll(async () => app.close());
+
+  it('lets the owner send immediately after creating a group', async () => {
+    const owner = await seedUserWithSession(app, 'group-owner');
+    const authorization = `Bearer ${owner.token}`;
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/group/create')
+      .set('Authorization', authorization)
+      .send({ name: 'New group' });
+    expect(created.body.code, JSON.stringify(created.body)).toBe(
+      BusinessCode.OK,
+    );
+
+    const sent = await request(app.getHttpServer())
+      .post('/api/v1/send-message')
+      .set('Authorization', authorization)
+      .send({
+        threadId: created.body.data.threadId,
+        contentType: 'PURE_TEXT',
+        content: '{"text":"owner message"}',
+      });
+    expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
+  });
+
+  it('uses the active group relationship as send authority', async () => {
+    const owner = await seedUserWithSession(app, 'group-pair-authority');
+    const authorization = `Bearer ${owner.token}`;
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/group/create')
+      .set('Authorization', authorization)
+      .send({ name: 'Projection lag group' });
+    expect(created.body.code, JSON.stringify(created.body)).toBe(
+      BusinessCode.OK,
+    );
+    const threadId = created.body.data.threadId as number;
+
+    const whileActive = await request(app.getHttpServer())
+      .post('/api/v1/send-message')
+      .set('Authorization', authorization)
+      .send({
+        threadId,
+        contentType: 'PURE_TEXT',
+        content: '{"text":"pair remains authoritative"}',
+      });
+    expect(whileActive.body.code, JSON.stringify(whileActive.body)).toBe(
+      BusinessCode.OK,
+    );
+
+    await database.db
+      .update(relationshipPair)
+      .set({ active: false, updatedAt: new Date() })
+      .where(eq(relationshipPair.threadId, threadId));
+    const whileInactive = await request(app.getHttpServer())
+      .post('/api/v1/send-message')
+      .set('Authorization', authorization)
+      .send({
+        threadId,
+        contentType: 'PURE_TEXT',
+        content: '{"text":"must be rejected"}',
+      });
+    expect(whileInactive.body.code).toBe(BusinessCode.GROUP_FORBIDDEN);
+  });
+});

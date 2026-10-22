@@ -1,0 +1,128 @@
+import { inject, Injectable } from '@angular/core';
+import { firstValueFrom } from 'rxjs';
+import { TranslocoService } from '@jsverse/transloco';
+import { ConversationItem, messageCreatorKey } from './model';
+import { namespaceDisplayDomain } from './profile-namespace-domain';
+import { ProfileNamespaceRepository } from './profile-namespace-store.service';
+import { MsgService } from './message.service';
+import { UserService } from './user.service';
+import { PopupType, RouteService } from './route.service';
+import { ToastService } from './toast.service';
+import type { ChatMsgData } from '../components/message-cards/chat-item';
+import type { ForwardDialogResult } from '../components/forward-dialog/forward-dialog.component';
+import { uuid } from '../lib/uuid';
+
+/** Opens the contact-card picker and sends the selected conversation identity to its recipients. */
+@Injectable({ providedIn: 'root' })
+export class ContactCardShareService {
+  private readonly messages = inject(MsgService);
+  private readonly users = inject(UserService);
+  private readonly route = inject(RouteService);
+  private readonly toast = inject(ToastService);
+  private readonly transloco = inject(TranslocoService);
+  private readonly profileNamespaces = inject(ProfileNamespaceRepository);
+
+  open(chat: ConversationItem): void {
+    const self = this.users.sessionProfile();
+    if (!self) return;
+    void this.openResolved(chat, self);
+  }
+
+  private async openResolved(
+    chat: ConversationItem,
+    self: ReturnType<UserService['sessionProfile']>,
+  ): Promise<void> {
+    if (!self) return;
+    const isGroup = chat.type === 'GROUP';
+    const target = isGroup ? chat.group : chat.peerUser;
+    const bio = isGroup ? chat.group.description : chat.peerUser.bio;
+    const binding = await firstValueFrom(
+      this.profileNamespaces.resolve({
+        publisherNamespaceId: 0,
+        profileNamespaceId: target.namespaceId,
+      }),
+    );
+    const domain = namespaceDisplayDomain(binding);
+    if (!domain || !binding.rootPublicKey) {
+      this.toast.warn(this.transloco.translate('forward.sendFailed'));
+      return;
+    }
+    const content = JSON.stringify({
+      account: target.account,
+      domain,
+      publicKey: binding.rootPublicKey,
+      displayName: target.name,
+      bio: bio ?? '',
+      ...(target.avatar ? { avatar: target.avatar } : {}),
+    });
+    const preview: ChatMsgData = {
+      type: 'msg',
+      msgId: -1,
+      creator: messageCreatorKey({
+        account: self.account,
+        namespaceId: self.namespaceId,
+      }),
+      isSelf: true,
+      name: self.name,
+      text: content,
+      time: '',
+      contentType: 'CONTACT_CARD',
+      images: null,
+      file: null,
+      createdAtMs: Date.now(),
+    };
+    this.route.popupDlg(
+      PopupType.FORWARD,
+      {
+        kind: 'CHAT_CARD',
+        recordKind: isGroup ? 'group' : 'chat',
+        messages: [
+          {
+            id: -1,
+            name: target.name,
+            summary: this.transloco.translate(
+              isGroup ? 'contactCard.group' : 'contactCard.person',
+            ),
+            original: preview,
+          },
+        ],
+      },
+      (result) => {
+        if (result) void this.send(result, chat);
+      },
+    );
+  }
+
+  private async send(
+    result: ForwardDialogResult,
+    chat: ConversationItem,
+  ): Promise<void> {
+    const target = chat.type === 'GROUP' ? chat.group : chat.peerUser;
+    const outcomes = await Promise.all(
+      result.threadIds.map(async (threadId) => {
+        try {
+          const response = await firstValueFrom(
+            this.messages.sendContactCard({
+              threadId,
+              target: {
+                account: target.account,
+                namespaceId: target.namespaceId,
+                profileRev: chat.profileRev,
+              },
+              clientMessageId: uuid(),
+            }),
+          );
+          return response.code === 0;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    const sent = outcomes.filter(Boolean).length;
+    this.toast[sent === outcomes.length ? 'info' : 'warn'](
+      sent > 0
+        ? this.transloco.translate('forward.sent', { count: sent })
+        : this.transloco.translate('forward.sendFailed'),
+    );
+  }
+}

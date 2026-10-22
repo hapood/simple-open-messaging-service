@@ -1,0 +1,244 @@
+import {
+  Component,
+  inject,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
+import { MatRadioModule } from '@angular/material/radio';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
+import {
+  MediaSizeThresholdService,
+  MEDIA_LOAD_POLICY_OPTIONS,
+  type MediaLoadPolicy,
+} from '../../services/media-size-threshold.service';
+import {
+  AttachmentUploadQueueService,
+  UPLOAD_CONCURRENCY_OPTIONS,
+} from '../../services/attachment-upload-queue.service';
+import {
+  MEDIA_CACHE_LIMIT_OPTIONS_MB,
+  NativeMediaCacheService,
+} from '../../services/native-media-cache.service';
+
+/**
+ * Settings → Media sub-page. The image size-threshold picker as an M3 radio list (the old dropdown was
+ * the only settings control still using a `<mat-select>` — a radio page is the scalable M3 treatment and
+ * keeps every Settings choice consistent). Body-only.
+ */
+@Component({
+  selector: 'app-settings-media',
+  imports: [
+    MatButtonModule,
+    MatListModule,
+    MatCardModule,
+    MatRadioModule,
+    TranslocoPipe,
+  ],
+  template: `
+    <section class="settings-group">
+      <mat-card appearance="outlined" class="settings-card">
+        <mat-list>
+          @for (
+            policy of options;
+            track policy.mode + (policy.mode === 'limited' ? policy.bytes : 0)
+          ) {
+            <mat-list-item (click)="select(policy)">
+              <span matListItemTitle>{{ label(policy) }}</span>
+              <mat-radio-button
+                matListItemMeta
+                name="media-threshold"
+                [checked]="isSelected(policy)"
+                [attr.aria-label]="label(policy)"
+              >
+              </mat-radio-button>
+            </mat-list-item>
+          }
+        </mat-list>
+      </mat-card>
+      <span class="hint">{{ 'settings.mediaThresholdHint' | transloco }}</span>
+    </section>
+    <section class="settings-group">
+      <h3>{{ 'settings.uploadConcurrency' | transloco }}</h3>
+      <mat-card appearance="outlined" class="settings-card">
+        <mat-list>
+          @for (count of uploadOptions; track count) {
+            <mat-list-item (click)="selectUploadConcurrency(count)">
+              <span matListItemTitle>
+                {{ 'settings.uploadConcurrencyCount' | transloco: { count } }}
+              </span>
+              <mat-radio-button
+                matListItemMeta
+                name="upload-concurrency"
+                [checked]="uploadConcurrency() === count"
+                [attr.aria-label]="
+                  'settings.uploadConcurrencyCount' | transloco: { count }
+                "
+              >
+              </mat-radio-button>
+            </mat-list-item>
+          }
+        </mat-list>
+      </mat-card>
+      <span class="hint">{{
+        'settings.uploadConcurrencyHint' | transloco
+      }}</span>
+    </section>
+    @if (showClearCache) {
+      <section class="settings-group">
+        <h3>{{ 'settings.mediaCache' | transloco }}</h3>
+        <mat-card appearance="outlined" class="settings-card">
+          <mat-list>
+            @for (mb of cacheLimitOptions; track mb) {
+              <mat-list-item (click)="selectCacheLimit(mb)">
+                <span matListItemTitle>{{
+                  'settings.mediaCacheLimitValue'
+                    | transloco: { size: cacheSizeLabel(mb) }
+                }}</span>
+                <mat-radio-button
+                  matListItemMeta
+                  name="media-cache-limit"
+                  [checked]="nativeCache.info().limitMb === mb"
+                  [disabled]="updatingCache()"
+                  [attr.aria-label]="cacheSizeLabel(mb)"
+                />
+              </mat-list-item>
+            }
+          </mat-list>
+        </mat-card>
+        <span class="hint">{{
+          'settings.mediaCacheUsage'
+            | transloco
+              : {
+                  used: formatCacheBytes(nativeCache.info().usedBytes),
+                  limit: cacheSizeLabel(nativeCache.info().limitMb),
+                }
+        }}</span>
+      </section>
+      <section class="settings-group">
+        <mat-card appearance="outlined" class="settings-card">
+          <mat-list>
+            <mat-list-item>
+              <span matListItemTitle>{{
+                'settings.clearMediaCache' | transloco
+              }}</span>
+              <span matListItemLine class="hint">{{
+                'settings.clearMediaCacheDesc' | transloco
+              }}</span>
+              <button
+                mat-button
+                matListItemMeta
+                type="button"
+                [disabled]="clearingCache()"
+                (click)="clearCache()"
+              >
+                {{
+                  (clearingCache()
+                    ? 'settings.clearingMediaCache'
+                    : 'settings.clearMediaCacheAction'
+                  ) | transloco
+                }}
+              </button>
+            </mat-list-item>
+          </mat-list>
+        </mat-card>
+        @if (cacheCleared()) {
+          <span class="hint">{{
+            'settings.mediaCacheCleared' | transloco
+          }}</span>
+        } @else if (cacheClearFailed()) {
+          <span class="hint">{{
+            'settings.mediaCacheClearFailed' | transloco
+          }}</span>
+        }
+      </section>
+    }
+  `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styleUrl: './sub-page.scss',
+})
+export class SettingsMediaComponent {
+  private readonly media = inject(MediaSizeThresholdService);
+  private readonly uploadQueue = inject(AttachmentUploadQueueService);
+  private readonly transloco = inject(TranslocoService);
+  readonly nativeCache = inject(NativeMediaCacheService);
+
+  readonly current = this.media.policy;
+  /** The offered threshold options. */
+  readonly options = MEDIA_LOAD_POLICY_OPTIONS;
+  readonly uploadConcurrency = this.uploadQueue.maxConcurrent;
+  readonly uploadOptions: readonly number[] = UPLOAD_CONCURRENCY_OPTIONS;
+  readonly showClearCache = this.nativeCache.available;
+  readonly cacheLimitOptions = MEDIA_CACHE_LIMIT_OPTIONS_MB;
+  readonly clearingCache = signal(false);
+  readonly updatingCache = signal(false);
+  readonly cacheCleared = signal(false);
+  readonly cacheClearFailed = signal(false);
+
+  /** Display label for a policy: "512 KB" / "1 MB" / "2 MB" / "No limit". */
+  label(policy: MediaLoadPolicy): string {
+    if (policy.mode === 'unlimited')
+      return this.transloco.translate('settings.noLimit');
+    const kb = policy.bytes / 1024;
+    if (kb >= 1024) return `${kb / 1024} MB`;
+    return `${kb} KB`;
+  }
+
+  isSelected(policy: MediaLoadPolicy): boolean {
+    const current = this.current();
+    return (
+      current.mode === policy.mode &&
+      (current.mode === 'unlimited' ||
+        (policy.mode === 'limited' && current.bytes === policy.bytes))
+    );
+  }
+
+  select(policy: MediaLoadPolicy): void {
+    this.media.setPolicy(policy);
+  }
+
+  selectUploadConcurrency(count: number): void {
+    this.uploadQueue.setMaxConcurrent(count);
+  }
+
+  cacheSizeLabel(mb: number): string {
+    return mb >= 1024 ? `${mb / 1024} GB` : `${mb} MB`;
+  }
+
+  formatCacheBytes(bytes: number): string {
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+    if (bytes < 1024 * 1024 * 1024)
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
+  async selectCacheLimit(mb: number): Promise<void> {
+    if (this.updatingCache()) return;
+    this.updatingCache.set(true);
+    this.cacheClearFailed.set(false);
+    try {
+      await this.nativeCache.setLimit(mb);
+    } catch {
+      this.cacheClearFailed.set(true);
+    } finally {
+      this.updatingCache.set(false);
+    }
+  }
+
+  async clearCache(): Promise<void> {
+    if (this.clearingCache()) return;
+    this.clearingCache.set(true);
+    this.cacheCleared.set(false);
+    this.cacheClearFailed.set(false);
+    try {
+      await this.nativeCache.clear();
+      this.cacheCleared.set(true);
+    } catch {
+      this.cacheClearFailed.set(true);
+    } finally {
+      this.clearingCache.set(false);
+    }
+  }
+}

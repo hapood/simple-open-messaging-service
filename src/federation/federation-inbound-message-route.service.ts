@@ -1,0 +1,396 @@
+import { groupStateSql } from '../group/shared/group-state.js';
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { sql } from 'drizzle-orm';
+import { normalizeAccount } from '../common/account.js';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
+import type { DatabaseTransaction } from '../database/database.service.js';
+import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
+import { FederationMessageContextError } from './federation-errors.js';
+import type {
+  FederationMessageFeedMessage,
+  FederationThreadAddress,
+} from './federation-message-feed.service.js';
+
+export interface FederationInboundMessageRoute {
+  threadId: number;
+  creatorAccount: string;
+  profileNamespaceId: number;
+  authority: 'LOCAL' | 'PEER';
+  recipients: number[];
+  toAccount: string;
+}
+
+export interface FederationInboundTombstoneRoute {
+  threadId: number;
+  recipients: number[];
+  authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
+}
+
+interface ResolvedInboundAuthor {
+  account: string;
+  namespaceId: number;
+  publisherLocal: boolean;
+  receiverLocal: boolean;
+}
+
+/** Resolves authenticated wire thread coordinates to retained local federation threads. */
+@Injectable()
+export class FederationInboundMessageRouteService {
+  messageAuthor(
+    item: FederationMessageFeedMessage,
+    sourceDomain: string,
+    peerAssignedLocalNamespaceId: number,
+  ): { account: string; namespaceId: number } {
+    const author = this.resolveAuthor(
+      item,
+      sourceDomain,
+      peerAssignedLocalNamespaceId,
+    );
+    return { account: author.account, namespaceId: author.namespaceId };
+  }
+
+  private resolveAuthor(
+    item: FederationMessageFeedMessage,
+    sourceDomain: string,
+    peerAssignedLocalNamespaceId: number,
+  ): ResolvedInboundAuthor {
+    if ('ref' in item.author) {
+      if (!('peerAccount' in item.thread))
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'P2P author reference requires a P2P thread',
+          HttpStatus.BAD_REQUEST,
+        );
+      const account =
+        item.author.ref === 'THREAD_ACCOUNT'
+          ? item.thread.account
+          : item.thread.peerAccount;
+      if (
+        item.author.namespaceId === 0 &&
+        item.author.ref === 'THREAD_ACCOUNT'
+      ) {
+        return {
+          account,
+          namespaceId: 0,
+          publisherLocal: true,
+          receiverLocal: false,
+        };
+      }
+      if (
+        item.author.namespaceId > 0 &&
+        item.author.ref === 'THREAD_PEER_ACCOUNT'
+      ) {
+        return {
+          account,
+          namespaceId: 0,
+          publisherLocal: false,
+          receiverLocal: true,
+        };
+      }
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'P2P author reference conflicts with namespaceId',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (item.author.namespaceId === 0) {
+      return {
+        account: item.author.account,
+        namespaceId: item.author.namespaceId,
+        publisherLocal: true,
+        receiverLocal: false,
+      };
+    }
+    if (item.author.namespaceId === peerAssignedLocalNamespaceId) {
+      return {
+        account: item.author.account,
+        namespaceId: 0,
+        publisherLocal: false,
+        receiverLocal: true,
+      };
+    }
+    return {
+      account: item.author.account,
+      namespaceId: item.author.namespaceId,
+      publisherLocal: false,
+      receiverLocal: false,
+    };
+  }
+
+  async resolveMessage(
+    tx: DatabaseTransaction,
+    item: FederationMessageFeedMessage,
+    sourceDomain: string,
+    namespaceId: number,
+    peerAssignedLocalNamespaceId: number,
+  ): Promise<FederationInboundMessageRoute> {
+    const author = this.resolveAuthor(
+      item,
+      sourceDomain,
+      peerAssignedLocalNamespaceId,
+    );
+    let authority: FederationInboundMessageRoute['authority'] | undefined;
+    let threadRows: Array<{
+      threadId: number;
+      toAccount: string;
+    }> = [];
+    if (!('peerAccount' in item.thread)) {
+      const result = await tx.execute<{
+        threadId: number;
+        toAccount: string;
+      }>(sql`
+        SELECT thread.id AS "threadId",
+               group_user.account AS "toAccount"
+        FROM "MessageThread" thread
+        JOIN ${groupStateSql} group_user ON group_user.id = thread.id
+        WHERE thread.type = 'GROUP'
+          AND group_user.account = ${normalizeAccount(item.thread.account)}
+          AND group_user."namespaceId" = ${namespaceId}
+        LIMIT 1
+        FOR SHARE OF thread
+      `);
+      threadRows = result.rows;
+      if (threadRows.length > 0) {
+        // A remote group owns its accepted timeline except for messages authored
+        // by this server, which return as authoritative-coordinate receipts.
+        authority = author.receiverLocal ? 'LOCAL' : 'PEER';
+      }
+      // A group origin consumes only the member home's own authored submissions.
+      // Returned origin-distributed copies, including this server's own authors,
+      // must be filtered as invalid items, never associated as processing receipts.
+      // The page applier skips malformed items without blocking cursor progress.
+      if (threadRows.length === 0 && !author.publisherLocal) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'group mirror may only submit its locally managed authors',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const remoteMemberAccount = normalizeAccount(author.account);
+      if (threadRows.length === 0) {
+        const memberResult = await tx.execute<{
+          threadId: number;
+          toAccount: string;
+        }>(sql`
+          SELECT thread.id AS "threadId",
+                 group_user.account AS "toAccount"
+          FROM "RelationshipPair" pair
+          JOIN "MessageThread" thread ON thread.id = pair."threadId"
+          JOIN ${groupStateSql} group_user ON group_user.id = thread.id
+          WHERE pair.kind = 'GROUP_MEMBER'
+            AND pair.active = true
+            AND thread.type = 'GROUP'
+            AND group_user.account = ${normalizeAccount(item.thread.account)}
+            AND group_user."namespaceId" = 0
+            AND (
+              pair."endpointAType" = 'GROUP'
+              AND pair."endpointAAccount" = group_user.account
+              AND pair."endpointBType" = 'USER'
+              AND pair."endpointBAccount" = ${remoteMemberAccount}
+              AND pair."endpointBNamespaceId" = ${namespaceId}
+            )
+          LIMIT 1
+          FOR SHARE OF pair, thread
+        `);
+        threadRows = memberResult.rows;
+        if (threadRows.length > 0) authority = 'PEER';
+      }
+    } else {
+      const selfAuthored = author.receiverLocal;
+      authority = selfAuthored ? 'LOCAL' : 'PEER';
+      const expectedAuthorAccount = selfAuthored
+        ? item.thread.peerAccount
+        : item.thread.account;
+      if (
+        normalizeAccount(author.account) !==
+        normalizeAccount(expectedAuthorAccount)
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'invalid P2P missed route',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const result = await tx.execute<{
+        threadId: number;
+        toAccount: string;
+      }>(sql`
+        SELECT thread.id AS "threadId",
+               local_user.account AS "toAccount"
+        FROM "RelationshipPair" pair
+        JOIN "MessageThread" thread ON thread.id = pair."threadId"
+        JOIN "AccountThreadState" local_participant
+          ON local_participant."threadId" = thread.id
+        JOIN "Account" local_user ON local_user.id = local_participant."accountId"
+        WHERE thread.type = 'P2P'
+          AND pair.kind = 'P2P'
+          AND pair.active = true
+          AND local_user."namespaceId" = 0
+          AND local_user.account = ${normalizeAccount(item.thread.peerAccount)}
+          AND (
+            pair."endpointAType" = 'USER'
+            AND pair."endpointAAccount" = local_user.account
+            AND pair."endpointBType" = 'USER'
+            AND pair."endpointBAccount" = ${normalizeAccount(item.thread.account)}
+            AND pair."endpointBNamespaceId" = ${namespaceId}
+          )
+        LIMIT 1
+        FOR SHARE OF pair, thread, local_participant
+      `);
+      threadRows = result.rows;
+    }
+    const route = threadRows[0];
+    if (!route) {
+      throw new FederationMessageContextError(
+        'missed message has no retained local thread',
+      );
+    }
+    if (!authority) throw new Error('message authority was not resolved');
+    const creatorAccount = normalizeAccount(author.account);
+    const profileNamespaceId = author.namespaceId;
+    const recipientRows =
+      'peerAccount' in item.thread
+        ? await tx.execute<{ userId: number }>(sql`
+            SELECT participant."accountId" AS "userId"
+            FROM "AccountThreadState" participant
+            WHERE participant."threadId" = ${route.threadId}
+            FOR SHARE OF participant
+          `)
+        : await tx.execute<{ userId: number }>(sql`
+            SELECT participant."accountId" AS "userId"
+            FROM "AccountThreadState" participant
+            WHERE participant."threadId" = ${route.threadId}
+            FOR SHARE OF participant
+          `);
+    const recipients = recipientRows.rows.map((row) => row.userId);
+    if (!('peerAccount' in item.thread)) {
+      const recipientAuthorization: boolean[] = [];
+      for (const userId of recipients)
+        recipientAuthorization.push(
+          await isThreadMutuallyAuthorized(tx, userId, route.threadId),
+        );
+      return {
+        ...route,
+        authority,
+        creatorAccount,
+        profileNamespaceId,
+        recipients: recipients.filter(
+          (_, index) => recipientAuthorization[index],
+        ),
+      };
+    }
+    return {
+      ...route,
+      authority,
+      creatorAccount,
+      profileNamespaceId,
+      recipients,
+    };
+  }
+
+  async resolveTombstone(
+    tx: DatabaseTransaction,
+    thread: FederationThreadAddress,
+    sourceDomain: string,
+    namespaceId: number,
+    peerAssignedLocalNamespaceId: number,
+    messageSeq?: number,
+  ): Promise<FederationInboundTombstoneRoute> {
+    if ('peerAccount' in thread) {
+      const route = await this.resolveMessage(
+        tx,
+        {
+          thread,
+          author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
+        } as FederationMessageFeedMessage,
+        sourceDomain,
+        namespaceId,
+        peerAssignedLocalNamespaceId,
+      );
+      return { ...route, authority: 'P2P_HOME' };
+    }
+
+    const rows = await tx.execute<{
+      threadId: number;
+    }>(sql`
+      SELECT message_thread.id AS "threadId"
+      FROM "MessageThread" message_thread
+      JOIN ${groupStateSql} group_user ON group_user.id = message_thread.id
+      WHERE message_thread.type = 'GROUP'
+        AND group_user.account = ${normalizeAccount(thread.account)}
+        AND group_user."namespaceId" = ${namespaceId}
+      LIMIT 1
+      FOR SHARE OF message_thread
+    `);
+    const route = rows.rows[0];
+    if (!route && messageSeq !== undefined) {
+      // A member home may retract or moderate only a retained message authored on its own server.
+      // Reuse message routing to lock and validate that author's active membership.
+      const targets = await tx.execute<{ account: string }>(sql`
+        SELECT m."creatorAccount" AS account
+        FROM "Message" m
+        JOIN "MessageThread" t ON t.id = m."threadId"
+        JOIN ${groupStateSql} g ON g.id = t.id
+        WHERE g.account = ${normalizeAccount(thread.account)}
+          AND g."namespaceId" = 0
+          AND (
+            (
+              m."publisherNamespaceId" = ${namespaceId}
+              AND m."originSeq" = ${messageSeq}
+              AND m."profileNamespaceId" IN (0, ${namespaceId})
+            )
+            OR (
+              m."publisherNamespaceId" = 0
+              AND m."profileNamespaceId" = 0
+              AND m."originSeq" = ${messageSeq}
+              AND m."originServerTime" IS NOT NULL
+            )
+          )
+          AND m."contentType" <> 'SYSTEM'
+        LIMIT 1
+      `);
+      const target = targets.rows[0];
+      if (target) {
+        const memberRoute = await this.resolveMessage(
+          tx,
+          {
+            thread,
+            author: { account: target.account, namespaceId: 0 },
+          } as FederationMessageFeedMessage,
+          sourceDomain,
+          namespaceId,
+          peerAssignedLocalNamespaceId,
+        );
+        return {
+          ...memberRoute,
+          authority: 'GROUP_MEMBER',
+        };
+      }
+    }
+    if (!route) {
+      throw new FederationMessageContextError(
+        'tombstone has no retained local group thread',
+      );
+    }
+    const recipientRows = await tx.execute<{ userId: number }>(sql`
+      SELECT participant."accountId" AS "userId"
+      FROM "AccountThreadState" participant
+      WHERE participant."threadId" = ${route.threadId}
+      FOR SHARE OF participant
+    `);
+    const recipientAuthorization: boolean[] = [];
+    for (const row of recipientRows.rows) {
+      recipientAuthorization.push(
+        await isThreadMutuallyAuthorized(tx, row.userId, route.threadId),
+      );
+    }
+    return {
+      ...route,
+      authority: 'GROUP_ORIGIN',
+      recipients: recipientRows.rows
+        .filter((_, index) => recipientAuthorization[index])
+        .map((row) => row.userId),
+    };
+  }
+}

@@ -1,0 +1,93 @@
+# compiled output
+dist/
+node_modules/
+.angular/
+.vite/
+
+# Logs — global *.log catch-all + npm debug (npm is the only package manager here; no pnpm/yarn/lerna)
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Firebase client config (google-services.json). Federated app: each operator runs their own Firebase
+# project, so this is NEVER bundled in the APK or committed — it lives on the server under data/
+# (data/google-services.json, path overridable via FIREBASE_CLIENT_CONFIG) and is read + published at runtime
+# so the APK initializes FirebaseApp dynamically. Defense in depth alongside src-tauri/.gitignore +
+# gen/android/.gitignore so a stray copy anywhere in the tree (e.g. downloaded to the repo root) can never be
+# committed.
+google-services.json
+
+# Firebase service-account key (the SEND-side credential backing GOOGLE_APPLICATION_CREDENTIALS). Like
+# google-services.json it's a per-deploy Firebase-console download — operator places it under data/
+# (gitignored via /data), never committed.
+*-firebase-adminsdk-*.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# temp directory
+.temp
+.tmp
+/tmp/
+
+.npmrc
+web/public/push/sw-runtime.js
+
+# Docker launch directories — runtime secrets/state when testing in-tree; templates remain tracked.
+/data/
+/deploy/data/
+
+# Federation e2e compiled entry — tsc output of test/federation-app.main.ts + deps, rebuilt on
+# demand by ensureCompiledEntry (test/federation-harness.ts); never tracked
+/.e2e-build
+dev/federation-lab/runtime/
+
+dev/federation-lab/local/
+
+# Local federation diagnostic sessions
+/dev/federation-lab/diagnostic-runs/
+
+# Playwright browser test artifacts
+/test-results/
+/test/browser-e2e/test-results/
+/test/browser-e2e/report/
+/test/browser-e2e/playwright-report/
+/test/browser-e2e/**/report/
+
+# Local E2E execution state and defect investigations; canonical test plans remain tracked.
+/docs/development/*-e2e-progress.md
+/docs/development/*-e2e-handoff.md
+/docs/development/*-e2e-bug-*.md
+/docs/development/android-device-*.md
+
+# Pi local package cache and session state; project configuration may still be tracked.
+/.pi/npm/
+/.pi/subagent-history.json
+
+# Machine-local build wrapper scripts (proxy environment + delegation); keep them out of the repo.
+/scripts/*.local.sh

@@ -1,0 +1,29 @@
+<header
+  class="page-header"
+  [class.page-header--start]="titleAlign() === 'start'"
+  [class.page-header--safe-area]="safeArea()"
+>
+  @if (showBack()) {
+    <button
+      class="page-header__back"
+      type="button"
+      [disabled]="backDisabled()"
+      (click)="back.emit()"
+      [attr.aria-label]="'common.back' | transloco"
+    >
+      <app-icon
+        [type]="AppIconType.BACK"
+        [style]="{ width: '28px', height: '28px' }"
+      />
+    </button>
+  } @else {
+    <span class="page-header__leading-spacer" aria-hidden="true"></span>
+  }
+  <span class="page-header__title">
+    {{ title() }}
+    <ng-content select="[pageHeaderTitleSuffix]" />
+  </span>
+  <span class="page-header__action">
+    <ng-content select="[pageHeaderAction]" />
+  </span>
+</header>

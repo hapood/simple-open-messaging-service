@@ -1,0 +1,79 @@
+.popup-com-wrapper {
+  background: var(--app-surface);
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  // Auto-capture focuses the surface rather than its first form field. In particular this keeps Android
+  // from opening the IME as a compact page mounts, avoiding an unsolicited viewport resize.
+  outline: none;
+  /* Fullscreen compact page/viewer surfaces sit edge-to-edge, so reserve both Android system-bar insets
+     once at the shared shell. Each component fills this content box; its header and footer therefore clear
+     the bars while the surface background continues underneath. */
+  box-sizing: border-box;
+  padding-top: var(--soms-safe-top, 0px);
+  padding-bottom: var(--soms-safe-bottom, 0px);
+}
+
+// desktop: centered modal card on the backdrop instead of a full-screen overlay
+.popup-com-wrapper.desktop {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 480px;
+  max-width: 92vw;
+  height: auto;
+  max-height: 80vh;
+  border-radius: var(--app-radius-lg);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  // The modal surface is only a viewport. Dialogs split themselves into a fixed header and a
+  // min-height:0, scrollable body; letting this outer wrapper scroll would move the header away
+  // whenever the fitted content reaches the 80vh cap.
+  overflow: hidden;
+}
+
+// A two-column surface such as Settings needs more room than the standard desktop card.
+.popup-com-wrapper.desktop.wide {
+  width: 720px;
+  max-width: 94vw;
+  overflow: hidden;
+}
+
+// List/workspace dialogs need a definite viewport so their flex children and virtual scrollers can
+// resolve height:100%. Content dialogs retain intrinsic sizing through the generic desktop rule above.
+.popup-com-wrapper.desktop.workspace-height {
+  height: min(640px, 80dvh);
+  overflow: hidden;
+}
+
+// Viewers fill a bounded desktop surface. Their content is positioned inside
+// this box, so it needs an explicit height rather than the generic card's
+// intrinsic `height:auto` (which collapses for an absolutely-positioned host).
+.popup-com-wrapper.desktop.presentation-viewer {
+  width: min(760px, 92vw);
+  height: min(900px, 80dvh);
+  overflow: hidden;
+}
+
+// Compact page surfaces mirror the mobile Settings navigation model: full-screen and immediate. The
+// common wrapper owns both safe areas, so page components only size their content to 100%.
+.popup-com-wrapper.presentation-page:not(.desktop),
+.popup-com-wrapper.presentation-viewer:not(.desktop) {
+  inset: 0;
+}
+
+// Compact confirmations/notices remain dialogs rather than pretending to be full pages. Their content
+// determines the height, capped inside both system bars; the surface itself supplies the modal card.
+.popup-com-wrapper.presentation-modal:not(.desktop) {
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100vw - 32px));
+  height: auto;
+  max-height: calc(
+    100dvh - var(--soms-safe-top, 0px) - var(--soms-safe-bottom, 0px) - 32px
+  );
+  padding: 0;
+  border-radius: var(--app-radius-lg);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+  overflow: auto;
+}

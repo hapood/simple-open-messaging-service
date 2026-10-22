@@ -1,0 +1,318 @@
+import {
+  Component,
+  computed,
+  inject,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
+import { MatListModule } from '@angular/material/list';
+import { MatCardModule } from '@angular/material/card';
+import { MatButtonModule } from '@angular/material/button';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
+import {
+  WebsocketService,
+  ConnectionState,
+} from '../../services/websocket.service';
+import { LanguageService } from '../../services/language.service';
+import { apiPrefix } from '../../services/constants';
+import {
+  apiOrigin,
+  getActiveApiOrigin,
+  getOriginMode,
+} from '../../services/runtime';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { firstValueFrom, timeout, TimeoutError } from 'rxjs';
+
+/** Result of a manual server reachability probe. */
+interface HealthResult {
+  ok: boolean;
+  version?: string;
+  ms?: number;
+  error?: string;
+}
+
+/**
+ * Map a health-probe failure to the short token shown in the UI (interpolated into the translated
+ * "unreachable" hint). Pure + standalone so every branch is unit-testable directly: the `TimeoutError`
+ * branch is unreachable through HttpClient's testing backend (which can't synthesize one), and driving
+ * it through the real pipe stalls Angular's zoneless stability check.
+ *
+ * HttpClient rejects with an `HttpErrorResponse`, which `implements Error` but does NOT extend `Error`
+ * — so a bare `instanceof Error` check silently misses every HTTP/connection failure. Handle it first:
+ * a non-2xx response → "HTTP <status>"; a connection-level failure (status 0 — host unreachable / DNS /
+ * CORS) → "network". A probe that blows past the deadline arrives as a rxjs `TimeoutError` → "timeout".
+ * A genuine thrown Error → its message; anything else → "network".
+ */
+export function classifyProbeError(e: unknown): string {
+  if (e instanceof HttpErrorResponse)
+    return e.status === 0 ? 'network' : `HTTP ${e.status}`;
+  if (e instanceof TimeoutError) return 'timeout';
+  if (e instanceof Error) return e.message;
+  return 'network';
+}
+
+/**
+ * Settings → Connection sub-page. Two diagnostics rows:
+ *
+ *  1. Realtime connection — the authenticated SSE stream that delivers live messages. Its
+ *     {@link WebsocketService.state} is shown as a colored pill (green=open, amber=connecting/
+ *     reconnecting, muted=closed), with a Retry button that calls {@link WebsocketService.retryNow}
+ *     (skips the worker's backoff — for impatience; the stream auto-reconnects on its own).
+ *  2. Server reachability — a manual pre-login compatibility probe (no sign-in
+ *     needed). Reports reachable/unreachable with the server version + round-trip latency. Deliberately
+ *     INDEPENDENT of the SSE stream: reachability can be OK while the authenticated stream is reconnecting
+ *     (e.g. a stale token mid-renew), and the stream can be open while health is unchecked.
+ *
+ * Body-only: the host (mobile aside or desktop dialog) provides the panel shell + category list. The
+ * trailing pill+button cluster on each row sits in a single `<div matListItemMeta>` so the whole group
+ * projects into the MDC list-item `__end` slot (multiple bare children would land in the primary content
+ * slot — the crooked-toggle bug). All vertical metrics are integer px (project rule).
+ */
+@Component({
+  selector: 'app-settings-connection',
+  imports: [MatListModule, MatCardModule, MatButtonModule, TranslocoPipe],
+  template: `
+    <section class="settings-group">
+      <mat-card appearance="outlined" class="settings-card">
+        <mat-list>
+          <!-- Active server (primary vs LAN fallback) -->
+          <mat-list-item>
+            <span matListItemTitle>{{
+              'settings.activeServer' | transloco
+            }}</span>
+            <span matListItemLine class="hint">{{ activeOriginHint() }}</span>
+            <div matListItemMeta class="row-actions">
+              <span
+                class="status-pill"
+                [class.warn]="originMode() === 'secondary'"
+                >{{ originPillLabel() }}</span
+              >
+            </div>
+          </mat-list-item>
+
+          <!-- Realtime connection (SSE) -->
+          <mat-list-item>
+            <span matListItemTitle>{{
+              'settings.realtimeConnection' | transloco
+            }}</span>
+            <span matListItemLine class="hint">{{
+              'settings.realtimeDesc' | transloco
+            }}</span>
+            <div matListItemMeta class="row-actions">
+              <span
+                class="status-pill"
+                [class.active]="connPillClass() === 'active'"
+                [class.warn]="connPillClass() === 'warn'"
+                >{{ connLabel() }}</span
+              >
+              <button
+                mat-button
+                type="button"
+                class="check-btn"
+                (click)="retry()"
+                [disabled]="!canRetry()"
+              >
+                {{ 'settings.retry' | transloco }}
+              </button>
+            </div>
+          </mat-list-item>
+
+          <!-- Server reachability (client compatibility probe) -->
+          <mat-list-item>
+            <span matListItemTitle>{{
+              'settings.serverHealth' | transloco
+            }}</span>
+            <span matListItemLine class="hint">{{ healthHint() }}</span>
+            <div matListItemMeta class="row-actions">
+              <span
+                class="status-pill"
+                [class.active]="healthPillClass() === 'active'"
+                [class.error]="healthPillClass() === 'error'"
+                >{{ healthPillLabel() }}</span
+              >
+              <button
+                mat-button
+                type="button"
+                class="check-btn"
+                (click)="check()"
+                [disabled]="checking()"
+              >
+                {{
+                  (checking()
+                    ? 'settings.healthChecking'
+                    : 'settings.healthCheck'
+                  ) | transloco
+                }}
+              </button>
+            </div>
+          </mat-list-item>
+        </mat-list>
+      </mat-card>
+    </section>
+  `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  styleUrl: './sub-page.scss',
+})
+export class SettingsConnectionComponent {
+  private readonly ws = inject(WebsocketService);
+  private readonly transloco = inject(TranslocoService);
+  private readonly language = inject(LanguageService);
+  private readonly http = inject(HttpClient);
+
+  /** Last health-probe result, or null before the first check. */
+  readonly health = signal<HealthResult | null>(null);
+  /** True while a health probe is in flight (disables the button + shows the "Checking…" label). */
+  readonly checking = signal(false);
+  /** Which origin is ACTIVE — 'primary' (normal) or 'secondary' (the LAN fallback). Loaded from Rust's
+   *  get_origin_mode on init + after each health probe; stays 'primary' in the browser build. */
+  readonly originMode = signal<'primary' | 'secondary'>('primary');
+  readonly activeOrigin = signal(apiOrigin());
+  /** Probe deadline (ms). Bounds the `checking` lifecycle so a hung connection (host reachable but
+   *  never responding) can't wedge the button forever — complements the re-entrancy guard. Tuned as a
+   *  liveness budget (see `check()`), NOT against the server's request-handling window. */
+  private readonly probeTimeoutMs = 8000;
+
+  // ── Realtime connection ────────────────────────────────────────────────────────────────────
+
+  /** Localized state label for the pill (re-renders on language switch). */
+  readonly connLabel = computed(() => {
+    void this.language.lang();
+    return this.transloco.translate(this.connKey(this.ws.state()));
+  });
+  /** Pill color: green when open, amber while connecting/reconnecting, muted when closed. */
+  readonly connPillClass = computed<string>(() => {
+    switch (this.ws.state()) {
+      case 'open':
+        return 'active';
+      case 'connecting':
+      case 'reconnecting':
+        return 'warn';
+      default:
+        return ''; // 'closed'
+    }
+  });
+  /** Retry is meaningful only mid-(re)connect — retryNow is a no-op when open or closed. */
+  readonly canRetry = computed(
+    () =>
+      this.ws.state() === 'connecting' || this.ws.state() === 'reconnecting',
+  );
+
+  private connKey(s: ConnectionState): string {
+    switch (s) {
+      case 'open':
+        return 'settings.connStatusOpen';
+      case 'connecting':
+        return 'settings.connStatusConnecting';
+      case 'reconnecting':
+        return 'settings.connStatusReconnecting';
+      default:
+        return 'settings.connStatusClosed';
+    }
+  }
+
+  /** Skip the worker's backoff and reconnect at once (no-op unless mid-(re)connect). */
+  retry(): void {
+    this.ws.retryNow();
+  }
+
+  constructor() {
+    this.loadOriginMode();
+  }
+
+  // ── Active server (origin mode) ────────────────────────────────────────────────────────────
+
+  /** Pill label: "Primary" normally, "Second server" (warn) when on the fallback. */
+  readonly originPillLabel = computed(() => {
+    void this.language.lang();
+    return this.transloco.translate(
+      this.originMode() === 'secondary'
+        ? 'settings.serverLan'
+        : 'settings.serverPrimary',
+    );
+  });
+
+  /** Detail line: the actual active address, not merely the stable configured primary. */
+  readonly activeOriginHint = computed(() => {
+    return this.activeOrigin();
+  });
+
+  /** Read the active mode from Rust (get_origin_mode). Re-called after each health probe (a probe may
+   *  trigger a switch). Stays 'primary' in the browser build (no fallback) or if the IPC is unavailable. */
+  private async loadOriginMode(): Promise<void> {
+    try {
+      const [mode, active] = await Promise.all([
+        getOriginMode(),
+        getActiveApiOrigin(),
+      ]);
+      this.originMode.set(mode);
+      this.activeOrigin.set(active);
+    } catch {
+      // not under Tauri — 'primary' default
+    }
+  }
+
+  // ── Server health ──────────────────────────────────────────────────────────────────────────
+
+  /** Short pill label: idle / OK / failed (re-renders on language switch). */
+  readonly healthPillLabel = computed(() => {
+    void this.language.lang();
+    const h = this.health();
+    if (!h) return this.transloco.translate('settings.healthIdle');
+    return this.transloco.translate(
+      h.ok ? 'settings.healthOkShort' : 'settings.healthFailShort',
+    );
+  });
+
+  readonly healthPillClass = computed<string>(() => {
+    const h = this.health();
+    if (!h) return ''; // idle → muted
+    return h.ok ? 'active' : 'error';
+  });
+
+  /** Detail line: the default description, or the version + latency / error from the last probe. */
+  readonly healthHint = computed(() => {
+    void this.language.lang();
+    const h = this.health();
+    if (!h) return this.transloco.translate('settings.healthDesc');
+    if (h.ok) {
+      return this.transloco.translate('settings.healthOkDetail', {
+        version: h.version ?? '?',
+        ms: h.ms ?? '?',
+      });
+    }
+    return this.transloco.translate('settings.healthFailDetail', {
+      error: h.error ?? '',
+    });
+  });
+
+  /** Probe `GET /api/v1/client/compat` (public), measure round-trip latency, store the result. Goes through
+   *  HttpClient (→ the TauriHttpBackend under Tauri / the stock fetch backend in the browser) so it works
+   *  on Android, where a raw fetch of an API path would miss the (removed) `api://` proxy. Independent of
+   *  the authenticated SSE stream: health can be OK while the stream reconnects. */
+  async check(): Promise<void> {
+    if (this.checking()) return;
+    this.checking.set(true);
+    const t0 = performance.now();
+    try {
+      const json = await firstValueFrom(
+        this.http
+          .get<{
+            code: number;
+            data?: { serverVersion?: string; apiVersion?: number };
+          }>(`${apiPrefix()}/client/compat`)
+          .pipe(timeout(this.probeTimeoutMs)),
+      );
+      const ms = Math.round(performance.now() - t0);
+      if (json?.code !== 0 || !Number.isInteger(json.data?.apiVersion)) {
+        throw new Error('Invalid client compatibility response');
+      }
+      const version = json.data?.serverVersion ?? '';
+      this.health.set({ ok: true, version, ms });
+    } catch (e) {
+      this.health.set({ ok: false, error: classifyProbeError(e) });
+    } finally {
+      this.checking.set(false);
+      void this.loadOriginMode();
+    }
+  }
+}

@@ -1,0 +1,36 @@
+:host {
+  // Typography variables overridable by the host. CSS variables pass through ViewEncapsulation:
+  // on the brand-gradient panel (auth-brand white text) just set --bl-*-color on the host — no ::ng-deep needed.
+  --bl-word: 27px;
+  --bl-tag: 14px;
+  --bl-word-color: var(--app-text);
+  --bl-tag-color: var(--app-text-muted);
+}
+
+.brand-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.bl-mark {
+  display: block;
+  margin: 0 auto 10px;
+  border-radius: var(--bl-mark-radius, 0);
+}
+
+.bl-word {
+  font-size: var(--bl-word);
+  line-height: 32px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  color: var(--bl-word-color);
+}
+
+.bl-tag {
+  margin-top: 12px;
+  font-size: var(--bl-tag);
+  line-height: 1.6;
+  color: var(--bl-tag-color);
+}

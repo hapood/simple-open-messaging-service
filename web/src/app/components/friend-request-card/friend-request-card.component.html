@@ -1,0 +1,97 @@
+<div
+  class="card"
+  role="button"
+  tabindex="0"
+  (click)="opened.emit()"
+  (keydown.enter)="opened.emit()"
+>
+  <span class="avatar">
+    @let resolvedDomain = requestItem().namespaceId | namespaceDomain | async;
+    @let avatarType = requestItem().kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER;
+    @if (sentSnapshot(); as snapshot) {
+      <app-snapshot-avatar
+        [type]="avatarType"
+        [name]="snapshot.displayName"
+        [src]="snapshot.avatar"
+        [account]="requestItem().account"
+        [domainSource]="{ type: 'namespace', namespaceId: requestItem().namespaceId }"
+      />
+    } @else {
+      <app-demand-avatar
+        [type]="avatarType"
+        [account]="requestItem().account"
+        [domainSource]="{ type: 'namespace', namespaceId: requestItem().namespaceId }"
+        [profile]="avatarProfile()"
+      />
+    }
+  </span>
+  <span class="content">
+    <span class="heading">
+      <app-user-identity-label
+        [account]="requestItem().account"
+        [domain]="resolvedDomain"
+        [snapshot]="sentSnapshot()"
+        [profileRef]="avatarProfile()"
+      />
+    </span>
+    <span class="message" [class.error]="requestItem().errText">
+      {{
+        requestItem().errText ||
+          requestItem().reqMessage ||
+          ('friend.noMessage' | transloco)
+      }}
+    </span>
+  </span>
+  <span class="date">{{ relativeDate() }}</span>
+  <span class="action">
+    @if (requestItem().status === RequestProjectionStatus.ACCEPTED) {
+      <button mat-button type="button" disabled>
+        {{ 'friend.approved' | transloco }}
+      </button>
+    } @else if (requestItem().status === RequestProjectionStatus.WITHDRAWN) {
+      <button mat-button type="button" disabled>
+        {{ 'friend.revoked' | transloco }}
+      </button>
+    } @else if (requestItem().status === RequestProjectionStatus.REJECTED) {
+      <button mat-button type="button" disabled>
+        {{ 'friend.rejected' | transloco }}
+      </button>
+    } @else if (requestItem().status === RequestProjectionStatus.EXPIRED) {
+      <button mat-button type="button" disabled>
+        {{ 'friend.expired' | transloco }}
+      </button>
+    } @else if (direction() === 'INCOMING') {
+      <button
+        mat-button
+        type="button"
+        [disabled]="actionPending()"
+        (click)="act($event, 'reject')"
+      >
+        {{ 'friend.decline' | transloco }}
+      </button>
+      <button
+        mat-flat-button
+        color="primary"
+        type="button"
+        [disabled]="actionPending()"
+        (click)="act($event, 'approve')"
+      >
+        {{
+          (requestItem().kind === 'GROUP'
+            ? 'friend.joinGroup'
+            : 'friend.approve'
+          ) | transloco
+        }}
+      </button>
+    } @else {
+      <button
+        mat-button
+        type="button"
+        [disabled]="actionPending()"
+        (click)="act($event, 'revoke')"
+      >
+        {{ 'friend.revoke' | transloco }}
+      </button>
+    }
+  </span>
+</div>

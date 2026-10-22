@@ -1,0 +1,169 @@
+// File-detail modal content. TransientOverlayService/CDK owns the shared backdrop and dismissal; this host
+// fills the overlay pane and centers the themed card inside the safe areas.
+
+:host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  position: fixed;
+  inset: 0;
+  padding:
+    calc(24px + var(--soms-safe-top, 0px))
+    24px
+    calc(24px + var(--soms-safe-bottom, 0px));
+  overflow: auto;
+  animation: fd-enter 0.18s ease-out;
+  z-index: 1100; // above the app shell; below nothing (top-most overlay)
+}
+
+.fd-card {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  box-sizing: border-box;
+  padding: 28px 22px 22px;
+  border-radius: 14px;
+  background: var(--app-surface, #ffffff);
+  color: var(--app-text, #1f2328);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+}
+
+.fd-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--app-text-muted, #6b7280);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  &:hover { background: var(--app-border, rgba(0, 0, 0, 0.06)); color: var(--app-text, #1f2328); }
+  &:focus-visible { outline: 2px solid var(--app-primary, #2b6cb0); outline-offset: 2px; }
+}
+
+// Type-tinted icon (mirrors the row's msg-file-ico artwork, scaled up). The tint drives the rounded-square background;
+// the file svg + ext badge sit on top in white.
+.fd-icon {
+  position: relative;
+  width: 64px;
+  height: 76px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: #fff;
+  background: var(--fd-c, #6b7280);
+}
+.fd-icon-ext {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+.fd-icon--pdf { --fd-c: #e53935; }
+.fd-icon--doc { --fd-c: #2b6cb0; }
+.fd-icon--sheet { --fd-c: #2e7d32; }
+.fd-icon--slides { --fd-c: #ef6c00; }
+.fd-icon--archive { --fd-c: #7b1fa2; }
+.fd-icon--text { --fd-c: #546e7a; }
+.fd-icon--unknown { --fd-c: #6b7280; }
+
+// The full filename: wraps freely across lines and breaks long unbreakable runs — this view exists precisely so a
+// long name can be read in full (the row ellipses it). center-aligned to match the icon header.
+.fd-name {
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 600;
+  text-align: center;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  margin-bottom: 18px;
+}
+
+// Meta rows: a two-column label/value grid (dt fixed-width, dd takes the rest). Separator above.
+.fd-meta {
+  margin: 0 0 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--app-border, rgba(0, 0, 0, 0.08));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fd-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.fd-meta-row dt {
+  flex: 0 0 72px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--app-text-muted, #6b7280);
+}
+.fd-meta-row dd {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 18px;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+// Download: full-width primary action. The <a> keeps native download semantics (the row no longer hosts it).
+.fd-download {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 44px;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  background: var(--app-primary, #2b6cb0);
+  color: #fff;
+  transition: filter 0.15s ease;
+  &:hover { filter: brightness(1.08); }
+  &:focus-visible { outline: 2px solid var(--app-primary, #2b6cb0); outline-offset: 3px; }
+  &.fd-download--disabled {
+    background: var(--app-border, rgba(0, 0, 0, 0.08));
+    color: var(--app-text-muted, #6b7280);
+    cursor: not-allowed;
+  }
+  // Backend relocalize retry (federated file status 'failed') — danger-tinted primary action.
+  &.fd-download--retry {
+    background: var(--app-danger, #e53935);
+  }
+  // Backend localize in flight (status 'downloading') — neutral, spinner + label, no interaction.
+  &.fd-download--loading {
+    background: var(--app-border, rgba(0, 0, 0, 0.08));
+    color: var(--app-text-muted, #6b7280);
+    cursor: default;
+    .mat-progress-spinner circle.mat-spinner-stroke { stroke: currentColor; }
+  }
+}
+
+@keyframes fd-enter {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host { animation: none; }
+}

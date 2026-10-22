@@ -1,0 +1,218 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { compareCurrentMemberMessages } from './message-set-audit.mjs';
+
+const alice = 'alice@alpha.test';
+const bob = 'bob@bravo.test';
+const threadKey = `${alice}|${bob}`;
+const message = (account, domain, seq, originSeq, text) => ({
+  creatorAccount: account,
+  creatorDomain: domain,
+  seq,
+  originSeq,
+  contentType: 'PURE_TEXT',
+  content: text,
+  localState: 'READY',
+  isDeleted: false,
+});
+function fixture() {
+  return {
+    groupAddress: threadKey,
+    members: [alice, bob],
+    nodeNames: ['alpha', 'bravo'],
+    signature: (_node, row) => row.content,
+    messages: {
+      alpha: new Map([
+        [
+          threadKey,
+          {
+            curSeq: 7,
+            deletedSeqs: new Set(),
+            messages: [
+              message('alice', 'alpha.test', 2, 1, 'before removing friend'),
+              message('bob', 'bravo.test', 7, 4, 'after re-adding friend'),
+            ],
+          },
+        ],
+      ]),
+      bravo: new Map([
+        [
+          threadKey,
+          {
+            curSeq: 4,
+            deletedSeqs: new Set(),
+            messages: [
+              message('alice', 'alpha.test', 1, 2, 'before removing friend'),
+              message('bob', 'bravo.test', 4, 7, 'after re-adding friend'),
+            ],
+          },
+        ],
+      ]),
+    },
+  };
+}
+test('compares all current authors across different local seq spaces, including retained history', () => {
+  assert.deepEqual(compareCurrentMemberMessages(fixture()).failures, []);
+});
+
+test('accepts simultaneous P2P sends whose peer receipt seq differs from both author seqs', () => {
+  const value = fixture();
+  value.messages.alpha.get(threadKey).messages = [
+    message('alice', 'alpha.test', 2, 3, 'alice send'),
+    message('bob', 'bravo.test', 3, 2, 'bob send'),
+  ];
+  value.messages.bravo.get(threadKey).messages = [
+    message('bob', 'bravo.test', 2, 3, 'bob send'),
+    message('alice', 'alpha.test', 3, 2, 'alice send'),
+  ];
+  assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
+  value.messages.bravo.get(threadKey).messages[1].originSeq = 4;
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_ORIGIN_SEQ',
+    ),
+  );
+});
+
+test('rejects a P2P receipt that incorrectly confirms the author local seq', () => {
+  const value = fixture();
+  value.messages.alpha.get(threadKey).messages[0].originSeq = 2;
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_ORIGIN_SEQ',
+    ),
+  );
+});
+
+test('validates a group submission, authority copy, and third-node mirror after confirmation', () => {
+  const key = '!group@alpha.test';
+  const carol = 'carol@charlie.test';
+  const row = (seq, originSeq, domain, sourceDomain) => ({
+    ...message('carol', domain, seq, originSeq, 'three coordinate spaces'),
+    sourceDomain,
+  });
+  const thread = (entry) => ({
+    curSeq: entry.seq,
+    messages: [entry],
+    deletedSeqs: new Set(),
+  });
+  const value = {
+    groupAddress: key,
+    members: [carol],
+    nodeNames: ['alpha', 'bravo', 'charlie'],
+    signature: (_node, entry) => entry.content,
+    messages: {
+      alpha: new Map([
+        [key, thread(row(10, 8, 'charlie.test', 'charlie.test'))],
+      ]),
+      bravo: new Map([[key, thread(row(9, 10, 'charlie.test', 'alpha.test'))]]),
+      charlie: new Map([
+        [key, thread(row(8, 10, 'charlie.test', 'charlie.test'))],
+      ]),
+    },
+  };
+  assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
+  const source = value.messages.charlie.get(key).messages[0];
+  source.originSeq = 8;
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_ORIGIN_SEQ',
+    ),
+  );
+  source.originSeq = 10;
+  const mirror = value.messages.bravo.get(key).messages[0];
+  mirror.sourceDomain = 'charlie.test';
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'MESSAGE_SOURCE',
+    ),
+  );
+  mirror.sourceDomain = 'alpha.test';
+  // Publisher-local profile coordinates must not be mistaken for the
+  // upstream author's domain. The exact authority row identifies the author.
+  mirror.creatorDomain = 'alpha.test';
+  assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
+  mirror.creatorAccount = 'different-account';
+  assert.ok(compareCurrentMemberMessages(value).failures.length > 0);
+  mirror.creatorAccount = 'carol';
+  mirror.originSeq = 8;
+  assert.ok(compareCurrentMemberMessages(value).failures.length > 0);
+});
+test('detects a historical message lost after friendship is re-established', () => {
+  const value = fixture();
+  value.messages.bravo.get(threadKey).messages.shift();
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_MESSAGE_MISSING',
+    ),
+  );
+});
+
+test('P2P permits absent withdrawn history only after scanning, never an undeleted retained copy', () => {
+  const value = fixture();
+  const source = value.messages.alpha.get(threadKey);
+  const mirror = value.messages.bravo.get(threadKey);
+  source.messages[0].isDeleted = true;
+  source.deletedSeqs.add(2);
+  const retained = mirror.messages.shift();
+  mirror.syncState = {
+    messageTargetSeq: 2,
+    messageProcessedThroughSeq: 2,
+    deletionTargetSeq: 1,
+    deletionProcessedThroughSeq: 1,
+    activeGapId: null,
+  };
+  mirror.historyGaps = [];
+  assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
+  mirror.syncState.deletionRecoveryThroughSeq = 1;
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_MESSAGE_MISSING',
+    ),
+  );
+  mirror.syncState.deletionRecoveryThroughSeq = null;
+  mirror.messages.unshift(retained);
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_DELETION_MISMATCH',
+    ),
+  );
+  retained.isDeleted = true;
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_TOMBSTONE_MISSING',
+    ),
+  );
+  mirror.deletedSeqs.add(retained.seq);
+  assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
+});
+test('does not require message equality for historical group members', () => {
+  const value = fixture();
+  value.members = [bob];
+  value.messages.bravo.get(threadKey).messages.shift();
+  assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
+});
+test('detects source coordinate drift, duplicate seq, and deleted-state mismatch', () => {
+  const drift = fixture();
+  drift.messages.bravo.get(threadKey).messages[1].originSeq = 3;
+  assert.ok(
+    compareCurrentMemberMessages(drift).failures.some(
+      ({ kind }) => kind === 'AUTHOR_ORIGIN_SEQ',
+    ),
+  );
+  const duplicate = fixture();
+  duplicate.messages.alpha.get(threadKey).messages[1].seq = 2;
+  assert.ok(
+    compareCurrentMemberMessages(duplicate).failures.some(
+      ({ kind }) => kind === 'MESSAGE_COORDINATE',
+    ),
+  );
+  const deleted = fixture();
+  deleted.messages.bravo.get(threadKey).messages[1].isDeleted = true;
+  deleted.messages.bravo.get(threadKey).deletedSeqs.add(4);
+  assert.ok(
+    compareCurrentMemberMessages(deleted).failures.some(
+      ({ kind }) => kind === 'AUTHOR_DELETION_MISMATCH',
+    ),
+  );
+});

@@ -1,0 +1,233 @@
+<div #mount class="gv-mount"></div>
+
+<header
+  class="gv-topbar"
+  [class.gv-chrome--hidden]="!chromeVisible() || videoFullscreen()"
+  [attr.aria-hidden]="!chromeVisible() || videoFullscreen()"
+>
+  <button
+    type="button"
+    class="gv-action gv-close"
+    (click)="dismiss($event)"
+    [attr.aria-label]="'gallery.closeAria' | transloco"
+  >
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  </button>
+
+  @if (images().length > 1) {
+    <span class="gv-counter" aria-live="polite">
+      {{ index() + 1 }} / {{ images().length }}
+    </span>
+  }
+
+  @if (currentStatus() === MEDIA_STATUS.READY && currentUrl()) {
+    <button
+      type="button"
+      class="gv-action gv-download"
+      [disabled]="saving()"
+      (click)="saveCurrent($event)"
+      [attr.aria-label]="'gallery.downloadAria' | transloco"
+    >
+      @if (saving()) {
+        <mat-progress-spinner mode="indeterminate" [diameter]="22" />
+      } @else {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
+        </svg>
+      }
+    </button>
+  }
+</header>
+
+@if (showThumbs()) {
+  <nav
+    #thumbRail
+    class="gv-thumbs"
+    [class.gv-chrome--hidden]="!chromeVisible()"
+    [attr.aria-label]="'gallery.mediaRailAria' | transloco"
+    [attr.aria-hidden]="!chromeVisible()"
+  >
+    @for (media of images(); track $index) {
+      <button
+        type="button"
+        class="gv-thumb"
+        [class.gv-thumb--active]="$index === index()"
+        [attr.data-index]="$index"
+        [attr.aria-current]="$index === index() ? 'true' : null"
+        [attr.aria-label]="
+          'gallery.openMediaAria' | transloco: { index: $index + 1 }
+        "
+        (click)="goTo($index)"
+      >
+        @if (media.kind === 'file' || media.kind === 'audio') {
+          <span class="gv-thumb-placeholder" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+              />
+              <path d="M14 3v5h5" />
+            </svg>
+          </span>
+        } @else if (media.kind === 'video') {
+          @if (useNativeVideo) {
+            <img [src]="mediaUrl(media)" alt="" />
+          } @else {
+            <video
+              muted
+              playsinline
+              preload="metadata"
+              [src]="mediaUrl(media)"
+              aria-hidden="true"
+            ></video>
+          }
+          <span class="gv-thumb-play" aria-hidden="true"></span>
+        } @else if (!isMediaGated(media)) {
+          <img [src]="mediaUrl(media)" alt="" />
+        } @else {
+          <span class="gv-thumb-placeholder" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 17l5-4 3 2 3-3 5 5" />
+              <rect x="3" y="4" width="18" height="16" rx="3" />
+            </svg>
+          </span>
+        }
+      </button>
+    }
+  </nav>
+}
+
+@if (currentTask()?.status === 'downloading') {
+  <div class="gv-load" role="status">
+    <svg class="gv-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+      <circle cx="9" cy="10" r="2"></circle>
+      <path d="M4 17l5-4 3 2 3-3 5 5"></path>
+    </svg>
+    <div class="gv-load-progress">
+      <div class="gv-load-progress__heading">
+        <span>{{ 'gallery.loadingImage' | transloco }}</span>
+        @if (currentProgress() !== null) {
+          <strong>{{ currentProgress() }}%</strong>
+        }
+      </div>
+      <div
+        class="gv-load-progress__track"
+        [class.gv-load-progress__track--indeterminate]="
+          currentProgress() === null
+        "
+      >
+        <span [style.width.%]="currentProgress() ?? 32"></span>
+      </div>
+      <div class="gv-load-progress__footer">
+        <span>{{ currentProgressText() }}</span>
+        <button type="button" (click)="cancelCurrent()">
+          {{ 'common.cancel' | transloco }}
+        </button>
+      </div>
+    </div>
+  </div>
+} @else if (currentTask()?.status === 'failed') {
+  <div class="gv-load">
+    <svg class="gv-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+      <circle cx="9" cy="10" r="2"></circle>
+      <path d="M4 17l5-4 3 2 3-3 5 5"></path>
+    </svg>
+    <button
+      type="button"
+      class="gv-load-button"
+      (click)="retryCurrentDownload()"
+    >
+      <span class="gv-load-button__label">{{
+        'gallery.failed' | transloco
+      }}</span>
+      <small class="gv-load-button__size">{{
+        'gallery.tapRetry' | transloco
+      }}</small>
+    </button>
+  </div>
+} @else if (currentNeedsLoad()) {
+  <div class="gv-load">
+    <svg class="gv-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+      <circle cx="9" cy="10" r="2"></circle>
+      <path d="M4 17l5-4 3 2 3-3 5 5"></path>
+    </svg>
+    <button type="button" class="gv-load-button" (click)="loadCurrent()">
+      <span class="gv-load-button__label">
+        {{ 'gallery.loadImage' | transloco }}
+      </span>
+      @if (current(); as media) {
+        @if (media.size) {
+          <small class="gv-load-button__size">{{
+            formatBytes(media.size)
+          }}</small>
+        }
+      }
+    </button>
+  </div>
+} @else if (currentStatus() === MEDIA_STATUS.PENDING) {
+  <div
+    class="gv-status gv-status--pending"
+    role="status"
+    [attr.aria-label]="'chat.mediaPending' | transloco"
+  >
+    <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+    <span>{{ 'chat.mediaPending' | transloco }}</span>
+  </div>
+} @else if (currentStatus() === MEDIA_STATUS.FAILED) {
+  <div class="gv-load">
+    <svg class="gv-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+      <circle cx="9" cy="10" r="2"></circle>
+      <path d="M4 17l5-4 3 2 3-3 5 5"></path>
+    </svg>
+    <button
+      type="button"
+      class="gv-load-button"
+      (click)="relocalizeCurrent()"
+      [attr.aria-label]="'chat.retryDownload' | transloco"
+    >
+      <span class="gv-load-button__label">{{
+        'chat.mediaFailed' | transloco
+      }}</span>
+      <small class="gv-load-button__size">{{
+        'chat.retryDownload' | transloco
+      }}</small>
+    </button>
+  </div>
+} @else if (currentStatus() === MEDIA_STATUS.DOWNLOADING) {
+  <div
+    class="gv-status"
+    role="status"
+    [attr.aria-label]="'chat.mediaDownloading' | transloco"
+  >
+    <mat-progress-spinner mode="indeterminate" [diameter]="32" />
+  </div>
+} @else if (currentLoadFailed()) {
+  <div class="gv-load">
+    <svg class="gv-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+      <circle cx="9" cy="10" r="2"></circle>
+      <path d="M4 17l5-4 3 2 3-3 5 5"></path>
+    </svg>
+    <button
+      type="button"
+      class="gv-load-button"
+      (click)="retryLoad()"
+      [attr.aria-label]="'gallery.retryAria' | transloco"
+    >
+      <span class="gv-load-button__label">{{
+        'gallery.failed' | transloco
+      }}</span>
+      <small class="gv-load-button__size">{{
+        'gallery.tapRetry' | transloco
+      }}</small>
+    </button>
+  </div>
+}

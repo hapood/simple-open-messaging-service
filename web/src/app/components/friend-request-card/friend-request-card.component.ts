@@ -1,0 +1,95 @@
+import {
+  parseRequestSnapshot,
+  type RequestSnapshot,
+} from '../../../../../shared/request-snapshot';
+import {
+  RequestProjectionStatus,
+  type RequestProjectionStatusValue,
+} from '../../../../../shared/request-projection-status';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  inject,
+  input,
+  output,
+} from '@angular/core';
+import { AsyncPipe } from '@angular/common';
+import { MatButtonModule } from '@angular/material/button';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
+import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
+
+export interface FriendRequestCardModel {
+  id: string;
+  peerId?: number | string;
+  account: string;
+  namespaceId: number;
+  reqMessage?: string;
+  status: RequestProjectionStatusValue;
+  date: number;
+  errText: string;
+  kind?: 'FRIEND' | 'GROUP';
+  profileRev?: number;
+  snapshot: RequestSnapshot | null;
+}
+
+@Component({
+  selector: 'app-friend-request-card',
+  imports: [
+    AsyncPipe,
+    MatButtonModule,
+    NamespaceDomainPipe,
+    TranslocoPipe,
+    DemandAvatarComponent,
+    SnapshotAvatarComponent,
+    UserIdentityLabelComponent,
+  ],
+  templateUrl: './friend-request-card.component.html',
+  styleUrl: './friend-request-card.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class FriendRequestCardComponent {
+  private readonly transloco = inject(TranslocoService);
+  readonly RequestProjectionStatus = RequestProjectionStatus;
+  readonly requestItem = input.required<FriendRequestCardModel>();
+  readonly direction = input.required<'INCOMING' | 'OUTGOING'>();
+  readonly relativeDate = input.required<string>();
+  readonly actionPending = input(false);
+  readonly opened = output<void>();
+  readonly approved = output<void>();
+  readonly revoked = output<void>();
+  readonly rejected = output<void>();
+  readonly UserAvatarType = UserAvatarType;
+
+  sentSnapshot(): RequestSnapshot | null {
+    return this.direction() === 'OUTGOING'
+      ? parseRequestSnapshot(this.requestItem().snapshot)
+      : null;
+  }
+
+  avatarProfile(): AvatarProfileRef | undefined {
+    if (this.sentSnapshot() !== null) return undefined;
+    const request = this.requestItem();
+    return request.account && request.profileRev
+      ? {
+          account: request.account,
+          publisherNamespaceId: request.namespaceId,
+          profileNamespaceId: 0,
+          rev: request.profileRev,
+          linked: true,
+        }
+      : undefined;
+  }
+
+  act(event: Event, action: 'approve' | 'revoke' | 'reject'): void {
+    event.stopPropagation();
+    if (this.actionPending()) return;
+    if (action === 'approve') this.approved.emit();
+    else if (action === 'revoke') this.revoked.emit();
+    else this.rejected.emit();
+  }
+}

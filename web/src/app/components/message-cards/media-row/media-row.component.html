@@ -1,0 +1,407 @@
+@if (showDate()) {
+  <app-msg-date-row [ms]="data().createdAtMs" />
+}
+
+<div
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}{{
+    !isAudioOnly() ? ' msg-row--full-bleed-media' : ''
+  }}"
+>
+  <span class="msg-highlight-layer" aria-hidden="true"></span>
+  @if (showAvatar() && side() === 'other') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+
+  @if (isFailed() || isSending()) {
+    <div class="msg-failed-actions">
+      @if (isFailed()) {
+        <button
+          type="button"
+          class="msg-action--retry"
+          (click)="retry.emit(data().msgId)"
+          [attr.aria-label]="'transfer.retry' | transloco"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
+          </svg>
+        </button>
+      }
+      <button
+        type="button"
+        class="msg-action--cancel"
+        (click)="cancel.emit(data().msgId)"
+        [attr.aria-label]="'transfer.cancel' | transloco"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
+    </div>
+  }
+  <div class="msg-col msg-{{ side() }}">
+    @if (showName()) {
+      <div class="msg-name msg-{{ side() }}">
+        {{ sender.name() || ('common.unknown' | transloco) }}
+      </div>
+    }
+    @if (data().quote; as quote) {
+      <app-msg-quote-block
+        [quote]="quote"
+        [isSelf]="data().isSelf"
+        (quoteJump)="quoteJump.emit($event)"
+      />
+    }
+    <div
+      class="msg-media-frame"
+      [style.width.px]="containerW()"
+      [style.max-width.%]="100"
+    >
+      <div
+        class="msg-bubble msg-{{ side() }} msg-{{ pos() }} msg-media"
+        [class.msg-media--audio]="isAudioOnly()"
+        [class.msg-media--gallery]="data().contentType === 'GALLERY'"
+        [class.msg-sending]="isSending()"
+        [style.width.%]="100"
+      >
+        @if (data().contentType === 'GALLERY') {
+          <div
+            class="msg-gallery-row"
+            role="button"
+            tabindex="0"
+            [attr.aria-label]="'chat.openFileAria' | transloco"
+            (click)="onGalleryClick()"
+            (keydown.enter)="onGalleryClick()"
+            (keydown.space)="$event.preventDefault(); onGalleryClick()"
+          >
+            <span class="msg-gallery-icons" aria-hidden="true">
+              @for (item of galleryIcons(); track $index) {
+                <span
+                  class="msg-gallery-icon msg-gallery-icon--{{ item.kind }}"
+                  [style.z-index]="$index + 1"
+                  [style.margin-left.px]="$index === 0 ? 0 : -9"
+                >
+                  <svg
+                    class="msg-gallery-icon-svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    @switch (item.kind) {
+                      @case ('image') {
+                        <rect x="3" y="4" width="18" height="16" rx="3" />
+                        <circle cx="9" cy="10" r="2" />
+                        <path d="M4 17l5-4 3 2 3-3 5 5" />
+                      }
+                      @case ('video') {
+                        <rect x="3" y="5" width="18" height="14" rx="2" />
+                        <path d="m10 9 5 3-5 3z" />
+                      }
+                      @case ('audio') {
+                        <path d="M5 10v4M9 7v10M13 4v16M17 8v8M21 10v4" />
+                      }
+                      @case ('more') {
+                        <circle cx="6" cy="12" r="1" fill="currentColor" />
+                        <circle cx="12" cy="12" r="1" fill="currentColor" />
+                        <circle cx="18" cy="12" r="1" fill="currentColor" />
+                      }
+                      @default {
+                        <path
+                          d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+                        />
+                        <path d="M14 3v5h5" />
+                      }
+                    }
+                  </svg>
+                  @if (item.thumbnail) {
+                    <img
+                      class="msg-gallery-thumbnail"
+                      [src]="item.thumbnail"
+                      loading="lazy"
+                      decoding="async"
+                      alt=""
+                      (load)="
+                        onGalleryThumbnailLoad(
+                          $event,
+                          item.index,
+                          !item.localPreview
+                        )
+                      "
+                      (error)="onGalleryThumbnailError($event)"
+                    />
+                  }
+                </span>
+              }
+            </span>
+            <span class="msg-gallery-title">{{
+              'chat.fileGroup' | transloco
+            }}</span>
+            <svg
+              class="msg-gallery-open"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              style="color: var(--app-text-faint)"
+              aria-hidden="true"
+            >
+              <path d="m9 5 7 7-7 7" />
+            </svg>
+          </div>
+        } @else {
+          <div class="msg-media-grid" [style.height.px]="totalH()">
+            @for (c of cells(); track $index) {
+              <div
+                class="msg-media-cell msg-media-cell--{{ c.kind }}{{
+                  c.unplayable ? ' msg-media-cell--placeholder' : ''
+                }}"
+                [attr.data-media-message-id]="
+                  data().images?.[$index]?.msgId ?? data().msgId
+                "
+                [style.left.%]="c.rect.xPct"
+                [style.top.px]="c.rect.yPx"
+                [style.width.%]="c.rect.wPct"
+                [style.height.px]="c.rect.hPx"
+                [attr.role]="
+                  c.kind === 'image' || c.kind === 'video' || c.kind === 'file'
+                    ? 'button'
+                    : null
+                "
+                [attr.tabindex]="
+                  c.kind === 'image' || c.kind === 'video' || c.kind === 'file'
+                    ? 0
+                    : null
+                "
+                [attr.aria-label]="
+                  c.kind === 'image'
+                    ? ('chat.openImageAria' | transloco)
+                    : c.kind === 'video'
+                      ? ('gallery.openVideoAria' | transloco)
+                      : null
+                "
+                (click)="onCellClick($index)"
+                (keydown.enter)="onCellClick($index)"
+              >
+                <span class="msg-media-select-indicator" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="m6.5 12.5 3.5 3.5 7.5-8" />
+                  </svg>
+                </span>
+                <!-- Audio owns its transfer state inside the player. Keeping the generic media overlay on
+                 top of it hides the player's download progress rail (overlay z-index:2, player z-index:1). -->
+                @if (c.kind !== 'audio' && c.status !== MEDIA_STATUS.READY) {
+                  <div
+                    class="msg-media-overlay"
+                    role="status"
+                    [attr.aria-label]="
+                      c.status === MEDIA_STATUS.PENDING
+                        ? ('chat.mediaPending' | transloco)
+                        : c.status === MEDIA_STATUS.DOWNLOADING
+                          ? ('chat.mediaDownloading' | transloco)
+                          : ('chat.mediaFailed' | transloco)
+                    "
+                  >
+                    @if (c.status === MEDIA_STATUS.PENDING) {
+                      <mat-icon class="msg-media-overlay-icon"
+                        >schedule</mat-icon
+                      >
+                    } @else if (c.status === MEDIA_STATUS.DOWNLOADING) {
+                      <mat-progress-spinner
+                        mode="indeterminate"
+                        [diameter]="24"
+                      />
+                    } @else {
+                      <mat-icon class="msg-media-overlay-icon"
+                        >cloud_off</mat-icon
+                      >
+                    }
+                  </div>
+                }
+                @if (c.kind === 'image' && !c.placeholder) {
+                  <img
+                    class="msg-media-image"
+                    [src]="c.src"
+                    loading="lazy"
+                    decoding="async"
+                    alt=""
+                    (load)="onImageLoad($index)"
+                    (error)="onImageError($index)"
+                  />
+                }
+                @if (c.showGate) {
+                  <span class="msg-media-tap">
+                    @if (c.transferStatus === 'downloading') {
+                      <span
+                        class="msg-media-download-progress"
+                        [class.msg-media-download-progress--indeterminate]="
+                          c.transferProgress === null
+                        "
+                        role="status"
+                        [attr.aria-label]="'gallery.loadingImage' | transloco"
+                      >
+                        @if (c.transferProgress !== null) {
+                          <strong>{{ c.transferProgress.toFixed(0) }}%</strong>
+                        }
+                      </span>
+                    } @else {
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+                        <circle cx="9" cy="10" r="2"></circle>
+                        <path d="M4 17l5-4 3 2 3-3 5 5"></path>
+                      </svg>
+                    }
+                  </span>
+                }
+                @if (c.kind === 'video' && c.thumbnail) {
+                  <img
+                    class="msg-media-video msg-media-video--thumbnail"
+                    [src]="c.thumbnail"
+                    alt=""
+                    (load)="onThumbnailLoad($event)"
+                    (error)="onThumbnailError($event)"
+                  />
+                }
+                @if (c.kind === 'video' && !isAndroidApp && !c.unplayable) {
+                  <video
+                    class="msg-media-video"
+                    [style.opacity]="loadedVideoFrames().has($index) ? 1 : 0"
+                    [src]="c.src"
+                    preload="metadata"
+                    aria-hidden="true"
+                    (loadeddata)="onVideoLoaded($index)"
+                    (error)="onVideoError($index)"
+                  ></video>
+                }
+                @if (c.kind === 'video') {
+                  <span class="msg-media-play" aria-hidden="true"></span>
+                  @if (c.duration) {
+                    <span class="msg-media-dur">{{
+                      formatDuration(c.duration)
+                    }}</span>
+                  }
+                }
+                @if (c.kind === 'audio') {
+                  <!-- Flat voice player — fills the cell; playback only animates a width fill (height-stable). -->
+                  <app-audio-player
+                    [src]="c.src"
+                    [duration]="c.duration ?? 0"
+                    [status]="c.status"
+                    [time]="metaBar().time"
+                    [pending]="isSending()"
+                    [transferId]="clientMessageId()"
+                    [showUnplayed]="!data().isSelf"
+                  />
+                }
+                @if (c.kind === 'file') {
+                  <span class="msg-media-file" aria-hidden="true">
+                    <mat-icon>description</mat-icon>
+                    <span [title]="c.name ?? ''">{{ c.name }}</span>
+                  </span>
+                }
+                @if (c.kind !== 'audio') {
+                  <span class="msg-media-size">{{
+                    c.sizeText || ('chat.unknownSize' | transloco)
+                  }}</span>
+                }
+                @if (c.transferStatus === 'downloading') {
+                  <span
+                    class="msg-media-progress"
+                    [class.msg-media-progress--indeterminate]="
+                      c.transferProgress === null
+                    "
+                  >
+                    <span [style.width.%]="c.transferProgress ?? 36"></span>
+                  </span>
+                } @else if (c.transferStatus === 'failed') {
+                  <span class="msg-media-progress msg-media-progress--failed">
+                    <span></span>
+                  </span>
+                }
+              </div>
+            }
+          </div>
+        }
+
+        @if (!isAudioOnly()) {
+          <div class="msg-media-meta msg-card-meta msg-{{ side() }}">
+            <span class="msg-media-meta-count">
+              @if (data().contentType === 'GALLERY') {
+                <span>{{
+                  'chat.mediaCount.file' | transloco: { count: metaBar().files }
+                }}</span>
+              } @else {
+                @if (metaBar().images > 1) {
+                  <span>{{
+                    'chat.mediaCount.image'
+                      | transloco: { count: metaBar().images }
+                  }}</span>
+                }
+                @if (metaBar().videos > 1) {
+                  <span>{{
+                    'chat.mediaCount.video'
+                      | transloco: { count: metaBar().videos }
+                  }}</span>
+                }
+                @if (metaBar().audios > 1) {
+                  <span>{{
+                    'chat.mediaCount.audio'
+                      | transloco: { count: metaBar().audios }
+                  }}</span>
+                }
+              }
+            </span>
+            @if (mediaStatus() !== MEDIA_STATUS.READY) {
+              <span
+                class="msg-media-status msg-media-status--{{ mediaStatus() }}"
+              >
+                @if (mediaStatus() === MEDIA_STATUS.PENDING) {
+                  <mat-icon>schedule</mat-icon>
+                } @else if (mediaStatus() === MEDIA_STATUS.DOWNLOADING) {
+                  <mat-progress-spinner mode="indeterminate" [diameter]="12" />
+                } @else {
+                  <mat-icon>error_outline</mat-icon>
+                }
+                {{
+                  (mediaStatus() === MEDIA_STATUS.PENDING
+                    ? 'chat.mediaPending'
+                    : mediaStatus() === MEDIA_STATUS.DOWNLOADING
+                      ? 'chat.mediaDownloading'
+                      : 'chat.mediaFailed'
+                  ) | transloco
+                }}
+              </span>
+            }
+            <span class="msg-media-meta-time">{{ metaBar().time }}</span>
+          </div>
+        }
+
+        @if (statusTick()) {
+          @if (!isFailed()) {
+            <span
+              class="msg-status msg-status--{{ data().status }}"
+              aria-hidden="true"
+            ></span>
+          }
+        }
+      </div>
+    </div>
+  </div>
+
+  @if (showAvatar() && side() === 'self') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+</div>

@@ -1,0 +1,109 @@
+@if (showDate()) {
+  <app-msg-date-row [ms]="data().createdAtMs" />
+}
+
+<div
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+>
+  <span class="msg-highlight-layer" aria-hidden="true"></span>
+  @if (showAvatar() && side() === 'other') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+
+  @if (isFailed() || isSending()) {
+    <div class="msg-failed-actions">
+      @if (isFailed()) {
+        <button
+          type="button"
+          class="msg-action--retry"
+          (click)="retry.emit(data().msgId)"
+          [attr.aria-label]="'transfer.retry' | transloco"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
+          </svg>
+        </button>
+      }
+      <button
+        type="button"
+        class="msg-action--cancel"
+        (click)="cancel.emit(data().msgId)"
+        [attr.aria-label]="'transfer.cancel' | transloco"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
+    </div>
+  }
+  <div class="msg-col msg-{{ side() }}">
+    @if (showName()) {
+      <div class="msg-name msg-{{ side() }}">
+        {{ sender.name() || ('common.unknown' | transloco) }}
+      </div>
+    }
+    <div
+      class="msg-bubble msg-{{ side() }} msg-{{ pos() }}"
+      [class.msg-sending]="isSending()"
+    >
+      @if (data().quote; as quote) {
+        <app-msg-quote-block
+          [quote]="quote"
+          [isSelf]="data().isSelf"
+          (quoteJump)="quoteJump.emit($event)"
+        />
+      }
+      <p class="msg-bubble-text">
+        @if (linkTextParts(); as parts) {
+          {{ parts.before
+          }}<a
+            class="msg-preview-url"
+            [href]="parts.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            (click)="openLink($event)"
+            >{{ parts.url }}</a
+          >{{ parts.after }}
+        } @else if (data().textSegments?.length) {
+          @for (segment of data().textSegments; track $index) {
+            @if (segment.kind === 'mention') {
+              <span
+                class="msg-mention msg-mention--{{ segment.target }}"
+                [attr.data-account]="segment.account ?? null"
+                >{{ segment.text }}</span
+              >
+            } @else {
+              {{ segment.text }}
+            }
+          }
+        } @else if (data().rich) {
+          <span class="msg-richtext" [innerHTML]="data().text"></span>
+        } @else {
+          {{ data().text }}
+        }
+        <span class="msg-time-shadow" aria-hidden="true">{{
+          data().time
+        }}</span>
+      </p>
+      @if (statusTick()) {
+        @if (!isFailed()) {
+          <span
+            class="msg-status msg-status--{{ data().status }}"
+            aria-hidden="true"
+          ></span>
+        }
+      }
+      <span class="msg-time">{{ data().time }}</span>
+    </div>
+  </div>
+
+  @if (showAvatar() && side() === 'self') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+</div>

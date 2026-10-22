@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify release version
+        run: |
+          node scripts/check-version-sync.mjs
+          VERSION=$(node -p "require('./package.json').version")
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: android-actions/setup-android@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Android NDK
+        run: sdkmanager 'ndk;27.1.12297006'
+      - name: Install frontend and Tauri tooling
+        run: |
+          npm ci --prefix web
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > src-tauri/gen/android/app/soms-release.keystore
+          {
+            echo 'storeFile=app/soms-release.keystore'
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+          } > src-tauri/gen/android/keystore.properties
+      - name: Build signed per-ABI release APKs
+        run: |
+          make -C src-tauri apk ABI=aarch64
+          make -C src-tauri apk ABI=armv7 WEB_BUILD=0
+          make -C src-tauri apk ABI=x86_64 WEB_BUILD=0
+          cd src-tauri/dist/android
+          sha256sum *.apk > SHA256SUMS
+      - name: Upload Android release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: soms-android-release
+          path: |
+            src-tauri/dist/android/*.apk
+            src-tauri/dist/android/SHA256SUMS
+          if-no-files-found: error
+  docker:
+    needs: android
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Resolve release version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish SOMS image
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          targets: app
+          set: |
+            app.platforms=linux/amd64,linux/arm64
+            app.tags=ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            app.output=type=registry
+            runtime-base.cache-from=type=gha,scope=soms-runtime-base
+            runtime-base.cache-to=type=gha,mode=max,scope=soms-runtime-base
+            build-base.cache-from=type=gha,scope=soms-build-base
+            build-base.cache-to=type=gha,mode=max,scope=soms-build-base
+            app.cache-from=type=gha,scope=soms-app
+            app.cache-to=type=gha,mode=max,scope=soms-app
+      - uses: actions/download-artifact@v4
+        with:
+          name: soms-android-release
+          path: release-assets
+      - name: Attach artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/*.apk release-assets/SHA256SUMS --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/*.apk release-assets/SHA256SUMS --verify-tag --generate-notes
+          fi

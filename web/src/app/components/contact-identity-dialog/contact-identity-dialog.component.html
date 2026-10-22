@@ -1,0 +1,46 @@
+<section class="identity-dialog">
+  <header class="identity-dialog__header">
+    {{
+      (isGroup() ? 'contactCard.groupProfileTitle' : 'contactCard.profileTitle')
+        | transloco
+    }}
+  </header>
+  <div class="identity-summary">
+    <app-snapshot-avatar
+      [type]="avatarType()"
+      [name]="identity().name"
+      [account]="identity().account"
+      [domainSource]="{ type: 'namespace', namespaceId: identity().namespaceId }"
+      [src]="identity().avatar"
+    />
+    <div class="identity-copy">
+      <strong>{{ identity().name || identity().account }}</strong>
+      @if (identity().bio) {
+        <span>{{ identity().bio }}</span>
+      } @else {
+        <span>{{ 'contactCard.noBio' | transloco }}</span>
+      }
+    </div>
+  </div>
+  <div class="identity-account">
+    {{ identity().account }}&#64;@if (isLocalDomain()) {
+      {{ 'common.localDomainLabel' | transloco: { domain: displayDomain() } }}
+    } @else {
+      {{ displayDomain() }}
+    }
+  </div>
+  @if (actionKey(); as key) {
+    <app-dialog-action-footer
+      [cancelLabel]="'common.cancel' | transloco"
+      [primaryLabel]="key | transloco"
+      [primaryDisabled]="actionDisabled()"
+      (cancelled)="cancel()"
+      (confirmed)="act()"
+    />
+  } @else {
+    <app-dialog-action-footer
+      [cancelLabel]="'common.cancel' | transloco"
+      (cancelled)="cancel()"
+    />
+  }
+</section>

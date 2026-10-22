@@ -1,0 +1,152 @@
+[package]
+name = "soms-client"
+version = "0.1.0-alpha.0"
+description = "SOMS cross-platform client (Tauri v2 shell around the Angular consumer client)"
+authors = ["hapood"]
+edition = "2021"
+rust-version = "1.77"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# `_lib` suffix makes the crate name `soms_client_lib`; the main binary calls `soms_client_lib::run()`.
+name = "soms_client_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+cc = "1.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# Open external links (a LINK message card's target page) in the system browser. The webview's nav
+# guard (nav_allowed) confines document navigation to the app origin, so an external URL is routed to
+# the OS opener instead of being navigated inside the privileged webview (which would run an arbitrary
+# page with IPC / secure-storage / media-proxy access). Cross-platform (desktop + Android).
+tauri-plugin-opener = "2"
+# Structured logging: provides the `log` facade impl so src/lib.rs can emit `warn!`/`error!`/`info!`.
+# Registered FIRST in run() so it captures every later plugin's setup + the URI-scheme proxies + the
+# desktop SSE supervisor. Sinks (see run()): Webview → forward every Rust log into the webview console
+# (the JS side re-emits them via the `plugin:log|log` listener — see web/.../main.ts — so Rust-side
+# failures land in the SAME console the JS errors do, visible via edge://inspect / adb logcat), Stdout
+# → terminal/docker, LogDir → a rotating file under the app-data log dir for post-mortem. `log` itself
+# is declared directly because src/lib.rs uses its macros.
+tauri-plugin-log = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+# rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
+# "stream" feeds the desktop SSE supervisor's `resp.bytes_stream()` + the shell-wide
+# `upload_stream_file` file stream;
+# "gzip" lets `proxy_api` auto-decompress gzipped JSON responses; "multipart" builds the streaming
+# upload form in `upload_stream_file`.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "multipart", "json"] }
+# CancellationToken for the desktop SSE supervisor's teardown (cancel a blocked reqwest future on
+# sse_stop / origin swap) and shell upload cancellation; ReaderStream ("io") for
+# `upload_stream_file`'s streaming file body. Already
+# resolved transitively; promoted to a direct dep.
+tokio-util = { version = "0.7", features = ["rt", "io"] }
+# The desktop SSE supervisor uses `tokio::select!` (macros), `tokio::time::interval`/`sleep` (time),
+# and `tokio::sync::Notify` (sync); the shell-wide `upload_stream_file` uses `tokio::fs` (fs) to
+# stream the file off disk. These features may or may not be enabled by the
+# transitive tokio tauri/reqwest pull in; declaring tokio direct guarantees them.
+tokio = { version = "1", features = ["macros", "time", "sync", "rt", "fs", "io-util", "net"] }
+getrandom = "0.2"
+uuid = { version = "1", features = ["v4"] }
+# SHA-256, gzip and tar are used by offline diagnostic report archives; futures-util streams
+# backend requests and media responses. They are unrelated to frontend application updates.
+sha2 = { version = "0.10", default-features = false }
+base64 = "0.22"
+# Chat-list thumbnails are generated beside the authenticated native media cache. Keep codecs explicit
+# so the shell does not pull image formats the message composer cannot produce.
+image = { version = "0.24.9", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+flate2 = "1"
+futures-util = "0.3"
+tar = "0.4"
+
+# Desktop-only deps. tauri-plugin-single-instance has no mobile backend (a phone has no concept of
+# "another instance"), so it is gated to non-mobile targets to keep the Android build compiling.
+# `keyring` is the OS-native credential store (Windows DPAPI via Credential Manager / macOS Keychain /
+# Linux libsecret via the Secret Service) used to persist a TRUSTED desktop's session token AT REST —
+# instead of the plaintext webview localStorage copy — so a trusted desktop may hold a permanent token.
+# Backends are enabled per OS; Android is excluded (it uses its own EncryptedSharedPreferences bridge).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# Mobile-only dep. tauri-plugin-barcode-scanner is the camera scanner for the phone side of QR sign-in — a
+# logged-in phone scans a desktop's QR to authorize it (two-step scan→confirm). It has no desktop backend, so
+# it is gated to mobile targets (the inverse of single-instance above) and registered in src/lib.rs under
+# #[cfg(mobile)]. The JS API is @tauri-apps/plugin-barcode-scanner; capability in capabilities/mobile.json.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Kotlin hands ContentResolver/recorder file descriptors to the shared Rust uploader directly.
+# `jni` is only the thin command boundary (file bytes never cross JNI).
+jni = "0.21"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Retain desktop notification handles for replacement and dismissal.
+notify-rust = "4.18"
+zbus = "5.16"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
+# Lean release binary + lower runtime RSS for BOTH desktop and Android release builds — Cargo applies
+# [profile.release] regardless of target, so the NDK cross-build inherits it too. codegen-units = 1 +
+# LTO let the optimizer see the whole program (smaller binary, fewer redundant copies in the text/heap);
+# opt-level = "s" optimizes for size; strip drops debug symbols; panic = "abort" drops the unwind
+# tables (binary AND resident memory both shrink).
+#
+# lto = "thin" (NOT fat `true`): Tauri's dependency graph is huge, and fat LTO during Android NDK
+# linking eats several GB of RAM and readily OOMs the cross-toolchain. Thin LTO keeps nearly all the
+# size/binary win at a fraction of the memory+time, so the same profile is safe on both targets.
+# Dev builds are untouched so iteration stays fast.
+[profile.release]
+lto = "thin"
+opt-level = "s"
+strip = true
+panic = "abort"
+codegen-units = 1
+
+# Fast release-mode iteration for DESKTOP + rust-only builds: inherits release's opt-level/strip/panic
+# but parallelizes codegen (16 units) and drops LTO, so a cold release build doesn't serialize the
+# whole crate graph through one unit + a thin-LTO pass. Invoke via `cargo tauri build --profile
+# release-fast` (desktop) or plain `cargo build --profile release-fast`. Binary is slightly larger /
+# less optimized than [profile.release] — fine for local release-mode testing; FINAL distribution
+# stays on [profile.release].
+#
+# NOT reachable from Android: `cargo tauri android build` has NO --profile flag (only --debug), so the
+# Android APK's rust profile is fixed to [profile.release] (release buildType) / dev (debug). For fast
+# ANDROID iteration use `make apk-debug`; the Android release-speed levers are the universal-only
+# default + the soms-cargo volume. Relaxing [profile.release].codegen-units here would speed the
+# release APK too — at a binary-size cost — so it stays = 1 for distribution.
+[profile.release-fast]
+inherits = "release"
+codegen-units = 16
+lto = false
+
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
+
+# Vendored fork of tauri-plugin-barcode-scanner 2.4.5. The ONLY change vs upstream lives in
+# vendor/tauri-plugin-barcode-scanner/android/build.gradle.kts: the barcode-recognition model is swapped
+# from `com.google.android.gms:play-services-mlkit-barcode-scanning` (the "thin" ML Kit that resolves the
+# model through Google Play Services at runtime) to `com.google.mlkit:barcode-scanning` (the model bundled
+# into the APK). The two expose the identical com.google.mlkit.vision.barcode.* Kotlin API, so this is a
+# drop-in — but the bundled variant runs on devices WITHOUT Google Play Services (Huawei / HarmonyOS, the
+# domestic target), where the GMS variant can't load the model and scan() silently fails. The JS API
+# (@tauri-apps/plugin-barcode-scanner) and the Rust + permission surface are unchanged. Re-sync upstream
+# by copying the new version over vendor/ and re-applying that single gradle line.
+[patch.crates-io]
+tauri-plugin-barcode-scanner = { path = "vendor/tauri-plugin-barcode-scanner" }

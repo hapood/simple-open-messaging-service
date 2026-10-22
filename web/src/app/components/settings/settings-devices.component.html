@@ -1,0 +1,132 @@
+<section class="settings-group">
+  @if (isAndroidNative()) {
+    <div class="link-device-card">
+      <button mat-flat-button type="button" (click)="linkDevice()">
+        <app-icon
+          matButtonIcon
+          [type]="AppIconType.DEVICES"
+          [style]="{ width: '18px', height: '18px' }"
+        />{{ 'session.linkDevice' | transloco }}
+      </button>
+    </div>
+  }
+  @if (loading()) {
+    <app-async-state state="loading" />
+  } @else if (loadError()) {
+    <app-async-state
+      state="error"
+      errorMessageKey="session.loadFailed"
+      (retry)="load()"
+    />
+  } @else if (list().length === 0) {
+    <div class="state">{{ 'session.noSessions' | transloco }}</div>
+  } @else {
+    <div class="session-section">
+      <h3>{{ 'session.thisDeviceSection' | transloco }}</h3>
+      @for (s of currentSessions(); track s.id) {
+        <mat-card
+          appearance="outlined"
+          class="device-card current"
+          (click)="showDetails(s)"
+          tabindex="0"
+          (keydown.enter)="showDetails(s)"
+        >
+          <mat-card-content
+            ><app-icon
+              class="lead"
+              [type]="AppIconType.DEVICES"
+              [style]="{ width: '22px', height: '22px' }" />
+            <div class="device-summary">
+              <strong>{{ deviceLabel(s) }}</strong
+              ><span
+                >{{ clientLabel(s.client) }} ·
+                {{
+                  'session.lastActive' | transloco: { date: fmt(s.lastSeenAt) }
+                }}</span
+              >
+            </div>
+            <app-icon
+              class="chevron"
+              [type]="AppIconType.CHEVRON_RIGHT"
+              [style]="{ width: '20px', height: '20px' }"
+          /></mat-card-content>
+        </mat-card>
+      }
+    </div>
+    @if (otherSessions().length > 0) {
+      <div class="session-section">
+        <div class="section-heading">
+          <h3>{{ 'session.otherDevicesSection' | transloco }}</h3>
+          <button
+            mat-button
+            class="terminate-others"
+            type="button"
+            (click)="terminateOthers()"
+          >
+            {{ 'session.terminateOthersShort' | transloco }}
+          </button>
+        </div>
+        @for (s of otherSessions(); track s.id) {
+          <mat-card
+            appearance="outlined"
+            class="device-card"
+            (click)="showDetails(s)"
+            tabindex="0"
+            (keydown.enter)="showDetails(s)"
+          >
+            <mat-card-content
+              ><app-icon
+                class="lead"
+                [type]="AppIconType.DEVICES"
+                [style]="{ width: '22px', height: '22px' }" />
+              <div class="device-summary">
+                <strong>{{ deviceLabel(s) }}</strong
+                ><span
+                  >{{ clientLabel(s.client) }} ·
+                  {{
+                    'session.lastActive'
+                      | transloco: { date: fmt(s.lastSeenAt) }
+                  }}</span
+                >
+              </div>
+              <app-icon
+                class="chevron"
+                [type]="AppIconType.CHEVRON_RIGHT"
+                [style]="{ width: '20px', height: '20px' }"
+            /></mat-card-content>
+          </mat-card>
+        }
+      </div>
+    }
+    <mat-card appearance="outlined" class="terminate-card">
+      <mat-card-content>
+        <div class="terminate-heading">
+          <div>
+            <div class="terminate-title">
+              {{ 'session.autoTerminateTitle' | transloco }}
+            </div>
+            <div class="terminate-hint">
+              {{ 'session.autoTerminateHint' | transloco }}
+            </div>
+          </div>
+          @if (savingDays() !== null) {
+            <mat-progress-spinner mode="indeterminate" [diameter]="18" />
+          }
+        </div>
+        <mat-select
+          class="terminate-select"
+          [value]="autoTerminateDays()"
+          [disabled]="savingDays() !== null"
+          [attr.aria-label]="'session.autoTerminateTitle' | transloco"
+          (selectionChange)="setAutoTerminateDays($event.value)"
+        >
+          @for (days of autoTerminateOptions; track days) {
+            <mat-option [value]="days">{{
+              autoTerminateLabel(days)
+            }}</mat-option>
+          }
+        </mat-select>
+      </mat-card-content>
+    </mat-card>
+  }
+</section>

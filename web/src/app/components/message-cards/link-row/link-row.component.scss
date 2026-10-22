@@ -1,0 +1,95 @@
+// Link-card message row (WeChat/Telegram-style): the bubble IS a tappable card with a left text
+// column (title / description / site) and a right small square thumbnail. The body is side-agnostic;
+// the meta bar below carries sender ownership plus the page host (credibility cue) and
+// time. Integer-px throughout per _row-base's height contract. The <button> is the card → chrome reset.
+@use '../row-base' as *;
+
+.msg-bubble.link {
+  padding: 0;
+  display: block;
+  overflow: hidden; // clip the thumbnail's rounded corners to the bubble
+  // The meta bar is a flush sibling below the card. The shared bubble's
+  // downward shadow otherwise lands on that join and reads as a stray line.
+  box-shadow: none;
+}
+
+.link-shell {
+  position: relative;
+  width: 280px;
+  max-width: 100%;
+  transition: opacity 0.2s ease-out;
+  &.msg-sending {
+    opacity: 0.88;
+  }
+}
+
+// The <button> is the card; reset native button chrome so the card styling wins.
+.link-tappable {
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  display: block;
+  text-align: left; // reset UA button center-align so every line is left-aligned
+  border-radius: 16px 16px 0 0;
+  outline: none;
+}
+
+// Match row-base's side+body specificity so a consecutive second link cannot retain the grouped 6px
+// bottom corner and expose a seam above its flush meta bar.
+.msg-bubble.link-tappable.msg-self,
+.msg-bubble.link-tappable.msg-other {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.link-tappable:focus-visible {
+  outline: 2px solid var(--bubble-accent);
+  outline-offset: 2px;
+}
+
+// Bottom meta bar: page host (credibility cue, left) + send time (right). Same translucent-grey chip as
+// the invite/media meta bar so every card type shares one info-strip style.
+.link-meta {
+  width: 280px; // match the card width → aligned with the card above
+  max-width: 100%;
+  border-radius: 0 0 16px 16px;
+}
+.link-host {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.7;
+}
+.link-host span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.link-favicon,
+.link-host svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+.link-favicon {
+  border-radius: 3px;
+}
+.link-host svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.link-meta-time {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}

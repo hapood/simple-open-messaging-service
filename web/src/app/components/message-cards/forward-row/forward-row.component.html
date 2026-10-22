@@ -1,0 +1,87 @@
+@if (showDate()) {
+  <app-msg-date-row [ms]="data().createdAtMs" />
+}
+
+<div
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+>
+  <span class="msg-highlight-layer" aria-hidden="true"></span>
+  @if (showAvatar() && side() === 'other') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+
+  <div class="msg-col msg-{{ side() }}">
+    @if (showName()) {
+      <div class="msg-name msg-{{ side() }}">
+        {{ sender.name() || ('common.unknown' | transloco) }}
+      </div>
+    }
+    @if (data().quote; as quote) {
+      <app-msg-quote-block
+        [quote]="quote"
+        [isSelf]="data().isSelf"
+        (quoteJump)="quoteJump.emit($event)"
+      />
+    }
+    <button
+      type="button"
+      class="msg-bubble msg-card msg-{{ side() }} msg-{{ pos() }} forward-card"
+      [class.msg-sending]="isSending()"
+      [disabled]="!card()"
+    >
+      @if (card(); as forward) {
+        <div class="forward-body">
+          <div class="forward-title">
+            {{ 'forward.chatHistory' | transloco }}
+          </div>
+          <div class="forward-lines">
+            @for (line of forward.summaryLines.slice(0, 2); track $index) {
+              <div class="forward-line">
+                {{ line
+                }}{{
+                  $last && forward.messageCount > forward.summaryLines.length
+                    ? '…'
+                    : ''
+                }}
+              </div>
+            }
+          </div>
+        </div>
+        <div class="forward-meta msg-card-meta msg-{{ side() }}">
+          <span>{{
+            'forward.messageCount' | transloco: { count: forward.messageCount }
+          }}</span>
+          <span>{{ data().time }}</span>
+        </div>
+      } @else {
+        <div class="forward-body">
+          <div class="forward-title">
+            {{ 'forward.chatHistory' | transloco }}
+          </div>
+          <div class="forward-line">
+            {{ 'forward.unavailable' | transloco }}
+          </div>
+        </div>
+        <div class="forward-meta msg-card-meta msg-{{ side() }}">
+          <span></span><span>{{ data().time }}</span>
+        </div>
+      }
+      @if (statusTick() && !isFailed()) {
+        <span
+          class="msg-status msg-status--{{ data().status }}"
+          aria-hidden="true"
+        ></span>
+      }
+    </button>
+  </div>
+
+  @if (showAvatar() && side() === 'self') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+</div>

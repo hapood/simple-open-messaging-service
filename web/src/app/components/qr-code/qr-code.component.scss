@@ -1,0 +1,23 @@
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.qr-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  // Keep module edges pixel-aligned (no anti-alias bleed between adjacent modules).
+  shape-rendering: crispEdges;
+}
+
+// Dark-on-white for scan reliability (NOT theme-following). Override via --qr-fg/--qr-bg only if a future
+// surface genuinely needs it.
+.qr-bg {
+  fill: var(--qr-bg, #ffffff);
+}
+
+.qr-fg {
+  fill: var(--qr-fg, #000000);
+}

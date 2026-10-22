@@ -1,0 +1,44 @@
+<div class="avatar-editor" [appFitDialog]="fitOpts">
+  <app-page-header
+    [title]="'profile.avatarTitle' | transloco"
+    (back)="cancel()"
+  >
+    <button
+      pageHeaderAction
+      mat-button
+      color="primary"
+      (click)="save()"
+      [disabled]="!canSave()"
+    >
+      {{ 'common.done' | transloco }}
+    </button>
+  </app-page-header>
+
+  <div class="body">
+    <div class="stage">
+      <canvas #crop class="crop" [width]="FRAME" [height]="FRAME"></canvas>
+      @if (error()) {
+        <div class="overlay">
+          <span>{{ error() }}</span>
+          <button mat-button class="app-secondary-action" (click)="cancel()">
+            {{ 'common.back' | transloco }}
+          </button>
+        </div>
+      }
+    </div>
+
+    <p class="gesture-hint">{{ 'profile.avatarAdjustHint' | transloco }}</p>
+    <label class="controls" [attr.aria-label]="'profile.zoom' | transloco">
+      <input
+        class="zoom"
+        type="range"
+        min="0"
+        max="1"
+        step="0.01"
+        [value]="zoom()"
+        (input)="onRange($event)"
+        [disabled]="!canSave()"
+      />
+    </label>
+  </div>
+</div>

@@ -1,0 +1,179 @@
+:host {
+  display: contents;
+}
+
+.playground-settings-button {
+  position: fixed;
+  right: 16px;
+  top: calc(50% - 22px);
+  z-index: 20;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--app-brand);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 18%);
+  cursor: grab;
+  touch-action: none;
+  transition: background 120ms ease, left 200ms ease, top 200ms ease;
+}
+
+.playground-settings-button:hover {
+  background: var(--app-brand-hover);
+}
+
+:host-context([data-theme='dark']) .playground-settings-button:not(.panel-open) {
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+  background: var(--app-surface-elevated);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 36%);
+}
+
+:host-context([data-theme='dark']) .playground-settings-button:not(.panel-open):hover {
+  background: var(--app-hover);
+}
+
+.playground-settings-button.dragging {
+  cursor: grabbing;
+  transition: none;
+  box-shadow: 0 10px 36px rgb(0 0 0 / 24%);
+}
+
+.playground-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 21;
+  border: 0;
+  background: rgb(0 0 0 / 32%);
+}
+
+.playground-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 22;
+  box-sizing: border-box;
+  width: min(360px, 92vw);
+  padding: 20px 16px;
+  overflow: auto;
+  color: var(--app-text);
+  background: var(--app-surface);
+  border-left: 1px solid var(--app-border);
+  box-shadow: -8px 0 32px rgb(0 0 0 / 12%);
+  transform: translateX(100%);
+  transition: transform 180ms ease;
+}
+
+.playground-panel.open {
+  transform: translateX(0);
+}
+
+.playground-panel header,
+.field-row,
+.button-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.playground-panel header {
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.playground-panel h2,
+.playground-panel p {
+  margin: 0;
+}
+
+.playground-panel h2 {
+  line-height: 28px;
+}
+
+.playground-panel p,
+.playground-panel button,
+.playground-panel input,
+.field-label {
+  line-height: 20px;
+}
+
+mat-accordion {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.playground-panel mat-expansion-panel {
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  box-shadow: none;
+  background: var(--app-surface-elevated);
+}
+
+.playground-panel mat-expansion-panel-header:hover {
+  background: var(--app-hover);
+}
+
+.field-label {
+  display: block;
+  margin: 16px 0 8px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.playground-panel mat-button-toggle-group {
+  display: flex;
+  width: 100%;
+}
+
+.playground-panel mat-button-toggle {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.playground-panel mat-button-toggle-group.two-column-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.playground-panel .two-column-options mat-button-toggle {
+  width: 100%;
+}
+
+.playground-panel mat-slide-toggle {
+  display: block;
+  margin-top: 16px;
+}
+
+.button-row {
+  flex-wrap: wrap;
+}
+
+.engine-actions {
+  margin-top: 16px;
+}
+
+.kernel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.playground-panel mat-form-field {
+  min-width: 0;
+  width: 100%;
+}
+
+.field-row {
+  margin-top: 12px;
+}
+
+.field-row mat-form-field {
+  flex: 1 1 auto;
+}

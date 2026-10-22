@@ -1,0 +1,9 @@
+// Shared stylesheet for the Settings category sub-pages: each pulls in the common M3 group/card/label
+// rules via the mixin (kept scoped per component by Angular's view encapsulation) and fills its host.
+@use './_settings-shared.scss' as s;
+
+@include s.settings-groups;
+
+:host {
+  display: block;
+}

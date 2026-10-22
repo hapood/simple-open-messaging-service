@@ -1,0 +1,263 @@
+@use "../../assets/utils.scss" as *;
+
+.auth-shell {
+  @include auth-shell;
+}
+
+@include auth-compact-brand;
+
+.qr-card {
+  @include auth-card;
+  // Center the QR stage / title / notices horizontally — the one card-level difference from the
+  // password / OTP form cards, which left-align their form fields.
+  & {
+    align-items: center;
+  }
+}
+
+.qr-frame {
+  width: 240px;
+}
+
+// Countdown feedback is attached directly to the QR's lower edge. Its reserved height keeps state changes
+// stable while avoiding an overlay that could obscure modules and reduce scan reliability.
+.progress-slot {
+  width: 240px;
+  height: 4px;
+  margin: 0;
+  overflow: hidden;
+  line-height: 0;
+  border-radius: var(--app-radius-sm, 8px) var(--app-radius-sm, 8px) 0 0;
+
+  mat-progress-bar {
+    display: block;
+    width: 100%;
+    height: 4px;
+  }
+
+  // Final stretch: flip the fill to the danger color so the user sees the code is about to refresh. With the
+  // m:ss readout gone, the bar's color is the only expiry cue. The active-indicator token is set on the host
+  // and inherits into the MDC bar-inner's border-color (the fill), so this one declaration recolors it.
+  mat-progress-bar.is-warning {
+    --mat-progress-bar-active-indicator-color: var(--app-danger);
+  }
+}
+
+.progress-time {
+  height: 18px;
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+// Material's default dark-theme track is too close to the surrounding auth surface. Give this compact QR
+// timer a brighter fill and a visible neutral track; the warning override above still wins near expiry.
+:host-context([data-theme='dark']) .progress-slot mat-progress-bar {
+  --mat-progress-bar-active-indicator-color: var(--app-brand);
+  --mat-progress-bar-track-color: rgba(255, 255, 255, 0.28);
+}
+
+:host-context([data-theme='dark']) .progress-slot mat-progress-bar.is-warning {
+  --mat-progress-bar-active-indicator-color: var(--app-danger);
+}
+
+// The scan instruction is the page's real heading — a full sentence, not a short label — so it reads as a
+// centered guidance line rather than a oversized title. Sized to stay clearly the heading (above the 14px
+// state line) while wrapping cleanly at the card width; integer-px line-height per the project rule.
+.qr-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  text-align: center;
+}
+
+// Phone-side navigation hint below the QR, using the same quiet treatment as the page's former explanatory
+// notice so it supports the scan action without competing with the title or QR state.
+.qr-title-path {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  color: var(--app-text-muted);
+}
+
+.notice {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 20px;
+  border-radius: var(--app-radius-sm, 8px);
+  background: var(--app-info-bg, rgba(20, 80, 160, 0.08));
+  color: var(--app-brand);
+}
+
+.qr-stage {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.qr-image {
+  // A quiet neutral frame separates the QR from the white auth card, while the inset scanning surface and
+  // its required quiet zone remain pure white.
+  position: relative;
+  width: 240px;
+  height: 240px;
+  box-sizing: border-box;
+  padding: 8px;
+  --qr-bg: #ffffff;
+  background: #f5f5f5;
+  border-radius: var(--app-radius-sm, 8px);
+}
+
+// The white scan surface must stay white in dark mode, but the light-theme frame would otherwise merge
+// into it as one bright tile. Darken only the outer frame and give its perimeter a restrained light edge.
+:host-context([data-theme='dark']) .qr-image {
+  background: color-mix(
+    in srgb,
+    var(--app-border-strong) 72%,
+    var(--app-surface)
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--app-text) 12%, transparent);
+}
+
+.qr-frame.has-progress .qr-image {
+  border-radius: 0 0 var(--app-radius-sm, 8px) var(--app-radius-sm, 8px);
+}
+
+// Wrapper that holds the QR matrix so the scan-consumed blur can transition independently of the card.
+.qr-canvas {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--qr-bg);
+  border-radius: 4px;
+  transition: filter 250ms ease;
+}
+
+// Loading filler that owns the 240×240 square while a code is being minted. Centers a Material spinner so
+// the white card is always present and the surrounding layout never reflows when the QR renders or departs.
+.qr-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--qr-bg);
+  border-radius: 4px;
+  color: var(--app-text-muted);
+}
+
+// Error state owns the whole 240×240 square: report glyph + message + retry, stacked and centered. Keeping
+// the recovery button INSIDE the square (instead of below it, as before) is what makes the error state
+// height-neutral — the card no longer grows a button row when a create failure lands, so nothing below the
+// QR (trust notice, switchers) shifts. The 8px inner padding adds breathing room beyond the square's 16px
+// quiet zone; everything is integer-px so the fixed box never rounds a fractional value into reflow.
+.qr-error {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  background: var(--qr-bg);
+  border-radius: 4px;
+}
+
+// M3 error-container treatment: the report glyph sits in a soft danger wash (the same --app-danger-soft
+// token forbidden-page uses), sized as a 56px chip so the icon reads as a calm state marker rather than a
+// bare alarming red glyph. The host <app-icon> is inline by default, so display:flex turns it into the
+// circle; its [style] width/height sizes only the inner SVG (currentColor picks up the danger tint below).
+.qr-error__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+
+// The message wraps within the square; line-height is an integer px per the project rule so every wrap count
+// yields a whole-pixel stack height inside the fixed box.
+.qr-error__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+}
+
+// Compact primary action — mirrors the auth-wide retry treatment (flat + primary + refresh glyph). flex
+// shrink-lock keeps the button from squashing when the message wraps to three lines.
+.qr-retry-btn {
+  flex: 0 0 auto;
+  min-height: 36px;
+  font-size: 14px;
+}
+
+// Once scanned, the QR is consumed — blur it so it can't be re-scanned while the phone confirms.
+.qr-image.is-scanned .qr-canvas {
+  filter: blur(10px);
+}
+
+// Green-check confirmation overlay centered over the blurred QR (the WhatsApp/Telegram/Discord treatment).
+// `inset: 0; margin: auto` centers a fixed-size box on both axes WITHOUT a transform, so the pop keyframe
+// below can own `transform: scale()` without clobbering the centering.
+.qr-scan-badge {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-green);
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(15, 40, 80, 0.18);
+  pointer-events: none;
+  animation: qr-scan-badge-pop 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes qr-scan-badge-pop {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.qr-state {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 20px;
+  // Reserve the one-line box even when the switch yields no text (pending/error). An empty block element
+  // collapses to height 0 — line-height does NOT reserve a line box for truly empty content — so without
+  // this floor the loading→pending flip (text → empty) would shrink the card by one line (~20px).
+  min-height: 20px;
+  color: var(--app-text-muted);
+  text-align: center;
+}
+
+.trust-cb {
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+// Footer row below the card (login-method switchers left, server-config link right) — the shared
+// auth-footer block, ALWAYS mounted with a reserved min-height so the async switcher appearance (before
+// /config lands) and the browser build (no server link) fill a pre-reserved line — no init-time jump.
+@include auth-footer;

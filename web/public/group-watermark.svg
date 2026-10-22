@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="1 5 22 14" role="img" aria-label="Group">
+  <!-- The white "users" glyph from the group default avatar (user-avatar.component.html) — multi-person
+       mark ONLY, transparent ground. viewBox is SNUG to the path's actual bbox (x:1–23, y:5–19 →
+       "1 5 22 14") with NO surrounding padding, so the mark fills its container's full width and leaves no
+       transparent gap on either side when the watermark is contained into a square box (a loose viewBox
+       here shows up as a blank band on the right of the card). The avatar's translate/scale are dropped
+       (they only centered the glyph in a 100×100 avatar box, which left the watermark's overflow invisible).
+       Keep this path in sync with the group avatar glyph. -->
+  <path fill="#ffffff" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+</svg>

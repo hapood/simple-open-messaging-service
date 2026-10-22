@@ -1,0 +1,319 @@
+"$schema" = "schemas/schema.json"
+
+# App-defined IPC commands registered via generate_handler! in src/lib.rs. This file defines the
+# reviewed ACL; registering a new Rust command does not grant it webview access. Every registered
+# command must have an explicit permission in the default capability, and removed commands must be
+# removed here. The repository's permission test checks both directions so omissions fail before APK
+# packaging. tauri-build reads this file to generate the capability schema.
+
+[[permission]]
+identifier = "allow-set-api-origin"
+description = "Enables the set_api_origin command (validate + persist the backend origin)."
+commands.allow = ["set_api_origin"]
+
+[[permission]]
+identifier = "allow-get-api-origin"
+description = "Enables get_api_origin — the configured backend origin (live ProxyState Arc)."
+commands.allow = ["get_api_origin"]
+
+[[permission]]
+identifier = "allow-get-active-api-origin"
+description = "Enables get_active_api_origin — the exact runtime endpoint currently used by Rust HTTP transports."
+commands.allow = ["get_active_api_origin"]
+
+[[permission]]
+identifier = "allow-is-origin-configured"
+description = "Enables is_origin_configured — authoritative 'has a backend been configured' (origin != the non-routable placeholder)."
+commands.allow = ["is_origin_configured"]
+
+# Native LAN-domain fallback (field-2 origin + the active-mode indicator). All three are no-ops when no
+# secondary is configured (dev / servers without SOMS_LAN_DOMAIN) — the shell behaves exactly as before.
+[[permission]]
+identifier = "allow-get-api-origin-secondary"
+description = "Enables get_api_origin_secondary — the configured LAN origin (null when no fallback is configured)."
+commands.allow = ["get_api_origin_secondary"]
+
+[[permission]]
+identifier = "allow-set-api-origin-secondary"
+description = "Enables set_api_origin_secondary — validate + persist the LAN origin (empty clears it, disabling fallback)."
+commands.allow = ["set_api_origin_secondary"]
+
+[[permission]]
+identifier = "allow-get-origin-mode"
+description = "Enables get_origin_mode — which origin is ACTIVE (primary | secondary), for the 'using LAN server' indicator."
+commands.allow = ["get_origin_mode"]
+
+[[permission]]
+identifier = "allow-init-pick-origin"
+description = "Enables init_pick_origin — the login-init concurrent race (probe both /client/compat, pick reachable, set active)."
+commands.allow = ["init_pick_origin"]
+
+[[permission]]
+identifier = "allow-set-active-origin"
+description = "Enables set_active_origin — Android passive-accept (Kotlin signals the active origin; Rust sets it without deciding)."
+commands.allow = ["set_active_origin"]
+
+[[permission]]
+identifier = "allow-set-session-token"
+description = "Activates the native login UUID and installs the bearer for the media:// proxy."
+commands.allow = ["set_session_token"]
+
+[[permission]]
+identifier = "allow-clear-session-token"
+description = "Ends the native login locally and detaches the bearer."
+commands.allow = ["clear_session_token"]
+
+[[permission]]
+identifier = "allow-login-session-for-token"
+description = "Validates a persisted credential against the durable native login record before restoration."
+commands.allow = ["login_session_for_token"]
+
+[[permission]]
+identifier = "allow-native-db-begin-login"
+description = "Fresh-login preparation: releases cache work, deletes retired caches, mints the login UUID."
+commands.allow = ["native_db_begin_login"]
+
+[[permission]]
+identifier = "allow-begin-logout"
+description = "Detaches the native session and waits for its bounded remote revocation."
+commands.allow = ["begin_logout", "wait_for_logout"]
+
+[[permission]]
+identifier = "allow-init-check-compat"
+description = "Enables init_check_compat — public client configuration probe (GET /client/compat)."
+commands.allow = ["init_check_compat"]
+
+[[permission]]
+identifier = "allow-init-validate-cert"
+description = "Enables init_validate_cert — strict TLS probe for https domains (skipped for IP/http)."
+commands.allow = ["init_validate_cert"]
+
+[[permission]]
+identifier = "allow-init-compat-status"
+description = "Enables init_compat_status — read-only client configuration probe."
+commands.allow = ["init_compat_status"]
+
+# Trusted-device secure storage (desktop keyring): persist/read/clear a TRUSTED desktop's permanent
+# session token in the OS credential store instead of plaintext localStorage.
+[[permission]]
+identifier = "allow-secure-set-token"
+description = "Enables the secure_set_token command (OS credential store)."
+commands.allow = ["secure_set_token"]
+
+[[permission]]
+identifier = "allow-secure-get-token"
+description = "Enables the secure_get_token command (OS credential store)."
+commands.allow = ["secure_get_token"]
+
+[[permission]]
+identifier = "allow-secure-clear-token"
+description = "Enables the secure_clear_token command (OS credential store)."
+commands.allow = ["secure_clear_token"]
+
+[[permission]]
+identifier = "allow-secure-clear-residual-token"
+description = "Clears a residual desktop credential only when no native login session is active."
+commands.allow = ["secure_clear_residual_token"]
+
+# Desktop SSE supervisor (Rust-owned /events stream). Desktop-only (Android owns SSE in Kotlin); these
+# commands are #[cfg(desktop)] in lib.rs, so the entries are inert on a mobile build.
+[[permission]]
+identifier = "allow-sse-start"
+description = "Enables sse_start — idempotently spawn the desktop SSE supervisor connect-loop."
+commands.allow = ["sse_start"]
+
+[[permission]]
+identifier = "allow-sse-stop"
+description = "Enables sse_stop — cancel the desktop SSE supervisor and emit closed."
+commands.allow = ["sse_stop"]
+
+[[permission]]
+identifier = "allow-sse-get-state"
+description = "Enables sse_get_state — synchronous read of the SSE connection state (renderer-reclaim seed)."
+commands.allow = ["sse_get_state"]
+
+[[permission]]
+identifier = "allow-sse-net"
+description = "Enables sse_net — forward navigator online/offline (+ user retry) to the supervisor."
+commands.allow = ["sse_net"]
+
+[[permission]]
+identifier = "allow-sse-replay-hello"
+description = "Enables sse_replay_hello — replay the cached+merged HELLO to a freshly-attached webview (renderer reclaim / FGS-pre-connected cold start) so it bootstraps (userId/stateRevision/profileRev/latestMessage) without a reconnect."
+commands.allow = ["sse_replay_hello"]
+
+[[permission]]
+identifier = "allow-sse-retry"
+description = "Enables sse_retry — lease-scoped supervisor retry/force-reconnect (explicit user retry and the HELLO-timeout backstop), so a stuck stream can be reopened without a process restart."
+commands.allow = ["sse_retry"]
+
+[[permission]]
+identifier = "allow-upload-stream-file"
+description = "Enables upload_stream_file — desktop streaming multipart upload from an on-disk file path (avoids buffering the whole file through the webview/IPC)."
+commands.allow = ["upload_stream_file"]
+
+[[permission]]
+identifier = "allow-cancel-upload"
+description = "Enables cancel_upload — idempotently cancel one desktop streaming upload by its client message ID."
+commands.allow = ["cancel_upload"]
+
+[[permission]]
+identifier = "allow-retry-native-voice"
+description = "Retry a previously recorded native voice upload by client message ID."
+commands.allow = ["retry_native_voice"]
+
+[[permission]]
+identifier = "allow-discard-native-voice"
+description = "Discard a retained native voice recording by client message ID."
+commands.allow = ["discard_native_voice"]
+
+[[permission]]
+identifier = "allow-report-diagnostics"
+description = "Enables report_diagnostics — build a gzip-tar diagnostic bundle (Rust logs + webview console capture + manifest) and upload it to the backend for field support; on failure it is cached under app_cache_dir for next-launch retry."
+commands.allow = ["report_diagnostics"]
+
+[[permission]]
+identifier = "allow-read-native-log"
+description = "Enables read_native_log — tail the active Rust log or the Kotlin native.log BY NAME (never a caller-supplied path) for the debug log panel. Source-attributed + filterable read-only view; not a generic file-read."
+commands.allow = ["read_native_log"]
+
+[[permission]]
+identifier = "allow-debug-logging"
+description = "Controls diagnostic logging and mirrors bounded WebView console lines to the native log."
+commands.allow = ["set_debug_logging", "log_js"]
+
+[[permission]]
+identifier = "allow-api-request"
+description = "Enables api_request — the webview→backend HTTP transport under Tauri. An IPC fetch that performs the reqwest call on the Rust side and injects the Bearer from ProxyState.token (JS never touches the token); replaces the api:// custom-scheme proxy that Android WebView could not fetch."
+commands.allow = ["api_request"]
+
+[[permission]]
+identifier = "allow-media-request"
+description = "Enables media_request — the webview→backend MEDIA transport under Tauri. The avatar blob cache does http.get(media://...) which Android WebView cannot fetch (custom-scheme fetch rejected); this command performs the reqwest GET to /uploads/* on the Rust side with the Bearer from ProxyState.token and returns the raw bytes."
+commands.allow = ["media_request"]
+
+[[permission]]
+identifier = "allow-media-download"
+description = "Enables the task-scoped native media download commands (stream into the shared cache, report progress, and cancel)."
+commands.allow = [
+  "cache_media",
+  "download_media",
+  "cancel_media_download",
+  "clear_media_cache",
+  "get_media_cache_info",
+  "set_media_cache_limit",
+  "save_media_desktop",
+]
+
+[[permission]]
+identifier = "allow-create-native-video-stream"
+description = "Enables capability-scoped loopback video URLs backed by the authenticated Rust media cache. Used by the Android WebView player; the dormant Media3 player shares the same command."
+commands.allow = ["create_native_video_stream"]
+
+[[permission]]
+identifier = "allow-open-external-url"
+description = "Enables open_external_url — open a LINK message card's target URL in the system browser (the webview's nav guard blocks in-app external navigation)."
+commands.allow = ["open_external_url"]
+
+[[permission]]
+identifier = "allow-native-db"
+description = "Enables the typed native SQLite cache commands used by the bundled SPA."
+commands.allow = [
+  "native_db_advance_thread_read",
+  "native_db_apply_deleted_messages",
+  "native_db_correct_system_message_profile",
+  "native_db_count_messages",
+  "native_db_count_unread_message_slots",
+  "native_db_delete_preference",
+  "native_db_get_deleted_hwm",
+  "native_db_get_group_member",
+  "native_db_get_preference",
+  "native_db_put_cached_messages",
+  "native_db_put_message_head",
+  "native_db_put_preference",
+  "native_db_query_group_members",
+  "native_db_recreate_cache",
+  "native_db_recreate_messages",
+  "native_db_thread_states",
+  "native_db_validate_cache",
+  "native_db_threads",
+  "native_db_put_thread",
+  "native_db_replace_threads",
+  "native_db_delete_thread",
+  "native_db_get_profile",
+  "native_db_advance_intent_request_read",
+  "native_db_initialize_account_state",
+  "native_db_read_account_state",
+  "native_db_write_self_profile",
+  "native_db_write_composer_drafts",
+  "native_db_clear_user",
+  "native_db_clear_all",
+  "native_db_get_profile_avatar",
+  "native_db_query_messages",
+  "native_db_get_message",
+  "native_db_get_deleted_message_seqs",
+  "native_db_newest_messages",
+  "native_db_delete_messages_by_thread",
+  "native_db_get_message_by_origin",
+  "native_message_history_get",
+  "native_profile_resolve",
+  "native_thread_feed_changes",
+  "native_db_project_thread_attention",
+  "native_db_drain_thread_misc",
+  "native_db_profile_namespace_bindings",
+  "native_db_commit_profile_namespace_bindings",
+  "native_db_apply_profile_namespace_changes",
+  "native_db_write_profile_namespace_tomb",
+  "native_db_write_profile_tomb",
+]
+
+[[permission]]
+identifier = "allow-desktop-notifications"
+description = "Updates or clears desktop message notifications through the native manager."
+commands.allow = ["desktop_notification_update", "desktop_notifications_clear", "desktop_notification_pending", "desktop_notification_acknowledge"]
+
+[default]
+description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
+permissions = [
+  "allow-desktop-notifications",
+  "allow-set-api-origin",
+  "allow-get-api-origin",
+  "allow-get-active-api-origin",
+  "allow-is-origin-configured",
+  "allow-get-api-origin-secondary",
+  "allow-set-api-origin-secondary",
+  "allow-get-origin-mode",
+  "allow-init-pick-origin",
+  "allow-set-active-origin",
+  "allow-set-session-token",
+  "allow-clear-session-token",
+  "allow-login-session-for-token",
+  "allow-native-db-begin-login",
+  "allow-begin-logout",
+  "allow-secure-set-token",
+  "allow-secure-get-token",
+  "allow-secure-clear-token",
+  "allow-secure-clear-residual-token",
+  "allow-init-check-compat",
+  "allow-init-validate-cert",
+  "allow-init-compat-status",
+  "allow-sse-start",
+  "allow-sse-stop",
+  "allow-sse-get-state",
+  "allow-sse-net",
+  "allow-sse-replay-hello",
+  "allow-sse-retry",
+  "allow-upload-stream-file",
+  "allow-cancel-upload",
+  "allow-retry-native-voice",
+  "allow-discard-native-voice",
+  "allow-report-diagnostics",
+  "allow-read-native-log",
+  "allow-debug-logging",
+  "allow-api-request",
+  "allow-media-request",
+  "allow-media-download",
+  "allow-create-native-video-stream",
+  "allow-open-external-url",
+  "allow-native-db",
+]

@@ -1,0 +1,52 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!--
+         Notification small icon — the brand mark (chat bubble + node-graph "M"), derived from
+         src-tauri/icons/android-ic-launcher-foreground.svg.
+
+         The launcher foreground is a SOLID white bubble with the M knocked out via an SVG <mask>
+         (the blue background layer shows through the M). A notification small icon has no background
+         layer and is rendered by the system as ALPHA ONLY (status bar ignores color), so the cutout
+         must be expressed here as negative space via android:fillType="evenOdd": overlapping filled
+         contours toggle, so the M sub-shapes drawn over the bubble subtract from it.
+
+         The M is a node-graph — 5 dots joined by 4 strokes (per the SVG mask). evenOdd XORs overlaps,
+         which would corrupt the joints if the strokes (capsules) passed under the dots. So the 4
+         capsules are shortened to terminate exactly at each dot's perimeter (radius 6.5): dots and
+         capsules touch but don't overlap → each toggles the bubble exactly once → a clean union cutout.
+
+         Coordinates are the UNSCALED brand path (the launcher wraps it in scale(0.82) for a padding
+         ring against the adaptive-icon mask). A notification small icon, by contrast, must FILL the
+         drawable's safe zone — the status bar renders it at ~18dp and clips the alpha to the bar tint,
+         so an underfilled glyph (the raw brand bbox is only ~61% wide / 51% tall of the 108 viewport)
+         reads as a tiny dot. The <group> below scales the unscaled brand path ×1.36 and re-centers it on
+         (54,54), landing the bbox at [9.1,98.9]×[16.6,91.4] — 83% width (the Material status-bar live
+         area) / 69% height, the limiting axis being the bubble's width. No padding ring here.
+    -->
+    <group
+        android:scaleX="1.36"
+        android:scaleY="1.36"
+        android:translateX="-19.44"
+        android:translateY="-22.84">
+        <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="
+            M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z
+
+            M28.5 65 a6.5 6.5 0 1 0 13 0 a6.5 6.5 0 1 0 -13 0 Z
+            M28.5 42 a6.5 6.5 0 1 0 13 0 a6.5 6.5 0 1 0 -13 0 Z
+            M47.5 57 a6.5 6.5 0 1 0 13 0 a6.5 6.5 0 1 0 -13 0 Z
+            M66.5 42 a6.5 6.5 0 1 0 13 0 a6.5 6.5 0 1 0 -13 0 Z
+            M66.5 65 a6.5 6.5 0 1 0 13 0 a6.5 6.5 0 1 0 -13 0 Z
+
+            M31 58.5 L39 58.5 L39 48.5 L31 48.5 Z
+            M69 48.5 L77 48.5 L77 58.5 L69 58.5 Z
+            M37.62 49.17 L46.42 56.11 L51.38 49.83 L42.58 42.89 Z
+            M61.58 56.11 L70.38 49.17 L65.42 42.89 L56.62 49.83 Z" />
+    </group>
+</vector>

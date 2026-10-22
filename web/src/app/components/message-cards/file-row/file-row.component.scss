@@ -1,0 +1,140 @@
+// FILE message row: reuse the shared rules (@use row-base) + file-specific (fixed-width bubble + type icon + download anchor).
+@use '../row-base' as *;
+
+// File bubble: fixed 280px width (absolute width + max-width:100% shrinks on narrow screens — honors the _row-base
+// width-self-contained contract).
+.msg-bubble.msg-file {
+  width: 280px;
+  max-width: 100%;
+  padding: 0;
+  display: block;
+  overflow: hidden;
+}
+
+// Click target: icon + meta + download glyph in a row. Clicking opens the file-detail overlay (the row emits openFile);
+// the actual <a download> lives inside that overlay. role=button + tabindex make it keyboard-accessible.
+// min-width:0 breaks the default min-width:auto chain: a nowrap filename's min-content is the WHOLE unbreakable name,
+// so without this the row would refuse to shrink below it and overflow the fixed 280px bubble. Paired with .msg-file-meta's
+// own min-width:0 + .msg-file-name's overflow:hidden/ellipsis, the filename now truncates inside the bubble.
+.msg-file-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 20px;
+  align-items: center;
+  column-gap: 12px;
+  width: 100%;
+  height: 76px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 10px;
+  outline: none;
+  &:focus-visible {
+    outline: 2px solid var(--bubble-accent);
+    outline-offset: 2px;
+  }
+}
+
+// Type icon: a rounded square + category-color tint. Keep the artwork and extension in normal flow so
+// they have a stable gap instead of overlapping around the icon's vertical center.
+.msg-file-ico {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-radius: 6px;
+  color: #fff;
+  background: var(--msg-file-c, #6b7280);
+}
+.msg-file-svg {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+}
+.msg-file-ext {
+  font-size: 8px;
+  line-height: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+// Category tint (pdf red / doc blue / sheet green / slides orange / archive purple / text gray / file blue-gray).
+.msg-file-ico--pdf {
+  --msg-file-c: #e53935;
+}
+.msg-file-ico--doc {
+  --msg-file-c: #2b6cb0;
+}
+.msg-file-ico--sheet {
+  --msg-file-c: #2e7d32;
+}
+.msg-file-ico--slides {
+  --msg-file-c: #ef6c00;
+}
+.msg-file-ico--archive {
+  --msg-file-c: #7b1fa2;
+}
+.msg-file-ico--text {
+  --msg-file-c: #546e7a;
+}
+.msg-file-ico--unknown {
+  --msg-file-c: #6b7280;
+}
+
+// Meta column: filename (single-line ellipsis) + size (de-emphasized).
+.msg-file-meta {
+  min-width: 0; // allow the ellipsis child to shrink
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.msg-file-name {
+  font-size: 14px;
+  line-height: 18px; // integer px (was 1.3 = 18.2px) — see the integer-height contract in _row-base.scss
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg-file-size {
+  font-size: 12px;
+  line-height: 14px; // integer px (was default ~14.4px) — see the integer-height contract in _row-base.scss
+  opacity: 0.6;
+}
+
+.msg-file-footer {
+  width: 100%;
+}
+
+.msg-file-time {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+// Download glyph (de-emphasized; darkens on hover — the whole row is click-to-download, this is auxiliary cue).
+// When the federated media is not yet local, the glyph slot swaps to a spinner (downloading) or a
+// cloud_off icon (failed) — HEIGHT-NEUTRAL: the slot is fixed, the swap never changes the row height.
+.msg-file-dl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: end;
+  width: 20px;
+  height: 20px;
+  opacity: 0.4;
+  .mat-icon {
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+  }
+}
+.msg-file-dl-failed {
+  color: var(--app-danger, #ff5252);
+  opacity: 0.95;
+}
+.msg-file-row:hover .msg-file-dl {
+  opacity: 0.8;
+}

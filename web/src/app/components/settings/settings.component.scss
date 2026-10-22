@@ -1,0 +1,70 @@
+@use './_settings-shared.scss' as s;
+@include s.settings-groups;
+
+// Settings surface — M3 two-tier (root category list + sliding sub-page). The shell (.msg-header +
+// scrollable .body) is shared by both views; the sub-page is an opaque absolute overlay that slides in
+// via [@pageSlide]. All vertical metrics are integer px (project rule).
+
+:host {
+  display: block;
+  height: 100%;
+  background: var(--app-surface);
+}
+
+.panel {
+  // Anchor for the .view-sub absolute overlay.
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  // The root recedes under the sliding sub-page (subtle parallax + dim); one curve for both directions.
+  transition:
+    transform 200ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 200ms cubic-bezier(0.4, 0, 1, 1);
+}
+
+.view.dimmed {
+  transform: translateX(-8%);
+  opacity: 0.5;
+}
+
+// Sub-page slides over the root (absolute, opaque). [@pageSlide] drives enter/leave; transitions here are
+// not used (the animation owns the motion).
+.view-sub {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--app-surface);
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 20px 16px 32px;
+}
+
+// Leading category glyph (brand-tinted) sits in the MDC list-item avatar/__start slot so it aligns in its
+// own column beside the two-line title+summary. Keep it a compact flex box (not an avatar circle).
+.lead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-brand);
+}
+
+// Trailing drill-in chevron.
+.chev {
+  color: var(--app-text-faint);
+}

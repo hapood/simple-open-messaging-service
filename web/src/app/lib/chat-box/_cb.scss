@@ -1,0 +1,435 @@
+// The only global style contract the virtual-scroll kernel requires (same directory as the core lib; framework-agnostic).
+//
+// .cb-pending: the kernel adds it to an element on mount() and removes it after measurePending() reads the real offsetHeight.
+// visibility:hidden is used (layout preserved, still measurable) to hide the element during the "mount → measure" frame,
+// eliminating the estimateHeight → real-height flicker. Consumers (styles.scss) @use this file once and it applies globally;
+// playground and the real chat share the kernel → share this rule, no need to redefine it in each place.
+.cb-pending {
+  visibility: hidden !important;
+}
+
+// .cb-ghost: the kernel tags the top item of the mounted window (the oldestId slot, not yet at the global oldest) with
+// cb-ghost to signal "still loading above". Two carriers: ① createItem produces a centered spinner [.cb-ghost-loading]
+// for the top item directly (prev=null, not the global oldest — see below: WhatsApp-style, fixed height, no real
+// component / image rendered); ② after a trim, an item promoted into the top slot is a real component el (its prev may
+// be stale), so a ::after overlay shimmers over its interior (_row-base contract: outer CSS never writes inside the host
+// → use a pseudo-element veil, do not pierce the component DOM). Hence the overlay uses :not(.cb-ghost-loading) to exclude
+// the spinner host (the spinner has its own ::before and needs no veil). Once loadOlder attaches the older neighbor the
+// item rebuilds into view (spinner → real) and the kernel removes cb-ghost; it follows oldestId and disappears permanently
+// when noOlder. position:relative is forced (the host has no position by default; without it ::after would size to .pg-content
+// and fill the whole column); absolute does not inflate the host offsetHeight.
+.cb-ghost {
+  position: relative;
+  &:not(.cb-ghost-loading)::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 1; // covers .msg-row / .msg-date (they have no stacking context)
+    pointer-events: none; // does not block scroll / clicks
+    background-color: var(--app-active);
+    background-image: linear-gradient(
+      100deg,
+      transparent 30%,
+      rgba(255, 255, 255, 0.5) 50%,
+      transparent 70%
+    );
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: cb-shimmer 1.4s ease-in-out infinite;
+  }
+}
+
+// .cb-ghost-loading: ghost loading indicator — the centered spinner used by mainstream chat apps for the incremental
+// "load older messages upward" indicator (WhatsApp style; Telegram's skeleton is for initial blank fill, not this case).
+// A skeleton / message-shaped placeholder does not fit here: only one row, and the self/other/content type is unknown, so
+// the shape can only be guessed. A spinner is content-agnostic, light, and semantically precise (loading). The structure is
+// produced by createGhostCbElement (empty host + the kernel-owned chat status SVG). Fixed height (GHOST_H inlined by JS) → never stretched by
+// content; host offsetHeight is constant = estimateHeight, the rebuildDelta is compensated by the kernel. Design choice: the
+// spinner is a centered ring (border ring + top-arc highlight + rotation); fg uses --app-text-faint (same neutral-gray tier as
+// the timestamp), track is a light gray.
+.cb-ghost-loading {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &::before {
+    display: none;
+  }
+}
+
+// Pagination status is intentionally separate from the realtime/SSE connection ring. Loading is a compact neutral
+// spinner; failure is a static retry glyph in a subtle button surface, so it cannot be mistaken for active work.
+.cb-load-status {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  transition:
+    color 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.cb-load-icon {
+  width: 20px;
+  height: 20px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cb-load-icon__spinner,
+.cb-load-icon__retry {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity 160ms ease,
+    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.cb-load-icon__spinner {
+  opacity: 1;
+  animation: cb-chat-load-spin 0.8s linear infinite;
+}
+
+.cb-load-icon__track {
+  stroke: color-mix(in srgb, var(--app-text-faint) 24%, transparent);
+}
+
+.cb-load-icon__arc {
+  stroke: var(--app-text-faint);
+  stroke-dasharray: 22 54;
+}
+
+.cb-load-icon__retry {
+  opacity: 0;
+  transform: scale(0.65) rotate(-35deg);
+}
+
+.cb-edge-failed .cb-load-icon__spinner,
+.cb-tail-cap--failed .cb-load-icon__spinner {
+  opacity: 0;
+  transform: scale(0.65) rotate(35deg);
+  animation: none;
+}
+
+.cb-edge-failed .cb-load-icon__retry,
+.cb-tail-cap--failed .cb-load-icon__retry {
+  opacity: 1;
+  transform: scale(1) rotate(0);
+}
+
+.cb-tail-cap > .cb-load-status {
+  display: none;
+}
+.cb-tail-cap--loading > .cb-load-status,
+.cb-tail-cap--failed > .cb-load-status {
+  display: inline-grid;
+}
+
+.cb-ghost-loading.cb-edge-failed,
+.cb-tail-cap--failed {
+  color: var(--app-text-muted);
+  cursor: pointer;
+
+  > .cb-load-status {
+    background: var(--app-surface-elevated);
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.1),
+      0 2px 7px rgba(0, 0, 0, 0.08);
+  }
+
+  &:hover > .cb-load-status {
+    color: var(--app-primary);
+    transform: scale(1.08);
+    background: var(--app-active);
+    box-shadow:
+      0 2px 4px rgba(0, 0, 0, 0.12),
+      0 4px 10px rgba(0, 0, 0, 0.09);
+  }
+
+  &:focus-visible > .cb-load-status {
+    color: var(--app-primary);
+    box-shadow: 0 0 0 2px
+      color-mix(in srgb, var(--app-primary) 28%, transparent);
+  }
+
+  &:active > .cb-load-status {
+    transform: scale(0.92);
+  }
+}
+
+@keyframes cb-chat-load-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+// .cb-tail-cap: the tail cap — a kernel-managed persistent non-message element that is always the last child of content
+//  (never in mounted[], so it neither corrupts the newer cursor mounted[last].item.id nor shifts any real item's topOf).
+//  Two modes, switched by the kernel from the newer boundary:
+//   ① noNewer (at the global newest) = gap: currently no extra spacer beyond the composer reserve;
+//   ② retry in flight = loading: the chat pagination spinner (independent from the SSE connection indicator).
+//  The height is MEASURED by the kernel (offsetHeight); CSS owns the dimension, the kernel reads it, so totalH stays
+//  exact even if the gap/spinner size is tuned here. It does NOT reuse .cb-ghost-loading: the playground sticky-date
+//  query targets .cb-ghost-loading, meaning the TOP ghost — tagging the cap with it
+//  would make that query match the bottom and wrongly suppress the date float.
+.cb-tail-cap {
+  box-sizing: border-box;
+  // Floating composer reserve. The host publishes one integer border-box height; because this padding is
+  // part of the measured cap, its existing ResizeObserver applies the shared bottom/item anchor policy.
+  --cb-composer-reserve: var(--soms-content-bottom-reserve, 0px);
+  // base = hidden (no height); --gap / --loading modifiers supply the height. Kernel measures the real offsetHeight.
+  // An aggregate attachment transfer is Angular-owned but mounted inside this kernel-owned slot. Let its
+  // natural height replace the ordinary gap so it participates in scrolling and total-height accounting.
+  &:has(.msg-transfer-stack) {
+    height: auto;
+    padding-bottom: var(--cb-composer-reserve);
+  }
+}
+.cb-tail-cap--gap {
+  height: calc(
+    0px + var(--cb-composer-reserve)
+  ); // no extra gap for now; keep only the floating composer reserve
+}
+.cb-tail-cap--loading {
+  height: calc(
+    48px + var(--cb-composer-reserve)
+  ); // spinner row (GHOST_H) + floating composer reserve
+  display: flex;
+  // Keep the indicator at the start of the cap's loading row. Centering against the full cap would also
+  // include the (potentially large) composer reserve and push the spinner into the middle of the viewport.
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8px;
+
+  &::before {
+    display: none;
+  }
+}
+.cb-tail-cap--failed {
+  height: calc(48px + var(--cb-composer-reserve));
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8px;
+
+  &::before {
+    display: none;
+  }
+}
+
+@keyframes cb-shimmer {
+  0% {
+    background-position: 200% 0;
+  } // highlight band outside on the right
+  100% {
+    background-position: -200% 0;
+  } // slides to outside on the left (shimmer flows right → left)
+}
+
+// .cb-jump-highlight: a one-shot cue on the message bubble itself. A pseudo-element keeps the cue paint-only and
+// preserves the bubble's normal background. Binding it to the bubble (rather than the variable-width row layer)
+// makes grouped rows with/without avatars flash identically. The animation event bubbles to the host for cleanup.
+.cb-jump-highlight > .msg-row .msg-bubble::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: cb-jump-target-flash 0.9s ease-out;
+}
+
+// A jump to a merged album member highlights only the requested media cell. The overlay is paint-only,
+// so the virtual scroller's measured row height stays stable.
+.cb-jump-highlight-target {
+  z-index: 1;
+}
+
+.cb-jump-highlight-target::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  background-color: transparent;
+  pointer-events: none;
+  animation: cb-jump-target-flash 0.9s ease-out;
+}
+
+@keyframes cb-jump-target-flash {
+  0%,
+  35% {
+    background-color: color-mix(in srgb, var(--app-brand) 20%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+// Accessibility: user prefers reduced motion → no flash (a very short fade-in to static is kept so the target is still noticeable).
+@media (prefers-reduced-motion: reduce) {
+  .cb-jump-highlight > .msg-row .msg-bubble::after {
+    animation: cb-jump-target-flash-reduced 0.25s ease-out;
+  }
+  .cb-jump-highlight-target::before {
+    animation: cb-jump-target-flash-reduced 0.25s ease-out;
+  }
+  @keyframes cb-jump-target-flash-reduced {
+    from {
+      background-color: color-mix(in srgb, var(--app-brand) 16%, transparent);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+}
+
+// .cb-enter / .cb-leave: host-level enter/exit animation classes added by the kernel (insertAfter + appendLive enter;
+// removeItem exits). Same tier as .cb-pending/.cb-ghost/.cb-jump-highlight — kernel mechanism classes, global
+// (styles.scss @use's this file once).
+// Height-model constraint: opacity + transform only (transform never affects offsetHeight) -> the kernel's measured
+// height is unchanged during the animation, no jitter.
+// Exit uses forwards (holds the `to` state at end); the kernel only unmounts the DOM on animationend, and the entry
+// keeps counting its height until then, so the height model stays exact.
+// No "height collapse" exit — it would fight the kernel's offsetHeight model (left as a future enhancement).
+// Pending-message enter/exit animations. Tuned snappy (0.18s enter / 0.2s leave) so an
+// optimistic send pops in without lag (WhatsApp/Telegram-class timing); the kernel's
+// animationend-driven lifecycle is duration-agnostic, and the safety timeout sits well
+// above the CSS duration.
+.cb-enter {
+  animation: cb-enter 0.18s ease-out;
+}
+.cb-leave {
+  animation: cb-leave 0.2s ease-in forwards;
+}
+
+@keyframes cb-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+// .cb-enter-above: the coordinated optimistic-confirm / incoming-at-tail enter. Used when an optimistic tail block is
+// present and a newer batch inserts reals just ABOVE it (the confirm/incoming source-demand path). The new real
+// must slide in FROM ABOVE (translateY(-N) → 0) so it descends into its slot from the newest-real side and never travels
+// DOWN through the pending tail's band (a downward enter would visually cover the pending mid-animation). The pending tail
+// simultaneously shoves via .cb-move; the pair moves apart in the same frame. Same height-model constraint as cb-enter.
+.cb-enter-above {
+  animation: cb-enter-above 0.18s ease-out;
+}
+
+@keyframes cb-enter-above {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes cb-leave {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+// .cb-move: FLIP reorder animation (reconcilePending sinking a failed send to the tail, etc.). The kernel sets a per-
+// element --cb-move-dy = (oldTop - newTop) BEFORE adding this class (after a forced reflow), so the element — already at
+// its new layout position — starts visually at its OLD position (translateY(var)) and slides to identity (new position).
+// `both` fill applies the `from` immediately so there is no one-frame flash at the un-inverted new position.
+// Height-model safe: transform never affects offsetHeight, so the kernel's measured height is unchanged during the move.
+.cb-move {
+  animation: cb-move 0.22s ease-out both;
+}
+
+@keyframes cb-move {
+  from {
+    transform: translateY(var(--cb-move-dy, 0px));
+  }
+  to {
+    transform: none;
+  }
+}
+
+// A11y: reduced motion -> near-instant (still fires animationend so the kernel completes its lifecycle; animating drains).
+@media (prefers-reduced-motion: reduce) {
+  .cb-enter,
+  .cb-enter-above,
+  .cb-leave,
+  .cb-move {
+    animation-duration: 0.01s;
+  }
+}
+.cb-server-gap {
+  box-sizing: border-box;
+  height: 56px;
+  padding: 12px var(--chat-timeline-inset-inline);
+  color: var(--ion-color-medium-shade, #667085);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.cb-server-gap__rule {
+  position: relative;
+  flex: 1 1 auto;
+  height: 2px;
+  background: currentColor;
+  opacity: 0.45;
+  clip-path: polygon(
+    0 0,
+    43% 0,
+    46% 100%,
+    49% 0,
+    52% 100%,
+    55% 0,
+    58% 100%,
+    61% 0,
+    64% 100%,
+    67% 0,
+    100% 0,
+    100% 100%,
+    67% 100%,
+    64% 0,
+    61% 100%,
+    58% 0,
+    55% 100%,
+    52% 0,
+    49% 100%,
+    46% 0,
+    43% 100%,
+    0 100%
+  );
+}
+
+.cb-server-gap__label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-server-gap--unavailable {
+  color: var(--ion-color-danger-shade, #b42318);
+}

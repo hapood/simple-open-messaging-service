@@ -1,0 +1,233 @@
+@use '../../assets/utils.scss' as *;
+
+// Paint above the scroll viewport (which carries the keyboard-lift transform and would otherwise slide
+// content over the header). A flex item honors z-index without `position`, but `position: relative` makes
+// the intent explicit. The opaque .msg-header background (var(--app-surface)) clips content sliding under
+// it. The CDK action-menu overlay mounts at body level, so it is unaffected.
+:host {
+  position: relative;
+  z-index: 2;
+}
+
+.msg-header {
+  // Single source of truth: the height is the --msg-header-h token defined on the
+  // host .msg-container (the sticky-date overlay consumes the same value to clear
+  // the header). Falls back to 56px if the token is absent (e.g. header used elsewhere).
+  height: var(--msg-header-h, 56px);
+  width: 100%;
+  position: relative;
+  background: var(--app-surface);
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--app-border);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  // Top padding = the status-bar safe-area inset, so the bar's --app-surface background extends seamlessly
+  // under the status bar (edge-to-edge, no tonal strip) and the content row sits below it. --msg-header-h
+  // (on .msg-container) already includes the inset; with border-box the content row stays exactly 56px and
+  // align-items:center centers within it. 0 on desktop/browser (no native injection).
+  padding: var(--soms-safe-top, 0px) 8px 0;
+}
+
+.back-btn {
+  @include styless-button;
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 8px;
+  color: var(--app-text-muted);
+  border-radius: var(--app-radius-pill);
+  cursor: pointer;
+  &:hover {
+    color: var(--app-text);
+    background: var(--app-hover);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 1px;
+  }
+}
+
+.back-unread {
+  min-width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: var(--app-radius-pill);
+  background: var(--app-brand);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-title {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--soms-safe-top, 0px) + 28px);
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: calc(100% - 196px);
+  // The title text owns its own ellipsis. Keep this wrapper visible so the
+  // absolutely-positioned mute state beside the centered name is not clipped.
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.msg-title-line {
+  position: relative;
+  max-width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  align-self: center;
+}
+
+.announcement-button {
+  pointer-events: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--app-brand);
+  cursor: pointer;
+  align-self: center;
+  &.unread {
+    background: var(--app-hover);
+    border-radius: 12px;
+  }
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+  }
+}
+
+.group-member-count {
+  flex: 0 0 auto;
+  color: var(--app-text-faint);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.thread-indicators {
+  position: absolute;
+  left: calc(100% + 5px);
+  top: 2px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--app-text-faint);
+}
+
+.msg-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.icon-btn {
+  position: relative;
+}
+
+.more-badge {
+  @include unread-attention-dot;
+  position: absolute;
+  top: 7px;
+  right: 7px;
+}
+
+// align-self:flex-start defeats the column's default align-items:stretch — otherwise a short name
+// ("Mom") stretches the box across the whole .msg-title column (~260px), making the entire header
+// middle one phantom hover-dim + click target. max-width:100% then caps a long name at the column
+// edge so text-overflow:ellipsis still fires (the cap is what makes offsetWidth < scrollWidth).
+.msg-title-text {
+  min-width: 0;
+  color: var(--app-text);
+  // Bold primary name + faint subtitle (see .msg-subtitle) establishes the header's name/desc hierarchy —
+  // mirrors the playground header's treatment (bold name on top, weaker descriptor beneath).
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+
+// Subtitle: the peer's bio (P2P) or the group description (GROUP). Rendered only when non-empty
+// (template @if), so an empty bio/description collapses the header to a single centered line.
+.msg-subtitle {
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 16px;
+  // --app-text-faint (one tier below --app-text-muted) keeps the descriptor clearly secondary to the
+  // bold name above — the same faint tier the playground header uses for its sub-line.
+  color: var(--app-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  margin-top: 1px;
+}
+
+@media (min-width: 600px) {
+  .msg-title {
+    max-width: calc(100% - 208px);
+  }
+}
+
+.icon-btn {
+  @include styless-button;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-text-muted);
+  border-radius: var(--app-radius-pill);
+  cursor: pointer;
+
+  // Keep the persistent highlight for real component state (the More menu), while
+  // touch devices get feedback only for the duration of the press. Android WebView
+  // can retain :hover after a tap; applying hover only to hover-capable pointers
+  // prevents the call button from looking selected after it starts a call.
+  &.active,
+  &:active {
+    color: var(--app-text);
+    background: var(--app-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-brand);
+    outline-offset: 1px;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover {
+    color: var(--app-text);
+    background: var(--app-hover);
+  }
+}

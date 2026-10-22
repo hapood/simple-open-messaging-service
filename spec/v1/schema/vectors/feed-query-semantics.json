@@ -1,0 +1,446 @@
+{
+  "formatVersion": 1,
+  "description": "Non-wire state-machine vectors. Cursor values are exclusive committed positions.",
+  "cases": [
+    {
+      "name": "namespace bootstrap commits pages rather than the disclosed end",
+      "initialCursors": { "profileNamespace": "0" },
+      "steps": [
+        {
+          "request": "profile-namespace-feed",
+          "responseItems": [{ "namespaceId": 7, "feedId": "2" }],
+          "responseEnd": "9",
+          "responseScannedThrough": "2",
+          "hasMore": true,
+          "commit": true
+        },
+        {
+          "request": "profile-namespace-feed",
+          "after": "2",
+          "through": "9",
+          "responseItems": [{ "namespaceId": 8, "feedId": "9" }],
+          "responseEnd": "11",
+          "responseScannedThrough": "9",
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "an omitted after is evaluated as zero and may return a partial page",
+        "the first page commits invalidation effects and cursor 2, not cursor 9",
+        "the bootstrap target remains 9 when a later page discloses end 11",
+        "completion commits cursor 9 and leaves end 11 for subsequent work"
+      ]
+    },
+    {
+      "name": "Group Meta compaction during a bounded full drain converges through delta",
+      "steps": [
+        {
+          "request": "group-meta",
+          "mode": "full",
+          "after": 0,
+          "through": 10,
+          "responseItems": [{ "feedId": 4, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } }],
+          "responseScannedThrough": 4,
+          "hasMore": true,
+          "commit": false
+        },
+        {
+          "action": "compact-member-replacement",
+          "replacedFeedId": 8,
+          "replacement": { "feedId": 11, "operation": "MEMBER_UPSERT", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 2 } }
+        },
+        {
+          "request": "group-meta",
+          "mode": "full",
+          "after": 4,
+          "through": 10,
+          "responseItems": [],
+          "responseScannedThrough": 10,
+          "hasMore": false,
+          "commit": true
+        },
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "after": 10,
+          "through": 11,
+          "responseItems": [{ "feedId": 11, "operation": "MEMBER_UPSERT", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 2 } }],
+          "responseScannedThrough": 11,
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "the full drain retains through 10, not a snapshot of every item visible at its start",
+        "the source need not preserve superseded item 8 for the active drain",
+        "full completion atomically applies the accumulated roster containing alice and cursor 10",
+        "delta restores bob from replacement 11 without a source-side drain session"
+      ]
+    },
+    {
+      "name": "full scan without announcement removes the previous projection before delta",
+      "initialCursors": { "groupMeta": 4 },
+      "steps": [
+        {
+          "request": "group-meta",
+          "mode": "full",
+          "after": 0,
+          "through": 10,
+          "currentAnnouncement": { "feedId": 11, "text": null },
+          "responseItems": [],
+          "responseScannedThrough": 10,
+          "hasMore": false,
+          "commit": true
+        },
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "after": 10,
+          "through": 11,
+          "responseItems": [
+            {
+              "feedId": 11,
+              "operation": "GROUP_ANNOUNCEMENT",
+              "body": { "text": null }
+            }
+          ],
+          "responseScannedThrough": 11,
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "full completion with no returned announcement removes the previous projection without inventing a clear",
+        "the source never falls back to a historical announcement below through",
+        "delta commits the explicit clear and cursor atomically",
+        "replaying an older publish cannot restore the cleared announcement"
+      ]
+    },
+    {
+      "name": "state dependencies precede the combined thread head",
+      "initialCursors": { "state": "4" },
+      "hint": { "state": "6" },
+      "steps": [
+        {
+          "request": "state-feed",
+          "after": "4",
+          "through": "6",
+          "responseItems": ["THREAD_CONTENT_HEAD(meta=5)@6"],
+          "responseScannedThrough": "6",
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "group roster target is applied before the thread targets",
+        "Group Meta, message, and deletion targets come from one item"
+      ]
+    },
+    {
+      "name": "first page fixes drain target and later pages preserve through",
+      "initialCursors": { "state": "4" },
+      "steps": [
+        {
+          "request": "state-feed",
+          "after": "4",
+          "responseEnd": "9",
+          "responseScannedThrough": "6",
+          "hasMore": true,
+          "commit": true
+        },
+        {
+          "request": "state-feed",
+          "after": "6",
+          "through": "9",
+          "responseEnd": "11",
+          "responseScannedThrough": "9",
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "drain target is 9",
+        "the first page belongs to the drain",
+        "the bounded State Feed drain completes only after its committed cursor equals 9"
+      ]
+    },
+    {
+      "name": "inactive audience forbids query without moving cursor",
+      "initialCursors": { "messageQuery": "20" },
+      "steps": [
+        {
+          "request": "messages",
+          "after": "20",
+          "through": "30",
+          "audienceActive": false,
+          "responseCode": 10004,
+          "commit": false
+        }
+      ],
+      "assertions": ["message query cursor remains 20"]
+    },
+    {
+      "name": "same account reactivation preserves cursor and applies local history policy",
+      "initialCursors": { "messageQuery": "20" },
+      "source": {
+        "serviceableSeqs": [21, 22, 28, 29],
+        "historyPolicyOmission": [23, 27]
+      },
+      "steps": [
+        {
+          "request": "messages",
+          "after": "20",
+          "through": "29",
+          "audienceActive": true,
+          "returnedSeqs": [21, 22, 28, 29],
+          "responseScannedThrough": "29",
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "query coordinate identity is unchanged",
+        "seq 23 through 27 are holes selected by this publisher history policy",
+        "the protocol also permits another publisher policy to expose retained positions from the absence"
+      ]
+    },
+    {
+      "name": "message query retry results never move cursor or peer lifecycle",
+      "initialCursors": { "messageQuery": "40" },
+      "initialPeerLifecycle": "available",
+      "steps": [
+        {
+          "request": "messages",
+          "after": "40",
+          "responseCode": 50024,
+          "retryAfter": 3,
+          "commit": false
+        },
+        {
+          "request": "messages",
+          "after": "40",
+          "responseCode": 50025,
+          "retryAfter": 10,
+          "commit": false
+        }
+      ],
+      "assertions": [
+        "message query cursor remains 40",
+        "peer lifecycle remains available"
+      ]
+    },
+    {
+      "name": "a compacted roster dependency move reindexes its thread head",
+      "initialCursors": { "state": "6" },
+      "steps": [
+        {
+          "request": "state-feed",
+          "after": "6",
+          "responseItems": ["THREAD_CONTENT_HEAD(meta=7)@8"],
+          "responseScannedThrough": "8",
+          "hasMore": false,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "the newer Group Meta coordinate is atomic with its dependent thread head",
+        "unchanged message and deletion coordinates may be force-reindexed"
+      ]
+    },
+    {
+      "name": "forward thread recovery uses the latest permitted start",
+      "initialCursors": {
+        "messageQuery": "20"
+      },
+      "source": { "resumeAfter": 35, "resumeBefore": 61 },
+      "steps": [
+        {
+          "action": "adopt-forward-start",
+          "start": "35",
+          "discardedLocalGap": ["21", "35"]
+        },
+        { "action": "commit-required-group-meta-coordinate" },
+        {
+          "request": "messages",
+          "after": "35",
+          "through": "60",
+          "responseScannedThrough": 60,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "forward start equals max of local cursor and resumeAfter",
+        "the discarded gap is absent rather than pending",
+        "the discarded gap does not imply source-side deletion",
+        "role-and-profile-reference group-meta departures commit before messages become visible",
+        "group member profile references advance through a later allocated Group Meta coordinate after the exact snapshot is available"
+      ]
+    },
+    {
+      "name": "skip-mode reverse starts at latest and remains continuous",
+      "initialCursors": {
+        "messageQuery": 60
+      },
+      "source": { "resumeAfter": 10, "resumeBefore": 61 },
+      "steps": [
+        { "action": "commit-latest-state" },
+        { "action": "commit-group-meta-full" },
+        {
+          "request": "messages",
+          "before": "61",
+          "through": "10",
+          "responseScannedThrough": 10,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "the reverse query does not start at an intermediate sequence",
+        "every later reverse page uses the preceding scannedThrough",
+        "reverse progress does not move the forward cursor backward"
+      ]
+    },
+    {
+      "name": "group origin resolves member message evidence before publishing a new Meta reference",
+      "steps": [
+        {
+          "request": "messages",
+          "thread": "!team",
+          "returnedSeqs": [41],
+          "commit": true
+        },
+        {
+          "request": "account-profile",
+          "thread": "!team",
+          "account": "alice@a.example",
+          "profileRev": 3,
+          "signerIsGroupOrigin": true,
+          "membershipConfirmed": true,
+          "messageServiceableToSigner": true,
+          "commit": true
+        },
+        {
+          "action": "publish-member-upsert",
+          "thread": "!team",
+          "member": "alice@a.example",
+          "profileRev": 3,
+          "allocateNewFeedId": true
+        },
+        {
+          "request": "group-member-profile",
+          "thread": "!team",
+          "member": "alice@a.example",
+          "profileRev": 3,
+          "authorizedGroupAudience": true,
+          "canonicalCurrentGroupMetaReference": true,
+          "commit": true
+        },
+        {
+          "request": "account-profile",
+          "thread": "!team",
+          "account": "alice@a.example",
+          "profileRev": 4,
+          "signerIsGroupOrigin": true,
+          "messageServiceableToSigner": false,
+          "responseCode": 10001,
+          "commit": false
+        }
+      ],
+      "assertions": [
+        "member messages can be distributed before the profile snapshot is resolved",
+        "only a confirmed group origin may use group-message evidence at the member home",
+        "a changed member Meta reference receives a new feed ID after the exact snapshot is available",
+        "a group peer resolves member bytes at the group origin, not the member home",
+        "a profile revision outside the current readable message interval is unavailable",
+        "no current-profile fallback is returned"
+      ]
+    },
+    {
+      "name": "canonical group meta hides pre-authorization delta history",
+      "canonicalGroupMetaEnd": "20",
+      "audienceVisibleAfter": "20",
+      "steps": [
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "after": "0",
+          "responseCode": 50019,
+          "commit": false
+        },
+        {
+          "request": "group-meta",
+          "mode": "full",
+          "after": "0",
+          "through": "20",
+          "currentMembersOnly": true,
+          "commit": true
+        },
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "after": "20",
+          "through": "23",
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "all audiences read one group-global coordinate space",
+        "a new or restored audience cannot enumerate changes before its visibility floor",
+        "full recovery exposes the current roster without exposing prior departures",
+        "subsequent delta reads begin at or above the audience visibility floor"
+      ]
+    },
+    {
+      "name": "forward and reverse rejoin races converge through group meta",
+      "modes": ["forward", "skip-reverse"],
+      "steps": [
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "departedMembers": ["bob@b.example"],
+          "responseItems": [
+            {
+              "feedId": 5,
+              "operation": "MEMBER_DEPART",
+              "body": {
+                "account": "bob",
+                "namespaceId": 7,
+                "role": "MEMBER",
+                "profileRev": 3
+              }
+            }
+          ],
+          "commit": true
+        },
+        {
+          "request": "messages",
+          "before": "61",
+          "through": "40",
+          "placeholderAuthors": ["alice@a.example"],
+          "commit": true
+        },
+        {
+          "request": "group-meta",
+          "mode": "delta",
+          "upsertedMembers": ["alice@a.example"],
+          "commit": true
+        },
+        {
+          "request": "group-member-profile",
+          "thread": "!team",
+          "member": "alice@a.example",
+          "profileRev": 3,
+          "authorizedGroupAudience": true,
+          "canonicalCurrentGroupMetaReference": true,
+          "commit": true
+        }
+      ],
+      "assertions": [
+        "a rejoined current member may temporarily use an account-domain placeholder in either direction",
+        "group meta supplies role and an exact profile reference but no display bytes",
+        "group-member profile resolution uses the exact revision selected by committed group meta",
+        "member-message revisions are published through newly allocated Group Meta coordinates after exact snapshot resolution",
+        "group-meta departures carry the final role and profile reference but do not enqueue profile work"
+      ]
+    }
+  ]
+}

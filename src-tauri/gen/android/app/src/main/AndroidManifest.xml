@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Observe OS network state (ConnectivityManager.registerDefaultNetworkCallback) so RealtimeService can
+         distinguish "device offline" (the Disconnected banner — no point retrying) from "server unreachable"
+         (the Reconnecting banner — backoff + origin race). Normal (normal-protection) permission: no prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- FCM notifications require POST_NOTIFICATIONS on Android 13+ (API 33). Granted at runtime via
+         SomsFcm.requestNotificationPermission(), invoked from JS after first login. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Foreground service for the native-owned realtime channel (RealtimeService, dataSync
+         type). Required to start a foreground service at all (base) + the dataSync type specifically
+         (Android 14+/API 34). The service is bounded by Android 15's ~6h/24h dataSync time budget. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Foreground service for an active 1:1 call (CallService, phoneCall type). The phoneCall type is NOT
+         bounded by Android 15's dataSync time budget (a call may exceed 6h) and is the type the system
+         associates with an in-progress call (Telecom / call-screen integration). Declared in addition to
+         the base FOREGROUND_SERVICE. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <!-- Runtime prerequisite for a phoneCall foreground service on targetSdk 34+: a self-managed VoIP app
+         must either declare MANAGE_OWN_CALLS or hold ROLE_DIALER. SOMS is not a system dialer, so it uses the
+         self-managed-call permission. Without this declaration startForeground(...PHONE_CALL) throws a
+         SecurityException on Android 14+. This is a normal permission (no runtime prompt). -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <!-- Full-screen intent for the incoming-call notification (CallService.buildIncomingNotification) — shows
+         the call surface over the lock screen / the system call screen. Required on Android 14+ (API 34) to
+         honor setFullScreenIntent (else the system downgrades to heads-up); for CATEGORY_CALL notifications
+         it is auto-granted, but declaring it is best practice. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Vibrate during the incoming-call ring (CallController.startRing). Normal permission (no prompt). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Route call audio to a connected Bluetooth headset (AudioManager.startBluetoothSco / the device
+         module). Runtime permission on Android 12+ (API 31); declared so the call audio module can scoot. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Keep the CPU awake for the duration of an active call so the media leg isn't suspended when the
+         screen turns off. Acquired/released by CallService (PARTIAL_WAKE_LOCK). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Camera for the QR scanner (the phone side of QR sign-in — scan a desktop's QR to authorize it).
+         Runtime permission is requested by tauri-plugin-barcode-scanner before opening the scanner view. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Microphone for in-app voice messages (the web layer's MediaRecorder via WebView getUserMedia). The
+         generated RustWebChromeClient.onPermissionRequest maps the AUDIO_CAPTURE resource request to these
+         two permissions and runs the system prompt; both MUST be declared here or the grant is denied. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- AndroidTV support -->
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <application
+        android:name=".SomsApplication"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.soms_desktop"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="${usesCleartextTraffic}">
+        <!-- Dynamic FCM: the APK ships WITHOUT google-services.json (each operator runs their own Firebase
+             project). FirebaseApp is initialized manually at process start (SomsApplication → SomsFirebase)
+             from server-fetched config, so remove the default FirebaseInitProvider that expects a bundled
+             google-services.json (it would otherwise log "Missing google-services.json" on every launch). -->
+        <provider
+            android:name="com.google.firebase.provider.FirebaseInitProvider"
+            android:authorities="${applicationId}.firebaseinitprovider"
+            android:exported="false"
+            tools:node="remove" />
+        <!-- FCM auto-init OFF at startup (there is no default FirebaseApp until SomsFirebase creates one);
+             re-enabled at runtime immediately after the manual initializeApp. -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:launchMode="singleTask"
+            android:label="@string/main_activity_title"
+            android:name=".MainActivity"
+            android:exported="true"
+            android:supportsPictureInPicture="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!-- AndroidTV support -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <!-- Dormant native Media3 video player. Keep the implementation for possible future use, but do
+             not package an activity whose dependencies are intentionally absent from the current APK.
+        <activity
+            android:name=".VideoPlayerActivity"
+            android:configChanges="orientation|keyboardHidden|screenSize"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:theme="@style/Theme.Soms.VideoPlayer" />
+        -->
+
+        <!-- FCM message handler. Receives data-only high-priority messages (the wake-up signal) and
+             posts a per-thread local notification when the app is backgrounded. See SomsMessagingService. -->
+        <service
+            android:name=".SomsMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- The native-owned realtime channel (foreground service, dataSync type). Holds a long-lived SSE
+             to /events with the session token, continuous across fg/bg, so messages arrive in near-real-time
+             when FCM is unavailable; in the foreground it forwards every event to the WebView. Promoted
+             while the activity is visible if enabled, and retained across onStop; otherwise stopped onStop.
+             Android 15 caps dataSync runtime at ~6h/24h; onTimeout stops it and FCM or the independently
+             enabled WorkManager poll can continue delivery. -->
+        <service
+            android:name=".RealtimeService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!-- The active 1:1 call. A phoneCall-type foreground service that anchors the process for the call's
+             duration (so the system keeps the WebRTC peer connection + the audio leg alive while the user
+             backgrounds into PiP or another app) and owns the call's audio routing (MODE_IN_COMMUNICATION)
+             + wake lock + the ongoing-call notification. The RTCPeerConnection + signaling logic live in
+             the process-global CallController; this service is the lifecycle/anchor wrapper. phoneCall type
+             (NOT dataSync) so it isn't bounded by Android 15's ~6h dataSync budget. Started when a call
+             begins (incoming or outgoing); tears down on end. See CallService / CallController. -->
+        <service
+            android:name=".CallService"
+            android:foregroundServiceType="phoneCall"
+            android:exported="false" />
+
+        <!-- Handles a notification ACTION button tap (mark-all-read / reply) — the receiver each action's
+             PendingIntent targets. Not exported (only the system NotificationManager fires it, internally). -->
+        <receiver
+            android:name=".SomsActionReceiver"
+            android:exported="false" />
+
+        <provider
+          android:name="androidx.core.content.FileProvider"
+          android:authorities="${applicationId}.fileprovider"
+          android:exported="false"
+          android:grantUriPermissions="true">
+          <meta-data
+            android:name="android.support.FILE_PROVIDER_PATHS"
+            android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

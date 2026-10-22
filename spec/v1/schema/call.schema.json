@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:call",
+  "title": "POST /s2s/v1/call request",
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["callId", "operation"],
+      "properties": {
+        "callId": {
+          "$ref": "urn:somfp:v1:common#/$defs/callId"
+        },
+        "operation": {
+          "type": "string"
+        }
+      }
+    },
+    "signalType": {
+      "enum": ["offer", "answer", "ice", "video-state"]
+    },
+    "signalPayload": {
+      "type": "object",
+      "required": ["signalId", "signalType", "data"],
+      "properties": {
+        "signalId": {
+          "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
+        },
+        "signalType": {
+          "$ref": "#/$defs/signalType"
+        },
+        "inReplyTo": {
+          "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": { "signalType": { "const": "answer" } },
+        "required": ["signalType"]
+      },
+      "then": { "required": ["inReplyTo"] },
+      "else": { "not": { "required": ["inReplyTo"] } }
+    },
+    "endReason": {
+      "enum": ["completed", "timeout", "failed"]
+    }
+  },
+  "oneOf": [
+    {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "required": ["payload", "mediaType"],
+          "properties": {
+            "operation": {
+              "const": "incoming"
+            },
+            "payload": {
+              "type": "object",
+              "required": ["callerAccount", "calleeAccount"],
+              "properties": {
+                "callerAccount": {
+                  "$ref": "urn:somfp:v1:common#/$defs/account"
+                },
+                "calleeAccount": {
+                  "$ref": "urn:somfp:v1:common#/$defs/account"
+                }
+              },
+              "additionalProperties": false
+            },
+            "mediaType": {
+              "enum": ["AUDIO", "VIDEO"]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "properties": {
+            "operation": {
+              "enum": [
+                "accepted",
+                "ringing",
+                "declined",
+                "cancelled",
+                "missed",
+                "connected"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "required": ["payload"],
+          "properties": {
+            "operation": {
+              "const": "signal"
+            },
+            "payload": {
+              "$ref": "#/$defs/signalPayload"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "properties": {
+            "operation": {
+              "const": "video-upgraded"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "required": ["payload"],
+          "properties": {
+            "operation": {
+              "const": "ended"
+            },
+            "payload": {
+              "type": "object",
+              "required": ["endReason"],
+              "properties": {
+                "endReason": {
+                  "$ref": "#/$defs/endReason"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  ]
+}

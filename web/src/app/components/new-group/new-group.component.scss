@@ -1,0 +1,104 @@
+@use '../../assets/utils.scss' as *;
+
+// Root is a flex column with a fixed header and a flexing creation panel.
+:host > div {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+// ── creation panel ──
+.panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 16px;
+}
+
+.avatar-section {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 28px;
+}
+
+.avatar-wrap {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  flex: 0 0 auto;
+  border-radius: var(--app-radius-lg);
+  overflow: hidden;
+}
+
+.avatar-edit {
+  @include avatar-edit-hint(26px, 3px);
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--app-radius-lg);
+  background: transparent;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: -2px;
+  }
+
+  &:disabled {
+    cursor: progress;
+  }
+
+  &:disabled .avatar-hint {
+    background: rgba(0, 0, 0, 0.58);
+  }
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+
+  mat-form-field {
+    width: 100%;
+  }
+
+  textarea {
+    line-height: 20px;
+    resize: vertical;
+  }
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  line-height: 20px;
+}
+
+.panel-actions {
+  margin-top: auto;
+  padding-top: 28px;
+
+  button {
+    width: 100%;
+  }
+}
+
+// avatar-upload spinner
+.spin {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: ng-spin 0.7s linear infinite;
+}
+@keyframes ng-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the SOMS single-window shell. The window (label \"main\") hosts the merged SPA at the LOCAL origin tauri://localhost (the bundled frontendDist; OTA bundle updates swap the served dir via Context::set_assets). It gets core IPC, desktop notifications, and all app-defined commands (origin/token + shell init_* + desktop SSE supervisor sse_*) via the app-commands \"default\" aggregate. The webview reaches the runtime-configured backend through the LOCAL `api://localhost` URI-scheme proxy (src/lib.rs `proxy_api`), which forwards to ${api_origin} with the Bearer — so the webview never crosses origins (no CORS, no tauri-plugin-http). The SSE downlink on desktop is owned by the `sse_*` commands (a URI-scheme responder can't stream a long-lived body).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:allow-open-url",
+    "default"
+  ]
+}

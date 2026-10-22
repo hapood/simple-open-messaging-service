@@ -1,0 +1,34 @@
+<main class="pnf">
+  <!-- Hero: a delivered bubble ("?") beside a dashed "unsent" bubble — the lost-message
+       metaphor for a chat app. Purely decorative, so aria-hidden keeps it out of the a11y tree. -->
+  <div class="pnf-art" aria-hidden="true">
+    <svg class="pnf-bubble pnf-bubble--ghost" width="74" height="58" viewBox="0 0 74 58" fill="none">
+      <path d="M14 3h46a10 10 0 0 1 10 10v20a10 10 0 0 1-10 10H32l-14 10V43H14A10 10 0 0 1 4 33V13A10 10 0 0 1 14 3z"
+        stroke="currentColor" stroke-width="2.5" stroke-dasharray="5 7" stroke-linejoin="round" />
+    </svg>
+    <svg class="pnf-bubble pnf-bubble--main" width="132" height="106" viewBox="0 0 132 106" fill="none">
+      <defs>
+        <linearGradient id="pnfBubbleGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#4b5055" />
+          <stop offset="1" stop-color="#25282c" />
+        </linearGradient>
+      </defs>
+      <path d="M22 4h88a18 18 0 0 1 18 18v36a18 18 0 0 1-18 18H58l-24 22V76H22A18 18 0 0 1 4 58V22A18 18 0 0 1 22 4z"
+        fill="url(#pnfBubbleGrad)" />
+      <text x="66" y="42" text-anchor="middle" dominant-baseline="central"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif"
+        font-size="54" font-weight="800" fill="#ffffff">?</text>
+    </svg>
+  </div>
+
+  <p class="pnf-code">{{ 'notFound.code' | transloco }}</p>
+  <h1 class="pnf-title">{{ 'notFound.title' | transloco }}</h1>
+  <p class="pnf-desc">{{ 'notFound.desc' | transloco }}</p>
+
+  <div class="pnf-actions">
+    <button type="button" class="pnf-btn pnf-btn--primary" (click)="goHome()">{{ 'notFound.back' | transloco }}</button>
+    @if (canGoBack()) {
+      <button type="button" class="pnf-btn pnf-btn--ghost" (click)="goBack()">{{ 'notFound.goBack' | transloco }}</button>
+    }
+  </div>
+</main>

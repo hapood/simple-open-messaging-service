@@ -1,0 +1,352 @@
+@use '../../assets/utils.scss' as *;
+
+// Server-config page styles. The centered form (`.cfg-shell`) is the ONLY in-flow element; the progress
+// bar, step label, and footnote are position:fixed overlays so the connect flow appearing/disappearing
+// never reflows the form. Integer-px vertical metrics per the project CSS rule (line-height + gaps).
+
+.cfg-back {
+  position: fixed;
+  top: calc(var(--soms-safe-top, 0px) + 4px);
+  left: 4px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--app-text-secondary);
+  cursor: pointer;
+  z-index: 60;
+  -webkit-tap-highlight-color: transparent;
+
+  &__arrow {
+    font-size: 32px;
+    line-height: 36px;
+    font-weight: 500;
+    margin-top: -6px; // optical centering of the single-chevron glyph
+  }
+}
+
+:host {
+  display: block;
+  // The viewport paints the full-page setup background. Keeping another background on this rectangular
+  // host leaks sharp gray corners around the rounded dialog card.
+  background: transparent;
+}
+
+.cfg-viewport {
+  @include neutral-form-controls;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: calc(100vh - var(--auth-keyboard-inset, 0px));
+  height: calc(100dvh - var(--auth-keyboard-inset, 0px));
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  box-sizing: border-box;
+  background:
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--app-brand) 10%, transparent), transparent 42%),
+    var(--app-bg);
+  transition: height 160ms ease-out;
+
+  // Android shell only: position the unchanged card from native IME geometry. `safe center` keeps an
+  // oversized form scrollable without switching to a smaller keyboard-specific visual design.
+  &.auth-native-keyboard-open {
+    align-items: safe center;
+  }
+}
+
+// Reconfiguration is a real modal, mounted inside AppComponent's global backdrop. It reuses the same
+// form/connection state machine without creating a second page-sized surface behind the card.
+.cfg-viewport--dialog {
+  position: relative;
+  width: min(420px, calc(100vw - 32px));
+  height: auto;
+  max-height: calc(100dvh - var(--soms-safe-top, 0px) - var(--soms-safe-bottom, 0px) - 32px);
+  display: block;
+  padding: 0;
+  overflow: auto;
+  background: transparent;
+  transition: none;
+
+  .cfg-back {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+  }
+
+  .cfg-progress {
+    position: absolute;
+    top: 0;
+    border-radius: var(--app-radius-lg) var(--app-radius-lg) 0 0;
+  }
+
+  .cfg-step {
+    position: absolute;
+    top: 12px;
+  }
+
+  &.auth-keyboard-open,
+  &.auth-native-keyboard-open {
+    padding: 0;
+  }
+
+  .cfg-shell {
+    max-width: none;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.24);
+  }
+
+  // A dialog should be as tall as its current content. The full-page setup reserves room for feedback
+  // to avoid layout jumps; inside a modal that reservation reads as an unexplained white block.
+  .cfg-feedback-slot {
+    min-height: 0;
+    padding-top: 0;
+
+    &.has-feedback {
+      padding-top: 12px;
+    }
+  }
+}
+
+.cfg-shell {
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  padding: 32px;
+  text-align: center;
+  background: var(--app-surface);
+  border: 1px solid color-mix(in srgb, var(--app-text) 8%, transparent);
+  border-radius: var(--app-radius-lg);
+  box-shadow: 0 12px 40px rgba(20, 22, 24, 0.10);
+}
+
+.cfg-logo {
+  display: block;
+  margin: 0 auto 20px;
+}
+
+.cfg-title {
+  margin: 0;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.cfg-intro {
+  margin: 6px 0 24px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--app-text-muted);
+}
+
+.cfg-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+}
+
+.cfg-field {
+  width: 100%;
+
+  // Reserve the validation-error slot so showing an error does not move the controls below it.
+  ::ng-deep .mat-mdc-form-field-subscript-wrapper {
+    min-height: 24px;
+  }
+}
+
+.cfg-action {
+  margin-top: 0;
+  width: 100%;
+}
+
+// Always-mounted result area below the primary action. Its minimum height covers the normal two-line
+// warning/error presentation, so the centered card and button do not jump when feedback appears.
+.cfg-feedback-slot {
+  min-height: 64px;
+  padding-top: 12px;
+  box-sizing: border-box;
+}
+
+// --- Fixed TOP overlays (out of flow): determinate progress + the current step label centered below it.
+.cfg-progress {
+  position: fixed;
+  top: var(--soms-safe-top, 0px);
+  left: 0;
+  right: 0;
+  z-index: 45;
+}
+
+.cfg-step {
+  position: fixed;
+  top: calc(var(--soms-safe-top, 0px) + 12px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0 16px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--app-text-secondary);
+  z-index: 45;
+
+  span {
+    margin-left: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (max-width: 480px) {
+  .cfg-viewport {
+    padding: 16px;
+  }
+
+  .cfg-shell {
+    padding: 28px 20px 24px;
+  }
+
+  .cfg-logo {
+    margin-bottom: 16px;
+  }
+
+  .cfg-viewport--dialog {
+    padding: 0;
+  }
+}
+
+.cfg-viewport.auth-native-keyboard-open .cfg-shell {
+  transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
+  transition: transform 160ms ease-out;
+}
+
+
+// The "can't validate both servers at once" guidance under the LAN field — small + faded, reads as a hint
+// not an error. Integer-px vertical metrics per the project CSS rule.
+.cfg-security-note,
+.cfg-error {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--app-radius-sm, 8px);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+}
+
+.cfg-security-note {
+  background: color-mix(in srgb, var(--app-warning) 10%, transparent);
+  color: var(--app-text-secondary);
+
+  strong {
+    color: var(--app-warning);
+  }
+}
+
+.cfg-error {
+  background: var(--app-danger-bg, rgba(229, 57, 53, 0.08));
+  color: var(--app-danger);
+
+  details {
+    margin-top: 6px;
+  }
+
+  summary {
+    cursor: pointer;
+  }
+
+  code {
+    display: block;
+    max-height: 72px;
+    margin-top: 6px;
+    overflow: auto;
+    color: var(--app-text-secondary);
+    overflow-wrap: anywhere;
+  }
+}
+
+// The shared MaterialDialog owns the fixed backdrop and modal z-tier. This route-local frame only centers
+// the card inside both native safe areas; server configuration remains independent of the authenticated
+// app's paneStack.
+.cfg-modal-frame {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding:
+    calc(24px + var(--soms-safe-top, 0px))
+    24px
+    calc(24px + var(--soms-safe-bottom, 0px));
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.cfg-modal {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 360px;
+  padding: 24px;
+  border-radius: var(--app-radius-lg);
+  outline: none;
+  background: var(--app-surface);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+
+  &__title {
+    margin: 0 0 8px;
+    font-size: 20px;
+    line-height: 28px;
+    color: var(--app-text);
+    text-align: left;
+  }
+
+  &__body {
+    margin: 0 0 12px;
+    font-size: 15px;
+    line-height: 22px;
+    color: var(--app-text);
+    text-align: left;
+  }
+
+  &__addresses {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+  }
+
+  &__address-row {
+    padding: 10px 12px;
+    border-radius: var(--app-radius-sm, 8px);
+    background: color-mix(in srgb, var(--app-text) 6%, transparent);
+
+    dt {
+      margin-bottom: 3px;
+      color: var(--app-text-secondary);
+      font-size: 12px;
+      line-height: 16px;
+    }
+
+    dd {
+      margin: 0;
+    }
+
+    code {
+      color: var(--app-text);
+      overflow-wrap: anywhere;
+    }
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+}

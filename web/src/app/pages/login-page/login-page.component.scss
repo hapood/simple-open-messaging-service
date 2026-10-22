@@ -1,0 +1,145 @@
+@use "../../assets/utils.scss" as *;
+
+.auth-shell {
+  @include auth-shell;
+}
+
+// Compact brand shown only where the side <app-auth-brand> panel is hidden (below the split
+// breakpoint), so the narrow Tauri shell / Android WebView keeps identity in every auth state —
+// including the server-unreachable error, which has no form title to fall back on. Hidden on
+// desktop, where the full brand panel is visible (showing both would be redundant).
+@include auth-compact-brand;
+
+// Splash-continuous loading view (brand + Material indeterminate spinner), shown while /config is in
+// flight. Bridges the index.html app-splash and the settled form so the window never paints a blank or
+// partial frame. The flex `gap` owns the brand↔spinner spacing here, so neutralize .form-brand's own
+// margin (it's tuned for the settled layout, not this stacked pair). Integer-px gap per the CSS rule.
+.auth-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+
+  // Keep the Angular-owned continuation of the splash calm and neutral. Red is
+  // reserved for actual failures, not normal startup progress.
+  --mat-progress-spinner-active-indicator-color: var(--app-text-muted);
+
+  .form-brand {
+    margin-bottom: 0;
+  }
+}
+
+// /config couldn't be loaded (backend unreachable / returned no config) — surfaces a visible error + a
+// reconfigure action instead of a silent empty page. Icon + body layout so it reads as an alert;
+// danger palette; integer-px vertical metrics per the CSS rule.
+.login-error {
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border-radius: var(--app-radius-sm, 8px);
+  background: var(--app-danger-bg, rgba(229, 57, 53, 0.08));
+  color: var(--app-danger);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+
+  &__icon {
+    flex: 0 0 auto;
+    color: var(--app-danger, #e53935);
+  }
+  &__body {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  &__msg {
+    margin: 0 0 10px;
+    font-size: 13px;
+    line-height: 20px;
+  }
+  // Retry (primary, filled) + Server settings (secondary, stroked) — two distinct emphases per Material's
+  // action hierarchy: retry is the likely-fix-for-a-transient-blip, reconfigure is the address-is-wrong
+  // escape. flex-wrap so they stack cleanly on a narrow shell instead of overflowing.
+  &__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+// Configured-backend banners (Tauri only). A dual-server setup renders both endpoints, including in the
+// pre-login unreachable state, so the user can verify every address that was attempted.
+.origin-list {
+  width: 100%;
+  max-width: 380px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+// Prominent host display: https = green globe (cert was
+// validated at init); http/IP = red (insecure — validation skipped, not guaranteed secure).
+// Material M3 surface treatment via --app-* tokens; integer-px vertical metrics per the CSS rule; dark
+// mode covered by the token overrides in styles.scss.
+.origin-banner {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 20px;
+  border-radius: var(--app-radius-sm, 8px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--app-success-bg, rgba(46, 125, 50, 0.1));
+  color: var(--app-success, #2e7d32);
+  app-icon {
+    color: var(--app-success, #2e7d32);
+    flex: 0 0 auto;
+  }
+  .origin-kind {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.8;
+  }
+  .origin-host {
+    font-weight: 600;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .origin-scheme {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    opacity: 0.85;
+  }
+  &.insecure {
+    background: var(--app-danger-bg, rgba(229, 57, 53, 0.1));
+    color: var(--app-danger, #e53935);
+    app-icon {
+      color: var(--app-danger, #e53935);
+    }
+  }
+  // Error state: keep the host display (it names WHICH backend failed) but drop the green/red scheme
+  // claim, so a "couldn't reach server" alert isn't visually contradicted by a healthy-looking ✓ banner.
+  // Declared after &.insecure so it wins when both classes apply (equal specificity → source order).
+  // color-mix on --app-text yields a theme-neutral wash (no dedicated muted-bg token needed).
+  &.muted {
+    background: color-mix(in srgb, var(--app-text) 6%, transparent);
+    color: var(--app-text-muted);
+    app-icon {
+      color: var(--app-text-muted);
+    }
+  }
+}
+
+// Footer row below the form (login-method switchers left, server-config link right) — the shared
+// auth-footer block, so the password page's switch buttons sit in the SAME position as the OTP/QR
+// pages: outside the card, bottom-left.
+@include auth-footer;

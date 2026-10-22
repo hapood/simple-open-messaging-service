@@ -1,0 +1,58 @@
+:host {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.chatbox-popup__backdrop {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  pointer-events: auto;
+  animation: chatbox-popup-backdrop-in 240ms ease-out both;
+}
+
+.chatbox-popup__surface {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(320px, calc(100% - 24px));
+  height: auto;
+  max-height: calc(100% - 32px);
+  box-sizing: border-box;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--app-border) 82%, var(--app-text));
+  border-radius: var(--app-radius-lg);
+  outline: none;
+  background: var(--app-surface-elevated);
+  box-shadow:
+    0 14px 46px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  animation: chatbox-popup-surface-in 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+@keyframes chatbox-popup-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes chatbox-popup-surface-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chatbox-popup__backdrop,
+  .chatbox-popup__surface {
+    animation: none;
+  }
+}

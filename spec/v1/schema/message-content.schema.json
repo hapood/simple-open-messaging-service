@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:message-content",
+  "title": "Parsed Federation v1 message content selected by contentType",
+  "$defs": {
+    "positiveNumber": { "type": "number", "exclusiveMinimum": 0 },
+    "text": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "image": {
+      "type": "object",
+      "required": ["digest", "width", "height", "name"],
+      "properties": {
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "name": { "type": "string", "minLength": 1 },
+        "width": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+        },
+        "height": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+        }
+      },
+      "additionalProperties": false
+    },
+    "file": {
+      "type": "object",
+      "required": ["digest", "name", "mimeType"],
+      "properties": {
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "name": { "type": "string", "minLength": 1 },
+        "mimeType": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "video": {
+      "type": "object",
+      "required": ["digest", "name", "mimeType", "width", "height", "duration"],
+      "properties": {
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "name": { "type": "string", "minLength": 1 },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "width": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+        },
+        "height": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+        },
+        "duration": { "$ref": "#/$defs/positiveNumber" }
+      },
+      "additionalProperties": false
+    },
+    "audio": {
+      "type": "object",
+      "required": ["digest", "name", "mimeType", "duration"],
+      "properties": {
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "name": { "type": "string", "minLength": 1 },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "duration": { "$ref": "#/$defs/positiveNumber" }
+      },
+      "additionalProperties": false
+    },
+    "galleryItem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "digest", "width", "height", "name"],
+          "properties": {
+            "kind": { "const": "IMAGE" },
+            "name": { "type": "string", "minLength": 1 },
+            "digest": {
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
+            },
+            "width": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            },
+            "height": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "digest",
+            "name",
+            "mimeType",
+            "width",
+            "height",
+            "duration"
+          ],
+          "properties": {
+            "kind": { "const": "VIDEO" },
+            "digest": {
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
+            },
+            "name": { "type": "string", "minLength": 1 },
+            "mimeType": { "type": "string", "minLength": 1 },
+            "width": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            },
+            "height": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            },
+            "duration": { "$ref": "#/$defs/positiveNumber" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "digest", "name", "mimeType", "duration"],
+          "properties": {
+            "kind": { "const": "AUDIO" },
+            "digest": {
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
+            },
+            "name": { "type": "string", "minLength": 1 },
+            "mimeType": { "type": "string", "minLength": 1 },
+            "duration": { "$ref": "#/$defs/positiveNumber" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "digest", "name", "mimeType"],
+          "properties": {
+            "kind": { "const": "FILE" },
+            "digest": {
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
+            },
+            "name": { "type": "string", "minLength": 1 },
+            "mimeType": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "gallery": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/galleryItem" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "link": {
+      "type": "object",
+      "required": ["url", "title", "description"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "maxLength": 2048,
+          "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s\\u0000-\\u001f\\u007f-\\u009f]+$"
+        },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "siteName": { "type": "string" },
+        "icon": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "favicon": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" }
+      },
+      "additionalProperties": false
+    },
+    "contactCard": {
+      "type": "object",
+      "required": ["account", "domain", "publicKey", "displayName", "bio"],
+      "properties": {
+        "account": {
+          "$ref": "urn:somfp:v1:common#/$defs/account"
+        },
+        "domain": {
+          "$ref": "urn:somfp:v1:common#/$defs/domain"
+        },
+        "publicKey": { "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key" },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "avatarDigest": {
+          "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
+        }
+      },
+      "additionalProperties": false
+    },
+    "forward": {
+      "type": "object",
+      "required": ["bundleId"],
+      "properties": {
+        "bundleId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["contentType", "content"],
+  "properties": {
+    "contentType": {
+      "$ref": "urn:somfp:v1:common#/$defs/contentType"
+    },
+    "content": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "contentType": { "const": "PURE_TEXT" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/text" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "IMAGE" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/image" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "VIDEO" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/video" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "FILE" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/file" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "AUDIO" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/audio" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "LINK" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/link" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "CONTACT_CARD" } } },
+      "then": {
+        "properties": { "content": { "$ref": "#/$defs/contactCard" } }
+      }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "FORWARD" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/forward" } } }
+    },
+    {
+      "if": { "properties": { "contentType": { "const": "GALLERY" } } },
+      "then": { "properties": { "content": { "$ref": "#/$defs/gallery" } } }
+    }
+  ],
+  "additionalProperties": false
+}

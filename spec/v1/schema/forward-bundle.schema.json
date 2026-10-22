@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:forward-bundle",
+  "title": "GET /s2s/v1/forward-bundles/:bundleId response data",
+  "$defs": {
+    "bundleId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "asset": {
+      "type": "object",
+      "required": ["digest", "bytes"],
+      "properties": {
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "bytes": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "additionalProperties": false
+    },
+    "bundleMessage": {
+      "type": "object",
+      "required": ["id", "profile", "contentType", "content", "sentAt"],
+      "properties": {
+        "id": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+        },
+        "profile": {
+          "type": "object",
+          "required": ["displayName"],
+          "properties": {
+            "displayName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 31
+            },
+            "avatarDigest": {
+              "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
+            }
+          },
+          "additionalProperties": false
+        },
+        "contentType": {
+          "$ref": "urn:somfp:v1:common#/$defs/contentType"
+        },
+        "content": { "type": "string" },
+        "sentAt": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        },
+        "childBundleId": { "$ref": "#/$defs/bundleId" },
+        "quoteTargetId": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "contentType": { "const": "FORWARD" } },
+            "required": ["contentType"]
+          },
+          "then": { "required": ["childBundleId"] },
+          "else": { "not": { "required": ["childBundleId"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "child": {
+      "type": "object",
+      "required": ["id", "messages"],
+      "properties": {
+        "id": { "$ref": "#/$defs/bundleId" },
+        "messages": {
+          "type": "array",
+          "minItems": 0,
+          "items": { "$ref": "#/$defs/bundleMessage" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["id", "messages", "children", "assets"],
+  "properties": {
+    "id": { "$ref": "#/$defs/bundleId" },
+    "messages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/bundleMessage" }
+    },
+    "children": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/child" }
+    },
+    "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
+  },
+  "additionalProperties": false
+}

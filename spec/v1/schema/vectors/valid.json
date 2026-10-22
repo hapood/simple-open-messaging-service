@@ -1,0 +1,1036 @@
+{
+  "vectors": [
+    {
+      "name": "Group Meta item variants accept the maximum allocatable coordinate",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "values": [
+        { "feedId": 9007199254740990, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
+        { "feedId": 9007199254740990, "operation": "MEMBER_DEPART", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 1 } },
+        { "feedId": 9007199254740990, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
+        { "feedId": 9007199254740990, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } }
+      ]
+    },
+    {
+      "name": "Group Meta page accepts the maximum allocatable end and scan boundary",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": { "account": "!team", "mode": "delta", "items": [], "scannedThrough": 9007199254740990, "groupMetaFeedEndId": 9007199254740990, "hasMore": false }
+    },
+    {
+      "name": "State Feed head accepts the maximum Group Meta end",
+      "schema": "urn:somfp:v1:state-feed#/$defs/groupThreadContentHeadBody",
+      "value": { "messageEndSeq": 0, "tombstoneEndSeq": 0, "groupMetaFeedEndId": 9007199254740990 }
+    },
+    {
+      "name": "Group Meta recovery reserves the maximum safe integer for resumeBefore",
+      "schema": "urn:somfp:v1:error",
+      "value": { "code": 50019, "message": "full recovery window", "data": { "resumeAfter": 0, "resumeBefore": 9007199254740991 } }
+    },
+    {
+      "name": "shared safe integer accepts zero",
+      "schema": "urn:somfp:v1:common#/$defs/safeInteger",
+      "value": 0
+    },
+    {
+      "name": "shared safe integer accepts the maximum safe integer",
+      "schema": "urn:somfp:v1:common#/$defs/safeInteger",
+      "value": 9007199254740991
+    },
+    {
+      "name": "provenance batch with P2P and group coordinates",
+      "schema": "urn:somfp:v1:message-provenance#/$defs/request",
+      "value": {
+        "queries": [
+          {
+            "thread": { "account": "alice", "peerAccount": "bob" },
+            "seq": 1,
+            "payloadDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "thread": { "account": "!group1" },
+            "seq": 1,
+            "payloadDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      }
+    },
+    {
+      "name": "provenance per-query answer states",
+      "schema": "urn:somfp:v1:message-provenance#/$defs/response",
+      "value": {
+        "results": [
+          { "thread": { "account": "!group1" }, "seq": 1, "known": "yes" },
+          { "thread": { "account": "!group1" }, "seq": 2, "known": "no" },
+          { "thread": { "account": "!group1" }, "seq": 3, "known": "declined" }
+        ]
+      }
+    },
+    {
+      "name": "reply with required payload binding",
+      "schema": "urn:somfp:v1:message-query#/$defs/message",
+      "value": {
+        "thread": { "account": "alice", "peerAccount": "bob" },
+        "author": { "ref": "THREAD_ACCOUNT", "namespaceId": 0 },
+        "seq": 2,
+        "profileRev": 1,
+        "originSeq": null,
+        "originCreatedAt": null,
+        "createdAt": 0,
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"reply\"}",
+        "assets": [],
+        "quoteTarget": { "seq": 1 },
+        "quoteDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "group announcement publish and explicit clear",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "values": [
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": {
+            "text": "Welcome to the group.\nPlease read the rules."
+          }
+        },
+        {
+          "feedId": 12,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": {
+            "text": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "group announcement clear survives full recovery",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "mode": "full",
+        "items": [
+          {
+            "feedId": 12,
+            "operation": "GROUP_ANNOUNCEMENT",
+            "body": {
+              "text": null
+            }
+          }
+        ],
+        "scannedThrough": 12,
+        "groupMetaFeedEndId": 12,
+        "hasMore": false
+      }
+    },
+    {
+      "name": "forward quotes retain absent or bundle-local targets",
+      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
+      "values": [
+        {
+          "id": 1,
+          "profile": {
+            "displayName": "Alice"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": 0
+        },
+        {
+          "id": 1,
+          "profile": {
+            "displayName": "Alice"
+          },
+          "contentType": "PURE_TEXT",
+          "content": "{\"text\":\"reply\"}",
+          "sentAt": 1,
+          "quoteTargetId": 1
+        }
+      ]
+    },
+    {
+      "name": "forward display name retains 31 Unicode code points",
+      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
+      "value": {
+        "id": 1,
+        "profile": {
+          "displayName": "123456789012345678901234567890😀"
+        },
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"unchanged source display name\"}",
+        "sentAt": 1
+      }
+    },
+    {
+      "name": "quote coordinates select sender or receiver timeline",
+      "schema": "urn:somfp:v1:message-query#/$defs/quoteTarget",
+      "values": [
+        {
+          "seq": 8
+        },
+        {
+          "originSeq": 42
+        },
+        {
+          "seq": 9007199254740990
+        }
+      ]
+    },
+    {
+      "name": "well-known supports v1 and a future major",
+      "schema": "urn:somfp:v1:discovery",
+      "value": {
+        "software": "example/1.0",
+        "protocolVersions": [1, 2],
+        "roots": [
+          {
+            "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+            "notBefore": 1699990000000,
+            "notAfter": 1899990000000
+          }
+        ],
+        "keys": [
+          {
+            "keyId": "a.example/key-1",
+            "ed25519": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+            "root": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+            "notBefore": 1699990000000,
+            "notAfter": 1899990000000,
+            "authorizationSignature": "xyJJS+reShl4dW0H10b0KXCD40MuXk9L9fsuwSU051gU2ldnijgi7jVbqF5e+759z4cUY3BG+864jdV/DIsJAw=="
+          }
+        ]
+      }
+    },
+    {
+      "name": "recognize request",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
+      "values": [
+        {},
+        {
+          "namespaceId": 7
+        }
+      ]
+    },
+    {
+      "name": "health result",
+      "schema": "urn:somfp:v1:identity#/$defs/healthResult",
+      "values": [
+        {
+          "status": "available",
+          "peerAssignedLocalNamespaceId": 7
+        },
+        {
+          "status": "degraded",
+          "peerAssignedLocalNamespaceId": 7
+        },
+        {
+          "status": "unavailable"
+        }
+      ]
+    },
+    {
+      "name": "health success envelope",
+      "schema": "urn:somfp:v1:common#/$defs/successEnvelope",
+      "values": [
+        {
+          "code": 0,
+          "message": "successful",
+          "data": { "status": "unavailable" }
+        },
+        {
+          "code": 0,
+          "message": "successful",
+          "data": {
+            "status": "available",
+            "peerAssignedLocalNamespaceId": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "feed head wake-up",
+      "schema": "urn:somfp:v1:identity#/$defs/feedHeadHint",
+      "value": {
+        "stateFeedEndId": "12",
+        "profileNamespaceFeedEndId": "12"
+      }
+    },
+    {
+      "name": "state page covers all event types",
+      "schema": "urn:somfp:v1:state-feed",
+      "value": {
+        "items": [
+          {
+            "account": "alice",
+            "eventType": "RELATIONSHIP_INTENT",
+            "peerAccount": "bob",
+            "feedId": "1",
+            "body": {
+              "status": "ACCEPTED",
+              "namespaceId": 0,
+              "profileRev": 3,
+              "note": "",
+              "requestedAt": 1700000000000,
+              "expiresAt": null,
+              "messageEndSeq": 0,
+              "tombstoneEndSeq": 0
+            }
+          },
+          {
+            "account": "!01arz3ndektsv4rrffq69g5fav",
+            "eventType": "RELATIONSHIP_INTENT",
+            "peerAccount": "bob",
+            "feedId": "3",
+            "body": {
+              "status": "ACCEPTED",
+              "namespaceId": 0,
+              "profileRev": 4,
+              "note": "",
+              "requestedAt": 1700000000000,
+              "expiresAt": null,
+              "messageEndSeq": 0,
+              "tombstoneEndSeq": 0
+            }
+          },
+          {
+            "account": "!01arz3ndektsv4rrffq69g5fav",
+            "eventType": "THREAD_CONTENT_HEAD",
+            "feedId": "6",
+            "body": {
+              "messageEndSeq": 8,
+              "tombstoneEndSeq": 2,
+              "groupMetaFeedEndId": 1
+            }
+          }
+        ],
+        "scannedThrough": "6",
+        "stateFeedEndId": "6",
+        "profileNamespaceFeedEndId": "6",
+        "hasMore": false
+      }
+    },
+    {
+      "name": "relationship intent timestamp states",
+      "schema": "urn:somfp:v1:state-feed",
+      "values": [
+        {
+          "items": [
+            {
+              "account": "alice",
+              "eventType": "RELATIONSHIP_INTENT",
+              "peerAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "REQUESTED",
+                "namespaceId": 0,
+                "profileRev": 3,
+                "note": "hello",
+                "requestedAt": 1700000000000,
+                "expiresAt": 1700604800000,
+                "messageEndSeq": 0,
+                "tombstoneEndSeq": 0
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "profileNamespaceFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "eventType": "RELATIONSHIP_INTENT",
+              "peerAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "REVOKED",
+                "namespaceId": 0,
+                "profileRev": 3,
+                "note": "",
+                "requestedAt": null,
+                "expiresAt": null
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "profileNamespaceFeedEndId": "1",
+          "hasMore": false
+        },
+        {
+          "items": [
+            {
+              "account": "alice",
+              "eventType": "RELATIONSHIP_INTENT",
+              "peerAccount": "bob",
+              "feedId": "1",
+              "body": {
+                "status": "REVOKED",
+                "namespaceId": 0,
+                "profileRev": 3,
+                "note": "",
+                "requestedAt": 1700000000000,
+                "expiresAt": null
+              }
+            }
+          ],
+          "scannedThrough": "1",
+          "stateFeedEndId": "1",
+          "profileNamespaceFeedEndId": "1",
+          "hasMore": false
+        }
+      ]
+    },
+    {
+      "name": "group meta full page",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "mode": "full",
+        "items": [
+          {
+            "feedId": 7,
+            "operation": "MEMBER_UPSERT",
+            "body": {
+              "account": "alice",
+              "role": "OWNER",
+              "namespaceId": 0,
+              "profileRev": 2
+            }
+          },
+          {
+            "feedId": 8,
+            "operation": "MEMBER_UPSERT",
+            "body": {
+              "account": "bob",
+              "role": "MEMBER",
+              "namespaceId": 7,
+              "profileRev": 1
+            }
+          },
+          {
+            "feedId": 9,
+            "operation": "GROUP_PROFILE",
+            "body": {
+              "account": "!01arz3ndektsv4rrffq69g5fav",
+              "namespaceId": 0,
+              "profileRev": 4
+            }
+          }
+        ],
+        "scannedThrough": 9,
+        "groupMetaFeedEndId": 9,
+        "hasMore": false
+      }
+    },
+    {
+      "name": "group meta departure carries the final member reference",
+      "schema": "urn:somfp:v1:group-meta",
+      "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "mode": "delta",
+        "items": [
+          {
+            "feedId": 10,
+            "operation": "MEMBER_DEPART",
+            "body": {
+              "account": "bob",
+              "role": "MEMBER",
+              "namespaceId": 7,
+              "profileRev": 3
+            }
+          }
+        ],
+        "scannedThrough": 10,
+        "groupMetaFeedEndId": 10,
+        "hasMore": false
+      }
+    },
+    {
+      "name": "message query page with parsed text content",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": {
+              "account": "alice",
+              "peerAccount": "bob"
+            },
+            "author": { "ref": "THREAD_ACCOUNT", "namespaceId": 0 },
+            "seq": 1,
+            "profileRev": 3,
+            "originSeq": null,
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello\"}",
+            "createdAt": 1700000000000,
+            "originCreatedAt": null,
+            "assets": []
+          }
+        ],
+        "scannedThrough": 1,
+        "hasMore": false
+      }
+    },
+    {
+      "name": "group message query page carries an explicit author",
+      "schema": "urn:somfp:v1:message-query",
+      "value": {
+        "messages": [
+          {
+            "thread": {
+              "account": "!team"
+            },
+            "author": {
+              "account": "alice",
+              "namespaceId": 0
+            },
+            "seq": 2,
+            "profileRev": 3,
+            "originSeq": null,
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello group\"}",
+            "createdAt": 1700000000001,
+            "originCreatedAt": null,
+            "assets": []
+          }
+        ],
+        "scannedThrough": 2,
+        "hasMore": false
+      }
+    },
+    {
+      "name": "all message content discriminators",
+      "schema": "urn:somfp:v1:message-content",
+      "values": [
+        {
+          "contentType": "PURE_TEXT",
+          "content": {
+            "text": "hello [@Bob](somfp://user/12/bob)"
+          }
+        },
+        {
+          "contentType": "IMAGE",
+          "content": {
+            "name": "photo.png",
+            "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "contentType": "VIDEO",
+          "content": {
+            "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+            "name": "v",
+            "mimeType": "video/webm",
+            "width": 1,
+            "height": 1,
+            "duration": 1
+          }
+        },
+        {
+          "contentType": "FILE",
+          "content": {
+            "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+            "name": "f",
+            "mimeType": "application/octet-stream"
+          }
+        },
+        {
+          "contentType": "AUDIO",
+          "content": {
+            "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+            "name": "a",
+            "mimeType": "audio/opus",
+            "duration": 1
+          }
+        },
+        {
+          "contentType": "LINK",
+          "content": {
+            "url": "https://example.com",
+            "title": "",
+            "description": "",
+            "favicon": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa"
+          }
+        },
+        {
+          "contentType": "CONTACT_CARD",
+          "content": {
+            "account": "carol",
+            "domain": "c.example",
+            "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+            "displayName": "Carol",
+            "bio": "Distributed systems enthusiast",
+            "avatarDigest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa"
+          }
+        },
+        {
+          "contentType": "CONTACT_CARD",
+          "content": {
+            "account": "!group123",
+            "domain": "a.example",
+            "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+            "displayName": "Project Group",
+            "bio": ""
+          }
+        },
+        {
+          "contentType": "FORWARD",
+          "content": {
+            "bundleId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "contentType": "GALLERY",
+          "content": {
+            "items": [
+              {
+                "kind": "IMAGE",
+                "name": "photo.png",
+                "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+                "width": 1,
+                "height": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "call frame variants",
+      "schema": "urn:somfp:v1:call",
+      "values": [
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "incoming",
+          "mediaType": "AUDIO",
+          "payload": {
+            "callerAccount": "alice",
+            "calleeAccount": "bob"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "ringing"
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "accepted"
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "signal",
+          "payload": {
+            "signalId": "c0a80101-0000-4000-8000-000000000001",
+            "signalType": "offer",
+            "data": "v=0"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "signal",
+          "payload": {
+            "signalId": "c0a80101-0000-4000-8000-000000000002",
+            "signalType": "answer",
+            "inReplyTo": "c0a80101-0000-4000-8000-000000000001",
+            "data": "v=0"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "signal",
+          "payload": {
+            "signalId": "c0a80101-0000-4000-8000-000000000003",
+            "signalType": "ice",
+            "data": "{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"abcd1234\"}"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "signal",
+          "payload": {
+            "signalId": "c0a80101-0000-4000-8000-000000000004",
+            "signalType": "video-state",
+            "data": "{\"enabled\":true}"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "connected"
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "video-upgraded"
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "declined"
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "cancelled"
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "missed"
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "ended",
+          "payload": {
+            "endReason": "completed"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "ended",
+          "payload": {
+            "endReason": "failed"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "ended",
+          "payload": {
+            "endReason": "timeout"
+          }
+        },
+        {
+          "callId": "550e8400-e29b-41d4-a716-446655440000",
+          "operation": "incoming",
+          "mediaType": "VIDEO",
+          "payload": {
+            "callerAccount": "alice",
+            "calleeAccount": "bob"
+          }
+        }
+      ]
+    },
+    {
+      "name": "exact evidence profile responses",
+      "schema": "urn:somfp:v1:evidence-profile",
+      "values": [
+        {
+          "account": "alice",
+          "displayName": "Alice",
+          "bio": "",
+          "avatar": null
+        },
+        {
+          "account": "!group",
+          "displayName": "Example Group",
+          "bio": "",
+          "avatar": null
+        }
+      ]
+    },
+    {
+      "name": "account evidence profile parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/accountEvidenceProfileParameters",
+      "values": [
+        {
+          "account": "alice",
+          "namespaceId": "0",
+          "profileRev": "3"
+        },
+        {
+          "account": "!group",
+          "namespaceId": "0",
+          "profileRev": "4"
+        }
+      ]
+    },
+    {
+      "name": "group member profile parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",
+      "values": [
+        {
+          "groupAccount": "!group",
+          "memberAccount": "alice",
+          "namespaceId": "0",
+          "profileRev": "7"
+        }
+      ]
+    },
+    {
+      "name": "profile response",
+      "schema": "urn:somfp:v1:profile",
+      "value": {
+        "account": "alice",
+        "displayName": "Alice",
+        "bio": "",
+        "avatar": {
+          "mimeType": "image/webp",
+          "base64": "AA==",
+          "width": 1,
+          "height": 1
+        },
+        "profileRev": 1,
+        "proof": "eyJhY2NvdW50IjoiYWxpY2UiLCJkb21haW4iOiJhLmV4YW1wbGUifQ=="
+      }
+    },
+    {
+      "name": "forward closure shares one child across two references",
+      "schema": "urn:somfp:v1:forward-bundle",
+      "value": {
+        "id": "4ea318598cc3fc74af11e7bbd5005803890f16ed43bfbacf53f336e1393fecd1",
+        "messages": [
+          {
+            "id": 1,
+            "profile": {
+              "displayName": "Bob"
+            },
+            "contentType": "FORWARD",
+            "content": "{\"bundleId\":\"79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c\"}",
+            "childBundleId": "79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c",
+            "sentAt": 2
+          },
+          {
+            "id": 2,
+            "profile": {
+              "displayName": "Bob"
+            },
+            "contentType": "FORWARD",
+            "content": "{\"bundleId\":\"79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c\"}",
+            "childBundleId": "79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c",
+            "sentAt": 2
+          }
+        ],
+        "children": [
+          {
+            "id": "79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c",
+            "messages": [
+              {
+                "id": 1,
+                "profile": {
+                  "displayName": "Alice"
+                },
+                "contentType": "PURE_TEXT",
+                "content": "{\"text\":\"shared snapshot\"}",
+                "sentAt": 1
+              }
+            ]
+          }
+        ],
+        "assets": []
+      }
+    },
+    {
+      "name": "minimal forward closure",
+      "schema": "urn:somfp:v1:forward-bundle",
+      "value": {
+        "id": "0af7e60042a206ee758e252d33cba24aa6a754dff6f5c0199dacd6038e1ccc5a",
+        "messages": [
+          {
+            "id": 1,
+            "profile": {
+              "displayName": "Alice"
+            },
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"hello\"}",
+            "sentAt": 1
+          },
+          {
+            "id": 2,
+            "profile": {
+              "displayName": "Bob"
+            },
+            "contentType": "PURE_TEXT",
+            "content": "{\"text\":\"display snapshot only\"}",
+            "sentAt": 2
+          }
+        ],
+        "children": [],
+        "assets": []
+      }
+    },
+    {
+      "name": "P2P thread data query is selected by user account grammar",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
+      "value": {
+        "account": "alice",
+        "peerAccount": "bob",
+        "after": "0"
+      }
+    },
+    {
+      "name": "group thread data query omits peer account",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
+      "value": {
+        "account": "!01arz3ndektsv4rrffq69g5fav",
+        "after": "0"
+      }
+    },
+    {
+      "name": "reauthorization tombstone drain fixes its fast-forward boundary",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/messageTombstoneQuery",
+      "value": {
+        "account": "alice",
+        "peerAccount": "bob",
+        "after": "4",
+        "through": "9",
+        "maxMessageSeq": "27",
+        "take": "100"
+      }
+    },
+    {
+      "name": "media authorization parameters",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/mediaParameters",
+      "value": {
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "fromAccount": "alice",
+        "fromDomain": "a.example",
+        "toAccount": "bob",
+        "seq": "1"
+      }
+    },
+    {
+      "name": "tombstone query page",
+      "schema": "urn:somfp:v1:message-tombstone-query",
+      "value": {
+        "tombstones": [
+          {
+            "deletionSeq": 4,
+            "thread": {
+              "account": "!group"
+            },
+            "messageSeq": 7,
+            "type": "USER_RETRACTION",
+            "deletedAt": 1700000000000
+          }
+        ],
+        "scannedThrough": 4,
+        "hasMore": false
+      }
+    },
+    {
+      "name": "error envelope",
+      "schema": "urn:somfp:v1:error",
+      "value": {
+        "code": 50007,
+        "message": "malformed"
+      }
+    },
+    {
+      "name": "quota error envelope",
+      "schema": "urn:somfp:v1:error",
+      "value": {
+        "code": 50011,
+        "message": "peer quota exceeded",
+        "data": {
+          "retryAfter": 60
+        }
+      }
+    },
+    {
+      "name": "message-query cursor correction envelope",
+      "schema": "urn:somfp:v1:error",
+      "value": {
+        "code": 50019,
+        "message": "requested message history is no longer retained",
+        "data": {
+          "resumeAfter": 120,
+          "resumeBefore": 501
+        }
+      }
+    },
+    {
+      "name": "tombstone-query cursor correction envelope",
+      "schema": "urn:somfp:v1:error",
+      "value": {
+        "code": 50019,
+        "message": "requested tombstone cursor is unavailable",
+        "data": {
+          "resumeAfter": 4,
+          "resumeBefore": 10
+        }
+      }
+    },
+    {
+      "name": "group-meta cursor recovery envelope",
+      "schema": "urn:somfp:v1:error",
+      "value": {
+        "code": 50019,
+        "message": "group-meta delta history is unavailable",
+        "data": {
+          "resumeAfter": "0",
+          "resumeBefore": "8"
+        }
+      }
+    },
+    {
+      "name": "message-query rate-limited envelope",
+      "schema": "urn:somfp:v1:error",
+      "value": {
+        "code": 50024,
+        "message": "message query rate limited",
+        "data": {
+          "retryAfter": 3
+        }
+      }
+    },
+    {
+      "name": "message-query temporarily-unavailable envelope",
+      "schema": "urn:somfp:v1:error",
+      "value": {
+        "code": 50025,
+        "message": "message query temporarily unavailable",
+        "data": {
+          "retryAfter": 10
+        }
+      }
+    },
+    {
+      "name": "recognize success data states",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeResult",
+      "values": [
+        {
+          "status": "recognized",
+          "peerAssignedLocalNamespaceId": 7
+        },
+        {
+          "status": "pending",
+          "message": "verification in progress"
+        }
+      ]
+    },
+    {
+      "name": "recognize success envelope",
+      "schema": "urn:somfp:v1:common#/$defs/successEnvelope",
+      "values": [
+        {
+          "code": 0,
+          "message": "successful",
+          "data": { "status": "pending" }
+        },
+        {
+          "code": 0,
+          "message": "successful",
+          "data": { "status": "recognized", "peerAssignedLocalNamespaceId": 7 }
+        }
+      ]
+    },
+    {
+      "name": "verify request",
+      "schema": "urn:somfp:v1:identity#/$defs/verifyRequest",
+      "values": [
+        {
+          "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+          "encryptedValue": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk="
+        }
+      ]
+    },
+    {
+      "name": "verify result",
+      "schema": "urn:somfp:v1:identity#/$defs/verifyResult",
+      "values": [
+        {
+          "value": "eyJhY2NvdW50IjoiYWxpY2UiLCJkb21haW4iOiJhLmV4YW1wbGUifQ=="
+        }
+      ]
+    }
+  ]
+}

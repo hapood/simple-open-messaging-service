@@ -1,0 +1,99 @@
+@use '../../lib/chat-box/cb';
+
+:host {
+  // RootPopup owns viewport positioning and safe-area padding. Using `fixed`
+  // here escaped that content box on compact screens (leaving a second strip
+  // above the header) and gave the intrinsic-height desktop card no usable
+  // content size, so only its dark backdrop was visible.
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--app-bg) 94%, transparent);
+}
+.forward-viewer {
+  // This surface reuses ChatBox rendering but has no composer. Do not inherit the
+  // application's floating-composer reserve into the kernel-managed tail cap.
+  --soms-content-bottom-reserve: 0px;
+  width: min(760px, 100%);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--app-surface);
+  color: var(--app-text);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+}
+.level {
+  margin-left: 6px;
+  color: var(--app-text-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+.forward-state {
+  flex: 1 1 auto;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  color: var(--app-text-muted);
+}
+.forward-state--error {
+  gap: 16px;
+  padding: 24px;
+  box-sizing: border-box;
+  text-align: center;
+}
+.forward-state--error p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+.forward-state__icon {
+  color: var(--app-text-faint);
+}
+.msg-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-anchor: none;
+  outline: none;
+  scrollbar-width: none;
+  // A neutral page layer separates incoming surface-coloured bubbles/cards from
+  // the record viewer without bringing back the user's chat wallpaper.
+  background: var(--app-bg);
+}
+.msg-viewport::-webkit-scrollbar {
+  display: none;
+}
+.msg-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-height: 100%;
+  width: min(680px, 100%);
+  margin: 0 auto;
+  // Message rows already own their top spacing (the same row components used by the live chatbox).
+  // Adding another 16px here made chat-history records sit farther below the header than chatbox rows.
+  padding: 0 0 20px;
+  box-sizing: border-box;
+}
+.msg-content > * {
+  flex-shrink: 0;
+}
+@media (min-width: 761px) {
+  .forward-viewer {
+    border-radius: 14px;
+  }
+
+  .msg-content {
+    // The base viewer centers records in a 680px column. On desktop that looks
+    // like horizontal padding inside the 760px card; let the records use the
+    // full card width while preserving each message row's normal small gutter.
+    width: 100%;
+    margin-inline: 0;
+  }
+}

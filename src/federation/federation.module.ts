@@ -1,0 +1,368 @@
+import { Module } from '@nestjs/common';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { KeypairService } from './keypair.service.js';
+import { SignatureService } from './signature.service.js';
+import { DiscoveryService } from './discovery.service.js';
+import { S2sVerifyService } from './s2s-verify.service.js';
+import { GroupMembershipProjectionService } from '../group/membership-intent/shared/group-membership-projection.service.js';
+import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
+import { GroupRelationshipFoldService } from '../group/membership-intent/shared/group-relationship-fold.service.js';
+import { FederationReconnectService } from './federation-reconnect.service.js';
+import { S2sController } from './s2s.controller.js';
+import { S2sVerifyController } from './s2s-verify.controller.js';
+import { S2sRecognitionController } from './s2s-recognition.controller.js';
+import { WellKnownController } from './well-known.controller.js';
+import { RelationshipModule } from '../relationship/relationship.module.js';
+import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
+import { GatewayModule } from '../gateway/gateway.module.js';
+import { UploadModule } from '../upload/upload.module.js';
+import { MessageModule } from '../message/message.module.js';
+import { ThreadPreviewModule } from '../message/thread-preview.module.js';
+import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.module.js';
+import { QuotaModule } from '../quota/quota.module.js';
+import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
+import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
+import { FederationRecognitionService } from './federation-recognition.service.js';
+import { FederationMessageFeedService } from './federation-message-feed.service.js';
+import { FederationMessageProvenanceService } from './federation-message-provenance.service.js';
+import { FederationAdminMessageProvenanceService } from './federation-admin-message-provenance.service.js';
+import { FederationAdminHealthProbeService } from './federation-admin-health-probe.service.js';
+import { FederationDownloadScheduler } from './federation-download-scheduler.js';
+import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
+import { PeerStateFeedService } from './peer-state-feed.service.js';
+import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js';
+import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
+import { ProfileNamespaceFeedConsumerService } from './profile-namespace-feed-consumer.service.js';
+import { ProfileNamespaceFeedPullService } from './profile-namespace-feed-pull.service.js';
+import { ProfileNamespaceService } from './profile-namespace.service.js';
+import { ProfileNamespaceRefreshService } from './profile-namespace-refresh.service.js';
+import { ProfileNamespaceResolutionService } from './profile-namespace-resolution.service.js';
+import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
+import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
+import { S2sSignatureGuard } from './s2s-signature.guard.js';
+import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
+import { FederationHttpScheduler } from './federation-http-scheduler.js';
+import { FederationTransportConfigService } from './federation-transport-config.service.js';
+import { FederationGroupMetaFeedService } from './group-meta-feed.service.js';
+import { GroupMetaFeedService } from '../group/meta/group-meta-feed.service.js';
+import { FederationThreadMetaRoundExecutorService } from './federation-thread-meta-round-executor.service.js';
+import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
+import { FederationThreadForwardRoundService } from './federation-thread-forward-round.service.js';
+import { FederationThreadReverseRoundService } from './federation-thread-reverse-round.service.js';
+import { FederationThreadReverseRoundExecutorService } from './federation-thread-reverse-round-executor.service.js';
+import { FederationThreadSourceService } from './federation-thread-source.service.js';
+import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
+import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
+import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
+import { FederationThreadFanoutTaskHandler } from './federation-thread-fanout-task.handler.js';
+import { GroupRelationshipMutationService } from '../group/membership-intent/shared/group-relationship-mutation.service.js';
+import { FederationNamespaceService } from './federation-namespace.service.js';
+import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
+import { MessageProfileWorkDispatcherService } from './message-profile-work-dispatcher.service.js';
+import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationHealthSchedulerService } from './federation-health-scheduler.service.js';
+import { FederationPeerHttp } from './federation-peer-http.js';
+import { FederationMediaRangeClient } from './federation-media-range-client.js';
+import { FederationInboundFileSync } from './federation-inbound-file-sync.js';
+import { FederationPendingMediaPromoter } from './federation-pending-media-promoter.js';
+import { FederationUserDirectoryService } from './federation-user-directory.service.js';
+import { FederationCallBridgeService } from './federation-call-bridge.service.js';
+import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
+import { FederationThreadResourceClient } from './federation-thread-resource-client.service.js';
+import { FederationProfileService } from './federation-profile.service.js';
+import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
+import { FederationInboundMessageStoreService } from './federation-inbound-message-store.service.js';
+import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
+import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
+import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
+import { FederationLocalSystemMessagePublisher } from './federation-local-system-message-publisher.service.js';
+import { FederationStatePullService } from './federation-state-pull.service.js';
+import { FederationStateFeedHeadClient } from './federation-state-feed-head-client.service.js';
+import { FederationStateFeedPushSchedulerService } from './federation-state-feed-push-scheduler.service.js';
+import { FederationPeerResourceService } from './federation-peer-resource.service.js';
+import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { ProfileEvidenceProjectionService } from '../profile-resolution/profile-evidence-projection.service.js';
+import { ProfileResolutionCoordinatorService } from '../profile-resolution/profile-resolution-coordinator.service.js';
+import { ProfileResolutionController } from '../profile-resolution/profile-resolution.controller.js';
+import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
+import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
+import { FederationDownloadAdminService } from './federation-download-admin.service.js';
+import { DurableTaskModule } from '../durable-task/durable-task.module.js';
+import { AuthoritativeMembershipFinalizerService } from '../group/membership-intent/shared/authoritative-membership-finalizer.service.js';
+import { RequestTransactionCapability } from '../relationship/request/request-transaction.contract.js';
+import { UserIntentService } from '../user/p2p-intent/authored/user-intent.service.js';
+import { ReceivedUserIntentService } from '../user/p2p-intent/received/received-user-intent.service.js';
+import { RemoteMemberMembershipIntentService } from '../group/membership-intent/received/remote-member-membership-intent.service.js';
+import { MirrorGroupMembershipIntentService } from '../group/membership-intent/received/mirror-group-membership-intent.service.js';
+import { DatabaseService } from '../database/database.service.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
+import { FederationStateFeedPushService } from './federation-state-feed-push.service.js';
+import { FederationInboundMessageEffectsService } from './federation-inbound-message-effects.service.js';
+
+/**
+ * Federation (S2S). Consumers import this module explicitly when they need its exported services.
+ * The exported services depend on RelationshipService (RelationshipModule, unified relationship
+ * transitions), MessageService (MessageModule, card write on outbound group invite),
+ * AccountThreadStateService (relationship reads + raw roster mutators), SseService (GatewayModule),
+ * + UploadModule (avatar wire helpers). DatabaseService is provided globally by DatabaseModule.
+ *
+ * Two S2S controllers share the `s2s/v1` prefix: S2sController (unified invite + roster + signed GETs,
+ * allow-list-gated via S2sSignatureGuard) and S2sRecognitionController (bidirectional Recognize + Health).
+ */
+@Module({
+  imports: [
+    // EventEmitterModule is NOT global (only forRoot() lives in AppModule) — import it here so
+    // FederationCallBridgeService can emitAsync('call.frame.inbound') for the inbound S2S call bridge.
+    EventEmitterModule,
+    RelationshipModule,
+    AccountThreadStateModule,
+    GatewayModule,
+    UploadModule,
+    MessageModule,
+    ThreadPreviewModule,
+    ClientStateFeedModule,
+    QuotaModule,
+    LinkPreviewModule,
+    ForwardBundleModule,
+    DurableTaskModule,
+  ],
+  controllers: [
+    WellKnownController,
+    S2sController,
+    S2sVerifyController,
+    S2sRecognitionController,
+    ProfileResolutionController,
+  ],
+  providers: [
+    {
+      provide: UserIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        FederationStateFeedPushService,
+        FederationNamespaceService,
+        RequestTransactionCapability,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        stateFeedPush: FederationStateFeedPushService,
+        namespaces: FederationNamespaceService,
+        requestCapability: RequestTransactionCapability,
+      ) =>
+        new UserIntentService(
+          database,
+          clientFeed,
+          peerFeed,
+          stateFeedPush,
+          namespaces,
+          requestCapability,
+        ),
+    },
+    {
+      provide: ReceivedUserIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        FederationStateFeedPushService,
+        UserIntentService,
+        RequestTransactionCapability,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        stateFeedPush: FederationStateFeedPushService,
+        userIntents: UserIntentService,
+        requestCapability: RequestTransactionCapability,
+      ) =>
+        new ReceivedUserIntentService(
+          database,
+          clientFeed,
+          peerFeed,
+          stateFeedPush,
+          userIntents,
+          requestCapability,
+        ),
+    },
+    {
+      provide: RemoteMemberMembershipIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        FederationStateFeedPushService,
+        FederationNamespaceService,
+        GroupRelationshipMutationService,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        stateFeedPush: FederationStateFeedPushService,
+        namespaces: FederationNamespaceService,
+        relationshipMutations: GroupRelationshipMutationService,
+      ) =>
+        new RemoteMemberMembershipIntentService(
+          database,
+          clientFeed,
+          peerFeed,
+          stateFeedPush,
+          relationshipMutations,
+        ),
+    },
+    {
+      provide: MirrorGroupMembershipIntentService,
+      inject: [
+        DatabaseService,
+        ClientStateFeedService,
+        PeerStateFeedService,
+        FederationStateFeedPushService,
+        FederationNamespaceService,
+        GroupRelationshipMutationService,
+      ],
+      useFactory: (
+        database: DatabaseService,
+        clientFeed: ClientStateFeedService,
+        peerFeed: PeerStateFeedService,
+        stateFeedPush: FederationStateFeedPushService,
+        namespaces: FederationNamespaceService,
+        memberMutations: GroupRelationshipMutationService,
+      ) =>
+        new MirrorGroupMembershipIntentService(
+          database,
+          clientFeed,
+          peerFeed,
+          stateFeedPush,
+          memberMutations,
+        ),
+    },
+    FederationThreadFanoutTaskHandler,
+    KeypairService,
+    SignatureService,
+    DiscoveryService,
+    S2sVerifyService,
+    S2sSignatureGuard,
+    FederationPeerLifecycle,
+    FederationHealthSchedulerService,
+    FederationPeerHttp,
+    ProfileEvidenceProjectionService,
+    ProfileResolutionCoordinatorService,
+    FederationMediaRangeClient,
+    FederationInboundFileSync,
+    FederationPendingMediaPromoter,
+    FederationInboundMediaBatchService,
+    FederationDownloadAdminService,
+    FederationUserDirectoryService,
+    FederationCallBridgeService,
+    FederationThreadAccessService,
+    FederationStateFeedPushService,
+    FederationInboundMessageEffectsService,
+    FederationTrustedPeerClient,
+    FederationThreadResourceClient,
+    FederationProfileService,
+    FederationMediaLocalizationService,
+    FederationInboundMessageStoreService,
+    FederationInboundMessageRouteService,
+    FederationInboundMessageValidatorService,
+    FederationInboundMessagePageService,
+    FederationLocalSystemMessagePublisher,
+    FederationStatePullService,
+    FederationStateFeedHeadClient,
+    FederationStateFeedPushSchedulerService,
+    FederationPeerResourceService,
+    FederationInboundMessageCommitService,
+    FederationThreadQueryDenialService,
+    GroupMembershipProjectionService,
+    AuthoritativeMembershipFinalizerService,
+    FederationGroupMetaClient,
+    FederationThreadMetaRoundExecutorService,
+    GroupRelationshipFoldService,
+    FederationReconnectService,
+    FederationRecognitionService,
+    FederationMessageFeedService,
+    FederationMessageProvenanceService,
+    FederationAdminMessageProvenanceService,
+    FederationAdminHealthProbeService,
+    FederationMessageTombstoneFeedService,
+    FederationDownloadScheduler,
+    FederationHttpScheduler,
+    FederationTransportConfigService,
+    FederationDownloadRecoveryService,
+    PeerStateFeedService,
+    PeerStateFeedPullService,
+    GroupMetaFeedService,
+    FederationGroupMetaFeedService,
+    FederationThreadSyncStateService,
+    FederationThreadForwardRoundService,
+    FederationThreadReverseRoundService,
+    FederationThreadSourceService,
+    FederationThreadForwardRoundExecutorService,
+    FederationThreadReverseRoundExecutorService,
+    FederationThreadRoundSchedulerService,
+    FederationThreadContentHeadService,
+    GroupRelationshipMutationService,
+    FederationNamespaceService,
+    ProfileNamespaceFeedService,
+    ProfileNamespaceChangeStore,
+    ProfileNamespaceFeedConsumerService,
+    ProfileNamespaceFeedPullService,
+    ProfileNamespaceService,
+    ProfileNamespaceRefreshService,
+    ProfileNamespaceResolutionService,
+    FederationProfileNamespacePullService,
+    FederationStateFeedConsumerService,
+    MessageProfileWorkDispatcherService,
+  ],
+  exports: [
+    UserIntentService,
+    ReceivedUserIntentService,
+    RemoteMemberMembershipIntentService,
+    MirrorGroupMembershipIntentService,
+    FederationThreadQueryDenialService,
+    FederationPeerLifecycle,
+    FederationCallBridgeService,
+    FederationProfileService,
+    FederationThreadAccessService,
+    FederationMediaLocalizationService,
+    FederationStateFeedPushService,
+    FederationInboundMessageEffectsService,
+    KeypairService,
+    SignatureService,
+    DiscoveryService,
+    FederationRecognitionService,
+    FederationMessageFeedService,
+    FederationMessageProvenanceService,
+    FederationAdminMessageProvenanceService,
+    FederationAdminHealthProbeService,
+    FederationMessageTombstoneFeedService,
+    FederationDownloadScheduler,
+    FederationHttpScheduler,
+    FederationTransportConfigService,
+    FederationDownloadRecoveryService,
+    FederationDownloadAdminService,
+    PeerStateFeedService,
+    PeerStateFeedPullService,
+    GroupMetaFeedService,
+    FederationGroupMetaFeedService,
+    FederationThreadSyncStateService,
+    FederationThreadForwardRoundService,
+    FederationThreadReverseRoundService,
+    FederationThreadSourceService,
+    FederationThreadForwardRoundExecutorService,
+    FederationThreadReverseRoundExecutorService,
+    FederationThreadRoundSchedulerService,
+    FederationThreadContentHeadService,
+    GroupRelationshipMutationService,
+    FederationNamespaceService,
+    ProfileNamespaceFeedService,
+    ProfileNamespaceService,
+    ProfileNamespaceRefreshService,
+    ProfileNamespaceResolutionService,
+  ],
+})
+export class FederationModule {}

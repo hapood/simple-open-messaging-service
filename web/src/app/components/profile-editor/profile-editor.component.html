@@ -1,0 +1,188 @@
+@if (avatarDraft(); as file) {
+  <app-avatar-editor
+    class="embedded-avatar-editor"
+    [file]="file"
+    [embedded]="true"
+    (canceled)="cancelAvatarEdit()"
+    (completed)="finishAvatarEdit($event)"
+  />
+} @else {
+  <div class="profile-editor">
+    <app-page-header
+      [title]="'profile.editTitle' | transloco"
+      [safeArea]="respectTopSafeArea()"
+      (back)="goBack()"
+    >
+      <button
+        pageHeaderAction
+        mat-button
+        color="primary"
+        class="save-btn"
+        (click)="save()"
+        [disabled]="!canSave() && !justSaved()"
+      >
+        @if (justSaved()) {
+          <app-icon
+            [type]="AppIconType.CHECK"
+            [style]="{ width: '18px', height: '18px' }"
+          />
+          <span>{{ 'common.saved' | transloco }}</span>
+        } @else {
+          {{ 'common.save' | transloco }}
+        }
+      </button>
+    </app-page-header>
+
+    <div class="body">
+      @if (saveError()) {
+        <div class="save-error" role="alert">{{ saveError() }}</div>
+      }
+      <div class="avatar-wrap">
+        <div class="avatar">
+          @if (sessionProfile(); as self) {
+            <app-snapshot-avatar
+              [type]="UserAvatarType.SELF"
+              [domainSource]="{ type: 'namespace', namespaceId: 0 }"
+              [name]="name() || self.account"
+              [account]="self.account"
+              [src]="avatarPreviewUrl() || self.avatar"
+            />
+          } @else {
+            <app-snapshot-avatar [type]="UserAvatarType.SELF" [loading]="true" />
+          }
+          <button
+            class="avatar-edit"
+            type="button"
+            (click)="fileInput.click()"
+            [disabled]="saving()"
+            [attr.aria-label]="'profile.changeAvatarAria' | transloco"
+          >
+            <span class="avatar-hint">
+              @if (saving()) {
+                <span class="spin"></span>
+              } @else {
+                {{ 'group.changeAvatarHint' | transloco }}
+              }
+            </span>
+          </button>
+        </div>
+        <input
+          #fileInput
+          type="file"
+          accept="image/*"
+          hidden
+          (change)="onAvatarPicked($event)"
+        />
+        @if (accountAddress(); as address) {
+          <div class="account-identity">
+            <span>{{ 'profile.account' | transloco }}</span>
+            <div class="account-address-row">
+              <strong>{{ address }}</strong>
+              <button
+                type="button"
+                class="copy-account-btn"
+                (click)="copyAccountAddress()"
+                [attr.aria-label]="
+                  (accountCopied()
+                    ? 'profile.accountCopied'
+                    : 'profile.copyAccount'
+                  ) | transloco
+                "
+                [attr.title]="
+                  (accountCopied()
+                    ? 'profile.accountCopied'
+                    : 'profile.copyAccount'
+                  ) | transloco
+                "
+              >
+                @if (accountCopied()) {
+                  <app-icon
+                    [type]="AppIconType.CHECK"
+                    [style]="{ width: '18px', height: '18px' }"
+                  />
+                } @else {
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <rect
+                      x="9"
+                      y="9"
+                      width="11"
+                      height="11"
+                      rx="2"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    />
+                    <path
+                      d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                }
+              </button>
+            </div>
+          </div>
+        }
+      </div>
+
+      <mat-form-field appearance="outline" class="field">
+        <mat-label>{{ 'profile.name' | transloco }}</mat-label>
+        <input
+          matInput
+          autocomplete="nickname"
+          [ngModel]="name()"
+          (ngModelChange)="onNameInput($event)"
+          [placeholder]="'profile.namePlaceholder' | transloco"
+        />
+        @if (nameHint()) {
+          <mat-error>{{ nameHint() }}</mat-error>
+        }
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="field bio-field">
+        <mat-label>{{ 'profile.bio' | transloco }}</mat-label>
+        <textarea
+          matInput
+          rows="3"
+          [ngModel]="bio()"
+          (ngModelChange)="onBioInput($event)"
+          [placeholder]="'profile.bioPlaceholder' | transloco"
+        ></textarea>
+        <mat-hint align="end">{{ bioLength() }}/{{ BIO_MAX }}</mat-hint>
+      </mat-form-field>
+
+      <div class="account-actions">
+        <button
+          mat-stroked-button
+          color="warn"
+          class="logout-btn"
+          (click)="onLogout()"
+          [attr.aria-label]="'nav.logout' | transloco"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <path d="M16 17l5-5-5-5" />
+            <path d="M21 12H9" />
+          </svg>
+          <span>{{ 'nav.logout' | transloco }}</span>
+        </button>
+      </div>
+    </div>
+  </div>
+}

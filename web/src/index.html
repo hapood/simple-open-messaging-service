@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Static theme-color fallback. The FOUC script just below (and ThemeService at runtime)
+       updates this to match the resolved theme, so the browser chrome blends from the very first
+       frame — placed before the script so the script can find it via querySelector. -->
+    <meta name="theme-color" content="#f3f3f1" />
+    <!-- Pre-paint FOUC bootstrap (persisted theme + language). Loaded as an EXTERNAL 'self' script so the
+       somsapp:// CSP `script-src 'self'` admits it without a nonce — an inline <script> would be blocked.
+       Synchronous (classic, no defer) so it runs during head parsing, before <body> paints. ThemeService /
+       LanguageService re-assert and own these attributes at runtime after boot. -->
+    <script src="/boot.js"></script>
+    <title>SOMS — Self-Hosted, Federated Chat Platform</title>
+    <base href="/" />
+    <meta
+      name="description"
+      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."
+    />
+    <meta
+      name="keywords"
+      content="self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
+    />
+
+    <!-- Open Graph / Social Media -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://hapood.github.io/simple-open-messaging-service/" />
+    <meta property="og:title" content="SOMS — Self-Hosted, Federated Chat Platform" />
+    <meta
+      property="og:description"
+      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+    />
+    <meta property="og:image" content="https://hapood.github.io/simple-open-messaging-service/social-preview.png" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://hapood.github.io/simple-open-messaging-service/" />
+    <meta name="twitter:title" content="SOMS — Self-Hosted, Federated Chat Platform" />
+    <meta
+      name="twitter:description"
+      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+    />
+    <meta name="twitter:image" content="https://hapood.github.io/simple-open-messaging-service/social-preview.png" />
+    <!-- Scale locked (`minimum-scale=maximum-scale=1`, `user-scalable=no`): disables the browser's
+       pinch-to-zoom and double-tap-to-zoom so the SPA behaves as a native shell, not a zoomable page.
+       On Android this is reinforced authoritatively at the engine layer in MainActivity.onWebViewCreate
+       (WebSettings.setSupportZoom(false)), because some OEM WebView cores ignore this meta; the meta
+       remains the lock for the PWA/browser build and the first line of defense natively. It blocks only
+       the UA's page-zoom — JS-level gesture handling (e.g. an image lightbox zooming one image via pointer
+       events) is unaffected, which is exactly the desired split. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="logo.svg" />
+    <!-- iOS home-screen icon (180×180 transparent Web mark). -->
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="SOMS" />
+  </head>
+  <body>
+    <!-- App-shell spinner: shows the instant the page parses (before Angular boots), so a freshly-created
+       / reloading main window (the two-window handoff in src-tauri) never flashes a blank frame. Angular
+       replaces <app-root>'s content on boot, then AppComponent emits `spa-ready` (Rust gates the window
+       show on it). Styles live in styles.scss (global). Harmless in the browser/PWA build (replaced fast). -->
+    <app-root>
+      <div class="app-splash">
+        <img class="app-splash__mark" src="/logo.svg" alt="" />
+        <div class="app-splash__word">SOMS</div>
+        <div class="app-splash__spinner"></div>
+      </div>
+    </app-root>
+  </body>
+</html>

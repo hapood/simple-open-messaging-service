@@ -1,0 +1,63 @@
+:host {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  overflow: hidden;
+  color: #ffffff;
+  background:
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.09), transparent 30%),
+    radial-gradient(circle at 82% 76%, rgba(255, 255, 255, 0.05), transparent 34%),
+    linear-gradient(145deg, #34383c 0%, #25282c 48%, #151719 100%);
+
+  // soft decorative bubbles, low opacity so the wordmark keeps contrast
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.06);
+  }
+  &::before {
+    width: 320px;
+    height: 320px;
+    top: -120px;
+    right: -80px;
+  }
+  &::after {
+    width: 220px;
+    height: 220px;
+    bottom: -90px;
+    left: -60px;
+  }
+}
+
+// Dark theme keeps the panel close to black while preserving a subtle material gradient.
+:host-context([data-theme="dark"]) {
+  background: linear-gradient(135deg, #24272a 0%, #111315 100%);
+}
+
+.brand-stack {
+  position: relative;
+  max-width: 320px;
+  text-align: center;
+
+  // Sits on the brand-gradient panel with white text and larger sizes.
+  // CSS variables pierce into <app-brand-logo> — no ::ng-deep needed.
+  app-brand-logo {
+    --bl-word: 27px;
+    --bl-tag: 14px;
+    --bl-word-color: #ffffff;
+    --bl-tag-color: rgba(255, 255, 255, 0.85);
+    --bl-mark-radius: 22.222%;
+  }
+}
+
+// below the split breakpoint the brand panel yields to the centered card
+@media (max-width: 899px) {
+  :host {
+    display: none;
+  }
+}

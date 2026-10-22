@@ -1,0 +1,27 @@
+<app-material-dialog
+  [isShow]="rootDialogs().length > 0"
+  [instantHide]="instantBackdropHide()"
+>
+  @for (info of rootDialogs(); track info.id) {
+    <div
+      class="popup-com-wrapper"
+      [class.desktop]="isCard()"
+      [class.wide]="info.desktopSize === 'wide'"
+      [class.workspace-height]="info.desktopHeight === 'workspace'"
+      [class.presentation-page]="info.presentation === 'page'"
+      [class.presentation-modal]="info.presentation === 'modal'"
+      [class.presentation-viewer]="info.presentation === 'viewer'"
+      role="dialog"
+      aria-modal="true"
+      [attr.aria-label]="'common.dialog' | transloco"
+      tabindex="-1"
+      cdkFocusInitial
+      [cdkTrapFocus]="$index === rootDialogs().length - 1"
+      [cdkTrapFocusAutoCapture]="$index === rootDialogs().length - 1"
+      [style]="{ zIndex: $index }"
+      [@dialogAnim]="dialogState(info)"
+    >
+      <ng-container *ngComponentOutlet="info.component; inputs: info.inputs" />
+    </div>
+  }
+</app-material-dialog>

@@ -1,0 +1,29 @@
+<div class="thread-search">
+  <app-icon
+    class="thread-search__icon"
+    [type]="AppIconType.SEARCH"
+    [style]="{ width: '18px', height: '18px' }"
+  ></app-icon>
+  <input
+    type="search"
+    autocomplete="off"
+    [attr.aria-label]="ariaLabel()"
+    [placeholder]="placeholder()"
+    [value]="value()"
+    (input)="updateValue($event)"
+    (keydown.escape)="clear()"
+  />
+  @if (value()) {
+    <button
+      type="button"
+      class="thread-search__clear"
+      (click)="clear()"
+      [attr.aria-label]="clearAriaLabel()"
+    >
+      <app-icon
+        [type]="AppIconType.CLOSE"
+        [style]="{ width: '16px', height: '16px' }"
+      ></app-icon>
+    </button>
+  }
+</div>

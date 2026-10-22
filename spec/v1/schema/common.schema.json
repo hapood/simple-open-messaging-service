@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:common",
+  "title": "Simple Open Messaging Federation Protocol v1 common wire types",
+  "$defs": {
+    "contentType": {
+      "enum": [
+        "PURE_TEXT",
+        "IMAGE",
+        "VIDEO",
+        "FILE",
+        "AUDIO",
+        "LINK",
+        "CONTACT_CARD",
+        "FORWARD",
+        "GALLERY"
+      ]
+    },
+    "userAccount": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,29}$"
+    },
+    "groupAccount": {
+      "type": "string",
+      "pattern": "^![a-z0-9]{2,30}$",
+      "description": "Globally unique immutable group identifier minted with cryptographically strong randomness."
+    },
+    "account": {
+      "type": "string",
+      "pattern": "^(?:[a-z0-9][a-z0-9._-]{0,29}|![a-z0-9]{2,30})$"
+    },
+    "domain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
+    },
+    "decimalString": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)$"
+    },
+    "signedDecimalString": {
+      "type": "string",
+      "pattern": "^(?:0|-?[1-9][0-9]*)$"
+    },
+    "positiveDecimalString": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "safeNonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "positiveSafeInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "positiveThreadSequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740990,
+      "description": "Positive thread message or deletion sequence; SafeInteger is reserved as the maximum exclusive reverse cursor"
+    },
+    "threadSequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740990,
+      "description": "Non-negative thread message or deletion boundary; SafeInteger is reserved as the maximum exclusive reverse cursor"
+    },
+    "threadAddress": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["account"],
+          "properties": {
+            "account": { "$ref": "#/$defs/groupAccount" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["account", "peerAccount"],
+          "properties": {
+            "account": { "$ref": "#/$defs/userAccount" },
+            "peerAccount": { "$ref": "#/$defs/userAccount" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "epochMilliseconds": {
+      "$ref": "#/$defs/safeNonNegativeInteger",
+      "description": "Unix epoch milliseconds encoded as a non-negative JSON safe integer"
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "inlineProfileAvatar": {
+      "type": "object",
+      "required": ["mimeType", "base64", "width", "height"],
+      "properties": {
+        "mimeType": { "type": "string", "minLength": 1 },
+        "base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 1048576,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "width": {
+          "allOf": [{ "$ref": "#/$defs/positiveSafeInteger" }],
+          "maximum": 512
+        },
+        "height": {
+          "allOf": [{ "$ref": "#/$defs/positiveSafeInteger" }],
+          "maximum": 512
+        }
+      },
+      "additionalProperties": false
+    },
+    "base64Ed25519Key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{43}=$"
+    },
+    "base64Ed25519Signature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{86}==$"
+    },
+    "base64ChallengeAnswer": {
+      "description": "Canonical RFC 4648 padded base64 of 0–4096 recovered plaintext bytes, including zero pad bits. Empty plaintext is the empty string.",
+      "type": "string",
+      "maxLength": 5464,
+      "pattern": "^(?:(?:[A-Za-z0-9+/]{4}){0,1364}(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?|(?:[A-Za-z0-9+/]{4}){1365}(?:[A-Za-z0-9+/][AQgw]==)?)(?![\\s\\S])"
+    },
+    "base64SealedChallenge": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+      "minLength": 48,
+      "maxLength": 8192
+    },
+    "safeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "canonicalUuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "callId": {
+      "$ref": "#/$defs/canonicalUuid"
+    },
+    "address": {
+      "type": "object",
+      "required": ["account", "domain"],
+      "properties": {
+        "account": { "$ref": "#/$defs/account" },
+        "domain": { "$ref": "#/$defs/domain" }
+      },
+      "additionalProperties": false
+    },
+    "successEnvelope": {
+      "type": "object",
+      "required": ["code", "message", "data"],
+      "properties": {
+        "code": { "const": 0 },
+        "message": { "type": "string" },
+        "data": true
+      },
+      "additionalProperties": false
+    }
+  }
+}

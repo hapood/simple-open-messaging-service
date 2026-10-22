@@ -1,0 +1,45 @@
+<section
+  class="forward-viewer"
+  role="dialog"
+  aria-modal="true"
+  [attr.aria-label]="'forward.chatHistory' | transloco"
+>
+  <app-page-header [title]="'forward.chatHistory' | transloco" (back)="back()">
+    @if (currentLevel() > 1) {
+      <span pageHeaderTitleSuffix class="level">
+        {{ 'forward.nestedLevel' | transloco: { level: currentLevel() } }}
+      </span>
+    }
+  </app-page-header>
+
+  @if (loading()) {
+    <div class="forward-state">{{ 'common.loading' | transloco }}</div>
+  } @else if (failed()) {
+    <div class="forward-state forward-state--error" role="alert">
+      <app-icon
+        class="forward-state__icon"
+        [type]="AppIconType.ERROR_OUTLINE"
+        [style]="{ width: '48px', height: '48px' }"
+      />
+      <p>{{ 'forward.loadFailed' | transloco }}</p>
+      <button mat-flat-button color="primary" type="button" (click)="load()">
+        <app-icon
+          matButtonIcon
+          [type]="AppIconType.REFRESH"
+          [style]="{ width: '18px', height: '18px' }"
+        />
+        {{ 'common.retry' | transloco }}
+      </button>
+    </div>
+  } @else {
+    <div
+      class="msg-viewport"
+      #viewport
+      tabindex="0"
+      role="region"
+      [attr.aria-label]="'chat.messageListAria' | transloco"
+    >
+      <div class="msg-content" #content role="list"></div>
+    </div>
+  }
+</section>

@@ -1,0 +1,157 @@
+.link-generation-dialog {
+  color: var(--app-text);
+}
+
+.link-generation-dialog__body {
+  box-sizing: border-box;
+  padding: 12px;
+  text-align: center;
+}
+
+.link-generation-dialog__actions {
+  min-height: 46px;
+  padding: 5px 8px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid rgba(127, 127, 127, 0.16);
+}
+.link-generation-dialog__primary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.link-generation-dialog__actions button {
+  min-width: 64px;
+  height: 34px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 17px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.link-generation-dialog__actions button:hover {
+  background: var(--app-hover);
+}
+.link-generation-dialog__send {
+  background: var(--app-action-primary) !important;
+  color: var(--app-on-action-primary) !important;
+  font-weight: 500 !important;
+}
+.link-generation-dialog__retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--app-action-primary) !important;
+  color: var(--app-action-primary) !important;
+}
+.link-generation-dialog__retry:hover {
+  background: color-mix(
+    in srgb,
+    var(--app-action-primary) 10%,
+    transparent
+  ) !important;
+}
+.link-generation-dialog__retry svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.link-generation-dialog__send:hover {
+  background: var(--app-action-primary-hover) !important;
+}
+
+.link-generation-card {
+  width: min(100%, 280px);
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--chat-card-bg);
+  text-align: left;
+}
+
+.link-generation-card footer svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.link-generation-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  min-height: 18px;
+  box-sizing: border-box;
+  background: var(--chat-card-meta-outgoing);
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--app-text);
+}
+.link-generation-card__meta--loading {
+  height: 18px;
+}
+.link-generation-card footer img,
+.link-generation-card footer svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+.link-generation-card footer img {
+  border-radius: 3px;
+}
+.link-generation-card footer span {
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.link-generation-failure {
+  width: min(100%, 280px);
+  height: 94px;
+  margin: 0 auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid color-mix(in srgb, var(--app-danger) 22%, transparent);
+  border-radius: 14px;
+  background: var(--app-danger-soft);
+  color: var(--app-text-muted);
+}
+.link-generation-failure__icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--app-danger) 16%, transparent);
+  color: var(--app-danger);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
+}
+.link-generation-failure strong {
+  color: var(--app-text);
+  font-size: 14px;
+  line-height: 18px;
+}
+.link-generation-failure p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+}

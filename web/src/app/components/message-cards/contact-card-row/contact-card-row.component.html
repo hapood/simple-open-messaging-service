@@ -1,0 +1,73 @@
+@if (showDate()) {
+  <app-msg-date-row [ms]="data().createdAtMs" />
+}
+<div
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{
+    isGroupStart() ? ' msg-group-start' : ''
+  }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+>
+  <span class="msg-highlight-layer" aria-hidden="true"></span>
+  @if (showAvatar() && side() === 'other') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+  <div class="msg-col msg-{{ side() }}">
+    @if (showName()) {
+      <div class="msg-name msg-{{ side() }}">{{ sender.name() }}</div>
+    }
+    @if (data().quote; as quote) {
+      <app-msg-quote-block
+        [quote]="quote"
+        [isSelf]="data().isSelf"
+        (quoteJump)="quoteJump.emit($event)"
+      />
+    }
+    <button
+      type="button"
+      class="msg-bubble msg-card msg-{{ side() }} msg-{{ pos() }} contact-card"
+      [disabled]="!card()"
+      (click)="openCard()"
+    >
+      <div class="contact-card-body">
+        @if (card(); as contact) {
+          <app-snapshot-avatar
+            [type]="cardAvatarType()"
+            [name]="contact.displayName"
+            [account]="contact.account"
+            [domainSource]="cardDomainSource()"
+            [src]="contact.avatar"
+          />
+          <div class="contact-card-copy">
+            <div class="contact-card-recommend">
+              {{ sender.name()
+              }}{{
+                (isGroupCard()
+                  ? 'contactCard.recommendedGroup'
+                  : 'contactCard.recommendedPerson'
+                ) | transloco
+              }}
+            </div>
+            <div class="contact-card-name">{{ contact.displayName }}</div>
+          </div>
+        } @else {
+          <div class="contact-card-copy">
+            {{ 'contactCard.unavailable' | transloco }}
+          </div>
+        }
+      </div>
+      <div class="contact-card-meta msg-card-meta msg-{{ side() }}">
+        <span>{{
+          (isGroupCard() ? 'contactCard.groupLabel' : 'contactCard.label')
+            | transloco
+        }}</span
+        ><span>{{ data().time }}</span>
+      </div>
+    </button>
+  </div>
+  @if (showAvatar() && side() === 'self') {
+    <div class="msg-avatar">
+      <app-avatar [view]="sender.avatar()" />
+    </div>
+  }
+</div>

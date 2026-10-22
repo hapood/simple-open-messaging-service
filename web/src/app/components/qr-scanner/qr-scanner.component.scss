@@ -1,0 +1,190 @@
+@use "../../assets/utils.scss" as *;
+
+// Full-viewport transparent host laid out by the CDK overlay (the service places it at the viewport's
+// top-left; :host fills 100vw/100vh). Transparent so the live camera shows through — the dimming scrim and
+// chrome are drawn by .qr-scan-stage / .qr-scan-cutout below. Mirrors gallery-viewer's fixed-inset host.
+
+:host {
+  display: block;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1100; // above the app shell; top-most overlay (parity with gallery-viewer)
+}
+
+// Column: title (top) → cutout (centered, flex-grows) → hint → bottom buttons. Padding clears the status /
+// gesture bars via the native shell's safe-area tokens (env(safe-area-inset-*) is 0 on the Android WebView,
+// so the Kotlin-injected --soms-safe-* is the only source). Transparent by default; .is-denied is opaque.
+.qr-scan-stage {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: calc(var(--soms-safe-top, 0px) + 24px) 24px calc(var(--soms-safe-bottom, 0px) + 20px);
+  background: transparent;
+  color: #ffffff;
+}
+
+// No camera (permission denied): an opaque themed background replaces transparency, and text flips to the
+// themed color so the denied panel reads as part of the app rather than the dark scan scrim.
+.qr-scan-stage.is-denied {
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+.qr-scan-top {
+  flex: 0 0 auto;
+  text-align: center;
+}
+
+.qr-scan-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 24px; // integer px per the project rule
+  font-weight: 600;
+}
+
+.qr-scan-center {
+  flex: 1 1 auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// The transparent "hole" the user aims at the QR. `box-shadow: 0 0 0 100vmax rgba(0,0,0,.55)` paints the
+// dimming scrim everywhere OUTSIDE this element (the 100vmax spread covers the viewport from any position),
+// while the element's own area stays transparent so the camera shows through clearly. `overflow: hidden`
+// clips the scan line to the rounded square; box-shadow is unaffected by overflow (it draws outside the
+// box), so the scrim is not clipped. box-shadow and transform are exempt from the integer-px rule.
+.qr-scan-cutout {
+  position: relative;
+  width: var(--cutout);
+  height: var(--cutout);
+  border-radius: var(--app-radius-lg);
+  overflow: hidden;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.55);
+}
+
+// Four L-shaped corner brackets, inset slightly from the cutout corners. White for max contrast over any
+// camera scene — the scan UI is theme-independent (always dark scrim + light chrome), unlike the rest of
+// the app, because it overlays an uncontrolled live feed.
+.qr-bracket {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border: 0 solid #ffffff;
+  pointer-events: none;
+}
+.qr-bracket--tl { top: 8px;    left: 8px;  border-top-width: 4px;    border-left-width: 4px;  border-top-left-radius: 6px; }
+.qr-bracket--tr { top: 8px;    right: 8px; border-top-width: 4px;    border-right-width: 4px; border-top-right-radius: 6px; }
+.qr-bracket--bl { bottom: 8px; left: 8px;  border-bottom-width: 4px; border-left-width: 4px;  border-bottom-left-radius: 6px; }
+.qr-bracket--br { bottom: 8px; right: 8px; border-bottom-width: 4px; border-right-width: 4px; border-bottom-right-radius: 6px; }
+
+// Sweeping scan line: a thin bright bar with a soft glow, animated top→bottom across the cutout. translateY
+// (transform) is exempt from the integer-px rule; the sweep targets the cutout height via --cutout.
+.qr-scan-line {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  top: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, #ffffff 25%, #ffffff 75%, transparent);
+  box-shadow: 0 0 12px 2px rgba(255, 255, 255, 0.7);
+  animation: qr-scan-sweep 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+// Freeze + hide the sweep the instant a code is captured (the green badge takes over as the cue).
+.qr-scan-cutout.is-captured .qr-scan-line {
+  animation-play-state: paused;
+  opacity: 0;
+}
+
+@keyframes qr-scan-sweep {
+  0%   { transform: translateY(4px); opacity: 0; }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { transform: translateY(calc(var(--cutout) - 6px)); opacity: 0; }
+}
+
+// Green-check confirmation overlay centered over the cutout once a QR is decoded — `inset:0; margin:auto`
+// centers a fixed-size box on both axes WITHOUT a transform, so the pop keyframe can own transform: scale()
+// (parity with qr-login-page's .qr-scan-badge).
+.qr-scan-badge {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-green);
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: qr-scan-badge-pop 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes qr-scan-badge-pop {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.qr-scan-hint {
+  flex: 0 0 auto;
+  align-self: center;
+  max-width: min(76%, 360px);
+  margin: 20px 0 0;
+  font-size: 14px;
+  line-height: 20px; // integer px per the project rule
+  text-align: center;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.qr-scan-bottom {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+// Over the live camera (non-denied), force the text-style Cancel button to white so it reads on the dark
+// scrim (its default --mat-button-text-label-text-color is the brand blue, which is fine but breaks the
+// "all chrome white" scan identity). The denied state keeps the themed brand color via .is-denied scoping.
+.qr-scan-stage:not(.is-denied) .mat-mdc-button {
+  --mat-button-text-label-text-color: #ffffff;
+  --mat-button-text-state-layer-color: #ffffff;
+}
+
+// Denied panel: centered icon chip + message inside the center area (no cutout — no camera).
+.qr-scan-denied {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: min(80%, 320px);
+  text-align: center;
+}
+.qr-scan-denied__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+.qr-scan-denied__text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px; // integer px per the project rule
+  color: var(--app-text-muted);
+}

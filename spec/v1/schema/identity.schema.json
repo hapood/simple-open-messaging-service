@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:identity",
+  "title": "Federation v1 recognition and feed-head objects",
+  "$defs": {
+    "recognizeRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "maxProperties": 0,
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["namespaceId"],
+          "properties": {
+            "namespaceId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "verifyRequest": {
+      "type": "object",
+      "required": ["publicKey", "encryptedValue"],
+      "properties": {
+        "publicKey": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+        },
+        "encryptedValue": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64SealedChallenge"
+        }
+      },
+      "additionalProperties": false
+    },
+    "verifyResult": {
+      "type": "object",
+      "required": ["value"],
+      "properties": {
+        "value": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64ChallengeAnswer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "recognizeResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "peerAssignedLocalNamespaceId"],
+          "properties": {
+            "status": {
+              "const": "recognized"
+            },
+            "peerAssignedLocalNamespaceId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "healthResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "peerAssignedLocalNamespaceId"],
+          "properties": {
+            "status": {
+              "enum": ["available", "degraded"]
+            },
+            "peerAssignedLocalNamespaceId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "feedHeadHint": {
+      "type": "object",
+      "required": ["stateFeedEndId", "profileNamespaceFeedEndId"],
+      "properties": {
+        "stateFeedEndId": {
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        },
+        "profileNamespaceFeedEndId": {
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

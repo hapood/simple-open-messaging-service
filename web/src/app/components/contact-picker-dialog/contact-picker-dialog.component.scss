@@ -1,0 +1,53 @@
+.contact-picker {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: 70dvh;
+  color: var(--app-text);
+}
+header {
+  flex: 0 0 auto;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--app-border);
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.contact-picker-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--app-radius-md);
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button:hover {
+  background: var(--app-hover);
+}
+button:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -2px;
+}
+app-demand-avatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+}
+button span {
+  overflow: hidden;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

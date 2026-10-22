@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:message-query",
+  "title": "GET /s2s/v1/messages response data",
+  "$defs": {
+    "quoteTarget": {
+      "type": "object",
+      "oneOf": [{ "required": ["seq"] }, { "required": ["originSeq"] }],
+      "properties": {
+        "seq": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+        },
+        "originSeq": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+        }
+      },
+      "additionalProperties": false
+    },
+    "asset": {
+      "type": "object",
+      "required": ["digest", "bytes"],
+      "properties": {
+        "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "bytes": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "additionalProperties": false
+    },
+    "message": {
+      "type": "object",
+      "required": [
+        "thread",
+        "author",
+        "seq",
+        "profileRev",
+        "originSeq",
+        "originCreatedAt",
+        "contentType",
+        "content",
+        "createdAt",
+        "assets"
+      ],
+      "properties": {
+        "thread": {
+          "$ref": "urn:somfp:v1:common#/$defs/threadAddress"
+        },
+        "author": { "type": "object" },
+        "seq": {
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+        },
+        "profileRev": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
+        "originSeq": {
+          "oneOf": [
+            {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
+            },
+            { "type": "null" }
+          ]
+        },
+        "originCreatedAt": {
+          "oneOf": [
+            {
+              "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+            },
+            { "type": "null" }
+          ]
+        },
+        "contentType": {
+          "$ref": "urn:somfp:v1:common#/$defs/contentType"
+        },
+        "content": { "type": "string", "minLength": 2 },
+        "createdAt": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        },
+        "quoteTarget": { "$ref": "#/$defs/quoteTarget" },
+        "quoteDigest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "author": {
+              "type": "object",
+              "required": ["ref", "namespaceId"],
+              "properties": {
+                "ref": { "enum": ["THREAD_ACCOUNT", "THREAD_PEER_ACCOUNT"] },
+                "namespaceId": {
+                  "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+                }
+              },
+              "additionalProperties": false
+            },
+            "thread": {
+              "type": "object",
+              "required": ["account", "peerAccount"],
+              "properties": {
+                "account": {
+                  "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+                },
+                "peerAccount": {
+                  "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "author": {
+              "type": "object",
+              "required": ["account", "namespaceId"],
+              "properties": {
+                "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+                "namespaceId": {
+                  "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+                }
+              },
+              "additionalProperties": false
+            },
+            "thread": {
+              "type": "object",
+              "required": ["account"],
+              "properties": {
+                "account": {
+                  "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "dependentRequired": {
+        "quoteTarget": ["quoteDigest"],
+        "quoteDigest": ["quoteTarget"]
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["messages", "scannedThrough", "hasMore"],
+  "properties": {
+    "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
+    "scannedThrough": {
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+    },
+    "hasMore": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,266 @@
+:host {
+  display: block;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.shell {
+  position: relative;
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--app-bg);
+  /* NOTE: the gesture-bar inset is NOT applied here. Each bottom surface owns its own
+     --soms-safe-bottom so its background extends seamlessly under the Android gesture / navigation bar
+     (Material 3 edge-to-edge: the bar color continues under the system bar, no tonal strip). Padding
+     here would shrink the in-flow tablet .chat-slot and double-count with the input bar's own inset.
+     See .drawer-body (list), .aside-slot (panels), and the chat input bar (.ci-input-bar). */
+  /* Single source for the app-header height — read by HomeHeaderComponent (its own height), a DOM
+     descendant of .shell, so the var reaches it. The indicator chip no longer reads a derived var from
+     here: indicators now live in <app-indicator-slot> at the HomeComponent layer (outside .shell) and are
+     positioned solely by IndicatorSlotComponent's :host. The value is the header's TOTAL occupied height:
+     the 56px content row PLUS the status-bar safe-area inset (--soms-safe-top, injected by the native
+     Android shell; 0 on desktop/browser), so on a notched device the bar's --app-surface background
+     extends seamlessly under the status bar while its content row sits below it (edge-to-edge, no tonal
+     strip). HomeHeaderComponent consumes the inset as padding-top (border-box keeps the content row 56px). */
+  --app-header-h: calc(56px + var(--soms-safe-top, 0px));
+}
+
+// Both persistent slots are flex columns; the routed component fills the slot (router-outlet itself
+// renders nothing and collapses).
+.chat-slot,
+.aside-slot {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.chat-slot > :not(router-outlet),
+.aside-slot > :not(router-outlet) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+// The aside panel (peer-profile / group-info / settings) owns its gesture-bar inset itself: the slot
+// spans the full screen edge-to-edge (inset:0 / bottom:0 below) and this bottom padding pushes its
+// scrollable content above the system bar, while the slot's --app-surface background extends under the
+// bar (seamless, no tonal strip). .chat-slot does NOT get this — its input bar owns the inset instead
+// (see .ci-input-bar), and padding here would shrink the host and break the KbdOffsetDirective math.
+.aside-slot {
+  box-sizing: border-box;
+  // The slot spans full-screen edge-to-edge on mobile, so its --app-surface background extends under BOTH
+  // the status bar (top) and the gesture bar (bottom) — seamless, no tonal strip — while each panel's own
+  // header/body/footer (settings, peer-profile, group-info) sit inside the system bars. 0 on desktop/browser;
+  // the desktop/tablet absolute overlay drawer is unaffected when no native inset is injected.
+  padding-top: var(--soms-safe-top, 0px);
+  padding-bottom: var(--soms-safe-bottom, 0px);
+}
+
+// ── expanded: icon rail | resizable list | chat | aside overlay ──
+.mode-expanded {
+  .rail { flex: 0 0 auto; }
+  .list { flex: 0 0 auto; }            /* width driven by [style.width.px] */
+  .resizer {
+    flex: 0 0 4px;
+    cursor: col-resize;
+    position: relative;
+    /* Persistent divider fill: without it the transparent strip renders as --app-bg — which in light
+       theme EQUALS --app-bg-muted (the input-bar fill #f0f2f5) and in dark theme equals the page bg, so
+       the bar was indistinguishable from both. --app-border is the semantic divider token, a shade off
+       the bg in either theme; hover steps to --app-border-strong. */
+    background: var(--app-border);
+    transition: background-color .15s ease;
+    &:hover { background: var(--app-border-strong); }
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: -2px;
+      background: var(--app-border-strong);
+    }
+
+    /* Drag-handle grip: three centered dots over the divider. Decorative only — the resizer element
+       itself is the mousedown hit target (see startResize in the .ts). The ::after is position:absolute,
+       so its height never enters the shell's measured layout height (integer-pixel rule safe). Dot color
+       flows through `color` + currentColor so the hover swap is one token. */
+    &::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 4px;
+      height: 32px;
+      transform: translate(-50%, -50%);
+      color: var(--app-text-muted);
+      /* 4px dots (radius 2) fill the 4px ::after exactly — no overhang into the list/chat panes. Dot
+         centers are 10px apart so the three read as a distinct grip. Light uses --app-text-muted (one
+         step darker than faint) so the dots read against the --app-border bar; the dark override at the
+         foot of this file keeps dark at --app-text-faint. `currentColor 90%` keeps each disc solid to
+         90% of its radius and AA-fades only the last 10%. */
+      background-image:
+        radial-gradient(circle 2px at 50% 6px, currentColor 90%, transparent),
+        radial-gradient(circle 2px at 50% 16px, currentColor 90%, transparent),
+        radial-gradient(circle 2px at 50% 26px, currentColor 90%, transparent);
+      background-repeat: no-repeat;
+      opacity: .6;
+      transition: opacity .15s ease, color .15s ease;
+    }
+    &:hover::after,
+    &:focus-visible::after {
+      color: var(--app-brand);
+      opacity: 1;
+    }
+  }
+  .chat-slot { flex: 1 1 auto; }
+  /* Desktop aside = an OVERLAY drawer floating over the chat from the right (NOT an inline flex column —
+     it no longer squeezes the chat). Pairs with the global .drawer-mask behind it: click the mask to
+     close. The Angular [@overlaySlide] is `static` on desktop (transform:none, visibility:visible inline),
+     which does NOT touch `display`, so display:none here fully hides the slot when no aside route is open. */
+  .aside-slot {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    max-width: 60%;
+    z-index: 25;
+    display: none;
+    overflow: hidden;
+    background: var(--app-surface);
+    box-shadow: -8px 0 28px rgba(0, 0, 0, 0.18);
+    border-left: 1px solid var(--app-border);
+  }
+}
+.mode-expanded.aside-open .aside-slot {
+  display: flex;
+}
+
+// ── medium: conversation list | chat; aside overlays the chat ──
+.mode-medium {
+  .drawer-body {
+    flex: 0 0 clamp(300px, 36vw, 360px);
+    width: clamp(300px, 36vw, 360px);
+    border-right: 1px solid var(--app-border);
+  }
+  .chat-slot {
+    flex: 1 1 auto;
+  }
+  .aside-slot {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(400px, 56vw);
+    z-index: 25;
+    display: none;
+    overflow: hidden;
+    background: var(--app-surface);
+    box-shadow: var(--app-shadow-3);
+    border-left: 1px solid var(--app-border);
+  }
+}
+.mode-medium.aside-open .aside-slot {
+  display: flex;
+}
+
+/* Global scrim behind the medium/expanded aside drawer. Compact uses a full-screen slide-over and
+   therefore renders no mask. */
+.drawer-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  animation: drawer-mask-fade 180ms ease;
+}
+.mode-medium .drawer-mask,
+.mode-expanded .drawer-mask { z-index: 24; }
+@keyframes drawer-mask-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+// ── compact: list(full screen) | chat(full-screen overlay) | aside(overlay) ──
+.mode-compact {
+  .drawer-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
+    transition:
+      transform 200ms cubic-bezier(0.4, 0, 1, 1),
+      opacity 200ms cubic-bezier(0.4, 0, 1, 1);
+    will-change: transform, opacity;
+  }
+  .chat-slot {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: var(--app-surface);
+    /* Full-screen edge-to-edge: the input bar (.ci-input-bar) owns the gesture-bar inset itself, so its
+       background extends seamlessly under the system bar. Clipping this slot to the inset (the old
+       approach) exposed .shell's --app-bg below the bar — a tonal seam in dark theme. The KbdOffsetDirective
+       host (.msg-container) still spans the full screen, so its offset math is unchanged. */
+    /* Hidden/shown by the [@chatSlide] animation, NOT display:none↔flex (display is not animatable):
+       mobile-closed = translate3d(100%,0,0) + visibility:hidden (off-screen right, the list shows through),
+       mobile-open = in place. display stays flex (from the shared rule above) so the routed component lays
+       out while still off-screen and is ready to glide in. */
+  }
+  .aside-slot {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    z-index: 40;
+    background: var(--app-surface);
+    border-left: 0;
+    box-shadow: none;
+    /* Full-screen; the shared .aside-slot padding-bottom carries the gesture-bar inset so the panel's
+       scrollable content clears the bar while its background extends under it. */
+    /* Same transform-driven show/hide as .chat-slot above: [@overlaySlide] slides this overlay in/out on
+       mobile (over the chat at z-index 40); display stays flex so the routed panel lays out off-screen. */
+  }
+}
+.mode-compact.chat-open .drawer-body {
+  transform: translate3d(-12%, 0, 0);
+  opacity: .96;
+  // Enter tracks the foreground chat exactly. On close the base rule's shorter accelerating transition
+  // takes over, matching overlaySlide's 200ms leave instead of letting the list drift after chat is gone.
+  transition-duration: 300ms;
+  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mode-compact .drawer-body { transition-duration: 0ms; }
+}
+
+// Conversation-list column (compact/medium): header + list stack and fill.
+// the nav-drawer is a shell-level overlay rather than the column wrapper.
+.drawer-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  /* Owns the thread list's gesture-bar inset: bottom padding lifts the scrolling list above the system
+     bar, and the list pane is transparent over --app-bg, so the padded strip blends seamlessly (no tonal
+     break). border-box keeps height:100% inclusive of the padding. 0 on desktop/browser. */
+  box-sizing: border-box;
+  padding-bottom: var(--soms-safe-bottom, 0px);
+}
+.drawer-body .header { flex: 0 0 auto; }
+.section-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+// Each section (chat-list-pane / settings / profile-section) fills the section area and owns its scroll.
+.section-content > * { flex: 1 1 auto; min-height: 0; }
+// Dark theme: keep the grip dots at --app-text-faint. Light uses the darker --app-text-muted (set in the
+// .resizer ::after above) so the dots read against the --app-border bar; in dark, faint is already
+// legible on the bar, so no need to darken (matches the auth-brand dark-override pattern).
+:host-context([data-theme="dark"]) {
+  .mode-expanded .resizer::after { color: var(--app-text-faint); }
+}

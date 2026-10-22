@@ -1,0 +1,143 @@
+<div class="auth-shell" appAuthViewport>
+  <app-auth-brand aria-hidden="true"></app-auth-brand>
+  <main class="form-pane">
+    <app-auth-toolbar></app-auth-toolbar>
+    <app-brand-logo class="form-brand" [size]="80" />
+    <div class="qr-card">
+      <h1 class="qr-title">
+        <span class="qr-title-lead">{{ 'auth.qrTitleLead' | transloco }}</span>
+      </h1>
+
+      <div class="qr-stage">
+        <div
+          class="qr-frame"
+          [class.has-progress]="view() === 'pending' || view() === 'scanned'"
+        >
+          <!-- Keep the countdown row mounted in every state. Removing it while loading or showing an
+            error would shorten the frame by 22px and move the QR card vertically. -->
+          <p class="progress-time">
+            @if (view() === 'pending' || view() === 'scanned') {
+              {{ 'auth.qrExpiresIn' | transloco: { time: qrRemainingText() } }}
+            }
+          </p>
+
+          <!-- Keep expiry feedback attached to the QR without covering any modules. -->
+          <div class="progress-slot">
+            @if (view() === 'pending' || view() === 'scanned') {
+              <mat-progress-bar
+                mode="determinate"
+                [value]="qrRemainingPct()"
+                [class.is-warning]="qrRemainingSec() <= QR_WARN_SEC"
+              ></mat-progress-bar>
+            }
+          </div>
+
+          <!-- The 240×240 white square is ALWAYS mounted and owns EVERY state's content: the QR matrix
+            (pending/scanned), a spinner (loading), or the full error UI — icon + message + retry (error). -->
+          <div class="qr-image" [class.is-scanned]="view() === 'scanned'">
+            @switch (view()) {
+              @case ('pending') {
+                <div class="qr-canvas">
+                  <app-qr-code
+                    [value]="qrToken() ?? ''"
+                    [ariaLabel]="'auth.qrTitle' | transloco"
+                  />
+                </div>
+              }
+              @case ('scanned') {
+                <div class="qr-canvas">
+                  <app-qr-code
+                    [value]="qrToken() ?? ''"
+                    [ariaLabel]="'auth.qrTitle' | transloco"
+                  />
+                </div>
+                <span class="qr-scan-badge" aria-hidden="true">
+                  <app-icon
+                    [type]="AppIcon.CHECK"
+                    [style]="{ width: '40px', height: '40px' }"
+                  />
+                </span>
+              }
+              @case ('loading') {
+                <div class="qr-placeholder">
+                  <mat-progress-spinner mode="indeterminate" [diameter]="40" />
+                </div>
+              }
+              @case ('error') {
+                <div class="qr-error" role="alert">
+                  <app-icon
+                    class="qr-error__icon"
+                    [type]="AppIcon.REPORT"
+                    [style]="{ width: '28px', height: '28px' }"
+                  />
+                  <p class="qr-error__text">
+                    {{ 'auth.qrCreateError' | transloco }}
+                  </p>
+                  <button
+                    mat-flat-button
+                    color="primary"
+                    type="button"
+                    class="qr-retry-btn"
+                    (click)="retry()"
+                  >
+                    <app-icon
+                      matButtonIcon
+                      [type]="AppIcon.REFRESH"
+                      [style]="{ width: '18px', height: '18px' }"
+                    />
+                    {{ 'auth.qrRetry' | transloco }}
+                  </button>
+                </div>
+              }
+            }
+          </div>
+        </div>
+
+        <!-- Persistent live region for the two in-flight states whose instruction belongs BELOW the square
+          (loading = "preparing", scanned = "confirm on your phone"). The element is always mounted — empty
+          in pending/error — so its one-line box never collapses and the layout can't shift between states.
+          The error is announced separately by the role=alert block inside the square. -->
+        <p class="qr-state" role="status" aria-live="polite">
+          @switch (view()) {
+            @case ('loading') {
+              {{ 'auth.qrLoading' | transloco }}
+            }
+            @case ('scanned') {
+              {{ 'auth.qrScanned' | transloco }}
+            }
+          }
+        </p>
+      </div>
+
+      <p class="qr-title-path">{{ 'auth.qrTitlePath' | transloco }}</p>
+    </div>
+
+    <!-- Footer row below the card: login-method switchers on the LEFT, server-config link on the RIGHT
+      (Tauri only). The row is ALWAYS mounted with a reserved min-height, so its one line is held even
+      before /config resolves (both switchers read false until loginMode lands) and even on the browser,
+      where there is no server link at all. The switchers therefore fill a pre-reserved line instead of
+      growing the layout when the async config settles — the init-time height jump is gone by construction. -->
+    <div class="auth-footer">
+      <div class="auth-footer__methods">
+        @if (canPassword() || canOtp()) {
+          <app-auth-method-menu
+            [password]="canPassword()"
+            [otp]="canOtp()"
+            (passwordSelected)="jumpToPassword()"
+            (otpSelected)="jumpToOtp()"
+          />
+        }
+      </div>
+      @if (isTauri()) {
+        <button mat-button class="server-link" type="button" (click)="openServerConfig()">
+          <app-icon
+            matButtonIcon
+            [type]="AppIcon.SETTINGS"
+            [style]="{ width: '18px', height: '18px' }"
+          />
+          {{ 'serverConfig.entry' | transloco }}
+        </button>
+      }
+    </div>
+  </main>
+</div>

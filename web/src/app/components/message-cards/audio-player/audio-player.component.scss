@@ -1,0 +1,180 @@
+// Flat voice player — fills its AUDIO cell (100% × the cell's locked integer-px height). Only the WIDTH of
+// the fill animates during playback, never the height, so the kernel's height model is unaffected. Integer
+// px on every height-contributing value (button, track, line-height) per the project's CSS rule.
+
+.ap {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+}
+.ap-btn {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--bubble-accent) 24%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bubble-accent) 14%, var(--bubble-bg));
+  color: var(--bubble-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    transform 0.1s,
+    background 0.16s,
+    color 0.16s;
+  &:hover {
+    background: color-mix(in srgb, var(--bubble-accent) 22%, var(--bubble-bg));
+  }
+  &:focus-visible {
+    outline: 2px solid var(--bubble-accent);
+    outline-offset: 2px;
+  }
+  &:active {
+    transform: scale(0.92);
+  }
+  &:disabled {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--bubble-muted) 18%, var(--bubble-bg));
+    color: var(--bubble-muted);
+    cursor: not-allowed;
+  }
+}
+.ap-btn--playing {
+  border-color: var(--bubble-accent);
+  background: var(--bubble-accent);
+  color: #fff;
+
+  &:hover {
+    background: color-mix(in srgb, var(--bubble-accent) 88%, #000);
+  }
+}
+.ap-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ap-wave {
+  z-index: 2;
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bubble-text) 32%, transparent) 0 2px,
+    transparent 2px 5px
+  );
+  mask: linear-gradient(
+    0deg,
+    transparent 1px,
+    #000 1px 5px,
+    transparent 5px 7px,
+    #000 7px 14px,
+    transparent 14px
+  );
+  cursor: pointer;
+  overflow: hidden;
+  &:disabled {
+    cursor: default;
+  }
+}
+.ap-wave-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--bubble-accent) 0 2px,
+    transparent 2px 5px
+  );
+  transition: width 0.1s linear;
+}
+.ap-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 10px;
+  line-height: 12px;
+  color: var(--bubble-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ap-meta-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.ap-unplayed {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--bubble-accent);
+}
+.ap-rate {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 28px;
+  width: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--bubble-muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ap-transfer {
+  position: absolute;
+  z-index: 4;
+  inset: auto 4px 2px;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bubble-accent) 24%, var(--bubble-bg));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bubble-accent) 14%, transparent);
+  pointer-events: none;
+
+  > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--bubble-accent);
+    transition: width 0.12s linear;
+  }
+}
+.ap-transfer--download {
+  background: color-mix(in srgb, var(--bubble-accent) 30%, var(--bubble-bg));
+}
+.ap-transfer--indeterminate > span {
+  animation: ap-transfer-slide 1.1s ease-in-out infinite;
+}
+@keyframes ap-transfer-slide {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(330%);
+  }
+}
+.ap--failed .ap-wave-fill {
+  background: var(--bubble-muted);
+}
+
+// The <audio> element has no controls — it is the playback engine only. Hidden (still plays + fires events).
+.ap-el {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}

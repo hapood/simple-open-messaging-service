@@ -1,0 +1,278 @@
+<div class="forward-dialog">
+  <app-page-header
+    [title]="
+      (kind() === 'NATIVE_SHARE'
+        ? 'nativeShare.title'
+        : kind() === 'CHAT_CARD'
+          ? 'contactCard.shareTitle'
+          : 'forward.title'
+      ) | transloco
+    "
+    (back)="close()"
+  >
+    @switch (kind()) {
+      @case ('HISTORY_FORWARD') {
+        <app-split-button
+          pageHeaderAction
+          [label]="selectedForwardModeLabel()"
+          [menuAriaLabel]="'forward.chooseMode' | transloco"
+          [options]="forwardModeOptions()"
+          [selectedValue]="selectedForwardMode()"
+          [disabled]="!canConfirm()"
+          (primaryAction)="confirm()"
+          (optionAction)="selectForwardMode($event)"
+        />
+      }
+      @case ('CHAT_CARD') {
+        <button
+          pageHeaderAction
+          type="button"
+          class="forward-dialog__header-action forward-dialog__header-action--primary"
+          [disabled]="!canConfirm()"
+          (click)="confirm()"
+        >
+          {{ 'forward.send' | transloco }}
+        </button>
+      }
+      @case ('DIRECT_FORWARD') {
+        <button
+          pageHeaderAction
+          type="button"
+          class="forward-dialog__header-action forward-dialog__header-action--primary"
+          [disabled]="!canConfirm()"
+          (click)="confirm()"
+        >
+          {{ 'forward.send' | transloco }}
+        </button>
+      }
+      @case ('NATIVE_SHARE') {
+        <button
+          pageHeaderAction
+          type="button"
+          class="forward-dialog__header-action forward-dialog__header-action--primary"
+          [disabled]="!canConfirm()"
+          (click)="confirm()"
+        >
+          {{ 'nativeShare.send' | transloco: { count: selectedCount() } }}
+        </button>
+      }
+    }
+  </app-page-header>
+
+  <div class="forward-dialog__workspace">
+    <section class="forward-dialog__preview-pane">
+      <div class="forward-dialog__preview">
+        @if (kind() === 'NATIVE_SHARE') {
+          @if (shareMode() === 'text') {
+            <div class="forward-dialog__direct-preview native-share-preview">
+              {{ sharedText() }}
+            </div>
+          } @else {
+            @switch (generationStatus()) {
+              @case ('pending') {
+                <div
+                  class="native-share-card native-share-card--skeleton"
+                  [attr.aria-label]="'linkCard.generating' | transloco"
+                >
+                  <span class="native-share-card__icon"></span>
+                  <span class="native-share-card__lines"
+                    ><i></i><i></i><i></i
+                  ></span>
+                </div>
+              }
+              @case ('succeeded') {
+                @if (shareLinkMessage(); as message) {
+                  <div class="forward-dialog__direct-preview">
+                    <app-msg-link-row [data]="message" />
+                  </div>
+                }
+              }
+              @case ('failed') {
+                <div class="native-share-card native-share-card--failed">
+                  <span aria-hidden="true">!</span>
+                  <strong>{{ 'linkCard.generateFailed' | transloco }}</strong>
+                  <p>{{ 'linkCard.generateFailedHint' | transloco }}</p>
+                </div>
+              }
+            }
+          }
+        } @else if (effectiveForwardMode() === 'HISTORY') {
+          <app-forward-message-card
+            [messages]="messages()"
+            [recordKind]="recordKind()"
+            [compact]="true"
+          ></app-forward-message-card>
+        } @else {
+          <div class="forward-dialog__direct-preview-list">
+            @if (directPreviewMessage(); as message) {
+              <div class="forward-dialog__direct-preview">
+                @switch (message.contentType) {
+                  @case ('IMAGE') {
+                    <app-msg-media-row [data]="message" />
+                  }
+                  @case ('VIDEO') {
+                    <app-msg-media-row [data]="message" />
+                  }
+                  @case ('AUDIO') {
+                    <app-msg-media-row [data]="message" />
+                  }
+                  @case ('FILE') {
+                    <app-msg-file-row [data]="message" />
+                  }
+                  @case ('LINK') {
+                    <app-msg-link-row [data]="message" />
+                  }
+                  @case ('CONTACT_CARD') {
+                    <app-msg-contact-card-row [data]="message" />
+                  }
+                  @case ('FORWARD') {
+                    <app-msg-forward-row [data]="message" />
+                  }
+                  @default {
+                    <app-msg-text-row [data]="message" />
+                  }
+                }
+              </div>
+            }
+            @if (remainingDirectMessageCount() > 0) {
+              <div
+                class="forward-dialog__direct-more"
+                [attr.aria-label]="
+                  'forward.remainingDirect'
+                    | transloco: { count: remainingDirectMessageCount() }
+                "
+              >
+                <app-demand-avatar
+                  [type]="UserAvatarType.SELF"
+                  [name]="selfProfile()?.name || selfProfile()?.account || ''"
+                  [account]="selfProfile()?.account"
+                  [domainSource]="{ type: 'namespace', namespaceId: 0 }"
+                />
+                <div class="forward-dialog__direct-more-content">
+                  <span class="forward-dialog__direct-more-name">{{
+                    selfProfile()?.name || selfProfile()?.account
+                  }}</span>
+                  <span class="forward-dialog__direct-more-bubble">
+                    {{
+                      'forward.remainingDirect'
+                        | transloco: { count: remainingDirectMessageCount() }
+                    }}
+                  </span>
+                </div>
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </section>
+
+    <section class="forward-dialog__recipient-pane">
+      <div class="forward-dialog__selected" aria-live="polite">
+        <span class="forward-dialog__selected-label">
+          {{ 'forward.selectedCount' | transloco: { count: selectedCount() } }}
+        </span>
+        <div class="forward-dialog__selected-chips">
+          @for (item of selectedConversations(); track item.threadId) {
+            <button
+              type="button"
+              class="forward-dialog__selected-chip"
+              (click)="removeConversation(item)"
+              [attr.aria-label]="displayName(item)"
+            >
+              <span>{{ displayName(item) }}</span
+              ><span aria-hidden="true">×</span>
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="forward-dialog__directory">
+        <app-thread-search-input
+          [value]="searchText()"
+          [placeholder]="'forward.searchPlaceholder' | transloco"
+          [ariaLabel]="'common.search' | transloco"
+          [clearAriaLabel]="'chat.clearSearch' | transloco"
+          (valueChange)="setSearchText($event)"
+        ></app-thread-search-input>
+
+        @if (recentConversations().length > 0 && !searchText()) {
+          <section class="forward-dialog__recent">
+            <h3>{{ 'forward.recent' | transloco }}</h3>
+            <div class="forward-dialog__recent-list">
+              @for (item of recentConversations(); track item.threadId) {
+                <button
+                  type="button"
+                  class="forward-dialog__recent-item"
+                  [class.forward-dialog__recent-item--selected]="
+                    selectedThreadIds().has(item.threadId)
+                  "
+                  (click)="toggleConversation(item)"
+                >
+                  <span class="forward-dialog__recent-avatar">
+                    <app-demand-avatar
+                      [type]="avatarType(item)"
+                      [name]="displayName(item)"
+                      [account]="avatarAccount(item)"
+                      [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
+                      [profile]="avatarProfile(item)"
+                    />
+                    <span
+                      class="forward-dialog__recent-check"
+                      aria-hidden="true"
+                    >
+                      <app-icon [type]="AppIconType.CHECK"></app-icon>
+                    </span>
+                  </span>
+                  <span>{{ displayName(item) }}</span>
+                </button>
+              }
+            </div>
+          </section>
+        }
+
+        <h3 class="forward-dialog__section-title">
+          {{ 'forward.allChats' | transloco }}
+        </h3>
+
+        <div
+          class="forward-dialog__list"
+          role="listbox"
+          aria-multiselectable="true"
+        >
+          @for (item of filteredConversations(); track item.threadId) {
+            <button
+              type="button"
+              class="forward-dialog__recipient"
+              [class.forward-dialog__recipient--selected]="
+                selectedThreadIds().has(item.threadId)
+              "
+              role="option"
+              [attr.aria-selected]="selectedThreadIds().has(item.threadId)"
+              (click)="toggleConversation(item)"
+            >
+              <span class="forward-dialog__avatar">
+                <app-demand-avatar
+                  [type]="avatarType(item)"
+                  [name]="displayName(item)"
+                  [account]="avatarAccount(item)"
+                  [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
+                  [profile]="avatarProfile(item)"
+                />
+              </span>
+              <span class="forward-dialog__recipient-name">{{
+                displayName(item)
+              }}</span>
+              <span class="forward-dialog__check" aria-hidden="true">
+                <app-icon [type]="AppIconType.CHECK"></app-icon>
+              </span>
+            </button>
+          } @empty {
+            <div class="forward-dialog__empty">
+              {{ 'forward.noResults' | transloco }}
+            </div>
+          }
+        </div>
+      </div>
+    </section>
+  </div>
+</div>

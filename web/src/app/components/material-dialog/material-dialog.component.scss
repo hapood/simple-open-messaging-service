@@ -1,0 +1,36 @@
+.material-modal {
+  position: fixed;
+  // The dialog layer must sit above the whole app shell. The shell's routed overlays (mobile chat-slot /
+  // aside-slot) paint at z-index 30/40, and the A/B ChatPane's absolute layers resolve at the SAME root
+  // stacking context (no ancestor creates one) at z-index 2-3 — so the old z-index:1 was occluded by both,
+  // hiding every popup (new-group, etc.). 1000 is the app's elevated-UI tier (matches chat-editor), staying
+  // below the 1100 lightbox viewers (the documented top-most overlay). Nested popups stack via
+  // [style]="{zIndex:$index}" (0,1,2…) scoped WITHIN this element's own stacking context (position:fixed +
+  // z-index), so they order correctly regardless of this base value.
+  z-index: 1000;
+  // Pin to the fixed-position containing block instead of sizing with 100vw/100vh. Android WebView can
+  // expose a stale `vh` during its first edge-to-edge/system-bar layout pass; a dialog opened in that
+  // window inherited the short height through its `height:100%` wrapper and sometimes stayed short.
+  // Four fixed offsets always follow the actual viewport rectangle and need no viewport-unit recompute.
+  inset: 0;
+  // The backdrop never scrolls; page/viewer bodies and modal cards own their respective scrolling.
+  // Clipping also prevents scale/fade transforms from contributing transient scrollable overflow.
+  overflow: hidden;
+  background-color: rgba(0, 0, 0, 0.25);
+  // The overlay element stays mounted (isShow only toggles a class), so the
+  // backdrop fades in/out with the dialog instead of the old display:none swap
+  // (which can't transition). pointer-events:none lets clicks pass through when
+  // no dialog is open.
+  opacity: 1;
+  transition: opacity 220ms ease;
+}
+.modal-hide {
+  opacity: 0;
+  pointer-events: none;
+}
+
+// A static full-screen surface is removed in the same render pass that hides this backdrop. Letting the
+// otherwise-empty gray layer fade for 220ms after the opaque surface is gone produces a visible flash.
+.modal-hide.instant-hide {
+  transition-duration: 0ms;
+}

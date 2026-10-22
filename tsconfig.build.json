@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The runtime image only executes the compiled JS. `.d.ts` declarations are dead weight here
+    // (no consumer imports the server's types) and source maps expose the full server source inside
+    // the shipped image — so neither is emitted for the production build. Type-checking still uses
+    // the base tsconfig.json in the editor / CI.
+    "declaration": false,
+    "sourceMap": false
+  },
+  "files": ["src/main.ts", "src/common/fastify-request-user.d.ts"]
+}

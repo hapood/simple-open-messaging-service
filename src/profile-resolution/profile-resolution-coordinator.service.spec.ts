@@ -1,0 +1,560 @@
+import { describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { BusinessCode } from '../common/business-code.js';
+import { S2sResponseError } from '../federation/federation-errors.js';
+import { ProfileLookup } from './profile-resolution-demand.js';
+import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
+
+function createSubject(options?: {
+  namespaceDomain?: string;
+  storedProfile?: object | null;
+}) {
+  const database = {
+    db: {
+      query: {
+        identityNamespace: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValue(
+              options?.namespaceDomain === undefined
+                ? { domain: 'publisher.test' }
+                : { domain: options.namespaceDomain },
+            ),
+        },
+      },
+      execute: vi.fn().mockResolvedValue({ rows: [{ allowed: 1 }] }),
+    },
+  };
+  const profiles: {
+    fetchExactAccountProfile: ReturnType<typeof vi.fn>;
+    fetchExactGroupMemberProfile: ReturnType<typeof vi.fn>;
+    materializeExactForeignProfile: ReturnType<typeof vi.fn>;
+    getStoredProfile: ReturnType<typeof vi.fn>;
+  } = {
+    fetchExactAccountProfile: vi.fn(),
+    fetchExactGroupMemberProfile: vi.fn(),
+    materializeExactForeignProfile: vi.fn().mockResolvedValue(undefined),
+    getStoredProfile: vi.fn().mockResolvedValue(options?.storedProfile ?? null),
+  };
+  const sse = {
+    onProfileAvailable: vi.fn(),
+    onProfileUnavailable: vi.fn(),
+  };
+  const subject = new ProfileResolutionCoordinatorService(
+    database as never,
+    profiles as never,
+    sse as never,
+  );
+  return { subject, database, profiles, sse };
+}
+
+const accountDemand = {
+  publisherNamespaceId: 7,
+  lookup: ProfileLookup.ACCOUNT_PROFILE,
+  target: {
+    profileNamespaceId: 12,
+    account: 'alice',
+    rev: 4,
+  },
+} as const;
+
+const wireProfile = {
+  namespaceId: 12,
+  account: 'alice',
+  domain: 'member.test',
+  displayName: 'Alice',
+  bio: 'Biography',
+  avatar: null,
+  profileRev: 4,
+};
+
+describe('ProfileResolutionCoordinatorService', () => {
+  it('preserves disclosed profile failure semantics from S2S responses', () => {
+    const { subject } = createSubject();
+
+    expect(
+      subject['failureReason'](
+        new S2sResponseError(
+          'not disclosed',
+          200,
+          BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
+        ),
+      ),
+    ).toBe('NOT_DISCLOSED');
+    expect(
+      subject['failureReason'](
+        new S2sResponseError('not found', 200, BusinessCode.NOT_FOUND),
+      ),
+    ).toBe('NOT_FOUND');
+  });
+
+  it.each([ProfileLookup.ACCOUNT_PROFILE, ProfileLookup.GROUP_MEMBER_PROFILE])(
+    'short-circuits evidenced %s demands on a durable or memory cache hit',
+    async (lookup) => {
+      const { subject, database, profiles, sse } = createSubject({
+        storedProfile: wireProfile,
+      });
+      const demand =
+        lookup === ProfileLookup.ACCOUNT_PROFILE
+          ? accountDemand
+          : { ...accountDemand, lookup, groupAccount: '!group' };
+      // This requester would not be authorized to start new resolution work.
+      database.db.execute.mockResolvedValue({ rows: [] });
+      const authorize = vi.spyOn(subject as any, 'authorizeDemand');
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(subject.start(999, 123, demand)).resolves.toMatchObject({
+          status: 'READY',
+          profile: { account: 'alice', name: 'Alice', rev: 4 },
+        });
+      }
+      expect(profiles.getStoredProfile).toHaveBeenCalledExactlyOnceWith(
+        7,
+        'alice',
+        12,
+        4,
+      );
+      expect(authorize).not.toHaveBeenCalled();
+      expect(
+        database.db.query.identityNamespace.findFirst,
+      ).not.toHaveBeenCalled();
+      expect(database.db.execute).not.toHaveBeenCalled();
+      expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+      expect(profiles.fetchExactGroupMemberProfile).not.toHaveBeenCalled();
+      expect(subject['pending'].size).toBe(0);
+      expect(subject['queue']).toEqual([]);
+      expect(sse.onProfileAvailable).not.toHaveBeenCalled();
+      expect(sse.onProfileUnavailable).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still authorizes evidenced demands on a cache miss before creating work', async () => {
+    const { subject, database, profiles } = createSubject();
+    database.db.execute.mockResolvedValue({ rows: [] });
+    await expect(subject.start(999, 123, accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    expect(profiles.getStoredProfile).toHaveBeenCalledExactlyOnceWith(
+      7,
+      'alice',
+      12,
+      4,
+    );
+    expect(database.db.execute).toHaveBeenCalledOnce();
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+    expect(subject['pending'].size).toBe(0);
+  });
+
+  it('serves cache-only client demands from durable storage without authorizing or fetching', async () => {
+    const { subject, database, profiles } = createSubject({
+      storedProfile: wireProfile,
+    });
+
+    await expect(subject.startCacheOnly(accountDemand)).resolves.toMatchObject({
+      status: 'READY',
+      profile: { account: 'alice', name: 'Alice', rev: 4 },
+    });
+
+    expect(database.db.execute).not.toHaveBeenCalled();
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+  });
+
+  it('rejects cache-only client demands on a durable miss without remote fetch', async () => {
+    const { subject, database, profiles } = createSubject();
+
+    await expect(subject.startCacheOnly(accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+
+    expect(database.db.execute).not.toHaveBeenCalled();
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+    expect(subject['pending'].size).toBe(0);
+    expect(subject['queue']).toEqual([]);
+  });
+
+  it('does not attach cache-only callers to existing remote resolution work', async () => {
+    const { subject, profiles, sse } = createSubject();
+    const key = { publisherNamespaceId: 7, ...accountDemand.target };
+    const listeners = new Set([123]);
+    subject['pending'].set(JSON.stringify([7, 12, 'alice', 4]), {
+      key,
+      demand: accountDemand,
+      listeners,
+      state: 'ACTIVE',
+    });
+
+    await expect(subject.startCacheOnly(accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    expect(listeners).toEqual(new Set([123]));
+    expect(subject['queue']).toEqual([]);
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+    expect(sse.onProfileAvailable).not.toHaveBeenCalled();
+    expect(sse.onProfileUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('does not publish a fetched profile to the cache before durable materialization', async () => {
+    const { subject, profiles } = createSubject();
+    profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);
+    let release!: () => void;
+    profiles.materializeExactForeignProfile.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const fetched = subject['fetch'](
+      { publisherNamespaceId: 7, ...accountDemand.target },
+      accountDemand,
+    );
+    await vi.waitFor(() =>
+      expect(profiles.materializeExactForeignProfile).toHaveBeenCalled(),
+    );
+    await expect(subject.startCacheOnly(accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    expect(subject['cache'].size).toBe(0);
+    profiles.getStoredProfile.mockResolvedValue(wireProfile);
+    release();
+    await expect(fetched).resolves.toMatchObject({ name: 'Alice' });
+  });
+
+  it('does not retain a transient READY cache entry when materialization fails', async () => {
+    const { subject, profiles } = createSubject();
+    profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);
+    profiles.materializeExactForeignProfile.mockRejectedValue(
+      new Error('snapshot write failed'),
+    );
+    await expect(
+      subject['fetch'](
+        { publisherNamespaceId: 7, ...accountDemand.target },
+        accountDemand,
+      ),
+    ).rejects.toThrow('snapshot write failed');
+    await expect(subject.startCacheOnly(accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    expect(subject['cache'].size).toBe(0);
+  });
+
+  it('uses the namespace publisher domain for ACCOUNT_PROFILE transport', async () => {
+    const { subject, profiles } = createSubject();
+    profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);
+    profiles.getStoredProfile.mockResolvedValue(wireProfile);
+
+    await subject['fetch'](
+      {
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
+        account: 'alice',
+        rev: 4,
+      },
+      accountDemand,
+    );
+
+    expect(profiles.fetchExactAccountProfile).toHaveBeenCalledWith(
+      'alice',
+      4,
+      'publisher.test',
+      12,
+    );
+    expect(profiles.materializeExactForeignProfile).toHaveBeenCalledWith(
+      wireProfile,
+      7,
+    );
+  });
+
+  it('dispatches GROUP_MEMBER_PROFILE through the group publisher namespace', async () => {
+    const { subject, profiles } = createSubject({
+      namespaceDomain: 'group-origin.test',
+    });
+    profiles.fetchExactGroupMemberProfile.mockResolvedValue(wireProfile);
+    profiles.getStoredProfile.mockResolvedValue(wireProfile);
+    const demand = {
+      publisherNamespaceId: 7,
+      lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+      target: accountDemand.target,
+      groupAccount: '!group',
+    } as const;
+
+    await subject['fetch'](
+      {
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
+        account: 'alice',
+        rev: 4,
+      },
+      demand,
+    );
+
+    expect(profiles.fetchExactGroupMemberProfile).toHaveBeenCalledWith(
+      '!group',
+      'alice',
+      4,
+      'group-origin.test',
+      12,
+    );
+  });
+
+  it('authorizes account profiles by exact established pair or visible history', async () => {
+    const { subject, database } = createSubject();
+
+    await subject['authorizeAccountDemand'](3, accountDemand);
+
+    const statement = database.db.execute.mock.calls[0][0] as SQL;
+    const query = new PgDialect().sqlToQuery(statement).sql;
+    expect(query).toContain("pair.kind = 'P2P'");
+    expect(query).toContain('pair.established = true');
+    expect(query).toMatch(
+      /pair\."endpointAAccount" = self\.account[\s\S]+pair\."endpointBAccount" = \$\d+/,
+    );
+    expect(query).toContain('message.seq > COALESCE(thread."clearedSeq", 0)');
+    expect(query).toContain('message.seq <= state."messageEndSeq"');
+    expect(query).toContain('message."publisherNamespaceId"');
+    expect(query).toContain('message."profileNamespaceId"');
+    expect(query).toContain('message."localState" = \'READY\'');
+    expect(query).not.toContain('message."isDeleted"');
+  });
+
+  it('requires exact namespace/revision matches for local disclosure proofs', async () => {
+    const { subject, database } = createSubject();
+
+    await subject['authorizeGroupMemberDemand'](3, {
+      publisherNamespaceId: 7,
+      lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+      target: accountDemand.target,
+      groupAccount: '!team',
+    });
+    let query = new PgDialect().sqlToQuery(
+      database.db.execute.mock.calls.at(-1)![0] as SQL,
+    ).sql;
+    expect(query).toContain("latest.body -> 'namespaceId'");
+    expect(query).toContain("latest.body -> 'profileRev'");
+    expect(query).not.toContain('message."isDeleted"');
+
+    await subject['authorizeAccountDemand'](3, {
+      ...accountDemand,
+      target: { ...accountDemand.target, account: '!team' },
+    });
+    query = new PgDialect().sqlToQuery(
+      database.db.execute.mock.calls.at(-1)![0] as SQL,
+    ).sql;
+    expect(query).toContain("latest.body -> 'namespaceId'");
+    expect(query).toContain("latest.body -> 'profileRev'");
+  });
+
+  it('registers only the invoking session and deduplicates it per exact key', async () => {
+    const { subject } = createSubject();
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+    vi.spyOn(subject as any, 'drain').mockImplementation(() => undefined);
+
+    await subject.start(3, 41, accountDemand);
+    await subject.start(3, 41, accountDemand);
+
+    const pending = subject['pending'].values().next().value!;
+    expect(pending.listeners).toEqual(new Set([41]));
+    expect(pending.demand).toEqual(accountDemand);
+  });
+
+  it('keeps different sessions of one user as independent listeners', async () => {
+    const { subject } = createSubject();
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+    vi.spyOn(subject as any, 'drain').mockImplementation(() => undefined);
+
+    await subject.start(3, 41, accountDemand);
+    await subject.start(3, 42, accountDemand);
+
+    const pending = subject['pending'].values().next().value!;
+    expect(pending.listeners).toEqual(new Set([41, 42]));
+  });
+
+  it('warns and fails new profile work when the pending queue is full', async () => {
+    const { subject } = createSubject();
+    const warn = vi
+      .spyOn(subject['logger'], 'warn')
+      .mockImplementation(() => undefined);
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+    vi.spyOn(subject['pending'], 'size', 'get').mockReturnValue(1000);
+
+    await expect(subject.start(3, 41, accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.PROFILE_RESOLUTION_CAPACITY,
+    });
+    expect(warn).toHaveBeenCalledWith('profile resolution queue is full');
+  });
+
+  it('queues internal prefetch without a session listener or SSE delivery', async () => {
+    const { subject, sse } = createSubject();
+    vi.spyOn(subject as any, 'drain').mockImplementation(() => undefined);
+
+    await subject.resolveDemand(accountDemand);
+
+    const pending = subject['pending'].values().next().value!;
+    expect(pending.listeners).toEqual(new Set());
+    expect(pending.demand).toEqual(accountDemand);
+    expect(sse.onProfileAvailable).not.toHaveBeenCalled();
+    expect(sse.onProfileUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue namespace-zero work', async () => {
+    const { subject } = createSubject();
+    const drain = vi.spyOn(subject as any, 'drain');
+
+    await subject.resolveDemand({
+      ...accountDemand,
+      publisherNamespaceId: 0,
+      target: {
+        ...accountDemand.target,
+        profileNamespaceId: 0,
+      },
+    });
+
+    expect(subject['pending'].size).toBe(0);
+    expect(drain).not.toHaveBeenCalled();
+  });
+
+  it('notifies each exact-key session only after the materialized profile is durable', async () => {
+    const order: string[] = [];
+    let releaseFetch!: (profile: typeof wireProfile) => void;
+    const fetched = new Promise<typeof wireProfile>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const { subject, profiles, sse } = createSubject();
+    profiles.fetchExactAccountProfile.mockReturnValue(fetched);
+    let materialized = false;
+    profiles.materializeExactForeignProfile.mockImplementation(async () => {
+      materialized = true;
+      order.push('materialized');
+    });
+    profiles.getStoredProfile.mockImplementation(async () => {
+      if (!materialized) return null;
+      order.push('read-durable');
+      return wireProfile;
+    });
+    sse.onProfileAvailable.mockImplementation(() => {
+      order.push('sse');
+    });
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+
+    await subject.start(3, 41, accountDemand);
+    await subject.start(3, 42, accountDemand);
+    releaseFetch(wireProfile);
+    await vi.waitFor(() =>
+      expect(sse.onProfileAvailable).toHaveBeenCalledTimes(2),
+    );
+
+    expect(order.indexOf('materialized')).toBeLessThan(order.indexOf('sse'));
+    expect(order.indexOf('read-durable')).toBeLessThan(order.indexOf('sse'));
+    expect(sse.onProfileAvailable.mock.calls).toEqual([
+      [
+        41,
+        {
+          publisherNamespaceId: 7,
+          profileNamespaceId: 12,
+          account: 'alice',
+          rev: 4,
+        },
+      ],
+      [
+        42,
+        {
+          publisherNamespaceId: 7,
+          profileNamespaceId: 12,
+          account: 'alice',
+          rev: 4,
+        },
+      ],
+    ]);
+  });
+
+  it('keeps snapshot-only prefetch in the profile resolution queue only', async () => {
+    const { subject } = createSubject();
+    await subject.resolveDemand(accountDemand);
+
+    expect(subject['pending'].size).toBe(1);
+  });
+
+  it('serves origin-side group member demands from the local member-home snapshot', async () => {
+    const { subject, profiles, sse } = createSubject();
+    const memberHomeProfile = {
+      namespaceId: 0,
+      account: 'alice',
+      displayName: 'Alice',
+      bio: 'Biography',
+      avatar: null,
+      profileRev: 4,
+    };
+    // The demand-key durable slot stays empty (publisher 0 has no mirrored
+    // copy); the member-home snapshot lives at (member NS, subject 0).
+    profiles.getStoredProfile.mockImplementation(
+      async (publisher: number, account: string, ns: number, rev: number) =>
+        publisher === 12 && account === 'alice' && ns === 0 && rev === 4
+          ? memberHomeProfile
+          : null,
+    );
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+    const localMemberDemand = {
+      publisherNamespaceId: 0,
+      lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+      groupAccount: '!group',
+      target: { profileNamespaceId: 12, account: 'alice', rev: 4 },
+    } as const;
+
+    await expect(
+      subject.start(3, 41, localMemberDemand),
+    ).resolves.toMatchObject({ status: 'PENDING' });
+    await vi.waitFor(() =>
+      expect(sse.onProfileAvailable).toHaveBeenCalledTimes(1),
+    );
+    expect(profiles.getStoredProfile).toHaveBeenCalledWith(12, 'alice', 0, 4);
+    expect(profiles.fetchExactGroupMemberProfile).not.toHaveBeenCalled();
+    expect(profiles.materializeExactForeignProfile).not.toHaveBeenCalled();
+    expect(sse.onProfileAvailable).toHaveBeenCalledWith(41, {
+      publisherNamespaceId: 0,
+      profileNamespaceId: 12,
+      account: 'alice',
+      rev: 4,
+    });
+  });
+
+  it('keeps namespace-zero ACCOUNT_PROFILE work unavailable', async () => {
+    const { subject, profiles } = createSubject();
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+
+    await expect(
+      subject.start(3, 41, {
+        ...accountDemand,
+        publisherNamespaceId: 0,
+        target: { ...accountDemand.target, profileNamespaceId: 0 },
+      }),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
+    expect(subject['pending'].size).toBe(0);
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+    expect(profiles.materializeExactForeignProfile).not.toHaveBeenCalled();
+  });
+
+  it('touches the profile LRU after successful durable materialization', async () => {
+    const { subject, profiles } = createSubject();
+    profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);
+    profiles.getStoredProfile.mockResolvedValue(wireProfile);
+
+    await subject['fetch'](
+      {
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
+        account: 'alice',
+        rev: 4,
+      },
+      accountDemand,
+    );
+
+    expect(subject['cache'].get('[7,12,"alice",4]')).toEqual({
+      publisherNamespaceId: 7,
+      profileNamespaceId: 12,
+      account: 'alice',
+      rev: 4,
+      name: 'Alice',
+      bio: 'Biography',
+      avatarBase64: null,
+    });
+  });
+});

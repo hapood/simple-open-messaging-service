@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+            admin-web/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix web
+          npm ci --prefix admin-web
+
+      - name: Install media tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Check circular dependencies
+        run: npm run check:cycles
+
+      - name: Build and test server
+        run: |
+          node scripts/check-version-sync.mjs
+          npm run build
+          npm test
+          npm run federation:conformance
+
+      - name: Build and test web client
+        run: |
+          npm run test:build --prefix web
+          npm run build --prefix web
+          npm test --prefix web
+
+      - name: Build and test administration console
+        run: |
+          npm run build --prefix admin-web
+          npm test --prefix admin-web
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Build SOMS image
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          targets: app
+          set: |
+            app.tags=soms:ci
+            app.output=type=docker
+            runtime-base.cache-from=type=gha,scope=soms-runtime-base
+            runtime-base.cache-to=type=gha,mode=max,scope=soms-runtime-base
+            build-base.cache-from=type=gha,scope=soms-build-base
+            build-base.cache-to=type=gha,mode=max,scope=soms-build-base
+            app.cache-from=type=gha,scope=soms-app
+            app.cache-to=type=gha,mode=max,scope=soms-app
+      - name: Inspect image
+        run: |
+          docker image inspect soms:ci
+          docker run --rm --entrypoint ffprobe soms:ci -version
+          docker run --rm --entrypoint caddy soms:ci version
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: android-actions/setup-android@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Android NDK
+        run: sdkmanager 'ndk;27.1.12297006'
+      - name: Install frontend and Tauri tooling
+        run: |
+          npm ci --prefix web
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build arm64 debug APK
+        run: make -C src-tauri apk-debug ABI=aarch64

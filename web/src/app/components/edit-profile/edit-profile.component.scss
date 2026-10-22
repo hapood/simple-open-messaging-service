@@ -1,0 +1,13 @@
+.edit-profile {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+// The shared editor body fills the fitted dialog height and owns its own scroll.
+.edit-profile app-profile-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

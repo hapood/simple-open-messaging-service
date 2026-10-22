@@ -1,0 +1,66 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      // Nest's app.enableCors() loads this Fastify plugin without a source import.
+      "ignoreDependencies": ["@fastify/cors"],
+      // ffprobe is supplied by the host, outside npm.
+      "ignoreBinaries": ["ffprobe"],
+      "entry": [
+        "src/main.ts!",
+        "scripts/{migrate-db,federation-conformance}.ts!",
+        "scripts/check-version-sync.mjs!",
+        "dev/federation-lab/{lab,reset}.mjs!",
+        "dev/federation-lab/diagnostics/{session,collect,preload,statement-probe}.mjs!",
+        "dev/federation-lab/p2p/run.mjs!",
+        "dev/federation-lab/p2p/audit-run.mjs!",
+        "dev/federation-lab/group-join-latency.mjs!"
+      ],
+      "project": [
+        "src/**/*.ts!",
+        "shared/**/*.ts!",
+        "scripts/**/*.{ts,mjs}!",
+        "dev/federation-lab/**/*.mjs!",
+        "!**/*.spec.{ts,mjs}!",
+        "!test/**!"
+      ]
+    },
+    "web": {
+      // Angular CLI is a development dependency and is omitted by production mode.
+      "ignoreBinaries": ["ng!"],
+      "entry": [
+        "src/main.ts!",
+        "src/playground/main.ts",
+        "src/push/push-worker.ts!"
+      ],
+      "project": [
+        "src/**/*.ts!",
+        "!src/playground/**!",
+        "src/playground/**/*.ts",
+        "!src/app/pages/chatbox-playground/**!",
+        "src/app/pages/chatbox-playground/**/*.ts",
+        "!src/app/services/thread-state.test-helper.ts!",
+        "src/app/services/thread-state.test-helper.ts",
+        "!**/*.spec.ts!",
+        "!src/test-setup.ts!"
+      ]
+    },
+    "admin-web": {
+      // Fonts, Tailwind, and shadcn are consumed by CSS or Vite configuration.
+      "ignoreDependencies": [
+        "@fontsource-variable/geist",
+        "@tailwindcss/vite",
+        "tailwindcss",
+        "tw-animate-css",
+        "shadcn"
+      ],
+      "entry": ["src/main.tsx!"],
+      "project": [
+        "src/**/*.{ts,tsx}!",
+        "!src/test/**!",
+        "src/test/**/*.{ts,tsx}",
+        "!**/*.spec.{ts,tsx}!"
+      ]
+    }
+  }
+}

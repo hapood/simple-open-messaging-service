@@ -1,0 +1,478 @@
+<div class="panel">
+  <app-page-header [title]="'group.title' | transloco" (back)="goBack()">
+    @if (!readOnly()) {
+      <button
+        pageHeaderAction
+        class="share-action"
+        type="button"
+        (click)="shareGroup()"
+        [attr.aria-label]="'profile.shareCardAria' | transloco"
+        [title]="'profile.shareCardAria' | transloco"
+      >
+        <app-icon
+          [type]="AppIconType.SHARE"
+          [style]="{ width: '18px', height: '18px' }"
+        />
+        <span>{{ 'profile.share' | transloco }}</span>
+      </button>
+    }
+  </app-page-header>
+
+  <div class="body">
+    <!-- Identity -->
+    @if (!readOnly()) {
+      <div class="identity">
+        <span class="profile-avatar">
+          @if (group(); as identity) {
+            <app-demand-avatar
+              [type]="UserAvatarType.GROUP"
+              [name]="identity.name"
+              [account]="identity.account"
+              [domainSource]="{
+                type: 'namespace',
+                namespaceId: identity.namespaceId,
+              }"
+              [profile]="groupProfileRef()"
+            />
+          }
+        </span>
+      </div>
+      <mat-card appearance="outlined" class="group-profile-card">
+        <div class="profile-meta">
+          {{ group()?.account }}
+          @if (displayDomain()) {
+            &#64;{{ displayDomain() }}
+          }
+        </div>
+        <button
+          class="group-profile-row"
+          type="button"
+          [disabled]="!isAdmin() || readOnly()"
+          (click)="beginEdit()"
+        >
+          <span class="profile-copy">
+            <strong>{{ group()?.name }}</strong>
+            <span class="profile-description">{{
+              group()?.description || ('group.noDescription' | transloco)
+            }}</span>
+          </span>
+          @if (isAdmin()) {
+            <app-icon
+              class="profile-chevron"
+              [type]="AppIconType.CHEVRON_RIGHT"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          }
+        </button>
+      </mat-card>
+    }
+
+    <!-- Per-user alias: the caller's private label for this group, separate from the real group
+         name above (which only admins can change). -->
+    @if (threadId() !== undefined && !readOnly()) {
+      <app-thread-alias-editor [threadId]="threadId()!" />
+    }
+
+    <mat-card appearance="outlined" class="conversation-actions">
+      @if (canEditAnnouncement() || hasAnnouncement()) {
+        <button
+          type="button"
+          class="action-row"
+          (click)="
+            canEditAnnouncement() ? beginAnnouncementEdit() : openAnnouncement()
+          "
+        >
+          <span class="action-icon" aria-hidden="true">
+            <app-icon
+              [type]="AppIconType.MEGAPHONE"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <span class="action-label">{{
+            'group.announcement' | transloco
+          }}</span>
+          <app-icon
+            class="action-chevron"
+            [type]="AppIconType.CHEVRON_RIGHT"
+            [style]="{ width: '18px', height: '18px' }"
+          />
+        </button>
+        @if (announcementEditing()) {
+          <div class="announcement-editor">
+            <textarea
+              [ngModel]="announcementDraft()"
+              (ngModelChange)="announcementDraft.set($event)"
+              [attr.aria-label]="'group.announcement' | transloco"
+              rows="5"
+            ></textarea>
+            <span>{{ announcementLength() }}/4096</span>
+            <div class="announcement-editor-actions">
+              <button
+                type="button"
+                [disabled]="busy()"
+                (click)="announcementEditing.set(false)"
+              >
+                {{ 'common.cancel' | transloco }}
+              </button>
+              @if (group()?.announcement?.text) {
+                <button
+                  type="button"
+                  [disabled]="busy()"
+                  (click)="confirmAnnouncementClear()"
+                >
+                  {{ 'group.announcementClear' | transloco }}
+                </button>
+              }
+              <button
+                type="button"
+                [disabled]="
+                  busy() ||
+                  announcementLength() < 1 ||
+                  announcementLength() > 4096
+                "
+                (click)="saveAnnouncement()"
+              >
+                {{ 'common.save' | transloco }}
+              </button>
+            </div>
+          </div>
+        }
+      }
+      <button type="button" class="action-row" (click)="openSearch()">
+        <span class="action-icon" aria-hidden="true">
+          <app-icon
+            [type]="AppIconType.SEARCH"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </span>
+        <span class="action-label">{{ 'chat.menuSearch' | transloco }}</span>
+        <app-icon
+          class="action-chevron"
+          [type]="AppIconType.CHEVRON_RIGHT"
+          [style]="{ width: '18px', height: '18px' }"
+        />
+      </button>
+      <div class="action-row">
+        <span class="action-icon" aria-hidden="true">
+          <app-icon
+            [type]="AppIconType.MUTE"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </span>
+        <span class="action-label">{{ 'chat.menuMute' | transloco }}</span>
+        <mat-slide-toggle
+          [checked]="userMsgTrd()?.muted === true"
+          [disabled]="mutedSaving()"
+          [attr.aria-label]="'chat.menuMute' | transloco"
+          (change)="setMuted($event.checked)"
+        />
+      </div>
+      <div class="action-row">
+        <span class="action-icon" aria-hidden="true">
+          <app-icon
+            [type]="AppIconType.PIN"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </span>
+        <span class="action-label">{{ 'chat.menuPin' | transloco }}</span>
+        <mat-slide-toggle
+          [checked]="userMsgTrd()?.pinned === true"
+          [disabled]="pinnedSaving()"
+          [attr.aria-label]="'chat.menuPin' | transloco"
+          (change)="setPinned($event.checked)"
+        />
+      </div>
+    </mat-card>
+
+    <!-- Compact roster preview; the complete searchable roster lives in the role-aware member list. -->
+    @if (loading() && !readOnly()) {
+      <div class="muted center">{{ 'common.loading' | transloco }}</div>
+    } @else if (!readOnly()) {
+      <mat-card appearance="outlined" class="member-overview-card">
+        <button
+          class="member-overview-row"
+          type="button"
+          [disabled]="readOnly()"
+          (click)="openMemberManager()"
+          [attr.aria-label]="
+            'group.allMembers' | transloco: { count: group()?.memberCount ?? 0 }
+          "
+        >
+          <span class="avatar-stack" aria-hidden="true">
+            @for (m of overviewMembers(); track m.identityKey) {
+              <app-demand-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="m.name"
+                [account]="m.account"
+                [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: m.publisherNamespaceId, profileNamespaceId: m.namespaceId }"
+                [profile]="memberProfileRef(m)"
+                [title]="m.name"
+              />
+            }
+            @if (remainingMemberCount() > 0) {
+              <span class="more-avatar">+{{ remainingMemberCount() }}</span>
+            }
+          </span>
+          <span class="member-overview-copy">
+            <strong>
+              {{
+                (isAdmin() ? 'group.manageMembers' : 'group.memberList')
+                  | transloco
+              }}
+            </strong>
+            <span>
+              {{
+                'group.members'
+                  | transloco: { count: group()?.memberCount ?? 0 }
+              }}
+            </span>
+          </span>
+          <app-icon
+            class="member-overview-chevron"
+            [type]="AppIconType.CHEVRON_RIGHT"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </button>
+      </mat-card>
+    }
+
+    @if (isAdmin() && !readOnly()) {
+      <mat-card appearance="outlined" class="invite-settings-card">
+        <button
+          class="invite-friends-row"
+          type="button"
+          (click)="openInvitesAndRequests()"
+        >
+          <span class="invite-icon" aria-hidden="true">
+            <app-icon
+              [type]="AppIconType.GROUP_JOIN_REQUESTS"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <strong>{{ 'group.invitesAndRequests' | transloco }}</strong>
+          @if (hasUnreadJoinRequests()) {
+            <span class="invite-unread-dot" aria-hidden="true"></span>
+          }
+          <app-icon
+            class="invite-chevron"
+            [type]="AppIconType.CHEVRON_RIGHT"
+            [style]="{ width: '20px', height: '20px' }"
+          />
+        </button>
+      </mat-card>
+    }
+
+    <!-- Conversation preference: separate from membership/destructive operations. -->
+    @if (!readOnly()) {
+      <mat-card appearance="outlined" class="permission-card block-card">
+        <span
+          class="block-icon"
+          [class.on]="blockedControl()"
+          aria-hidden="true"
+        >
+          <app-icon
+            [type]="AppIconType.BLOCK"
+            [style]="{ width: '20px', height: '20px' }"
+          ></app-icon>
+        </span>
+        <span class="permission-copy">
+          <strong>{{ 'group.blockGroup' | transloco }}</strong>
+        </span>
+        <mat-slide-toggle
+          class="danger-switch"
+          [checked]="blockedControl()"
+          [class.saving]="blockedSaving()"
+          [attr.aria-busy]="blockedSaving()"
+          [attr.aria-label]="'group.blockGroup' | transloco"
+          (change)="setBlocked($event.checked)"
+        />
+      </mat-card>
+
+      <!-- Material destructive actions are standalone text buttons, not card rows. -->
+      <div class="group-actions">
+        <button
+          mat-button
+          color="warn"
+          class="danger"
+          type="button"
+          [disabled]="busy()"
+          (click)="confirmLeave()"
+        >
+          {{ 'group.leave' | transloco }}
+        </button>
+        @if (isOwner()) {
+          <button
+            mat-button
+            color="warn"
+            class="danger"
+            type="button"
+            [disabled]="busy()"
+            (click)="confirmDissolveAction()"
+          >
+            {{ 'group.dissolve' | transloco }}
+          </button>
+        }
+      </div>
+    }
+    @if (dissolved() && !readOnly()) {
+      <div class="muted center hint">
+        {{ 'group.dissolvedNote' | transloco }}
+      </div>
+    }
+  </div>
+
+  @if (editing()) {
+    <div class="profile-editor">
+      <app-page-header
+        [title]="'group.editInfo' | transloco"
+        (back)="cancelEdit()"
+      >
+        <button
+          pageHeaderAction
+          mat-button
+          color="primary"
+          class="save-profile-btn"
+          type="button"
+          [disabled]="busy() || !nameEdit().trim()"
+          (click)="saveEdit()"
+        >
+          {{ 'common.save' | transloco }}
+        </button>
+      </app-page-header>
+      <div class="profile-editor-body">
+        <label class="avatar-edit">
+          @if (group(); as identity) {
+            <app-snapshot-avatar
+              [type]="UserAvatarType.GROUP"
+              [name]="nameEdit()"
+              [account]="identity.account"
+              [src]="avatarUrl()"
+              [domainSource]="{
+                type: 'namespace',
+                namespaceId: identity.namespaceId,
+              }"
+            />
+          }
+          <span class="avatar-hint">{{
+            'group.changeAvatarHint' | transloco
+          }}</span>
+          <input
+            type="file"
+            accept="image/*"
+            hidden
+            (change)="pickAvatar($any($event.target))"
+          />
+        </label>
+        <mat-form-field appearance="outline">
+          <mat-label>{{ 'group.groupName' | transloco }}</mat-label>
+          <input
+            matInput
+            [ngModel]="nameEdit()"
+            (ngModelChange)="onNameEditInput($event)"
+            autocomplete="off"
+          />
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>{{ 'group.groupDescription' | transloco }}</mat-label>
+          <textarea
+            matInput
+            rows="4"
+            [ngModel]="descEdit()"
+            (ngModelChange)="onDescEditInput($event)"
+          ></textarea>
+          <mat-hint align="end">{{ descEditLength() }}/{{ DESC_MAX }}</mat-hint>
+        </mat-form-field>
+      </div>
+    </div>
+  }
+
+  @if (memberManagerMode()) {
+    <div class="member-manager">
+      <app-page-header
+        [title]="
+          (isAdmin() ? 'group.manageMembers' : 'group.memberList') | transloco
+        "
+        (back)="goBack()"
+      />
+      <div class="manager-body" (scroll)="onRosterScroll($event)">
+        <input
+          class="member-search"
+          [ngModel]="memberQuery()"
+          (ngModelChange)="memberQuery.set($event)"
+          [placeholder]="'group.searchMembers' | transloco"
+        />
+        <div class="section-label">
+          {{
+            'group.allMembers' | transloco: { count: group()?.memberCount ?? 0 }
+          }}
+        </div>
+        @for (m of filteredRoster(); track m.identityKey) {
+          <div class="member">
+            <div class="member-main">
+              <app-demand-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="m.name"
+                [account]="m.account"
+                [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: m.publisherNamespaceId, profileNamespaceId: m.namespaceId }"
+                [profile]="memberProfileRef(m)"
+              />
+              <div class="member-info">
+                <span class="member-name"
+                  >{{ m.name }}
+                  @if (m.account === sessionAccount() && m.namespaceId === 0) {
+                    {{ 'common.you' | transloco }}
+                  }
+                </span>
+                @if (m.role !== 'MEMBER') {
+                  <span
+                    class="role-badge"
+                    [class.owner]="m.role === 'OWNER'"
+                    [class.admin]="m.role === 'ADMIN'"
+                    >{{ roleName(m.role) }}</span
+                  >
+                }
+              </div>
+            </div>
+            @if (canActOn(m)) {
+              <button
+                class="more-btn"
+                type="button"
+                [matMenuTriggerFor]="memberActions"
+                [attr.aria-label]="'group.actionsAria' | transloco"
+              >
+                <app-icon
+                  [type]="AppIconType.MORE"
+                  [style]="{ width: '20px', height: '20px' }"
+                />
+              </button>
+              <mat-menu #memberActions="matMenu">
+                @if (canChangePrivilegedRole(m)) {
+                  <button mat-menu-item (click)="doSetRole(m)">
+                    {{
+                      (m.role === 'ADMIN'
+                        ? 'group.unsetAdmin'
+                        : 'group.setAdmin'
+                      ) | transloco
+                    }}
+                  </button>
+                }
+                <button mat-menu-item (click)="askKick(m)">
+                  {{ 'group.kick' | transloco }}
+                </button>
+                @if (canChangePrivilegedRole(m)) {
+                  <button
+                    mat-menu-item
+                    style="color: var(--app-danger)"
+                    (click)="askTransfer(m)"
+                  >
+                    {{ 'group.transferOwner' | transloco }}
+                  </button>
+                }
+              </mat-menu>
+            }
+          </div>
+        }
+      </div>
+    </div>
+  }
+</div>

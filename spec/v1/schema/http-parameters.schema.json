@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:http-parameters",
+  "title": "Federation v1 normalized HTTP path/query parameter objects",
+  "$defs": {
+    "accountProfileParameters": {
+      "type": "object",
+      "required": ["account", "publicKey", "challenge"],
+      "properties": {
+        "account": {
+          "$ref": "urn:somfp:v1:common#/$defs/account"
+        },
+        "publicKey": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+        },
+        "challenge": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64SealedChallenge"
+        }
+      },
+      "additionalProperties": false
+    },
+    "accountEvidenceProfileParameters": {
+      "type": "object",
+      "required": ["account", "namespaceId", "profileRev"],
+      "properties": {
+        "account": {
+          "$ref": "urn:somfp:v1:common#/$defs/account"
+        },
+        "namespaceId": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        },
+        "profileRev": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,15}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "feedQuery": {
+      "type": "object",
+      "dependentRequired": {
+        "take": ["after"],
+        "through": ["after"]
+      },
+      "properties": {
+        "after": {
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        },
+        "take": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,15}$"
+        },
+        "through": {
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "threadDataQuery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["account", "peerAccount"],
+          "dependentSchemas": {
+            "take": {
+              "anyOf": [
+                {
+                  "required": ["after"]
+                },
+                {
+                  "required": ["before"]
+                }
+              ]
+            },
+            "through": {
+              "anyOf": [
+                {
+                  "required": ["after"]
+                },
+                {
+                  "required": ["before"]
+                }
+              ]
+            }
+          },
+          "not": {
+            "required": ["after", "before"]
+          },
+          "properties": {
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+            },
+            "peerAccount": {
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+            },
+            "after": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "before": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "through": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "take": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,15}$"
+            },
+            "includeSelf": {
+              "enum": ["true", "false"]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["account"],
+          "dependentSchemas": {
+            "take": {
+              "anyOf": [
+                {
+                  "required": ["after"]
+                },
+                {
+                  "required": ["before"]
+                }
+              ]
+            },
+            "through": {
+              "anyOf": [
+                {
+                  "required": ["after"]
+                },
+                {
+                  "required": ["before"]
+                }
+              ]
+            }
+          },
+          "not": {
+            "required": ["after", "before"]
+          },
+          "properties": {
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+            },
+            "after": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "before": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "through": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "take": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,15}$"
+            },
+            "includeSelf": {
+              "enum": ["true", "false"]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "messageTombstoneQuery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["account", "peerAccount"],
+          "dependentRequired": {
+            "take": ["after"],
+            "through": ["after"],
+            "maxMessageSeq": ["after", "through"]
+          },
+          "properties": {
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+            },
+            "peerAccount": {
+              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+            },
+            "after": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "through": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "maxMessageSeq": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "take": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,15}$"
+            },
+            "includeSelf": {
+              "enum": ["true", "false"]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["account"],
+          "dependentRequired": {
+            "take": ["after"],
+            "through": ["after"],
+            "maxMessageSeq": ["after", "through"]
+          },
+          "properties": {
+            "account": {
+              "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+            },
+            "after": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "through": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "maxMessageSeq": {
+              "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+            },
+            "take": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,15}$"
+            },
+            "includeSelf": {
+              "enum": ["true", "false"]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "groupMetaQuery": {
+      "type": "object",
+      "required": ["account", "mode"],
+      "dependentRequired": {
+        "take": ["after"],
+        "through": ["after"]
+      },
+      "properties": {
+        "account": {
+          "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+        },
+        "mode": {
+          "enum": ["full", "delta"]
+        },
+        "after": {
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        },
+        "take": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,15}$"
+        },
+        "through": {
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "groupMemberProfileParameters": {
+      "type": "object",
+      "required": [
+        "groupAccount",
+        "memberAccount",
+        "namespaceId",
+        "profileRev"
+      ],
+      "properties": {
+        "groupAccount": {
+          "$ref": "urn:somfp:v1:common#/$defs/groupAccount"
+        },
+        "memberAccount": {
+          "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+        },
+        "namespaceId": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        },
+        "profileRev": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,15}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mediaParameters": {
+      "type": "object",
+      "required": ["digest", "fromAccount", "fromDomain", "toAccount", "seq"],
+      "properties": {
+        "digest": {
+          "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
+        },
+        "fromAccount": {
+          "$ref": "urn:somfp:v1:common#/$defs/userAccount"
+        },
+        "fromDomain": {
+          "$ref": "urn:somfp:v1:common#/$defs/domain"
+        },
+        "toAccount": {
+          "$ref": "urn:somfp:v1:common#/$defs/account"
+        },
+        "seq": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,15}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "forwardBundleParameters": {
+      "type": "object",
+      "required": ["bundleId"],
+      "properties": {
+        "bundleId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "profileNamespaceParameters": {
+      "type": "object",
+      "required": ["nsid"],
+      "properties": {
+        "nsid": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

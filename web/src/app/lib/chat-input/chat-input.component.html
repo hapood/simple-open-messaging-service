@@ -1,0 +1,333 @@
+<!-- Transparent mask: a click on the empty area closes the emoji popup but does NOT steal focus (same
+     appPreventFocusSteal directive on the backdrop). [hidden] removes it from layout + pointer events when the
+     panel is closed. SIBLING of the form (not inside it): `.ci-input-bar` carries the keyboard-lift
+     `transform: translateY(-K)`, and a transformed ancestor becomes the containing block for this
+     `position: fixed` mask — breaking its full-screen `inset: 0`. Keeping the backdrop outside the form
+     leaves it anchored to the real viewport. -->
+<div
+  class="ci-backdrop"
+  appPreventFocusSteal
+  [hidden]="!emojiOpen()"
+  (click)="closeEmoji()"
+></div>
+<form
+  class="ci-input-bar"
+  [class.ci-input-bar--compact]="compact()"
+  #inputBar
+  (submit)="$event.preventDefault()"
+  (pointerdown)="onComposerInteraction($event)"
+  (keydown.escape)="closeEmoji()"
+>
+  <!-- Emoji panel — WhatsApp/Telegram-style category tabs + grid. It floats above the bar on browser/PC;
+       the Android native shell reflows it below as an IME replacement. Recents is first when non-empty. -->
+  <!-- ALWAYS MOUNTED (not behind @if): the panel and every category grid render ONCE at component init, so
+       opening the panel and switching tabs are both pure CSS toggles with zero DOM creation/destruction. The
+       panel hides via opacity+pointer-events (NOT display:none) so the grids stay painted and their glyphs stay
+       rasterized — see chat-input.component.scss. [aria-hidden] keeps the closed panel out of the a11y tree
+       (opacity alone would leave it reachable to AT). appPreventFocusSteal on the panel covers every button via
+       mousedown bubbling (one directive, not ~440). -->
+  <div
+    class="ci-emoji-panel"
+    appPreventFocusSteal
+    [class.ci-emoji-panel--open]="emojiOpen()"
+    [attr.aria-hidden]="!emojiOpen()"
+    (click)="$event.stopPropagation()"
+    role="dialog"
+    [attr.aria-label]="'chat.emojiAria' | transloco"
+  >
+    <div class="ci-emoji-tabs" role="tablist">
+      @for (cat of emojiTabs(); track cat.id) {
+        <button
+          type="button"
+          class="ci-emoji-tab"
+          role="tab"
+          [id]="'emoji-tab-' + cat.id"
+          [attr.aria-controls]="'emoji-panel-' + cat.id"
+          [attr.aria-selected]="activeCategory() === cat.id"
+          [class.ci-emoji-tab--active]="activeCategory() === cat.id"
+          (click)="activeCategory.set(cat.id)"
+          [attr.aria-label]="'chat.emojiTab.' + cat.id | transloco"
+        >
+          {{ cat.icon }}
+        </button>
+      }
+    </div>
+    <!-- All category grids are always present; only the active one is opacity:1 + on top. Switching tabs toggles
+         one class — no nodes re-created, no relayout, no glyph re-raster. One delegated (click) inserts via
+         data-emoji. -->
+    <div class="ci-emoji-grids" (click)="onGridClick($event)">
+      @for (tab of emojiTabs(); track tab.id) {
+        <div
+          class="ci-emoji-grid"
+          role="tabpanel"
+          [id]="'emoji-panel-' + tab.id"
+          [attr.aria-labelledby]="'emoji-tab-' + tab.id"
+          [attr.aria-hidden]="activeCategory() !== tab.id"
+          [attr.inert]="activeCategory() === tab.id ? null : ''"
+          [class.ci-emoji-grid--active]="activeCategory() === tab.id"
+        >
+          @for (e of tab.icons; track e) {
+            <button type="button" class="ci-emoji" [attr.data-emoji]="e">
+              {{ e }}
+            </button>
+          }
+        </div>
+      }
+    </div>
+  </div>
+  @if (recordError()) {
+    <div class="ci-record-error" role="alert">
+      {{ recordError() | transloco }}
+    </div>
+  }
+  <div class="ci-controls">
+    <div
+      class="ci-action-capsule"
+      [class.ci-action-capsule--linked]="!!detectedLink()"
+    >
+      <button
+        type="button"
+        class="ci-link-action"
+        appPreventFocusSteal
+        [class.ci-link-action--visible]="!!detectedLink()"
+        [class.ci-link-action--pending]="linkState() === 'pending'"
+        [class.ci-link-action--ready]="linkState() === 'succeeded'"
+        [class.ci-link-action--failed]="linkState() === 'failed'"
+        (click)="onLinkClick()"
+        [disabled]="!detectedLink()"
+        [attr.tabindex]="detectedLink() ? 0 : -1"
+        [attr.aria-hidden]="!detectedLink()"
+        [attr.aria-label]="'chat.linkCardAction' | transloco"
+      >
+        <span class="ci-link-action-core" aria-hidden="true">
+          @if (linkFavicon(); as favicon) {
+            <img [src]="favicon" alt="" />
+          } @else {
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+              />
+              <path
+                d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+              />
+            </svg>
+          }
+        </span>
+      </button>
+      <button
+        type="button"
+        class="ci-attach"
+        appPreventFocusSteal
+        (click)="toggleAttach()"
+        [class.ci-attach--active]="attachOpen()"
+        aria-haspopup="menu"
+        [attr.aria-expanded]="attachOpen()"
+        [attr.aria-label]="'chat.attachAria' | transloco"
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+          />
+        </svg>
+      </button>
+    </div>
+    <div
+      class="ci-attach-drawer-shell"
+      [class.ci-attach-drawer-shell--open]="attachOpen()"
+      [attr.aria-hidden]="!attachOpen()"
+      (click)="onAttachDrawerClick($event)"
+    >
+      <div
+        class="ci-attach-drawer"
+        role="menu"
+        [attr.aria-label]="'chat.attachAria' | transloco"
+      >
+        @for (entry of attachEntries; track entry.key) {
+          <button
+            type="button"
+            class="ci-attach-option"
+            appPreventFocusSteal
+            role="menuitem"
+            [attr.tabindex]="attachOpen() ? 0 : -1"
+            (click)="onAttachSelect(entry.key)"
+          >
+            <span class="ci-attach-option-icon" aria-hidden="true">
+              <app-icon
+                [type]="entry.icon"
+                [style]="{ width: '22px', height: '22px' }"
+              />
+            </span>
+            <span class="ci-attach-option-label">{{
+              entry.labelKey | transloco
+            }}</span>
+          </button>
+        }
+      </div>
+    </div>
+    <div
+      class="ci-record-shell"
+      [class.ci-record-shell--open]="recording()"
+      [class.ci-record-shell--cancelled]="recordCancelled()"
+      role="status"
+      [attr.aria-hidden]="!recording()"
+      [attr.aria-label]="
+        recordCancelled()
+          ? ('chat.recordReleaseCancel' | transloco)
+          : ('chat.recordingAria' | transloco: { time: recordTimeLabel() })
+      "
+    >
+      <span class="ci-record-dot"></span>
+      <span class="ci-record-track">
+        @if (recordCancelled()) {
+          <span class="ci-record-release-copy">
+            {{ 'chat.recordReleaseCancel' | transloco }}
+          </span>
+        } @else {
+          <span class="ci-record-time">{{ recordTimeLabel() }}</span>
+          <span class="ci-record-wave" aria-hidden="true">
+            @for (level of recordWave(); track $index) {
+              <span
+                class="ci-record-wave-bar"
+                [style.--ci-wave-level]="level"
+              ></span>
+            }
+          </span>
+        }
+      </span>
+    </div>
+    <div
+      #recordCancelTarget
+      class="ci-record-cancel-target"
+      [class.ci-record-cancel-target--open]="recording()"
+      [class.ci-record-cancel-target--active]="recordCancelled()"
+      [attr.aria-hidden]="!recording()"
+    >
+      <span class="ci-record-cancel-icon" aria-hidden="true">
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M3 6h18" />
+          <path d="M8 6V4h8v2" />
+          <path d="M19 6l-1 14H6L5 6" />
+          <path d="M10 11v5M14 11v5" />
+        </svg>
+      </span>
+      <span>{{ 'chat.recordCancel' | transloco }}</span>
+    </div>
+    <div class="ci-input-wrap">
+      <!-- Host-owned context occupies the capsule's first row but stays outside the editor document, so
+           Backspace edits only the draft and the context's close control is its sole removal path. -->
+      <ng-content select="[composer-prefix]"></ng-content>
+      <app-chat-editor
+        class="ci-input"
+        [memberSearch]="memberSearch()"
+        [mentionsEnabled]="mentionsEnabled()"
+        [placeholder]="placeholder()"
+        (attachmentPaste)="onAttachmentPaste($event)"
+        (html)="onHtml($event)"
+        (linkMarkers)="onLinkMarkers($event)"
+        (send)="onEditorSend()"
+      ></app-chat-editor>
+      <button
+        type="button"
+        class="ci-input-ico"
+        appPreventFocusSteal
+        [class.ci-input-ico--active]="emojiOpen()"
+        (click)="toggleEmoji()"
+        [attr.aria-expanded]="emojiOpen()"
+        [attr.aria-label]="'chat.emojiAria' | transloco"
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="10" />
+          <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+          <line x1="9" y1="9" x2="9.01" y2="9" />
+          <line x1="15" y1="9" x2="15.01" y2="9" />
+        </svg>
+      </button>
+    </div>
+    <!-- Empty draft shows the blue mic; a text draft shows send. Holding the mic enters the red recording state. -->
+    <button
+      type="button"
+      class="ci-send"
+      appPreventFocusSteal
+      [class.ci-send--has-draft]="!!draftHtml()"
+      [class.ci-send-recording]="recording()"
+      [class.ci-send-cancelled]="recording() && recordCancelled()"
+      (click)="onSendClick()"
+      (pointerdown)="onMicPointerDown($event)"
+      (pointermove)="onMicPointerMove($event)"
+      (pointerup)="onMicPointerUp($event)"
+      (pointercancel)="onMicPointerCancel()"
+      [disabled]="sending()"
+      [attr.aria-label]="
+        draftHtml()
+          ? ('chat.sendAria' | transloco)
+          : recording()
+            ? ('chat.recordingStateAria' | transloco)
+            : ('chat.recordVoiceAria' | transloco)
+      "
+    >
+      @if (draftHtml()) {
+        <app-icon
+          class="ci-send-glyph"
+          [type]="AppIconType.SEND"
+          [style]="{ width: '22px', height: '22px' }"
+        />
+      } @else {
+        <app-icon
+          [type]="AppIconType.MIC"
+          [style]="{ width: '22px', height: '22px' }"
+        />
+      }
+    </button>
+  </div>
+  <input
+    #attachInput
+    type="file"
+    accept="image/*"
+    multiple
+    hidden
+    (change)="onAttachChange($event)"
+  />
+  <input
+    #fileInput
+    type="file"
+    multiple
+    hidden
+    (change)="onFileChange($event)"
+  />
+</form>

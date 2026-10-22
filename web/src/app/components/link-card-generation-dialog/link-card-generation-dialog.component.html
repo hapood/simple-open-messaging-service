@@ -1,0 +1,87 @@
+<div class="link-generation-dialog">
+  <main class="link-generation-dialog__body">
+    @switch (displayStatus()) {
+      @case ('pending') {
+        <div
+          class="link-generation-card"
+          [attr.aria-label]="'linkCard.generating' | transloco"
+        >
+          <app-link-card-content [loading]="true" />
+          <div
+            class="link-generation-card__meta link-generation-card__meta--loading"
+          ></div>
+        </div>
+      }
+      @case ('succeeded') {
+        @if (content(); as card) {
+          <article class="link-generation-card">
+            <app-link-card-content [content]="card" />
+            <footer class="link-generation-card__meta">
+              @if (faviconSrc()) {
+                <img [src]="faviconSrc()" alt="" />
+              } @else {
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+                  />
+                  <path
+                    d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+                  />
+                </svg>
+              }
+              <span>{{ source() }}</span>
+            </footer>
+          </article>
+        }
+      }
+      @case ('failed') {
+        <div class="link-generation-failure" role="alert">
+          <span class="link-generation-failure__icon" aria-hidden="true"
+            >!</span
+          >
+          <strong>{{ 'linkCard.generateFailed' | transloco }}</strong>
+          <p>{{ 'linkCard.generateFailedHint' | transloco }}</p>
+        </div>
+      }
+    }
+  </main>
+
+  <footer class="link-generation-dialog__actions">
+    <button
+      type="button"
+      class="link-generation-dialog__cancel"
+      (click)="cancel()"
+    >
+      {{ 'common.cancel' | transloco }}
+    </button>
+    <div class="link-generation-dialog__primary-actions">
+      @if (status() === 'failed') {
+        <button
+          type="button"
+          class="link-generation-dialog__retry"
+          (click)="retry()"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-2.34 5.66" />
+            <path d="M20 4v7h-7" />
+          </svg>
+          {{ 'linkCard.retry' | transloco }}
+        </button>
+      }
+      @if (canConfirm()) {
+        <button
+          type="button"
+          class="link-generation-dialog__send"
+          (click)="confirm()"
+        >
+          {{
+            (status() === 'failed' && !content()
+              ? 'linkCard.sendText'
+              : 'linkCard.send'
+            ) | transloco
+          }}
+        </button>
+      }
+    </div>
+  </footer>
+</div>

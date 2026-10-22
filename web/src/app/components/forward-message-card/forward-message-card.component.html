@@ -1,0 +1,29 @@
+<section
+  class="forward-card"
+  [class.forward-card--compact]="compact()"
+  [attr.aria-label]="'forward.previewAria' | transloco"
+>
+  <h3 class="forward-card__title">
+    {{
+      (recordKind() === 'group'
+        ? 'forward.groupChatHistory'
+        : 'forward.chatHistory'
+      ) | transloco
+    }}
+  </h3>
+  @for (message of shownMessages(); track message.id) {
+    <div class="forward-card__message">
+      <span class="forward-card__name">{{ message.name }}：</span>
+      <span class="forward-card__summary">{{ message.summary }}</span>
+    </div>
+  }
+  @if (remainingCount() > 0) {
+    <div class="forward-card__more" aria-hidden="true">…</div>
+  }
+  <footer class="forward-card__meta">
+    <span>{{ 'forward.chatHistory' | transloco }}</span>
+    <span>
+      {{ 'forward.recordCount' | transloco: { count: messages().length } }}
+    </span>
+  </footer>
+</section>

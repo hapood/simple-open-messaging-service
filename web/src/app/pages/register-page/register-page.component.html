@@ -1,0 +1,14 @@
+<div class="auth-shell">
+  <app-auth-brand aria-hidden="true"></app-auth-brand>
+  <main class="form-pane">
+    <app-auth-toolbar></app-auth-toolbar>
+    <app-brand-logo class="form-brand" [size]="80" />
+    <app-register (onSuccess)="onSuccess($event)"></app-register>
+    @if (isTauri()) {
+      <button mat-button class="server-link" type="button" (click)="openServerConfig()">
+        <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+        {{ 'serverConfig.entry' | transloco }}
+      </button>
+    }
+  </main>
+</div>

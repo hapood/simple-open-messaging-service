@@ -1,0 +1,224 @@
+@mixin styless-button {
+  border: none;
+  color: unset;
+  background-color: unset;
+  padding: unset
+}
+
+// Shared unread-attention dot used by compact navigation surfaces. Callers own positioning/layout;
+// this mixin keeps the painted size, surface cutout, and semantic color identical.
+@mixin unread-attention-dot {
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--app-surface);
+  border-radius: 50%;
+  background: var(--app-danger);
+  box-sizing: content-box;
+}
+
+// Shared treatment for editable avatars: a compact translucent caption anchored
+// to the bottom of the image. The host controls its own dimensions and positioning.
+@mixin avatar-edit-hint($height: 24px, $vertical-padding: 2px) {
+  cursor: pointer;
+
+  .avatar-hint {
+    position: absolute;
+    inset: auto 0 0;
+    height: $height;
+    box-sizing: border-box;
+    padding: $vertical-padding 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 12px;
+    line-height: 20px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.48);
+  }
+
+  &:hover .avatar-hint {
+    background: rgba(0, 0, 0, 0.62);
+  }
+}
+
+// Effective keyboard lift, shared by the production message container (.msg-container in
+// friend-message.component.scss). The standalone playground mounts that production thread directly.
+// Both derive the SAME value, so the formula + rationale live once here and the two include sites can't drift.
+//
+// Effective lift = raw --kbd-lift (set on the host by KbdOffsetDirective from the IME inset) MINUS the
+// --soms-safe-bottom the input bar's own bottom padding already covers. That padding clears the gesture /
+// nav bar while the keyboard is CLOSED; when the keyboard opens it COVERS that system bar, so the
+// safe-bottom clearance becomes redundant — the bar only needs to lift by (kbd-lift − safe-bottom) for its
+// content to clear the keyboard (its own padding supplies the rest). Without the subtraction the
+// closed-keyboard safe-bottom padding would read as an extra gap between editor and keyboard. Clamped at 0
+// (closed → no lift). Resolves to 0 on desktop/browser (no --soms-safe-bottom injected there), so this is
+// an Android-only adjustment. Consumed by the input-bar / scroller transform (translateY(-1 * var)).
+@mixin kbd-lift-effective {
+  --kbd-lift-effective: max(0px, var(--kbd-lift, 0px) - var(--soms-safe-bottom, 0px));
+}
+
+// Neutral Material control treatment for authentication and server setup. Material emits several
+// component-level color tokens in addition to --mat-sys-primary, so bind the visible form states here
+// as well. Error tokens are intentionally untouched and remain semantic red.
+@mixin neutral-form-controls {
+  --mat-form-field-filled-caret-color: var(--app-brand);
+  --mat-form-field-filled-focus-active-indicator-color: var(--app-brand);
+  --mat-form-field-filled-focus-label-text-color: var(--app-brand);
+  --mat-form-field-focus-select-arrow-color: var(--app-brand);
+  --mat-form-field-outlined-caret-color: var(--app-brand);
+  --mat-form-field-outlined-focus-label-text-color: var(--app-brand);
+  --mat-form-field-outlined-focus-outline-color: var(--app-brand);
+  --mat-checkbox-selected-icon-color: var(--app-brand);
+  --mat-checkbox-selected-focus-icon-color: var(--app-brand);
+  --mat-checkbox-selected-hover-icon-color: var(--app-brand-hover);
+  --mat-checkbox-selected-pressed-icon-color: var(--app-brand-pressed);
+  --mat-checkbox-selected-focus-state-layer-color: var(--app-brand);
+  --mat-checkbox-selected-hover-state-layer-color: var(--app-brand);
+  --mat-checkbox-selected-pressed-state-layer-color: var(--app-brand);
+  --mat-progress-bar-active-indicator-color: var(--app-brand);
+  --mat-progress-bar-track-color: var(--app-brand-soft);
+}
+
+// One compact brand lockup for every narrow authentication/setup surface. The mark, wordmark and gap
+// stay identical across password, OTP, QR, registration and server setup instead of each page selecting
+// its own logo size. Desktop keeps the dedicated left brand panel, so this lockup is hidden there.
+@mixin auth-compact-brand {
+  .form-brand {
+    display: none;
+    margin-bottom: 20px;
+    --bl-word: 27px;
+  }
+
+  @media (max-width: 899px) {
+    .form-brand {
+      display: block;
+    }
+  }
+}
+
+// Shared auth split-screen shell. Include inside the `.auth-shell` selector.
+// Left column = <app-auth-brand> (decorative, hides itself below the breakpoint),
+// right column = `.form-pane` that centers the form card. Below 900px the grid
+// collapses to a single column so the card centers full-screen on mobile.
+@mixin auth-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  height: calc(100vh - var(--auth-keyboard-inset, 0px));
+  height: calc(100dvh - var(--auth-keyboard-inset, 0px));
+  min-height: 0;
+  overflow: auto;
+  // border-box + padding-top so the grid's 100dvh height INCLUDES the status-bar safe-area inset:
+  // the auth toolbar (absolute top:16px on .form-pane) and the form card then sit BELOW the status bar
+  // instead of under it. Android WebView is edge-to-edge and env(safe-area-inset-top) is 0 there, so
+  // --soms-safe-top is injected by the native shell (see _tokens.scss).
+  box-sizing: border-box;
+  padding-top: var(--soms-safe-top, 0px);
+  transition: height 160ms ease-out;
+
+  .form-pane {
+    @include neutral-form-controls;
+    // Anchor for <app-auth-toolbar>'s absolute top-right placement.
+    position: relative;
+    display: flex;
+    flex-direction: column; // stack the form card + the Tauri-only "server settings" link vertically
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box; // padding stays inside the grid-stretched size — no explicit height is set
+    padding: 32px 24px;
+    background:
+      radial-gradient(circle at 88% 10%, color-mix(in srgb, var(--app-brand) 7%, transparent), transparent 30%),
+      radial-gradient(circle at 12% 90%, color-mix(in srgb, var(--app-text-muted) 5%, transparent), transparent 32%),
+      var(--app-bg);
+  }
+
+  // Android shell only: native WindowInsets gives us authoritative IME geometry. Keep the unchanged form
+  // centered in the visible region. `safe center` falls back to the start edge when the full-size content
+  // is taller than that region, leaving it scroll-reachable without hiding or resizing any page chrome.
+  &.auth-native-keyboard-open .form-pane {
+    justify-content: safe center;
+  }
+
+  @media (max-width: 899px) {
+    grid-template-columns: 1fr;
+    // .form-pane needs no min-height: the grid stretches the single row to fill the auth-shell's 100dvh
+    // content area (verified live). The old `min-height: 100dvh` sized the content-box and, with the
+    // 32px padding, gave 1088px → 64px overflow on a 1024px viewport. Stretch + border-box adapts to
+    // any viewport / status-bar height without writing a fixed height.
+  }
+}
+
+// Shared auth form-card surface (password / OTP / QR). Declarations only — include inside the page's own
+// card selector so each page keeps its class name (.login-card / .qr-card) and can extend it (e.g. .qr-card
+// adds align-items: center to center its content). max-width matches .auth-footer so the two align.
+@mixin auth-card {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 40px 32px 32px;
+  background: var(--app-surface);
+  border: 1px solid color-mix(in srgb, var(--app-brand) 10%, var(--app-border));
+  border-radius: var(--app-radius-lg);
+  box-shadow: 0 20px 56px rgba(20, 22, 24, 0.10), 0 2px 8px rgba(20, 22, 24, 0.04);
+
+  @media (max-width: 479px) {
+    padding: 32px 24px 24px;
+  }
+}
+
+// Borderless brand-colored text link — the shared link / CTA treatment across auth pages (method
+// switchers, register CTA). Declarations only so callers can extend (e.g. an inline link that needs a
+// leading margin). Integer-px line-height per the project CSS rule so the one-line box is a whole pixel
+// for any locale / wrap count.
+@mixin auth-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--app-brand);
+  cursor: pointer;
+}
+
+// Shared auth footer row, mounted BELOW the form card: login-method switchers on the LEFT (as .link-btn
+// text links), Tauri server-config link on the RIGHT. Emitted as a self-contained block of rules —
+// @include at the TOP LEVEL of a page's component SCSS so Angular's emulated encapsulation scopes the
+// rules to that component. Every auth page therefore gets the SAME switch-button position: outside the
+// card, bottom-left. The row is always mounted with a reserved min-height so the async switcher
+// appearance (switchers read false until /config lands) and the browser build (no server link) fill a
+// pre-reserved line instead of growing the layout — no init-time height jump.
+@mixin auth-footer {
+  .auth-footer {
+    width: 100%;
+    max-width: 380px;
+    margin-top: 12px;
+    min-height: 24px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .auth-footer__methods {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .link-btn {
+    @include auth-link;
+  }
+
+  .link-btn:hover {
+    text-decoration: underline;
+  }
+
+  // <app-icon matButtonIcon> seats the gear in the button's leading-icon projection slot; mirror
+  // Material's icon spacing token so the glyph isn't flush against the label.
+  .server-link app-icon {
+    margin-right: var(--mat-button-text-icon-spacing, 8px);
+  }
+}
