@@ -26,8 +26,8 @@ export function matchesLogFilters(
 }
 
 /**
- * Live log tail over SSE for the admin console. On connect: replay the ring buffer (filtered to records
- * at/above an optional level), then stream every new matching record. Nest owns the response and
+ * Live log tail over SSE for the admin console. On connect: replay the ring buffer filtered
+ * by scope/task, then stream every new matching record. Nest owns the response and
  * unsubscribes on disconnect. This admin-only stream does not share the chat subscriber registry.
  */
 @Injectable()
@@ -36,11 +36,7 @@ export class LogViewerService implements OnModuleDestroy {
 
   constructor(@Inject(LogStreamStore) private readonly store: LogStreamStore) {}
 
-  attach(
-    minLevel?: string,
-    scope?: string,
-    taskId?: string,
-  ): Observable<MessageEvent> {
+  attach(scope?: string, taskId?: string): Observable<MessageEvent> {
     return new Observable<MessageEvent>((sink) => {
       const client: LogClient = { sink };
       const emit = (rec: LogRecord) => {
@@ -49,10 +45,8 @@ export class LogViewerService implements OnModuleDestroy {
         }
       };
       // Replay before subscribing to new records, preserving their chronological order.
-      for (const rec of this.store.snapshot(minLevel)) emit(rec);
-      const unsub = this.store.subscribe((rec) => {
-        if (!minLevel || atOrAbove(rec.level, minLevel)) emit(rec);
-      });
+      for (const rec of this.store.snapshot()) emit(rec);
+      const unsub = this.store.subscribe(emit);
       this.clients.add(client);
       return () => {
         unsub();

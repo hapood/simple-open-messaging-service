@@ -13,12 +13,14 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Observable } from 'rxjs';
 import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
 import { LogViewerService } from './log-viewer.service.js';
-import { AdminLogHistoryDto } from './log-viewer.dto.js';
-
-const LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
+import { LogLevelService } from './log-level.service.js';
+import {
+  AdminLogHistoryDto,
+  AdminLogOutputLevelDto,
+} from './log-viewer.dto.js';
 
 /**
- * Admin log-viewer endpoints. Both are behind AdminAuthGuard (opaque admin session cookie,
+ * Admin log-viewer endpoints. All are behind AdminAuthGuard (opaque admin session cookie,
  * physically isolated from user auth — same protection as every other admin endpoint). Registered in
  * AdminModule (which imports LoggerModule for LogViewerService), mirroring AdminDiagnosticsController.
  */
@@ -28,29 +30,40 @@ const LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
 @Controller('admin/logs')
 @UseGuards(AdminAuthGuard)
 export class LogViewerController {
-  constructor(private readonly viewer: LogViewerService) {}
+  constructor(
+    private readonly viewer: LogViewerService,
+    private readonly output: LogLevelService,
+  ) {}
+
+  @Post('output-level')
+  @ApiOperation({ summary: 'Read the process-local log output level' })
+  outputLevel() {
+    return this.output.getLevel();
+  }
+
+  @Post('output-level/set')
+  @ApiOperation({
+    summary: 'Change log output level until the process restarts',
+  })
+  setOutputLevel(@Body() dto: AdminLogOutputLevelDto) {
+    return this.output.setLevel(dto.level);
+  }
 
   /**
    * Live log tail over SSE. GET (not the admin POST convention) because this is a long-lived streaming
-   * body that must behave as a true event stream across proxies/CDNs. Auth stays header-based:
-   * the admin web sends its Bearer in the Authorization header, never in a URL.
+   * body that must behave as a true event stream across proxies/CDNs. Authentication uses the
+   * same-origin admin session cookie.
    *
-   * `level` filters inclusively (a selected level shows itself + every more-severe level); omitted/invalid
-   * → all levels.
+   * Streams every captured record; the process-local output threshold controls new log production.
    */
   @Raw()
   @Sse('stream')
   @ApiOperation({ summary: 'Admin live log tail (SSE)' })
   stream(
-    @Query('level') level?: string,
     @Query('scope') scope?: string,
     @Query('taskId') taskId?: string,
   ): Observable<MessageEvent> {
-    return this.viewer.attach(
-      this.normalizeLevel(level),
-      scope || undefined,
-      taskId || undefined,
-    );
+    return this.viewer.attach(scope || undefined, taskId || undefined);
   }
 
   /**
@@ -62,11 +75,5 @@ export class LogViewerController {
   @ApiOperation({ summary: 'Admin historical log search' })
   history(@Body() dto: AdminLogHistoryDto) {
     return this.viewer.history(dto);
-  }
-
-  private normalizeLevel(level?: string): string | undefined {
-    if (!level) return undefined;
-    const v = level.toLowerCase();
-    return (LEVELS as readonly string[]).includes(v) ? v : undefined;
   }
 }

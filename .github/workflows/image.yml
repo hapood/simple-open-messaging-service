@@ -1,0 +1,182 @@
+name: Container image
+
+on:
+  push:
+    branches: [dev]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/dev' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.version.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate publication ref and version
+        id: version
+        shell: bash
+        run: |
+          node scripts/check-version-sync.mjs
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            test "$GITHUB_REF_NAME" = "v$VERSION"
+          elif [[ "$GITHUB_REF" == refs/heads/dev ]]; then
+            VERSION="$VERSION-dev.$GITHUB_SHA"
+          else
+            echo 'Images may only be published from dev or a matching version tag.' >&2
+            exit 1
+          fi
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ steps.version.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=ref,event=tag
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+  verify:
+    needs: prepare
+    uses: ./.github/workflows/verify.yml
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build native image
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          targets: app
+          set: |
+            app.platform=linux/${{ matrix.arch }}
+            app.tags=${{ env.IMAGE }}:sha-${{ github.sha }}-${{ matrix.arch }}
+            app.output=type=docker
+            app.labels.org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            app.labels.org.opencontainers.image.revision=${{ github.sha }}
+            runtime-base.cache-from=type=gha,scope=soms-runtime-base-${{ matrix.arch }}
+            runtime-base.cache-to=type=gha,mode=max,scope=soms-runtime-base-${{ matrix.arch }}
+            build-base.cache-from=type=gha,scope=soms-build-base-${{ matrix.arch }}
+            build-base.cache-to=type=gha,mode=max,scope=soms-build-base-${{ matrix.arch }}
+            app.cache-from=type=gha,scope=soms-app-${{ matrix.arch }}
+            app.cache-to=type=gha,mode=max,scope=soms-app-${{ matrix.arch }}
+      - name: Check runtime tools, native modules, and packaged assets
+        shell: bash
+        run: |
+          REF="$IMAGE:sha-$GITHUB_SHA-$ARCH"
+          docker run --rm --entrypoint ffprobe "$REF" -version
+          docker run --rm --entrypoint caddy "$REF" version
+          docker run --rm --entrypoint node "$REF" --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { access } from "node:fs/promises";
+            import argon2 from "argon2";
+            import sharp from "sharp";
+            const hash = await argon2.hash("image-smoke-test");
+            assert(await argon2.verify(hash, "image-smoke-test"));
+            await sharp({ create: { width: 1, height: 1, channels: 3, background: "white" } }).png().toBuffer();
+            for (const path of ["dist/src/main.js", "dist/scripts/migrate-db.js", "public/web/index.html", "public/admin/index.html"])
+              await access(path);
+          '
+      - name: Push checked image and record digest
+        shell: bash
+        run: |
+          REF="$IMAGE:sha-$GITHUB_SHA-$ARCH"
+          docker push "$REF"
+          DIGEST=$(docker image inspect "$REF" --format '{{index .RepoDigests 0}}')
+          DIGEST="${DIGEST##*@sha256:}"
+          [[ "$DIGEST" =~ ^[a-f0-9]{64}$ ]]
+          mkdir -p digests
+          touch "digests/$DIGEST"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      TAGS: ${{ needs.prepare.outputs.tags }}
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-digest-*
+          merge-multiple: true
+          path: digests
+      - name: Publish multi-platform tags
+        shell: bash
+        run: |
+          TAG_ARGS=()
+          while IFS= read -r TAG; do
+            [[ -z "$TAG" ]] || TAG_ARGS+=(--tag "$TAG")
+          done <<< "$TAGS"
+          SOURCES=()
+          for FILE in digests/*; do
+            DIGEST="${FILE##*/}"
+            [[ "$DIGEST" =~ ^[a-f0-9]{64}$ ]]
+            SOURCES+=("$IMAGE@sha256:$DIGEST")
+          done
+          test "${#SOURCES[@]}" -eq 2
+          docker buildx imagetools create "${TAG_ARGS[@]}" "${SOURCES[@]}"
+          while IFS= read -r TAG; do
+            [[ -z "$TAG" ]] || docker buildx imagetools inspect "$TAG"
+          done <<< "$TAGS"
+          {
+            echo '### Published images'
+            printf '%s\n' "$TAGS"
+            echo
+            echo 'Both linux/amd64 and linux/arm64 passed runtime checks.'
+            echo 'For the first publication, set the GHCR package visibility to Public to enable anonymous pulls.'
+          } >> "$GITHUB_STEP_SUMMARY"

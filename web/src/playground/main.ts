@@ -1,7 +1,7 @@
 import { bootstrapApplication } from '@angular/platform-browser';
 import { playgroundConfig } from './playground.config';
-import { PlaygroundRootComponent } from './playground-root.component';
+import { PlaygroundShellComponent } from './playground-shell.component';
 
-bootstrapApplication(PlaygroundRootComponent, playgroundConfig).catch(
+bootstrapApplication(PlaygroundShellComponent, playgroundConfig).catch(
   (error) => console.error('[playground] bootstrap failed:', error),
 );

@@ -135,6 +135,8 @@ emit_handlers() {
   printf '\thandle /push/*.js {\n\t\troot * /app/public/web\n\t\theader Cache-Control "no-cache"\n\t\tfile_server\n\t}\n'
   printf '\t# Federation discovery is served by Fastify, not the SPA fallback.\n'
   printf '\thandle /.well-known/* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
+  # Federation endpoints must reach the API, not the SPA fallback. Preserve the path.
+  printf '\thandle /s2s/* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}\n'
   if [ "${SOMS_ADMIN_ACCESS:-public}" = "lan" ]; then
     printf '\t@not_lan not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.1 ::1 fc00::/7 fe80::/10\n'
     printf '\t# Admin API + admin page - LAN-only (403 otherwise); MUST precede the generic /api* handle.\n'

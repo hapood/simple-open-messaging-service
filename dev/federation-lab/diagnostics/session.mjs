@@ -231,7 +231,6 @@ async function main() {
     FED_LAB_BACKEND_PORTS: JSON.stringify(backendPorts),
     FED_LAB_DATABASE_PREFIX: databasePrefix,
     FED_LAB_RUNTIME_DIR: join(directory, 'runtime'),
-    FED_LAB_LOG_LEVEL: process.env.FED_LAB_LOG_LEVEL ?? 'info',
   };
   process.env.FED_LAB_BACKEND_PORTS = env.FED_LAB_BACKEND_PORTS;
   process.env.FED_LAB_DATABASE_PREFIX = env.FED_LAB_DATABASE_PREFIX;

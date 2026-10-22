@@ -1,0 +1,66 @@
+name: Verify application
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+            admin-web/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix web
+          npm ci --prefix admin-web
+
+      - name: Install media tools
+        timeout-minutes: 5
+        run: |
+          # The runner's Azure mirror can stall individual package downloads for minutes.
+          # Use Ubuntu's primary archive while retaining apt's signed package verification.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
+
+      - name: Check circular dependencies
+        run: npm run check:cycles
+
+      - name: Build and test server
+        run: |
+          node scripts/check-version-sync.mjs
+          npm run build
+          npm test
+          npm run federation:conformance
+
+      - name: Build and test web client
+        run: |
+          npm run test:build --prefix web
+          npm run build --prefix web
+          npm test --prefix web
+
+      - name: Validate deployment image references and Compose output
+        run: node --test test/deployment/*.test.mjs docker/nas-compose.test.mjs
+
+      - name: Build and test administration console
+        run: |
+          npm run build --prefix admin-web
+          npm test --prefix admin-web

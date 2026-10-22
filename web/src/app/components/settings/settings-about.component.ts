@@ -27,7 +27,7 @@ import { personalQuotaStatus } from '../profile-editor/personal-quota-status';
   template: `
     <section class="about-page">
       <header class="product-hero">
-        <img class="product-mark" src="/logo.svg" alt="" />
+        <img class="product-mark" src="logo.svg" alt="" />
         <div>
           <h2>SOMS</h2>
           <p>{{ 'settings.aboutTagline' | transloco }}</p>
@@ -47,10 +47,14 @@ import { personalQuotaStatus } from '../profile-editor/personal-quota-status';
           </div>
           <!-- TODO: Connect package-download byte progress when an app release endpoint exists. -->
           @if (downloading()) {
-            <div class="progress-track" role="progressbar"
+            <div
+              class="progress-track"
+              role="progressbar"
               [attr.aria-label]="'settings.updateDownloading' | transloco"
-              aria-valuemin="0" aria-valuemax="100"
-              [attr.aria-valuenow]="downloadPercent()">
+              aria-valuemin="0"
+              aria-valuemax="100"
+              [attr.aria-valuenow]="downloadPercent()"
+            >
               <span [style.width.%]="downloadPercent()"></span>
             </div>
           }
@@ -179,7 +183,9 @@ export class SettingsAboutComponent {
 
   readonly serverVersion = computed(() => this.status()?.serverVersion ?? '');
   readonly incompatible = computed(() => this.status()?.incompatible ?? false);
-  readonly backendLabel = computed(() => this.clientCompat.probedOrigin() || null);
+  readonly backendLabel = computed(
+    () => this.clientCompat.probedOrigin() || null,
+  );
 
   constructor() {
     // Re-probe when the page opens so the version state is fresh (not just the launch-time snapshot).

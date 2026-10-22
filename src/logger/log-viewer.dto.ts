@@ -1,9 +1,11 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+
+import { LOG_OUTPUT_LEVELS, type LogOutputLevel } from './log-level.service.js';
 
 /** POST /admin/logs/history query. Filters are ANDed; `level` is inclusive (a level shows itself +
- *  every more-severe level, matching the live viewer). `from`/`to` are ms-epoch time bounds. */
+ *  every more-severe level). `from`/`to` are ms-epoch time bounds. */
 export class AdminLogHistoryDto {
   @ApiPropertyOptional({
     default: 0,
@@ -59,4 +61,10 @@ export class AdminLogHistoryDto {
   @IsOptional()
   @IsString()
   taskId?: string;
+}
+
+export class AdminLogOutputLevelDto {
+  @ApiProperty({ enum: LOG_OUTPUT_LEVELS })
+  @IsIn(LOG_OUTPUT_LEVELS)
+  level!: LogOutputLevel;
 }

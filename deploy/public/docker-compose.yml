@@ -1,4 +1,5 @@
 # SOMS public deployment. Runtime configuration lives in the adjacent .env file.
+# Uses the latest published version, including alpha releases. Pull explicitly when upgrading.
 # Start with the standard command: docker compose up -d
 services:
   postgres:
@@ -21,7 +22,7 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: soms:latest
+    image: ghcr.io/hapood/simple-open-messaging-service:latest
     env_file: ${SOMS_ENV_FILE:-.env}
     environment:
       PGHOST: postgres
@@ -36,7 +37,7 @@ services:
     restart: 'no'
 
   app:
-    image: soms:latest
+    image: ghcr.io/hapood/simple-open-messaging-service:latest
     env_file: ${SOMS_ENV_FILE:-.env}
     environment:
       PGHOST: postgres

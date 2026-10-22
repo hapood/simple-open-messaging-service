@@ -5,7 +5,7 @@ const WIDE_BREAKPOINT_PX = 720;
 const COMPACT_HEIGHT_PX = 74;
 const WIDE_HEIGHT_PX = 82;
 
-/** Single global writer for the floating composer's CSS height. */
+/** Owns web pane geometry and publishes the active pane's height for external UI. */
 @Injectable({ providedIn: 'root' })
 export class ComposerGeometryService {
   private readonly tauri = isTauri();

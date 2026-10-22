@@ -1,8 +1,8 @@
 # Building the Docker Image
 
-The deployment guide consumes published registry images. This page is for maintainers and
-contributors who build the image themselves — before the first release, for local testing, or when
-developing the build itself.
+The [deployment guide](../deployment/deployment.md) uses versioned registry images. This page is
+for maintainers and contributors who build an image for local testing or development. Select the
+local image tag in the Compose generator when deploying a locally built image.
 
 ## Build
 
@@ -37,7 +37,13 @@ the scripts invoke the host Docker CLI through `host-spawn` and forward these va
 
 ## Release Publishing
 
-Tag pushes (`v*`) trigger the Release workflow, which builds `linux/amd64` and `linux/arm64` images
-and publishes them to `ghcr.io/hapood/simple-open-messaging-service` under the tag name. The
-deployment templates pin that registry reference; bump both `image:` lines together when a new
-version is released.
+Tag pushes (`v*`) trigger the container image workflow, which builds `linux/amd64` and `linux/arm64`
+images and publishes them to `ghcr.io/hapood/simple-open-messaging-service` under the tag name.
+The Compose generator and NAS template target `v0.1.0-alpha.0`; the public template uses `latest`.
+Publish the version tag
+from `main` after the release pull request is approved and squash-merged; the image is available
+after the tag workflow succeeds. Every version release, including alpha, updates `latest`.
+Development branch builds only update `dev` and commit tags.
+
+For an existing generated deployment, update the shared `app-image` anchor when selecting a new
+release. See [Publishing container images](publishing-images.md) for tags and registry access.

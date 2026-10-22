@@ -33,7 +33,7 @@
                  brand-logo's internal .bl-mark) rather than <app-brand-logo> because this empty-state
                  icon slot sizes its own content and must not inherit brand-logo's 16px mark→wordmark gap. -->
             <img
-              src="/logo.svg"
+              src="logo.svg"
               width="40"
               height="40"
               alt=""
@@ -43,7 +43,8 @@
         }
       } @else {
         @for (thread of filteredThreadList(); track thread.threadId) {
-          @let resolvedDomain = avatarNamespaceId(thread) | namespaceDomain | async;
+          @let resolvedDomain =
+            avatarNamespaceId(thread) | namespaceDomain | async;
           <button
             type="button"
             class="thread-item"
@@ -62,7 +63,10 @@
                 [type]="avatarType(thread)"
                 [name]="displayName(thread)"
                 [account]="avatarAccount(thread)"
-                [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(thread) }"
+                [domainSource]="{
+                  type: 'namespace',
+                  namespaceId: avatarNamespaceId(thread),
+                }"
                 [profile]="avatarProfile(thread)"
               ></app-demand-avatar>
             </span>

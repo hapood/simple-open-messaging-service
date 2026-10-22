@@ -32,3 +32,26 @@ export function listHistory(
 ): Promise<LogHistoryResult> {
   return request<LogHistoryResult>('/admin/logs/history', params);
 }
+
+export const LOG_OUTPUT_LEVELS = [
+  'trace',
+  'debug',
+  'info',
+  'warn',
+  'error',
+  'fatal',
+] as const;
+export type LogOutputLevel = (typeof LOG_OUTPUT_LEVELS)[number];
+export interface LogOutputSettings {
+  level: LogOutputLevel;
+}
+
+export function getLogOutputLevel(): Promise<LogOutputSettings> {
+  return request('/admin/logs/output-level');
+}
+
+export function setLogOutputLevel(
+  level: LogOutputLevel,
+): Promise<LogOutputSettings> {
+  return request('/admin/logs/output-level/set', { level });
+}

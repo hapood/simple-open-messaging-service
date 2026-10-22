@@ -9,8 +9,9 @@
     <!-- Pre-paint FOUC bootstrap (persisted theme + language). Loaded as an EXTERNAL 'self' script so the
        somsapp:// CSP `script-src 'self'` admits it without a nonce — an inline <script> would be blocked.
        Synchronous (classic, no defer) so it runs during head parsing, before <body> paints. ThemeService /
-       LanguageService re-assert and own these attributes at runtime after boot. -->
-    <script src="/boot.js"></script>
+       LanguageService re-assert and own these attributes at runtime after boot. Referenced by RELATIVE path
+       so it resolves against <base href>, which the Pages build rewrites to the deploy sub-path. -->
+    <script src="boot.js"></script>
     <title>SOMS — Self-Hosted, Federated Chat Platform</title>
     <base href="/" />
     <meta
@@ -24,23 +25,41 @@
 
     <!-- Open Graph / Social Media -->
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://hapood.github.io/simple-open-messaging-service/" />
-    <meta property="og:title" content="SOMS — Self-Hosted, Federated Chat Platform" />
+    <meta
+      property="og:url"
+      content="https://hapood.github.io/simple-open-messaging-service/"
+    />
+    <meta
+      property="og:title"
+      content="SOMS — Self-Hosted, Federated Chat Platform"
+    />
     <meta
       property="og:description"
       content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
     />
-    <meta property="og:image" content="https://hapood.github.io/simple-open-messaging-service/social-preview.png" />
+    <meta
+      property="og:image"
+      content="https://hapood.github.io/simple-open-messaging-service/social-preview.png"
+    />
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:url" content="https://hapood.github.io/simple-open-messaging-service/" />
-    <meta name="twitter:title" content="SOMS — Self-Hosted, Federated Chat Platform" />
+    <meta
+      name="twitter:url"
+      content="https://hapood.github.io/simple-open-messaging-service/"
+    />
+    <meta
+      name="twitter:title"
+      content="SOMS — Self-Hosted, Federated Chat Platform"
+    />
     <meta
       name="twitter:description"
       content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
     />
-    <meta name="twitter:image" content="https://hapood.github.io/simple-open-messaging-service/social-preview.png" />
+    <meta
+      name="twitter:image"
+      content="https://hapood.github.io/simple-open-messaging-service/social-preview.png"
+    />
     <!-- Scale locked (`minimum-scale=maximum-scale=1`, `user-scalable=no`): disables the browser's
        pinch-to-zoom and double-tap-to-zoom so the SPA behaves as a native shell, not a zoomable page.
        On Android this is reinforced authoritatively at the engine layer in MainActivity.onWebViewCreate
@@ -65,7 +84,7 @@
        show on it). Styles live in styles.scss (global). Harmless in the browser/PWA build (replaced fast). -->
     <app-root>
       <div class="app-splash">
-        <img class="app-splash__mark" src="/logo.svg" alt="" />
+        <img class="app-splash__mark" src="logo.svg" alt="" />
         <div class="app-splash__word">SOMS</div>
         <div class="app-splash__spinner"></div>
       </div>

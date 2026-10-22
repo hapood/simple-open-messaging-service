@@ -23,6 +23,18 @@ render() {
     SOMS_RUN_DIR="$SANDBOX/run" \
     "${@:3}" \
     "$INIT" >/dev/null
+  # Every site and mode must route federation POSTs before the SPA fallback.
+  node - "$SANDBOX/run/Caddyfile" <<'JS'
+const assert = require('node:assert/strict');
+const text = require('node:fs').readFileSync(process.argv[2], 'utf8');
+const blocks = text.split('\thandle /.well-known/* {').slice(1);
+assert.ok(blocks.length, 'no backend handlers generated');
+for (const block of blocks) {
+  const rule = '\thandle /s2s/* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}';
+  assert.ok(block.includes(rule), 'missing path-preserving federation proxy');
+  assert.ok(block.indexOf(rule) < block.indexOf('\thandle {'), 'federation proxy follows SPA');
+}
+JS
   if [ -n "${CADDY_BIN:-}" ]; then
     "$CADDY_BIN" adapt --config "$SANDBOX/run/Caddyfile" --adapter caddyfile >/dev/null
   fi

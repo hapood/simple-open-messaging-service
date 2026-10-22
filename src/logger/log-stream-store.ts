@@ -55,11 +55,9 @@ export class LogStreamStore {
     }
   }
 
-  /** Copy of the buffer, optionally filtered to records at or above `minLevel`. Newest-last (the
-   *  chronological order the viewer renders in). */
-  snapshot(minLevel?: string): LogRecord[] {
-    if (!minLevel) return [...this.buffer];
-    return this.buffer.filter((r) => atOrAbove(r.level, minLevel));
+  /** Copy of captured records in chronological order (newest-last). */
+  snapshot(): LogRecord[] {
+    return [...this.buffer];
   }
 
   /** Subscribe to live records; returns an unsubscribe function. */

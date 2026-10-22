@@ -664,6 +664,8 @@
       "history": "History",
       "diagnostics": "Client diagnostics"
     },
+    "outputLevel": "Output level",
+    "outputLevelHint": "Applies to console, file and live logs. Resets to ERROR on every server restart.",
     "allLevels": "All levels",
     "clear": "Clear",
     "jumpLatest": "Latest",

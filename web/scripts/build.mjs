@@ -8,11 +8,7 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const webDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const angularCli = require.resolve('@angular/cli/bin/ng.js');
-const targets = {
-  web: { output: 'dist/web', configuration: 'production' },
-  native: { output: 'dist/native', configuration: 'production' },
-  playground: { output: 'dist/playground', configuration: 'playground' },
-};
+import { frontendTarget } from './frontend-targets.mjs';
 const reservedOptions = new Set([
   '--aot',
   '--no-aot',
@@ -26,8 +22,7 @@ const reservedOptions = new Set([
 ]);
 
 export function createBuildPlan(target, args = []) {
-  const options = Object.hasOwn(targets, target) ? targets[target] : undefined;
-  if (!options) throw new Error(`Unknown frontend build target: ${target}`);
+  const options = frontendTarget(target);
   for (const arg of args) {
     if (reservedOptions.has(arg.split('=')[0])) {
       throw new Error(
@@ -36,16 +31,23 @@ export function createBuildPlan(target, args = []) {
     }
   }
 
-  const hasConfiguration = args.some((arg) =>
-    ['--configuration', '-c'].includes(arg.split('=')[0]),
-  );
+  let configuration = options.configuration;
+  const forwarded = [];
+  for (let i = 0; i < args.length; i++) {
+    const [key, value] = args[i].split('=');
+    if (key === '--configuration' || key === '-c') {
+      configuration = value ?? args[++i];
+      if (!configuration) throw new Error('Missing configuration value.');
+    } else forwarded.push(args[i]);
+  }
   const commands = [
-    ['scripts/build-push-worker.mjs'],
+    ['scripts/build-push-worker.mjs', target],
     [
       angularCli,
       'build',
-      ...(hasConfiguration ? [] : ['--configuration', options.configuration]),
-      ...args,
+      '--configuration',
+      `${configuration},${options.overlay}`,
+      ...forwarded,
       '--aot',
       '--output-path',
       options.output,

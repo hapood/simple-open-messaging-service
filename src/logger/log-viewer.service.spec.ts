@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
 import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
+import { LogLevelService } from './log-level.service.js';
 import { LogViewerController } from './log-viewer.controller.js';
 import { LogViewerService, matchesLogFilters } from './log-viewer.service.js';
 import type { LogRecord } from './log-stream-store.js';
@@ -45,7 +46,7 @@ describe('log viewer SSE', () => {
     const service = new LogViewerService(store as never);
     const received: unknown[] = [];
     const sub = service
-      .attach('info', 'media-transfer', 'task-a')
+      .attach('media-transfer', 'task-a')
       .subscribe((event) => received.push(event));
     expect(received).toEqual([{ type: 'log', data: record }]);
     publish({ ...record, msg: 'next' });
@@ -65,7 +66,10 @@ describe('log viewer SSE', () => {
     } as never);
     const module = await Test.createTestingModule({
       controllers: [LogViewerController],
-      providers: [{ provide: LogViewerService, useValue: service }],
+      providers: [
+        { provide: LogLevelService, useValue: {} },
+        { provide: LogViewerService, useValue: service },
+      ],
     })
       .overrideGuard(AdminAuthGuard)
       .useValue({ canActivate: () => true })

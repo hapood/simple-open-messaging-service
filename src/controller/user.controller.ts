@@ -1,3 +1,4 @@
+import { describeError } from '../logger/describe-error.js';
 import {
   Controller,
   Get,
@@ -565,10 +566,13 @@ export class UserController {
             reason !== 'BLOCKED' &&
             reason !== 'IDENTITY_LOST'
           ) {
-            const detail = error instanceof Error ? error.stack : String(error);
-            this.logger.warn(
-              `Federated resolve ${account}@${domain} failed (${reason}): ${detail}`,
-            );
+            this.logger.warn({
+              msg: `Federated user resolution failed (${reason})`,
+              account,
+              peerDomain: domain,
+              reason,
+              error: describeError(error),
+            });
           }
           finish('failed', { reason });
         }

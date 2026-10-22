@@ -4,6 +4,7 @@ This document describes the system architecture, module responsibilities, authen
 
 ## Table of Contents
 
+- [Technology Stack](#technology-stack)
 - [Overall Architecture](#overall-architecture)
 - [Backend Module Responsibilities](#backend-module-responsibilities)
 - [Frontend Structure](#frontend-structure)
@@ -13,6 +14,16 @@ This document describes the system architecture, module responsibilities, authen
 - [Core Business Flows](#core-business-flows)
 
 ---
+
+## Technology Stack
+
+| Component                 | Technology                                    |
+| ------------------------- | --------------------------------------------- |
+| API and federation server | NestJS, Fastify, Drizzle ORM, PostgreSQL       |
+| User client               | Angular, Signals, RxJS, Angular CDK / Material |
+| Native applications       | Tauri, shared Rust runtime, native OS adapters |
+| Administration console    | React, Vite                                   |
+| Real-time and calls       | SSE, Web Push, FCM, WebRTC, optional TURN      |
 
 ## Overall Architecture
 

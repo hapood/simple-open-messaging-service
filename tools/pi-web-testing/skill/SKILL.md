@@ -1,6 +1,6 @@
 ---
 name: web-testing
-description: Run project-specific browser E2E exploration, execute numbered acceptance cases, reproduce UI defects, or create and maintain Playwright browser tests for the three-node federation lab. Use only for Web/Admin browser automation and browser test planning or progress updates.
+description: Run project-specific browser E2E exploration, execute numbered acceptance cases, reproduce UI defects, or create and maintain Playwright browser tests for the standalone playground or three-node federation lab. Use only for Web/Admin browser automation and browser test planning or progress updates.
 ---
 
 # Project Web testing
@@ -9,7 +9,7 @@ Use the repository's existing browser harness and documentation as the source of
 
 ## Read only what the task needs
 
-Start with these short routing reads. Browser and Android each have a plan,
+First read `docs/development/browser-testing.md` to choose the environment and shared runtime. Playground tasks do not require federation credentials, HMR status files, or acceptance-plan history. Open a new profile with explicit `target: "playground"` or `target: "federation"`; the Pi startup command never binds a target. For federation acceptance, continue with these short routing reads. Browser and Android each have a plan,
 progress log, and handoff; route to the platform the task targets.
 
 1. Read `docs/development/browser-e2e-progress.md` (or
@@ -74,7 +74,7 @@ record or paste proxy URLs in evidence.
 
 ## Browser-driver workflow
 
-Browser E2E is HMR-only. Start `npm run dev:be` and `npm run dev:fe`; never use `dev:fe:built` for browser acceptance. Before changing or testing code, use `browser_driver` action `frontendStatus` to inspect the current Web and Admin HMR build. Do not issue a long-running `frontendWait` call without progress visibility. If waiting is needed, poll with short bounded waits (normally 10-20 seconds each), and between attempts report the current `frontendStatus`, relevant HMR status-file contents, or recent frontend logs. A failure or stale status is an environment/build failure, not a product PASS.
+Federation acceptance is HMR-only. Playground regression owns a non-HMR server; interactive playground exploration may use its separate development server. Start `npm run dev:be` and `npm run dev:fe`; never use `dev:fe:built` for browser acceptance. Before changing or testing code, use `browser_driver` action `frontendStatus` to inspect the current Web and Admin HMR build. Do not issue a long-running `frontendWait` call without progress visibility. If waiting is needed, poll with short bounded waits (normally 10-20 seconds each), and between attempts report the current `frontendStatus`, relevant HMR status-file contents, or recent frontend logs. A failure or stale status is an environment/build failure, not a product PASS.
 
 The `browser_driver` tool wraps `test/browser-e2e/driver.mjs` and keeps isolated persistent Chromium profiles. Call state-dependent commands sequentially.
 
@@ -87,7 +87,7 @@ The `browser_driver` tool wraps `test/browser-e2e/driver.mjs` and keeps isolated
 7. On failure, collect `shot`, `errors`, and an explicit trace when useful. Distinguish harness, environment, and product failures.
 8. Close contexts cleanly when they should not remain available. Do not reset profiles or databases merely to resume work.
 
-Navigation is restricted to the Alpha, Bravo, and Charlie local lab edges on ports 3101-3103. Never point the tool at production or an arbitrary URL. `npm run test:browser` also refuses to start unless both HMR status files report a current successful build.
+Navigation is restricted by the profile target: playground uses `http://127.0.0.1:4301`, federation uses the three `http://localhost:3101-3103` edges. Never point the tool at production or an arbitrary URL. Only federation Playwright projects require successful lab HMR statuses. Install the shared browser with `npm run test:browser:install`. The Pi driver and automated projects use the same browser; do not silently substitute a system binary when installation fails.
 
 ## Result discipline
 

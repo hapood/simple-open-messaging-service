@@ -15,29 +15,32 @@
 //   {"id":8,"action":"close"}
 // Secrets (admin password, OTPs) are read from .env / kept in memory only.
 import { chromium, expect } from '@playwright/test';
-import { readFileSync, rmSync, existsSync, mkdirSync, readdirSync, readlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  readFileSync,
+  rmSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readlinkSync,
+} from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 
-const NODES = {
-  alpha: {
-    edge: 'http://localhost:3101/',
-    admin: 'http://localhost:3101/admin/',
-    domain: 'alpha.test',
-  },
-  bravo: {
-    edge: 'http://localhost:3102/',
-    admin: 'http://localhost:3102/admin/',
-    domain: 'bravo.test',
-  },
-  charlie: {
-    edge: 'http://localhost:3103/',
-    admin: 'http://localhost:3103/admin/',
-    domain: 'charlie.test',
-  },
-};
-const SHOTS = process.env.BROWSER_ARTIFACT_DIR || '/tmp/soms-browser-e2e';
-const PROFILES = process.env.BROWSER_PROFILE_DIR || `${SHOTS}/profiles`;
+import { browserLaunchOptions } from './infrastructure/browser-runtime.mjs';
+import {
+  federationNodes as NODES,
+  navigationUrl,
+  assertProfileTarget,
+} from './infrastructure/targets.mjs';
+import {
+  profileTarget,
+  profileDirectory,
+} from './infrastructure/profile-targets.mjs';
+const ARTIFACT_ROOT =
+  process.env.BROWSER_ARTIFACT_DIR || '/tmp/soms-browser-e2e';
+const SHOTS = `${ARTIFACT_ROOT}/runs/${Date.now()}-${randomUUID()}`;
+const PROFILES = process.env.BROWSER_PROFILE_DIR || `${ARTIFACT_ROOT}/profiles`;
 mkdirSync(SHOTS, { recursive: true, mode: 0o700 });
 mkdirSync(PROFILES, { recursive: true, mode: 0o700 });
 function validName(name) {
@@ -84,18 +87,23 @@ function requireAdminPassword() {
 
 const contexts = new Map(); // name -> { context, page, consoleErrors[], pageErrors[] }
 
-function profileOwner(name) {
-  const lock = `${PROFILES}/${name}/SingletonLock`;
-  if (!existsSync(`${PROFILES}/${name}`)) return null;
-  let target;
+function profileOwner(name, target = 'federation') {
+  const directory = profileDirectory(PROFILES, name, target);
+  const lock = `${directory}/SingletonLock`;
+  if (!existsSync(directory)) return null;
+  let lockTarget;
   try {
-    target = readlinkSync(lock);
+    lockTarget = readlinkSync(lock);
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
     return { state: 'unknown', reason: 'Cannot inspect Chrome profile lock' };
   }
-  const match = /-(\d+)$/.exec(target);
-  if (!match) return { state: 'unknown', reason: 'Chrome profile lock has no recognizable PID' };
+  const match = /-(\d+)$/.exec(lockTarget);
+  if (!match)
+    return {
+      state: 'unknown',
+      reason: 'Chrome profile lock has no recognizable PID',
+    };
   const pid = Number(match[1]);
   try {
     process.kill(pid, 0);
@@ -105,17 +113,30 @@ function profileOwner(name) {
     // this diagnostic; Chromium owns its own profile locking lifecycle.
     if (error?.code === 'EPERM') return { state: 'occupied', pid };
     if (error?.code === 'ESRCH') return { state: 'stale', pid };
-    return { state: 'unknown', reason: 'Could not verify Chrome profile owner' };
+    return {
+      state: 'unknown',
+      reason: 'Could not verify Chrome profile owner',
+    };
   }
 }
 
 function externalProfiles() {
-  return readdirSync(PROFILES, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !contexts.has(entry.name))
-    .flatMap((entry) => {
-      const owner = profileOwner(entry.name);
-      return owner ? [{ name: entry.name, ...owner }] : [];
-    });
+  return ['federation', 'playground'].flatMap((target) => {
+    const directory =
+      target === 'playground' ? `${PROFILES}/.playground` : PROFILES;
+    if (!existsSync(directory)) return [];
+    return readdirSync(directory, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          !entry.name.startsWith('.') &&
+          !contexts.has(entry.name),
+      )
+      .flatMap((entry) => {
+        const owner = profileOwner(entry.name, target);
+        return owner ? [{ name: entry.name, target, ...owner }] : [];
+      });
+  });
 }
 const otps = new Map(); // account -> code (memory only, never printed)
 
@@ -132,20 +153,24 @@ function fail(id, err) {
   );
 }
 
-async function newSession(name, viewport) {
+async function newSession(name, viewport, requestedTarget) {
   validName(name);
-  if (contexts.has(name)) return contexts.get(name);
-  const owner = profileOwner(name);
+  if (contexts.has(name)) {
+    const rec = contexts.get(name);
+    if (requestedTarget) assertProfileTarget(rec.target, requestedTarget);
+    return rec;
+  }
+  const target = profileTarget(PROFILES, name, requestedTarget);
+  const owner = profileOwner(name, target);
   if (owner?.state === 'occupied') {
     throw new Error(
       `Profile ${name} is held by Chrome PID ${owner.pid} outside this driver. Close its owning driver/context cleanly, then retry; do not delete SingletonLock or reset the profile.`,
     );
   }
   const context = await chromium.launchPersistentContext(
-    `${PROFILES}/${name}`,
+    profileDirectory(PROFILES, name, target),
     {
-      headless: process.env.BROWSER_HEADFUL !== '1',
-      executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
+      ...browserLaunchOptions(),
       ignoreHTTPSErrors: true,
       viewport: viewport || { width: 1440, height: 1000 },
       args: [
@@ -158,17 +183,32 @@ async function newSession(name, viewport) {
       ],
     },
   );
+  // Validate document navigations, including redirects/popups and trusted step page.goto calls.
+  // This is a navigation guard, not a sandbox for trusted Node step modules or app subresources.
+  await context.route('**/*', async (route) => {
+    const request = route.request();
+    if (request.isNavigationRequest()) {
+      try {
+        navigationUrl(target, undefined, request.url());
+      } catch {
+        await route.abort('blockedbyclient');
+        return;
+      }
+    }
+    await route.continue();
+  });
   const page = context.pages()[0] || (await context.newPage());
   page.setDefaultTimeout(15000);
   page.setDefaultNavigationTimeout(30000);
   // Stored profile content settings may carry a persisted media-permission
   // block from an earlier auto-dismissed prompt; re-grant for every lab origin.
-  for (const node of Object.values(NODES)) {
+  for (const node of target === 'federation' ? Object.values(NODES) : []) {
     await context
       .grantPermissions(['microphone', 'camera'], { origin: node.edge })
       .catch(() => {});
   }
   const rec = {
+    target,
     context,
     page,
     consoleErrors: [],
@@ -195,14 +235,13 @@ async function newSession(name, viewport) {
 
 async function adminLogin(node, profile) {
   const name = validName(profile || `admin-${node}`);
-  const { page } = await newSession(name);
+  navigationUrl('federation', node);
+  const { page } = await newSession(name, undefined, 'federation');
   const base = NODES[node].admin;
   try {
     await page.goto(base, { waitUntil: 'domcontentloaded' });
     // The SPA may still be redirecting to /login; settle before checking.
-    await page
-      .waitForURL(/\/admin\/login/, { timeout: 5000 })
-      .catch(() => {});
+    await page.waitForURL(/\/admin\/login/, { timeout: 5000 }).catch(() => {});
     if (page.url().includes('/login')) {
       await page.locator('#account').fill('admin');
       await page.locator('#password').fill(requireAdminPassword());
@@ -263,7 +302,8 @@ async function issueOtp(node, account, profile) {
       // Local accounts carry their node's own home domain (e.g. alpha.test);
       // federated stubs carry a peer domain and must never match.
       ...users.data.list.filter(
-        (user) => user.account === account && user.domain === NODES[node].domain,
+        (user) =>
+          user.account === account && user.domain === NODES[node].domain,
       ),
     );
     skip += take;
@@ -272,10 +312,9 @@ async function issueOtp(node, account, profile) {
     throw new Error(`expected one exact local account for ${account}`);
   }
   const targetId = matches[0].id;
-  await page.goto(
-    base.replace(/\/$/, '') + `/users/${targetId}`,
-    { waitUntil: 'domcontentloaded' },
-  );
+  await page.goto(base.replace(/\/$/, '') + `/users/${targetId}`, {
+    waitUntil: 'domcontentloaded',
+  });
   const openIssue = page.locator(
     'button[aria-controls="issue-login-code-dialog"]',
   );
@@ -361,6 +400,7 @@ const actions = {
   status: () => ({
     profiles: [...contexts].map(([name, rec]) => ({
       name,
+      target: rec.target,
       url: rec.page.url(),
     })),
     externalProfiles: externalProfiles(),
@@ -368,11 +408,11 @@ const actions = {
     artifacts: SHOTS,
   }),
   async open(c) {
-    const { page } = await newSession(c.user, c.viewport);
-    await page.goto(c.url || NODES[c.node || 'alpha'].edge, {
-      waitUntil: 'domcontentloaded',
-    });
-    return { user: c.user, url: page.url() };
+    const target = profileTarget(PROFILES, validName(c.user), c.target);
+    const url = navigationUrl(target, c.node, c.url);
+    const { page } = await newSession(c.user, c.viewport, target);
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    return { user: c.user, target, url: page.url() };
   },
   async inspect(c) {
     const { page } = await newSession(c.user);
@@ -429,7 +469,11 @@ const actions = {
       await rec.context.close().catch(() => {});
       contexts.delete(c.user);
     }
-    const dir = `${PROFILES}/${c.user}`;
+    const target = profileTarget(PROFILES, c.user, c.target);
+    const owner = profileOwner(c.user, target);
+    if (owner && owner.state !== 'stale')
+      throw new Error('Cannot reset a profile owned by another process.');
+    const dir = profileDirectory(PROFILES, c.user, target);
     if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
     return { reset: c.user };
   },
@@ -450,7 +494,21 @@ async function pump() {
     const cmd = queue.shift();
     const { id, action } = cmd;
     try {
-      if (!actions[action]) throw new Error(`unknown action ${action}`);
+      if (!Object.hasOwn(actions, action))
+        throw new Error(`unknown action ${action}`);
+      if (cmd.target && cmd.user && !['open', 'resetUser'].includes(action))
+        profileTarget(PROFILES, validName(cmd.user), cmd.target);
+      if (['adminLogin', 'issueOtp', 'userLogin'].includes(action)) {
+        if (!Object.hasOwn(NODES, cmd.node))
+          throw new Error('Select a valid federation node.');
+        if (cmd.target && cmd.target !== 'federation')
+          throw new Error('Login helpers require federation.');
+        profileTarget(
+          PROFILES,
+          validName(cmd.user || `admin-${cmd.node}`),
+          'federation',
+        );
+      }
       const data = await actions[action](cmd);
       out(id, true, data);
     } catch (err) {

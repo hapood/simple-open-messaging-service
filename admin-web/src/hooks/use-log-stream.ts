@@ -33,9 +33,7 @@ const MAX_LINES = 1000;
 /** Parse one SSE frame (the text between blank lines) into { event, data }. A leading `:` line is a
  *  comment (ignored); a frame with no `event:` field is dropped. Multiple `data:` lines join with `\n`
  *  per spec. Direct port of the consumer web/src/app/services/sse.worker.ts parser. */
-function parseFrame(
-  raw: string,
-): { event: string; data?: string } | undefined {
+function parseFrame(raw: string): { event: string; data?: string } | undefined {
   let event = '';
   let data = '';
   let hasData = false;
@@ -89,21 +87,17 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
 /**
- * Live log tail over SSE: GET /api/v1/admin/logs/stream[?level=]. Opened with fetch + ReadableStream
- * (NOT EventSource — the admin Bearer must ride in the Authorization header; EventSource can't set
- * one, and a `?token=` fallback would leak the token into our own access logs). Owns the reconnect
- * loop, single-flight token refresh on 401, exponential backoff, and a liveness watchdog.
- *
- * `level` filters server-side (the ring-buffer replay + the live fan-out); changing it reconnects and
- * clears the local view. The browser keeps only the newest MAX_LINES records — older records are on
- * disk (the Phase-3 history view).
- *
- * Auto-scroll / "stick to bottom" is NOT done here — react-virtuoso's followOutput owns it in the page.
+ * Live log tail opened with fetch and the same-origin admin session cookie.
+ * Owns reconnect backoff and the liveness watchdog. Output level changes leave
+ * this connection and its retained records intact. The browser keeps MAX_LINES
+ * records; older records remain available through historical log search.
+ * Auto-scroll is owned by react-virtuoso in the page.
  */
-export function useLogStream(
-  level: string | undefined,
-  filters?: { scope?: string; taskId?: string; enabled?: boolean },
-) {
+export function useLogStream(filters?: {
+  scope?: string;
+  taskId?: string;
+  enabled?: boolean;
+}) {
   const [lines, setLines] = useState<LogRecord[]>([]);
   const [state, setState] = useState<LogStreamState>('connecting');
 
@@ -126,7 +120,7 @@ export function useLogStream(
       }
     };
 
-    // A level change re-filters the server ring-buffer replay; clear the local view so levels don't mix.
+    // Changing scope or task starts a fresh view.
     setLines([]);
 
     const run = async (): Promise<void> => {
@@ -135,7 +129,6 @@ export function useLogStream(
         try {
           aborter = new AbortController();
           const params = new URLSearchParams();
-          if (level) params.set('level', level);
           if (filters?.scope) params.set('scope', filters.scope);
           if (filters?.taskId) params.set('taskId', filters.taskId);
           const url = `${API_BASE}/admin/logs/stream${params.size ? `?${params}` : ''}`;
@@ -185,7 +178,7 @@ export function useLogStream(
           await sleep(backoff(attempt));
         } catch {
           if (manualClose) break;
-          // A persistently failing refresh already force-logged-out inside refreshOnce; back off + retry transport errors.
+          // Retry transport failures with backoff.
           setState('reconnecting');
           attempt++;
           await sleep(backoff(attempt));
@@ -200,7 +193,7 @@ export function useLogStream(
       aborter?.abort();
       stopWatchdog();
     };
-  }, [level, filters?.scope, filters?.taskId, filters?.enabled]);
+  }, [filters?.scope, filters?.taskId, filters?.enabled]);
 
   const clear = useCallback(() => setLines([]), []);
   return { lines, state, clear };

@@ -66,7 +66,6 @@ async function bootstrap() {
   // (multistream → stdout + rotating file + the in-process ring buffer/SSE fan-out) is built by
   // LoggerModule (nestjs-pino) and replaces Nest's default ConsoleLogger — so every existing
   // `new Logger('Ctx')` call site routes through pino with its context preserved, unchanged.
-  // LOG_LEVEL is now resolved inside the pino factory, not here.
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     adapter,

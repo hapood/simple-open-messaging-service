@@ -27,13 +27,10 @@ const forkUrl = await ensureDatabase(process.env.DATABASE_URL, forkDb);
 process.env.DATABASE_URL = forkUrl;
 await resetE2EWorkerDatabase(forkUrl, forkDb);
 
-// Keep structured logs out of the repo and quiet during e2e. LoggerModule builds the pino instance
-// during AppModule boot even though the e2e harness never calls useLogger, so without this every
-// fork would create a `logs/` dir in the repo root and emit verbose boot output. Override by setting
-// LOG_DIR / LOG_LEVEL in the shell before `npm run test:e2e`.
+// Keep structured log files out of the repo during e2e. Output starts at error.
+// Override LOG_DIR in the shell before `npm run test:e2e` to retain logs elsewhere.
 process.env.LOG_DIR ??= join(tmpdir(), `soms-test-${runId}-logs-fork${poolId}`);
 process.env.SOMS_DATA_DIR ??= join(
   tmpdir(),
   `soms-test-${runId}-data-fork${poolId}`,
 );
-process.env.LOG_LEVEL ??= 'warn';
