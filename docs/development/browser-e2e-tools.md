@@ -5,7 +5,11 @@
 Use `test/browser-e2e/driver.mjs` for exploratory browser validation across
 independent conversations. It owns persistent Chromium profiles and accepts
 JSON commands. Scenario steps stay in temporary modules; only generally useful
-operations belong in the driver. The existing Playwright suite remains separate.
+operations belong in the driver. The driver and Playwright suite share browser
+installation, target definitions, and build-status interpretation; their context
+lifecycles remain separate. Start with [browser testing architecture](browser-testing.md).
+`npm run pi:webtest` does not bind an environment. New `open` commands select
+`target: "playground"` or `target: "federation"`; retained profiles keep their target.
 
 ## Start and reconnect
 
@@ -32,7 +36,7 @@ Defaults:
 
 - Alpha/Bravo/Charlie edges: `http://localhost:3101/`, `3102/`, `3103/`.
 - Profiles: `/tmp/soms-browser-e2e/profiles/`.
-- Screenshots and explicit traces: `/tmp/soms-browser-e2e/`.
+- Screenshots and explicit traces: `/tmp/soms-browser-e2e/runs/<run>/` (reported by `status`).
 - Override roots with `BROWSER_PROFILE_DIR` and `BROWSER_ARTIFACT_DIR`.
 - Override Chromium executable with `CHROME_PATH`.
 - Admin credential precedence: `BROWSER_ADMIN_PASSWORD`, tmpfs file
@@ -270,7 +274,7 @@ page is re-logged-in on the next `issueOtp`. After a lab reset, refresh
 Example, submitting each command after its prerequisite succeeds:
 
 ```json
-{"id":1,"action":"open","user":"alice-device-1","node":"alpha"}
+{"id":1,"action":"open","target":"federation","user":"alice-device-1","node":"alpha"}
 {"id":2,"action":"inspect","user":"alice-device-1"}
 {"id":3,"action":"eval","user":"alice-device-1","script":"/absolute/path/to/temporary-step.mjs"}
 {"id":4,"action":"errors","user":"alice-device-1","clear":true}

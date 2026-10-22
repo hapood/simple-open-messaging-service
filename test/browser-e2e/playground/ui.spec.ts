@@ -1,12 +1,8 @@
-import { test, expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect } from '../fixtures/playground';
 
 const groupInfo = (page: Page) => page.locator('app-group-info').last();
 const requests = (page: Page) => page.locator('app-friend-requests');
-const evidence = new WeakMap<
-  Page,
-  { errors: string[]; apiRequests: string[] }
->();
-
 async function openGroup(page: Page) {
   await page.getByRole('button', { name: /^Playground Team, chat/ }).click();
   await page
@@ -15,31 +11,6 @@ async function openGroup(page: Page) {
     .click();
   await expect(groupInfo(page).locator('.member-overview-row')).toBeVisible();
 }
-
-// Every action is a visible UI interaction. Network is observed, never used to mutate mock state.
-test.beforeEach(async ({ page }) => {
-  const errors: string[] = [];
-  const apiRequests: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
-  });
-  page.on('request', (request) => {
-    if (request.url().includes('/api/v1/')) apiRequests.push(request.url());
-  });
-  await page.goto('/');
-  await expect(page.locator('app-home-shell')).toBeVisible();
-  // Assert after each scenario, including errors caught by Angular's ErrorHandler.
-  test.info().annotations.push({
-    type: 'mock-only',
-    description: 'No live API or database',
-  });
-  evidence.set(page, { errors, apiRequests });
-});
-test.afterEach(async ({ page }) => {
-  expect(evidence.get(page)?.errors).toEqual([]);
-  expect(evidence.get(page)?.apiRequests).toEqual([]);
-});
 
 test('friend requests: accept, reject, search, send and withdraw retain the new round state', async ({
   page,
@@ -173,9 +144,6 @@ test('group profile and announcement changes are projected back into the chat', 
   await expect(
     groupInfo(page).locator('.announcement-editor textarea'),
   ).toHaveValue('Mock announcement is live');
-  await page.screenshot({
-    path: '/tmp/soms-playground/group-announcement.png',
-  });
 });
 
 test('new group creates an owner-only roster and dissolution retains read-only history', async ({
@@ -261,6 +229,10 @@ test('accepting a group invitation adds a group, and unfriend keeps a read-only 
   await bookClub
     .getByRole('button', { name: 'Join group', exact: true })
     .click();
+  await expect(
+    bookClub.getByRole('button', { name: 'Join group', exact: true }),
+  ).toHaveCount(0);
+  await expect(bookClub.locator('.action button')).toHaveCount(1);
   await expect(bookClub.locator('.action button')).toBeDisabled();
   await requests(page).locator('.page-header__back').click();
   await expect(
@@ -283,4 +255,11 @@ test('accepting a group invitation adds a group, and unfriend keeps a read-only 
   await expect(page.locator('.pane-layer.pane-fg .msg-header')).toContainText(
     'Alice',
   );
+  await expect
+    .poll(() =>
+      page
+        .locator('.pane-layer.pane-fg .cb-tail-cap')
+        .evaluate((tail) => (tail as HTMLElement).offsetHeight),
+    )
+    .toBe(16);
 });

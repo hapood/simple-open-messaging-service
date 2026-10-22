@@ -15,6 +15,7 @@ import { Client } from 'pg';
 import { prepareLabConfig } from './local-config.mjs';
 import { ensureLabDatabase } from './database.mjs';
 import { assertPortsFree } from './ports.mjs';
+import { writeHmrSession } from './hmr-session.mjs';
 import { signalProcessGroup, stopLabChildren } from './shutdown.mjs';
 import {
   federationLabDatabaseUrl,
@@ -49,16 +50,8 @@ let hmrRecoveryTimer;
 let controlTimer;
 
 function restoreHmrSessionMarker() {
-  const marker = join(hmrStatusDir, 'session.json');
-  if (existsSync(marker)) return;
-  mkdirSync(hmrStatusDir, { recursive: true, mode: 0o700 });
-  // Only restore the original session identity for this still-running lab.
-  // Never claim a successful build; each frontend must rebuild its own status.
-  writeFileSync(
-    marker,
-    `${JSON.stringify({ sessionId: hmrSessionId, pid: process.pid, startedAt: hmrSessionId }, null, 2)}\n`,
-    { encoding: 'utf8', mode: 0o600 },
-  );
+  // Restore identity only; each frontend must publish a fresh successful build independently.
+  writeHmrSession(hmrStatusDir, hmrSessionId, process.pid);
 }
 
 const baseDatabaseUrl = process.env.DATABASE_URL?.trim();
@@ -504,7 +497,8 @@ try {
 
   if (runFrontend && devServer && !stopping) {
     mkdirSync(hmrStatusDir, { recursive: true, mode: 0o700 });
-    restoreHmrSessionMarker();
+    // Port preflight already established this process as the new lab owner. Retire any stale marker.
+    writeHmrSession(hmrStatusDir, hmrSessionId, process.pid, true);
     hmrRecoveryTimer = setInterval(() => {
       try {
         restoreHmrSessionMarker();

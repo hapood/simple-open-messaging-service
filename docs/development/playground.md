@@ -64,13 +64,15 @@ From the isolated worktree root:
 
 ```sh
 npm --prefix web test -- --watch=false --include='src/playground/*.spec.ts'
-npx playwright test --config test/browser-e2e/playground.config.ts
-npm --prefix web run build:playground -- --output-path=dist/playground
+npm run test:browser:install
+npm run test:playground
+npm --prefix web run build:playground
 ```
 
-The standalone Playwright configuration starts/reuses only the playground on
-port 4301. It uses fresh browser contexts, no lab credentials, and no lab HMR
-status files. The federation configuration explicitly excludes this suite.
-Tests assert visible UI outcomes, absence of browser errors, and absence of
-outgoing API requests. Local screenshots/traces are written under
-`/tmp/soms-playground/` and are not committed.
+The playground project in the shared Playwright configuration starts and owns
+its server on port 4301; it refuses to reuse an existing server. It uses fresh
+browser contexts, no lab credentials, and no lab HMR status files. Tests assert
+visible UI outcomes, absence of browser errors, and absence of outgoing API
+requests. Failure artifacts are isolated per run under `test-results/browser-e2e/`.
+See [browser testing architecture](browser-testing.md) for shared installation,
+interactive Pi use, and build isolation.

@@ -26,12 +26,25 @@
             "assets": [
               {
                 "glob": "**/*",
-                "input": "public"
+                "input": "public",
+                "ignore": [
+                  "push/sw-runtime.js"
+                ]
+              },
+              {
+                "glob": "**/*",
+                "input": ".generated/web",
+                "output": "/"
               }
             ],
-            "styles": ["src/styles.scss"],
+            "styles": [
+              "src/styles.scss"
+            ],
             "scripts": [],
-            "allowedCommonJsDependencies": ["dayjs", "@messageformat/core"]
+            "allowedCommonJsDependencies": [
+              "dayjs",
+              "@messageformat/core"
+            ]
           },
           "configurations": {
             "production": {
@@ -81,7 +94,22 @@
               "optimization": true,
               "extractLicenses": true,
               "sourceMap": false,
-              "outputHashing": "all"
+              "outputHashing": "all",
+              "outputPath": "dist/playground",
+              "assets": [
+                {
+                  "glob": "**/*",
+                  "input": "public",
+                  "ignore": [
+                    "push/sw-runtime.js"
+                  ]
+                },
+                {
+                  "glob": "**/*",
+                  "input": ".generated/playground",
+                  "output": "/"
+                }
+              ]
             },
             "playground-development": {
               "browser": "src/playground/main.ts",
@@ -89,12 +117,78 @@
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true,
-              "outputHashing": "none"
+              "outputHashing": "none",
+              "outputPath": "dist/playground",
+              "assets": [
+                {
+                  "glob": "**/*",
+                  "input": "public",
+                  "ignore": [
+                    "push/sw-runtime.js"
+                  ]
+                },
+                {
+                  "glob": "**/*",
+                  "input": ".generated/playground",
+                  "output": "/"
+                }
+              ]
             },
             "testing": {
               "aot": false,
               "optimization": false,
               "extractLicenses": false
+            },
+            "web-output": {
+              "outputPath": "dist/web",
+              "assets": [
+                {
+                  "glob": "**/*",
+                  "input": "public",
+                  "ignore": [
+                    "push/sw-runtime.js"
+                  ]
+                },
+                {
+                  "glob": "**/*",
+                  "input": ".generated/web",
+                  "output": "/"
+                }
+              ]
+            },
+            "native-output": {
+              "outputPath": "dist/native",
+              "assets": [
+                {
+                  "glob": "**/*",
+                  "input": "public",
+                  "ignore": [
+                    "push/sw-runtime.js"
+                  ]
+                },
+                {
+                  "glob": "**/*",
+                  "input": ".generated/native",
+                  "output": "/"
+                }
+              ]
+            },
+            "playground-output": {
+              "outputPath": "dist/playground",
+              "assets": [
+                {
+                  "glob": "**/*",
+                  "input": "public",
+                  "ignore": [
+                    "push/sw-runtime.js"
+                  ]
+                },
+                {
+                  "glob": "**/*",
+                  "input": ".generated/playground",
+                  "output": "/"
+                }
+              ]
             }
           },
           "defaultConfiguration": "production"

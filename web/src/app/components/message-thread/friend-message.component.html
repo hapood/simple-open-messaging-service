@@ -1,6 +1,7 @@
 <div>
   <div
     class="msg-container"
+    [class.msg-container--web-composer]="!nativeComposer.supported"
     [class.msg-container--has-floating-composer]="
       !blockedPeer() &&
       !friendshipEnded() &&

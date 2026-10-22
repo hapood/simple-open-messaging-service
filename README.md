@@ -6,8 +6,7 @@
 
 <p align="center">
   <strong>Simple Open Messaging Service</strong><br>
-  A lightweight, federated chat platform for the web and native devices.<br>
-  <em>Modern, open-source, and built for complete data ownership.</em>
+  A self-hosted, federated chat platform for the web and native devices.
 </p>
 
 <p align="center">
@@ -37,35 +36,24 @@
 > [!IMPORTANT]
 > SOMS `0.1.0-alpha.0` and the federation protocol (`v1.0.0-draft.0`) are under active development; the wire contract remains subject to closeout revisions prior to stable release.
 
-## Why SOMS?
+## Features
 
-Most self-hosted chat applications stop at the boundary of one installation. SOMS treats federation
-as a first-class feature: people on independently operated servers can discover one another, become
-friends, exchange messages and media, form groups, and place calls without sharing an account
-database or trusting a central service.
+SOMS connects independently operated chat servers. Users can become friends, exchange messages
+and media, form groups, and place calls across servers without a shared account database or
+central account authority. The server and administration console are self-hosted.
 
-At the same time, SOMS is one product across form factors. The Angular client runs directly in a
-browser and is packaged with Tauri for native platforms, while the NestJS server and administration
-console remain fully self-hostable.
+### Federation
 
-### Federation by design
-
-- **Independent identities** — users keep an address on their own server; no global account authority
-  or hosted control plane is required.
+- **Independent identities** — users keep an address on their own server.
 - **Signed server-to-server traffic** — peer discovery, key continuity, HTTP message signatures, and
-  replay protection establish trust between servers.
-- **Recoverable, pull-based synchronization** — bounded state, message, and tombstone feeds make
-  delivery deterministic and allow peers to recover after downtime.
-- **Federated conversations** — friendship, direct messages, group membership, media, read state,
-  message deletion, and call signaling cross server boundaries.
-- **Content-addressed media** — authorized CAS transfer identifies blobs by digest and verifies their
-  declared size before acceptance.
-- **Strictly versioned protocol** — each wire major has a fixed, closed surface; incompatible fields,
-  types, or behavior ship under a new integer major.
-- **Open specification** — the protocol contract, JSON schemas, security model, and conformance suite
-  live in [`spec/`](spec/README.md), independently of the SOMS implementation.
+  replay protection support authenticated communication between servers.
+- **Recoverable synchronization** — pull-based state, message, and deletion feeds let peers catch up
+  after downtime; authorized media transfers verify content digests and declared sizes.
+- **Open protocol** — SOMFP defines cross-server friendship, messaging, group membership, media,
+  read state, deletion, and call signaling. Its versioned contract, schemas, security model, and
+  conformance suite live in [`spec/`](spec/README.md).
 
-### A complete chat experience
+### Chat and administration
 
 - Direct and group conversations with message history, search, replies, mentions, link
   previews, unread state, mute, pin, and history clearing
@@ -78,87 +66,27 @@ console remain fully self-hostable.
   WebAuthn
 - Responsive, installable web client with a shared Tauri shell for native platform integrations
 
-### SOMS at a Glance
-
-| Feature | SOMS | Traditional Self-Hosted Chat | Centralized SaaS |
-| :--- | :--- | :--- | :--- |
-| **Data Ownership** | 100% self-hosted on your own hardware / VPS | Self-hosted (isolated silo) | Third-party cloud provider |
-| **Federation** | Built-in via open SOMFP protocol | None (island) | Walled garden |
-| **Architecture** | Lightweight NestJS + Fastify + Angular + Tauri | Often heavy JVM or monolithic | Proprietary infrastructure |
-| **Calling** | Peer-to-peer WebRTC audio/video | Often requires external bridges | Proprietary calling stack |
-| **Cross-Platform** | Web PWA + shared Tauri shell (Android, Desktop) | Disjointed clients | Official native apps |
-
-## Quick Start
-
-### Local Development
-
-Prerequisites: Node.js 24+, npm, PostgreSQL, and Caddy.
-
-```bash
-# Clone repository and install dependencies
-git clone https://github.com/hapood/simple-open-messaging-service.git
-cd simple-open-messaging-service
-npm install && npm install --prefix web && npm install --prefix admin-web
-
-# Configure environment
-cp .env.example .env
-
-# Run development servers (in separate terminals)
-npm run dev:be   # Backend & federation lab
-npm run dev:fe   # Web client with HMR
-```
-
-For full environment setup, database migrations, and testing workflows, see the [local development guide](docs/development/local-development.md).
-
 ## Deployment
 
 SOMS ships as a self-contained Docker stack with PostgreSQL, automatic migrations, the application,
 and a Caddy TLS edge.
 
-| Profile | Status        | Intended environment                                                       | Guide / Compose                                                    |
-| ------- | ------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| NAS     | In progress   | Home LAN administration with a publicly reachable client                   | [NAS guide](docs/deployment/nas.md) · [`deploy/nas/`](deploy/nas/) |
-| Public  | In progress   | Internet-facing server with standard HTTPS ports and public administration | [`deploy/public/`](deploy/public/)                                 |
+| Profile | Status      | Intended environment                                                       | Guide / Compose                                                    |
+| ------- | ----------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| NAS     | In progress | Home LAN administration with a publicly reachable client                   | [NAS guide](docs/deployment/nas.md) · [`deploy/nas/`](deploy/nas/) |
+| Public  | In progress | Internet-facing server with standard HTTPS ports and public administration | [`deploy/public/`](deploy/public/)                                 |
 
-## Platform Roadmap
+## Platform Status
 
-SOMS uses one Angular client and a Tauri 2 native shell, keeping the core experience shared while
-allowing platform-specific capabilities such as notifications, secure storage, media handling, and
-calls.
+The Angular client runs in the browser and is shared with the Tauri native applications.
+Native platform availability is tracked separately below; planned applications are not yet available.
 
-| Platform  | Status                | Distribution                                              |
-| --------- | --------------------- | --------------------------------------------------------- |
-| Web / PWA | **Available** (Alpha) | Runs in modern desktop and mobile browsers                |
-| Android   | In development        | Tauri application with native calling and FCM integration |
-| Windows   | Planned               | Tauri desktop application                                 |
-| macOS     | Planned               | Tauri desktop application                                 |
-| Linux     | Planned               | Tauri desktop application                                 |
-| iOS       | Deferred              | Paused due to App Store distribution constraints          |
-
-## Architecture
-
-```text
- Web / PWA ────────────────┐                         ┌──── Web / PWA
- Android (Tauri) ──────────┼─ HTTPS + SSE ─ SOMS ───┼──── Android (Tauri)
- Desktop (Tauri, planned) ─┘               server   └──── Third-party clients
-                                      │
-                                signed SOMFP v1
-                                      │
-                                  peer servers
-```
-
-| Layer                     | Technology                                                             |
-| ------------------------- | ---------------------------------------------------------------------- |
-| API and federation server | NestJS 11, Fastify, Drizzle ORM, PostgreSQL                            |
-| User client               | Angular 22, Signals, RxJS, Angular CDK/Material primitives             |
-| Native applications       | Tauri 2 with platform integrations in Rust/Kotlin                      |
-| Administration console    | React 19 and Vite                                                      |
-| Real-time and calls       | SSE, Web Push, FCM, WebRTC, optional TURN                              |
-| Federation                | SOMFP v1, Ed25519 HTTP message signatures, pull-based feeds, CAS media |
-
-For the full component model and request flows, see the
-[architecture guide](docs/overview/architecture.md). The consumer and administrator endpoints are
-documented in the [HTTP API reference](docs/api/api.md).
+| Platform                | Status                | Delivery                                                  |
+| ----------------------- | --------------------- | --------------------------------------------------------- |
+| Web / PWA               | **Available (Alpha)** | Modern desktop and mobile browsers                        |
+| Android                 | In development        | Tauri application with native calling and FCM integration |
+| Windows / macOS / Linux | Planned               | Tauri desktop applications                                |
+| iOS                     | Deferred              | Paused due to App Store distribution constraints          |
 
 ## Documentation
 
@@ -167,9 +95,9 @@ documented in the [HTTP API reference](docs/api/api.md).
 | Documentation           | [Documentation index](docs/README.md)                                                                                       |
 | Development             | [Local initialization and development](docs/development/local-development.md) · [Repository conventions](AGENTS.md)         |
 | Federation protocol     | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
-| Server architecture     | [Architecture](docs/overview/architecture.md) · [Database model](docs/overview/database.md)                                 |
+| Architecture and stack  | [Architecture and technology stack](docs/overview/architecture.md) · [Database model](docs/overview/database.md)            |
 | APIs                    | [Client/admin HTTP API](docs/api/api.md) · [Federation HTTP surface](spec/v1/protocol.md#3-federation-v1-http-surface)      |
-| Deployment              | [NAS deployment (in progress)](docs/deployment/nas.md) · [Public server (in progress)](deploy/public/)                                    |
+| Deployment              | [NAS deployment (in progress)](docs/deployment/nas.md) · [Public server (in progress)](deploy/public/)                      |
 | Operations              | [Rate limiting](docs/operations/rate-limiting.md)                                                                           |
 | Native client           | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/platform/android/calls.md)                                    |
 | Security and governance | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |

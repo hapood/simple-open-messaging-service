@@ -42,7 +42,7 @@ npm run dev:fe
 Use the runner with:
 
 ```bash
-npm run test:browser
+npm run test:browser -- --project=federation-desktop
 ```
 
 The runner refuses to start unless both Angular Web and Admin Vite report a
@@ -60,9 +60,9 @@ It does not coordinate multi-user cases. Review the
 [runner limitations](./cross-platform-ai-e2e.md#current-implementation-limits-2026-09-20)
 before using it. Manual execution remains valid for the acceptance suite.
 
-The Playwright runner uses the installed system Chrome by default
-(`/usr/bin/google-chrome`); set `CHROME_PATH` only when another Chrome binary
-is required. Set `BROWSER_HEADFUL=1` for a visible browser. AI-run artifacts
+The Playwright projects and Pi driver share the lockfile-paired Chromium installed
+by `npm run test:browser:install`; `CHROME_PATH` is an explicit debugging override.
+See [browser testing architecture](browser-testing.md) for target isolation. Set `BROWSER_HEADFUL=1` for a visible browser. AI-run artifacts
 default to `/tmp/soms-cross-platform/` and must not contain authentication
 state.
 

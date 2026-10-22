@@ -23,6 +23,18 @@ render() {
     SOMS_RUN_DIR="$SANDBOX/run" \
     "${@:3}" \
     "$INIT" >/dev/null
+  # Every site and mode must route federation POSTs before the SPA fallback.
+  python3 - "$SANDBOX/run/Caddyfile" <<'PY'
+import pathlib
+import sys
+text = pathlib.Path(sys.argv[1]).read_text()
+blocks = text.split('\thandle /.well-known/* {')[1:]
+assert blocks, 'no backend handlers generated'
+for block in blocks:
+    rule = '\thandle /s2s/* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}'
+    assert rule in block, 'missing path-preserving federation proxy'
+    assert block.index(rule) < block.index('\thandle {'), 'federation proxy follows SPA'
+PY
   if [ -n "${CADDY_BIN:-}" ]; then
     "$CADDY_BIN" adapt --config "$SANDBOX/run/Caddyfile" --adapter caddyfile >/dev/null
   fi

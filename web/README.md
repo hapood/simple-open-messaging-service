@@ -28,7 +28,10 @@ Run `ng test` to execute the unit tests via [Vitest](https://vitest.dev/).
 
 ## Running end-to-end tests
 
-Run `ng e2e` to execute the end-to-end tests via a platform of your choice. To use this command, you need to first add a package that implements end-to-end testing capabilities.
+From the repository root, run `npm run test:browser:install`, then
+`npm run test:playground` for standalone mock UI regression. Federation browser
+projects require the running lab. See [browser testing architecture](../docs/development/browser-testing.md)
+for project selection, Pi exploration, and isolated build outputs.
 
 ## Further help
 

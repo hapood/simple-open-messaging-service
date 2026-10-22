@@ -4,6 +4,8 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { frontendTarget } from './frontend-targets.mjs';
+const target = frontendTarget(process.argv[2]);
 const require = createRequire(import.meta.url);
 execFileSync(
   process.execPath,
@@ -19,7 +21,7 @@ await build({
     fileURLToPath(new URL('../src/push/push-worker.ts', import.meta.url)),
   ],
   outfile: fileURLToPath(
-    new URL('../public/push/sw-runtime.js', import.meta.url),
+    new URL(`../${target.generated}/push/sw-runtime.js`, import.meta.url),
   ),
   bundle: true,
   format: 'iife',

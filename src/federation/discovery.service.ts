@@ -12,13 +12,13 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import type { SigningKeyCertificate } from './federation-certificate.js';
 import { loadFederationRuntimeConfig } from './federation.config.js';
 import { continuousCoverageEnd } from './peer-key-coverage.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { KeypairService } from './keypair.service.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 import { classifySomfpSrvRrset } from './srv-rrset.js';
+import { describeError } from '../logger/describe-error.js';
 import {
   normalizeFederationDomain,
   validateWellKnownDocument,
@@ -57,6 +57,7 @@ interface CachedRoute {
   baseUrl: string;
   connectHost: string;
   fetchedAt: number;
+  connectTimeoutMs?: number;
   dispatcher?: Agent;
 }
 
@@ -65,6 +66,10 @@ export class DiscoveryService implements OnApplicationShutdown {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationRuntimeConfig();
   private readonly routes = new Map<string, CachedRoute>();
+  private readonly routeBuilds = new Map<string, Promise<string>>();
+  private readonly retiring = new Map<Agent, Promise<void>>();
+  private readonly poolCancellation = new WeakMap<Agent, AbortController>();
+  private stopping = false;
   /** Single-flight well-known refreshes keyed by `<domain>#<namespaceId>`. */
   private readonly refreshInFlight = new Map<string, Promise<void>>();
   private readonly lastRefreshAttemptAt = new Map<string, number>();
@@ -76,8 +81,10 @@ export class DiscoveryService implements OnApplicationShutdown {
     private readonly transportConfig: FederationTransportConfigService,
   ) {}
 
-  onApplicationShutdown(): void {
+  async onApplicationShutdown(): Promise<void> {
+    this.stopping = true;
     this.invalidateAllRoutes();
+    await Promise.all(this.retiring.values());
   }
 
   /** Resolve the mandatory SOMFP SRV record while keeping the logical peer as HTTP/TLS authority.
@@ -86,6 +93,7 @@ export class DiscoveryService implements OnApplicationShutdown {
    *  Health cadence without every request re-querying DNS. */
   async resolveBase(domain: string): Promise<string> {
     const normalized = this.normalizeDomain(domain);
+    this.assertRunning();
     const cached = this.routes.get(normalized);
     if (cached) return cached.baseUrl;
     return this.buildRoute(normalized);
@@ -97,25 +105,48 @@ export class DiscoveryService implements OnApplicationShutdown {
   async refreshRoute(domain: string): Promise<void> {
     const normalized = this.normalizeDomain(domain);
     try {
-      await this.buildRoute(normalized, /* replace */ true);
+      await this.buildRoute(normalized);
     } catch (error) {
       if (!this.routes.has(normalized)) throw error;
-      this.logger.warn(
-        `SRV refresh for ${normalized} failed, keeping cached route: ${(error as Error).message}`,
-      );
+      this.logger.warn({
+        msg: `SRV refresh for ${normalized} failed, keeping cached route`,
+        error: describeError(error),
+      });
     }
   }
 
-  /** Build (or rebuild) the cached route. When `replace` is set and the SRV target changed,
-   *  the previous dispatcher is closed so its connection pool is reclaimed. */
-  private async buildRoute(
+  /** Coalesce DNS lookups. Invalidating a route detaches its pending lookup so an
+   *  obsolete result cannot publish a route or allocate a new Agent. */
+  private buildRoute(normalized: string): Promise<string> {
+    this.assertRunning();
+    const pending = this.routeBuilds.get(normalized);
+    if (pending) return pending;
+    const build = Promise.resolve().then(() =>
+      this.discoverRoute(normalized, () => {
+        this.assertRunning();
+        if (this.routeBuilds.get(normalized) !== build)
+          throw new Error(
+            `Federation route lookup invalidated for ${normalized}`,
+          );
+      }),
+    );
+    this.routeBuilds.set(normalized, build);
+    const cleanup = () => {
+      if (this.routeBuilds.get(normalized) === build)
+        this.routeBuilds.delete(normalized);
+    };
+    void build.then(cleanup, cleanup);
+    return build;
+  }
+
+  private async discoverRoute(
     normalized: string,
-    replace = false,
+    assertCurrent: () => void,
   ): Promise<string> {
+    assertCurrent();
     const devRoute = this.config.devRoutes[normalized];
     if (devRoute) {
-      this.maybeClosePreviousDispatcher(normalized, replace);
-      this.routes.set(normalized, {
+      this.publishRoute(normalized, {
         baseUrl: devRoute,
         connectHost: new URL(devRoute).hostname,
         fetchedAt: Date.now(),
@@ -124,9 +155,8 @@ export class DiscoveryService implements OnApplicationShutdown {
     }
 
     if (this.config.allowInsecureHttp) {
-      this.maybeClosePreviousDispatcher(normalized, replace);
       const baseUrl = `http://${normalized}`;
-      this.routes.set(normalized, {
+      this.publishRoute(normalized, {
         baseUrl,
         connectHost: normalized,
         fetchedAt: Date.now(),
@@ -143,6 +173,7 @@ export class DiscoveryService implements OnApplicationShutdown {
         { cause: error },
       );
     }
+    assertCurrent();
     const rrset = classifySomfpSrvRrset(records);
     if (rrset.kind === 'empty')
       throw new FederationDomainResolutionError(
@@ -170,51 +201,135 @@ export class DiscoveryService implements OnApplicationShutdown {
       selected.port === 443
         ? `https://${normalized}`
         : `https://${normalized}:${selected.port}`;
-    const previous = replace ? this.routes.get(normalized) : undefined;
+    const previous = this.routes.get(normalized);
+    const connectTimeoutMs =
+      this.transportConfig.get().connectTimeoutSec * 1000;
     // Reuse the previous dispatcher when the connect target is unchanged so the
     // keep-alive pool stays warm across Health-driven SRV refreshes.
     const dispatcher =
-      previous && previous.connectHost === connectHost
+      previous &&
+      previous.connectHost === connectHost &&
+      previous.baseUrl === baseUrl &&
+      previous.connectTimeoutMs === connectTimeoutMs
         ? previous.dispatcher
-        : this.createDispatcher(normalized, connectHost);
-    this.maybeClosePreviousDispatcher(normalized, replace, previous);
+        : this.createDispatcher(normalized, connectHost, connectTimeoutMs);
     const route: CachedRoute = {
       baseUrl,
       connectHost,
       fetchedAt: Date.now(),
+      connectTimeoutMs,
       dispatcher,
     };
-    this.routes.set(normalized, route);
+    this.publishRoute(normalized, route);
     return baseUrl;
   }
 
-  private maybeClosePreviousDispatcher(
-    normalized: string,
-    replace: boolean,
-    previous: CachedRoute | undefined = this.routes.get(normalized),
-  ): void {
-    if (replace && previous?.dispatcher) void previous.dispatcher.close();
+  private assertRunning(): void {
+    if (this.stopping) throw new Error('Federation transport is shutting down');
+  }
+
+  private publishRoute(domain: string, route: CachedRoute): void {
+    const previous = this.routes.get(domain);
+    this.routes.set(domain, route);
+    if (previous?.dispatcher && previous.dispatcher !== route.dispatcher)
+      this.retire(previous.dispatcher);
+  }
+
+  /** Undici drains already dispatched requests, including response bodies, on close.
+   *  Bound draining so an abandoned streaming body cannot leak a retired pool forever. */
+  private retire(agent: Agent): void {
+    if (this.retiring.has(agent)) return;
+    const draining = (async () => {
+      const timeoutMs = Math.max(
+        1_000,
+        (this.transportConfig.get().callTimeoutSec ?? 30) * 1000,
+      );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const closed = await Promise.race([
+          agent.close().then(() => true),
+          new Promise<false>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+            timer.unref();
+          }),
+        ]);
+        if (!closed) {
+          this.logger.warn(
+            'Federation HTTP pool drain timed out; destroying remaining connections',
+          );
+          // Agent.close detaches its child pools in Undici. Cancel active fetches
+          // explicitly rather than relying on Agent.destroy to find those pools.
+          this.poolCancellation
+            .get(agent)
+            ?.abort(new Error('Federation pool drain timed out'));
+          await agent.destroy();
+        }
+      } catch (error) {
+        this.logger.warn({
+          msg: 'Failed to drain federation HTTP pool',
+          error: describeError(error),
+        });
+        try {
+          this.poolCancellation
+            .get(agent)
+            ?.abort(new Error('Federation pool drain failed'));
+          await agent.destroy();
+        } catch (destroyError) {
+          this.logger.warn({
+            msg: 'Failed to destroy federation HTTP pool',
+            error: describeError(destroyError),
+          });
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    this.retiring.set(agent, draining);
+    void draining.then(() => this.retiring.delete(agent));
   }
 
   invalidateBase(domain: string): void {
     const normalized = this.normalizeDomain(domain);
     const route = this.routes.get(normalized);
-    void route?.dispatcher?.close();
+    this.routeBuilds.delete(normalized);
     this.routes.delete(normalized);
+    if (route?.dispatcher) this.retire(route.dispatcher);
   }
 
   invalidateAllRoutes(): void {
-    for (const route of this.routes.values()) void route.dispatcher?.close();
+    this.routeBuilds.clear();
+    const previous = [...this.routes.values()];
     this.routes.clear();
+    for (const route of previous)
+      if (route.dispatcher) this.retire(route.dispatcher);
   }
 
   /** Federation HTTP transport: never follows redirects and preserves logical authority across SRV routing. */
   async request(url: URL | string, init: RequestInit = {}): Promise<Response> {
     const parsed = typeof url === 'string' ? new URL(url) : url;
-    const domain = this.normalizeDomain(parsed.hostname);
+    const devDomain = Object.entries(this.config.devRoutes).find(
+      ([, base]) => new URL(base).origin === parsed.origin,
+    )?.[0];
+    const domain = this.normalizeDomain(devDomain ?? parsed.hostname);
+    await this.resolveBase(domain);
+    this.assertRunning();
     const route = this.routes.get(domain);
+    // Never silently fall back to apex DNS after invalidation, or dispatch to an
+    // obsolete port after a concurrent refresh. The caller must resolve again.
+    if (!route || new URL(route.baseUrl).origin !== parsed.origin)
+      throw new Error(`Federation route changed before dispatch for ${domain}`);
+    const poolSignal = route.dispatcher
+      ? this.poolCancellation.get(route.dispatcher)?.signal
+      : undefined;
     const response = await undiciFetch(parsed, {
       ...(init as Record<string, unknown>),
+      ...(poolSignal
+        ? {
+            signal: init.signal
+              ? AbortSignal.any([init.signal, poolSignal])
+              : poolSignal,
+          }
+        : {}),
       redirect: 'manual',
       ...(route?.dispatcher ? { dispatcher: route.dispatcher } : {}),
     } as never);
@@ -481,9 +596,13 @@ export class DiscoveryService implements OnApplicationShutdown {
     return records[records.length - 1]!;
   }
 
-  private createDispatcher(domain: string, connectHost: string): Agent {
-    return new Agent({
-      connectTimeout: this.transportConfig.get().connectTimeoutSec * 1000,
+  private createDispatcher(
+    domain: string,
+    connectHost: string,
+    connectTimeoutMs: number,
+  ): Agent {
+    const agent = new Agent({
+      connectTimeout: connectTimeoutMs,
       connect: {
         servername: domain,
         lookup: (_hostname, options, callback) => {
@@ -497,6 +616,8 @@ export class DiscoveryService implements OnApplicationShutdown {
         },
       },
     });
+    this.poolCancellation.set(agent, new AbortController());
+    return agent;
   }
 
   private normalizeDomain(domain: string): string {

@@ -16,7 +16,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const STARTUP_TIMEOUT_MS = 30_000;
 const MAX_RESULT_BYTES = 30 * 1024;
 const MAX_RESULT_LINES = 500;
-const ALLOWED_EDGE_URL = /^http:\/\/localhost:310[1-3](?:\/|$)/;
+import { readFrontendStatus } from '../../../test/browser-e2e/infrastructure/frontend-status.mjs';
 
 type DriverResponse = {
   id: number | null;
@@ -71,6 +71,12 @@ const BrowserDriverParameters = Type.Object({
       description: 'Persistent browser profile name, such as alice-alpha.',
     }),
   ),
+  target: Type.Optional(
+    Type.Union([Type.Literal('playground'), Type.Literal('federation')], {
+      description:
+        'Environment for open. Required for new profiles; existing profiles retain their target.',
+    }),
+  ),
   node: Type.Optional(
     Type.Union([
       Type.Literal('alpha'),
@@ -84,7 +90,7 @@ const BrowserDriverParameters = Type.Object({
   url: Type.Optional(
     Type.String({
       description:
-        'Optional lab edge URL. Only localhost ports 3101-3103 are allowed.',
+        'Optional local URL within the selected target. The driver enforces target origins.',
     }),
   ),
   viewport: Type.Optional(
@@ -182,62 +188,8 @@ function assertEvalScript(cwd: string, script: string | undefined): string {
   return resolvedScript;
 }
 
-function assertAllowedUrl(url: string | undefined): void {
-  if (url && !ALLOWED_EDGE_URL.test(url)) {
-    throw new Error(
-      'Browser navigation is restricted to http://localhost:3101-3103.',
-    );
-  }
-}
-
 function artifactDirectory(): string {
   return process.env.BROWSER_ARTIFACT_DIR || DEFAULT_ARTIFACT_DIRECTORY;
-}
-
-function processIsRunning(pid: number | null): boolean {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readFrontendStatus(
-  service: FrontendService,
-): Promise<FrontendStatus & { processRunning: boolean }> {
-  const statusDirectory = join(artifactDirectory(), 'status');
-  const path = join(statusDirectory, `${service}.json`);
-  let status: FrontendStatus;
-  try {
-    status = JSON.parse(await readFile(path, 'utf8')) as FrontendStatus;
-  } catch (error) {
-    throw new Error(
-      `No valid ${service} HMR status at ${path}. Do not start another frontend while the lab might be running. Inspect dev:fe processes and frontend logs; if the status directory was removed, the running lab will restore the session marker and require a fresh build before browser acceptance. ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  let sessionId: string | undefined;
-  try {
-    sessionId = JSON.parse(
-      await readFile(join(statusDirectory, 'session.json'), 'utf8'),
-    ).sessionId;
-  } catch (error) {
-    throw new Error(
-      `No valid HMR session marker in ${statusDirectory}. Check whether dev:fe is already running before starting a replacement; a live lab should restore this marker without claiming build success. ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!sessionId || status.sessionId !== sessionId) {
-    throw new Error(
-      `${service} HMR status belongs to session ${String(status.sessionId)}, current session is ${String(sessionId)}.`,
-    );
-  }
-  return {
-    ...status,
-    processRunning:
-      processIsRunning(status.observerPid ?? null) &&
-      processIsRunning(status.childPid ?? status.pid),
-  };
 }
 
 async function frontendStatus(
@@ -560,7 +512,6 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
         };
       }
 
-      assertAllowedUrl(params.url);
       const script =
         params.action === 'eval'
           ? assertEvalScript(ctx.cwd, params.script)

@@ -10,12 +10,12 @@ for (const [target, configuration, output] of [
 ]) {
   test(`${target} prepares the worker, builds AOT, and postprocesses its own output`, () => {
     const plan = createBuildPlan(target);
-    assert.deepEqual(plan[0], ['scripts/build-push-worker.mjs']);
+    assert.deepEqual(plan[0], ['scripts/build-push-worker.mjs', target]);
     assert.match(plan[1][0], /[\\/]@angular[\\/]cli[\\/]bin[\\/]ng\.js$/);
     assert.deepEqual(plan[1].slice(1), [
       'build',
       '--configuration',
-      configuration,
+      `${configuration},${target}-output`,
       '--aot',
       '--output-path',
       output,
@@ -40,7 +40,10 @@ for (const args of [
 ]) {
   test(`forwards configuration without duplicating a default: ${args.join(' ')}`, () => {
     const command = createBuildPlan('native', args)[1];
-    assert.deepEqual(command.slice(2, 2 + args.length), args);
+    assert.deepEqual(command.slice(2, 4), [
+      '--configuration',
+      `${args.join(' ').includes('automation') ? 'automation' : 'development'},native-output`,
+    ]);
     assert.equal(command.includes('production'), false);
     assert.equal(command.includes('--aot'), true);
     assert.equal(command.at(-1), '--stats-json');
@@ -51,7 +54,7 @@ test('forwards Pages deployment arguments to Angular', () => {
   const command = createBuildPlan('playground', ['--base-href', '/soms/'])[1];
   assert.deepEqual(command.slice(2, 6), [
     '--configuration',
-    'playground',
+    'playground,playground-output',
     '--base-href',
     '/soms/',
   ]);
@@ -138,10 +141,11 @@ test('package entry points share the build runner without lifecycle-hook forks',
   assert.equal(web['build:playground'], 'node scripts/build.mjs playground');
   assert.equal(
     web['start:playground'],
-    'npm start -- --configuration playground',
+    'node scripts/start.mjs playground serve',
   );
-  assert.equal(web.prestart, 'node scripts/build-push-worker.mjs');
-  assert.equal(web.prewatch, web.prestart);
+  assert.equal(web.start, 'node scripts/start.mjs web serve');
+  assert.equal(web.prestart, undefined);
+  assert.equal(web.prewatch, undefined);
   assert.equal(
     Object.keys(web).some((name) => /^(?:pre|post)build/.test(name)),
     false,
@@ -157,6 +161,26 @@ test('package entry points share the build runner without lifecycle-hook forks',
     root['build:fe'],
     'npm run build:development --prefix web && npm run build:development --prefix admin-web',
   );
+});
+
+test('Angular target configurations isolate outputs and generated assets even without the npm wrapper', () => {
+  const config = JSON.parse(
+    readFileSync(new URL('../angular.json', import.meta.url), 'utf8'),
+  );
+  const build = config.projects.web.architect.build;
+  for (const target of ['web', 'native', 'playground']) {
+    const overlay = build.configurations[`${target}-output`];
+    assert.equal(overlay.outputPath, `dist/${target}`);
+    assert.equal(overlay.assets[1].input, `.generated/${target}`);
+    assert.deepEqual(overlay.assets[0].ignore, ['push/sw-runtime.js']);
+  }
+  for (const mode of ['playground', 'playground-development']) {
+    assert.equal(build.configurations[mode].outputPath, 'dist/playground');
+    assert.equal(
+      build.configurations[mode].assets[1].input,
+      '.generated/playground',
+    );
+  }
 });
 
 test('application builds default to AOT while unit tests explicitly opt into JIT', () => {

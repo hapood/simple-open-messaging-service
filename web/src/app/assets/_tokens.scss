@@ -216,8 +216,9 @@ $app-gray-900: #111827;
     var(--soms-composer-height) + var(--soms-keyboard-height) +
       var(--soms-safe-bottom)
   );
-  // Browser chat content is already translated above the IME, so its scroll-tail reserve excludes the
-  // keyboard. NativeComposerService overrides this with the full occupation because native owns the lift.
+  // Root fallback for native boot; NativeComposerService replaces this with the full occupation once
+  // native owns the keyboard lift. Web chatboxes must compute their reserve locally from their own
+  // composer height: inheriting this root-resolved aggregate would couple the two buffered panes.
   --soms-content-bottom-reserve: calc(
     var(--soms-composer-height) + var(--soms-safe-bottom)
   );

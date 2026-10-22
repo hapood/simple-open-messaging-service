@@ -67,6 +67,15 @@
   --kbd-compositor-lift: 0px;
 }
 
+// Resolve the aggregate on the same element that owns the web composer height. A root-defined calc()
+// is resolved before inheritance, so it would keep both A/B panes coupled to the global notification
+// (including its transient zero during handoff). Native keeps the inherited composer + keyboard reserve.
+.msg-container--web-composer {
+  --soms-content-bottom-reserve: calc(
+    var(--soms-composer-height) + var(--soms-safe-bottom)
+  );
+}
+
 // The projected quote is a fixed first row inside the web composer. Extend the kernel tail reserve by the
 // same outer row height so the newest message and floating jump controls remain fully above the composer.
 .msg-container--has-compose-quote {
