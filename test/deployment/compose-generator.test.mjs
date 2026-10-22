@@ -25,6 +25,22 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
       deploymentIssues,
     } = await import(output);
     const template = await readFile('deploy/nas/docker-compose.yml', 'utf8');
+    const { version } = JSON.parse(await readFile('package.json', 'utf8'));
+    const releaseImage = `ghcr.io/hapood/simple-open-messaging-service:v${version}`;
+    assert.equal(initialDeployment.image, releaseImage);
+    for (const [path, expectedImage] of [
+      ['deploy/nas/docker-compose.yml', releaseImage],
+      [
+        'deploy/public/docker-compose.yml',
+        'ghcr.io/hapood/simple-open-messaging-service:latest',
+      ],
+    ]) {
+      const source = await readFile(path, 'utf8');
+      const images = [...source.matchAll(/^    image: (.+)$/gm)]
+        .map((match) => match[1])
+        .filter((image) => !image.startsWith('postgres:'));
+      assert.deepEqual(images, [expectedImage, expectedImage], path);
+    }
     assert.equal(composeScalar('a$b'), '"a$$b"');
     const config = {
       ...initialDeployment,
@@ -66,6 +82,8 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
     const result = parse();
     assert.equal(result.status, 0, result.stderr || 'Docker Compose required');
     const model = JSON.parse(result.stdout);
+    assert.equal(model.services.app.image, releaseImage);
+    assert.equal(model.services.migrate.image, releaseImage);
     // Compose config emits a re-loadable model, preserving dollar escapes.
     const escaped = config.databasePassword.replaceAll('$', () => '$$');
     assert.equal(model.services.app.environment.PGPASSWORD, escaped);
@@ -90,6 +108,8 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
     const publicResult = parse();
     assert.equal(publicResult.status, 0, publicResult.stderr);
     const publicModel = JSON.parse(publicResult.stdout);
+    assert.equal(publicModel.services.app.image, releaseImage);
+    assert.equal(publicModel.services.migrate.image, releaseImage);
     assert.equal(
       publicModel.services.app.environment.SOMS_TLS_MODE,
       'standard',

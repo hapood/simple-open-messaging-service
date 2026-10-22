@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - web/**
+      - deploy/nas/docker-compose.yml
       - .github/workflows/pages.yml
   workflow_dispatch:
 

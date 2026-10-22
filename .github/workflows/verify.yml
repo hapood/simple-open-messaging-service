@@ -57,6 +57,9 @@ jobs:
           npm run build --prefix web
           npm test --prefix web
 
+      - name: Validate deployment image references and Compose output
+        run: node --test test/deployment/*.test.mjs docker/nas-compose.test.mjs
+
       - name: Build and test administration console
         run: |
           npm run build --prefix admin-web

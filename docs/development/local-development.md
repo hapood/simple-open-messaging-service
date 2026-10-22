@@ -1,8 +1,7 @@
 # Local Development
 
 This guide covers source checkout, local initialization, database setup, and development commands.
-For an operator installation, use the [NAS deployment guide](../deployment/nas.md) instead. The
-internet-facing server deployment guide is still being written.
+For an operator installation, use the [deployment guide](../deployment/deployment.md) instead.
 
 ## Requirements
 

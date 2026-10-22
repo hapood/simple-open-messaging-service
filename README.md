@@ -22,7 +22,7 @@
   ·
   <a href="docs/development/local-development.md">Development setup</a>
   ·
-  <a href="docs/deployment/nas.md">NAS deployment</a>
+  <a href="docs/deployment/deployment.md">Deployment</a>
 </p>
 
 <p align="center">
@@ -39,61 +39,93 @@
 ## Features
 
 SOMS connects independently operated chat servers. Users can become friends, exchange messages
-and media, form groups, and place calls across servers without a shared account database or
-central account authority. The server and administration console are self-hosted.
+and rich media, form groups, and place calls across servers without a shared database or central
+authority. The server, web client, and administration console are self-hosted.
 
-### Federation
+### 🔄 Bulletproof Federation (Engineered for Self-Hosters)
 
-- **Independent identities** — users keep an address on their own server.
-- **Signed server-to-server traffic** — peer discovery, key continuity, HTTP message signatures, and
-  replay protection support authenticated communication between servers.
-- **Recoverable synchronization** — pull-based state, message, and deletion feeds let peers catch up
-  after downtime; authorized media transfers verify content digests and declared sizes.
-- **Open protocol** — SOMFP defines cross-server friendship, messaging, group membership, media,
-  read state, deletion, and call signaling. Its versioned contract, schemas, security model, and
-  conformance suite live in [`spec/`](spec/README.md).
+Unlike protocols that assume enterprise data centers with 100% uptime, SOMS is built for the
+reality of home servers, NAS devices, and dynamic IPs:
 
-### Chat and administration
+- **Zero-Loss Recoverable Pull Sync** — When a server goes offline for maintenance or network
+  outages, it doesn't cause state divergence or CPU storms upon reconnect. Nodes catch up on
+  missed messages, membership changes, and room states smoothly via cursor-based pull feeds.
+- **First-Class Deletion & Recall (Tombstones)** — Message revocations and author deletions are
+  treated as sequenced tombstones. Deletion feeds propagate reliably across peers, ensuring
+  withdrawn messages are cleanly purged even if a peer server was offline at the moment of deletion.
+- **Signed Server-to-Server Traffic** — Ed25519 HTTP message signatures, replay protection,
+  and key continuity authenticate every cross-server interaction without central gatekeepers.
+- **Open Protocol (SOMFP)** — SOMFP specifies friendship, messaging, group rosters, media,
+  read positions, deletions, and call signaling. Complete contracts, schemas, and conformance
+  suites live in [`spec/`](spec/README.md).
 
-- Direct and group conversations with message history, search, replies, mentions, link
-  previews, unread state, mute, pin, and history clearing
-- Images, video, audio, files, avatars, and access-controlled media storage
-- OTP and QR sign-in with per-device sessions, sliding inactivity expiry, and remote revocation; registration
-  and password sign-in are temporarily hidden in the client UI during alpha
-- Real-time delivery over SSE, Web Push and FCM notifications, plus missed-message summaries
-- One-to-one audio/video calls with WebRTC signaling and optional TURN credentials
-- Administration console with RBAC, audit logs, quotas, diagnostics, federation controls, 2FA, and
-  WebAuthn
-- Responsive, installable web client with a shared Tauri shell for native platform integrations
+### 💬 Rich & Responsive Messaging
+
+Enjoy the fluid speed of modern cloud messengers on your own hardware:
+
+- **Rich Content Types** — Images, streaming video, voice audio, raw files with progress,
+  quoted replies, @mentions, rich link previews, and customizable avatars.
+- **NAS-Grade Media Delivery** — Stream large files and media directly from personal storage
+  with verified content digests (SHA-256) and declared sizes.
+- **In-Thread Substring Search** — Search conversation text, quoted replies, and media
+  filenames with lightweight coordinate jumping, avoiding client-side decryption bottlenecks
+  and mobile battery drain.
+- **Reliable Multi-Device Sync** — Instant unread/read state, pinned threads, mute, and draft
+  sync across every device you log into.
+- **One-to-One Voice & Video** — Low-latency WebRTC calls with simple cross-server signaling
+  and optional custom TURN credentials.
+
+### 🛡️ Administration & Community Moderation
+
+Keep your server healthy and your community safe with full administrative visibility:
+
+- **In-App Message Reporting** — Users can report inappropriate or abusive content within
+  conversations, creating an auditable review entry for server administrators.
+- **Content Moderation Actions** — Administrators can inspect reported messages, dismiss
+  spurious reports, or execute administrative deletions (tombstones) across the thread.
+- **Enterprise-Grade Admin Console** — Role-based access control (RBAC), quota management,
+  system audit logs, connection diagnostics, and federation peer controls.
+- **Zero-Password & Modern Auth** — OTP and QR code sign-in, per-device session management
+  with remote revocation, plus 2FA and WebAuthn hardware key support for administrators.
+- **Streamlined Stack & Low Overhead** — Built on Fastify, Drizzle ORM, and PostgreSQL with
+  zero external broker dependencies (no Redis or RabbitMQ required), running comfortably on
+  entry-level NAS hardware and modest servers.
 
 ## Deployment
 
 SOMS ships as a self-contained Docker stack with PostgreSQL, automatic migrations, the application,
 and a Caddy TLS edge.
 
-The quickest path is the [**Compose configuration generator**][gen] in the live playground: pick a
-deployment environment (public server, home NAS, or custom), fill in domains and credentials, and
-download a ready-to-run `compose.yaml` with all editable settings grouped at the top of the file.
-The generator also emits the DNS records, ports, and verification commands for the chosen shape.
+Use the [**Compose configuration generator**][gen] in the live playground. Choose **Public Server**
+(`public`) or **LAN / NAS** (`nas`), fill in domains and credentials, then download
+`docker-compose.yml`. All editable settings are grouped at the top of this single file. The
+page also provides the DNS records and published ports for the selected mode.
 
-Manual steps after downloading:
+The generator and NAS template pin
+`ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0` for both the application and migrations.
+This alpha image supports Linux amd64 and arm64 and is published after the corresponding release
+tag is created from `main`. See [GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases)
+for availability and release notes. The public deployment template uses `:latest`, which follows
+published versions including alpha releases; its first release will point to `v0.1.0-alpha.0`.
+The rolling `:dev` image is intended for development testing and never updates `latest`.
+
+After downloading:
 
 ```bash
-mkdir soms && cd soms   # place compose.yaml here
-mkdir data               # state lives here; back it up
+mkdir soms && cd soms   # place docker-compose.yml here
+sudo install -d -m 0750 -o 1000 -g 1000 data
 docker compose up -d
 docker compose logs -f app
 ```
 
-Notes:
-
-- Admin access is chosen per deployment: private source IPs only (home NAS default) or public with
-  mandatory login (public server default). Both options exist on either shape.
-- The compose file contains plaintext credentials. Keep it private and out of version control.
+- Public mode uses HTTPS on port 443; NAS mode uses one configurable port, defaulting to 7667.
+- Admin access defaults to public with mandatory login in public mode, and private source IPs only
+  in NAS mode. Either mode lets you change that restriction.
+- Configuration inputs, YAML preview, copy, and download show plaintext credentials. Keep the file
+  private and out of version control.
 - Changing credential values in the file does not rotate existing database or admin passwords.
 
-For background on the two network shapes, certificate provisioning, and manual templates, see the
-[detailed deployment guide](docs/deployment/nas.md) and [`deploy/`](deploy/).
+See the [deployment guide](docs/deployment/deployment.md) for domains, DNS, configuration, and updates.
 
 [gen]: https://hapood.github.io/simple-open-messaging-service/#/deploy
 
@@ -118,7 +150,7 @@ Native platform availability is tracked separately below; planned applications a
 | Federation protocol     | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
 | Architecture and stack  | [Architecture and technology stack](docs/overview/architecture.md) · [Database model](docs/overview/database.md)            |
 | APIs                    | [Client/admin HTTP API](docs/api/api.md) · [Federation HTTP surface](spec/v1/protocol.md#3-federation-v1-http-surface)      |
-| Deployment              | [NAS deployment (in progress)](docs/deployment/nas.md) · [Public server (in progress)](deploy/public/)                      |
+| Deployment              | [Deployment guide](docs/deployment/deployment.md) · [Compose configuration generator][gen]                                  |
 | Operations              | [Rate limiting](docs/operations/rate-limiting.md)                                                                           |
 | Native client           | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/platform/android/calls.md)                                    |
 | Security and governance | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |

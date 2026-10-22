@@ -79,7 +79,7 @@ export const deploymentMessages = {
       'Shared by PostgreSQL, migrations and the app. Do not change casually on an existing database.',
     image: 'Image Version',
     imageHint:
-      'The app and migration service share this image. Use a published version or locally built image.',
+      'Defaults to the v0.1.0-alpha.0 release image for amd64 and arm64. The app and migration service must use the same image. You can also enter a locally built image.',
 
     // Output & Checklist
     checklist: 'Deployment Steps',
@@ -194,7 +194,7 @@ export const deploymentMessages = {
       'PostgreSQL、数据库迁移服务与应用共用这些标识。已有数据时请勿随意更改。',
     image: '镜像版本',
     imageHint:
-      '核心应用和迁移服务共用此容器镜像。可填写已发布的官方标签或本地构建镜像。',
+      '默认使用 v0.1.0-alpha.0 发布镜像，支持 amd64 和 arm64。应用和迁移服务必须使用同一镜像，也可填写本地构建的镜像。',
 
     // Output & Checklist
     checklist: '部署步骤',

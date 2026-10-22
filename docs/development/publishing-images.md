@@ -8,13 +8,13 @@ verification and both architectures pass does it assemble and update the multi-p
 
 ## Tags
 
-| Trigger | Published multi-platform tags |
-| --- | --- |
-| Push to `dev` | `dev`, `sha-<full commit SHA>` |
-| Push `v<package.json version>` | Exact version tag, `sha-<full commit SHA>` |
-| Stable version tag, without a prerelease suffix | Also updates `latest` |
+| Trigger                        | Published multi-platform tags                        |
+| ------------------------------ | ---------------------------------------------------- |
+| Push to `dev`                  | `dev`, `sha-<full commit SHA>`                       |
+| Push `v<package.json version>` | Exact version tag, `sha-<full commit SHA>`, `latest` |
 
-Prereleases such as `v0.1.0-alpha.0` never update `latest`. Every image includes `linux/amd64` and
+Version releases, including prereleases such as `v0.1.0-alpha.0`, update `latest`. Development
+branch pushes never update `latest`. Every image includes `linux/amd64` and
 `linux/arm64`. Per-architecture staging tags use `sha-<full commit SHA>-amd64` and
 `sha-<full commit SHA>-arm64`; deployment configurations should use a multi-platform tag.
 
@@ -45,8 +45,14 @@ docker --config "$docker_config" pull ghcr.io/hapood/simple-open-messaging-servi
 rm -r "$docker_config"
 ```
 
-For deployment before the first versioned release, select
-`ghcr.io/hapood/simple-open-messaging-service:dev` in the Compose generator. This is a rolling
-development channel; pin `sha-<full commit SHA>` when a deployment needs a reproducible image.
-Keep the migration and application services on the same image reference. Versioned releases
-remain the preferred choice for production deployments.
+The Compose generator and NAS template default to
+`ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0`; the public template uses `:latest`.
+Publish that tag from `main` after
+the release pull request has been approved and squash-merged. Versioned images become available
+after the tag workflow succeeds; merging to `main` alone does not publish them.
+
+Use `:dev` explicitly for development testing. Pin an image digest when a deployment needs an
+immutable image reference, and keep the migration and application services on the same reference.
+The first alpha release also publishes `:latest`, and subsequent version releases update it.
+The GitHub Release remains marked as a prerelease for alpha versions; that designation is separate
+from the container registry's `latest` tag.
