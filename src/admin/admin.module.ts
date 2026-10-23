@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
+import { AccountSecurityService } from './account-security.service.js';
+import { AccountSecurityController } from './account-security.controller.js';
 import { AdminController } from './admin.controller.js';
 import { AdminSettingsController } from './admin-settings.controller.js';
 import { AdminFederationController } from './admin-federation.controller.js';
@@ -73,6 +75,7 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     QuotaModule,
   ],
   controllers: [
+    AccountSecurityController,
     AdminController,
     AdminSettingsController,
     AdminFederationController,
@@ -91,6 +94,7 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     DurableTaskAdminController,
   ],
   providers: [
+    AccountSecurityService,
     AdminAuthService,
     TwoFactorService,
     WebAuthnService,

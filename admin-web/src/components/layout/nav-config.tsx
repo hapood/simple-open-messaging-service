@@ -32,6 +32,7 @@ type NavKey =
   | 'media'
   | 'settings'
   | 'security'
+  | 'adminSessions'
   | 'durableTasks'
   | 'rateLimits'
   | 'messageReports';
@@ -116,7 +117,10 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: 'nav.group.account',
     footer: true,
-    items: [{ to: '/security', key: 'security', icon: CircleUser }],
+    items: [
+      { to: '/security', key: 'security', icon: CircleUser },
+      { to: '/admin-sessions', key: 'adminSessions', icon: Monitor },
+    ],
   },
 ];
 

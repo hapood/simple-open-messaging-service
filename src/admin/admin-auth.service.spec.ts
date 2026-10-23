@@ -119,7 +119,11 @@ async function setup(o: Overrides = {}) {
   };
 
   const db = {
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     query: {
+      adminLoginChallenge: {
+        findFirst: vi.fn(async () => ({ consumedAt: new Date() })),
+      },
       user: { findFirst: store.user.findUnique },
       admin: { findFirst: store.admin.findUnique },
       twoFactorBackupCode: {
@@ -129,8 +133,13 @@ async function setup(o: Overrides = {}) {
       },
     },
     select: vi.fn(() => {
+      let table: unknown;
       const query = {
-        from: () => query,
+        from: (value: unknown) => {
+          table = value;
+          return query;
+        },
+        for: async () => [table === adminTable ? admin : user],
         innerJoin: () => query,
         where: () => query,
         limit: async () =>
@@ -430,14 +439,9 @@ describe('AdminAuthService two-factor orchestration', () => {
     );
   });
 
-  // ── passkey lifecycle: additive factor, sessions stay valid ───────────────────
-
-  it('passkey enroll/remove does NOT revoke existing sessions (additive factor)', async () => {
-    const { svc, store } = await setup({ webauthnEnabled: true });
-    // revokeSessionsByAdmin routes through adminSession.updateMany — pin that neither enroll nor remove
-    // touches it (a passkey is an additive optional factor; enroll already required password re-auth).
-    await svc.completeWebAuthnRegistration(7, 'pending-token', {} as never);
-    await svc.removeWebAuthnCredential(7, 1);
-    expect(store.adminSession.updateMany).not.toHaveBeenCalled();
+  it('refuses session issuance without a verified authentication snapshot', async () => {
+    const { svc, store } = await setup();
+    await expect(svc.createAdminSession(7, {})).rejects.toMatchObject({ bizCode: BusinessCode.UNAUTHENTICATED });
+    expect(store.adminSession.create).not.toHaveBeenCalled();
   });
 });

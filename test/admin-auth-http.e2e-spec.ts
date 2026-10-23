@@ -1,9 +1,24 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request, { type Response } from 'supertest';
 import { Secret, TOTP } from 'otpauth';
 import { DatabaseService } from '../src/database/database.service';
-import { admin } from '../src/database/schema';
+import {
+  account,
+  admin,
+  adminSession,
+  sessionToken,
+} from '../src/database/schema';
+import { and, eq, isNull } from 'drizzle-orm';
+import { SessionTokenService } from '../src/auth/session-token.service';
 import { AdminRole } from '../src/database/enums';
 import { TwoFactorService } from '../src/admin/two-factor.service';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
@@ -57,12 +72,7 @@ describe('Admin authentication HTTP security', () => {
     // an in-process request without reaching into KvStoreService's private maps.
     await kv.del(
       ...['127.0.0.1', '::1', '::ffff:127.0.0.1', 'unknown'].flatMap((ip) =>
-        ['admin/login', 'admin/login/verify'].map((path) =>
-          fixedWindowPolicies.bucketKey(
-            path === 'admin/login' ? 'admin.login' : 'admin.login.verify',
-            ip,
-          ),
-        ),
+        (['admin.login', 'admin.login.verify', 'admin.two-factor', 'admin.webauthn'] as const).map(policy => fixedWindowPolicies.bucketKey(policy, ip)),
       ),
     );
   });
@@ -104,7 +114,11 @@ describe('Admin authentication HTTP security', () => {
     expect(initialLogin.body.data).toEqual({ authenticated: true });
     const oldCookie = cookieFrom(initialLogin);
 
-    const setup = await post('admin/2fa/setup', {}, oldCookie);
+    const setup = await post(
+      'admin/2fa/setup',
+      { password: PASSWORD },
+      oldCookie,
+    );
     expect(setup.body.code).toBe(BusinessCode.OK);
     expect(setup.body.data).toMatchObject({
       secret: expect.any(String),
@@ -139,7 +153,7 @@ describe('Admin authentication HTTP security', () => {
 
     const verified = await post('admin/login/verify', {
       challengeToken: challenged.body.data.challengeToken,
-      code: totpFor(setup.body.data.secret),
+      backupCode: enabled.body.data.backupCodes[0],
     });
     expect(verified.body.data).toEqual({ authenticated: true });
     const sessionHeader = String(verified.headers['set-cookie']);
@@ -152,6 +166,269 @@ describe('Admin authentication HTTP security', () => {
       account: 'totp-admin',
       role: AdminRole.SUPER_ADMIN,
     });
+  });
+
+  it('atomically changes the password once, revokes every own session, and leaves another account intact', async () => {
+    const id = await seedAdmin('password-admin');
+    const otherId = await seedAdmin('other-admin');
+    const owner = await database.db.query.admin.findFirst({
+      where: eq(admin.id, id),
+    });
+    const sessions = app.get(SessionTokenService);
+    const userToken = await sessions.issue(owner!.userId, 'web');
+    const first = cookieFrom(
+      await post('admin/login', {
+        account: 'password-admin',
+        password: PASSWORD,
+      }),
+    );
+    const second = cookieFrom(
+      await post('admin/login', {
+        account: 'password-admin',
+        password: PASSWORD,
+      }),
+    );
+    const other = cookieFrom(
+      await post('admin/login', { account: 'other-admin', password: PASSWORD }),
+    );
+    const current = await post('admin/account/current', {}, first);
+    expect(current.body.data.currentIp).toEqual(expect.any(String));
+    const list = await post('admin/admin-sessions', {}, first);
+    expect(
+      list.body.data.list.filter((s: { isCurrent: boolean }) => s.isCurrent),
+    ).toHaveLength(1);
+    const results = await Promise.all([
+      post(
+        'admin/account/password',
+        { password: PASSWORD, newPassword: 'NewPassword123!' },
+        first,
+      ),
+      post(
+        'admin/account/password',
+        { password: PASSWORD, newPassword: 'OtherPassword123!' },
+        second,
+      ),
+    ]);
+    expect(results.filter((r) => r.body.code === BusinessCode.OK)).toHaveLength(
+      1,
+    );
+    expect((await post('admin/me', {}, first)).status).toBe(401);
+    expect((await post('admin/me', {}, second)).status).toBe(401);
+    expect((await post('admin/me', {}, other)).body.code).toBe(BusinessCode.OK);
+    expect(await sessions.validate(userToken)).toBeNull();
+    expect(
+      await database.db
+        .select()
+        .from(adminSession)
+        .where(
+          and(eq(adminSession.adminId, id), isNull(adminSession.revokedAt)),
+        ),
+    ).toHaveLength(0);
+    expect(
+      await database.db
+        .select()
+        .from(sessionToken)
+        .where(
+          and(
+            eq(sessionToken.userId, owner!.userId),
+            isNull(sessionToken.revokedAt),
+          ),
+        ),
+    ).toHaveLength(0);
+    expect(
+      await database.db
+        .select()
+        .from(adminSession)
+        .where(
+          and(
+            eq(adminSession.adminId, otherId),
+            isNull(adminSession.revokedAt),
+          ),
+        ),
+    ).toHaveLength(1);
+  });
+
+  it('cannot initialize a stale cache after a concurrent password rotation', async () => {
+    const id = await seedAdmin('cache-race-admin');
+    const owner = await database.db.query.admin.findFirst({
+      where: eq(admin.id, id),
+    });
+    const cookie = cookieFrom(
+      await post('admin/login', {
+        account: 'cache-race-admin',
+        password: PASSWORD,
+      }),
+    );
+    const sessions = app.get(SessionTokenService);
+    let reached!: () => void;
+    const initialized = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = kv.initPersistent.bind(kv);
+    const spy = vi
+      .spyOn(kv, 'initPersistent')
+      .mockImplementationOnce(async (...args) => {
+        reached();
+        await gate;
+        await original(...args);
+      });
+    const issuance = sessions.issue(owner!.userId, 'web');
+    try {
+      await initialized;
+      // The rotation is allowed to start while issuance holds the account lock.
+      const rotation = post(
+        'admin/account/password',
+        { password: PASSWORD, newPassword: 'NewPassword123!' },
+        cookie,
+      ).then((response) => response);
+      release();
+      const token = await issuance;
+      expect((await rotation).body.code).toBe(BusinessCode.OK);
+      expect(await sessions.validate(token)).toBeNull();
+      expect(await kv.getPersistent(spy.mock.calls[0][0])).toBeNull();
+    } finally {
+      release();
+      await issuance.catch(() => {});
+      spy.mockRestore();
+    }
+  });
+
+  it('requires an enrolled factor to change passwords and forbids the consumer bypass', async () => {
+    const id = await seedAdmin('factor-admin');
+    const owner = await database.db.query.admin.findFirst({
+      where: eq(admin.id, id),
+    });
+    const setup = twoFactor.beginSetup(id, 'factor-admin', 'factor-admin');
+    const codes = await twoFactor.enableWithBackupCodes(id, setup.secret);
+    const challenge = await post('admin/login', {
+      account: 'factor-admin',
+      password: PASSWORD,
+    });
+    const login = await post('admin/login/verify', {
+      challengeToken: challenge.body.data.challengeToken,
+      backupCode: codes.backupCodes[0],
+    });
+    const cookie = cookieFrom(login);
+    const denied = await post(
+      'admin/account/password',
+      { password: PASSWORD, newPassword: 'NewPassword123!' },
+      cookie,
+    );
+    expect(denied.body.code).toBe(BusinessCode.TWO_FACTOR_INVALID);
+    const token = await app
+      .get(SessionTokenService)
+      .issue(owner!.userId, 'web');
+    const bypass = await request(app.getHttpServer())
+      .post('/api/v1/auth/change-password')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ oldPassword: PASSWORD, newPassword: 'NewPassword123!' });
+    expect(bypass.body.code).toBe(BusinessCode.FORBIDDEN);
+    const success = await post(
+      'admin/account/password',
+      {
+        password: PASSWORD,
+        newPassword: 'NewPassword123!',
+        backupCode: codes.backupCodes[1],
+      },
+      cookie,
+    );
+    expect(success.body.code).toBe(BusinessCode.OK);
+  });
+
+  it('rejects enrollment without fresh proof and concurrent replay of a setup permit', async () => {
+    await seedAdmin('setup-admin');
+    const cookie = cookieFrom(
+      await post('admin/login', { account: 'setup-admin', password: PASSWORD }),
+    );
+    expect((await post('admin/2fa/setup', {}, cookie)).body.code).not.toBe(
+      BusinessCode.OK,
+    );
+    const setup = await post('admin/2fa/setup', { password: PASSWORD }, cookie);
+    const body = {
+      pendingToken: setup.body.data.pendingToken,
+      code: totpFor(setup.body.data.secret),
+    };
+    const results = await Promise.all([
+      post('admin/2fa/setup/verify', body, cookie),
+      post('admin/2fa/setup/verify', body, cookie),
+    ]);
+    expect(results.filter((r) => r.body.code === BusinessCode.OK)).toHaveLength(
+      1,
+    );
+  });
+
+  it('rejects an enrollment permit in another session and after password rotation', async () => {
+    await seedAdmin('bound-admin');
+    const login = () =>
+      post('admin/login', { account: 'bound-admin', password: PASSWORD });
+    const cookie = cookieFrom(await login());
+    const other = cookieFrom(await login());
+    const setup = await post('admin/2fa/setup', { password: PASSWORD }, cookie);
+    const body = {
+      pendingToken: setup.body.data.pendingToken,
+      code: totpFor(setup.body.data.secret),
+    };
+    expect(
+      (await post('admin/2fa/setup/verify', body, other)).body.code,
+    ).not.toBe(BusinessCode.OK);
+    expect(
+      (
+        await post(
+          'admin/account/password',
+          { password: PASSWORD, newPassword: 'RotatedPassword1!' },
+          cookie,
+        )
+      ).body.code,
+    ).toBe(BusinessCode.OK);
+    expect((await post('admin/2fa/setup/verify', body, cookie)).status).toBe(
+      401,
+    );
+  });
+
+  it('allows only one concurrent login to consume the same TOTP time step', async () => {
+    const id = await seedAdmin('concurrent-totp');
+    const setup = twoFactor.beginSetup(
+      id,
+      'concurrent-totp',
+      'concurrent-totp',
+    );
+    await twoFactor.enableWithBackupCodes(id, setup.secret);
+    const login = () =>
+      post('admin/login', { account: 'concurrent-totp', password: PASSWORD });
+    const first = await login();
+    const second = await login();
+    const code = totpFor(setup.secret);
+    const results = await Promise.all(
+      [first, second].map((challenge) =>
+        post('admin/login/verify', {
+          challengeToken: challenge.body.data.challengeToken,
+          code,
+        }),
+      ),
+    );
+    expect(
+      results.filter((result) => result.body.code === BusinessCode.OK),
+    ).toHaveLength(1);
+  });
+
+  it('requires fresh proof to remove passkeys and forbids self-reset through the recovery endpoint', async () => {
+    const id = await seedAdmin('remove-admin');
+    const cookie = cookieFrom(
+      await post('admin/login', {
+        account: 'remove-admin',
+        password: PASSWORD,
+      }),
+    );
+    expect(
+      (await post('admin/webauthn/credentials/1/delete', {}, cookie)).body.code,
+    ).not.toBe(BusinessCode.OK);
+    expect(
+      (await post(`admin/admins/${id}/reset-2fa`, {}, cookie)).status,
+    ).toBe(403);
   });
 
   it('accepts a backup code once and rejects reused or invalid challenges', async () => {

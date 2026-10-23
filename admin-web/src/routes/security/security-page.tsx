@@ -1,681 +1,645 @@
-import { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
-import { startRegistration } from '@simplewebauthn/browser'
-import { AlertTriangle, Copy, Fingerprint, KeyRound, Loader2, Lock, Smartphone, WandSparkles } from 'lucide-react'
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
-  useBeginTwoFactorSetup,
-  useCompleteTwoFactorSetup,
-  useDisableTwoFactor,
-  useRegenerateBackupCodes,
-  useTwoFactorStatus,
-} from '@/hooks/use-two-factor'
+  startAuthentication,
+  startRegistration,
+} from '@simplewebauthn/browser';
+import { toast } from 'sonner';
+import { request } from '@/api/client';
+import { useTwoFactorStatus } from '@/hooks/use-two-factor';
 import {
-  useBeginWebAuthnRegistration,
-  useCompleteWebAuthnRegistration,
-  useRemoveWebAuthnCredential,
-  useRenameWebAuthnCredential,
   useWebAuthnCredentials,
   useWebAuthnStatus,
-} from '@/hooks/use-webauthn'
-import { forceLogout } from '@/auth/force-logout'
-import { formatApiError } from '@/lib/format-error'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+} from '@/hooks/use-webauthn';
+import { forceLogout } from '@/auth/force-logout';
+import { formatApiError } from '@/lib/format-error';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { QrCode } from '@/components/common/qr-code'
-import { Timestamp } from '@/components/common/timestamp'
-import type { TwoFactorSetupBundle } from '@/types/api'
+  DialogDescription,
+} from '@/components/ui/dialog';
+import { QrCode } from '@/components/common/qr-code';
+import { Timestamp } from '@/components/common/timestamp';
+import type {
+  TwoFactorSetupBundle,
+  WebAuthnLoginBegin,
+  WebAuthnRegBegin,
+} from '@/types/api';
 
-/** My Account — two-factor authentication self-service for the signed-in admin. Enroll an authenticator
- *  app (Google / Microsoft Authenticator), reveal/regenerate one-time backup codes, or disable. Enabling
- *  invalidates every existing session (the admin must re-login through the new 2FA challenge). */
+type Action =
+  | 'password'
+  | 'totp-enable'
+  | 'totp-disable'
+  | 'backup-regenerate'
+  | 'passkey-add'
+  | 'passkey-remove';
+interface Selection {
+  action: Action;
+  target?: string;
+}
+interface CurrentAccount {
+  account: string;
+  name: string;
+  role: string;
+  currentIp: string;
+  createdAt: number;
+  userAgent: string | null;
+}
+
+/** Security mutations require fresh password + an enrolled factor, and revoke all own sessions. */
 export function SecurityPage() {
-  const { t } = useTranslation()
-  const { data, isLoading, error } = useTwoFactorStatus()
-  const enabled = !!data?.enabled
-
-  const [setupOpen, setSetupOpen] = useState(false)
-  const [disableOpen, setDisableOpen] = useState(false)
-  const [regenOpen, setRegenOpen] = useState(false)
-
-  const { data: waStatus } = useWebAuthnStatus()
-  const { data: waCreds } = useWebAuthnCredentials()
-  // The backend `available` hint is a TLS-mode guess; window.isSecureContext is the real browser gate.
-  const waUsable = !!waStatus?.available && window.isSecureContext
-  const [enrollOpen, setEnrollOpen] = useState(false)
-  const [renameTarget, setRenameTarget] = useState<{ id: string; nickname: string } | null>(null)
-  const removeMut = useRemoveWebAuthnCredential()
-  const onRemovePasskey = async (id: string) => {
-    try {
-      await removeMut.mutateAsync(id)
-      toast.success(t('security.passkey.removedToast'))
-    } catch (err) {
-      toast.error(formatApiError(err))
-    }
-  }
-
+  const { t } = useTranslation();
+  // Do not refetch after revocation while the one-time recovery codes are shown.
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const current = useQuery({
+    enabled: selection === null,
+    queryKey: ['account-current'],
+    queryFn: () => request<CurrentAccount>('/admin/account/current'),
+    staleTime: 0,
+  });
+  const totp = useTwoFactorStatus(selection === null);
+  const passkey = useWebAuthnStatus(selection === null);
+  const credentials = useWebAuthnCredentials(selection === null);
+  const [renameTarget, setRenameTarget] = useState<{
+    id: string;
+    nickname: string;
+  } | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const ready = !!totp.data && !!passkey.data && !totp.error && !passkey.error;
+  const labels: Record<Action, string> = {
+    password: t('security.account.changePassword'),
+    'totp-enable': t('security.totp.enable'),
+    'totp-disable': t('security.totp.disable'),
+    'backup-regenerate': t('security.totp.regenerate'),
+    'passkey-add': t('security.passkey.add'),
+    'passkey-remove': t('security.passkey.remove'),
+  };
   return (
-    <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t('security.title')}</h1>
-        <p className="text-sm text-muted-foreground">{t('security.desc')}</p>
-      </div>
-
+    <div className="flex flex-col gap-4 leading-[20px]">
+      <h1 className="text-2xl font-semibold leading-[32px]">
+        {t('security.title')}
+      </h1>
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Smartphone className="size-4" />
-            {t('security.totp.title')}
-            <Badge variant={enabled ? 'default' : 'outline'} className="ml-1">
-              {enabled ? t('security.totp.on') : t('security.totp.off')}
-            </Badge>
-          </CardTitle>
-          <CardDescription>{t('security.totp.desc')}</CardDescription>
+          <CardTitle>{t('security.account.current')}</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {isLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              {t('common.loading')}
-            </div>
-          ) : error ? (
-            <p className="text-sm text-destructive">{formatApiError(error)}</p>
-          ) : enabled ? (
-            <>
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
-                <span>
-                  {t('security.totp.enabledAt')}{' '}
-                  {data?.enabledAt ? <Timestamp value={data.enabledAt} /> : '—'}
-                </span>
-                <span>{t('security.totp.backupRemaining', { count: data?.backupCodesRemaining ?? 0 })}</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => setRegenOpen(true)}>
-                  <KeyRound className="size-3.5" />
-                  {t('security.totp.regenerate')}
-                </Button>
-                <Button variant="outline" size="sm" className="text-destructive" onClick={() => setDisableOpen(true)}>
-                  <Lock className="size-3.5" />
-                  {t('security.totp.disable')}
-                </Button>
-              </div>
-            </>
+        <CardContent className="flex flex-col gap-2">
+          {current.isPending ? (
+            <p>{t('common.loading')}</p>
+          ) : current.error ? (
+            <p role="alert">{formatApiError(current.error)}</p>
           ) : (
-            <>
-              <p className="text-sm text-muted-foreground">{t('security.totp.notEnabledHint')}</p>
-              <Button size="sm" className="self-start" onClick={() => setSetupOpen(true)}>
-                <WandSparkles className="size-4" />
-                {t('security.totp.enable')}
-              </Button>
-            </>
+            current.data && (
+              <>
+                <p>
+                  {current.data.account} · {current.data.role}
+                </p>
+                <p>
+                  {t('security.account.ip')}:{' '}
+                  <code>{current.data.currentIp}</code>
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {t('security.account.ipHint')}
+                </p>
+                <p>
+                  {t('adminSessions.col.created')}:{' '}
+                  <Timestamp value={current.data.createdAt} />
+                </p>
+                <p className="break-all text-sm">
+                  {current.data.userAgent ?? '—'}
+                </p>
+              </>
+            )
           )}
         </CardContent>
       </Card>
-
-      <SetupDialog open={setupOpen} onOpenChange={setSetupOpen} />
-      <DisableDialog open={disableOpen} onOpenChange={setDisableOpen} />
-      <RegenerateDialog open={regenOpen} onOpenChange={setRegenOpen} />
-
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Fingerprint className="size-4" />
-            {t('security.passkey.title')}
-            <Badge variant={waStatus?.enabled ? 'default' : 'outline'} className="ml-1">
-              {waStatus?.enabled ? t('security.totp.on') : t('security.totp.off')}
-            </Badge>
-          </CardTitle>
-          <CardDescription>{t('security.passkey.desc')}</CardDescription>
+          <CardTitle>{t('security.account.password')}</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {!waUsable ? (
-            <p className="text-sm text-muted-foreground">{t('security.passkey.notAvailable')}</p>
-          ) : waCreds && waCreds.length > 0 ? (
-            <>
-              <ul className="flex flex-col divide-y">
-                {waCreds.map((c) => (
-                  <li key={c.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
-                    <span className="font-medium">{c.nickname ?? c.id}</span>
-                    <Badge variant="outline">
-                      {c.backed ? t('security.passkey.backed') : t('security.passkey.single')}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">
-                      {t('security.passkey.lastUsed', {
-                        when: c.lastUsedAt ? <Timestamp value={c.lastUsedAt} /> : t('security.passkey.never'),
-                      })}
-                    </span>
-                    <div className="ml-auto flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setRenameTarget({ id: c.id, nickname: c.nickname ?? '' })}
-                      >
-                        {t('security.passkey.rename')}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-destructive"
-                        disabled={removeMut.isPending}
-                        onClick={() => onRemovePasskey(c.id)}
-                      >
-                        {t('security.passkey.remove')}
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              <Button variant="outline" size="sm" className="self-start" onClick={() => setEnrollOpen(true)}>
-                <Fingerprint className="size-3.5" />
-                {t('security.passkey.add')}
-              </Button>
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-muted-foreground">{t('security.passkey.empty')}</p>
-              <Button size="sm" className="self-start" onClick={() => setEnrollOpen(true)}>
-                <Fingerprint className="size-4" />
-                {t('security.passkey.add')}
-              </Button>
-            </>
-          )}
-        </CardContent>
-      </Card>
-
-      <WebAuthnEnrollDialog open={enrollOpen} onOpenChange={setEnrollOpen} />
-      <RenamePasskeyDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
-    </div>
-  )
-}
-
-/** Enrollment wizard: scan QR → enter first code → backup codes revealed ONCE → forced re-login. */
-function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
-  const { t } = useTranslation()
-  const begin = useBeginTwoFactorSetup()
-  const complete = useCompleteTwoFactorSetup()
-  const [bundle, setBundle] = useState<TwoFactorSetupBundle | null>(null)
-  const [code, setCode] = useState('')
-  const [backupCodes, setBackupCodes] = useState<string[] | null>(null)
-
-  // Fetch the setup bundle when the dialog opens (and clear stale state on close).
-  useEffect(() => {
-    if (!open) return
-    setBackupCodes(null)
-    setCode('')
-    setBundle(null)
-    begin.mutate(undefined, {
-      onSuccess: setBundle,
-      onError: (e) => {
-        toast.error(formatApiError(e))
-        onOpenChange(false)
-      },
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-
-  const onVerify = async () => {
-    if (!bundle || code.length !== 6) return
-    try {
-      const r = await complete.mutateAsync({ pendingToken: bundle.pendingToken, code })
-      setBackupCodes(r.backupCodes)
-      toast.success(t('security.totp.enabledToast'))
-    } catch (e) {
-      toast.error(formatApiError(e))
-    }
-  }
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        // Block closing while backup codes are on screen — they must be acknowledged first.
-        if (!v && backupCodes) return
-        onOpenChange(v)
-      }}
-    >
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{t('security.setup.title')}</DialogTitle>
-          {!backupCodes && <DialogDescription>{t('security.setup.scanDesc')}</DialogDescription>}
-        </DialogHeader>
-
-        {backupCodes ? (
-          <BackupCodesReveal codes={backupCodes} onDone={() => forceLogout()} />
-        ) : (
-          <div className="flex flex-col gap-4">
-            <div className="flex justify-center">
-              <div className="size-48 rounded-lg bg-white p-2">
-                {bundle ? (
-                  <QrCode value={bundle.otpauthUri} aria-label={t('security.setup.qrAlt')} />
-                ) : (
-                  <div className="flex size-full items-center justify-center">
-                    <Loader2 className="size-6 animate-spin text-muted-foreground" />
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label className="text-xs text-muted-foreground">{t('security.setup.manualKey')}</Label>
-              <div className="flex items-center gap-2">
-                <code className="min-w-0 flex-1 break-all rounded bg-muted px-2 py-1 font-mono text-xs">
-                  {bundle?.secret ?? '…'}
-                </code>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!bundle}
-                  onClick={() => copy(bundle?.secret ?? '', t('common.copied'), t('common.copyFailed'))}
-                >
-                  <Copy className="size-3.5" />
-                </Button>
-              </div>
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="setup-code" className="text-xs text-muted-foreground">
-                {t('security.setup.codeLabel')}
-              </Label>
-              <Input
-                id="setup-code"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                className="text-center font-mono text-lg tracking-[0.5em]"
-                placeholder="000000"
-              />
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
-                {t('common.cancel')}
-              </Button>
-              <Button onClick={onVerify} disabled={complete.isPending || code.length !== 6}>
-                {complete.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
-                {t('security.setup.enable')}
-              </Button>
-            </DialogFooter>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-/** Backup-code reveal — used by enable + regenerate. Shows the codes ONCE with copy/download, then the
- *  caller's onDone (enable → forceLogout; regenerate → close). */
-function BackupCodesReveal({ codes, onDone }: { codes: string[]; onDone: () => void }) {
-  const { t } = useTranslation()
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
-        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-        <span>{t('security.totp.backupWarning')}</span>
-      </div>
-      <div className="grid grid-cols-2 gap-2 rounded-lg border p-3 font-mono text-sm">
-        {codes.map((c) => (
-          <span key={c} className="text-center">
-            {c}
-          </span>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" onClick={() => copy(codes.join('\n'), t('common.copied'), t('common.copyFailed'))}>
-          <Copy className="size-3.5" />
-          {t('security.totp.copyAll')}
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => downloadCodes(codes)}>
-          {t('security.totp.download')}
-        </Button>
-      </div>
-      <DialogFooter>
-        <Button onClick={onDone}>{t('security.totp.savedDone')}</Button>
-      </DialogFooter>
-    </div>
-  )
-}
-
-/** Disable 2FA: current password + a live TOTP or backup code. */
-function DisableDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
-  const { t } = useTranslation()
-  const disable = useDisableTwoFactor()
-  const [password, setPassword] = useState('')
-  const [useBackup, setUseBackup] = useState(false)
-  const [code, setCode] = useState('')
-  const [backupCode, setBackupCode] = useState('')
-
-  const submit = async () => {
-    try {
-      await disable.mutateAsync({
-        password,
-        code: useBackup ? undefined : code.trim() || undefined,
-        backupCode: useBackup ? backupCode.trim() || undefined : undefined,
-      })
-      toast.success(t('security.totp.disabledToast'))
-      setPassword('')
-      setCode('')
-      setBackupCode('')
-      onOpenChange(false)
-    } catch (e) {
-      toast.error(formatApiError(e))
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{t('security.disable.title')}</DialogTitle>
-          <DialogDescription>{t('security.disable.desc')}</DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="dis-pwd" className="text-xs text-muted-foreground">
-              {t('login.password')}
-            </Label>
-            <Input
-              id="dis-pwd"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          {!useBackup ? (
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="dis-code" className="text-xs text-muted-foreground">
-                {t('login.code')}
-              </Label>
-              <Input
-                id="dis-code"
-                inputMode="numeric"
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                className="text-center font-mono text-lg tracking-[0.5em]"
-                placeholder="000000"
-              />
-            </div>
-          ) : (
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="dis-backup" className="text-xs text-muted-foreground">
-                {t('login.backupCode')}
-              </Label>
-              <Input
-                id="dis-backup"
-                value={backupCode}
-                onChange={(e) => setBackupCode(e.target.value.toUpperCase())}
-                className="font-mono"
-                placeholder="ABCD-EFGH-IJKL-MNOP"
-              />
-            </div>
-          )}
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => setUseBackup((v) => !v)}
+        <CardContent className="flex flex-col items-start gap-3">
+          <p>{t('security.account.logoutWarning')}</p>
+          <Button
+            disabled={!ready}
+            onClick={() => setSelection({ action: 'password' })}
           >
-            {useBackup ? t('login.useAuthenticator') : t('login.useBackupCode')}
-          </button>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t('common.cancel')}
+            {labels.password}
           </Button>
-          <Button variant="destructive" onClick={submit} disabled={disable.isPending || !password}>
-            {disable.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
-            {t('security.totp.disable')}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-/** Regenerate backup codes: one live TOTP or backup code → new set revealed ONCE. */
-function RegenerateDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
-  const { t } = useTranslation()
-  const regen = useRegenerateBackupCodes()
-  const [useBackup, setUseBackup] = useState(false)
-  const [code, setCode] = useState('')
-  const [backupCode, setBackupCode] = useState('')
-  const [newCodes, setNewCodes] = useState<string[] | null>(null)
-
-  useEffect(() => {
-    if (!open) {
-      setNewCodes(null)
-      setCode('')
-      setBackupCode('')
-    }
-  }, [open])
-
-  const submit = async () => {
-    try {
-      const r = await regen.mutateAsync({
-        code: useBackup ? undefined : code.trim() || undefined,
-        backupCode: useBackup ? backupCode.trim() || undefined : undefined,
-      })
-      setNewCodes(r.backupCodes)
-    } catch (e) {
-      toast.error(formatApiError(e))
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v && newCodes) return; onOpenChange(v) }}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{t('security.regen.title')}</DialogTitle>
-          {!newCodes && <DialogDescription>{t('security.regen.desc')}</DialogDescription>}
-        </DialogHeader>
-        {newCodes ? (
-          <BackupCodesReveal codes={newCodes} onDone={() => onOpenChange(false)} />
-        ) : (
-          <div className="flex flex-col gap-3">
-            {!useBackup ? (
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="reg-code" className="text-xs text-muted-foreground">
-                  {t('login.code')}
-                </Label>
-                <Input
-                  id="reg-code"
-                  inputMode="numeric"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  className="text-center font-mono text-lg tracking-[0.5em]"
-                  placeholder="000000"
-                />
-              </div>
-            ) : (
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="reg-backup" className="text-xs text-muted-foreground">
-                  {t('login.backupCode')}
-                </Label>
-                <Input
-                  id="reg-backup"
-                  value={backupCode}
-                  onChange={(e) => setBackupCode(e.target.value.toUpperCase())}
-                  className="font-mono"
-                  placeholder="ABCD-EFGH-IJKL-MNOP"
-                />
-              </div>
-            )}
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => setUseBackup((v) => !v)}
+        </CardContent>
+      </Card>
+      {(totp.error || passkey.error || credentials.error) && (
+        <p role="alert">
+          {formatApiError(totp.error ?? passkey.error ?? credentials.error)}
+        </p>
+      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            {t('security.totp.title')} ·{' '}
+            {totp.isPending
+              ? t('common.loading')
+              : totp.data?.enabled
+                ? t('security.totp.on')
+                : t('security.totp.off')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col items-start gap-3">
+          <p>{t('security.totp.desc')}</p>
+          {totp.data?.enabled && (
+            <p>
+              {t('security.totp.backupRemaining', {
+                count: totp.data.backupCodesRemaining,
+              })}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {(totp.data?.enabled
+              ? (['totp-disable', 'backup-regenerate'] as const)
+              : (['totp-enable'] as const)
+            ).map((action) => (
+              <Button
+                key={action}
+                variant="outline"
+                disabled={!ready}
+                onClick={() => setSelection({ action })}
+              >
+                {labels[action]}
+              </Button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('security.passkey.title')}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p>{t('security.passkey.desc')}</p>
+          {!window.isSecureContext && (
+            <p>{t('security.passkey.notAvailable')}</p>
+          )}
+          {credentials.data?.map((credential) => (
+            <div
+              key={credential.id}
+              className="flex flex-wrap items-center gap-3 border-b py-2"
             >
-              {useBackup ? t('login.useAuthenticator') : t('login.useBackupCode')}
-            </button>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
-                {t('common.cancel')}
+              <span>{credential.nickname ?? credential.id}</span>
+              <span className="text-sm">
+                {credential.backed
+                  ? t('security.passkey.backed')
+                  : t('security.passkey.single')}
+              </span>
+              <span className="text-sm">
+                {credential.lastUsedAt ? (
+                  <Timestamp value={credential.lastUsedAt} />
+                ) : (
+                  t('security.passkey.never')
+                )}
+              </span>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  setRenameTarget({
+                    id: credential.id,
+                    nickname: credential.nickname ?? '',
+                  })
+                }
+              >
+                {t('security.passkey.rename')}
               </Button>
-              <Button onClick={submit} disabled={regen.isPending}>
-                {regen.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
-                {t('security.totp.regenerate')}
+              <Button
+                variant="outline"
+                disabled={!ready}
+                onClick={() =>
+                  setSelection({
+                    action: 'passkey-remove',
+                    target: credential.id,
+                  })
+                }
+              >
+                {labels['passkey-remove']}
               </Button>
-            </DialogFooter>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  )
+            </div>
+          ))}
+          <Button
+            className="self-start"
+            disabled={
+              !ready || !window.isSecureContext || !passkey.data?.available
+            }
+            onClick={() => setSelection({ action: 'passkey-add' })}
+          >
+            {labels['passkey-add']}
+          </Button>
+        </CardContent>
+      </Card>
+      {renameTarget && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !renaming) setRenameTarget(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t('security.passkey.rename')}</DialogTitle>
+            </DialogHeader>
+            <form
+              className="flex flex-col gap-3"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                setRenaming(true);
+                try {
+                  await request(
+                    `/admin/webauthn/credentials/${encodeURIComponent(renameTarget.id)}/rename`,
+                    { nickname: renameTarget.nickname.trim() },
+                  );
+                  await credentials.refetch();
+                  setRenameTarget(null);
+                } catch (err) {
+                  toast.error(formatApiError(err));
+                } finally {
+                  setRenaming(false);
+                }
+              }}
+            >
+              <Label htmlFor="rename-passkey">
+                {t('security.passkey.nicknameLabel')}
+              </Label>
+              <Input
+                id="rename-passkey"
+                maxLength={64}
+                value={renameTarget.nickname}
+                onChange={(event) =>
+                  setRenameTarget({
+                    ...renameTarget,
+                    nickname: event.target.value,
+                  })
+                }
+              />
+              <Button disabled={renaming}>
+                {t('security.passkey.rename')}
+              </Button>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+      {selection && (
+        <SecurityMutation
+          key={`${selection.action}:${selection.target ?? ''}`}
+          selection={selection}
+          title={labels[selection.action]}
+          totp={!!totp.data?.enabled}
+          passkey={!!passkey.data?.enabled}
+          onClose={() => setSelection(null)}
+        />
+      )}
+    </div>
+  );
 }
 
-async function copy(text: string, okMsg: string, errMsg: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text)
-    toast.success(okMsg)
-  } catch {
-    toast.error(errMsg)
-  }
-}
-
-function downloadCodes(codes: string[]): void {
-  const blob = new Blob([`SOMS Admin — 2FA backup codes\n\n${codes.join('\n')}\n`], {
-    type: 'text/plain',
-  })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'soms-admin-2fa-backup-codes.txt'
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-/** Passkey enrollment wizard: re-auth password (+ optional label) → browser platform prompt → credential
- *  saved. No forced re-login (a passkey is an additive factor; existing sessions stay valid). */
-function WebAuthnEnrollDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
-  const { t } = useTranslation()
-  const [password, setPassword] = useState('')
-  const [nickname, setNickname] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const begin = useBeginWebAuthnRegistration()
-  const complete = useCompleteWebAuthnRegistration()
-
-  useEffect(() => {
-    if (!open) {
-      setPassword('')
-      setNickname('')
-    }
-  }, [open])
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setSubmitting(true)
-    try {
-      const r = await begin.mutateAsync({ password, nickname: nickname.trim() || undefined })
-      // The browser drives the platform authenticator; the backend generated the registration options.
-      const credential = await startRegistration({ optionsJSON: r.options })
-      await complete.mutateAsync({ pendingToken: r.pendingToken, registrationResponse: credential })
-      toast.success(t('security.passkey.addedToast'))
-      onOpenChange(false)
-    } catch (err) {
-      // The user dismissing the OS prompt is a DOMException (NotAllowedError/AbortError) — not an error.
-      if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'AbortError')) return
-      toast.error(formatApiError(err))
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{t('security.passkey.add')}</DialogTitle>
-          <DialogDescription>{t('security.passkey.reauthLabel')}</DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="wa-password">{t('security.passkey.reauthLabel')}</Label>
-            <Input
-              id="wa-password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="wa-nickname">{t('security.passkey.nicknameLabel')}</Label>
-            <Input
-              id="wa-nickname"
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              maxLength={64}
-              placeholder={t('security.passkey.nicknamePlaceholder')}
-            />
-          </div>
-          <DialogFooter>
-            <Button type="submit" disabled={submitting}>
-              {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
-              {t('security.passkey.add')}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-/** Rename a saved passkey (the target is null when closed). */
-function RenamePasskeyDialog({
-  target,
+function SecurityMutation({
+  selection,
+  title,
+  totp,
+  passkey,
   onClose,
 }: {
-  target: { id: string; nickname: string } | null
-  onClose: () => void
+  selection: Selection;
+  title: string;
+  totp: boolean;
+  passkey: boolean;
+  onClose: () => void;
 }) {
-  const { t } = useTranslation()
-  const [nickname, setNickname] = useState('')
-  const rename = useRenameWebAuthnCredential()
+  const { t } = useTranslation();
+  const [password, setPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [factor, setFactor] = useState<'totp' | 'backup' | 'passkey'>(
+    totp ? 'totp' : 'passkey',
+  );
+  const [code, setCode] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [bundle, setBundle] = useState<TwoFactorSetupBundle | null>(null);
+  const [setupCode, setSetupCode] = useState('');
+  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { action, target } = selection;
 
-  useEffect(() => {
-    if (target) setNickname(target.nickname)
-  }, [target])
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!target) return
-    try {
-      await rename.mutateAsync({ id: target.id, nickname: nickname.trim().slice(0, 64) })
-      onClose()
-    } catch (err) {
-      toast.error(formatApiError(err))
+  const completed = (result?: { backupCodes?: string[] }) => {
+    setPassword('');
+    setNewPassword('');
+    setConfirmation('');
+    setCode('');
+    setBundle(null);
+    if (result?.backupCodes) setBackupCodes(result.backupCodes);
+    else {
+      toast.success(t('security.account.changed'));
+      forceLogout();
     }
-  }
-
+  };
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      if (bundle) {
+        completed(
+          await request<{ backupCodes: string[] }>('/admin/2fa/setup/verify', {
+            pendingToken: bundle.pendingToken,
+            code: setupCode,
+          }),
+        );
+        return;
+      }
+      if (
+        action === 'password' &&
+        (newPassword !== confirmation ||
+          !/^[a-zA-Z0-9.@!#$%^&*()]{6,20}$/.test(newPassword))
+      ) {
+        setError(t('security.account.passwordHint'));
+        return;
+      }
+      const proof: {
+        password: string;
+        code?: string;
+        backupCode?: string;
+        pendingToken?: string;
+        assertionResponse?: unknown;
+      } = { password };
+      if (totp || passkey) {
+        if (factor === 'passkey') {
+          const challenge = await request<WebAuthnLoginBegin>(
+            '/admin/account/assertion',
+            { password, action, target: target ? Number(target) : undefined },
+          );
+          proof.assertionResponse = await startAuthentication({
+            optionsJSON: challenge.options,
+          });
+          proof.pendingToken = challenge.pendingToken;
+        } else if (factor === 'backup') proof.backupCode = code.trim();
+        else proof.code = code.trim();
+      }
+      if (action === 'totp-enable') {
+        setBundle(
+          await request<TwoFactorSetupBundle>('/admin/2fa/setup', proof),
+        );
+        setPassword('');
+        setCode('');
+        return;
+      }
+      if (action === 'passkey-add') {
+        const begin = await request<WebAuthnRegBegin>(
+          '/admin/webauthn/registration/begin',
+          { ...proof, nickname: nickname.trim() || undefined },
+        );
+        const registrationResponse = await startRegistration({
+          optionsJSON: begin.options,
+        });
+        await request('/admin/webauthn/registration/finish', {
+          pendingToken: begin.pendingToken,
+          registrationResponse,
+        });
+        completed();
+        return;
+      }
+      const route =
+        action === 'password'
+          ? '/admin/account/password'
+          : action === 'totp-disable'
+            ? '/admin/2fa/disable'
+            : action === 'backup-regenerate'
+              ? '/admin/2fa/backup/regenerate'
+              : `/admin/webauthn/credentials/${encodeURIComponent(target!)}/delete`;
+      completed(
+        await request<{ backupCodes?: string[] }>(route, {
+          ...proof,
+          ...(action === 'password' ? { newPassword } : {}),
+        }),
+      );
+    } catch (err) {
+      setError(formatApiError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <Dialog
-      open={!!target}
-      onOpenChange={(v) => {
-        if (!v) onClose()
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy && !backupCodes) onClose();
       }}
     >
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto leading-[20px]">
         <DialogHeader>
-          <DialogTitle>{t('security.passkey.rename')}</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>
+            {t('security.account.logoutWarning')}
+          </DialogDescription>
         </DialogHeader>
-        <form onSubmit={submit} className="flex flex-col gap-4">
-          <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
-          <DialogFooter>
-            <Button type="submit" disabled={rename.isPending}>
-              {t('security.passkey.rename')}
+        {backupCodes ? (
+          <div className="flex flex-col gap-4">
+            <p>{t('security.totp.backupWarning')}</p>
+            <div className="grid grid-cols-2 gap-2 font-mono">
+              {backupCodes.map((value) => (
+                <span key={value}>{value}</span>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(backupCodes.join('\n'));
+                  toast.success(t('common.copied'));
+                } catch {
+                  toast.error(t('common.copyFailed'));
+                }
+              }}
+            >
+              {t('security.totp.copyAll')}
             </Button>
-          </DialogFooter>
-        </form>
+            <Button
+              variant="outline"
+              onClick={() => {
+                const url = URL.createObjectURL(
+                  new Blob([backupCodes.join('\n')], { type: 'text/plain' }),
+                );
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'soms-admin-recovery-codes.txt';
+                link.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
+              {t('security.totp.download')}
+            </Button>
+            <Button onClick={() => forceLogout()}>
+              {t('security.totp.savedDone')}
+            </Button>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="flex flex-col gap-4">
+            {bundle ? (
+              <>
+                <p>{t('security.setup.scanDesc')}</p>
+                <div className="size-48 self-center bg-white p-2">
+                  <QrCode value={bundle.otpauthUri} />
+                </div>
+                <Label>{t('security.setup.manualKey')}</Label>
+                <code className="break-all">{bundle.secret}</code>
+                <Label htmlFor="setup-code">
+                  {t('security.setup.codeLabel')}
+                </Label>
+                <Input
+                  id="setup-code"
+                  value={setupCode}
+                  onChange={(e) =>
+                    setSetupCode(e.target.value.replace(/\D/g, '').slice(0, 6))
+                  }
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  required
+                  pattern="[0-9]{6}"
+                />
+              </>
+            ) : (
+              <>
+                <Label htmlFor="security-password">
+                  {t('security.account.currentPassword')}
+                </Label>
+                <Input
+                  id="security-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                {action === 'password' && (
+                  <>
+                    <Label htmlFor="new-password">
+                      {t('security.account.newPassword')}
+                    </Label>
+                    <Input
+                      id="new-password"
+                      type="password"
+                      autoComplete="new-password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      required
+                    />
+                    <Label htmlFor="confirm-password">
+                      {t('security.account.confirmPassword')}
+                    </Label>
+                    <Input
+                      id="confirm-password"
+                      type="password"
+                      autoComplete="new-password"
+                      value={confirmation}
+                      onChange={(e) => setConfirmation(e.target.value)}
+                      required
+                    />
+                    <p className="text-sm">
+                      {t('security.account.passwordHint')}
+                    </p>
+                  </>
+                )}
+                {action === 'passkey-add' && (
+                  <>
+                    <Label htmlFor="nickname">
+                      {t('security.passkey.nicknameLabel')}
+                    </Label>
+                    <Input
+                      id="nickname"
+                      value={nickname}
+                      onChange={(e) => setNickname(e.target.value)}
+                      maxLength={64}
+                    />
+                  </>
+                )}
+                {(totp || passkey) && (
+                  <>
+                    <Label htmlFor="security-factor">
+                      {t('security.account.factor')}
+                    </Label>
+                    <select
+                      id="security-factor"
+                      className="h-10 rounded-md border bg-background px-3 leading-[20px]"
+                      value={factor}
+                      onChange={(e) => {
+                        setFactor(e.target.value as typeof factor);
+                        setCode('');
+                      }}
+                    >
+                      {totp && (
+                        <>
+                          <option value="totp">
+                            {t('security.totp.title')}
+                          </option>
+                          <option value="backup">
+                            {t('login.backupCode')}
+                          </option>
+                        </>
+                      )}
+                      {passkey && (
+                        <option
+                          value="passkey"
+                          disabled={!window.isSecureContext}
+                        >
+                          {t('security.passkey.title')}
+                        </option>
+                      )}
+                    </select>
+                    {factor !== 'passkey' && (
+                      <>
+                        <Label htmlFor="security-code">
+                          {factor === 'backup'
+                            ? t('login.backupCode')
+                            : t('login.code')}
+                        </Label>
+                        <Input
+                          id="security-code"
+                          value={code}
+                          onChange={(e) => setCode(e.target.value)}
+                          autoComplete="one-time-code"
+                          required
+                        />
+                      </>
+                    )}
+                    {factor === 'passkey' && !window.isSecureContext && (
+                      <p role="alert">{t('security.passkey.notAvailable')}</p>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+            {error && (
+              <p role="alert" className="text-destructive">
+                {error}
+              </p>
+            )}
+            <Button
+              type="submit"
+              disabled={
+                busy ||
+                (!bundle &&
+                  (totp || passkey) &&
+                  factor === 'passkey' &&
+                  !window.isSecureContext)
+              }
+            >
+              {busy ? t('common.loading') : title}
+            </Button>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
-  )
+  );
 }

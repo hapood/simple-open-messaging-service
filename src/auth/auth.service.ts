@@ -5,12 +5,12 @@ import { and, count, desc, eq, gt, isNull, like, or } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   account,
+  admin,
   sessionToken,
   account as userTable,
 } from '../database/schema.js';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
-import { localIdentityDomain } from '../common/local-identity.js';
 import { BusinessException } from '../common/business.exception.js';
 import { SessionTokenService } from './session-token.service.js';
 import { PasswordHasher } from './password-hasher.service.js';
@@ -93,15 +93,38 @@ export class AuthService {
       // The first-time set uses setPassword (no old password); a voluntary change requires the current one.
       return { ok: false, reason: 'wrong_password' };
     }
-    await this.database.db
-      .update(account)
-      .set({
-        hashPwd: await this.passwordHasher.hash(newPassword),
-        mustChangePassword: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(account.id, userId));
-    await this.invalidateAllSessions(userId, 'password_change');
+    const hash = await this.passwordHasher.hash(newPassword);
+    const hashes = await this.database.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({ hashPwd: account.hashPwd })
+        .from(account)
+        .where(eq(account.id, userId))
+        .for('no key update');
+      await this.requireConsumerPasswordManagement(tx, userId);
+      if (!current || current.hashPwd !== user.hashPwd)
+        throw new BusinessException(
+          BusinessCode.INVALID_CREDENTIALS,
+          'authentication changed',
+        );
+      await tx
+        .update(account)
+        .set({
+          hashPwd: hash,
+          mustChangePassword: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(account.id, userId));
+      return this.sessionTokens.revokeAllInTransaction(
+        tx,
+        userId,
+        'password_change',
+      );
+    });
+    await this.sessionTokens.clearRevokedCache(hashes);
+    this.eventEmitter.emit('auth.sessions-invalidated', {
+      userId,
+      reason: 'password_change',
+    });
     return { ok: true };
   }
 
@@ -133,17 +156,48 @@ export class AuthService {
         'password already set — use change-password (old password required)',
       );
     }
-    await this.database.db
-      .update(account)
-      .set({
-        hashPwd: await this.passwordHasher.hash(newPassword),
-        mustChangePassword: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(account.id, userId));
+    const hash = await this.passwordHasher.hash(newPassword);
+    await this.database.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(account)
+        .where(eq(account.id, userId))
+        .for('no key update');
+      await this.requireConsumerPasswordManagement(tx, userId);
+      if (!current || (current.hashPwd !== null && !current.mustChangePassword))
+        throw new BusinessException(
+          BusinessCode.FORBIDDEN,
+          'password already set',
+        );
+      await tx
+        .update(account)
+        .set({
+          hashPwd: hash,
+          mustChangePassword: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(account.id, userId));
+    });
     if (sessionId !== undefined) {
       await this.sessionTokens.bustCacheBySessionId(sessionId);
     }
+  }
+
+  /** Admin-linked accounts must use the admin security flow, including when their
+   * profile is disabled. Consumer sessions must never bypass its second factor. */
+  private async requireConsumerPasswordManagement(
+    tx: import('../database/database.service.js').DatabaseTransaction,
+    userId: number,
+  ) {
+    const operator = await tx.query.admin.findFirst({
+      where: eq(admin.userId, userId),
+      columns: { id: true },
+    });
+    if (operator)
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'change administrator passwords in My Account in the admin console',
+      );
   }
 
   /** Active session credentials — the data behind the "Devices / Active sessions" settings page.

@@ -12,7 +12,11 @@ import {
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
 import { and, asc, count, eq } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
+import {
+  DatabaseService,
+  type Database,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
 import { admin, webAuthnCredential } from '../database/schema.js';
 import { jwtConstants } from '../auth/constants.js';
 import { WEBAUTHN_CONFIG } from './webauthn.config.js';
@@ -47,6 +51,7 @@ interface AssertPendingPayload {
   sub: number;
   scope: 'webauthn-assert-pending';
   challenge: string;
+  binding?: string;
 }
 
 /**
@@ -121,6 +126,7 @@ export class WebAuthnService {
     adminId: number,
     pendingToken: string,
     response: RegistrationResponseJSON,
+    transaction?: DatabaseTransaction,
   ): Promise<{
     id: string;
     nickname: string | null;
@@ -160,7 +166,12 @@ export class WebAuthnService {
     }
     const info = verification.registrationInfo;
     const transports = (response.response.transports ?? []) as string[];
-    const created = await this.database.db.transaction(async (tx) => {
+    const persist = async (tx: DatabaseTransaction) => {
+      await tx
+        .select({ id: admin.id })
+        .from(admin)
+        .where(eq(admin.id, adminId))
+        .for('no key update');
       const row = await tx
         .insert(webAuthnCredential)
         .values({
@@ -181,7 +192,10 @@ export class WebAuthnService {
         .set({ webauthnEnabled: true, updatedAt: new Date() })
         .where(and(eq(admin.id, adminId), eq(admin.webauthnEnabled, false)));
       return row;
-    });
+    };
+    const created = transaction
+      ? await persist(transaction)
+      : await this.database.db.transaction(persist);
     return {
       id: created.id.toString(),
       nickname: created.nickname,
@@ -194,7 +208,10 @@ export class WebAuthnService {
 
   /** Mint assertion options for an admin's enrolled credentials + a signed pending token carrying the
    *  challenge. Re-counts credentials first (guards a stale webauthnEnabled=true hint). */
-  async beginAssertion(adminId: number): Promise<{
+  async beginAssertion(
+    adminId: number,
+    binding?: string,
+  ): Promise<{
     options: PublicKeyCredentialRequestOptionsJSON;
     pendingToken: string;
   }> {
@@ -223,6 +240,7 @@ export class WebAuthnService {
         sub: adminId,
         scope: 'webauthn-assert-pending',
         challenge: options.challenge,
+        binding,
       },
       { secret: jwtConstants.adminSecret, expiresIn: ASSERT_PENDING_TTL },
     );
@@ -236,12 +254,15 @@ export class WebAuthnService {
     adminId: number,
     pendingToken: string,
     response: AuthenticationResponseJSON,
+    binding?: string,
+    db: Database | DatabaseTransaction = this.database.db,
   ): Promise<{ ok: boolean }> {
     const pending = this.verifyAssertPending(pendingToken);
-    if (!pending || pending.sub !== adminId) return { ok: false };
+    if (!pending || pending.sub !== adminId || pending.binding !== binding)
+      return { ok: false };
     // The assertion names which credential was used; bind it to THIS admin (a credential enrolled by
     // another admin can never authenticate this one).
-    const row = await this.database.db.query.webAuthnCredential.findFirst({
+    const row = await db.query.webAuthnCredential.findFirst({
       where: eq(webAuthnCredential.credentialId, response.id),
       columns: { id: true, adminId: true, publicKey: true, counter: true },
     });
@@ -266,11 +287,11 @@ export class WebAuthnService {
       // Includes the counter-regression clone signal: (new>0||stored>0) && new<=stored throws here.
       return { ok: false };
     }
-    // Compare-and-swap advance: only if the stored counter is still exactly what we read. A concurrent
-    // verify that already advanced it leaves count=0 (harmless — the row already holds a ≥ counter). The
-    // library guarantees newCounter > row.counter or both 0 by this point, so we never decrease.
+    // Compare-and-swap advance: a concurrent verifier or removal must cause rejection.
+    // The library guarantees newCounter > row.counter or both zero; the caller's
+    // single-use operation binding additionally protects zero-counter credentials.
     const now = new Date();
-    const swapped = await this.database.db
+    const swapped = await db
       .update(webAuthnCredential)
       .set({ counter: newCounter, lastUsedAt: now })
       .where(
@@ -280,15 +301,9 @@ export class WebAuthnService {
         ),
       )
       .returning({ id: webAuthnCredential.id });
-    if (swapped.length === 0) {
-      // Lost the CAS — another verify advanced the counter. Still record last-use.
-      await this.database.db
-        .update(webAuthnCredential)
-        .set({ lastUsedAt: now })
-        .where(eq(webAuthnCredential.id, row.id))
-        .catch(() => {});
-    }
-    return { ok: true };
+    // A lost CAS can mean replay or removal; neither may authenticate. Counter-zero
+    // authenticators additionally require a single-use operation binding at the caller.
+    return { ok: swapped.length === 1 };
   }
 
   // ── credential management ──────────────────────────────────────────────────────
@@ -344,16 +359,20 @@ export class WebAuthnService {
     }
   }
 
-  /** Delete a credential. Flips webauthnEnabled off when the last one is removed. Deliberately does NOT
-   *  revoke sessions: a passkey is an additive optional factor whose removal must not log the admin out
-   *  (enrollment already required password re-auth, so a session hijacker cannot have enrolled their own
-   *  — the same rationale applies on the way out). Returns the remaining count. Throws NOT_FOUND if the
-   *  credential belongs to another admin. */
+  /** Delete a credential and maintain the enabled hint under the admin lock.
+   * The account-security orchestrator supplies authorization and session revocation
+   * in the same transaction. Ownership is checked even for an authenticated caller. */
   async removeCredential(
     adminId: number,
     rowId: number,
+    transaction?: DatabaseTransaction,
   ): Promise<{ remaining: number }> {
-    const remaining = await this.database.db.transaction(async (tx) => {
+    const remove = async (tx: DatabaseTransaction) => {
+      await tx
+        .select({ id: admin.id })
+        .from(admin)
+        .where(eq(admin.id, adminId))
+        .for('no key update');
       const deleted = await tx
         .delete(webAuthnCredential)
         .where(
@@ -381,7 +400,10 @@ export class WebAuthnService {
           .where(and(eq(admin.id, adminId), eq(admin.webauthnEnabled, true)));
       }
       return value;
-    });
+    };
+    const remaining = transaction
+      ? await remove(transaction)
+      : await this.database.db.transaction(remove);
     return { remaining };
   }
 

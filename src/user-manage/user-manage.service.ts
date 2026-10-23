@@ -14,6 +14,7 @@ import {
 import { DatabaseService } from '../database/database.service.js';
 import {
   account,
+  admin,
   identityNamespace,
   sessionToken,
   account as user,
@@ -186,9 +187,25 @@ export class UserManageService {
     await this.assertLocalPerson(id);
     const password = randomInitialPassword();
     const hash = await this.auth.hashPassword(password);
-    await this.updateAccountOrThrow(id, {
-      hashPwd: hash,
-      mustChangePassword: true,
+    await this.database.db.transaction(async (tx) => {
+      await tx
+        .select({ id: account.id })
+        .from(account)
+        .where(eq(account.id, id))
+        .for('no key update');
+      const operator = await tx.query.admin.findFirst({
+        where: eq(admin.userId, id),
+        columns: { id: true },
+      });
+      if (operator)
+        throw new BusinessException(
+          BusinessCode.FORBIDDEN,
+          'administrator passwords must be changed through authenticated account security',
+        );
+      await tx
+        .update(account)
+        .set({ hashPwd: hash, mustChangePassword: true, updatedAt: new Date() })
+        .where(eq(account.id, id));
     });
     await this.auth.invalidateAllSessions(id, 'admin_reinit_password');
     return { password };

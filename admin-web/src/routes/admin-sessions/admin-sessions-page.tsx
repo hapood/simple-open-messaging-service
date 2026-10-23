@@ -1,12 +1,10 @@
-import { useTranslation } from 'react-i18next'
-import { Search } from 'lucide-react'
-import { toast } from 'sonner'
-import { useAdminSessions, useRevokeAdminSession } from '@/hooks/use-admin-sessions'
-import { useListParams } from '@/hooks/use-list-params'
-import { formatApiError } from '@/lib/format-error'
-import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { useTranslation } from 'react-i18next';
+import { Search } from 'lucide-react';
+import { useAdminSessions } from '@/hooks/use-admin-sessions';
+import { useListParams } from '@/hooks/use-list-params';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Table,
   TableBody,
@@ -14,38 +12,39 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
-import { Pagination } from '@/components/common/pagination'
-import { TableBodyState } from '@/components/common/table-state'
-import { Timestamp } from '@/components/common/timestamp'
+} from '@/components/ui/table';
+import { Pagination } from '@/components/common/pagination';
+import { TableBodyState } from '@/components/common/table-state';
+import { Timestamp } from '@/components/common/timestamp';
 
-const PAGE_SIZE = 50
+const PAGE_SIZE = 50;
 
 export function AdminSessionsPage() {
-  const { t } = useTranslation()
-  const { searchInput, setSearchInput, search, page, setPage, skip, take } = useListParams({
-    pageSize: PAGE_SIZE,
-  })
-  const { data, isLoading, error } = useAdminSessions({
+  const { t } = useTranslation();
+  const { searchInput, setSearchInput, search, page, setPage, skip, take } =
+    useListParams({
+      pageSize: PAGE_SIZE,
+    });
+  const { data, isLoading, error, refetch, isFetching } = useAdminSessions({
     skip,
     take,
     ip: search || undefined,
-  })
-  const revoke = useRevokeAdminSession()
-
-  const total = data?.total ?? 0
-
-  const onRevoke = async (id: string) => {
-    try {
-      await revoke.mutateAsync(id)
-      toast.success(t('adminSessions.revoked'))
-    } catch (e) {
-      toast.error(formatApiError(e))
-    }
-  }
+  });
+  const total = data?.total ?? 0;
 
   return (
     <div className="flex flex-col gap-4">
+      <h1 className="text-2xl font-semibold leading-[32px]">
+        {t('nav.adminSessions')}
+      </h1>
+      <Button
+        variant="outline"
+        className="self-start"
+        disabled={isFetching}
+        onClick={() => void refetch()}
+      >
+        {t('security.account.refresh')}
+      </Button>
       <div className="flex items-center justify-between gap-4">
         <p className="max-w-xl text-sm text-muted-foreground">
           {t('adminSessions.desc', { count: total })}
@@ -69,7 +68,7 @@ export function AdminSessionsPage() {
               <TableHead>{t('adminSessions.col.ip')}</TableHead>
               <TableHead>{t('adminSessions.col.created')}</TableHead>
               <TableHead>{t('adminSessions.col.expires')}</TableHead>
-              <TableHead className="w-20" />
+              <TableHead>{t('security.account.lastActive')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -84,7 +83,14 @@ export function AdminSessionsPage() {
               {data?.list.map((s) => (
                 <TableRow key={s.id}>
                   <TableCell className="font-medium">
-                    <Badge variant="outline">{s.admin?.account ?? '#' + s.adminId}</Badge>
+                    <Badge variant="outline">
+                      {s.admin?.account ?? '#' + s.adminId}
+                    </Badge>
+                    {s.isCurrent && (
+                      <Badge className="ml-2">
+                        {t('security.account.thisSession')}
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell
                     className="max-w-[280px] truncate text-xs text-muted-foreground"
@@ -92,7 +98,9 @@ export function AdminSessionsPage() {
                   >
                     {s.userAgent ?? '—'}
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{s.ip ?? '—'}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {s.ip ?? '—'}
+                  </TableCell>
                   <TableCell>
                     <Timestamp value={s.createdAt} />
                   </TableCell>
@@ -100,15 +108,7 @@ export function AdminSessionsPage() {
                     <Timestamp value={s.expiresAt} />
                   </TableCell>
                   <TableCell>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-destructive"
-                      disabled={revoke.isPending}
-                      onClick={() => onRevoke(s.id)}
-                    >
-                      {t('adminSessions.revoke')}
-                    </Button>
+                    <Timestamp value={s.lastAccessedAt} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -117,8 +117,13 @@ export function AdminSessionsPage() {
         </Table>
       </div>
       <div className="flex items-center justify-end text-sm text-muted-foreground">
-        <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
+        <Pagination
+          page={page}
+          total={total}
+          pageSize={PAGE_SIZE}
+          onPageChange={setPage}
+        />
       </div>
     </div>
-  )
+  );
 }

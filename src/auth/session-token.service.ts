@@ -52,7 +52,7 @@ function hashToken(token: string): string {
  * generalized to:
  *  - a required sliding `expiresAt` for every client;
  *  - a `lastSeenAt` activity tracker;
- *  - an issue-initialized validation cache so the hot REST path avoids a DB read.
+ *  - an issue-initialized validation cache whose entries are deleted on revocation.
  *
  * Used by {@link BearerAuthService}, which is the single source of truth shared by the global
  * SessionAuthGuard and the /uploads/* media preHandler — so a session token grants identical access on
@@ -103,66 +103,105 @@ export class SessionTokenService {
       device?: string;
       userAgent?: string;
       ip?: string;
+      expectedPasswordHash?: string | null;
+      authorizingSessionId?: number;
     } = {},
   ): Promise<string> {
     const plaintext = randomBytes(32).toString('hex');
     const tokenHash = hashToken(plaintext);
-    const [principal, preference] = await Promise.all([
-      this.database.db
-        .select({ mustChangePassword: account.mustChangePassword })
-        .from(account)
-        .where(eq(account.id, userId))
-        .limit(1)
-        .then((rows) => rows[0]),
-      this.database.db
-        .select({ value: userPreference.value })
-        .from(userPreference)
-        .where(
-          and(
-            eq(userPreference.userId, userId),
-            eq(userPreference.key, AUTO_TERMINATE_PREFERENCE_KEY),
-          ),
+    try {
+      await this.database.db.transaction(async (tx) => {
+        const [locked] = await tx
+          .select({ id: account.id, hashPwd: account.hashPwd })
+          .from(account)
+          .where(eq(account.id, userId))
+          .for('no key update');
+        if (
+          !locked ||
+          (opts.expectedPasswordHash !== undefined &&
+            locked.hashPwd !== opts.expectedPasswordHash)
         )
-        .limit(1)
-        .then((rows) => rows[0]),
-    ]);
-    if (!principal) throw new Error('session issue failed');
-    const autoTerminateDays = isAutoTerminateDays(preference?.value)
-      ? preference.value
-      : DEFAULT_AUTO_TERMINATE_DAYS;
-    const expiresAt = new Date(
-      Date.now() + autoTerminateDays * 24 * 60 * 60 * 1000,
-    );
-    const created = await this.database.db
-      .insert(sessionToken)
-      .values({
-        userId,
-        tokenHash,
-        client,
-        device: opts.device ?? null,
-        userAgent: opts.userAgent ?? null,
-        ip: opts.ip ?? null,
-        lastSeenIp: opts.ip ?? null,
-        expiresAt,
-        autoTerminateDays,
-      })
-      .returning({ id: sessionToken.id })
-      .then((rows) => rows[0]);
-    if (!created) throw new Error('session issue failed');
-    await this.kvStore
-      .initPersistent(
-        `${CACHE_PREFIX}${tokenHash}`,
-        encodeCacheEntry({
-          userId,
-          sessionId: created.id,
-          exp: expiresAt.getTime(),
-          autoTerminateDays,
-          mustChangePassword: principal.mustChangePassword,
-          nextTouchAt: Date.now() + WEB_SESSION_SLIDING_TOUCH_MS,
-        }),
-        expiresAt.getTime(),
-      )
-      .catch(() => {});
+          throw new ServiceUnavailableException(
+            'authentication changed; sign in again',
+          );
+        if (opts.authorizingSessionId !== undefined) {
+          const parent = await tx.query.sessionToken.findFirst({
+            where: and(
+              eq(sessionToken.id, opts.authorizingSessionId),
+              eq(sessionToken.userId, userId),
+              isNull(sessionToken.revokedAt),
+            ),
+          });
+          if (!parent || parent.expiresAt <= new Date())
+            throw new ServiceUnavailableException(
+              'authorizing session expired',
+            );
+        }
+        const [principal, preference] = await Promise.all([
+          tx
+            .select({ mustChangePassword: account.mustChangePassword })
+            .from(account)
+            .where(eq(account.id, userId))
+            .limit(1)
+            .then((rows) => rows[0]),
+          tx
+            .select({ value: userPreference.value })
+            .from(userPreference)
+            .where(
+              and(
+                eq(userPreference.userId, userId),
+                eq(userPreference.key, AUTO_TERMINATE_PREFERENCE_KEY),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0]),
+        ]);
+        if (!principal) throw new Error('session issue failed');
+        const autoTerminateDays = isAutoTerminateDays(preference?.value)
+          ? preference.value
+          : DEFAULT_AUTO_TERMINATE_DAYS;
+        const expiresAt = new Date(
+          Date.now() + autoTerminateDays * 24 * 60 * 60 * 1000,
+        );
+        const created = await tx
+          .insert(sessionToken)
+          .values({
+            userId,
+            tokenHash,
+            client,
+            device: opts.device ?? null,
+            userAgent: opts.userAgent ?? null,
+            ip: opts.ip ?? null,
+            lastSeenIp: opts.ip ?? null,
+            expiresAt,
+            autoTerminateDays,
+          })
+          .returning({ id: sessionToken.id })
+          .then((rows) => rows[0]);
+        if (!created) throw new Error('session issue failed');
+        // Initialize before releasing the account lock / committing the session row.
+        // A password rotation cannot revoke the row and then be undone by late cache
+        // initialization. The plaintext credential is not published until commit.
+        await this.kvStore
+          .initPersistent(
+            `${CACHE_PREFIX}${tokenHash}`,
+            encodeCacheEntry({
+              userId,
+              sessionId: created.id,
+              exp: expiresAt.getTime(),
+              autoTerminateDays,
+              mustChangePassword: principal.mustChangePassword,
+              nextTouchAt: Date.now() + WEB_SESSION_SLIDING_TOUCH_MS,
+            }),
+            expiresAt.getTime(),
+          )
+          .catch(() => {});
+      });
+    } catch (error) {
+      // A failed commit must not leave an authoritative cache entry behind.
+      await this.kvStore.delPersistent(`${CACHE_PREFIX}${tokenHash}`);
+      throw error;
+    }
     return plaintext;
   }
 
@@ -190,7 +229,7 @@ export class SessionTokenService {
     const cacheExistedAtStart = cached !== null;
     if (cached !== null) {
       const entry = JSON.parse(cached) as SessionCacheEntry;
-      if (entry.nextTouchAt > Date.now()) {
+      if (entry.exp > Date.now() && entry.nextTouchAt > Date.now()) {
         return {
           userId: entry.userId,
           sessionId: entry.sessionId,
@@ -421,6 +460,28 @@ export class SessionTokenService {
       .delPersistent(`${CACHE_PREFIX}${rec.tokenHash}`)
       .catch(() => {});
     return true;
+  }
+
+  /** Shared transaction boundary for password/security mutations. */
+  async revokeAllInTransaction(
+    tx: DatabaseTransaction,
+    userId: number,
+    reason: string,
+  ): Promise<string[]> {
+    const rows = await this.revokeSessionsInTx(
+      tx,
+      and(eq(sessionToken.userId, userId), isNull(sessionToken.revokedAt)),
+      reason,
+      new Date(),
+    );
+    return rows.map((row) => row.tokenHash);
+  }
+
+  async clearRevokedCache(hashes: string[]): Promise<void> {
+    if (hashes.length)
+      await this.kvStore.delPersistent(
+        ...hashes.map((hash) => `${CACHE_PREFIX}${hash}`),
+      );
   }
 
   /** Revoke ALL of the user's session tokens and delete each corresponding persistent validation entry. */

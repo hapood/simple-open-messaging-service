@@ -592,8 +592,14 @@ export class AdminController {
   @ApiOperation({
     summary: 'Admin active session list (joins Admin → linked user account)',
   })
-  async listAdminSessions(@Body() dto: AdminListSessionsDto) {
-    return this.adminAuthService.listAdminSessions(dto);
+  async listAdminSessions(
+    @Body() dto: AdminListSessionsDto,
+    @Req() req: FastifyRequest,
+  ) {
+    return this.adminAuthService.listAdminSessions(
+      dto,
+      req.user.sessionId ?? undefined,
+    );
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

@@ -199,6 +199,7 @@ export class OtpLoginService {
         availability: accountTable.availability,
         disabledAt: accountTable.disabledAt,
         mustChangePassword: accountTable.mustChangePassword,
+        hashPwd: accountTable.hashPwd,
       })
       .from(accountTable)
       .where(
@@ -278,6 +279,7 @@ export class OtpLoginService {
 
     const client = opts.client ?? 'app';
     const token = await this.sessionTokens.issue(user.id, client, {
+      expectedPasswordHash: user.hashPwd,
       device: opts.device,
       userAgent: opts.userAgent,
       ip: opts.ip,

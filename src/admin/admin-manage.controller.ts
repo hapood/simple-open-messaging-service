@@ -1,9 +1,12 @@
+import type { FastifyRequest } from 'fastify';
 import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
   Body,
   Param,
+  Req,
+  ForbiddenException,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -87,7 +90,11 @@ export class AdminManageController {
     summary:
       "Reset (disable) an admin's 2FA — lockout recovery when a device is lost",
   })
-  async reset2fa(@Param('id') id: string) {
+  async reset2fa(@Param('id') id: string, @Req() req: FastifyRequest) {
+    if (Number(id) === req.user.adminId)
+      throw new ForbiddenException(
+        'use My Account to change your own second factor',
+      );
     return this.svc.resetTwoFactor(Number(id));
   }
 }

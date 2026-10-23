@@ -155,6 +155,7 @@ export interface SessionListResult {
 
 // Admin active session entry (POST /admin/admin-sessions; joins Admin for the account; no device field)
 interface AdminSessionListItem {
+  isCurrent: boolean;
   adminId: number;
   id: string;
   userAgent: string | null;

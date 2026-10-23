@@ -21,6 +21,8 @@ export interface LoginAuthInfo {
   bannedUntil?: number;
   /** Set on a successful login whose password is an admin-generated INITIAL password the user must change. */
   mustChangePassword?: boolean;
+  /** Internal proof snapshot; never returned to the client. */
+  passwordHash?: string;
 }
 
 /**
@@ -125,6 +127,7 @@ export class LocalStrategy extends PassportStrategy(Strategy) {
         status: 0,
         account,
         userId: user.id,
+        passwordHash: user.hashPwd ?? undefined,
         ...(user.mustChangePassword ? { mustChangePassword: true } : {}),
       };
     } catch (e) {

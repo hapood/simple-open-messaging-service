@@ -67,11 +67,11 @@ describe('matchNav', () => {
 });
 
 describe('NAV_GROUPS shape', () => {
-  it('has exactly 14 primary items + 1 footer item', () => {
+  it('has exactly 14 primary items and both account pages in the footer', () => {
     const primary = NAV_GROUPS.filter((g) => !g.footer).flatMap((g) => g.items);
     expect(primary).toHaveLength(14);
     const footer = NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items);
-    expect(footer.map((i) => i.key)).toEqual(['security']);
+    expect(footer.map((i) => i.key)).toEqual(['security', 'adminSessions']);
   });
 
   it('only enables the first-release navigation surface', () => {
@@ -84,6 +84,7 @@ describe('NAV_GROUPS shape', () => {
       'messageReports',
       'logs',
       'security',
+      'adminSessions',
     ]);
   });
 

@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { seedAdminSession } from './support/admin-session.js';
 import request from 'supertest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import { admin, adminActionLog, account as user } from '../src/database/schema';
-import { AdminAuthService } from '../src/admin/admin-auth.service';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
 import { AdminRole } from '../src/database/enums.js';
@@ -35,11 +35,9 @@ import { truncateTablesForTest } from './support/truncate';
 describe('Admin RBAC + revocation + audit', () => {
   let app: NestFastifyApplication;
   let database: DatabaseService;
-  let adminAuth: AdminAuthService;
 
   beforeAll(async () => {
     ({ app, database } = await createTestApp());
-    adminAuth = app.get(AdminAuthService);
   });
 
   beforeEach(async () => {
@@ -75,7 +73,7 @@ describe('Admin RBAC + revocation + audit', () => {
       .insert(admin)
       .values({ userId: createdUser.id, role, enabled: true, updatedAt: now })
       .returning({ id: admin.id });
-    const token = await adminAuth.createAdminSession(createdAdmin.id, {});
+    const token = await seedAdminSession(database, createdAdmin.id);
     return {
       adminId: createdAdmin.id,
       userId: createdUser.id,

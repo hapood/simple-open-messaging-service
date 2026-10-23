@@ -70,8 +70,9 @@
       "overview": "常用功能",
       "access": "访问与活动",
       "system": "系统",
-      "account": "账户"
-    }
+      "account": "账户与安全"
+    },
+    "adminSessions": "管理员会话"
   },
   "quota": {
     "title": "每日配额",
@@ -368,7 +369,7 @@
   "adminSessions": {
     "title": "管理员会话",
     "searchPlaceholder": "按 IP 筛选",
-    "desc": "管理员的活跃 opaque session，与普通用户会话物理隔离。共 {{count}} 条，吊销后下一次请求立即失效。",
+    "desc": "当前有效的管理员会话（共 {{count}} 个），仅供查看。有效会话不代表设备当前在线。",
     "revoke": "吊销",
     "revoked": "已吊销该管理员会话（其 access 15m 内仍有效）",
     "revokeFailed": "吊销失败",
@@ -1049,7 +1050,7 @@
     "desc": "管理你自己的登录安全——二次验证与恢复码。",
     "totp": {
       "title": "身份验证器",
-      "desc": "每次登录时要求来自 Google / Microsoft 身份验证器的轮换 6 位数字代码。",
+      "desc": "使用验证器动态验证码或恢复码完成二次验证；同时绑定通行密钥时可任选一种。",
       "on": "已开启",
       "off": "未开启",
       "enable": "启用二次验证",
@@ -1098,6 +1099,23 @@
     "regen": {
       "title": "重新生成备用代码",
       "desc": "请用有效验证码确认。旧的备用代码将立即失效。"
+    },
+    "account": {
+      "current": "当前账户与登录",
+      "ip": "当前访问 IP",
+      "ipHint": "这是服务端识别的当前请求来源，不是本次会话最初的登录 IP。",
+      "password": "密码",
+      "changePassword": "修改密码",
+      "currentPassword": "当前密码",
+      "newPassword": "新密码",
+      "confirmPassword": "确认新密码",
+      "passwordHint": "新密码须为 6–20 位，使用字母、数字或 .@!#$%^&*()，且两次输入一致。",
+      "factor": "二次验证方式",
+      "logoutWarning": "修改密码或安全设置成功后，本人的管理台和聊天客户端全部会话将退出，包括当前会话。",
+      "changed": "已更新，请重新登录",
+      "refresh": "刷新",
+      "lastActive": "最近活动",
+      "thisSession": "当前会话"
     }
   },
   "rateLimits": {

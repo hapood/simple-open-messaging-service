@@ -103,12 +103,16 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'admins',
-                  lazy: () =>
-                    import('@/routes/admin-sessions/admin-sessions-page').then(
-                      (m) => ({ Component: m.AdminSessionsPage }),
-                    ),
+                  element: <Navigate to="/admin-sessions" replace />,
                 },
               ],
+            },
+            {
+              path: '/admin-sessions',
+              lazy: () =>
+                import('@/routes/admin-sessions/admin-sessions-page').then(
+                  (m) => ({ Component: m.AdminSessionsPage }),
+                ),
             },
             {
               path: '/connections',

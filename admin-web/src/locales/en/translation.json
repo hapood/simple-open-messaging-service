@@ -70,8 +70,9 @@
       "overview": "Common tasks",
       "access": "Access & Activity",
       "system": "System",
-      "account": "Account"
-    }
+      "account": "Account & security"
+    },
+    "adminSessions": "Administrator sessions"
   },
   "quota": {
     "title": "Daily Quotas",
@@ -368,7 +369,7 @@
   "adminSessions": {
     "title": "Admin Sessions",
     "searchPlaceholder": "Filter by IP",
-    "desc": "Active opaque administrator sessions, physically isolated from user sessions. {{count}} total. Revocation takes effect on the next request.",
+    "desc": "{{count}} valid administrator sessions. Read-only; a valid session does not imply the device is online.",
     "revoke": "Revoke",
     "revoked": "Admin session revoked (its access remains valid for up to 15m)",
     "revokeFailed": "Revoke failed",
@@ -1048,7 +1049,7 @@
     "desc": "Manage your own sign-in security — two-factor authentication and recovery codes.",
     "totp": {
       "title": "Authenticator App",
-      "desc": "Require a rotating 6-digit code from Google / Microsoft Authenticator at every sign-in.",
+      "desc": "Use an authenticator code or recovery code as a second factor. If a passkey is also enrolled, either factor can be used.",
       "on": "On",
       "off": "Off",
       "enable": "Enable 2FA",
@@ -1097,6 +1098,23 @@
     "regen": {
       "title": "Regenerate backup codes",
       "desc": "Confirm with a valid code. The previous backup codes stop working immediately."
+    },
+    "account": {
+      "current": "Current account and sign-in",
+      "ip": "Current access IP",
+      "ipHint": "The source identified by the server for this request, not the original sign-in IP.",
+      "password": "Password",
+      "changePassword": "Change password",
+      "currentPassword": "Current password",
+      "newPassword": "New password",
+      "confirmPassword": "Confirm new password",
+      "passwordHint": "Use 6–20 letters, digits or .@!#$%^&*(). Both new password entries must match.",
+      "factor": "Second factor",
+      "logoutWarning": "Changing your password or security settings signs out all your admin and chat sessions, including this session.",
+      "changed": "Updated. Please sign in again.",
+      "refresh": "Refresh",
+      "lastActive": "Last active",
+      "thisSession": "Current session"
     }
   },
   "rateLimits": {
