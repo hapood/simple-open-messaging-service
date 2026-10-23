@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   composeScalar,
+  DeploymentModeState,
   defaultsForMode,
   deploymentIssues,
   initialDeployment,
@@ -42,6 +43,23 @@ describe('deployment configuration validation', () => {
       deploymentIssues({ ...valid, mode: 'public', port: 7668 }),
     ).toContain('publicPort');
     expect(deploymentIssues({ ...valid, mode: 'nas', port: 7668 })).toEqual([]);
+  });
+  it('keeps host-port and admin policy settings independent across tabs', () => {
+    const state = new DeploymentModeState();
+    const nas = { ...valid, port: 8888, adminAccess: 'public' as const };
+    let current = state.switch(nas, 'public');
+    expect(current).toMatchObject({
+      mode: 'public',
+      port: 7667,
+      adminAccess: 'public',
+    });
+    current = state.switch({ ...current, adminAccess: 'lan' }, 'nas');
+    expect(current).toMatchObject({
+      mode: 'nas',
+      port: 8888,
+      adminAccess: 'public',
+    });
+    expect(state.switch(current, 'public').adminAccess).toBe('lan');
   });
   it('requires credentials matching chosen DNS provider', () => {
     expect(

@@ -102,6 +102,14 @@ else
   tls_block="$(printf '\ttls {\n\t\t%s\n\t}' "$directive")"
 fi
 
+BACKEND_UPSTREAM='127.0.0.1:3000'
+if [ -n "${SOMS_BACKEND_SOCKET:-}" ]; then
+  [[ "$SOMS_BACKEND_SOCKET" =~ ^/[A-Za-z0-9/_.-]+$ ]] || die 'SOMS_BACKEND_SOCKET must be an absolute path without whitespace'
+  BACKEND_UPSTREAM="unix/$SOMS_BACKEND_SOCKET"
+fi
+EDGE_PORT="${SOMS_EDGE_PORT:-7667}"
+[[ "$EDGE_PORT" =~ ^[0-9]+$ ]] && (( EDGE_PORT >= 1 && EDGE_PORT <= 65535 )) || die 'SOMS_EDGE_PORT must be 1-65535'
+
 # --- Caddyfile (self-contained). SOMS_TLS_MODE picks the edge:
 #   single-port  HTTPS on the compose port (7667), DNS-01 wildcard cert, no HTTP redirect.
 #             + SOMS_LAN_DOMAIN set → ALSO an https://<lan-domain>:7667 site (own DNS-01 cert, same zone).
@@ -114,9 +122,10 @@ fi
 # The route handlers shared by every site. When SOMS_ADMIN_ACCESS=lan the admin page (/admin) and admin API
 # (/api/v1/admin) are gated to private IPs: @not_lan is defined once and reused by both admin handles, and
 # `respond @not_lan 403` short-circuits non-LAN clients. handle blocks are source-ordered / first-match /
-# terminal, so the guard precedes reverse_proxy/file_server with no Caddy directive-reorder risk; remote_ip
-# sees the real client because Caddy is the edge here (no front proxy in the single-image stack). The public
-# branch is byte-identical to the pre-guard output (no var set → no change for existing deploys).
+# terminal, so the guard precedes reverse_proxy/file_server with no Caddy directive-reorder risk.
+# remote_ip is the immediate connection peer. Docker userland proxies or upstream SNAT can replace the
+# original source with a private address; private-source filtering cannot distinguish those requests
+# from LAN clients. Access logs expose the observed peer for deployment diagnostics.
 emit_static_files() {
   local root="$1" fallback="$2" matcher="$3"
   printf '\t\troute {\n'
@@ -131,6 +140,20 @@ emit_static_files() {
 
 emit_handlers() {
   printf '\tencode zstd gzip\n'
+  # Keep network diagnostics without recording credentials in headers or URL query parameters.
+  # stderr is collected by the container log driver; access logs are independent of backend log levels.
+  printf '%s\n' \
+    ' log {' \
+    '  output stderr' \
+    '  format filter {' \
+    '   wrap json' \
+    '   fields {' \
+    '    request>headers delete' \
+    '    resp_headers delete' \
+    '    request>uri regexp "[?].*$" ""' \
+    '   }' \
+    '  }' \
+    ' }'
   # Fixed-name worker scripts must revalidate and must never fall back to SPA HTML.
   printf '\thandle /push/*.js {\n\t\troot * /app/public/web\n\t\theader Cache-Control "no-cache"\n\t\tfile_server\n\t}\n'
   printf '\t# Federation discovery is served by Fastify, not the SPA fallback.\n'
@@ -170,15 +193,21 @@ emit_handlers() {
     emit_handlers
     printf '}\n'
     printf 'https://%s, https://*.%s {\n\timport soms_site\n}\n' "$SOMS_DOMAIN" "$SOMS_DOMAIN"
-    printf 'https://%s:7667, https://*.%s:7667 {\n\timport soms_site\n}\n' "$SOMS_DOMAIN" "$SOMS_DOMAIN"
+    if [ -z "${SOMS_BACKEND_SOCKET:-}" ]; then
+      printf 'https://%s:7667, https://*.%s:7667 {\n\timport soms_site\n}\n' "$SOMS_DOMAIN" "$SOMS_DOMAIN"
+    fi
     if [ -n "${SOMS_WEB_DOMAIN:-}" ] && ! covered_by_identity_site "$SOMS_WEB_DOMAIN"; then
       printf 'https://%s {\n\timport soms_site\n}\n' "$SOMS_WEB_DOMAIN"
-      printf 'https://%s:7667 {\n\timport soms_site\n}\n' "$SOMS_WEB_DOMAIN"
+      if [ -z "${SOMS_BACKEND_SOCKET:-}" ]; then
+        printf 'https://%s:7667 {\n\timport soms_site\n}\n' "$SOMS_WEB_DOMAIN"
+      fi
     fi
     # LAN domain (own DNS-01 cert via the same provider/zone) — only when configured.
     if [ -n "${SOMS_LAN_DOMAIN:-}" ] && ! covered_by_identity_site "$SOMS_LAN_DOMAIN"; then
       printf 'https://%s, https://*.%s {\n\timport soms_site\n}\n' "$SOMS_LAN_DOMAIN" "$SOMS_LAN_DOMAIN"
-      printf 'https://%s:7667, https://*.%s:7667 {\n\timport soms_site\n}\n' "$SOMS_LAN_DOMAIN" "$SOMS_LAN_DOMAIN"
+      if [ -z "${SOMS_BACKEND_SOCKET:-}" ]; then
+        printf 'https://%s:7667, https://*.%s:7667 {\n\timport soms_site\n}\n' "$SOMS_LAN_DOMAIN" "$SOMS_LAN_DOMAIN"
+      fi
     fi
   else
     printf '{\n\tauto_https disable_redirects\n\tstorage file_system {\n\t\troot /app/data/caddy\n\t}\n}\n'
@@ -202,6 +231,13 @@ emit_handlers() {
     fi
   fi
 } > "$CADDYFILE"
-
+if [ -n "${SOMS_BACKEND_SOCKET:-}" ]; then
+  # Host networking must not bind Caddy's administrative API to a host TCP port.
+  sed -i '/^[[:space:]]*storage file_system {/i\	admin off' "$CADDYFILE"
+  sed -i "s|127.0.0.1:3000|$BACKEND_UPSTREAM|g" "$CADDYFILE"
+fi
+if [ "$SOMS_TLS_MODE" != standard ] && [ "$EDGE_PORT" != 7667 ]; then
+  sed -i "s/:7667/:$EDGE_PORT/g" "$CADDYFILE"
+fi
 chmod 600 "$CADDYFILE"
 log "OK — domain=$SOMS_DOMAIN web-domain=${SOMS_WEB_DOMAIN:-$SOMS_DOMAIN} lan-domain=${SOMS_LAN_DOMAIN:-none} mode=$SOMS_TLS_MODE admin=${SOMS_ADMIN_ACCESS:-public}; wrote $CADDYFILE"

@@ -1,21 +1,21 @@
-import { Fragment, useState, type ReactNode } from 'react'
-import { useTranslation } from 'react-i18next'
+import { Fragment, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   CheckCircle2,
   AlertTriangle,
   XCircle,
   MinusCircle,
   ChevronDown,
-} from 'lucide-react'
+} from 'lucide-react';
 import type {
   SelfCheckCheck,
   SelfCheckStatus,
   SelfCheckIpTlsProbe,
   SelfCheckIpWellKnownProbe,
-} from '@/types/api'
-import { cn } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
-import { CertDetail } from './cert-detail'
+} from '@/types/api';
+import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
+import { CertDetail } from './cert-detail';
 
 /** Status → icon + tone, shared by checks and per-IP probes. */
 export const STATUS_META: Record<
@@ -38,22 +38,22 @@ export const STATUS_META: Record<
     tone: 'text-muted-foreground',
     chip: 'text-muted-foreground',
   },
-}
+};
 
 /** Render any evidence value: booleans as ✓/✗, arrays joined, null/undefined as —. */
 function fmt(v: unknown): ReactNode {
-  if (v === null || v === undefined) return '—'
-  if (typeof v === 'boolean') return v ? '✓' : '✗'
-  if (Array.isArray(v)) return v.length ? v.join(', ') : '—'
-  return String(v)
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'boolean') return v ? '✓' : '✗';
+  if (Array.isArray(v)) return v.length ? v.join(', ') : '—';
+  return String(v);
 }
 
 /** A key/value list built from raw evidence entries. Labels resolve through i18n with a field-name
  *  fallback (so a field the i18n bundle doesn't list yet still shows readably). */
 function KvList({ entries }: { entries: Array<[string, unknown]> }) {
-  const { t } = useTranslation()
+  const { t } = useTranslation();
   return (
-    <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-1">
+    <dl className="grid grid-cols-[minmax(80px,120px)_minmax(0,1fr)] gap-x-3 gap-y-1">
       {entries.map(([k, v]) => (
         <Fragment key={k}>
           <dt className="text-xs text-muted-foreground">
@@ -63,16 +63,21 @@ function KvList({ entries }: { entries: Array<[string, unknown]> }) {
         </Fragment>
       ))}
     </dl>
-  )
+  );
 }
 
 /** One per-IP TLS probe: status, reachability, and a collapsible full-certificate detail. */
 function TlsIpBlock({ probe }: { probe: SelfCheckIpTlsProbe }) {
-  const { t } = useTranslation()
-  const meta = STATUS_META[probe.status]
-  const [certOpen, setCertOpen] = useState(false)
+  const { t } = useTranslation();
+  const meta = STATUS_META[probe.status];
+  const [certOpen, setCertOpen] = useState(false);
+  const detail = probe.code
+    ? t(`federation.selfCheck.error.${probe.code}`, {
+        defaultValue: probe.detail,
+      })
+    : probe.detail;
   return (
-    <div className="rounded-md border bg-muted/30 p-2">
+    <div className="self-check-ip-probe rounded-md border bg-muted/30 p-2">
       <div className="flex items-center gap-2">
         <Badge variant="outline" className="h-5 font-mono text-[10px]">
           v{probe.family}
@@ -84,8 +89,8 @@ function TlsIpBlock({ probe }: { probe: SelfCheckIpTlsProbe }) {
         )}
         <span className="font-mono text-xs">{probe.ip}</span>
         <meta.Icon className={cn('size-3.5 shrink-0', meta.tone)} />
-        <span className="flex-1 truncate text-xs text-muted-foreground">
-          {probe.detail}
+        <span className="min-w-0 flex-1 basis-full break-words text-xs text-muted-foreground">
+          {detail}
         </span>
         {probe.cert && (
           <button
@@ -114,20 +119,20 @@ function TlsIpBlock({ probe }: { probe: SelfCheckIpTlsProbe }) {
         </div>
       )}
     </div>
-  )
+  );
 }
 
 /** One per-IP .well-known probe: HTTP status, content-type, software, key validity. */
 function WkIpBlock({ probe }: { probe: SelfCheckIpWellKnownProbe }) {
-  const { t } = useTranslation()
-  const meta = STATUS_META[probe.status]
+  const { t } = useTranslation();
+  const meta = STATUS_META[probe.status];
   const detail = probe.code
     ? t(`federation.selfCheck.error.${probe.code}`, {
         defaultValue: probe.detail,
       })
-    : probe.detail
+    : probe.detail;
   return (
-    <div className="rounded-md border bg-muted/30 p-2">
+    <div className="self-check-ip-probe rounded-md border bg-muted/30 p-2">
       <div className="flex items-center gap-2">
         <Badge variant="outline" className="h-5 font-mono text-[10px]">
           v{probe.family}
@@ -151,12 +156,12 @@ function WkIpBlock({ probe }: { probe: SelfCheckIpWellKnownProbe }) {
         {probe.code ? ` · ${probe.code}` : ''}
       </div>
     </div>
-  )
+  );
 }
 
 /** Renders a check's evidence block, switched on the check key (each check has a distinct shape). */
 function Evidence({ check }: { check: SelfCheckCheck }) {
-  const ev = (check.evidence ?? {}) as Record<string, unknown>
+  const ev = (check.evidence ?? {}) as Record<string, unknown>;
   switch (check.key) {
     case 'config':
       return (
@@ -170,7 +175,7 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['listenPort', ev.listenPort],
           ]}
         />
-      )
+      );
     case 'key-file':
       return (
         <KvList
@@ -179,7 +184,7 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['mode', ev.mode],
           ]}
         />
-      )
+      );
     case 'key-age':
       return (
         <KvList
@@ -188,7 +193,7 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['ageDays', ev.ageDays],
           ]}
         />
-      )
+      );
     case 'dns-srv':
       return (
         <KvList
@@ -198,7 +203,7 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['error', ev.error],
           ]}
         />
-      )
+      );
     case 'dns-a':
     case 'dns-aaaa':
       return (
@@ -208,15 +213,15 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['targets', ev.targets],
           ]}
         />
-      )
+      );
     case 'tls-public': {
-      const ips = (ev.ips ?? []) as SelfCheckIpTlsProbe[]
+      const ips = (ev.ips ?? []) as SelfCheckIpTlsProbe[];
       const endpoints = Array.isArray(ev.endpoints)
         ? ev.endpoints.join(', ')
-        : ''
+        : '';
       const host = ev.host
         ? `sni=${String(ev.host)}${endpoints ? ` · endpoints=${endpoints}` : ''}`
-        : ''
+        : '';
       return (
         <div className="flex flex-col gap-2">
           {host && (
@@ -228,17 +233,17 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             <TlsIpBlock key={`${p.target ?? ''}:${p.ip}:${i}`} probe={p} />
           ))}
         </div>
-      )
+      );
     }
     case 'well-known': {
-      const ips = (ev.ips ?? []) as SelfCheckIpWellKnownProbe[]
+      const ips = (ev.ips ?? []) as SelfCheckIpWellKnownProbe[];
       return (
         <div className="flex flex-col gap-2">
           {ips.map((p, i) => (
             <WkIpBlock key={`${p.target ?? ''}:${p.ip}:${i}`} probe={p} />
           ))}
         </div>
-      )
+      );
     }
     case 'key-consistency':
       return (
@@ -255,7 +260,7 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['publishedKeyCount', ev.publishedKeyCount],
           ]}
         />
-      )
+      );
     case 'sign-loopback':
       return (
         <KvList
@@ -265,7 +270,7 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['keyId', ev.keyId],
           ]}
         />
-      )
+      );
     case 'clock-skew':
       return (
         <KvList
@@ -278,7 +283,7 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['failSec', ev.failSec],
           ]}
         />
-      )
+      );
     case 'tls-loopback':
       return (
         <KvList
@@ -288,38 +293,40 @@ function Evidence({ check }: { check: SelfCheckCheck }) {
             ['originTls', ev.originTls],
           ]}
         />
-      )
+      );
     default:
-      return <KvList entries={Object.entries(ev)} />
+      return <KvList entries={Object.entries(ev)} />;
   }
 }
 
 /** A single collapsible check row. Collapsed = status icon + title + detail + duration; expanded = evidence. */
 export function CheckRow({ check }: { check: SelfCheckCheck }) {
-  const { t } = useTranslation()
-  const meta = STATUS_META[check.status]
-  const hasEvidence = !!check.evidence && Object.keys(check.evidence).length > 0
+  const { t } = useTranslation();
+  const meta = STATUS_META[check.status];
+  const hasEvidence =
+    !!check.evidence && Object.keys(check.evidence).length > 0;
   const [open, setOpen] = useState(
     check.status === 'fail' || check.status === 'warn',
-  )
+  );
   const title = t(`federation.selfCheck.check.${check.key}`, {
     defaultValue: check.title,
-  })
+  });
   const duration = check.blockedBy
     ? '—'
     : check.durationMs < 1
       ? '<1ms'
-      : `${check.durationMs}ms`
+      : `${check.durationMs}ms`;
   return (
     <div className="rounded-lg border">
       <button
         type="button"
-        className="flex w-full items-center gap-3 p-3 text-left"
+        className="flex w-full flex-wrap items-center gap-3 p-3 text-left"
+        aria-expanded={hasEvidence ? open : undefined}
         onClick={() => hasEvidence && setOpen((o) => !o)}
       >
         <meta.Icon className={cn('size-4 shrink-0', meta.tone)} />
-        <span className="text-sm font-medium">{title}</span>
-        <span className="flex-1 whitespace-normal text-xs text-muted-foreground">
+        <span className="min-w-0 flex-1 text-sm font-medium">{title}</span>
+        <span className="order-last w-full break-words text-xs text-muted-foreground">
           {check.detail}
         </span>
         {check.blockedBy && (
@@ -348,5 +355,5 @@ export function CheckRow({ check }: { check: SelfCheckCheck }) {
         </div>
       )}
     </div>
-  )
+  );
 }

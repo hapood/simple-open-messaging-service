@@ -21,6 +21,7 @@ import { WebAuthnService } from './webauthn.service.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { AdminAuditInterceptor } from './admin-audit.interceptor.js';
+import { NetworkInspectionService } from '../federation/self-check/network-inspection.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { DashboardService } from './dashboard.service.js';
 import { AuditTargetLabelService } from './audit-target-label.service.js';
@@ -101,6 +102,7 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     AdminAuthGuard,
     AdminRolesGuard,
     FederationSelfCheckService,
+    NetworkInspectionService,
     FederationRetireService,
     FederationNamespaceAdminService,
     DashboardService,

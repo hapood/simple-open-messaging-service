@@ -37,7 +37,7 @@ export function useForceLogoutUser() {
 export function useCreateUser() {
   const invalidate = useInvalidateUsers()
   return useMutation({
-    mutationFn: (v: { account: string; name: string; password?: string }) => createUser(v),
+    mutationFn: (v: { account: string; password?: string }) => createUser(v),
     onSuccess: invalidate,
   })
 }

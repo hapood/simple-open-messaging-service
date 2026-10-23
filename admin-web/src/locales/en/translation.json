@@ -1,5 +1,6 @@
 {
   "common": {
+    "confirm": "Confirm",
     "appName": "Admin Console",
     "loading": "Loading…",
     "noData": "No data",
@@ -22,7 +23,6 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Copy failed",
-    "workspace": "Operations workspace",
     "client": {
       "app": "Android",
       "web": "Web",
@@ -223,13 +223,14 @@
     "backToPassword": "Back to password"
   },
   "users": {
+    "grantViewerConfirm": "Grant {{account}} read-only access to the admin console? Existing user sessions and issued login codes will be revoked. Only a super administrator can change this role later.",
+    "grantViewerSuccess": "Read-only admin access granted",
     "title": "User Management",
     "create": "Create user",
     "searchPlaceholder": "Search account",
     "col": {
       "id": "ID",
       "account": "account",
-      "domain": "domain",
       "foreigner": "Foreign",
       "status": "Status",
       "quota": "Quota",
@@ -245,6 +246,7 @@
       "ban": "Ban",
       "forceLogout": "Force Logout",
       "viewSessions": "View Sessions",
+      "grantViewer": "Set as administrator",
       "issueLoginCode": "Issue login code",
       "generateInitialPassword": "Generate initial password"
     },
@@ -274,7 +276,6 @@
       "push": "Push devices"
     },
     "field": {
-      "domain": "Domain",
       "foreigner": "Foreigner",
       "createdAt": "Created",
       "updatedAt": "Updated",
@@ -509,7 +510,48 @@
     },
     "selfCheck": {
       "title": "S2S Handshake Self-Check",
-      "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/somfp, key consistency, signature loopback and clock skew. Real network probes run per SRV target and per resolved IP, over exactly the HTTPS path production peers use; in insecure dev mode (allowInsecureHttp) network probes are skipped.",
+      "navigation": "On this page",
+      "overview": "Federation check overview",
+      "awaitRun": "Run federation checks to view this section.",
+      "network": {
+        "title": "Local & public IP addresses",
+        "local": "Local interfaces",
+        "showLocal": "Show loopback & link-local addresses ({{count}})",
+        "hideLocal": "Hide loopback & link-local addresses",
+        "external": "Public egress IP",
+        "refreshLocal": "Refresh addresses",
+        "detect": "Detect public IP",
+        "sources": "IP sources (multiple allowed)",
+        "localHint": "Addresses visible to the backend process, not your browser. In Docker these are container addresses; inbound IPv6 forwarding does not imply IPv6 egress.",
+        "externalHint": "Each source is contacted directly over IPv4 and IPv6. The reported server egress IP may differ from your DNS entry or reverse proxy address.",
+        "privacy": "Manual probes disclose the server egress IP to selected providers. Results may be reused for 10 seconds; no background probing.",
+        "loading": "Checking…",
+        "notRun": "Not checked",
+        "noInterfaces": "No interface addresses available.",
+        "sourceAddress": "Local source",
+        "sourceFailure": "This source could not be verified. A provider failure does not prove general network failure or public ingress failure.",
+        "runtime": {
+          "docker": "Docker image",
+          "unknown": "Runtime not declared"
+        },
+        "scope": {
+          "loopback": "Loopback",
+          "private": "Private",
+          "linkLocal": "Link-local",
+          "uniqueLocal": "Unique local",
+          "unicast": "Global unicast",
+          "carrierGradeNat": "Shared address",
+          "reserved": "Reserved"
+        },
+        "error": {
+          "EADDRNOTAVAIL": "No usable local source address. Check the backend/container IPv6 configuration.",
+          "ENETUNREACH": "The backend network has no route to this destination.",
+          "ETIMEDOUT": "This provider did not complete within 5 seconds. Try another source.",
+          "ENOTFOUND": "The provider hostname could not be resolved for this address family.",
+          "ECONNREFUSED": "The connection to this provider was refused."
+        }
+      },
+      "desc": "Inspect local and public IP addresses, then check federation configuration, DNS, TLS, discovery, keys and clock. All probes originate from the backend, not an external monitoring node. Federation network checks are skipped in insecure development mode.",
       "entry": "Self-check",
       "ntpServer": "Reference clock (NTP)",
       "dnsResolver": "DNS resolver",
@@ -525,7 +567,8 @@
       "blocked": "Blocked upstream",
       "blockedCount": "{{count}} additional check(s) were not run because of this issue.",
       "error": {
-        "HPE_INVALID_CONSTANT": "HTTP protocol parse failure: the response did not match the negotiated protocol"
+        "HPE_INVALID_CONSTANT": "HTTP protocol parse failure: the response did not match the negotiated protocol",
+        "EADDRNOTAVAIL": "Local source address unavailable; check the backend/container network. TLS certificate validation could not complete."
       },
       "check": {
         "config": "Local configuration",
@@ -550,13 +593,14 @@
       "group": {
         "config": "Local configuration",
         "dns": "DNS resolution",
-        "tls": "TLS certificate",
+        "tls": "Connectivity & TLS",
         "well-known": ".well-known/somfp",
         "crypto": "Key & signature",
         "clock": "Clock skew"
       },
       "toast": {
         "ok": "All checks passed",
+        "incomplete": "Checks finished with warnings or skipped items — review the report",
         "hasFails": "{{count}} check(s) failed — review below",
         "copied": "Report copied to clipboard",
         "copyFailed": "Copy failed"
@@ -693,8 +737,6 @@
     "title": "Create user",
     "account": "Account",
     "accountHint": "1-30 chars: letters, digits, dot, underscore or hyphen; start with a letter or digit",
-    "name": "Display name",
-    "nameHint": "1 to 31 characters",
     "password": "Initial password",
     "passwordHint": "6-20 chars; letters, digits and .@!#$%^&*()",
     "passwordRequired": "Password login is enabled; an initial password is required",
@@ -849,10 +891,7 @@
   "admins": {
     "title": "Admin Accounts",
     "desc": "Manage who can sign in to the console and their role. Disabling or demoting revokes their sessions immediately.",
-    "add": "Add admin",
-    "addTitle": "Promote a user to admin",
-    "userIdLabel": "User ID",
-    "userIdHint": "Numeric id of an existing user to promote (find it on the Users page).",
+    "roleConfirm": "Change the backend role for {{account}}? Existing backend sessions will be revoked. This does not change whether access is enabled.",
     "roleLabel": "Role",
     "empty": "No admins",
     "col": {
@@ -865,11 +904,11 @@
     "action": {
       "disable": "Disable",
       "enable": "Enable",
-      "reset2fa": "Reset 2FA"
+      "reset2fa": "Reset 2FA",
+      "setRole": "Set role"
     },
     "reset2faConfirm": "Reset two-factor for {{name}}? They will be able to sign in with their password only. Use this to recover a locked-out admin who lost their device.",
     "toast": {
-      "created": "Admin created",
       "disabled": "Admin disabled",
       "enabled": "Admin enabled",
       "role": "Role updated",

@@ -1,5 +1,8 @@
 # Administrator account security
 
+For role assignment, access revocation, and administrator-management permissions,
+see [Administrator access management](./admin-access.md).
+
 ## Ownership and storage
 
 Administrators share the password on their linked `Account`. The existing `Admin`,
@@ -21,7 +24,8 @@ satisfies the second step. Renaming a passkey changes only its display label.
 The consumer password-change/set endpoints and user initial-password generation
 refuse administrator-linked accounts. Administrators must use My Account so those
 paths cannot bypass their second factor. The super-administrator recovery endpoint
-cannot reset the caller's own authenticator.
+cannot reset the caller's own authenticator or any SUPER_ADMIN target's authenticator.
+Super administrators must use authenticated self-service security operations.
 
 Passkey assertion tokens bind the administrator, current session, operation,
 credential target when relevant, and a fingerprint of the current authentication

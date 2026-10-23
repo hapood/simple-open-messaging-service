@@ -4536,11 +4536,6 @@ export interface components {
              */
             account: string;
             /**
-             * @description Display name (1-31 chars; unicode/emoji allowed)
-             * @example Alice
-             */
-            name: string;
-            /**
              * @description Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
              * @example P@ssw0rd
              */
@@ -5053,11 +5048,6 @@ export interface components {
              * @example alice
              */
             account: string;
-            /**
-             * @description Display name (1-31 chars; unicode/emoji allowed)
-             * @example Alice
-             */
-            name: string;
             /**
              * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.
              * @example P@ssw0rd

@@ -18,14 +18,6 @@
 </p>
 
 <p align="center">
-  <a href="spec/README.md">Federation specification</a>
-  ·
-  <a href="docs/development/local-development.md">Development setup</a>
-  ·
-  <a href="docs/deployment/deployment.md">Deployment</a>
-</p>
-
-<p align="center">
   <img src="docs/design/assets/playground-preview.png" alt="SOMS Web Client Preview - Self-Hosted Federated Chat UI" width="850">
 </p>
 
@@ -143,17 +135,8 @@ Native platform availability is tracked separately below; planned applications a
 
 ## Documentation
 
-| Topic                   | Entry point                                                                                                                 |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Documentation           | [Documentation index](docs/README.md)                                                                                       |
-| Development             | [Local initialization and development](docs/development/local-development.md) · [Repository conventions](AGENTS.md)         |
-| Federation protocol     | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
-| Architecture and stack  | [Architecture and technology stack](docs/overview/architecture.md) · [Database model](docs/overview/database.md)            |
-| APIs                    | [Client/admin HTTP API](docs/api/api.md) · [Federation HTTP surface](spec/v1/protocol.md#3-federation-v1-http-surface)      |
-| Deployment              | [Deployment guide](docs/deployment/deployment.md) · [Compose configuration generator][gen]                                  |
-| Operations              | [Rate limiting](docs/operations/rate-limiting.md)                                                                           |
-| Native client           | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/platform/android/calls.md)                                    |
-| Security and governance | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |
+See the [documentation index](docs/README.md) for setup, deployment, architecture,
+APIs, federation, and operations.
 
 ## License
 

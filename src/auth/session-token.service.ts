@@ -9,7 +9,12 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { account, sessionToken, userPreference } from '../database/schema.js';
+import {
+  account,
+  admin,
+  sessionToken,
+  userPreference,
+} from '../database/schema.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
 import {
   AUTO_TERMINATE_PREFERENCE_KEY,
@@ -104,6 +109,7 @@ export class SessionTokenService {
       userAgent?: string;
       ip?: string;
       expectedPasswordHash?: string | null;
+      disallowAdmin?: boolean;
       authorizingSessionId?: number;
     } = {},
   ): Promise<string> {
@@ -112,17 +118,34 @@ export class SessionTokenService {
     try {
       await this.database.db.transaction(async (tx) => {
         const [locked] = await tx
-          .select({ id: account.id, hashPwd: account.hashPwd })
+          .select({
+            id: account.id,
+            hashPwd: account.hashPwd,
+            disabledAt: account.disabledAt,
+            availability: account.availability,
+          })
           .from(account)
           .where(eq(account.id, userId))
           .for('no key update');
         if (
           !locked ||
+          locked.disabledAt != null ||
+          locked.availability === 'REMOVED' ||
           (opts.expectedPasswordHash !== undefined &&
             locked.hashPwd !== opts.expectedPasswordHash)
         )
           throw new ServiceUnavailableException(
             'authentication changed; sign in again',
+          );
+        if (
+          opts.disallowAdmin &&
+          (await tx.query.admin.findFirst({
+            where: eq(admin.userId, userId),
+            columns: { id: true },
+          }))
+        )
+          throw new ServiceUnavailableException(
+            'administrator accounts cannot use issued login codes',
           );
         if (opts.authorizingSessionId !== undefined) {
           const parent = await tx.query.sessionToken.findFirst({

@@ -18,6 +18,7 @@ import {
   AdminListFederationPeersDto,
   AdminFederationBlockDto,
   AdminFederationSelfCheckDto,
+  AdminNetworkIpProbeDto,
   AdminFederationRetireDto,
   AdminFederationReviewApproveDto,
   AdminFederationIdentityRecoverDto,
@@ -27,6 +28,7 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { FederationPeerLifecycle } from '../federation/federation-peer-lifecycle.js';
+import { NetworkInspectionService } from '../federation/self-check/network-inspection.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { FederationRetireService } from './federation-retire.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
@@ -60,6 +62,7 @@ export class AdminFederationController {
     private readonly recognition: FederationRecognitionService,
     private readonly messageProvenance: FederationAdminMessageProvenanceService,
     private readonly healthProbe: FederationAdminHealthProbeService,
+    private readonly networkInspection: NetworkInspectionService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -313,6 +316,26 @@ export class AdminFederationController {
   })
   async unblockPeer(@Param('domain') domain: string): Promise<void> {
     await this.peerLifecycle.markUnblocked(domain);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/network-info')
+  @ApiOperation({
+    summary: 'Local process addresses and available public IP sources',
+  })
+  networkInfo() {
+    return this.networkInspection.local();
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/network-ip')
+  @ApiOperation({
+    summary: 'Probe one public IP source with a fixed address family',
+  })
+  networkIp(@Body() dto: AdminNetworkIpProbeDto) {
+    return this.networkInspection.probe(dto.source, dto.family);
   }
 
   @UseGuards(AdminAuthGuard)

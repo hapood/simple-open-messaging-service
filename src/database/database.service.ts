@@ -10,6 +10,7 @@ import {
   type Logger as DrizzleLogger,
 } from 'drizzle-orm/logger';
 import { Pool, type PoolClient } from 'pg';
+import { readFileSync } from 'node:fs';
 import { optionalIntEnv } from '../common/env.js';
 import {
   executionMeasurementSampleRate,
@@ -44,6 +45,16 @@ export class DatabaseService implements OnModuleInit, OnApplicationShutdown {
     }
     this.pool = new Pool({
       ...(connectionString ? { connectionString } : {}),
+      ...(process.env.SOMS_DB_TLS === 'verify-full'
+        ? {
+            ssl: {
+              rejectUnauthorized: true,
+              ...(process.env.SOMS_DB_CA_FILE
+                ? { ca: readFileSync(process.env.SOMS_DB_CA_FILE, 'utf8') }
+                : {}),
+            },
+          }
+        : {}),
       max: optionalIntEnv('DATABASE_POOL_MAX', 10),
       // Absolute instants are stored as timestamptz, but pin the session timezone too so SQL date
       // arithmetic, CURRENT_DATE, logs, and any future timestamp casts have one deterministic UTC

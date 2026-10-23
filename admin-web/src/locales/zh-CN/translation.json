@@ -1,5 +1,6 @@
 {
   "common": {
+    "confirm": "确认",
     "appName": "Admin 控制台",
     "loading": "加载中…",
     "noData": "无数据",
@@ -22,7 +23,6 @@
     "copy": "复制",
     "copied": "已复制",
     "copyFailed": "复制失败",
-    "workspace": "运营工作台",
     "client": {
       "app": "安卓",
       "web": "网页",
@@ -223,13 +223,14 @@
     "backToPassword": "返回密码步骤"
   },
   "users": {
+    "grantViewerConfirm": "确认授予 {{account}} 只读管理员权限？现有用户会话和已签发的登录码将被撤销。后续仅超级管理员可以调整其角色。",
+    "grantViewerSuccess": "已授予只读管理员权限",
     "title": "用户管理",
     "create": "新建用户",
     "searchPlaceholder": "搜索 账户名",
     "col": {
       "id": "ID",
       "account": "账户名",
-      "domain": "domain",
       "foreigner": "外宾",
       "status": "状态",
       "quota": "额度",
@@ -245,6 +246,7 @@
       "ban": "封禁",
       "forceLogout": "强制下线",
       "viewSessions": "查看会话",
+      "grantViewer": "设置管理员",
       "issueLoginCode": "签发登录码",
       "generateInitialPassword": "生成初始密码"
     },
@@ -274,7 +276,6 @@
       "push": "推送设备"
     },
     "field": {
-      "domain": "域",
       "foreigner": "境外",
       "createdAt": "创建时间",
       "updatedAt": "更新时间",
@@ -510,7 +511,45 @@
     },
     "selfCheck": {
       "title": "S2S 握手自检",
-      "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/somfp、密钥一致性、签名回环与时钟偏移。网络探测真实发起，按 SRV 目标 × 解析出的每个 IP 逐端点执行，且只走生产对端使用的 HTTPS 路径；不安全 dev 模式（allowInsecureHttp）下自动跳过网络探测。",
+      "navigation": "快速导航",
+      "overview": "联邦检测总览",
+      "awaitRun": "运行联邦检查后，这里将显示检测结果。",
+      "network": {
+        "title": "本机与外部 IP",
+        "local": "本机网卡地址",
+        "showLocal": "展开回环与链路本地地址（{{count}}）",
+        "hideLocal": "收起回环与链路本地地址",
+        "external": "外部检测 · 出口 IP",
+        "refreshLocal": "刷新本机地址",
+        "detect": "检测外部 IP",
+        "sources": "检测来源（可多选）",
+        "localHint": "这里显示后端进程可见的地址，不是浏览器地址。Docker 环境下显示容器地址；IPv6 入站转发正常，不代表容器具备 IPv6 出站能力。",
+        "externalHint": "从服务器分别通过 IPv4 / IPv6 直连检测来源，返回出口公网 IP；它不一定与 DNS 入口或反向代理地址一致。",
+        "privacy": "仅手动检测，所选服务会看到服务器出口 IP。10 秒内可能复用检测结果，不会在后台定时探测。",
+        "loading": "检测中…",
+        "notRun": "尚未检测",
+        "noInterfaces": "暂无可用的网卡地址。",
+        "sourceAddress": "本地源地址",
+        "sourceFailure": "未能完成该来源的检测。单个来源失败不代表网络整体不可用，也不能证明外网无法访问本实例。",
+        "runtime": { "docker": "Docker 镜像环境", "unknown": "运行环境未声明" },
+        "scope": {
+          "loopback": "回环",
+          "private": "私有地址",
+          "linkLocal": "链路本地",
+          "uniqueLocal": "唯一本地",
+          "unicast": "全球单播",
+          "carrierGradeNat": "共享地址",
+          "reserved": "保留地址"
+        },
+        "error": {
+          "EADDRNOTAVAIL": "本地源地址不可用，请检查后端或容器的 IPv6 配置。",
+          "ENETUNREACH": "后端运行环境没有到该目标的可用路由。",
+          "ETIMEDOUT": "该来源未在 5 秒内完成响应，可换其他来源对比。",
+          "ENOTFOUND": "无法为该地址协议解析检测服务的域名。",
+          "ECONNREFUSED": "连接被检测服务或网络设备拒绝。"
+        }
+      },
+      "desc": "先查看本机与出口 IP，再按分区检查联邦配置、DNS、TLS、协议发现、密钥和时钟。检测从后端运行环境发起，并非外部监测节点；不安全开发模式下跳过联邦网络探测。",
       "entry": "握手自检",
       "ntpServer": "参考时钟 (NTP)",
       "dnsResolver": "DNS 解析器",
@@ -526,7 +565,8 @@
       "blocked": "受上游阻断",
       "blockedCount": "另有 {{count}} 项检查因该问题未执行。",
       "error": {
-        "HPE_INVALID_CONSTANT": "HTTP 协议解析失败：响应与协商的协议不一致"
+        "HPE_INVALID_CONSTANT": "HTTP 协议解析失败：响应与协商的协议不一致",
+        "EADDRNOTAVAIL": "本地源地址不可用，请检查后端或容器网络；TLS 证书校验未能完成。"
       },
       "check": {
         "config": "本地配置",
@@ -551,13 +591,14 @@
       "group": {
         "config": "本地配置",
         "dns": "DNS 解析",
-        "tls": "TLS 证书",
+        "tls": "公网连接与 TLS",
         "well-known": ".well-known/somfp",
         "crypto": "密钥与签名",
         "clock": "时钟偏移"
       },
       "toast": {
         "ok": "全部检查通过",
+        "incomplete": "检测完成，存在警告或未执行项目，请查看报告",
         "hasFails": "{{count}} 项失败——请查看下方",
         "copied": "报告已复制到剪贴板",
         "copyFailed": "复制失败"
@@ -694,8 +735,6 @@
     "title": "新建用户",
     "account": "账户名",
     "accountHint": "1-30 位：字母、数字、点号、下划线或连字符，首位须为字母或数字",
-    "name": "显示名称",
-    "nameHint": "1 到 31 个字符",
     "password": "初始密码",
     "passwordHint": "6-20 位，允许字母数字和 .@!#$%^&*()",
     "passwordRequired": "密码登录已启用，需设置初始密码",
@@ -850,10 +889,7 @@
   "admins": {
     "title": "管理员账号",
     "desc": "管理可登录控制台的人员及其角色。禁用或降级会立即吊销其会话。",
-    "add": "添加管理员",
-    "addTitle": "将用户提升为管理员",
-    "userIdLabel": "用户 ID",
-    "userIdHint": "要提升的已有用户的数字 ID（在用户页查找）。",
+    "roleConfirm": "确认修改 {{account}} 的后台角色？现有后台会话将被撤销，不会改变该账号后台访问的启用状态。",
     "roleLabel": "角色",
     "empty": "无管理员",
     "col": {
@@ -866,11 +902,11 @@
     "action": {
       "disable": "禁用",
       "enable": "启用",
-      "reset2fa": "重置二次验证"
+      "reset2fa": "重置二次验证",
+      "setRole": "设置角色"
     },
     "reset2faConfirm": "重置 {{name}} 的二次验证？重置后该账号将仅凭密码登录。用于为丢失设备的被锁管理员解锁。",
     "toast": {
-      "created": "已创建管理员",
       "disabled": "已禁用管理员",
       "enabled": "已启用管理员",
       "role": "角色已更新",

@@ -1,23 +1,26 @@
-import { type ReactNode, useEffect, useState } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
-import { LogOut, X } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import { useAuth } from '@/auth/auth-context'
-import { Button } from '@/components/ui/button'
-import { NAV_GROUPS, type NavItem } from '@/components/layout/nav-config'
-import { TopBar } from '@/components/layout/top-bar'
-import { BreakerBanner } from '@/components/admin/breaker-banner'
+import { type ReactNode, useEffect, useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
+import { LogOut, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { useAuth } from '@/auth/auth-context';
+import { useMe } from '@/hooks/use-me';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { NAV_GROUPS, type NavItem } from '@/components/layout/nav-config';
+import { TopBar } from '@/components/layout/top-bar';
+import { BreakerBanner } from '@/components/admin/breaker-banner';
 
 export function AdminLayout({ children }: { children: ReactNode }) {
-  const { logout } = useAuth()
-  const { t } = useTranslation()
-  const { pathname } = useLocation()
-  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const { logout } = useAuth();
+  const { t } = useTranslation();
+  const { data: me } = useMe();
+  const { pathname } = useLocation();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  useEffect(() => setMobileNavOpen(false), [pathname])
+  useEffect(() => setMobileNavOpen(false), [pathname]);
 
   return (
-    <div className="flex min-h-svh bg-background">
+    <div className="flex h-svh overflow-hidden bg-background">
       {mobileNavOpen ? (
         <button
           type="button"
@@ -47,8 +50,20 @@ export function AdminLayout({ children }: { children: ReactNode }) {
             className="size-7 rounded-md"
           />
           <div className="min-w-0">
-            <div className="truncate text-base font-semibold tracking-tight">{t('common.appName')}</div>
-            <div className="text-[11px] text-muted-foreground">{t('common.workspace')}</div>
+            <div className="truncate text-base font-semibold tracking-tight">
+              {t('common.appName')}
+            </div>
+            {/* Node home domain, shared via the /admin/me React Query cache the auth bootstrap
+                already warmed — no dedicated fetch. Hidden (not an error) in the degraded
+                local-identity state. */}
+            {me?.somsDomain ? (
+              <Badge
+                variant="outline"
+                className="mt-0.5 max-w-full truncate font-mono"
+              >
+                {me.somsDomain}
+              </Badge>
+            ) : null}
           </div>
           <Button
             variant="ghost"
@@ -73,18 +88,24 @@ export function AdminLayout({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="mt-auto flex flex-col gap-1">
-          {NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items).map((item) => (
-            <NavEntry key={item.to} item={item} />
-          ))}
-          <Button variant="ghost" className="w-full justify-start gap-2" onClick={logout}>
+          {NAV_GROUPS.filter((g) => g.footer)
+            .flatMap((g) => g.items)
+            .map((item) => (
+              <NavEntry key={item.to} item={item} />
+            ))}
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2"
+            onClick={logout}
+          >
             <LogOut className="size-4" />
             {t('nav.logout')}
           </Button>
         </div>
       </aside>
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <TopBar onOpenNavigation={() => setMobileNavOpen(true)} />
-        <main className="flex-1 overflow-auto">
+        <main className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto w-full max-w-[1440px] p-4 sm:p-6 lg:px-8">
             <BreakerBanner />
             {children}
@@ -92,11 +113,11 @@ export function AdminLayout({ children }: { children: ReactNode }) {
         </main>
       </div>
     </div>
-  )
+  );
 }
 
 function NavEntry({ item }: { item: NavItem }) {
-  const { t } = useTranslation()
+  const { t } = useTranslation();
   if (item.disabled) {
     return (
       <span
@@ -107,7 +128,7 @@ function NavEntry({ item }: { item: NavItem }) {
         <item.icon className="size-4" />
         {t(`nav.${item.key}`)}
       </span>
-    )
+    );
   }
   return (
     <NavLink
@@ -125,5 +146,5 @@ function NavEntry({ item }: { item: NavItem }) {
       <item.icon className="size-4" />
       {t(`nav.${item.key}`)}
     </NavLink>
-  )
+  );
 }

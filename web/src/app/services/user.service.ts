@@ -570,7 +570,9 @@ export class UserService {
     if (cur === undefined || feedId > cur) this._stateFeedCursor.set(feedId);
   }
 
-  register(params: { account: string; name: string; password: string }) {
+  /** Account-only registration: the account is created at profile rev 0 and the user sets
+   *  their display name through their own first profile edit afterwards. */
+  register(params: { account: string; password: string }) {
     return this.http.post<{
       code: number;
       message: string;

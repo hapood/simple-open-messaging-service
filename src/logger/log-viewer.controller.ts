@@ -11,6 +11,10 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Observable } from 'rxjs';
+import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
+import { Roles } from '../admin/admin-roles.decorator.js';
+import { Audit } from '../admin/audit.decorator.js';
+import { AdminRole } from '../database/enums.js';
 import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
 import { LogViewerService } from './log-viewer.service.js';
 import { LogLevelService } from './log-level.service.js';
@@ -28,7 +32,7 @@ import {
 @ApiBearerAuth()
 @Public()
 @Controller('admin/logs')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class LogViewerController {
   constructor(
     private readonly viewer: LogViewerService,
@@ -41,6 +45,8 @@ export class LogViewerController {
     return this.output.getLevel();
   }
 
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('logs.output_level.set')
   @Post('output-level/set')
   @ApiOperation({
     summary: 'Change log output level until the process restarts',

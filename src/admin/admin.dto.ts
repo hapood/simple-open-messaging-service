@@ -20,7 +20,6 @@ import {
 } from '@simplewebauthn/server';
 import { AdminRole } from '../database/enums.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
-import { IsDisplayName } from '../common/validators.js';
 
 export class AdminFederationReviewApproveDto {
   @ApiPropertyOptional({ enum: ['new-peer', 'replace-identity'] })
@@ -195,14 +194,6 @@ export class AdminCreateUserDto {
       'account must be 1-30 chars: start alphanumeric, then letters, digits, dot, underscore or hyphen',
   })
   account!: string;
-
-  @ApiProperty({
-    example: 'Alice',
-    description: 'Display name (1-31 chars; unicode/emoji allowed)',
-  })
-  @IsDisplayName()
-  @IsNotEmpty()
-  name!: string;
 
   @ApiProperty({
     required: false,
@@ -506,6 +497,16 @@ export class AdminContinueQuotaDto {
 /** Inputs to the S2S self-check: which NTP server to compare the clock against, and which DNS resolver
  *  to run lookups through (default 'system' = /etc/resolv.conf; a public resolver surfaces split-horizon
  *  / propagation issues). Both optional. */
+export class AdminNetworkIpProbeDto {
+  @ApiProperty({ enum: ['ip-sb', 'ipify', 'ident-me'] })
+  @IsIn(['ip-sb', 'ipify', 'ident-me'])
+  source!: 'ip-sb' | 'ipify' | 'ident-me';
+
+  @ApiProperty({ enum: [4, 6] })
+  @IsIn([4, 6])
+  family!: 4 | 6;
+}
+
 export class AdminFederationSelfCheckDto {
   @ApiProperty({
     required: false,
@@ -645,22 +646,10 @@ export class AdminManageListDto {
   search?: string;
 }
 
-/** Promote an existing User to an admin. */
-export class AdminCreateDto {
-  @ApiProperty({ example: 42, description: 'Id of the User to promote' })
-  @Type(() => Number)
-  @IsInt()
-  userId!: number;
-
-  @ApiProperty({ enum: AdminRole, description: 'Initial role' })
-  @IsIn([AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.VIEWER])
-  role!: AdminRole;
-}
-
-/** Change an admin's role. */
+/** Super-admin access cannot be granted through account-management APIs. */
 export class AdminSetRoleDto {
-  @ApiProperty({ enum: AdminRole })
-  @IsIn([AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.VIEWER])
+  @ApiProperty({ enum: [AdminRole.ADMIN, AdminRole.VIEWER] })
+  @IsIn([AdminRole.ADMIN, AdminRole.VIEWER])
   role!: AdminRole;
 }
 

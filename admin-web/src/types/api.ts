@@ -76,11 +76,12 @@ export interface WebAuthnLoginBegin {
 
 // User row (backend no longer exposes hashPwd; Date fields are serialized to ms-epoch numbers by the global interceptor)
 export interface User {
+  /** Present even when the associated admin access is disabled. */
+  adminRole?: AdminRole | null;
   id: number;
   account: string;
   /** Namespace 0 is the local namespace; other values are federated guests. */
   namespaceId: number;
-  domain: string | null;
   createdAt: number;
   updatedAt: number;
   isDeleted: boolean;
@@ -390,6 +391,31 @@ export interface ContinueQuotaInput {
   addFileBytes?: number;
 }
 
+export type IpSource = 'ip-sb' | 'ipify' | 'ident-me';
+export interface NetworkInfo {
+  checkedAt: number;
+  runtime: 'docker' | 'unknown';
+  interfaces: {
+    name: string;
+    address: string;
+    family: 4 | 6;
+    cidr: string | null;
+    scope: string;
+  }[];
+  sources: { id: IpSource; label: string; ipv4: string; ipv6: string }[];
+}
+export interface IpProbeResult {
+  source: IpSource;
+  family: 4 | 6;
+  url: string;
+  checkedAt: number;
+  durationMs: number;
+  status: 'ok' | 'warn';
+  ip?: string;
+  localAddress?: string;
+  code?: string;
+}
+
 // ─── S2S handshake self-check (POST /admin/federation/self-check) ───
 // Probes THIS server's federation prerequisites from the external viewpoint. Each network check
 // (tls-public / well-known) carries an `ips[]` evidence array — one independent probe per resolved IP,
@@ -533,16 +559,18 @@ export interface MeResult {
   account: string;
   name: string;
   role: AdminRole;
+  /** This node's home domain (sidebar tag). Null only in the degraded local-identity state. */
+  somsDomain: string | null;
 }
 
 // ── User 360° detail (POST /admin/users/:id/detail) ──────────────────────────
 interface UserDetailUser {
+  adminRole?: AdminRole | null;
   id: number;
   account: string;
   name: string;
   avatar: string;
   bio: string;
-  domain: string | null;
   /** Namespace 0 is the local namespace; the detail surface serves local persons. */
   namespaceId: number;
   isDeleted: boolean;

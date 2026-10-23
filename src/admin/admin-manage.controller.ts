@@ -5,6 +5,7 @@ import {
   Post,
   Body,
   Param,
+  ParseIntPipe,
   Req,
   ForbiddenException,
   UseGuards,
@@ -18,18 +19,14 @@ import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
 import { AdminManageService } from './admin-manage.service.js';
 import { AdminRole } from '../database/enums.js';
-import {
-  AdminManageListDto,
-  AdminCreateDto,
-  AdminSetRoleDto,
-} from './admin.dto.js';
+import { AdminManageListDto, AdminSetRoleDto } from './admin.dto.js';
 
 /**
  * Admin self-management (SUPER_ADMIN only — the whole controller is gated). HTTP adapter over
  * AdminManageService: list/promote/disable + assign roles. Disabling or demoting an admin revokes
  * their outstanding admin_session cookies (revokeSessionsByAdmin) so the next request fails
- * validation; a no-op same-role setRole revokes nothing. The last enabled SUPER_ADMIN can never be
- * disabled or demoted.
+ * validation; a no-op same-role setRole revokes nothing. SUPER_ADMIN grants cannot be changed
+ * through these management endpoints.
  */
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -47,12 +44,12 @@ export class AdminManageController {
     return this.svc.list(dto);
   }
 
-  @Audit('admin.create', { targetType: 'admin' })
+  @Audit('admin.grant_viewer', { targetType: 'user', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
-  @Post('admin/admins/create')
-  @ApiOperation({ summary: 'Promote an existing User to an admin' })
-  async create(@Body() dto: AdminCreateDto) {
-    return this.svc.create(dto);
+  @Post('admin/users/:id/grant-viewer')
+  @ApiOperation({ summary: 'Grant read-only admin access to an existing user' })
+  async grantViewer(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.grantViewer(id);
   }
 
   @Audit('admin.disable', { targetType: 'admin', targetParam: 'id' })

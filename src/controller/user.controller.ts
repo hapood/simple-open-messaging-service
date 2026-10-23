@@ -642,10 +642,11 @@ export class UserController {
     }
     /* Format validation (regex) for account/password has moved into RegisterDto's @Matches → failures
        go through ValidationPipe → 200/10000. Business validation (account duplicate) stays in the
-       service → 200 + ALREADY_EXISTS. */
+       service → 200 + ALREADY_EXISTS. Registration creates the account at profile rev 0 — the
+       display name is set by the user's own first profile edit, exactly like admin-provisioned
+       accounts. */
     const res = await this.userService.addUser({
       account: dto.account,
-      name: dto.name,
       hashPwd: await this.authService.hashPassword(dto.password),
     });
     if (res.status === 2) {

@@ -4,14 +4,17 @@ import { TranslocoService } from '@jsverse/transloco';
 import { UserService } from '../../services/user.service';
 import { RouteService } from '../../services/route.service';
 import { RegisterComponent } from './register.component';
+import { of } from 'rxjs';
 
 describe('RegisterComponent', () => {
+  const register = vi.fn(() => of({ code: 0 }));
+
   function createComponent() {
     TestBed.configureTestingModule({
       imports: [RegisterComponent],
       providers: [
         provideZonelessChangeDetection(),
-        { provide: UserService, useValue: { register: vi.fn() } },
+        { provide: UserService, useValue: { register } },
         { provide: RouteService, useValue: { jumpTo: vi.fn() } },
         {
           provide: TranslocoService,
@@ -22,11 +25,17 @@ describe('RegisterComponent', () => {
     return TestBed.createComponent(RegisterComponent);
   }
 
-  it('counts and limits display name by Unicode code points', () => {
+  it('registers with account and password only — no display name', () => {
     const component = createComponent().componentInstance;
 
-    component.onNameInput('😀'.repeat(40));
+    component.onAccountInput('alice');
+    component.onPasswordInput('secret123');
+    component.onPassword2Input('secret123');
+    component.register();
 
-    expect(component.name()).toBe('😀'.repeat(31));
+    expect(register).toHaveBeenCalledWith({
+      account: 'alice',
+      password: 'secret123',
+    });
   });
 });

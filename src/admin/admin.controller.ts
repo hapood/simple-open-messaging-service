@@ -55,6 +55,7 @@ import {
 } from './admin-session.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { ThreadHistoryService } from '../message/thread-history.service.js';
+import { KeypairService } from '../federation/keypair.service.js';
 
 /**
  * Admin console HTTP adapter. All domain logic lives in services (AdminAuthService, AuthService,
@@ -81,6 +82,7 @@ export class AdminController {
     private readonly otpLoginService: OtpLoginService,
     private readonly userQuotaService: UserQuotaService,
     private readonly threadHistory: ThreadHistoryService,
+    private readonly keypair: KeypairService,
   ) {}
 
   @UseGuards(ThrottleGuard)
@@ -199,7 +201,7 @@ export class AdminController {
   @Post('admin/me')
   @ApiOperation({
     summary:
-      'Current admin identity (account + role) for the console header + role gating',
+      'Current admin identity (account + role) + node domain, for the console header + role gating',
   })
   async me(@Req() req: FastifyRequest) {
     const adminId = (req.user as { adminId?: number } | undefined)?.adminId;
@@ -216,7 +218,18 @@ export class AdminController {
         BusinessCode.UNAUTHENTICATED,
         'no admin profile',
       );
-    return me;
+    // The console chrome (sidebar domain tag) rides on this payload: /admin/me is already fetched once
+    // per session before the layout mounts, so the tag needs no extra request. Every listed user is
+    // local, which is also why the user list no longer joins the domain. Null only in the degraded
+    // local-identity state — the console must stay reachable for recovery, so the tag degrades to
+    // hidden instead of failing the session check.
+    let somsDomain: string | null;
+    try {
+      somsDomain = this.keypair.getIdentityDomain();
+    } catch {
+      somsDomain = null;
+    }
+    return { ...me, somsDomain };
   }
 
   // ===== User management =====
@@ -247,7 +260,6 @@ export class AdminController {
     }
     return this.userManageService.createUser({
       account: dto.account,
-      name: dto.name,
       password: dto.password,
     });
   }

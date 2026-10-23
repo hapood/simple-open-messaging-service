@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
+import { readFileSync } from 'node:fs';
 
 const MIGRATIONS_DIR = join(process.cwd(), 'database', 'migrations');
 const LOCK_NAME = 'soms-schema-migrations';
@@ -252,6 +253,16 @@ async function main(): Promise<void> {
 
   const pool = new Pool({
     ...(connectionString ? { connectionString } : {}),
+    ...(process.env.SOMS_DB_TLS === 'verify-full'
+      ? {
+          ssl: {
+            rejectUnauthorized: true,
+            ...(process.env.SOMS_DB_CA_FILE
+              ? { ca: readFileSync(process.env.SOMS_DB_CA_FILE, 'utf8') }
+              : {}),
+          },
+        }
+      : {}),
     max: 1,
     options: '-c timezone=UTC',
   });

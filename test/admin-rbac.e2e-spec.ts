@@ -8,6 +8,7 @@ import { admin, adminActionLog, account as user } from '../src/database/schema';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
 import { AdminRole } from '../src/database/enums.js';
+import { SessionTokenService } from '../src/auth/session-token.service.js';
 import { createTestApp } from './support/app';
 import { truncateTablesForTest } from './support/truncate';
 
@@ -165,10 +166,10 @@ describe('Admin RBAC + revocation + audit', () => {
   // ── 2. Revocation is immediate ────────────────────────────────────────────────
   it('disabling an admin invalidates their outstanding session on the next request', async () => {
     const superA = await seedAdmin('super-a', AdminRole.SUPER_ADMIN);
-    const superB = await seedAdmin('super-b', AdminRole.SUPER_ADMIN);
+    const superB = await seedAdmin('super-b', AdminRole.ADMIN);
 
     // B's session cookie is valid before the disable.
-    const before = await post(superB.cookie, 'admin/admins', { take: 5 });
+    const before = await post(superB.cookie, 'admin/users', { take: 5 });
     expect(before.status).toBe(200);
 
     // A disables B → revokeSessionsByAdmin('admin_disabled') marks B's AdminSession rows revoked
@@ -180,7 +181,7 @@ describe('Admin RBAC + revocation + audit', () => {
     expect(disable.body.code).toBe(BusinessCode.OK);
 
     // B's SAME previously-issued cookie now fails validation (revoked + disabled) → 401 / UNAUTHENTICATED.
-    const after = await post(superB.cookie, 'admin/admins', { take: 5 });
+    const after = await post(superB.cookie, 'admin/users', { take: 5 });
     expect(after.status).toBe(401);
     expect(after.body.code).toBe(BusinessCode.UNAUTHENTICATED);
   });
@@ -232,25 +233,187 @@ describe('Admin RBAC + revocation + audit', () => {
 
   it('a same-role setRole is a no-op (no session revocation)', async () => {
     const a = await seedAdmin('keep-super-a', AdminRole.SUPER_ADMIN);
-    const b = await seedAdmin('keep-super-b', AdminRole.SUPER_ADMIN);
+    const b = await seedAdmin('keep-super-b', AdminRole.ADMIN);
 
     // Re-affirming B's existing role writes the same value — guardedStateChange reports changed:false,
     // so setRole must NOT call revokeSessionsByAdmin.
     const r = await post(a.cookie, `admin/admins/${b.adminId}/role`, {
-      role: AdminRole.SUPER_ADMIN,
+      role: AdminRole.ADMIN,
     });
     expect(r.body.code).toBe(BusinessCode.OK);
 
     // B's previously-issued cookie still validates → no kick.
-    const stillValid = await post(b.cookie, 'admin/admins', { take: 5 });
+    const stillValid = await post(b.cookie, 'admin/users', { take: 5 });
     expect(stillValid.status).toBe(200);
     expect(stillValid.body.code).toBe(BusinessCode.OK);
+  });
+
+  it('grants only VIEWER, only from SUPER_ADMIN, and removes the legacy create route', async () => {
+    const root = await seedAdmin('root', AdminRole.SUPER_ADMIN);
+    const operator = await seedAdmin('operator', AdminRole.ADMIN);
+    const viewer = await seedAdmin('reader', AdminRole.VIEWER);
+    const target = await seedUser('candidate');
+    for (const actor of [operator, viewer]) {
+      expect(
+        (await post(actor.cookie, `admin/users/${target.id}/grant-viewer`)).body
+          .code,
+      ).toBe(BusinessCode.FORBIDDEN);
+      expect(
+        (
+          await post(actor.cookie, `admin/admins/${viewer.adminId}/role`, {
+            role: 'ADMIN',
+          })
+        ).body.code,
+      ).toBe(BusinessCode.FORBIDDEN);
+    }
+    const grant = await post(
+      root.cookie,
+      `admin/users/${target.id}/grant-viewer`,
+    );
+    expect(grant.body.data.role).toBe('VIEWER');
+    expect(
+      (
+        await post(root.cookie, `admin/admins/${grant.body.data.id}/role`, {
+          role: 'SUPER_ADMIN',
+        })
+      ).body.code,
+    ).not.toBe(BusinessCode.OK);
+    expect(
+      (
+        await post(root.cookie, 'admin/admins/create', {
+          userId: target.id,
+          role: 'SUPER_ADMIN',
+        })
+      ).status,
+    ).toBe(404);
+  });
+
+  it('protects administrator identities through generic user operations and role-based super protection', async () => {
+    const root = await seedAdmin('not-the-admin-name', AdminRole.SUPER_ADMIN);
+    const actor = await seedAdmin('admin', AdminRole.ADMIN);
+    for (const action of [
+      'disable',
+      'enable',
+      'force-logout',
+      'issue-login-code',
+    ]) {
+      expect(
+        (await post(actor.cookie, `admin/users/${root.userId}/${action}`)).body
+          .code,
+      ).toBe(BusinessCode.FORBIDDEN);
+    }
+    expect(
+      (
+        await post(actor.cookie, 'admin/users/batch', {
+          ids: [root.userId],
+          action: 'disable',
+        })
+      ).body.code,
+    ).toBe(BusinessCode.FORBIDDEN);
+    expect(
+      (
+        await post(root.cookie, `admin/admins/${root.adminId}/role`, {
+          role: 'VIEWER',
+        })
+      ).body.code,
+    ).toBe(BusinessCode.FORBIDDEN);
+    // The literal account name does not confer protection or privilege.
+    expect(
+      (
+        await post(root.cookie, `admin/admins/${actor.adminId}/role`, {
+          role: 'VIEWER',
+        })
+      ).body.code,
+    ).toBe(BusinessCode.OK);
+  });
+
+  it('rejects an OTP session finishing after an administrator grant', async () => {
+    const target = await seedAdmin('otp-target', AdminRole.VIEWER);
+    const sessions = app.get(SessionTokenService);
+    await expect(
+      sessions.issue(target.userId, 'app', { disallowAdmin: true }),
+    ).rejects.toThrow();
+  });
+
+  it('serializes concurrent role change and disable without re-enabling access', async () => {
+    const root = await seedAdmin('role-root', AdminRole.SUPER_ADMIN);
+    const target = await seedAdmin('role-target', AdminRole.VIEWER);
+    const results = await Promise.all([
+      post(root.cookie, `admin/admins/${target.adminId}/role`, {
+        role: 'ADMIN',
+      }),
+      post(root.cookie, `admin/admins/${target.adminId}/disable`),
+    ]);
+    expect(results.every((r) => r.body.code === BusinessCode.OK)).toBe(true);
+    const row = await database.db.query.admin.findFirst({
+      where: eq(admin.id, target.adminId),
+    });
+    expect(row).toMatchObject({ role: 'ADMIN', enabled: false });
+    expect((await post(target.cookie, 'admin/me')).status).toBe(401);
+  });
+
+  it('checks account availability when validating backend sessions', async () => {
+    const root = await seedAdmin('disabled-root', AdminRole.SUPER_ADMIN);
+    await database.db
+      .update(user)
+      .set({ disabledAt: new Date() })
+      .where(eq(user.id, root.userId));
+    expect((await post(root.cookie, 'admin/me')).status).toBe(401);
+  });
+
+  it('serializes concurrent grants and user disable without leaving an enabled administrator on a disabled account', async () => {
+    const root = await seedAdmin('concurrent-root', AdminRole.SUPER_ADMIN);
+    const target = await seedUser('concurrent-target');
+    const results = await Promise.all([
+      post(root.cookie, `admin/users/${target.id}/grant-viewer`),
+      post(root.cookie, `admin/users/${target.id}/disable`),
+    ]);
+    expect(results.filter((r) => r.body.code === BusinessCode.OK)).toHaveLength(
+      1,
+    );
+    const [row] = await database.db
+      .select({ disabledAt: user.disabledAt, role: admin.role })
+      .from(user)
+      .leftJoin(admin, eq(admin.userId, user.id))
+      .where(eq(user.id, target.id));
+    expect(row.role === null || row.disabledAt === null).toBe(true);
+  });
+
+  it('allows log reads for VIEWER but audits output changes only by ADMIN+', async () => {
+    const viewer = await seedAdmin('log-reader', AdminRole.VIEWER);
+    const actor = await seedAdmin('log-writer', AdminRole.ADMIN);
+    expect(
+      (await post(viewer.cookie, 'admin/logs/output-level')).body.code,
+    ).toBe(BusinessCode.OK);
+    expect(
+      (
+        await post(viewer.cookie, 'admin/logs/output-level/set', {
+          level: 'error',
+        })
+      ).body.code,
+    ).toBe(BusinessCode.FORBIDDEN);
+    expect(
+      (
+        await post(actor.cookie, 'admin/logs/output-level/set', {
+          level: 'error',
+        })
+      ).body.code,
+    ).toBe(BusinessCode.OK);
+    const logs = await database.db
+      .select()
+      .from(adminActionLog)
+      .where(eq(adminActionLog.action, 'logs.output_level.set'));
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      adminId: actor.adminId,
+      status: 'SUCCEEDED',
+    });
   });
 
   // ── 3. Audit ──────────────────────────────────────────────────────────────────
   it('marks an AdminActionLog row SUCCEEDED for an executed mutation', async () => {
     const actor = await seedAdmin('auditor', AdminRole.SUPER_ADMIN);
-    const target = await seedAdmin('audited', AdminRole.SUPER_ADMIN);
+    const target = await seedAdmin('audited', AdminRole.ADMIN);
 
     const r = await post(
       actor.cookie,

@@ -25,7 +25,7 @@ import {
 } from '../../app/components/icon/icon.component';
 import {
   DeploymentConfig,
-  defaultsForMode,
+  DeploymentModeState,
   deploymentIssues,
   generateCompose,
   initialDeployment,
@@ -216,30 +216,37 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                   </div>
                 }
 
-                <div class="toggle-row">
-                  <mat-slide-toggle
-                    name="adminAccess"
-                    [checked]="config().adminAccess === 'lan'"
-                    (change)="
-                      update('adminAccess', $event.checked ? 'lan' : 'public')
-                    "
-                  >
-                    {{ t().adminOnly }}
-                  </mat-slide-toggle>
-                  <button
-                    mat-icon-button
-                    type="button"
-                    class="row-help-btn small"
-                    [matTooltip]="t().adminHint"
-                    [attr.aria-label]="t().adminHint"
-                  >
-                    <app-icon
-                      [type]="AppIconType.INFO"
-                      [style]="helpIconStyle"
-                      aria-hidden="true"
-                    />
-                  </button>
-                </div>
+                <mat-expansion-panel class="sub-expansion-panel">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title class="sub-panel-title">{{
+                      t().networkOptions
+                    }}</mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <div class="toggle-row">
+                    <mat-slide-toggle
+                      name="adminAccess"
+                      [checked]="config().adminAccess === 'lan'"
+                      (change)="
+                        update('adminAccess', $event.checked ? 'lan' : 'public')
+                      "
+                    >
+                      {{ t().adminOnly }}
+                    </mat-slide-toggle>
+                    <button
+                      mat-icon-button
+                      type="button"
+                      class="row-help-btn small"
+                      [matTooltip]="t().adminHint"
+                      [attr.aria-label]="t().adminHint"
+                    >
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
+                </mat-expansion-panel>
               </mat-card-content>
             </mat-card>
 
@@ -628,6 +635,61 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                 </mat-expansion-panel-header>
 
                 <div class="advanced-body">
+                  <mat-form-field appearance="outline" class="flex-field">
+                    <mat-label>{{ t().databaseMode }}</mat-label>
+                    <mat-select
+                      name="databaseMode"
+                      [ngModel]="config().databaseMode"
+                      (ngModelChange)="update('databaseMode', $event)"
+                    >
+                      <mat-option value="builtin">{{
+                        t().databaseBuiltin
+                      }}</mat-option>
+                      <mat-option value="remote">{{
+                        t().databaseRemote
+                      }}</mat-option>
+                    </mat-select>
+                  </mat-form-field>
+                  @if (config().databaseMode === 'remote') {
+                    <mat-form-field appearance="outline" class="flex-field">
+                      <mat-label>{{ t().remoteHost }}</mat-label>
+                      <input
+                        matInput
+                        name="remoteHost"
+                        required
+                        [ngModel]="config().remoteHost"
+                        (ngModelChange)="update('remoteHost', $event)"
+                        spellcheck="false"
+                      />
+                    </mat-form-field>
+                    <mat-form-field appearance="outline" class="flex-field">
+                      <mat-label>{{ t().remotePort }}</mat-label>
+                      <input
+                        matInput
+                        name="remotePort"
+                        required
+                        type="number"
+                        [ngModel]="config().remotePort"
+                        (ngModelChange)="update('remotePort', $event)"
+                      />
+                    </mat-form-field>
+                    <mat-slide-toggle
+                      name="remoteTls"
+                      [checked]="config().remoteTls"
+                      (change)="update('remoteTls', $event.checked)"
+                      >{{ t().remoteTls }}</mat-slide-toggle
+                    >
+                    <mat-form-field appearance="outline" class="flex-field">
+                      <mat-label>{{ t().remoteCaPath }}</mat-label>
+                      <input
+                        matInput
+                        name="remoteCaPath"
+                        [ngModel]="config().remoteCaPath"
+                        (ngModelChange)="update('remoteCaPath', $event)"
+                        spellcheck="false"
+                      />
+                    </mat-form-field>
+                  }
                   <!-- Database Password lives here, auto-generated by default -->
                   <div class="input-row-with-help">
                     <mat-form-field appearance="outline" class="flex-field">
@@ -1398,6 +1460,7 @@ export class DeploymentPageComponent {
   );
 
   readonly config = signal<DeploymentConfig>({ ...initialDeployment });
+  private readonly modeState = new DeploymentModeState();
   readonly collapsed = signal(
     typeof window !== 'undefined' &&
       window.matchMedia('(max-width: 600px)').matches,
@@ -1526,7 +1589,15 @@ export class DeploymentPageComponent {
       domainPanel?.open();
     }
     if (
-      ['database', 'databasePassword', 'databaseUser', 'image'].includes(key)
+      [
+        'database',
+        'databasePassword',
+        'databaseUser',
+        'remoteHost',
+        'remotePort',
+        'remoteCaPath',
+        'image',
+      ].includes(key)
     ) {
       advancedPanel?.open();
     }
@@ -1547,7 +1618,7 @@ export class DeploymentPageComponent {
   }
 
   setMode(mode: DeploymentConfig['mode']) {
-    this.config.update((c) => ({ ...c, mode, ...defaultsForMode(mode) }));
+    this.config.update((c) => this.modeState.switch(c, mode));
   }
 
   update<K extends keyof DeploymentConfig>(key: K, value: DeploymentConfig[K]) {

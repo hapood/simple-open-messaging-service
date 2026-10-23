@@ -5,7 +5,17 @@ import { toast } from 'sonner';
 import { KeyRound, MoreHorizontal, Plus, Search } from 'lucide-react';
 import { useAdminUsers } from '@/hooks/use-admin-users';
 import { useListParams } from '@/hooks/use-list-params';
-import { useIsAdminPlus } from '@/hooks/use-me';
+import { useIsAdminPlus, useMe } from '@/hooks/use-me';
+import { useGrantViewer } from '@/hooks/use-admins';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import { usePublicConfig } from '@/hooks/use-public-config';
+import { isPasswordLoginEnabled } from '@/lib/constants';
 import {
   useBatchUsers,
   useDisableUser,
@@ -44,6 +54,17 @@ const PAGE_SIZE = 20;
 export function UsersPage() {
   const { t } = useTranslation();
   const canManage = useIsAdminPlus();
+  const { data: me } = useMe();
+  const isSuper = me?.role === 'SUPER_ADMIN';
+  const grantViewer = useGrantViewer();
+  const [grantTarget, setGrantTarget] = useState<User | null>(null);
+  const canManageUser = (u: User) =>
+    canManage && u.namespaceId === 0 && !u.adminRole;
+  const { data: publicConfig } = usePublicConfig();
+  // Same gate as the detail page: password bootstrap exists only under a password loginMode.
+  const passwordLoginEnabled = publicConfig
+    ? isPasswordLoginEnabled(publicConfig.loginMode)
+    : false;
   const [sessionsUser, setSessionsUser] = useState<User | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -102,9 +123,7 @@ export function UsersPage() {
 
   // Local persons live in namespace 0; federated guests must never receive
   // local-account actions, so selection, badges, and actions gate on nsid.
-  const listIds = (data?.list ?? [])
-    .filter((u) => u.namespaceId === 0)
-    .map((u) => u.id);
+  const listIds = (data?.list ?? []).filter(canManageUser).map((u) => u.id);
   const allSelected =
     listIds.length > 0 && listIds.every((id) => selected.has(id));
   const toggle = (id: number) =>
@@ -158,7 +177,7 @@ export function UsersPage() {
         </div>
       </div>
 
-      {selected.size > 0 ? (
+      {canManage && selected.size > 0 ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
           <span>{t('users.selected', { count: selected.size })}</span>
           <Button
@@ -206,13 +225,12 @@ export function UsersPage() {
                   aria-label={t('users.selectAll')}
                   checked={allSelected}
                   onChange={toggleAll}
-                  disabled={(data?.list.length ?? 0) === 0}
+                  disabled={listIds.length === 0}
                   className="size-4"
                 />
               </TableHead>
               <TableHead className="w-16">{t('users.col.id')}</TableHead>
               <TableHead>{t('users.col.account')}</TableHead>
-              <TableHead>{t('users.col.domain')}</TableHead>
               <TableHead className="w-16">{t('users.col.foreigner')}</TableHead>
               <TableHead className="w-20">{t('users.col.status')}</TableHead>
               <TableHead className="w-28">{t('users.col.quota')}</TableHead>
@@ -237,7 +255,7 @@ export function UsersPage() {
                       aria-label={t('users.selectRow', { name: u.account })}
                       checked={selected.has(u.id)}
                       onChange={() => toggle(u.id)}
-                      disabled={u.namespaceId !== 0}
+                      disabled={!canManageUser(u)}
                       className="size-4"
                     />
                   </TableCell>
@@ -248,9 +266,6 @@ export function UsersPage() {
                     <Link to={`/users/${u.id}`} className="hover:underline">
                       {u.account}
                     </Link>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {u.domain ?? '—'}
                   </TableCell>
                   <TableCell>
                     {u.namespaceId !== 0 ? t('common.yes') : t('common.no')}
@@ -297,7 +312,7 @@ export function UsersPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      {canManage && u.namespaceId === 0 && !u.isDeleted ? (
+                      {canManageUser(u) && !u.isDeleted ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -319,7 +334,15 @@ export function UsersPage() {
                           <MoreHorizontal className="size-4" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {u.namespaceId === 0 && u.isDeleted ? (
+                          {isSuper &&
+                          u.namespaceId === 0 &&
+                          !u.adminRole &&
+                          !u.isDeleted ? (
+                            <DropdownMenuItem onClick={() => setGrantTarget(u)}>
+                              {t('users.action.grantViewer')}
+                            </DropdownMenuItem>
+                          ) : null}
+                          {canManageUser(u) && u.isDeleted ? (
                             <DropdownMenuItem
                               onClick={() =>
                                 onAction(
@@ -331,7 +354,7 @@ export function UsersPage() {
                             >
                               {t('users.action.unban')}
                             </DropdownMenuItem>
-                          ) : u.namespaceId === 0 ? (
+                          ) : canManageUser(u) ? (
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={() =>
@@ -341,7 +364,7 @@ export function UsersPage() {
                               {t('users.action.ban')}
                             </DropdownMenuItem>
                           ) : null}
-                          {u.namespaceId === 0 ? (
+                          {canManageUser(u) ? (
                             <DropdownMenuItem
                               onClick={() =>
                                 onAction(
@@ -357,8 +380,9 @@ export function UsersPage() {
                           <DropdownMenuItem onClick={() => setSessionsUser(u)}>
                             {t('users.action.viewSessions')}
                           </DropdownMenuItem>
-                          {canManage && u.namespaceId === 0 ? (
+                          {canManageUser(u) ? (
                             <DropdownMenuItem
+                              disabled={!passwordLoginEnabled}
                               onClick={() => setGenPwdUser(u)}
                             >
                               {t('users.action.generateInitialPassword')}
@@ -385,6 +409,45 @@ export function UsersPage() {
         />
       </div>
 
+      <Dialog
+        open={!!grantTarget}
+        onOpenChange={(open) =>
+          !open && !grantViewer.isPending && setGrantTarget(null)
+        }
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('users.action.grantViewer')}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm leading-[20px]">
+            {t('users.grantViewerConfirm', { account: grantTarget?.account })}
+          </p>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={grantViewer.isPending}
+              onClick={() => setGrantTarget(null)}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              disabled={grantViewer.isPending || !isSuper}
+              onClick={async () => {
+                if (!grantTarget) return;
+                try {
+                  await grantViewer.mutateAsync(grantTarget.id);
+                  toast.success(t('users.grantViewerSuccess'));
+                  setGrantTarget(null);
+                } catch {
+                  /* Global mutation handler reports the error. */
+                }
+              }}
+            >
+              {t('common.confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <SessionsDialog
         user={sessionsUser}
         onClose={() => setSessionsUser(null)}

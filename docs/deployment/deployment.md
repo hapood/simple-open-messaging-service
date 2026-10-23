@@ -34,7 +34,13 @@ The generator has exactly two modes. A custom published port is a NAS setting, n
 
 Public mode redirects HTTP on port 80 to HTTPS on 443. The generated configuration serves both
 client and federation traffic on HTTPS port 443; it does not require a separate published 7667 port.
-NAS mode maps the selected host port to the container's single HTTPS port.
+New generator exports run the application in host networking: Caddy directly binds the selected
+port (or 80/443 in public mode), without Docker port publishing. The backend listens only on a
+private Unix socket inside the app container, not host port 3000. Port 2019 is disabled. Host
+networking requires Linux Docker Engine, and those ports must be free on the host; no two host-mode
+instances can use the same port. NAS mode uses the selected port directly for Caddy; switching an
+existing installation from bridge port publishing to host mode requires a maintenance window and
+external reachability tests. Existing bridge-mode Compose files are not changed automatically.
 
 The admin restriction is independently configurable in either mode. With private-source access
 selected, Caddy restricts `/admin/` and `/api/v1/admin` by the source IP it sees. A proxy or router
@@ -64,6 +70,17 @@ Database and administrator passwords are separate credentials: the database pass
 services to PostgreSQL (at least 16 characters), while the initial admin password signs into the
 administration console. Changing either value in the YAML does not rotate an existing database role
 or reset an existing administrator password.
+
+Advanced settings offer a bundled PostgreSQL instance or a remote PostgreSQL server. The bundled
+instance exposes no host database port: the app and migration task share a dedicated Unix socket
+volume with the database, while `pg_hba` requires SCRAM password authentication even on local
+sockets. Remote mode generates no PostgreSQL service; both app and migration task use host
+networking for outgoing TCP connections. TLS certificate verification is on by default. Supply an
+absolute host path to a CA certificate only for private CAs; the file is mounted read-only into
+both services. Do not disable verification on untrusted networks. Remote databases must already
+exist, allow the selected credentials, and accept migration writes. Switching modes does not copy
+or migrate data between database servers; back up and migrate data separately. Do not reuse a
+freshly generated database password when reconnecting to an existing database.
 
 The generator and templates target the latest release:
 
@@ -156,6 +173,19 @@ After changing the YAML, run `docker compose up -d` to recreate affected contain
 `docker compose restart` alone does not reload container environment values.
 
 ## Runtime Logging and Optional Services
+
+Caddy HTTP access logs are enabled in every TLS/admin-access mode and written as JSON to container
+stderr. View them with `docker compose logs -f --since 1m app`. They are independent of the backend
+log level. Entries include `request.remote_ip` (the immediate connection peer), `request.client_ip`,
+method, host, path, response status, and duration. Request and response headers are omitted and the
+URL query string is removed; paths and client addresses remain sensitive operational metadata.
+Configure Docker log rotation and retention according to your deployment requirements.
+
+To diagnose private-source access, send a request from a genuinely external client and correlate
+its path and timestamp with an `http.log.access` entry. A private `request.remote_ip` for an external
+request indicates a proxy/NAT source rewrite; private-range filtering alone is not a safe LAN
+boundary on that path. A container's own interface address is not the request source. IPv6 support
+on the Docker network does not guarantee source preservation on every ingress path.
 
 Log output starts at `error` on every backend restart. Change **Output level** under **Logs → Live
 tail** in the administration console. The setting applies immediately to console, files, and live

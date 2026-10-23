@@ -14,6 +14,7 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { normalizeAccount } from '../common/account.js';
+import { lockOrdinaryAccount } from '../user/account-management-policy.js';
 
 /** Account-dimension brute-force ceiling on the 6-digit code (the IP dimension is handled by the OTP
  *  rate-limit policy). A sliding window of failures per account; past the threshold the account's OTP is locked,
@@ -107,57 +108,46 @@ export class OtpLoginService {
    *  validity window is the admin-configured OTP TTL (SettingsService, default 10 min). Returns the plaintext
    *  ONCE (reveal-once) + the audit view. */
   async issueCode(adminId: number, userId: number): Promise<IssuedLoginCode> {
-    const [target] = await this.database.db
-      .select({
-        id: accountTable.id,
-        disabledAt: accountTable.disabledAt,
-      })
-      .from(accountTable)
-      .where(and(eq(accountTable.id, userId), eq(accountTable.namespaceId, 0)))
-      .limit(1);
-    if (!target) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'local user not found',
+    return this.database.db.transaction(async (tx) => {
+      const target = await lockOrdinaryAccount(tx, userId);
+      if (target.disabledAt !== null || target.availability === 'REMOVED') {
+        throw new BusinessException(
+          BusinessCode.FORBIDDEN,
+          'cannot issue a login code for a disabled user',
+        );
+      }
+      const code = generateCode();
+      const now = new Date();
+      const expiresAt = new Date(
+        now.getTime() + (await this.settings.getOtpTtlMinutes()) * 60_000,
       );
-    }
-    if (target.disabledAt !== null) {
-      throw new BusinessException(
-        BusinessCode.FORBIDDEN,
-        'cannot issue a login code for a disabled user',
-      );
-    }
-    const code = generateCode();
-    const now = new Date();
-    const expiresAt = new Date(
-      now.getTime() + (await this.settings.getOtpTtlMinutes()) * 60_000,
-    );
-    const created = await this.database.db
-      .insert(loginCode)
-      .values({
-        userId,
-        codeHash: await argon2.hash(code),
-        issuedBy: adminId,
-        // Keep both ends of the validity window on the same clock. Relying on the
-        // database CURRENT_TIMESTAMP here while computing expiresAt in Node can
-        // skew the displayed duration when their timezone settings differ.
-        issuedAt: now,
-        expiresAt,
-      })
-      .returning()
-      .then(([row]) => row);
-    return {
-      id: created.id,
-      code,
-      issuedAt: created.issuedAt,
-      expiresAt: created.expiresAt,
-      consumedAt: null,
-      consumedIp: null,
-      consumedDevice: null,
-      producedSessionId: null,
-      revokedAt: null,
-      issuedBy: created.issuedBy,
-    };
+      const created = await tx
+        .insert(loginCode)
+        .values({
+          userId,
+          codeHash: await argon2.hash(code),
+          issuedBy: adminId,
+          // Keep both ends of the validity window on the same clock. Relying on the
+          // database CURRENT_TIMESTAMP here while computing expiresAt in Node can
+          // skew the displayed duration when their timezone settings differ.
+          issuedAt: now,
+          expiresAt,
+        })
+        .returning()
+        .then(([row]) => row);
+      return {
+        id: created.id,
+        code,
+        issuedAt: created.issuedAt,
+        expiresAt: created.expiresAt,
+        consumedAt: null,
+        consumedIp: null,
+        consumedDevice: null,
+        producedSessionId: null,
+        revokedAt: null,
+        issuedBy: created.issuedBy,
+      };
+    });
   }
 
   /** Verify a one-time code for an account and issue a session. Accepts ANY active (unconsumed + unrevoked)
@@ -280,6 +270,7 @@ export class OtpLoginService {
     const client = opts.client ?? 'app';
     const token = await this.sessionTokens.issue(user.id, client, {
       expectedPasswordHash: user.hashPwd,
+      disallowAdmin: true,
       device: opts.device,
       userAgent: opts.userAgent,
       ip: opts.ip,

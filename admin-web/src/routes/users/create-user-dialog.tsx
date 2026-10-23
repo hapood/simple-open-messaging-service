@@ -41,11 +41,6 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
     () =>
       z.object({
         account: z.string().regex(ACCOUNT_REGEX, t('createUser.accountHint')),
-        name: z
-          .string()
-          .trim()
-          .min(1, t('createUser.nameHint'))
-          .max(31, t('createUser.nameHint')),
         password: passwordEnabled
           ? z
               .string()
@@ -64,12 +59,12 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
     clearErrors,
     formState: { errors },
   } = useForm<FormValues>({
-    defaultValues: { account: '', name: '', password: '' },
+    defaultValues: { account: '', password: '' },
   })
 
   useEffect(() => {
     if (open) {
-      resetForm({ account: '', name: '', password: '' })
+      resetForm({ account: '', password: '' })
       clearErrors()
       setSubmitError(null)
     }
@@ -85,7 +80,7 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
       for (const issue of parsed.error.issues) {
         const field = issue.path[0]
         if (
-          (field === 'account' || field === 'name' || field === 'password') &&
+          (field === 'account' || field === 'password') &&
           !assigned.has(field)
         ) {
           setError(field, { type: 'manual', message: issue.message })
@@ -100,7 +95,6 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
     try {
       const r = await create.mutateAsync({
         account: parsed.data.account,
-        name: parsed.data.name.trim(),
         password,
       })
       toast.success(t('createUser.success', { account: r.account }))
@@ -131,15 +125,6 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
               <p className="text-xs text-destructive">{errors.account.message}</p>
             ) : (
               <p className="text-xs text-muted-foreground">{t('createUser.accountHint')}</p>
-            )}
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="cu-name">{t('createUser.name')}</Label>
-            <Input id="cu-name" autoComplete="off" {...register('name')} />
-            {errors.name ? (
-              <p className="text-xs text-destructive">{errors.name.message}</p>
-            ) : (
-              <p className="text-xs text-muted-foreground">{t('createUser.nameHint')}</p>
             )}
           </div>
           {passwordEnabled ? (

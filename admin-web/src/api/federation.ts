@@ -118,6 +118,22 @@ export function recognizeFederationPeer(
   );
 }
 
+export function getNetworkInfo() {
+  return request<import('@/types/api').NetworkInfo>(
+    '/admin/federation/network-info',
+  );
+}
+
+export function probeNetworkIp(
+  source: import('@/types/api').IpSource,
+  family: 4 | 6,
+) {
+  return request<import('@/types/api').IpProbeResult>(
+    '/admin/federation/network-ip',
+    { source, family },
+  );
+}
+
 /** Run the S2S handshake self-check. Both options are optional; the server defaults to
  *  ntp.aliyun.com and the system DNS resolver. */
 export function runFederationSelfCheck(opts?: {

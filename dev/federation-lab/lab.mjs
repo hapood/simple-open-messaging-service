@@ -280,6 +280,9 @@ function labEnvironment(node, peerRoutes) {
     ...process.env,
     NODE_ENV: 'development',
     PORT: String(node.backendPort),
+    // The lab Caddy edge connects over loopback. Trust only that local proxy,
+    // not deployment-specific proxy ranges inherited from the repository environment.
+    TRUSTED_PROXY_CIDRS: '127.0.0.1/32,::1/128',
     SOMS_DOMAIN: node.domain,
     SOMS_TLS_MODE: 'disabled',
     SOMS_ALLOW_INSECURE_HTTP: '1',

@@ -93,6 +93,8 @@ export type AdminLoginResult =
 @Injectable()
 export class AdminAuthService implements OnModuleInit {
   private sessionPolicy = { ttlHours: 12, idleMinutes: 60 };
+  /** Coalesce activity writes within this process, without caching authentication state. */
+  private readonly activityWrites = new Map<bigint, Promise<void>>();
   constructor(
     private database: DatabaseService,
     private jwtService: JwtService,
@@ -163,7 +165,13 @@ export class AdminAuthService implements OnModuleInit {
       );
     }
     const [userRow] = await this.database.db
-      .select({ id: user.id, hashPwd: user.hashPwd, updatedAt: user.updatedAt })
+      .select({
+        id: user.id,
+        hashPwd: user.hashPwd,
+        updatedAt: user.updatedAt,
+        disabledAt: user.disabledAt,
+        availability: user.availability,
+      })
       .from(user)
       .where(and(eq(user.account, acct), eq(user.namespaceId, 0)))
       .limit(1);
@@ -183,6 +191,8 @@ export class AdminAuthService implements OnModuleInit {
       !!adminProfile &&
       adminProfile.enabled &&
       !!userRow &&
+      userRow.disabledAt == null &&
+      userRow.availability !== 'REMOVED' &&
       !!userRow.hashPwd &&
       (await this.passwordHasher.verify(userRow.hashPwd, password));
     if (!passwordOk || !adminProfile) {
@@ -358,6 +368,11 @@ export class AdminAuthService implements OnModuleInit {
         .from(admin)
         .where(eq(admin.id, targetAdminId))
         .for('no key update');
+      if (row.role === AdminRole.SUPER_ADMIN)
+        throw new BusinessException(
+          BusinessCode.FORBIDDEN,
+          'super-admin security must be managed by its owner',
+        );
       if (!row.twoFactorEnabled) return;
       await this.twoFactor.disable(targetAdminId, tx);
       await tx
@@ -700,6 +715,9 @@ export class AdminAuthService implements OnModuleInit {
         .for('no key update');
       if (
         !row?.enabled ||
+        !account ||
+        account.disabledAt != null ||
+        account.availability === 'REMOVED' ||
         !expectedState ||
         this.stateDigest(account.hashPwd, row, account.updatedAt) !==
           expectedState
@@ -751,7 +769,12 @@ export class AdminAuthService implements OnModuleInit {
         lastAccessedAt: true,
       },
       with: {
-        admin: { columns: { userId: true, enabled: true, role: true } },
+        admin: {
+          columns: { userId: true, enabled: true, role: true },
+          with: {
+            account: { columns: { disabledAt: true, availability: true } },
+          },
+        },
       },
     });
     if (
@@ -759,20 +782,39 @@ export class AdminAuthService implements OnModuleInit {
       rec.revokedAt ||
       rec.expiresAt <= new Date() ||
       !rec.admin.enabled ||
+      !rec.admin.account ||
+      rec.admin.account.disabledAt != null ||
+      rec.admin.account.availability === 'REMOVED' ||
       (this.sessionIdleMs !== null &&
         Date.now() - rec.lastAccessedAt.getTime() > this.sessionIdleMs)
     )
       return null;
     if (Date.now() - rec.lastAccessedAt.getTime() >= 5 * 60 * 1000) {
-      await this.database.db
-        .update(adminSession)
-        .set({
-          lastAccessedAt: new Date(),
-          ...(ip === undefined ? {} : { ip }),
-        })
-        .where(
-          and(eq(adminSession.id, rec.id), isNull(adminSession.revokedAt)),
-        );
+      let write = this.activityWrites.get(rec.id);
+      if (!write) {
+        // Defer execution until the promise is registered, including synchronous failures.
+        // Concurrent requests share the first writer's timestamp and IP.
+        write = Promise.resolve()
+          .then(async () => {
+            await this.database.db
+              .update(adminSession)
+              .set({
+                lastAccessedAt: new Date(),
+                ...(ip === undefined ? {} : { ip }),
+              })
+              .where(
+                and(
+                  eq(adminSession.id, rec.id),
+                  isNull(adminSession.revokedAt),
+                ),
+              );
+          })
+          .finally(() => {
+            this.activityWrites.delete(rec.id);
+          });
+        this.activityWrites.set(rec.id, write);
+      }
+      await write;
     }
     return {
       userId: rec.admin.userId,

@@ -15,7 +15,6 @@ import { DatabaseService } from '../database/database.service.js';
 import {
   account,
   admin,
-  identityNamespace,
   sessionToken,
   account as user,
 } from '../database/schema.js';
@@ -26,6 +25,9 @@ import { BusinessException } from '../common/business.exception.js';
 import { randomInt } from 'node:crypto';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { rawDate } from '../database/raw-result.js';
+import { lockOrdinaryAccount } from '../user/account-management-policy.js';
+import { SessionTokenService } from '../auth/session-token.service.js';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 @Injectable()
 export class UserManageService {
   constructor(
@@ -33,6 +35,8 @@ export class UserManageService {
     private auth: AuthService,
     private userService: UserService,
     private userQuotaService: UserQuotaService,
+    private readonly sessions: SessionTokenService,
+    private readonly events: EventEmitter2,
   ) {}
 
   /** 360° view of one user: profile + group memberships + active sessions + push devices.
@@ -98,8 +102,16 @@ export class UserManageService {
         )
         .orderBy(desc(sessionToken.pushRegisteredAt)),
     ]);
+    const operator = await this.database.db.query.admin.findFirst({
+      where: eq(admin.userId, id),
+      columns: { role: true },
+    });
     return {
-      user: { ...profile, isDeleted: localAccount.disabledAt !== null },
+      user: {
+        ...profile,
+        adminRole: operator?.role ?? null,
+        isDeleted: localAccount.disabledAt !== null,
+      },
       groups,
       sessions,
       pushTokens,
@@ -113,7 +125,9 @@ export class UserManageService {
   // the user-manage layer free of an admin dependency; the controller translates the DTO.
 
   /** Paginated, searchable local-person user list. Federated user stubs and groups belong to their
-   *  respective administration surfaces and must never receive local-account actions. Omits hashPwd. */
+   *  respective administration surfaces and must never receive local-account actions. Every listed
+   *  user is local (namespaceId 0), so the home domain is not repeated per row — the console reads it
+   *  once from the /admin/me chrome payload (KeypairService identity snapshot). Omits hashPwd. */
   async listUsers(opts: { skip?: number; take?: number; search?: string }) {
     const where = and(
       eq(user.namespaceId, 0),
@@ -123,11 +137,11 @@ export class UserManageService {
       this.database.db
         .select({
           id: user.id,
+          adminRole: admin.role,
           account: user.account,
           name: accountProfileFields(user).name,
           avatar: accountProfileFields(user).avatar,
           bio: accountProfileFields(user).bio,
-          domain: identityNamespace.domain,
           namespaceId: user.namespaceId,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
@@ -137,7 +151,7 @@ export class UserManageService {
           mustChangePassword: account.mustChangePassword,
         })
         .from(user)
-        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
+        .leftJoin(admin, eq(admin.userId, user.id))
         .where(where)
         .orderBy(desc(user.createdAt))
         .offset(opts.skip ?? 0)
@@ -145,7 +159,6 @@ export class UserManageService {
       this.database.db
         .select({ value: count() })
         .from(user)
-        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .where(where)
         .then(([row]) => row.value),
     ]);
@@ -162,20 +175,20 @@ export class UserManageService {
 
   /** Soft-delete + revoke every session token (invalidateAllSessions revokes all SessionToken rows + emits FORCE_LOGOUT). */
   async disableUser(id: number): Promise<void> {
-    await this.assertLocalPerson(id);
-    await this.updateAccountOrThrow(id, { disabledAt: new Date() });
-    await this.auth.invalidateAllSessions(id, 'admin_disabled');
+    await this.mutateOrdinaryAccount(
+      id,
+      { disabledAt: new Date() },
+      'admin_disabled',
+    );
   }
 
   async enableUser(id: number): Promise<void> {
-    await this.assertLocalPerson(id);
-    await this.updateAccountOrThrow(id, { disabledAt: null });
+    await this.mutateOrdinaryAccount(id, { disabledAt: null });
   }
 
   /** Force logout every device without changing the account (disable = soft-delete; this does not). */
   async forceLogout(id: number): Promise<void> {
-    await this.assertLocalPerson(id);
-    await this.auth.invalidateAllSessions(id, 'admin_force_logout');
+    await this.mutateOrdinaryAccount(id, {}, 'admin_force_logout');
   }
 
   /** (Re-)initialize a user's INITIAL password: generate a strong random password (reveal-once — the admin
@@ -187,39 +200,24 @@ export class UserManageService {
     await this.assertLocalPerson(id);
     const password = randomInitialPassword();
     const hash = await this.auth.hashPassword(password);
-    await this.database.db.transaction(async (tx) => {
-      await tx
-        .select({ id: account.id })
-        .from(account)
-        .where(eq(account.id, id))
-        .for('no key update');
-      const operator = await tx.query.admin.findFirst({
-        where: eq(admin.userId, id),
-        columns: { id: true },
-      });
-      if (operator)
-        throw new BusinessException(
-          BusinessCode.FORBIDDEN,
-          'administrator passwords must be changed through authenticated account security',
-        );
-      await tx
-        .update(account)
-        .set({ hashPwd: hash, mustChangePassword: true, updatedAt: new Date() })
-        .where(eq(account.id, id));
-    });
-    await this.auth.invalidateAllSessions(id, 'admin_reinit_password');
+    await this.mutateOrdinaryAccount(
+      id,
+      { hashPwd: hash, mustChangePassword: true },
+      'admin_reinit_password',
+    );
     return { password };
   }
 
   /** Create a local user (admin-provisioned). Delegates to UserService.addUser — the single creation choke
-   *  point that normalizes/validates the account grammar + enforces uniqueness. The password is optional:
-   *  provided → hashed + stored; omitted → the account is created with NO password (an OTP/QR-only account,
-   *  bootstrapped by the one-time code the admin issues next). Whether a password is allowed/required is a
-   *  loginMode policy enforced by the controller; this service persists exactly what it's given. Returns the
-   *  new {id, account}; throws ALREADY_EXISTS on a duplicate account. */
+   *  point that normalizes/validates the account grammar + enforces uniqueness. The account is born at
+   *  profile rev 0 (no Profile row): the display name is the user's own first profile edit, never
+   *  admin-authored. The password is optional: provided → hashed + stored; omitted → the account is
+   *  created with NO password (an OTP/QR-only account, bootstrapped by the one-time code the admin
+   *  issues next). Whether a password is allowed/required is a loginMode policy enforced by the
+   *  controller; this service persists exactly what it's given. Returns the new {id, account}; throws
+   *  ALREADY_EXISTS on a duplicate account. */
   async createUser(params: {
     account: string;
-    name: string;
     password?: string;
   }): Promise<{ id: number; account: string }> {
     const hashPwd = params.password
@@ -227,7 +225,6 @@ export class UserManageService {
       : null;
     const res = await this.userService.addUser({
       account: params.account,
-      name: params.name,
       hashPwd,
     });
     // addUser returns {status:2} on a duplicate account (no data) — map to ALREADY_EXISTS. status 0
@@ -264,18 +261,27 @@ export class UserManageService {
     return new Map(users.map((u) => [u.id, u.account]));
   }
 
-  private async updateAccountOrThrow(
+  private async mutateOrdinaryAccount(
     id: number,
     data: Partial<typeof account.$inferInsert>,
+    revokeReason?: string,
   ): Promise<void> {
-    const rows = await this.database.db
-      .update(account)
-      .set({ ...data, updatedAt: new Date() })
-      .where(eq(account.id, id))
-      .returning({ id: account.id });
-    if (rows.length === 0) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
-    }
+    const hashes = await this.database.db.transaction(async (tx) => {
+      await lockOrdinaryAccount(tx, id);
+      await tx
+        .update(account)
+        .set({ ...data, updatedAt: new Date() })
+        .where(eq(account.id, id));
+      return revokeReason
+        ? this.sessions.revokeAllInTransaction(tx, id, revokeReason)
+        : [];
+    });
+    await this.sessions.clearRevokedCache(hashes);
+    if (revokeReason)
+      this.events.emit('auth.sessions-invalidated', {
+        userId: id,
+        reason: revokeReason,
+      });
   }
 
   private async assertLocalPerson(id: number): Promise<void> {

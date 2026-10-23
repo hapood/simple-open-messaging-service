@@ -30,13 +30,9 @@ describe('CreateUserDialog', () => {
     fireEvent.change(screen.getByLabelText('createUser.account'), {
       target: { value: '' },
     })
-    fireEvent.change(screen.getByLabelText('createUser.name'), {
-      target: { value: '' },
-    })
     fireEvent.click(screen.getByRole('button', { name: 'createUser.confirm' }))
 
     expect(await screen.findByText('createUser.accountHint')).toBeInTheDocument()
-    expect(await screen.findByText('createUser.nameHint')).toBeInTheDocument()
     expect(create.mutateAsync).not.toHaveBeenCalled()
   })
 
@@ -47,15 +43,11 @@ describe('CreateUserDialog', () => {
     fireEvent.change(screen.getByLabelText('createUser.account'), {
       target: { value: '1alice' },
     })
-    fireEvent.change(screen.getByLabelText('createUser.name'), {
-      target: { value: 'Valid Name' },
-    })
     fireEvent.click(screen.getByRole('button', { name: 'createUser.confirm' }))
 
     await waitFor(() =>
       expect(create.mutateAsync).toHaveBeenCalledWith({
         account: '1alice',
-        name: 'Valid Name',
         password: undefined,
       }),
     )
@@ -67,9 +59,6 @@ describe('CreateUserDialog', () => {
 
     fireEvent.change(screen.getByLabelText('createUser.account'), {
       target: { value: 'valid.user' },
-    })
-    fireEvent.change(screen.getByLabelText('createUser.name'), {
-      target: { value: 'Valid User' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'createUser.confirm' }))
 
@@ -94,9 +83,6 @@ describe('CreateUserDialog', () => {
 
     fireEvent.change(screen.getByLabelText('createUser.account'), {
       target: { value: 'dup.c513a' },
-    })
-    fireEvent.change(screen.getByLabelText('createUser.name'), {
-      target: { value: 'C513 Duplicate' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'createUser.confirm' }))
 

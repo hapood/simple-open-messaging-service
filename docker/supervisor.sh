@@ -11,6 +11,18 @@
 set -euo pipefail
 
 # --- 1. Start the node origin (plain HTTP/1.1 on :3000; Caddy terminates TLS at the edge) ---
+if [ -n "${SOMS_BACKEND_SOCKET:-}" ]; then
+  mkdir -p "$(dirname "$SOMS_BACKEND_SOCKET")"
+  if [ -e "$SOMS_BACKEND_SOCKET" ] || [ -S "$SOMS_BACKEND_SOCKET" ]; then
+    [ -S "$SOMS_BACKEND_SOCKET" ] || { echo 'Backend socket path is not a socket' >&2; exit 1; }
+    # The image has one Node owner; never remove a socket still accepting connections.
+    if node -e 'require("node:net").connect(process.argv[1]).on("connect",()=>process.exit(0)).on("error",()=>process.exit(1))' "$SOMS_BACKEND_SOCKET"; then
+      echo 'Backend socket already has a listener' >&2
+      exit 1
+    fi
+    rm -f -- "$SOMS_BACKEND_SOCKET"
+  fi
+fi
 node dist/src/main.js &
 NODE_PID=$!
 
@@ -19,7 +31,11 @@ NODE_PID=$!
 # /dev/tcp builtin checks the port accepts connections without spawning a node process per attempt.
 PORT="${PORT:-3000}"
 for _ in $(seq 1 60); do
-  if (exec 3<>/dev/tcp/127.0.0.1/"${PORT}") 2>/dev/null; then break; fi
+  if [ -n "${SOMS_BACKEND_SOCKET:-}" ]; then
+    if [ -S "$SOMS_BACKEND_SOCKET" ]; then break; fi
+  elif (exec 3<>/dev/tcp/127.0.0.1/"${PORT}") 2>/dev/null; then
+    break
+  fi
   sleep 0.5
 done
 
@@ -39,6 +55,7 @@ stop_children() {
   while (( SECONDS < shutdown_deadline )); do
     if ! kill -0 "$CADDY_PID" 2>/dev/null && ! kill -0 "$NODE_PID" 2>/dev/null; then
       wait "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
+      [ -z "${SOMS_BACKEND_SOCKET:-}" ] || rm -f -- "$SOMS_BACKEND_SOCKET"
       return 0
     fi
     sleep 0.1

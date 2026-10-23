@@ -417,10 +417,11 @@ export class LabAdminActor {
     await this.loginInFlight;
   }
 
-  async createAndLoginUser({ account, name }) {
+  async createAndLoginUser({ account }) {
+    // Accounts are born at profile rev 0; display names belong to the user's own profile edits.
     const created = await this.post(
       '/admin/users/create',
-      { account, name },
+      { account },
       `create user ${account}`,
     );
     if (!Number.isInteger(created?.id) || created?.account !== account) {

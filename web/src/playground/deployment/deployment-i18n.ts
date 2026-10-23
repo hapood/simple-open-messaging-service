@@ -21,6 +21,7 @@ export const deploymentMessages = {
     port: 'Published Port',
     portHint:
       'Default 7667. Router port forwarding and DNS SRV records must match this port.',
+    networkOptions: 'Network options',
     adminOnly: 'Restrict admin access to private network IPs',
     adminHint:
       'Restricts admin pages and APIs to private network IPs. Password login is always required.',
@@ -76,6 +77,13 @@ export const deploymentMessages = {
 
     // Section 4: Advanced
     advanced: 'Advanced Configuration',
+    databaseMode: 'PostgreSQL connection',
+    databaseBuiltin: 'Bundled database (Unix socket)',
+    databaseRemote: 'Remote database (TCP)',
+    remoteHost: 'Database host',
+    remotePort: 'Database port',
+    remoteTls: 'Verify remote TLS certificate',
+    remoteCaPath: 'Host path to private CA certificate (optional)',
     database: 'Database Name',
     databaseUser: 'Database User',
     databaseHint:
@@ -132,6 +140,7 @@ export const deploymentMessages = {
     publicPorts: 'HTTPS 443（HTTP 80 自动重定向至 HTTPS）',
     port: '对外发布端口',
     portHint: '默认 7667。路由器端口转发与 DNS SRV 记录需与此一致。',
+    networkOptions: '网络选项',
     adminOnly: '仅允许私网 IP 访问管理后台',
     adminHint: '开启后仅允许私网 IP 访问管理后台页面及 API（均仍需密码登录）。',
 
@@ -182,6 +191,13 @@ export const deploymentMessages = {
 
     // Section 4: Advanced
     advanced: '高级配置',
+    databaseMode: 'PostgreSQL 连接方式',
+    databaseBuiltin: '自带数据库（Unix socket）',
+    databaseRemote: '远端数据库（TCP）',
+    remoteHost: '数据库主机名',
+    remotePort: '数据库端口',
+    remoteTls: '验证远端 TLS 证书',
+    remoteCaPath: '宿主机 CA 证书绝对路径（可选）',
     database: '数据库名称',
     databaseUser: '数据库用户',
     databaseHint: '数据库内部标识，已有数据时请勿随意更改。',
@@ -229,6 +245,18 @@ export const issueMessages: Record<string, [string, string]> = {
   database: [
     '数据库名称和用户不能为空。',
     'Database name and user are required.',
+  ],
+  remoteHost: [
+    '请输入远端数据库主机名。',
+    'Enter a valid remote database hostname.',
+  ],
+  remotePort: [
+    '数据库端口必须为 1–65535。',
+    'Remote database port must be 1–65535.',
+  ],
+  remoteCaPath: [
+    'CA 证书需填写宿主机绝对路径。',
+    'CA certificate requires an absolute host path.',
   ],
   databasePassword: [
     '数据库密码至少需要 16 个字符。',

@@ -1,3 +1,5 @@
+import { DEFAULT_EDGE_PORT } from '../../../../shared/deployment-ports';
+
 export interface DeploymentConfig {
   /** Public mode fixes web ports at 80/443 and federation at 7667. */
   mode: 'public' | 'nas';
@@ -10,6 +12,11 @@ export interface DeploymentConfig {
   database: string;
   databaseUser: string;
   databasePassword: string;
+  databaseMode: 'builtin' | 'remote';
+  remoteHost: string;
+  remotePort: number;
+  remoteTls: boolean;
+  remoteCaPath: string;
   adminPassword: string;
   dnsProvider: 'cloudflare' | 'alidns' | 'tencentcloud';
   dnsToken: string;
@@ -23,7 +30,7 @@ export interface DeploymentConfig {
 
 export const initialDeployment: DeploymentConfig = {
   mode: 'nas',
-  port: 7667,
+  port: DEFAULT_EDGE_PORT,
   domain: '',
   webDomain: '',
   lanDomain: '',
@@ -31,6 +38,11 @@ export const initialDeployment: DeploymentConfig = {
   database: 'soms',
   databaseUser: 'timescale',
   databasePassword: randomPassword(),
+  databaseMode: 'builtin',
+  remoteHost: '',
+  remotePort: 5432,
+  remoteTls: true,
+  remoteCaPath: '',
   adminPassword: '',
   dnsProvider: 'cloudflare',
   dnsToken: '',
@@ -46,10 +58,29 @@ export const initialDeployment: DeploymentConfig = {
 export function defaultsForMode(
   mode: DeploymentConfig['mode'],
 ): Pick<DeploymentConfig, 'port' | 'adminAccess'> {
-  if (mode === 'public') {
-    return { port: 7667, adminAccess: 'public' };
+  return {
+    port: DEFAULT_EDGE_PORT,
+    adminAccess: mode === 'public' ? 'public' : 'lan',
+  };
+}
+
+/** In-memory tab state only; never persist deployment secrets in browser storage. */
+export class DeploymentModeState {
+  private readonly settings = {
+    public: defaultsForMode('public'),
+    nas: defaultsForMode('nas'),
+  };
+
+  switch(
+    current: DeploymentConfig,
+    mode: DeploymentConfig['mode'],
+  ): DeploymentConfig {
+    this.settings[current.mode] = {
+      port: current.port,
+      adminAccess: current.adminAccess,
+    };
+    return { ...current, mode, ...this.settings[mode] };
   }
-  return { port: 7667, adminAccess: 'lan' };
 }
 
 export function publishedPort(c: DeploymentConfig): number {
@@ -99,10 +130,30 @@ export function deploymentIssues(c: DeploymentConfig): string[] {
   }
   if (!Number.isInteger(c.port) || c.port < 1 || c.port > 65535)
     issues.push('port');
-  if (c.mode === 'public' && c.port !== 7667) issues.push('publicPort');
+  if (c.mode === 'public' && c.port !== DEFAULT_EDGE_PORT)
+    issues.push('publicPort');
   if (!c.dataDir.trim()) issues.push('dataDir');
   if (!c.database || !c.databaseUser) issues.push('database');
   if (c.databasePassword.length < 16) issues.push('databasePassword');
+  if (c.databaseMode === 'remote') {
+    if (
+      !/^(?:[a-zA-Z0-9][a-zA-Z0-9.-]*|\[[a-fA-F0-9:]+\])$/.test(
+        c.remoteHost.trim(),
+      )
+    )
+      issues.push('remoteHost');
+    if (
+      !Number.isInteger(c.remotePort) ||
+      c.remotePort < 1 ||
+      c.remotePort > 65535
+    )
+      issues.push('remotePort');
+    if (
+      c.remoteCaPath &&
+      (!c.remoteCaPath.startsWith('/') || /[\s\x00]/.test(c.remoteCaPath))
+    )
+      issues.push('remoteCaPath');
+  }
   if (!c.adminPassword.trim()) issues.push('adminPassword');
   const provider = dnsProviders[c.dnsProvider];
   if (!provider) issues.push('dnsProvider');
@@ -133,6 +184,12 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
     ['database_name', 'database-name', scalar(c.database)],
     ['database_user', 'database-user', scalar(c.databaseUser)],
     ['database_password', 'database-password', scalar(c.databasePassword)],
+    ...(c.databaseMode === 'remote'
+      ? ([
+          ['database_host', 'database-host', scalar(c.remoteHost.trim())],
+          ['database_port', 'database-port', scalar(String(c.remotePort))],
+        ] as [string, string, string][])
+      : []),
     ['admin_password', 'admin-password', scalar(c.adminPassword.trim())],
     ...dnsProviders[c.dnsProvider].fields.map(
       (field): [string, string, string] => [field, field, scalar(c[field])],
@@ -186,7 +243,10 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
     /^      SOMS_TLS_MODE: single-port$/,
     `      SOMS_TLS_MODE: ${c.mode === 'public' ? 'standard' : 'single-port'}\n      SOMS_WEBAUTHN_ALLOWED_ORIGINS: *webauthn-origins`,
   );
-  replace(/^ {6}- \.\/data:\/app\/data$/m, '      - *data-dir:/app/data');
+  replace(
+    /^ {6}- \.\/data:\/app\/data$/m,
+    '      - type: bind\n        source: *data-dir\n        target: /app/data',
+  );
   if (c.mode === 'public') {
     // In public mode, all traffic (web, api, federation) goes through standard 80/443 ports
     const portsBlock =
@@ -202,6 +262,75 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
       2,
     );
   }
+  // Host networking removes Docker's published-port proxy. The origin and Caddy talk over
+  // a private Unix socket; the built-in database shares a separate PostgreSQL socket volume.
+  replace(/^    ports:\n(?: {6,}[^\n]*\n?)+/m, '    network_mode: host\n');
+  replace(
+    /^      TRUSTED_PROXY_CIDRS:.*$/,
+    `      TRUSTED_PROXY_CIDRS: '127.0.0.0/8,::1/128'\n      SOMS_BACKEND_SOCKET: /tmp/soms/backend.sock\n      SOMS_EDGE_PORT: ${c.mode === 'public' ? DEFAULT_EDGE_PORT : '*published-port'}`,
+  );
+  if (c.databaseMode === 'builtin') {
+    replace(/^  PGHOST: postgres$/, '  PGHOST: /var/run/postgresql');
+    replace(
+      /^    image: postgres:18$/,
+      `    image: postgres:18
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        printf 'local all all scram-sha-256\\nhost all all 0.0.0.0/0 scram-sha-256\\nhost all all ::/0 scram-sha-256\\n' > /tmp/soms_pg_hba.conf
+        exec docker-entrypoint.sh postgres -c hba_file=/tmp/soms_pg_hba.conf`,
+    );
+    replace(
+      /^      - postgres-data:.*$/,
+      '      - postgres-data:/var/lib/postgresql\n      - postgres-socket:/var/run/postgresql',
+    );
+    replace(
+      /^    command: \['node', 'dist\/scripts\/migrate-db.js', 'migrate'\]$/,
+      "    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']\n    volumes:\n      - postgres-socket:/var/run/postgresql",
+    );
+    replace(
+      /^        target: \/app\/data$/,
+      '        target: /app/data\n      - postgres-socket:/var/run/postgresql',
+    );
+  } else {
+    replace(/^  PGHOST: postgres$/, '  PGHOST: *database-host');
+    replace(/^  PGPORT: '5432'$/, '  PGPORT: *database-port');
+    // Remove only the postgres service, and its dependencies. Both jobs use the remote host.
+    replace(/^  postgres:\n[\s\S]*?(?=  migrate:\n)/m, '');
+    replace(
+      /^    depends_on:\n      postgres:\n        condition: service_healthy\n    command:/,
+      '    command:',
+    );
+    replace(
+      /^      postgres:\n        condition: service_healthy\n      migrate:/,
+      '      migrate:',
+    );
+    replace(
+      /^    command: \['node', 'dist\/scripts\/migrate-db.js', 'migrate'\]$/,
+      "    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']\n    network_mode: host",
+    );
+    if (c.remoteTls) {
+      replace(
+        /^  PGPASSWORD: \*database-password$/,
+        '  PGPASSWORD: *database-password\n  SOMS_DB_TLS: verify-full',
+      );
+    }
+    if (c.remoteCaPath.trim()) {
+      replace(
+        /^  PGPASSWORD: \*database-password$/,
+        '  PGPASSWORD: *database-password\n  SOMS_DB_CA_FILE: /tmp/soms/db-ca.pem',
+      );
+      replace(
+        /^    command: \['node', 'dist\/scripts\/migrate-db.js', 'migrate'\]\n    network_mode: host$/,
+        `    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']\n    network_mode: host\n    volumes:\n      - type: bind\n        source: ${scalar(c.remoteCaPath.trim())}\n        target: /tmp/soms/db-ca.pem\n        read_only: true`,
+      );
+      replace(
+        /^        target: \/app\/data$/,
+        `        target: /app/data\n      - type: bind\n        source: ${scalar(c.remoteCaPath.trim())}\n        target: /tmp/soms/db-ca.pem\n        read_only: true`,
+      );
+    }
+  }
   const header =
     `# SOMS deployment — generated locally in your browser.\n` +
     '# Contains secrets. Keep private; do not commit to version control.\n' +
@@ -214,7 +343,16 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
       .map(([key, anchor, value]) => `  ${key}: &${anchor} ${value}`)
       .join('\n') +
     '\n\n' +
-    body.replace(/\n{3,}/g, '\n\n')
+    body
+      .replace(/\n{3,}/g, '\n\n')
+      .trimEnd()
+      .replace(
+        /\nvolumes:\n  postgres-data:\s*$/,
+        c.databaseMode === 'builtin'
+          ? '\nvolumes:\n  postgres-data:\n  postgres-socket:'
+          : '',
+      ) +
+    '\n'
   );
 }
 
