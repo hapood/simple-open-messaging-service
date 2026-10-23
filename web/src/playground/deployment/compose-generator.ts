@@ -6,6 +6,7 @@ export interface DeploymentConfig {
   domain: string;
   webDomain: string;
   lanDomain: string;
+  dataDir: string;
   database: string;
   databaseUser: string;
   databasePassword: string;
@@ -26,6 +27,7 @@ export const initialDeployment: DeploymentConfig = {
   domain: '',
   webDomain: '',
   lanDomain: '',
+  dataDir: '',
   database: 'soms',
   databaseUser: 'timescale',
   databasePassword: randomPassword(),
@@ -36,7 +38,7 @@ export const initialDeployment: DeploymentConfig = {
   aliyunKeySecret: '',
   tencentSecretId: '',
   tencentSecretKey: '',
-  image: 'ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0',
+  image: 'ghcr.io/hapood/simple-open-messaging-service:latest',
   adminAccess: 'lan',
 };
 
@@ -86,19 +88,22 @@ export function deploymentIssues(c: DeploymentConfig): string[] {
   const issues: string[] = [];
   const hostname =
     /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-  for (const [name, value] of [
-    ['domain', c.domain],
-    ['webDomain', c.webDomain],
-    ['lanDomain', c.lanDomain],
-  ])
-    if ((name !== 'lanDomain' || value) && !hostname.test(value))
-      issues.push(name);
+  if (!hostname.test(c.domain.trim())) {
+    issues.push('domain');
+  }
+  if (c.webDomain.trim() && !hostname.test(c.webDomain.trim())) {
+    issues.push('webDomain');
+  }
+  if (c.lanDomain.trim() && !hostname.test(c.lanDomain.trim())) {
+    issues.push('lanDomain');
+  }
   if (!Number.isInteger(c.port) || c.port < 1 || c.port > 65535)
     issues.push('port');
   if (c.mode === 'public' && c.port !== 7667) issues.push('publicPort');
+  if (!c.dataDir.trim()) issues.push('dataDir');
   if (!c.database || !c.databaseUser) issues.push('database');
   if (c.databasePassword.length < 16) issues.push('databasePassword');
-  if (c.adminPassword.length < 16) issues.push('adminPassword');
+  if (!c.adminPassword.trim()) issues.push('adminPassword');
   const provider = dnsProviders[c.dnsProvider];
   if (!provider) issues.push('dnsProvider');
   else for (const key of provider.fields) if (!c[key].trim()) issues.push(key);
@@ -111,7 +116,8 @@ export function deploymentIssues(c: DeploymentConfig): string[] {
  * generating a stale service definition. Keep operational values in a top-level block. */
 export function generateCompose(template: string, c: DeploymentConfig): string {
   const scalar = composeScalar;
-  const origins = [c.webDomain, c.lanDomain]
+  const webDomain = c.webDomain.trim() || c.domain.trim();
+  const origins = [webDomain, c.lanDomain.trim()]
     .filter(Boolean)
     .map((d) =>
       c.mode === 'public' ? `https://${d}` : `https://${d}:${c.port}`,
@@ -119,14 +125,15 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
     .join(',');
   const anchors: [string, string, string][] = [
     ['image', 'app-image', scalar(c.image)],
-    ['identity_domain', 'identity-domain', scalar(c.domain)],
-    ['web_domain', 'web-domain', scalar(c.webDomain)],
-    ['lan_domain', 'lan-domain', scalar(c.lanDomain)],
+    ['identity_domain', 'identity-domain', scalar(c.domain.trim())],
+    ['web_domain', 'web-domain', scalar(webDomain)],
+    ['lan_domain', 'lan-domain', scalar(c.lanDomain.trim())],
     ['published_port', 'published-port', scalar(String(publishedPort(c)))],
+    ['data_dir', 'data-dir', scalar(c.dataDir.trim())],
     ['database_name', 'database-name', scalar(c.database)],
     ['database_user', 'database-user', scalar(c.databaseUser)],
     ['database_password', 'database-password', scalar(c.databasePassword)],
-    ['admin_password', 'admin-password', scalar(c.adminPassword)],
+    ['admin_password', 'admin-password', scalar(c.adminPassword.trim())],
     ...dnsProviders[c.dnsProvider].fields.map(
       (field): [string, string, string] => [field, field, scalar(c[field])],
     ),
@@ -179,6 +186,7 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
     /^      SOMS_TLS_MODE: single-port$/,
     `      SOMS_TLS_MODE: ${c.mode === 'public' ? 'standard' : 'single-port'}\n      SOMS_WEBAUTHN_ALLOWED_ORIGINS: *webauthn-origins`,
   );
+  replace(/^ {6}- \.\/data:\/app\/data$/m, '      - *data-dir:/app/data');
   if (c.mode === 'public') {
     // In public mode, all traffic (web, api, federation) goes through standard 80/443 ports
     const portsBlock =

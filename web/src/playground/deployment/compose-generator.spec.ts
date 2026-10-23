@@ -10,15 +10,23 @@ describe('deployment configuration validation', () => {
   const valid = {
     ...initialDeployment,
     domain: 'example.com',
+    dataDir: './data',
     webDomain: 'soms.example.com',
     adminPassword: 'admin-password-123',
     dnsToken: 'test-token',
   };
   it('validates required fields before export', () => {
-    // initialDeployment now includes pre-generated databasePassword
-    // domain, webDomain, adminPassword, and dnsToken are remaining required fields
-    expect(deploymentIssues(initialDeployment)).toHaveLength(4);
+    // domain, dataDir, adminPassword, and dnsToken are remaining required fields (webDomain is optional)
+    expect(deploymentIssues(initialDeployment)).toEqual([
+      'domain',
+      'dataDir',
+      'adminPassword',
+      'dnsToken',
+    ]);
     expect(deploymentIssues(valid)).toEqual([]);
+    expect(deploymentIssues({ ...valid, webDomain: '' })).toEqual([]);
+    expect(deploymentIssues({ ...valid, dataDir: '' })).toContain('dataDir');
+    expect(deploymentIssues({ ...valid, adminPassword: 'admin' })).toEqual([]);
   });
   it('fixes public ports and sets appropriate admin access default per mode', () => {
     expect(defaultsForMode('public')).toEqual({

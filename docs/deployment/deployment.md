@@ -47,9 +47,10 @@ Open the generator and enter the following values:
 | Field                        | Purpose                                                                                       |
 | ---------------------------- | --------------------------------------------------------------------------------------------- |
 | Identity domain              | Stable server identity used in user addresses and federation discovery, such as `example.com` |
-| Server hostname              | Browser entry and federation SRV target, such as `soms.example.com`                           |
+| Data directory               | Host directory for server data and certificates, such as `./data`                             |
+| Server hostname              | Optional browser entry and federation SRV target (defaults to identity domain)                |
 | LAN hostname                 | Optional direct LAN entry, such as `soms-lan.example.com`                                     |
-| Database password            | PostgreSQL connection credential; the generator supplies a random initial value               |
+| Database password            | PostgreSQL connection credential (at least 16 characters); generated automatically            |
 | Initial admin password       | Creates the initial `admin` account when absent                                               |
 | DNS provider and credentials | Allow Caddy to obtain trusted certificates using DNS-01                                       |
 | Image version                | Versioned application image shared by the app and migration services                          |
@@ -59,15 +60,15 @@ registrable DNS zone. The identity domain does not need its own A/AAAA record wh
 to a separate server hostname. Resolve the optional LAN hostname to the host's private address on
 the local network; this supports networks without hairpin NAT.
 
-Database and administrator passwords must each contain at least 16 characters. They are different
-credentials: the database password connects services to PostgreSQL, while the initial admin
-password signs into the administration console. Changing either value in the YAML does not rotate
-an existing database role or reset an existing administrator password.
+Database and administrator passwords are separate credentials: the database password connects
+services to PostgreSQL (at least 16 characters), while the initial admin password signs into the
+administration console. Changing either value in the YAML does not rotate an existing database role
+or reset an existing administrator password.
 
-The generator and NAS template target the `v0.1.0-alpha.0` prerelease:
+The generator and templates target the latest release:
 
 ```text
-ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
+ghcr.io/hapood/simple-open-messaging-service:latest
 ```
 
 This image supports `linux/amd64` and `linux/arm64`; Docker selects the host architecture

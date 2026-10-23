@@ -1,4 +1,20 @@
 @switch (type()) {
+  @case (AppIcon.DOWNLOAD) {
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v3h16v-3"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  }
   @case (AppIcon.BACK) {
     <svg
       [style]="style()"
@@ -290,8 +306,20 @@
     </svg>
   }
   @case (AppIcon.MEGAPHONE) {
-    <svg [style]="style()" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <path d="M3 10h4l11-5v14L7 14H3v-4Zm4 4 2 6h3l-2-5M20 9c1 1 1.5 2 1.5 3s-.5 2-1.5 3" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+    <svg
+      [style]="style()"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <path
+        d="M3 10h4l11-5v14L7 14H3v-4Zm4 4 2 6h3l-2-5M20 9c1 1 1.5 2 1.5 3s-.5 2-1.5 3"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linejoin="round"
+        stroke-linecap="round"
+      />
     </svg>
   }
   @case (AppIcon.SPEAKER) {

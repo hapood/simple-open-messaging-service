@@ -34,7 +34,7 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
+    image: ghcr.io/hapood/simple-open-messaging-service:latest
     environment:
       <<: *database-environment
     depends_on:
@@ -44,7 +44,7 @@ services:
     restart: 'no'
 
   app:
-    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
+    image: ghcr.io/hapood/simple-open-messaging-service:latest
     environment:
       <<: *database-environment
       # Federation identity, used in handles such as @alice@example.com.
