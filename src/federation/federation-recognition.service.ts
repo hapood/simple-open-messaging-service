@@ -319,11 +319,11 @@ export class FederationRecognitionService {
       !this.inboundRecognizeIps.has(ip) &&
       this.inboundRecognizeInFlight.size < INBOUND_CACHE_LIMIT
     ) {
-      this.insertInboundCache(
-        this.inboundRecognizeIps,
-        ip,
-        now + INBOUND_IP_COOLDOWN_MS,
-      );
+      // The slot expiry doubles as the run's ownership token: a later failed
+      // run from the same IP re-arms the cooldown with a fresh expiry, and a
+      // completed run then must not release that newer cooldown.
+      const ipSlotExpiresAt = now + INBOUND_IP_COOLDOWN_MS;
+      this.insertInboundCache(this.inboundRecognizeIps, ip, ipSlotExpiresAt);
       const run = this.verifyInboundRecognize({ ...params, domain });
       this.inboundRecognizeInFlight.set(evidenceKey, run);
       void run
@@ -331,6 +331,13 @@ export class FederationRecognitionService {
           () => {
             if (this.inboundRecognizeInFlight.get(evidenceKey) !== run) return;
             this.inboundRecognizeRefusals.delete(evidenceKey);
+            // A successful verification releases the per-IP slot: the slot
+            // bounds concurrent verifiers, and a peer's next legitimate
+            // arrival (for example the root-rotation recognize immediately
+            // after a completed recognition) must still be verified. The
+            // cooldown survives only failed verifications.
+            if (this.inboundRecognizeIps.get(ip) === ipSlotExpiresAt)
+              this.inboundRecognizeIps.delete(ip);
           },
           (error: unknown) => {
             if (this.inboundRecognizeInFlight.get(evidenceKey) !== run) return;

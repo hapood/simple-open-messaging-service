@@ -1361,6 +1361,21 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     expect(verify).toHaveBeenCalledOnce();
   });
 
+  it('releases the IP slot after a successful verification so a rotation arrival is verified', async () => {
+    const { service, verify } = subject();
+    verify.mockResolvedValue(undefined);
+    await expect(
+      service.submitInboundRecognize(arrival()),
+    ).resolves.toMatchObject({ status: 'pending' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A root rotation re-recognizes immediately after a completed
+    // recognition; the same peer IP must not be cooled down by success.
+    await expect(
+      service.submitInboundRecognize(arrival('192.0.2.1', 'sig1=:rotated:')),
+    ).resolves.toMatchObject({ status: 'pending' });
+    expect(verify).toHaveBeenCalledTimes(2);
+  });
+
   it('does not delay committed recognition because the IP is cooling down', async () => {
     const target = subject();
     await target.service.submitInboundRecognize(arrival());
