@@ -154,7 +154,8 @@ export class FederationProfileService {
           eq(groupStateFields.namespaceId, 0),
         ),
       );
-      if (!group || group.profileRev === 0 || group.dissolvedAt) return null;
+      if (!group || group.dissolvedAt) return null;
+      if (group.profileRev === 0) return this.noProfile(group.account);
       return this.getStoredProfile(
         0,
         group.account,
@@ -168,14 +169,26 @@ export class FederationProfileService {
         eq(tables.account.namespaceId, 0),
       ),
     });
-    if (!user || user.namespaceId !== 0 || user.defaultProfileRev === 0)
-      return null;
+    if (!user || user.namespaceId !== 0 || user.kind === 'SYSTEM') return null;
+    if (user.defaultProfileRev === 0) return this.noProfile(user.account);
     return this.getStoredProfile(
       0,
       user.account,
       profileNamespaceId,
       user.defaultProfileRev,
     );
+  }
+
+  /** Local presentation only; revision zero never identifies a stored snapshot. */
+  private noProfile(account: string): S2SProfile {
+    return {
+      namespaceId: 0,
+      account,
+      profileRev: 0,
+      displayName: account,
+      bio: '',
+      avatar: null,
+    };
   }
 
   /** Account evidence is distinct from group-member evidence. Authorization,
@@ -585,17 +598,22 @@ export class FederationProfileService {
       );
     }
     const fields = profile as Record<string, unknown>;
+    const content = fields.profile;
+    const validContent =
+      fields.profileRev === 0
+        ? content === null
+        : content !== null &&
+          typeof content === 'object' &&
+          !Array.isArray(content) &&
+          Object.keys(content).sort().join(',') === 'avatar,bio,displayName' &&
+          this.validPublicProfileContent(content as Record<string, unknown>);
     if (
       Object.keys(fields).sort().join(',') !==
-        'account,avatar,bio,displayName,profileRev,proof' ||
+        'account,profile,profileRev,proof' ||
       fields.account !== address.account ||
-      typeof fields.displayName !== 'string' ||
-      !this.validWireText(fields.displayName, 1, 31) ||
-      typeof fields.bio !== 'string' ||
-      !this.validWireText(fields.bio, 0, 120) ||
-      !this.validWireAvatar(fields.avatar) ||
       !Number.isSafeInteger(fields.profileRev) ||
-      Number(fields.profileRev) < 1 ||
+      Number(fields.profileRev) < 0 ||
+      !validContent ||
       typeof fields.proof !== 'string'
     ) {
       throw new S2sResponseError(
@@ -613,14 +631,26 @@ export class FederationProfileService {
         BusinessCode.FEDERATION_MALFORMED,
       );
     }
+    if (fields.profileRev === 0) return this.noProfile(address.account);
+    const body = content as Record<string, unknown>;
     return {
       account: fields.account as string,
-      displayName: fields.displayName as string,
-      bio: fields.bio as string,
-      avatar: fields.avatar as S2SProfile['avatar'],
+      displayName: body.displayName as string,
+      bio: body.bio as string,
+      avatar: body.avatar as S2SProfile['avatar'],
       profileRev: fields.profileRev as number,
       namespaceId: 0,
     };
+  }
+
+  private validPublicProfileContent(content: Record<string, unknown>): boolean {
+    return (
+      typeof content.displayName === 'string' &&
+      this.validWireText(content.displayName, 1, 31) &&
+      typeof content.bio === 'string' &&
+      this.validWireText(content.bio, 0, 120) &&
+      this.validWireAvatar(content.avatar)
+    );
   }
 
   /** Resolves the responder key a possession challenge is sealed under. The

@@ -1,6 +1,6 @@
 # `FORWARD` Message and Bundle
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
 
 This document defines a timeline `FORWARD` card and the immutable forward bundle it references. The wire card references only the bundle root ID; the complete bundle is fetched through a resource operation, and summaries are derived locally after validation. See [Message Envelope](./envelope.md) for the shared outer message shape and [Resources, Section 4](../resources.md#4-forward-bundles) for HTTP, authorization, and error contracts.
 

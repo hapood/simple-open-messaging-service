@@ -2,12 +2,15 @@
 
 This directory publishes the **Simple Open Messaging Federation Protocol** (SOMFP) for independent implementers. The normative text defines only the observable, interoperable wire contract between nodes. SOMS is the reference implementation; its implementation audits, internal design, and operations documentation are outside this release package and cannot override this specification.
 
+See the [changelog](./CHANGELOG.md) for versioned draft changes and compatibility impact.
+
 ## Directory layout
 
 ```text
 spec/
   README.md                   Release rules and version index
   RELEASE.json                Machine-readable version and release status
+  CHANGELOG.md                Versioned changes and compatibility notes
   LICENSE                     License for standalone distribution of spec/
   GOVERNANCE.md               Change, decision, and release governance
   SECURITY.md                 Protocol security reporting and support policy
@@ -38,7 +41,7 @@ Protocol changes and releases follow [Governance](./GOVERNANCE.md). Security iss
 ## Independent validation
 
 This specification package contains protocol text, schemas, and vectors, not
-an npm project. The accompanying SOMFP offline validator **1.0.0-draft.0** is a
+an npm project. The accompanying SOMFP offline validator **1.0.0-draft.1** is a
 separate tool distribution with its own dependency lock and regression tests.
 It accepts the copied specification directory through `--spec`; neither package
 requires a SOMS checkout or a database.
@@ -55,6 +58,6 @@ artifact, not a runtime conformance certification.
 - `FINAL`: the current major version's wire contract is frozen. Incompatible changes require a new URL major version.
 - `SUPERSEDED`: a later major version has replaced this one; it remains available for compatible implementations and historical reference.
 
-The current working package is [Simple Open Messaging Federation Protocol v1.0.0-draft.0 — Draft, Final Review](./v1/README.md). Every implementation claiming compatibility, including SOMS, must demonstrate conformance through tests. Implementation code, implementation-specific reviews, JSON Schema, and examples cannot independently alter the meaning of the normative text.
+The current working package is [Simple Open Messaging Federation Protocol v1.0.0-draft.1 — Draft, Final Review](./v1/README.md). Every implementation claiming compatibility, including SOMS, must demonstrate conformance through tests. Implementation code, implementation-specific reviews, JSON Schema, and examples cannot independently alter the meaning of the normative text.
 
 The conformant discovery identifiers are `/.well-known/somfp` and `_somfp._tcp`. No alternative discovery identifier belongs to the SOMFP v1 surface.

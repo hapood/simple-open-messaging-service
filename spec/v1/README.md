@@ -2,11 +2,11 @@
 
 Status: `DRAFT` — Final Review
 
-Release: `v1.0.0-draft.0`
+Release: `v1.0.0-draft.1`
 
-This directory contains the Simple Open Messaging Federation Protocol v1.0.0-draft.0 working package. The intended protocol scope is settled for final review, but the wire contract is not frozen. This is a closeout-review draft, not an early design sketch or a release candidate. Corrections remain possible; the current text and validation artifacts must describe the same draft contract. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
+This directory contains the Simple Open Messaging Federation Protocol v1.0.0-draft.1 working package. The intended protocol scope is settled for final review, but the wire contract is not frozen. This is a closeout-review draft, not an early design sketch or a release candidate. Corrections remain possible; the current text and validation artifacts must describe the same draft contract. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
 
-This English text is the authoritative working text for v1.0.0-draft.0.
+This English text is the authoritative working text for v1.0.0-draft.1.
 
 The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174. Wire fields, enum values, HTTP headers, standard names, and stable error codes retain their original spelling and appear in code formatting. Examples, diagrams, TypeScript notation, and artifacts under `schema/` explain or validate the normative text but do not independently create protocol requirements.
 

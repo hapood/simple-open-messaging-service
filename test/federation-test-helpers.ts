@@ -166,6 +166,19 @@ export async function registerAndLogin(
   return { id: u.id, account, token };
 }
 
+/** Seed a real no-profile account and session without creating a snapshot. */
+export async function seedUserWithoutProfile(
+  app: Pick<AppLike, 'database'>,
+  account: string,
+): Promise<{ id: number; account: string; token: string }> {
+  const [created] = await app.database
+    .insert(user)
+    .values({ account })
+    .returning({ id: user.id });
+  const token = await seedSessionToken(app.database, created.id, 'app');
+  return { id: created.id, account, token };
+}
+
 export async function resolveFederatedCard(
   app: AppLike,
   token: string,

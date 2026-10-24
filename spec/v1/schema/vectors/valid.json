@@ -1,6 +1,14 @@
 {
   "vectors": [
     {
+      "name": "existing user or live group without a profile",
+      "schema": "urn:somfp:v1:profile",
+      "values": [
+        { "account": "alice", "profileRev": 0, "profile": null, "proof": "Y2hhbGxlbmdl" },
+        { "account": "!team", "profileRev": 0, "profile": null, "proof": "Y2hhbGxlbmdl" }
+      ]
+    },
+    {
       "name": "Group Meta item variants accept the maximum allocatable coordinate",
       "schema": "urn:somfp:v1:group-meta#/$defs/item",
       "values": [
@@ -760,13 +768,15 @@
       "schema": "urn:somfp:v1:profile",
       "value": {
         "account": "alice",
-        "displayName": "Alice",
-        "bio": "",
-        "avatar": {
-          "mimeType": "image/webp",
-          "base64": "AA==",
-          "width": 1,
-          "height": 1
+        "profile": {
+          "displayName": "Alice",
+          "bio": "",
+          "avatar": {
+            "mimeType": "image/webp",
+            "base64": "AA==",
+            "width": 1,
+            "height": 1
+          }
         },
         "profileRev": 1,
         "proof": "eyJhY2NvdW50IjoiYWxpY2UiLCJkb21haW4iOiJhLmV4YW1wbGUifQ=="

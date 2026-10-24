@@ -1,6 +1,6 @@
 # `PURE_TEXT` Message
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
 
 This document defines parsed `PURE_TEXT` content, quoted replies, and inline entities. See [Message Envelope](./envelope.md) for shared outer fields and receive rules.
 

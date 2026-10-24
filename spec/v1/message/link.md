@@ -1,6 +1,6 @@
 # `LINK` Message
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
 
 This document defines a `LINK` card containing target metadata and optional content-addressed artwork. An ordinary URL in message text remains `PURE_TEXT` and does not use this type. See [Message Envelope](./envelope.md) for the shared outer message shape.
 

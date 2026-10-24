@@ -6,7 +6,8 @@ export interface InlineProfileAvatar {
   height: number;
 }
 
-/** Public user or group profile as transmitted over federation. */
+/** Internal profile projection. Revision zero uses account-name presentation only;
+ * it is never a stored snapshot. Public wire responses nest content or use null. */
 export interface S2SProfile {
   /** Profile-subject namespace in the authenticated publisher's namespace space. */
   namespaceId: number;

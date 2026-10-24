@@ -359,22 +359,25 @@ export class GroupService {
               columns: { account: true, defaultProfileRev: true },
             });
             if (!owner) throw new Error('group creator account is unavailable');
-            const ownerProfile = await tx.query.profileTable.findFirst({
-              where: and(
-                eq(profileTable.account, owner.account),
-                eq(profileTable.publisherNamespaceId, 0),
-                eq(profileTable.profileNamespaceId, 0),
-                eq(profileTable.profileRev, owner.defaultProfileRev),
-              ),
-              columns: { displayName: true, avatar: true },
-            });
-            if (!ownerProfile)
+            const ownerProfile =
+              owner.defaultProfileRev > 0
+                ? await tx.query.profileTable.findFirst({
+                    where: and(
+                      eq(profileTable.account, owner.account),
+                      eq(profileTable.publisherNamespaceId, 0),
+                      eq(profileTable.profileNamespaceId, 0),
+                      eq(profileTable.profileRev, owner.defaultProfileRev),
+                    ),
+                    columns: { displayName: true, avatar: true },
+                  })
+                : null;
+            if (owner.defaultProfileRev > 0 && !ownerProfile)
               throw new Error('group creator profile is unavailable');
             // Creation authors a founding invitation before the owner accepts it.
-            // Its target presentation follows the same immutable snapshot contract.
+            // A revision-zero owner has account-name presentation, not a stored profile.
             const snapshot = parseRequestSnapshot({
-              displayName: ownerProfile.displayName,
-              avatar: ownerProfile.avatar === '' ? null : ownerProfile.avatar,
+              displayName: ownerProfile?.displayName ?? owner.account,
+              avatar: ownerProfile?.avatar ? ownerProfile.avatar : null,
             });
             await this.relationshipMutations.writeGroupRelationshipIntentInTx(
               tx,

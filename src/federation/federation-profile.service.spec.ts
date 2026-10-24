@@ -110,6 +110,61 @@ describe('FederationProfileService localization', () => {
     });
   });
 
+  it('returns revision zero for an existing user without reading a snapshot', async () => {
+    const { subject, database } = makeSubject();
+    database.db.query.account.findFirst.mockResolvedValueOnce({
+      account: 'alice',
+      namespaceId: 0,
+      defaultProfileRev: 0,
+      kind: 'USER',
+    } as never);
+    await expect(
+      subject.getLocalAccountProfile({ account: 'alice', domain: 'local' }),
+    ).resolves.toEqual({
+      account: 'alice',
+      namespaceId: 0,
+      profileRev: 0,
+      displayName: 'alice',
+      bio: '',
+      avatar: null,
+    });
+    expect(database.db.query.profileTable.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('does not expose a missing or system account as a no-profile user', async () => {
+    const { subject, database } = makeSubject();
+    await expect(
+      subject.getLocalAccountProfile({ account: 'missing', domain: 'local' }),
+    ).resolves.toBeNull();
+    database.db.query.account.findFirst.mockResolvedValueOnce({
+      account: '$system',
+      namespaceId: 0,
+      defaultProfileRev: 0,
+      kind: 'SYSTEM',
+    } as never);
+    await expect(
+      subject.getLocalAccountProfile({ account: '$system', domain: 'local' }),
+    ).resolves.toBeNull();
+  });
+
+  it('returns revision zero for a live group without a profile', async () => {
+    const { subject, database } = makeSubject();
+    database.db
+      .select()
+      .from()
+      .where()
+      .limit.mockResolvedValueOnce([
+        { account: '!group', namespaceId: 0, profileRev: 0, dissolvedAt: null },
+      ] as never);
+    await expect(
+      subject.getLocalAccountProfile({ account: '!group', domain: 'local' }),
+    ).resolves.toMatchObject({
+      account: '!group',
+      profileRev: 0,
+    });
+    expect(database.db.query.profileTable.findFirst).not.toHaveBeenCalled();
+  });
+
   it('returns no group profile when only a presentation fallback is available', async () => {
     const { subject, database } = makeSubject();
     database.db

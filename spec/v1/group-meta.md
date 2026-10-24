@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Group Meta Feed
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
 
 This document is entirely normative. `GET /s2s/v1/group-meta` exposes the one
 canonical Group Meta Feed owned by a group's origin. The feed is the origin's

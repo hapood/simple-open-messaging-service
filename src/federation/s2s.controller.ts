@@ -496,10 +496,8 @@ export class S2sController {
     const { account: owner, displayName, bio, avatar, profileRev } = profile;
     return {
       account: owner,
-      displayName,
-      bio,
-      avatar,
       profileRev,
+      profile: profileRev === 0 ? null : { displayName, bio, avatar },
       proof,
     };
   }
