@@ -22,7 +22,7 @@ import {
  * — here the repo is a simple canned data source so this spec stays focused on the source's shaping,
  * boundary, remounting, and optimistic-pending reconcile.
  */
-import { firstValueFrom, Subject, of } from 'rxjs';
+import { firstValueFrom, Subject, of, throwError } from 'rxjs';
 import { HttpItemSource } from './http-item-source';
 import { StableReadTracker } from './stable-read-tracker';
 import { MessageRepository } from '../../services/message-repository.service';
@@ -361,14 +361,24 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       resolve: vi
         .fn()
         .mockName('resolve')
-        .mockImplementation((demand: { target: { account: string } }) => {
-          const user = users.find(
-            (candidate) =>
-              candidate.account.toLowerCase() ===
-              demand.target.account.toLowerCase(),
-          );
-          return of(user);
-        }),
+        // Accepts both the bare demand and the unevidenced {demand, evidence}
+        // wrapper that batch shaping resolves.
+        .mockImplementation(
+          (
+            request:
+              | { target: { account: string } }
+              | { demand: { target: { account: string } } },
+          ) => {
+            const target =
+              'demand' in request ? request.demand.target : request.target;
+            const user = users.find(
+              (candidate) =>
+                candidate.account.toLowerCase() ===
+                target.account.toLowerCase(),
+            );
+            return of(user);
+          },
+        ),
     } as unknown as ProfileRepository;
     const activeProfileRepo = resolutionRepo ?? profileRepo;
     const newerAvailable = vi.fn().mockName('onNewerAvailable');
@@ -435,13 +445,82 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       name: 'Charlie',
       creator: JSON.stringify([0, 'charlie']),
     });
-    // The author resolves by the message's own publisher-scoped coordinates —
-    // the same demand path as P2P threads, never a roster identity join.
+    // The author resolves through the cache-only unevidenced form — the
+    // same demand path as P2P threads, never a roster identity join, and
+    // never a federation-capable evidenced resolution on the batch path.
     expect(resolve).toHaveBeenCalledWith({
-      publisherNamespaceId: 1,
-      lookup: 'ACCOUNT_PROFILE',
-      target: { profileNamespaceId: 0, account: 'charlie', rev: 1 },
+      demand: {
+        publisherNamespaceId: 1,
+        lookup: 'ACCOUNT_PROFILE',
+        target: { profileNamespaceId: 0, account: 'charlie', rev: 1 },
+      },
+      evidence: null,
     });
+  });
+
+  it('degrades a profileRev 0 author to the account identity without resolving a demand', async () => {
+    const resolve = vi.fn().mockName('resolve');
+    const accountProfiles = { resolve } as unknown as ProfileRepository;
+    const message = {
+      ...remoteGroupMessage(1),
+      profileRev: 0,
+    } as unknown as Message;
+    const { src } = setup(
+      { code: 0, message: 'ok', data: [message] },
+      42,
+      new ThreadSendOutbox(),
+      accountProfiles,
+      { code: 0, message: 'ok', data: [] },
+      true,
+    );
+
+    const items = await src.init(-1, 20, 0);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]!.data).toMatchObject({
+      type: 'msg',
+      name: 'charlie',
+      sender: { kind: 'snapshot', name: 'charlie', imageUrl: null },
+    });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('keeps the batch rendering when one author cache resolution errors', async () => {
+    const resolve = vi
+      .fn()
+      .mockName('resolve')
+      .mockImplementation(
+        (request: { demand: { target: { account: string } } }) =>
+          request.demand.target.account === 'charlie'
+            ? throwError(() => new Error('unevidenced cache miss'))
+            : of({
+                publisherNamespaceId: 0,
+                namespaceId: 0,
+                account: 'alice',
+                rev: 3,
+                name: 'Alice',
+                bio: '',
+                avatarDigest: null,
+                avatarBlob: null,
+              }),
+      );
+    const accountProfiles = { resolve } as unknown as ProfileRepository;
+    const { src } = setup(
+      { code: 0, message: 'ok', data: [row(1, 2), remoteGroupMessage(2)] },
+      42,
+      new ThreadSendOutbox(),
+      accountProfiles,
+      { code: 0, message: 'ok', data: [] },
+      true,
+    );
+
+    const items = await src.init(-1, 20, 0);
+
+    const byId = new Map(
+      items.map((item) => [item.id, item.data as { name: string }]),
+    );
+    expect(byId.get(1)).toMatchObject({ name: 'Alice' });
+    expect(byId.get(2)).toMatchObject({ name: 'charlie' });
   });
   it('remounts an accepted native voice bubble so its confirmation timeout and retry remain visible', () => {
     const { src, outbox } = setup({ code: 0, message: 'ok', data: [] });
@@ -490,13 +569,16 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       },
     });
     expect(repository.resolve).toHaveBeenCalledWith({
-      publisherNamespaceId: 0,
-      lookup: 'ACCOUNT_PROFILE',
-      target: {
-        profileNamespaceId: 0,
-        account: 'alice',
-        rev: 3,
+      demand: {
+        publisherNamespaceId: 0,
+        lookup: 'ACCOUNT_PROFILE',
+        target: {
+          profileNamespaceId: 0,
+          account: 'alice',
+          rev: 3,
+        },
       },
+      evidence: null,
     });
   });
 
