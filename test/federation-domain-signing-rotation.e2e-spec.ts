@@ -156,13 +156,14 @@ describe('federation domain and signing-certificate rotation together', () => {
       kind: 'domain-rebind',
       claimedRoot: oldRoot,
     });
-    const quarantined = await peer(FED_DOMAIN_B);
-    expect(quarantined).toMatchObject({
+    // A pending domain review preserves acceptance of the old binding, but
+    // authorizes neither a new namespace nor a domain change before approval.
+    expect(await peer(FED_DOMAIN_B)).toMatchObject({
       id: oldNamespaceId,
       rootPublicKey: oldRoot,
-      peerAcceptanceConfirmed: false,
+      peerAcceptanceConfirmed: true,
     });
-    expect(quarantined!.trustLevel).not.toBe('available');
+    expect(await peer(NEW_DOMAIN)).toBeUndefined();
   }, 60_000);
 
   it('restores the same identity only after approval', async () => {

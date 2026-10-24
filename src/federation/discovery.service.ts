@@ -144,16 +144,6 @@ export class DiscoveryService implements OnApplicationShutdown {
     assertCurrent: () => void,
   ): Promise<string> {
     assertCurrent();
-    const devRoute = this.config.devRoutes[normalized];
-    if (devRoute) {
-      this.publishRoute(normalized, {
-        baseUrl: devRoute,
-        connectHost: new URL(devRoute).hostname,
-        fetchedAt: Date.now(),
-      });
-      return devRoute;
-    }
-
     if (this.config.allowInsecureHttp) {
       const baseUrl = `http://${normalized}`;
       this.publishRoute(normalized, {
@@ -307,10 +297,7 @@ export class DiscoveryService implements OnApplicationShutdown {
   /** Federation HTTP transport: never follows redirects and preserves logical authority across SRV routing. */
   async request(url: URL | string, init: RequestInit = {}): Promise<Response> {
     const parsed = typeof url === 'string' ? new URL(url) : url;
-    const devDomain = Object.entries(this.config.devRoutes).find(
-      ([, base]) => new URL(base).origin === parsed.origin,
-    )?.[0];
-    const domain = this.normalizeDomain(devDomain ?? parsed.hostname);
+    const domain = this.normalizeDomain(parsed.hostname);
     await this.resolveBase(domain);
     this.assertRunning();
     const route = this.routes.get(domain);

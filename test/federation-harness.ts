@@ -13,7 +13,6 @@ import { openSealedBox } from '../src/federation/sealed-box.js';
 import type { RootKeyEntry } from '../src/federation/federation-certificate.js';
 import { databaseSchema } from '../src/database/database-schema.js';
 import type { Database } from '../src/database/database.service.js';
-import { DiscoveryService } from '../src/federation/discovery.service.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 import { signingCertificateStatement } from '../src/federation/federation-certificate.js';
 import { startS2sProxy, type S2sProxy } from './federation-proxy.js';
@@ -40,10 +39,9 @@ export type { S2sProxy };
  * imports, so `node` runs the compiled entry cleanly (the Fed↔Buffer forwardRef cycle that used to ESM-TDZ
  * at boot is now broken — one-way Fed→Buffer).
  *
- * Loopback without /etc/hosts/SRV/stubbing: TestDiscoveryService maps each peer domain to the other
- * app's `http://127.0.0.1:<port>` via resolveBase. Both ports are known up front (passed to both
- * subprocesses), so each app's map is complete. The signing @authority (127.0.0.1:<port>) matches what
- * the receiving Fastify sees → signatures verify end-to-end.
+ * Loopback without /etc/hosts/SRV: the subprocess injects a disposable request implementation
+ * with fixed connection targets. Requests retain the peer domain as authority, with real HTTP,
+ * signatures and (in TLS suites) domain-verified certificates.
  *
  * DUAL-DATABASE INVARIANT (enforced): appA/appB MUST be on separate databases — a group's
  * fedGroupAccount is @unique per DB; a shared DB aliases appB's mirror to appA's origin thread.
@@ -217,21 +215,6 @@ export async function makePng(
   return sharp(raw, { raw: { width: size, height: size, channels: 4 } })
     .png()
     .toBuffer();
-}
-
-/**
- * DiscoveryService override for tests: resolveBase reads the static portMap. Every S2S endpoint derives
- * its URL from resolveBase, so overriding resolveBase alone routes all of them over loopback. The
- * portMap is set by the subprocess entry (from FED_PORT_A/B) — identical in both processes.
- */
-export class TestDiscoveryService extends DiscoveryService {
-  static portMap: Record<string, string> = {};
-
-  override async resolveBase(domain: string): Promise<string> {
-    const mapped = TestDiscoveryService.portMap[domain];
-    if (mapped) return mapped;
-    return super.resolveBase(domain);
-  }
 }
 
 // ─── dual-DB setup ────────────────────────────────────────────────────────────

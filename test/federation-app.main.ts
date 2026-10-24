@@ -6,12 +6,14 @@
 //
 // Config is read from env (set by the harness):
 //   SOMS_DOMAIN / DATABASE_URL / APP_PORT — this app's identity, DB, listen port.
-//   FED_PORT_A / FED_PORT_B — BOTH apps' loopback ports (known up front so TestDiscoveryService.portMap
-//     is complete in each process; loopback avoids /etc/hosts, SRV, or stubbing fetch).
+//   FED_PORT_A / FED_PORT_B — both apps' connection targets, injected into the disposable
+//     request implementation without changing domain authority or stubbing HTTP responses.
 // The app prints `FED_APP_READY <port>` on stdout once listening; the harness awaits that. SIGTERM →
 // graceful app.close() (the degradation test stops appB this way to force a real ECONNREFUSED on appA).
 import 'dotenv/config';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Test } from '@nestjs/testing';
 import {
   FastifyAdapter,
@@ -24,10 +26,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { identityNamespace } from '../src/database/schema.js';
 import { KeypairService } from '../src/federation/keypair.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
-import {
-  TestDiscoveryService,
-  makeInMemoryKeypair,
-} from './federation-harness.js';
+import { makeInMemoryKeypair } from './federation-harness.js';
 
 async function main(): Promise<void> {
   const domain = process.env.SOMS_DOMAIN;
@@ -43,12 +42,10 @@ async function main(): Promise<void> {
   }
   process.env.SOMS_ALLOW_INSECURE_HTTP = '1';
 
-  // Loopback map scheme + extra domains (FED_E2E_SCHEME / FED_E2E_EXTRA_ROUTES, set by the
-  // harness): the base entries cover aaa/bbb.test; extra routes point additional domains (e.g. a
-  // post-re-bind peer domain) at appB's listener. Identical inputs in both processes keep the map
-  // complete on each side, so signatures verify end-to-end.
+  // The disposable transport owns these fixed connection targets, not production config.
+  // Scheme and extra domains allow TLS, proxy legs, three-node and identity-rebind tests.
   const scheme = process.env.FED_E2E_SCHEME === 'https' ? 'https' : 'http';
-  TestDiscoveryService.portMap = {
+  const routes: Record<string, string> = {
     'aaa.test': `${scheme}://127.0.0.1:${portA}`,
     'bbb.test': `${scheme}://127.0.0.1:${portB}`,
   };
@@ -62,7 +59,7 @@ async function main(): Promise<void> {
         const parsed = new URL(base);
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
           throw new Error(`unsupported route scheme for ${domain}`);
-        TestDiscoveryService.portMap[domain] = base;
+        routes[domain] = base;
       }
     } catch (error) {
       console.error(
@@ -73,31 +70,27 @@ async function main(): Promise<void> {
     }
   }
 
-  // The loopback map is identical in both processes (each knows both ports), so appA's signed requests
-  // to bbb.local route to appB's listener and vice versa — the signing @authority (127.0.0.1:<port>)
-  // matches what the receiving Fastify sees, so signatures verify end-to-end.
-
   // FED_E2E_REAL_KEYPAIR=1 keeps the REAL database-backed KeypairService (bootstrap,
   //  well-known publication, and the adaptive rotation lifecycle). Used by the
   //  signing-key-rotation e2e; every other spec keeps the deterministic in-memory keypair.
   const overrides =
     process.env.FED_E2E_REAL_KEYPAIR === '1'
-      ? (builder: ReturnType<typeof Test.createTestingModule>) =>
-          builder
-            .overrideProvider(DiscoveryService)
-            .useClass(TestDiscoveryService)
+      ? (builder: ReturnType<typeof Test.createTestingModule>) => builder
       : (builder: ReturnType<typeof Test.createTestingModule>) =>
           builder
             .overrideProvider(KeypairService)
-            .useValue(makeInMemoryKeypair(domain))
-            .overrideProvider(DiscoveryService)
-            .useClass(TestDiscoveryService);
+            .useValue(makeInMemoryKeypair(domain));
 
   const moduleRef = await overrides(
     Test.createTestingModule({
       imports: [AppModule],
     }),
   ).compile();
+  const { installFixedFederationTransport } = await import(
+    pathToFileURL(join(process.cwd(), 'dev/federation-lab/fixed-transport.mjs'))
+      .href
+  );
+  installFixedFederationTransport(moduleRef.get(DiscoveryService), routes);
   // The in-memory keypair bypasses the real KeypairService bootstrap, which is now the
   // component that creates the local IdentityNamespace(id=0) row (the WIP root-identity
   // redesign moved it there). Seed it here exactly as bootstrapOrLoad would, so Profile

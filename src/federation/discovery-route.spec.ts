@@ -17,7 +17,7 @@ import { resolveSrv } from 'node:dns/promises';
 import { DiscoveryService } from './discovery.service.js';
 
 const state = vi.hoisted(() => ({
-  ca: Buffer.alloc(0),
+  ca: Buffer.alloc(0) as Buffer,
   lookups: [] as string[],
 }));
 vi.mock('node:dns/promises', () => ({ resolveSrv: vi.fn() }));
@@ -88,7 +88,11 @@ async function server(label: string) {
 async function request(s: DiscoveryService) {
   const base = await s.resolveBase('peer.example');
   const response = await s.request(`${base}/.well-known/somfp`);
-  return response.json();
+  return response.json() as Promise<{
+    label: string;
+    host: string;
+    path: string;
+  }>;
 }
 
 beforeAll(async () => {

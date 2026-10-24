@@ -7,8 +7,6 @@ import { isValidSomfpDomain } from '../common/account.js';
 export interface FederationRuntimeConfig {
   /** dev-only: allow plain http:// for localhost federation testing (never in production). */
   allowInsecureHttp: boolean;
-  /** Dev-only static peer routes. */
-  devRoutes: Readonly<Record<string, string>>;
   forwardedResourcePolicy: 'trust' | 'rebuild';
   signingKey: SigningKeyLifecycleConfig;
   rootKey: RootKeyLifecycleConfig;
@@ -147,74 +145,15 @@ function loadForwardedResourcePolicy(): 'trust' | 'rebuild' {
   );
 }
 
-function loadDevRoutes(allowInsecureHttp: boolean): Record<string, string> {
-  const raw = process.env.SOMS_DEV_FEDERATION_ROUTES;
-  const production = process.env.NODE_ENV === 'production';
-  if (production && (raw !== undefined || allowInsecureHttp)) {
-    throw new Error(
-      'SOMS_ALLOW_INSECURE_HTTP and SOMS_DEV_FEDERATION_ROUTES are forbidden when NODE_ENV=production',
-    );
-  }
-  if (raw === undefined) return {};
-  if (!allowInsecureHttp) {
-    throw new Error(
-      'SOMS_DEV_FEDERATION_ROUTES requires SOMS_ALLOW_INSECURE_HTTP=1',
-    );
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error('SOMS_DEV_FEDERATION_ROUTES must be a JSON object');
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('SOMS_DEV_FEDERATION_ROUTES must be a JSON object');
-  }
-
-  const routes: Record<string, string> = {};
-  for (const [domain, value] of Object.entries(parsed)) {
-    const normalized = domain.toLowerCase();
-    if (domain !== normalized || !isValidSomfpDomain(normalized)) {
-      throw new Error(
-        `SOMS_DEV_FEDERATION_ROUTES contains invalid canonical domain: ${domain}`,
-      );
-    }
-    if (typeof value !== 'string') {
-      throw new Error(
-        `development federation route for ${domain} must be a URL`,
-      );
-    }
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      throw new Error(
-        `development federation route for ${domain} must be a URL`,
-      );
-    }
-    if (
-      url.protocol !== 'http:' ||
-      url.username ||
-      url.password ||
-      url.pathname !== '/' ||
-      url.search ||
-      url.hash
-    ) {
-      throw new Error(
-        `development federation route for ${domain} must be an http:// origin without credentials, path, query, or fragment`,
-      );
-    }
-    routes[normalized] = url.origin;
-  }
-  return routes;
-}
-
 export function loadFederationRuntimeConfig(): FederationRuntimeConfig {
   const allowInsecureHttp = process.env.SOMS_ALLOW_INSECURE_HTTP === '1';
+  if (process.env.NODE_ENV === 'production' && allowInsecureHttp) {
+    throw new Error(
+      'SOMS_ALLOW_INSECURE_HTTP is forbidden when NODE_ENV=production',
+    );
+  }
   return {
     allowInsecureHttp,
-    devRoutes: loadDevRoutes(allowInsecureHttp),
     forwardedResourcePolicy: loadForwardedResourcePolicy(),
     signingKey: loadSigningKeyLifecycle(),
     rootKey: loadRootKeyLifecycle(),
