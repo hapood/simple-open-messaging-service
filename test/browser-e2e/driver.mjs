@@ -40,7 +40,10 @@ import {
   profileTarget,
   profileDirectory,
 } from './infrastructure/profile-targets.mjs';
-import { validateDeployment } from './infrastructure/acceptance-run.mjs';
+import {
+  resolveDeploymentIdentity,
+  validateDeployment,
+} from './infrastructure/acceptance-run.mjs';
 import { otpKey, redactSecrets } from './infrastructure/driver-secrets.mjs';
 const deployment = process.env.BROWSER_DEPLOYMENT_FILE
   ? JSON.parse(readFileSync(process.env.BROWSER_DEPLOYMENT_FILE, 'utf8'))
@@ -314,6 +317,14 @@ async function adminLogin(node, profile) {
     });
     // The login page can also expose a searchbox, so confirm the URL.
     if (page.url().includes('/login')) throw new Error('admin login failed');
+    const identityResponse = await page.request.post(
+      new URL('/api/v1/admin/me', base).href,
+      { maxRedirects: 0 },
+    );
+    const identity = await identityResponse.json();
+    if (!identityResponse.ok() || identity.code !== 0)
+      throw new Error('Cannot read authenticated Admin identity.');
+    resolveDeploymentIdentity(NODES, node, identity.data?.somsDomain);
   } catch (error) {
     // Drop the half-open session so the next attempt retries login instead of
     // silently reusing a logged-out page.
@@ -324,7 +335,7 @@ async function adminLogin(node, profile) {
     }
     throw error;
   }
-  return { node, url: page.url() };
+  return { node, url: page.url(), domain: NODES[node].domain };
 }
 
 async function issueOtp(node, account, profile) {
@@ -363,11 +374,12 @@ async function issueOtp(node, account, profile) {
     }
     total = users.data.total;
     matches.push(
-      // Local accounts carry their node's own home domain (e.g. alpha.test);
-      // federated stubs carry a peer domain and must never match.
+      // Current Admin user lists contain local accounts only. Older responses may
+      // include domain labels; never accept a peer-labelled entry from those versions.
       ...users.data.list.filter(
         (user) =>
-          user.account === account && user.domain === NODES[node].domain,
+          user.account === account &&
+          (user.domain === undefined || user.domain === NODES[node].domain),
       ),
     );
     skip += take;

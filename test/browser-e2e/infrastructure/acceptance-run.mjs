@@ -17,6 +17,53 @@ export function endpoint(value) {
   return url.href.replace(/\/$/, '') + '/';
 }
 
+export function deploymentNode(
+  externalUrl,
+  internalAdminUrl = '',
+  account = 'admin',
+) {
+  const edge = endpoint(externalUrl);
+  const adminUrl = internalAdminUrl.trim();
+  const admin = adminUrl
+    ? endpoint(
+        new URL(adminUrl).pathname === '/'
+          ? new URL('/admin/', adminUrl).href
+          : adminUrl,
+      )
+    : new URL('/admin/', edge).href;
+  return {
+    edge,
+    admin,
+    service: edge,
+    domain: '',
+    account: account.trim() || 'admin',
+  };
+}
+
+export function resolveDeploymentIdentity(nodes, key, rawDomain) {
+  if (!Object.hasOwn(nodes, key)) throw new Error('Unknown deployment node.');
+  const domain =
+    typeof rawDomain === 'string' ? rawDomain.trim().toLowerCase() : '';
+  if (!domain || !/^[a-z0-9.-]+(?::\d+)?$/.test(domain))
+    throw new Error(
+      `${key}: Admin did not report a valid federation identity domain.`,
+    );
+  if (nodes[key].domain && nodes[key].domain !== domain)
+    throw new Error(
+      `${key}: deployment identity changed; verify configuration before continuing.`,
+    );
+  if (
+    Object.entries(nodes).some(
+      ([other, node]) => other !== key && node.domain === domain,
+    )
+  )
+    throw new Error(
+      'Configured entrances resolve to the same federation identity.',
+    );
+  nodes[key].domain = domain;
+  return domain;
+}
+
 export function validateDeployment(mode, input) {
   if (!['quick', 'full'].includes(mode))
     throw new Error('Select quick or full.');
@@ -30,7 +77,7 @@ export function validateDeployment(mode, input) {
       const domain = String(node.domain ?? '')
         .trim()
         .toLowerCase();
-      if (!domain || !/^[a-z0-9.-]+(?::\d+)?$/.test(domain))
+      if (domain && !/^[a-z0-9.-]+(?::\d+)?$/.test(domain))
         throw new Error(
           `${key}: enter the actual federation identity domain, not a URL.`,
         );
@@ -47,10 +94,12 @@ export function validateDeployment(mode, input) {
     }),
   );
   for (const field of ['edge', 'admin', 'domain']) {
-    const values = Object.values(nodes).map((node) =>
-      field === 'domain' ? node[field] : new URL(node[field]).origin,
-    );
-    if (new Set(values).size !== keys.length)
+    const values = Object.values(nodes)
+      .map((node) =>
+        field === 'domain' ? node[field] : new URL(node[field]).origin,
+      )
+      .filter(Boolean);
+    if (new Set(values).size !== values.length)
       throw new Error(`Nodes must have distinct ${field} identities/origins.`);
   }
   return nodes;
@@ -129,12 +178,12 @@ export function saveRun(directory, state) {
   );
   atomic(
     join(directory, 'handoff.md'),
-    `# Resume ${state.id}\n\nState: ${state.phase}\n\nNext action / fixture and cleanup notes:\n\n${state.next}\n\n## Last fixture / cleanup checkpoint\n\n${state.checkpoint || 'No checkpoint recorded yet.'}\n\nRevalidate deployment identity, version, profiles and fixture state before continuing. Credentials must be entered again after process restart. Historical PASS is not evidence for a changed deployment.\n`,
+    `# Resume ${state.id}\n\nState: ${state.phase}\n\nNext action / fixture and cleanup notes:\n\n${state.next}\n\n## Last fixture / cleanup checkpoint\n\n${state.checkpoint || 'No checkpoint recorded yet.'}\n\nRevalidate deployment identity, version, profiles and fixture state before continuing. Shared machine-local test settings can be reused after process restart; never put credentials in run records. Historical PASS is not evidence for a changed deployment.\n`,
   );
   for (const issue of state.issues)
     atomic(
       join(directory, 'bugs', `${issue.id}.md`),
-      `# ${issue.kind}: ${issue.summary}\n\nCase: ${issue.caseId || 'preflight'}\n\n${issue.evidence}\n\nProposed change / next action:\n\n${issue.proposal || 'Diagnose before proposing a change.'}\n\nOperator decision: ${issue.decision || 'pending'}\n`,
+      `# ${issue.kind}: ${issue.summary}\n\nCase: ${issue.caseId || 'preflight'}\n\n${issue.evidence}\n\nProposed change / next action:\n\n${issue.proposal || 'Diagnose before proposing a change.'}\n\nResolution: ${issue.decision || 'pending operator decision'}\n`,
     );
 }
 
@@ -152,6 +201,56 @@ export function loadRun(root, id) {
     throw new Error('Unsupported run record.');
   state.nodes = validateDeployment(state.mode, state.nodes);
   return { directory, state };
+}
+
+export function registerCases(state, items) {
+  if (state.phase !== 'running')
+    throw new Error('Resolve the pause with the operator first.');
+  if (!Array.isArray(items) || items.length < 1 || items.length > 200)
+    throw new Error('register requires between 1 and 200 cases.');
+  const seen = new Set();
+  const additions = [];
+  for (const item of items) {
+    if (
+      !item ||
+      typeof item.id !== 'string' ||
+      !/^[a-zA-Z0-9_.-]{1,100}$/.test(item.id) ||
+      typeof item.title !== 'string' ||
+      !item.title.trim() ||
+      item.title.length > 500 ||
+      Object.keys(item).some((key) => !['id', 'title'].includes(key))
+    )
+      throw new Error(
+        'Each registration requires only a valid id and title (1-500 characters).',
+      );
+    if (seen.has(item.id)) throw new Error(`Duplicate case ID: ${item.id}`);
+    seen.add(item.id);
+    const existing = state.cases.find((entry) => entry.id === item.id);
+    if (existing && existing.title !== item.title)
+      throw new Error(`Existing case title differs: ${item.id}`);
+    if (!existing)
+      additions.push({ ...item, outcome: 'NOT RUN', evidence: '' });
+  }
+  // Validate the complete batch before mutating; re-registration never resets results.
+  state.cases.push(...additions);
+  return {
+    requested: items.length,
+    added: additions.length,
+    preserved: items.length - additions.length,
+  };
+}
+
+export function progressSummary(state) {
+  const outcomes = {};
+  for (const item of state.cases)
+    outcomes[item.outcome] = (outcomes[item.outcome] ?? 0) + 1;
+  return {
+    id: state.id,
+    phase: state.phase,
+    caseCount: state.cases.length,
+    outcomes,
+    issueCount: state.issues.length,
+  };
 }
 
 export function recordCase(state, item) {

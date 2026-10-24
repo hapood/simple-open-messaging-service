@@ -11,11 +11,16 @@ import {
   loadRun,
   pauseRun,
   recordCase,
+  registerCases,
+  progressSummary,
   saveRun,
   validateDeployment,
+  deploymentNode,
+  resolveDeploymentIdentity,
   type RunState,
 } from './acceptance-run.mjs';
 import { navigationUrl } from './targets.mjs';
+import { localOperationBlockReason } from '../../../tools/pi-web-testing/extension/local-operation-policy';
 import { otpKey, redactSecrets } from './driver-secrets.mjs';
 
 const nodes = {
@@ -62,7 +67,7 @@ describe('acceptance run configuration and gates', () => {
     expect(() =>
       validateDeployment('quick', {
         ...nodes,
-        alpha: { ...nodes.alpha, domain: '' },
+        alpha: { ...nodes.alpha, domain: 'https://not-an-identity.test' },
       }),
     ).toThrow('identity domain');
     for (const url of [
@@ -72,6 +77,43 @@ describe('acceptance run configuration and gates', () => {
       'https://a.test/#token',
     ])
       expect(() => endpoint(url)).toThrow();
+  });
+  it('derives endpoints from minimal inputs and discovers identity only after Admin login', () => {
+    const alpha = deploymentNode('https://web-a.test');
+    const bravo = deploymentNode(
+      'https://web-b.test',
+      'http://10.0.0.2:3101',
+      'operator',
+    );
+    expect(alpha).toEqual({
+      edge: 'https://web-a.test/',
+      service: 'https://web-a.test/',
+      admin: 'https://web-a.test/admin/',
+      account: 'admin',
+      domain: '',
+    });
+    expect(bravo.admin).toBe('http://10.0.0.2:3101/admin/');
+    expect(
+      deploymentNode('https://web-b.test', 'http://10.0.0.2:3101/admin/').admin,
+    ).toBe(bravo.admin);
+    const configured = validateDeployment('quick', { alpha, bravo });
+    expect(configured.alpha.domain).toBe('');
+    expect(
+      resolveDeploymentIdentity(configured, 'alpha', 'IDENTITY-A.TEST'),
+    ).toBe('identity-a.test');
+    expect(() =>
+      resolveDeploymentIdentity(configured, 'bravo', 'identity-a.test'),
+    ).toThrow('same federation identity');
+    expect(configured.bravo.domain).toBe('');
+    expect(() => resolveDeploymentIdentity(configured, 'bravo', null)).toThrow(
+      'did not report',
+    );
+    expect(
+      resolveDeploymentIdentity(configured, 'bravo', 'identity-b.test'),
+    ).toBe('identity-b.test');
+    expect(() =>
+      resolveDeploymentIdentity(configured, 'alpha', 'changed.test'),
+    ).toThrow('identity changed');
   });
   it('allows only configured browser/admin origins, not backend or lookalike URLs', () => {
     const configured = validateDeployment('quick', nodes);
@@ -189,6 +231,167 @@ describe('acceptance run configuration and gates', () => {
         evidence: '',
       }),
     ).toThrow();
+  });
+  it('authorizes routine local work once while keeping repair and pause boundaries', () => {
+    const state: RunState = {
+      version: 1,
+      id: 'fixture',
+      mode: 'quick',
+      nodes: {},
+      createdAt: '',
+      phase: 'running',
+      cases: [],
+      issues: [],
+      next: '',
+    };
+    expect(localOperationBlockReason(state, 'bash')).toBeUndefined();
+    for (const tool of ['write', 'edit']) {
+      expect(
+        localOperationBlockReason(
+          state,
+          tool,
+          '/tmp/soms-browser-e2e/steps/scenario.mjs',
+        ),
+      ).toBeUndefined();
+      expect(
+        localOperationBlockReason(
+          state,
+          tool,
+          '/tmp/soms-browser-e2e/steps/../driver.mjs',
+        ),
+      ).toContain('Source changes');
+      expect(
+        localOperationBlockReason(state, tool, 'test/browser-e2e/driver.mjs'),
+      ).toContain('Source changes');
+    }
+    pauseRun(state, {
+      kind: 'DRIVER_MISMATCH',
+      summary: 'Stale selector',
+      evidence: 'Changed UI',
+      proposal: 'Update the scoped driver selector and verify.',
+    });
+    expect(localOperationBlockReason(state, 'bash')).toContain('paused');
+    expect(
+      localOperationBlockReason(
+        state,
+        'edit',
+        '/tmp/soms-browser-e2e/steps/scenario.mjs',
+      ),
+    ).toContain('paused');
+    expect(localOperationBlockReason(state, 'read')).toBeUndefined();
+    decideRun(state, 'repair');
+    expect(
+      localOperationBlockReason(state, 'edit', 'test/browser-e2e/driver.mjs'),
+    ).toBeUndefined();
+    expect(localOperationBlockReason(state, 'bash')).toBeUndefined();
+    expect(() => assertBrowserAction(state, 'eval')).toThrow('paused');
+    decideRun(state, 'retry');
+    expect(
+      localOperationBlockReason(state, 'edit', 'test/browser-e2e/driver.mjs'),
+    ).toContain('Source changes');
+  });
+  it('registers batches atomically, preserves verdicts and persists through the run store', () => {
+    const root = mkdtempSync(join(tmpdir(), 'soms-registration-'));
+    try {
+      const run = createRun(root, 'quick', nodes);
+      recordCase(run.state, {
+        id: 'Q0.pass',
+        title: 'Passed',
+        outcome: 'PASS',
+        evidence: 'asserted',
+      });
+      recordCase(run.state, {
+        id: 'Q1.bug',
+        title: 'Bug',
+        outcome: 'BUG',
+        evidence: 'reproduced',
+      });
+      decideRun(run.state, 'retry');
+      const before = structuredClone(run.state);
+      expect(
+        registerCases(run.state, [
+          { id: 'Q0.pass', title: 'Passed' },
+          { id: 'Q1.bug', title: 'Bug' },
+          { id: 'Q4.text.send', title: 'Text exact-once receipt' },
+        ]),
+      ).toEqual({ requested: 3, added: 1, preserved: 2 });
+      expect(run.state.cases.slice(0, -1)).toEqual(before.cases);
+      expect(run.state.issues).toEqual(before.issues);
+      expect(run.state.cases.at(-1)).toEqual({
+        id: 'Q4.text.send',
+        title: 'Text exact-once receipt',
+        outcome: 'NOT RUN',
+        evidence: '',
+      });
+      saveRun(run.directory, run.state);
+      expect(loadRun(root, run.state.id).state.cases).toEqual(run.state.cases);
+      expect(
+        readFileSync(join(run.directory, 'progress.md'), 'utf8'),
+      ).toContain('Q4.text.send');
+      expect(() => finishRun(run.state)).toThrow('Unfinished');
+      const stable = structuredClone(run.state);
+      const valid = { id: 'Q4.new', title: 'New assertion' };
+      const invalidBatches = [
+        [],
+        Array.from({ length: 201 }, (_, i) => ({
+          id: `Q4.${i}`,
+          title: 'Assertion',
+        })),
+        [valid, valid],
+        [valid, { id: '../invalid', title: 'Bad' }],
+        [valid, { id: 'Q4.blank', title: ' ' }],
+        [valid, { id: 'Q4.long', title: 'x'.repeat(501) }],
+        [valid, { id: 'Q0.pass', title: 'Changed scope' }],
+        [
+          valid,
+          { id: 'Q4.verdict', title: 'Not registration', outcome: 'PASS' },
+        ],
+      ];
+      for (const batch of invalidBatches) {
+        expect(() => registerCases(run.state, batch)).toThrow();
+        expect(run.state).toEqual(stable);
+      }
+      for (const phase of ['paused', 'stopped', 'completed'] as const) {
+        run.state.phase = phase;
+        const snapshot = structuredClone(run.state);
+        expect(() => registerCases(run.state, [valid])).toThrow('operator');
+        expect(run.state).toEqual(snapshot);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('keeps progress summaries bounded as case evidence and issue stacks grow', () => {
+    const root = mkdtempSync(join(tmpdir(), 'soms-summary-'));
+    try {
+      const { state } = createRun(root, 'quick', nodes);
+      for (let batch = 0; batch < 10; batch++)
+        registerCases(
+          state,
+          Array.from({ length: 200 }, (_, i) => ({
+            id: `Q4.b${batch}.${i}`,
+            title: 'Assertion',
+          })),
+        );
+      state.cases[0].evidence = 'private-evidence'.repeat(10000);
+      pauseRun(state, {
+        kind: 'DRIVER_MISMATCH',
+        summary: 'Stack',
+        evidence: 'private-stack'.repeat(10000),
+      });
+      const summary = progressSummary(state);
+      expect(summary).toMatchObject({
+        caseCount: 2007,
+        phase: 'paused',
+        issueCount: 1,
+        outcomes: { 'NOT RUN': 2007 },
+      });
+      const text = JSON.stringify(summary);
+      expect(text.length).toBeLessThan(500);
+      expect(text).not.toContain('private-');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
   it('isolates same-account OTPs by node and redacts secret variants', () => {
     expect(otpKey('alpha', 'alice')).not.toBe(otpKey('bravo', 'alice'));

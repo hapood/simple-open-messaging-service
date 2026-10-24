@@ -20,9 +20,11 @@ shared progress dashboard or retained-session history to this plan.
 ## Environment and fixtures
 
 - Exactly two distinct node identities, Web origins and Admin origins. Collect
-  each backend service URL independently; it may differ from the browser origin.
-- Confirm actual federation identity domains, not just Web hostnames. Record
-  server/API versions and verify authorized test environments before mutations.
+  each external SOMS URL and optional internal Admin URL; derive API routes from
+  the external URL and default Admin to `/admin/` when no internal URL is given.
+- Log into each Admin and read its actual federation identity (`somsDomain` from
+  `/api/v1/admin/me`), not the Web hostname. Missing, changed or duplicate identities
+  block testing. Record server/API versions and verify authorization before mutations.
 - Create at least two dedicated users on **each** node, all with a unique run
   prefix: A1/A2 on Alpha, B1/B2 on Bravo. Use isolated browser contexts and verify
   identity through the UI. Never disable/delete or change existing users.
@@ -160,8 +162,15 @@ References: full plan recovery rules and cleanup/data safety.
 
 ## Pauses and completion
 
-A driver failure immediately pauses browser mutations. Capture safe diagnostics,
-classify PRODUCT_BUG, DRIVER_MISMATCH or ENVIRONMENT, and write the reproduction,
+A failed browser command immediately pauses browser mutations for diagnosis.
+Invocation mistakes and agent-authored temporary-step mistakes may be corrected
+without operator confirmation using `webtest_run recover` with the current issue
+ID, diagnostic evidence, scope, and temporary `.mjs` path when applicable. Preserve
+the failure and rerun the assertion; recovery is not PASS and never authorizes
+shared helper, driver, harness or product edits. Progress-tool parameter errors
+that leave the run running can be corrected directly. For other or ambiguous
+failures, capture safe diagnostics, classify PRODUCT_BUG, DRIVER_MISMATCH or
+ENVIRONMENT, and write the reproduction,
 expected/actual and evidence through `webtest_run pause`. For a proposed repair,
 name exact files/behavior and verification. Ask before changing drivers, selectors,
 helper contracts or product source; do not silently repair and continue.

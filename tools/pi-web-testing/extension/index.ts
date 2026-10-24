@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Writable } from 'node:stream';
 import { installAcceptance } from './acceptance';
+import { assertLoginNode } from './driver-command';
 import { Type } from '@earendil-works/pi-ai';
 import {
   defineTool,
@@ -81,11 +82,13 @@ const BrowserDriverParameters = Type.Object({
     }),
   ),
   node: Type.Optional(
-    Type.Union([
-      Type.Literal('alpha'),
-      Type.Literal('bravo'),
-      Type.Literal('charlie'),
-    ]),
+    Type.Union(
+      [Type.Literal('alpha'), Type.Literal('bravo'), Type.Literal('charlie')],
+      {
+        description:
+          'Required for adminLogin, issueOtp, and userLogin, even for an existing profile. Pass the explicit selected deployment alias; never infer it from a profile name.',
+      },
+    ),
   ),
   account: Type.Optional(
     Type.String({ description: 'Lab account used by OTP login helpers.' }),
@@ -557,6 +560,7 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
       );
       let response: DriverResponse;
       try {
+        assertLoginNode(params);
         response = await sendCommand(
           ctx.cwd,
           command,
@@ -565,6 +569,11 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
         );
         if (!response.ok)
           throw new Error(response.error || 'Browser driver command failed.');
+        if (params.action === 'adminLogin' && params.node) {
+          const identity = response.data as { domain?: string };
+          if (identity.domain)
+            acceptance.acceptIdentity(params.node, identity.domain);
+        }
       } catch (error) {
         acceptance.driverFailed(
           error instanceof Error ? error.message : String(error),

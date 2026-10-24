@@ -76,6 +76,8 @@ dev/federation-lab/local/
 # Playwright browser test artifacts
 /test-results/
 /test/browser-e2e/test-results/
+# Shared machine-local browser acceptance settings and plaintext test credentials.
+/test/browser-e2e/.local/
 /test/browser-e2e/report/
 /test/browser-e2e/playwright-report/
 /test/browser-e2e/**/report/

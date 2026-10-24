@@ -46,8 +46,10 @@ federation scenarios still need disjoint accounts and fixture data.
 
 `npm run pi:webtest` loads the project extension and opens a setup wizard:
 **full acceptance requires three nodes**, while **main-workflow acceptance requires
-two nodes**. The wizard collects confirmed Web/backend/Admin URLs and federation
-identity domains, asks for fixture authorization, and accepts Admin passwords in
+two nodes**. The wizard collects each external SOMS URL, optional internal Admin
+URL and optional Admin username (default `admin`). It derives API/default Admin
+addresses, discovers the actual federation identity after Admin login, asks for
+fixture authorization, and accepts Admin passwords in
 masked TUI dialogs. It explicitly loads the Skill and starts preflight without
 starting or resetting services. Configured deployments use HTTP/UI health and
 version checks, not local HMR status files. See the
@@ -56,10 +58,16 @@ version checks, not local HMR status files. See the
 
 The `webtest_run` tool writes local progress, handoff and issue documents beneath
 `test-results/browser-e2e/acceptance/<run-id>/`. Browser failures pause mutations;
-product bugs and driver mismatches require an explicit operator decision. A
-specific repair approval does not authorize automatic retry or later repairs.
-Use `/webtest-status` or `/webtest-resume RUN_ID`; resumed sessions re-enter
-credentials and revalidate deployment/fixtures.
+product bugs, environment faults and driver/shared-harness repairs require an
+explicit operator decision. Diagnosed invocation mistakes and agent-authored
+temporary-step mistakes can use the audited `webtest_run recover` path without
+an operator dialog; this does not authorize source changes or imply PASS. A
+specific source repair approval does not authorize automatic retry or later repairs.
+Shared settings and test credentials live in the Git-ignored private file
+`test/browser-e2e/.local/config.json`, not in each run or session. Startup offers
+use/modify; reuse skips credential entry. Use `/webtest-status` or
+`/webtest-resume RUN_ID`; resumed runs require matching saved targets and must
+revalidate deployment/fixtures.
 
 For targeted local exploration without the wizard, load the same extension and
 Skill directly without `--webtest-wizard` (see its README). The agent checks
@@ -98,11 +106,11 @@ and secret-safe evidence collection.
 
 Frontend builds own their output and generated inputs:
 
-| Target | Build output | Generated worker input |
-| --- | --- | --- |
-| Web | `web/dist/web` | `web/.generated/web` |
+| Target     | Build output          | Generated worker input      |
+| ---------- | --------------------- | --------------------------- |
+| Web        | `web/dist/web`        | `web/.generated/web`        |
 | Playground | `web/dist/playground` | `web/.generated/playground` |
-| Native | `web/dist/native` | `web/.generated/native` |
+| Native     | `web/dist/native`     | `web/.generated/native`     |
 
 Use `npm --prefix web run build`, `build:playground`, or `build:native`.
 The runner appends a target-owned Angular output/assets configuration even when
@@ -111,4 +119,4 @@ output directly. Generated workers no longer write to shared `web/public`;
 legacy generated `public/push/sw-runtime.js` is excluded from assets.
 Development entry points prepare the matching worker before starting Angular.
 Source maps, native validation, and Angular output cleanup only touch the selected
-target. Concurrent builds of the *same* target are not supported.
+target. Concurrent builds of the _same_ target are not supported.

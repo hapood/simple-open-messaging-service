@@ -1,6 +1,7 @@
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { CURSOR_MARKER, Input, truncateToWidth } from '@earendil-works/pi-tui';
 import {
+  deploymentNode,
   endpoint,
   validateDeployment,
 } from '../../../test/browser-e2e/infrastructure/acceptance-run.mjs';
@@ -115,31 +116,34 @@ export async function collectDeployment(
   for (const key of mode === 'quick'
     ? ['alpha', 'bravo']
     : ['alpha', 'bravo', 'charlie']) {
-    const edge = await field(ctx, `${key}: SOMS Web URL`, undefined, endpoint);
+    const edge = await field(
+      ctx,
+      `${key}: external SOMS URL`,
+      undefined,
+      endpoint,
+    );
     if (!edge) return undefined;
-    const service = await field(
+    let internalAdmin: string | undefined;
+    for (;;) {
+      internalAdmin = await ctx.ui.input(
+        `${key}: internal Admin URL (optional)`,
+        'Leave empty to use the external URL + /admin/',
+      );
+      if (internalAdmin === undefined) return undefined;
+      try {
+        if (internalAdmin.trim()) endpoint(internalAdmin.trim());
+        break;
+      } catch {
+        ctx.ui.notify('Enter a valid HTTP(S) URL or leave empty.', 'warning');
+      }
+    }
+    const account = await field(
       ctx,
-      `${key}: backend service base URL (not /api/v1)`,
-      edge,
-      endpoint,
+      `${key}: Admin username (optional)`,
+      'admin',
     );
-    if (!service) return undefined;
-    const admin = await field(
-      ctx,
-      `${key}: Admin console URL`,
-      new URL('/admin/', edge).href,
-      endpoint,
-    );
-    if (!admin) return undefined;
-    // Web/service hostnames are not necessarily the federation identity domain.
-    const domain = await field(
-      ctx,
-      `${key}: actual federation identity domain (confirm in Admin settings)`,
-    );
-    if (!domain) return undefined;
-    const account = await field(ctx, `${key}: Admin username`, 'admin');
     if (!account) return undefined;
-    nodes[key] = { edge, service, admin, domain, account };
+    nodes[key] = deploymentNode(edge, internalAdmin, account);
   }
   const deployment = {
     mode,
@@ -148,7 +152,14 @@ export async function collectDeployment(
   if (
     !(await ctx.ui.confirm(
       'Authorize browser acceptance',
-      `${JSON.stringify(deployment, null, 2)}\n\nConfirm these are authorized test deployments. Allow dedicated test accounts, relationships, groups, and uploads. Existing business data, database resets, credential changes, service restarts and source changes are NOT authorized.`,
+      `${Object.entries(deployment.nodes)
+        .map(
+          ([key, node]) =>
+            `${key}: Web ${node.edge}\nAdmin ${node.admin}\nUsername ${node.account}`,
+        )
+        .join(
+          '\n\n',
+        )}\n\nAPI addresses are derived from the external URL. Federation identity is read after Admin login.\n\nConfirm these are authorized test deployments. Allow dedicated test accounts, relationships, groups, uploads, routine non-destructive local checks, and temporary test scripts/fixtures without per-operation prompts. Existing business data, database resets, credential changes, service restarts and source changes are NOT authorized.`,
     ))
   )
     return undefined;

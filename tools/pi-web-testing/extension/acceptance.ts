@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { Type } from '@earendil-works/pi-ai';
 import {
   defineTool,
@@ -13,8 +13,19 @@ import {
   loadRun,
   pauseRun,
   recordCase,
+  registerCases,
+  progressSummary,
   saveRun,
+  resolveDeploymentIdentity,
 } from '../../../test/browser-e2e/infrastructure/acceptance-run.mjs';
+import { localOperationBlockReason } from './local-operation-policy';
+import { recoverTestError } from './test-error-recovery';
+import {
+  loadLocalConfig,
+  localConfigPath,
+  matchesDeployment,
+  saveLocalConfig,
+} from './local-config';
 import { redactSecrets } from '../../../test/browser-e2e/infrastructure/driver-secrets.mjs';
 import {
   collectCredentials,
@@ -44,11 +55,15 @@ export function installAcceptance(
   const prompt = () => {
     if (!run) return;
     pi.sendUserMessage(
-      `/skill:web-testing Execute this authorized acceptance run: ${JSON.stringify(summary())}. First read the selected plan and perform preflight. Use webtest_run for progress and all pauses. No driver or product edits without a new explicit operator confirmation. Never use a shell or another browser client to bypass a pause.`,
+      `/skill:web-testing Execute this authorized acceptance run: ${JSON.stringify(summary())}. First read the selected plan and perform preflight. Use webtest_run for progress and all pauses. No driver/shared-harness or product edits without a new explicit operator confirmation. Correct invocation errors and temporary-step mistakes using webtest_run recover with diagnostic evidence, without an operator dialog. Never use a shell or another browser client to bypass a pause.`,
       { expandPromptTemplates: true },
     );
   };
-  async function setup(ctx: ExtensionContext, resumeId?: string) {
+  async function setup(
+    ctx: ExtensionContext,
+    resumeId?: string,
+    options?: { quiet?: boolean },
+  ) {
     if (configuring) throw new Error('A wizard is already open.');
     if (ctx.mode !== 'tui')
       throw new Error('The acceptance wizard requires interactive Pi TUI.');
@@ -65,53 +80,111 @@ export function installAcceptance(
       const restored = resumeId
         ? loadRun(root(ctx.cwd), resumeId.trim())
         : undefined;
-      const deployment = restored
-        ? ({
-            mode: restored.state.mode,
-            nodes: restored.state.nodes,
-          } as Deployment)
-        : await collectDeployment(ctx);
+      let saved: Awaited<ReturnType<typeof loadLocalConfig>>;
+      try {
+        saved = await loadLocalConfig(ctx.cwd);
+      } catch {
+        if (
+          !(await ctx.ui.confirm(
+            'Replace unreadable local configuration?',
+            'The saved test settings could not be read or validated. Re-enter the settings to replace them. Existing settings and the active run remain unchanged if setup is cancelled.',
+          ))
+        )
+          return;
+      }
+      let reuse = false;
+      if (saved) {
+        const choice = await ctx.ui.select(
+          `Saved browser test configuration (${saved.deployment.mode})\n${Object.entries(
+            saved.deployment.nodes,
+          )
+            .map(
+              ([key, node]) =>
+                `${key}: Web ${node.edge}\nAdmin ${node.admin}\nUsername ${node.account}`,
+            )
+            .join(
+              '\n',
+            )}\nUsing this configuration authorizes dedicated test fixtures and routine local testing, not source changes or resets.`,
+          ['Use saved configuration', 'Modify saved configuration'],
+        );
+        if (!choice) return;
+        reuse = choice.startsWith('Use');
+      }
+      const deployment =
+        reuse && saved
+          ? saved.deployment
+          : saved || !restored
+            ? await collectDeployment(ctx)
+            : ({
+                mode: restored.state.mode,
+                nodes: restored.state.nodes,
+              } as Deployment);
       if (!deployment) return;
+      const nextCredentials =
+        reuse && saved
+          ? saved.credentials
+          : await collectCredentials(ctx, deployment);
+      if (!nextCredentials) return;
+      const nextConfig = {
+        version: 1 as const,
+        deployment,
+        credentials: nextCredentials,
+      };
       if (
         restored &&
+        !matchesDeployment(nextConfig, {
+          mode: restored.state.mode,
+          nodes: restored.state.nodes,
+        } as Deployment)
+      )
+        throw new Error(
+          'Shared configuration does not match the restored run. Use the original endpoints/account or start a new run with /webtest. No credentials or run state were changed.',
+        );
+      if (
+        restored &&
+        !saved &&
         !(await ctx.ui.confirm(
           'Resume authorized test deployment?',
-          `${JSON.stringify(deployment, null, 2)}\nRevalidate identity/build and fixture state before any mutation. Resume does not authorize source changes or reset operations.`,
+          `${JSON.stringify(deployment, null, 2)}\nSave these settings as the shared local test configuration? Revalidate identity and fixtures before continuing.`,
         ))
       )
         return;
-      const nextCredentials = await collectCredentials(ctx, deployment);
-      if (!nextCredentials) return;
+      await saveLocalConfig(ctx.cwd, nextConfig);
       await stopDriver('acceptance deployment changed');
-      if (run && run.state.phase === 'running') {
-        pauseRun(run.state, {
+      const previous = run;
+      credentials = nextCredentials;
+      run =
+        restored ?? createRun(root(ctx.cwd), deployment.mode, deployment.nodes);
+      if (previous && previous !== run && previous.state.phase === 'running') {
+        pauseRun(previous.state, {
           kind: 'UNCLASSIFIED',
           summary: 'Run replaced by another configuration',
           evidence:
             'Operator opened another run. Revalidate environment and fixtures before resuming.',
         });
-        persist();
+        saveRun(previous.directory, previous.state);
       }
-      credentials = nextCredentials;
-      run =
-        restored ?? createRun(root(ctx.cwd), deployment.mode, deployment.nodes);
-      // A persisted repair decision never grants edit permission in another session.
-      if (restored && run.state.phase !== 'paused') {
+      if (!restored) {
+        // Fresh run starts running immediately.
+      } else if (run.state.phase === 'paused') {
+        const issue = run.state.issues.at(-1);
+        if (issue) issue.decision = undefined;
+      } else {
         pauseRun(run.state, {
           kind: 'UNCLASSIFIED',
           summary: 'Resume preflight required',
           evidence:
             'Process/session changed. Verify deployment, profiles and fixtures before retrying.',
         });
-      } else if (restored) {
-        const issue = run.state.issues.at(-1);
-        if (issue) issue.decision = undefined;
       }
       persist();
       pi.appendEntry('webtest-run', { id: run.state.id });
       ctx.ui.setStatus('webtest', `${run.state.mode}: ${run.state.id}`);
-      ctx.ui.notify(`Run documents: ${run.directory}`, 'info');
-      prompt();
+      ctx.ui.notify(
+        `Configuration: ${localConfigPath(ctx.cwd)}\nRun documents: ${run.directory}`,
+        'info',
+      );
+      if (!options?.quiet) prompt();
     } finally {
       configuring = false;
     }
@@ -162,7 +235,7 @@ export function installAcceptance(
     },
   });
   pi.registerCommand('webtest-resume', {
-    description: 'Resume acceptance by run ID; re-enter credentials',
+    description: 'Resume acceptance by run ID using shared local test settings',
     handler: async (id, ctx) => {
       if (!id.trim()) {
         ctx.ui.notify('Usage: /webtest-resume RUN_ID', 'warning');
@@ -172,7 +245,31 @@ export function installAcceptance(
     },
   });
   pi.on('session_start', async (_event, ctx) => {
-    if (pi.getFlag('webtest-wizard') && ctx.mode === 'tui') await setup(ctx);
+    if (!pi.getFlag('webtest-wizard') || ctx.mode !== 'tui') return;
+    // Session entries retain only the progress run ID. Deployment settings and
+    // credentials are shared across sessions in the local test configuration.
+    const last = [...ctx.sessionManager.getEntries()]
+      .reverse()
+      .find(
+        (entry) =>
+          entry.type === 'custom' &&
+          (entry as { customType?: string }).customType === 'webtest-run',
+      ) as { data?: { id?: string } } | undefined;
+    if (last?.data?.id) {
+      try {
+        await setup(ctx, last.data.id, { quiet: true });
+        const issue = run?.state.issues.at(-1);
+        if (run?.state.phase === 'paused' && issue && !issue.decision)
+          await decide(ctx);
+      } catch {
+        ctx.ui.notify(
+          'Could not restore this run with the shared configuration. Check local settings and the run ID, then use /webtest-resume; /webtest starts a new run.',
+          'error',
+        );
+      }
+      return;
+    }
+    await setup(ctx);
   });
   pi.registerTool(
     defineTool({
@@ -180,11 +277,30 @@ export function installAcceptance(
       label: 'Acceptance progress',
       executionMode: 'sequential',
       description:
-        'Persist acceptance scope, assertion-backed results, resume notes and issues. pause writes an issue before asking the operator; decision asks the operator for a paused driver failure. Never pass credentials or OTPs. Expand matrices with NOT RUN records before testing.',
+        'Persist acceptance scope, assertion-backed results, resume notes and issues. pause writes an issue before asking the operator; decision asks the operator for a paused driver failure. recover resumes only an unclassified browser-command failure diagnosed as an argument or temporary-step mistake, with evidence, without a dialog; it never authorizes shared-harness/product edits. record requires id, title and outcome. Never pass credentials or OTPs. Use register with up to 200 {id,title} cases per batch to expand matrices as NOT RUN before testing; existing results are preserved. register and record return compact summaries; status returns full state.',
       parameters: Type.Object({
         action: Type.Union(
-          ['status', 'record', 'pause', 'decision', 'checkpoint', 'finish'].map(
-            (value) => Type.Literal(value),
+          [
+            'status',
+            'register',
+            'record',
+            'pause',
+            'decision',
+            'recover',
+            'checkpoint',
+            'finish',
+          ].map((value) => Type.Literal(value)),
+        ),
+        cases: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                id: Type.String({ pattern: '^[a-zA-Z0-9_.-]{1,100}$' }),
+                title: Type.String({ minLength: 1, maxLength: 500 }),
+              },
+              { additionalProperties: false },
+            ),
+            { minItems: 1, maxItems: 200 },
           ),
         ),
         id: Type.Optional(Type.String()),
@@ -213,6 +329,13 @@ export function installAcceptance(
         ),
         evidence: Type.Optional(Type.String()),
         proposal: Type.Optional(Type.String()),
+        scope: Type.Optional(
+          Type.Union([
+            Type.Literal('arguments'),
+            Type.Literal('temporary-step'),
+          ]),
+        ),
+        path: Type.Optional(Type.String()),
         next: Type.Optional(Type.String()),
       }),
       async execute(_id, raw, _signal, _update, ctx) {
@@ -223,7 +346,10 @@ export function installAcceptance(
             typeof value === 'string' ? clean(value) : value,
           ),
         ) as typeof raw;
-        if (params.action === 'record') {
+        let registration: ReturnType<typeof registerCases> | undefined;
+        if (params.action === 'register') {
+          registration = registerCases(run.state, params.cases ?? []);
+        } else if (params.action === 'record') {
           if (!params.id || !params.title || !params.outcome)
             throw new Error('record requires id, title and outcome.');
           recordCase(run.state, {
@@ -249,7 +375,9 @@ export function installAcceptance(
           persist();
           await decide(ctx);
         } else if (params.action === 'decision') await decide(ctx);
-        else if (params.action === 'checkpoint') {
+        else if (params.action === 'recover') {
+          recoverTestError(run.state, params);
+        } else if (params.action === 'checkpoint') {
           if (!params.next?.trim())
             throw new Error(
               'checkpoint requires resume/fixture/cleanup notes in next.',
@@ -259,43 +387,39 @@ export function installAcceptance(
         } else if (params.action === 'finish') finishRun(run.state);
         persist();
         return {
-          content: [{ type: 'text', text: JSON.stringify(summary(), null, 2) }],
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                ['register', 'record', 'recover'].includes(params.action)
+                  ? {
+                      directory: run.directory,
+                      ...progressSummary(run.state),
+                      ...(registration ? { registration } : {}),
+                      ...(params.action === 'record'
+                        ? { caseId: params.id }
+                        : {}),
+                    }
+                  : summary(),
+                null,
+                2,
+              ),
+            },
+          ],
           details: { directory: run.directory },
         };
       },
     }),
   );
-  // Native gates complement the Skill. Shells and file writers require a fresh visible approval;
-  // arbitrary shell commands cannot be classified safely by matching command strings.
-  pi.on('tool_call', async (event, ctx) => {
-    if (!run) return;
-    if (['bash', 'edit', 'write'].includes(event.toolName)) {
-      const path = 'path' in event.input ? event.input.path : undefined;
-      const temporaryStep =
-        event.toolName === 'write' &&
-        typeof path === 'string' &&
-        resolve(path).startsWith('/tmp/soms-browser-e2e/steps/') &&
-        path.endsWith('.mjs') &&
-        run.state.phase === 'running';
-      if (temporaryStep) return;
-      const issue = run.state.issues.at(-1);
-      if (event.toolName !== 'bash' && issue?.decision !== 'repair')
-        return {
-          block: true,
-          reason:
-            'Source changes require a paused issue, a concrete proposal, and explicit operator repair approval.',
-        };
-      if (
-        ctx.mode !== 'tui' ||
-        !(await ctx.ui.confirm(
-          'Authorize this local operation?',
-          clean(
-            `${event.toolName}: ${JSON.stringify(event.input)}\nDo not approve alternate browser clients or bypass paused acceptance. Repair approval applies only to the recorded proposal.`,
-          ),
-        ))
-      )
-        return { block: true, reason: 'Operation not authorized by operator.' };
-    }
+  // Gate decisions, not individual keystrokes or routine local commands.
+  // Trusted shells/steps remain subject to the Skill; this hook is not an OS sandbox.
+  pi.on('tool_call', async (event) => {
+    // Progress/status and pause/decision tools must remain usable even when a
+    // local-operation policy fails. Do not evaluate that policy for other tools.
+    if (!['bash', 'edit', 'write'].includes(event.toolName)) return;
+    const path = 'path' in event.input ? event.input.path : undefined;
+    const reason = localOperationBlockReason(run?.state, event.toolName, path);
+    if (reason) return { block: true, reason };
   });
   return {
     configuration() {
@@ -306,6 +430,11 @@ export function installAcceptance(
         credentials,
       };
     },
+    acceptIdentity(node: string, domain: string) {
+      if (!run) return;
+      resolveDeploymentIdentity(run.state.nodes, node, domain);
+      persist();
+    },
     assertAction(action: string) {
       assertBrowserAction(run?.state, action);
     },
@@ -315,6 +444,7 @@ export function installAcceptance(
         kind: 'UNCLASSIFIED',
         summary: 'Browser command failed; classify before continuing',
         evidence: clean(message),
+        failureSource: 'browser-command',
       });
       persist();
     },
