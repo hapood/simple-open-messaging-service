@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifySomfpSrvRrset } from './srv-rrset.js';
+import { classifySomfpSrvRrset, selectSomfpSrvRecord } from './srv-rrset.js';
 
 const record = (
   over: Partial<{
@@ -14,6 +14,33 @@ const record = (
   priority: 0,
   weight: 0,
   ...over,
+});
+
+describe('selectSomfpSrvRecord', () => {
+  const records = [
+    {
+      host: 'backup.example',
+      port: 7669,
+      priority: 10,
+      weight: 100,
+      display: '',
+    },
+    { host: 'a.example', port: 7667, priority: 0, weight: 1, display: '' },
+    { host: 'b.example', port: 7668, priority: 0, weight: 3, display: '' },
+  ];
+  it('selects only the lowest priority and honors weights', () => {
+    expect(selectSomfpSrvRecord(records, () => 0).host).toBe('a.example');
+    expect(selectSomfpSrvRecord(records, () => 0.25).host).toBe('b.example');
+    expect(selectSomfpSrvRecord(records, () => 0.99).host).toBe('b.example');
+  });
+  it('chooses uniformly when all eligible weights are zero', () => {
+    const zero = records.map((record) => ({ ...record, weight: 0 }));
+    expect(selectSomfpSrvRecord(zero, () => 0).host).toBe('a.example');
+    expect(selectSomfpSrvRecord(zero, () => 0.99).host).toBe('b.example');
+  });
+  it('rejects an empty candidate set', () => {
+    expect(() => selectSomfpSrvRecord([])).toThrow('No SOMFP SRV targets');
+  });
 });
 
 describe('classifySomfpSrvRrset', () => {

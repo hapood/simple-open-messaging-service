@@ -17,10 +17,14 @@ import { LocalInformationService } from '../federation/self-check/local-informat
 import { TargetNetworkDiagnosticsService } from '../federation/self-check/target-network-diagnostics.service.js';
 
 export class NetworkTargetDto {
-  @ApiProperty({ example: 'https://example.com:443' })
+  @ApiProperty({
+    example: 'example.com',
+    description:
+      'Federation domain only; the HTTPS host and port are discovered through SOMFP SRV.',
+  })
   @IsString()
   @MinLength(1)
-  @MaxLength(2048)
+  @MaxLength(253)
   target!: string;
 }
 

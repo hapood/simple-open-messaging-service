@@ -4,10 +4,14 @@ import {
   Logger,
   OnApplicationShutdown,
 } from '@nestjs/common';
-import { lookup, type LookupAddress } from 'node:dns';
-import { resolveSrv } from 'node:dns/promises';
 import { and, eq } from 'drizzle-orm';
-import { Agent, fetch as undiciFetch } from 'undici';
+import type { Agent } from 'undici';
+import {
+  createFederationDispatcher,
+  resolveFederationRoute,
+  requestFederation,
+  readFederationDiscovery,
+} from './federation-transport.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -17,11 +21,9 @@ import { continuousCoverageEnd } from './peer-key-coverage.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { KeypairService } from './keypair.service.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
-import { classifySomfpSrvRrset } from './srv-rrset.js';
 import { describeError } from '../logger/describe-error.js';
 import {
   normalizeFederationDomain,
-  validateWellKnownDocument,
   type WellKnownDoc,
 } from './well-known-document.js';
 
@@ -43,14 +45,6 @@ export function currentCertifyingRoots(doc: WellKnownDoc): string[] {
       roots.add(certificate.root);
   }
   return [...roots];
-}
-
-/** Stable classification for DNS/SRV discovery failures exposed to first-contact UI. */
-export class FederationDomainResolutionError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = 'FederationDomainResolutionError';
-  }
 }
 
 interface CachedRoute {
@@ -144,53 +138,19 @@ export class DiscoveryService implements OnApplicationShutdown {
     assertCurrent: () => void,
   ): Promise<string> {
     assertCurrent();
+    const { baseUrl, connectHost } = await resolveFederationRoute(normalized, {
+      allowInsecureHttp: this.config.allowInsecureHttp,
+      timeoutMs: this.transportConfig.get().connectTimeoutSec * 1000,
+    });
+    assertCurrent();
     if (this.config.allowInsecureHttp) {
-      const baseUrl = `http://${normalized}`;
       this.publishRoute(normalized, {
         baseUrl,
-        connectHost: normalized,
+        connectHost,
         fetchedAt: Date.now(),
       });
       return baseUrl;
     }
-
-    let records;
-    try {
-      records = await resolveSrv(`_somfp._tcp.${normalized}`);
-    } catch (error) {
-      throw new FederationDomainResolutionError(
-        `SRV discovery for ${normalized} failed`,
-        { cause: error },
-      );
-    }
-    assertCurrent();
-    const rrset = classifySomfpSrvRrset(records);
-    if (rrset.kind === 'empty')
-      throw new FederationDomainResolutionError(
-        `${normalized} does not publish SOMFP SRV`,
-      );
-    if (rrset.kind === 'disabled')
-      throw new FederationDomainResolutionError(
-        `${normalized} explicitly disables SOMFP`,
-      );
-    if (rrset.kind === 'invalid')
-      throw new FederationDomainResolutionError(
-        rrset.reason === 'mixed'
-          ? `${normalized} publishes an invalid mixed SRV RRset`
-          : `${normalized} publishes an invalid SOMFP SRV RRset`,
-      );
-    const priority = Math.min(
-      ...rrset.records.map((record) => record.priority),
-    );
-    const candidates = rrset.records.filter(
-      (record) => record.priority === priority,
-    );
-    const selected = this.weightedRecord(candidates);
-    const connectHost = selected.host;
-    const baseUrl =
-      selected.port === 443
-        ? `https://${normalized}`
-        : `https://${normalized}:${selected.port}`;
     const previous = this.routes.get(normalized);
     const connectTimeoutMs =
       this.transportConfig.get().connectTimeoutSec * 1000;
@@ -308,19 +268,7 @@ export class DiscoveryService implements OnApplicationShutdown {
     const poolSignal = route.dispatcher
       ? this.poolCancellation.get(route.dispatcher)?.signal
       : undefined;
-    const response = await undiciFetch(parsed, {
-      ...(init as Record<string, unknown>),
-      ...(poolSignal
-        ? {
-            signal: init.signal
-              ? AbortSignal.any([init.signal, poolSignal])
-              : poolSignal,
-          }
-        : {}),
-      redirect: 'manual',
-      ...(route?.dispatcher ? { dispatcher: route.dispatcher } : {}),
-    } as never);
-    return response as unknown as Response;
+    return requestFederation(parsed, route.dispatcher, init, poolSignal);
   }
 
   /** Acquire an ordinary S2S HTTP slot. Callers acquire before signing/creating a timeout and release
@@ -340,30 +288,13 @@ export class DiscoveryService implements OnApplicationShutdown {
         ),
         headers: { accept: 'application/json' },
       });
-      if (response.status !== 200)
-        throw new Error(`well-known ${domain}: HTTP ${response.status}`);
-      const contentType = response.headers.get('content-type') ?? '';
-      if (!/^application\/json(?:\s*;|$)/i.test(contentType))
-        throw new Error(`well-known ${domain}: invalid Content-Type`);
-      let value: unknown;
-      try {
-        value = await response.json();
-      } catch (error) {
-        throw new Error(
-          `well-known ${domain}: malformed JSON (${(error as Error).message})`,
-        );
-      }
-      return this.validateWellKnown(domain, value);
+      return await readFederationDiscovery(domain, response);
     } finally {
       release();
     }
   }
 
   /** Peer-side document validation, shared with the admin self-check. */
-  validateWellKnown(domain: string, value: unknown): WellKnownDoc {
-    return validateWellKnownDocument(domain, value);
-  }
-
   /** Read-only cached-key lookup used by the inbound signature path. A miss is NOT
    *  repaired here: certificate freshness is owned by the Health round (and by the
    *  Recognize bootstrap, which fetches before first use). A missing or expired
@@ -571,38 +502,15 @@ export class DiscoveryService implements OnApplicationShutdown {
     }
   }
 
-  private weightedRecord<T extends { weight: number }>(records: T[]): T {
-    const total = records.reduce((sum, record) => sum + record.weight, 0);
-    if (total === 0)
-      return records[Math.floor(Math.random() * records.length)]!;
-    let selected = Math.random() * total;
-    for (const record of records) {
-      selected -= record.weight;
-      if (selected < 0) return record;
-    }
-    return records[records.length - 1]!;
-  }
-
   private createDispatcher(
     domain: string,
     connectHost: string,
     connectTimeoutMs: number,
   ): Agent {
-    const agent = new Agent({
-      connectTimeout: connectTimeoutMs,
-      connect: {
-        servername: domain,
-        lookup: (_hostname, options, callback) => {
-          lookup(connectHost, options as never, (error, address, family) => {
-            callback(
-              error,
-              address as string | LookupAddress[],
-              family as number,
-            );
-          });
-        },
-      },
-    });
+    const agent = createFederationDispatcher(
+      { domain, connectHost },
+      connectTimeoutMs,
+    );
     this.poolCancellation.set(agent, new AbortController());
     return agent;
   }

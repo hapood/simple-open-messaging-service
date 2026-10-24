@@ -44,11 +44,8 @@ vi.mock('undici', async (original) => {
   const actual = await original<typeof import('undici')>();
   return {
     ...actual,
-    Agent: class extends actual.Agent {
-      constructor(options: any) {
-        super({ ...options, connect: { ...options.connect, ca: state.ca } });
-      }
-    },
+    buildConnector: (options: Parameters<typeof actual.buildConnector>[0]) =>
+      actual.buildConnector({ ...options, ca: state.ca }),
   };
 });
 

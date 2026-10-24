@@ -1,138 +1,182 @@
-import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   parseDiagnosticTarget,
   TargetNetworkDiagnosticsService,
 } from './target-network-diagnostics.service.js';
+import type { TransportPolicy } from '../federation-transport.js';
 const mocks = vi.hoisted(() => ({
+  resolve: vi.fn(),
+  create: vi.fn(),
   request: vi.fn(),
-  resolve4: vi.fn(),
-  resolve6: vi.fn(),
-  resolveSrv: vi.fn(),
-  cancel: vi.fn(),
+  read: vi.fn(),
+  destroy: vi.fn(),
 }));
-vi.mock('node:https', () => ({ request: mocks.request }));
-vi.mock('node:dns/promises', () => ({
-  Resolver: class {
-    resolve4 = mocks.resolve4;
-    resolve6 = mocks.resolve6;
-    resolveSrv = mocks.resolveSrv;
-    cancel = mocks.cancel;
-  },
+vi.mock('../federation-transport.js', () => ({
+  resolveFederationRoute: mocks.resolve,
+  createFederationDispatcher: mocks.create,
+  requestFederation: mocks.request,
+  readFederationDiscovery: mocks.read,
 }));
-
-describe('target diagnostics', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(100_000);
-    vi.clearAllMocks();
-    mocks.resolve4.mockResolvedValue(['1.1.1.1']);
-    mocks.resolve6.mockResolvedValue([]);
-    mocks.resolveSrv.mockRejectedValue(
-      Object.assign(new Error(), { code: 'ENODATA' }),
-    );
-    mocks.request.mockImplementation((_url, _opts, respond) => {
-      const req = Object.assign(new EventEmitter(), {
-        end: vi.fn(),
-        destroy: vi.fn(),
-      });
-      req.end.mockImplementation(() => {
-        const res = Object.assign(new EventEmitter(), {
-          statusCode: 404,
-          destroy: vi.fn(),
-        });
-        respond(res);
-        res.emit('end');
-      });
-      return req;
+const service = () =>
+  new TargetNetworkDiagnosticsService({
+    get: () => ({ connectTimeoutSec: 12, callTimeoutSec: 15 }),
+  } as never);
+let policy: TransportPolicy;
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.resolve.mockImplementation(async (domain, options) => {
+    const srv = { kind: 'targets', records: [], targets: [] };
+    options.observe({ phase: 'srv', evidence: srv });
+    return {
+      domain,
+      baseUrl: `https://${domain}:7668`,
+      connectHost: 'edge.example.net',
+      srv,
+    };
+  });
+  mocks.destroy.mockResolvedValue(undefined);
+  mocks.create.mockImplementation((_route, _timeout, options) => {
+    policy = options;
+    return { destroy: mocks.destroy };
+  });
+  mocks.request.mockImplementation(async () => {
+    policy.observe?.({
+      phase: 'dns',
+      host: 'edge.example.net',
+      addresses: ['1.1.1.1'],
+    });
+    policy.validateAddresses?.(['1.1.1.1']);
+    policy.observe?.({
+      phase: 'tls',
+      address: '1.1.1.1',
+      port: 7668,
+      certificate: null,
+    });
+    return new Response('{}', {
+      headers: { 'content-type': 'application/json' },
     });
   });
-  afterEach(() => vi.useRealTimers());
+  mocks.read.mockResolvedValue({ protocolVersions: [1], roots: [], keys: [] });
+});
+afterEach(() => vi.useRealTimers());
+
+describe('target diagnostics adapter', () => {
   it.each([
     '',
-    'http://example.com',
-    'https://user:pass@example.com',
-    'https://example.com?q=1',
-    'https://127.0.0.1',
-    'https://2130706433',
-    'https://[::ffff:127.0.0.1]',
-    'https://169.254.169.254',
-  ])('rejects unsafe input %s', (input) =>
-    expect(() => parseDiagnosticTarget(input)).toThrow(),
+    'https://example.com',
+    'example.com:7668',
+    'example.com/path',
+    'example.com?q=1',
+    'a@b',
+    '1.1.1.1',
+    '2130706433',
+    '0x7f000001',
+    '[::1]',
+    'a'.repeat(254),
+  ])('rejects non-domain input %s', (input) => {
+    expect(() => parseDiagnosticTarget(input)).toThrow();
+  });
+  it('normalizes a bare identity domain', () =>
+    expect(parseDiagnosticTarget(' EXAMPLE.COM. ')).toBe('example.com'));
+  it('uses only shared transport primitives and their runtime timeouts', async () => {
+    const svc = service();
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    const report = await svc.run('example.com');
+    expect(mocks.resolve).toHaveBeenCalledWith(
+      'example.com',
+      expect.objectContaining({ allowInsecureHttp: false, timeoutMs: 12000 }),
+    );
+    expect(mocks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ connectHost: 'edge.example.net' }),
+      12000,
+      expect.any(Object),
+    );
+    expect(mocks.request).toHaveBeenCalledWith(
+      'https://example.com:7668/.well-known/somfp',
+      expect.any(Object),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        headers: { accept: 'application/json' },
+      }),
+    );
+    expect(mocks.read).toHaveBeenCalledWith(
+      'example.com',
+      expect.any(Response),
+    );
+    expect(report.route).toMatchObject({
+      host: 'edge.example.net',
+      port: 7668,
+      domain: 'example.com',
+    });
+    expect(report.policy).toMatchObject({
+      publicDestinationsOnly: true,
+      freshConnection: true,
+      callTimeoutMs: 15000,
+    });
+    expect(report.checks.map((c) => [c.name, c.status])).toEqual([
+      ['srv', 'ok'],
+      ['dns', 'ok'],
+      ['https', 'ok'],
+      ['federation', 'ok'],
+    ]);
+    expect(mocks.destroy).toHaveBeenCalledOnce();
+    await expect(svc.run('example.com')).rejects.toMatchObject({ status: 429 });
+  });
+  it('never dials if shared SRV discovery fails', async () => {
+    mocks.resolve.mockRejectedValue(new Error('Missing SRV'));
+    const report = await service().run('example.com');
+    expect(report.route).toBeNull();
+    expect(report.checks).toEqual([
+      { name: 'srv', status: 'fail', detail: 'Missing SRV' },
+    ]);
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+  it.each([['127.0.0.1'], ['1.1.1.1', '::1'], []])(
+    'applies an explicit public-destination restriction: %j',
+    async (...addresses) => {
+      const ips = addresses.flat() as string[];
+      mocks.request.mockImplementation(async () => {
+        policy.observe?.({
+          phase: 'dns',
+          host: 'edge.example.net',
+          addresses: ips,
+        });
+        policy.validateAddresses?.(ips);
+        throw new Error('must reject before connection');
+      });
+      const report = await service().run('example.com');
+      expect(report.checks.at(-1)).toMatchObject({
+        name: 'dns',
+        status: 'fail',
+        detail: expect.stringContaining('safety policy'),
+      });
+      expect(mocks.read).not.toHaveBeenCalled();
+      expect(mocks.destroy).toHaveBeenCalledOnce();
+    },
   );
-  it('normalizes an explicit port and discards application paths', () => {
-    expect(parseDiagnosticTarget('example.com:7668/admin').origin).toBe(
-      'https://example.com:7668',
-    );
-  });
-  it('does not probe until run, pins public addresses, and treats a non-federation website separately', async () => {
-    const svc = new TargetNetworkDiagnosticsService();
-    expect(mocks.request).not.toHaveBeenCalled();
-    const report = await svc.run('example.com:7668');
-    expect(report.checks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: 'https', status: 'ok' }),
-        expect.objectContaining({ name: 'federation', status: 'skip' }),
-      ]),
-    );
-    const [url, options] = mocks.request.mock.calls[0];
-    expect(url.href).toBe('https://example.com:7668/.well-known/somfp');
-    const callback = vi.fn();
-    options.lookup('example.com', {}, callback);
-    expect(callback).toHaveBeenCalledWith(null, '1.1.1.1', 4);
-    expect(options.family).toBe(4);
-    await expect(svc.run('other.example')).rejects.toMatchObject({
-      status: 429,
-    });
-  });
-  it('rejects mixed public/private DNS without making any HTTPS request', async () => {
-    mocks.resolve6.mockResolvedValue(['::1']);
-    const report = await new TargetNetworkDiagnosticsService().run(
-      'example.com',
-    );
-    expect(report.checks).toContainEqual(
-      expect.objectContaining({ name: 'dns', status: 'fail' }),
-    );
-    expect(mocks.request).not.toHaveBeenCalled();
-  });
-  it('tests both families with bounded fanout', async () => {
-    mocks.resolve4.mockResolvedValue(['1.1.1.1', '8.8.8.8']);
-    mocks.resolve6.mockResolvedValue(['2606:4700:4700::1111']);
-    await new TargetNetworkDiagnosticsService().run('example.com');
-    expect(mocks.request).toHaveBeenCalledTimes(3);
-  });
-  it('does not follow redirects', async () => {
-    mocks.request.mockImplementation((_url, _opts, respond) => {
-      const req = Object.assign(new EventEmitter(), {
-        end: vi.fn(),
-        destroy: vi.fn(),
+  it('reports a real connection failure and disposes the isolated pool', async () => {
+    mocks.request.mockImplementation(async () => {
+      policy.validateAddresses?.(['1.1.1.1']);
+      throw new TypeError('fetch failed', {
+        cause: new Error('connect timeout'),
       });
-      req.end.mockImplementation(() => {
-        const res = new EventEmitter();
-        Object.assign(res, { statusCode: 302 });
-        respond(res);
-        res.emit('end');
-      });
-      return req;
     });
-    const report = await new TargetNetworkDiagnosticsService().run(
-      'example.com',
-    );
-    expect(report.checks).toContainEqual(
-      expect.objectContaining({ name: 'federation', status: 'warn' }),
-    );
-    expect(mocks.request).toHaveBeenCalledTimes(1);
+    const report = await service().run('example.com');
+    expect(report.checks.at(-1)).toMatchObject({
+      name: 'https',
+      status: 'fail',
+      detail: 'connect timeout',
+    });
+    expect(mocks.destroy).toHaveBeenCalledOnce();
   });
-  it('times out a stalled request and releases the concurrency guard', async () => {
-    const destroy = vi.fn();
-    mocks.request.mockReturnValue(
-      Object.assign(new EventEmitter(), { end: vi.fn(), destroy }),
-    );
-    const pending = new TargetNetworkDiagnosticsService().run('example.com');
-    await vi.advanceTimersByTimeAsync(7001);
-    expect((await pending).checks).toContainEqual(
-      expect.objectContaining({ name: 'https', status: 'fail' }),
-    );
-    expect(destroy).toHaveBeenCalled();
+  it('reports the same discovery-document rejection as production', async () => {
+    mocks.read.mockRejectedValue(new Error('invalid Content-Type'));
+    const report = await service().run('example.com');
+    expect(report.checks.at(-1)).toMatchObject({
+      name: 'federation',
+      status: 'fail',
+      detail: 'invalid Content-Type',
+    });
+    expect(mocks.destroy).toHaveBeenCalledOnce();
   });
 });

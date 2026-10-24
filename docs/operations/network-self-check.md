@@ -21,27 +21,49 @@ addresses describe the process network namespace rather than all host interfaces
 `POST /api/v1/admin/network/diagnose` requires an ADMIN or SUPER_ADMIN session and a body such as:
 
 ```json
-{ "target": "https://example.com:7668" }
+{ "target": "example.com" }
 ```
 
-A bare domain is interpreted as HTTPS. Explicit ports are preserved. Application paths are ignored;
-credentials, query parameters, fragments, and non-HTTPS schemes are rejected. Opening the page does
-not start a diagnostic.
+Only a federation identity domain is accepted. Schemes, explicit ports, paths, credentials, query
+parameters, fragments, and IP literals are rejected; the former URL-input mode is removed. Opening
+the page does not start a diagnostic.
 
-The backend resolves A/AAAA and reports SRV records independently. SRV records are observations only:
-they do not silently redirect probes away from the input origin. Up to eight addresses, interleaving
-IPv4 and IPv6, are probed concurrently. Results explicitly enumerate selected addresses. The HTTPS
-request uses `/.well-known/somfp`; TLS and HTTP reachability are reported separately from federation
-document validation. A 404/410 discovery response means no federation document, not broken HTTPS.
+The backend queries `_somfp._tcp.<domain>` and uses the same priority/weight selection helper as
+outbound federation discovery. Missing, disabled, invalid, or failed SRV answers stop the diagnostic:
+there is no implicit port 443 fallback. The report includes all SRV records and the selected route
+(`domain`, connection `host`, `port`, and HTTPS identity `origin`). Only the selected endpoint is
+probed; this is not an exhaustive check of every SRV candidate.
 
-Public unicast destinations only are accepted, including literal IPs. Mixed public/private DNS
-answers reject the target. Each socket is pinned to the validated address and address family; no
-redirect is followed. DNS has a three-second deadline and each HTTPS probe a seven-second deadline.
-Responses are capped at 256 KiB. There is one active diagnostic per process and a three-second
-completion cooldown. Diagnostic reports do not establish trust or update peer caches.
+Both `DiscoveryService` and diagnostics call the shared primitives in
+[`federation-transport.ts`](../../src/federation/federation-transport.ts): SRV resolution,
+Undici connector construction, HTTP dispatch, and discovery response validation. There is no
+separate `node:https` diagnostic client. OS DNS lookup resolves the selected SRV host, not the
+identity domain. The connector uses the same OS address ordering and Undici address-family selection
+for both callers; diagnostics no longer fan out into separate per-address probes. Reports show the
+resolved addresses and the actual connected address, port, and certificate.
 
-Internal targets, external-IP providers, NTP comparisons, SRV endpoint probing, and browser-origin
-measurements are not part of this API.
+The HTTPS request uses the identity domain for Host, SNI, certificate verification, and discovery
+document validation. The path is always `/.well-known/somfp`. TLS reachability is separate from
+protocol validation: 404/410 is a failed discovery document, not a failed TLS handshake, just as in
+real federation discovery. Both callers enforce JSON Content-Type, the 256 KiB streaming body cap,
+and document/signature validity. Responses are cancelled on error; redirects are never followed.
+
+Diagnostics pass an explicit public-unicast destination policy into the shared connector. Mixed
+public/private DNS answers reject the selected endpoint before connection. This does not add a
+second DNS lookup: the checked addresses are delivered directly to the same connector. The report
+and page disclose this policy and the fresh-connection policy. Diagnostics use an isolated,
+always-destroyed pool and fresh SRV lookup, whereas ordinary traffic retains its route and
+keep-alive caches. They use the same runtime connect/request timeout settings; the SRV lookup is
+bounded by the connect timeout. Diagnostics require HTTPS even when insecure HTTP is explicitly
+enabled for a development federation host.
+
+There is one active diagnostic per process and a three-second completion cooldown. Business HTTP
+queueing remains owned by business callers; diagnostic concurrency is independently limited.
+Reports do not establish trust, mutate peer caches, or perform signed Health/Recognize operations.
+
+Internal targets, external-IP providers, NTP comparisons, and browser-origin measurements are not
+part of this API. These safety restrictions differ from ordinary federation transport: a failed
+public-destination policy check does not imply an internal peer is unreachable.
 
 ## Quota navigation
 
