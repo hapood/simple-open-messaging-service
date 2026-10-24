@@ -77,7 +77,8 @@ export class SelfAccountResponseDto extends PickType(UserResponseDto, [
   @ApiProperty({
     example: 0,
     minimum: 0,
-    description: 'Default profile revision; 0 means no profile has been published',
+    description:
+      'Default profile revision; 0 means no profile has been published',
   })
   profileRev!: number;
 }

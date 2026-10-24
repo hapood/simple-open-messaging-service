@@ -441,7 +441,9 @@ describe('AdminAuthService two-factor orchestration', () => {
 
   it('refuses session issuance without a verified authentication snapshot', async () => {
     const { svc, store } = await setup();
-    await expect(svc.createAdminSession(7, {})).rejects.toMatchObject({ bizCode: BusinessCode.UNAUTHENTICATED });
+    await expect(svc.createAdminSession(7, {})).rejects.toMatchObject({
+      bizCode: BusinessCode.UNAUTHENTICATED,
+    });
     expect(store.adminSession.create).not.toHaveBeenCalled();
   });
 });

@@ -30,7 +30,10 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { normalizeAccount } from '../common/account.js';
-import { SelfAccountResponseDto, UserResponseDto } from '../dto/response.dto.js';
+import {
+  SelfAccountResponseDto,
+  UserResponseDto,
+} from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserResolveDto,
@@ -117,7 +120,9 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/my-profile')
-  @ApiOperation({ summary: 'Get the current account and default profile revision' })
+  @ApiOperation({
+    summary: 'Get the current account and default profile revision',
+  })
   @ApiResultResponse(SelfAccountResponseDto)
   async getMyProfile(@Request() req: FastifyRequest) {
     // The legacy route returns account facts only. Profile snapshots have their own resolver.

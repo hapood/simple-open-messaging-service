@@ -52,7 +52,9 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       };
       expect(await users.findSelfAccount(owner.id)).toEqual(expected);
       const request = { user: { userId: owner.id } } as FastifyRequest;
-      expect(await mod.get(UserController).getMyProfile(request)).toEqual(expected);
+      expect(await mod.get(UserController).getMyProfile(request)).toEqual(
+        expected,
+      );
       await database.db.insert(tables.profileTable).values({
         account: owner.account,
         publisherNamespaceId: 0,
@@ -64,7 +66,9 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       });
       // Even an available snapshot must not leak display fields into the account endpoint.
       expect(await users.findSelfAccount(owner.id)).toEqual(expected);
-      expect(await mod.get(UserController).getMyProfile(request)).toEqual(expected);
+      expect(await mod.get(UserController).getMyProfile(request)).toEqual(
+        expected,
+      );
     },
   );
 
