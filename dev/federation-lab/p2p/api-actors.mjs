@@ -148,6 +148,17 @@ export class LabUserActor {
     return this.post('/user/my-profile', {}, 'load own profile');
   }
 
+  /** Full profile projection for the actor's own local account. The legacy
+   * /user/my-profile route returns account facts only, so callers that need
+   * name/avatar/bio must resolve the profile explicitly. */
+  async resolveOwnProfile() {
+    return this.post(
+      '/user/resolve',
+      { account: this.account },
+      'resolve own profile',
+    );
+  }
+
   async updateProfile({ name, bio, avatar = 'KEEP' }) {
     return this.post(
       '/user/update-profile',

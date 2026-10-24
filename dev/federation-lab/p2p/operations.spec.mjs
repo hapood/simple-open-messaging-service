@@ -32,7 +32,10 @@ test('group invitations submit snapshot and address for each target', async () =
   };
   const friendUser = {
     address: 'friend@bravo.test',
-    myProfile: async () => ({ name: 'Friend', avatar: '/uploads/friend.webp' }),
+    resolveOwnProfile: async () => ({
+      name: 'Friend',
+      avatar: '/uploads/friend.webp',
+    }),
   };
   await admitOperation(
     {

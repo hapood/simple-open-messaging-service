@@ -55,7 +55,7 @@ async function sendRequest(actor, peer, timeoutMs, actors) {
     account: peer.account,
     namespaceId,
     snapshot: profileSnapshot(
-      resolved ? resolved.user : await peer.myProfile(),
+      resolved ? resolved.user : await peer.resolveOwnProfile(),
     ),
   };
   const accepted = await actor.post(
@@ -232,7 +232,7 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
           account: operation.target.account,
           namespaceId: targetNamespaceId,
           snapshot: profileSnapshot(
-            await actors.user(operation.target.address).myProfile(),
+            await actors.user(operation.target.address).resolveOwnProfile(),
           ),
         },
       ],
