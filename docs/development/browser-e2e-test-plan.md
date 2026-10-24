@@ -463,6 +463,20 @@ Run the following matrix for both `Alice ↔ Bob` (local) and
 - **4.7** Test manager-only invite, role, kick, transfer, and dissolve paths.
   Confirm forbidden controls are hidden or disabled, and forbidden direct
   navigation produces a clear error.
+- **4.8** Promote a member to administrator and verify permissions:
+  - Owner promotes regular member to administrator; both participants see the
+    role badge update immediately.
+  - Administrator can edit group name, description, avatar, publish announcements,
+    and process join requests/invitations.
+  - Administrator cannot kick the group owner or dissolve the group.
+  - Owner demotes administrator back to member; administrative controls are
+    immediately revoked and disabled or hidden.
+- **4.9** Verify comprehensive lifecycle system messages:
+  - System event for group creation ("xxx created the group").
+  - System event for member invitation and acceptance ("xxx joined the group").
+  - System event for administrator promotion and demotion.
+  - System event for group metadata updates (rename and announcement publication).
+  - System event for member leave, kick, and group dissolution.
 
 ### 5. Mixed federated group workflows
 
@@ -479,6 +493,16 @@ Run the following matrix for both `Alice ↔ Bob` (local) and
   on membership and write permissions.
 - **5.8** Invite Charlie again and verify a fresh accepted membership does not
   resurrect stale permissions or duplicate roster rows.
+- **5.8a** Promote a federated remote member to group administrator:
+  - Alpha owner promotes remote Bravo member Charlie to administrator; verify
+    the role badge and administrative permissions project across federation.
+  - Remote administrator exercises allowed edits and invites; verify owner-only
+    restrictions (dissolution, kicking owner) remain enforced remotely.
+  - Alpha owner demotes Charlie back to regular member; verify immediate remote
+    revocation across the federation boundary.
+- **5.8b** Federated lifecycle system messages:
+  - Verify remote member join, leave, promotion, demotion, and rename system events
+    arrive with accurate remote domain badges on all participants.
 - **5.9** If the lab supports a controlled node interruption, disconnect Bravo,
   send an allowed message, restore Bravo, and verify eventual convergence.
 

@@ -81,9 +81,25 @@ For local groups on each node and mixed groups owned on each node:
 - Create a group; verify owner, name, optional description and avatar controls.
 - Invite and accept; separately exercise exposed search/application/join approval.
 - Confirm every participant sees roster, roles, identity domains and the same group.
+- Promote and demote group administrator:
+  - Owner promotes regular member to administrator; verify role badge updates to
+    administrator across all participants.
+  - Verify administrator permissions: can edit group info, publish announcements,
+    manage invites and join applications, but cannot dissolve group or remove the owner.
+  - Owner demotes administrator back to regular member; verify administrative
+    controls are revoked and become disabled or hidden.
+  - Validate across local groups and federated mixed groups.
+- System message event projections across group lifecycle:
+  - Group creation: verify visible system status ("xxx created the group").
+  - Member join and invitation: verify join system events ("xxx joined the group"
+    or "xxx invited yyy to the group").
+  - Role transition: verify administrator promotion and demotion system events.
+  - Member leave and removal: verify exit system status ("xxx left the group" or
+    "You are no longer in this group").
+  - Group dissolution: verify dissolution tombstone and read-only archival.
 - Leave, verify removed-member access/composer and remaining-member roster, then
   rejoin through an exposed authorized path. Check live update and reload state.
-- Check a basic owner/member permission contrast; do not infer full role coverage.
+- Check a basic owner/admin/member permission contrast across all management controls.
 
 ### Q3 — Group and message preferences
 
@@ -91,10 +107,13 @@ References: full plan 4.5, 5, 12 and additional conversation/group preferences.
 
 - Change name, description and group avatar for local/mixed groups; verify all
   relevant participants and the contract's live-versus-refresh behavior.
+- System messages on metadata updates:
+  - Group name change: verify live system event in message stream.
+  - Group announcement update: verify unread announcement indicator and notification.
 - Publish/edit the exposed group announcement; verify visibility and read state.
 - Change exposed message notification/mute settings and conversation preferences;
   verify persistence after reload and isolation from another user/group.
-- Exercise exposed invite/join restrictions as owner versus ordinary member.
+- Exercise exposed invite/join restrictions as owner, administrator, and ordinary member.
   Clearly name each setting tested; do not claim all settings from one toggle.
 
 ### Q4 — Message, media and file matrix
