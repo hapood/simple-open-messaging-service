@@ -4,15 +4,48 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag, e.g. v0.1.0-alpha.1'
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Resolve and validate release tag
+        id: resolve
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          COMMIT=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$COMMIT" refs/remotes/origin/main
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+
   android:
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -22,7 +55,7 @@ jobs:
         run: |
           node scripts/check-version-sync.mjs
           VERSION=$(node -p "require('./package.json').version")
-          test "$GITHUB_REF_NAME" = "v$VERSION"
+          test "$RELEASE_TAG" = "v$VERSION"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -75,12 +108,15 @@ jobs:
             src-tauri/dist/android/SHA256SUMS
           if-no-files-found: error
   publish:
-    needs: android
+    needs: [prepare, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: soms-android-release
@@ -91,7 +127,7 @@ jobs:
           import { readFileSync, writeFileSync } from 'node:fs';
           import { join } from 'node:path';
 
-          const version = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          const version = process.env.RELEASE_TAG.replace(/^v/, '');
           const changelog = readFileSync('CHANGELOG.md', 'utf8');
           const sections = [...changelog.matchAll(/^## (.+)\r?$/gm)];
           const index = sections.findIndex((section) => section[1] === version);
@@ -112,13 +148,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
-            gh release upload "$GITHUB_REF_NAME" release-assets/*.apk release-assets/SHA256SUMS --clobber
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release upload "$RELEASE_TAG" release-assets/*.apk release-assets/SHA256SUMS --clobber
           else
             RELEASE_FLAGS=()
-            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            if [[ "$RELEASE_TAG" == *-* ]]; then
               RELEASE_FLAGS+=(--prerelease --latest=false)
             fi
-            gh release create "$GITHUB_REF_NAME" release-assets/*.apk release-assets/SHA256SUMS --verify-tag --notes-file "$RUNNER_TEMP/release-notes.md" "${RELEASE_FLAGS[@]}"
+            gh release create "$RELEASE_TAG" release-assets/*.apk release-assets/SHA256SUMS --verify-tag --notes-file "$RUNNER_TEMP/release-notes.md" "${RELEASE_FLAGS[@]}"
           fi
