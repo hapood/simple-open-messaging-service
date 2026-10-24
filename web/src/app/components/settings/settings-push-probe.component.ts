@@ -44,7 +44,6 @@ import { SessionLifecycleService } from '../../services/session-lifecycle.servic
           | transloco: { ms: latencyMs(), error: error() }
       }}
     </p>
-    <p class="hint">{{ 'settings.pushProbeDisclaimer' | transloco }}</p>
   `,
   styles: `
     :host {
@@ -62,9 +61,6 @@ import { SessionLifecycleService } from '../../services/session-lifecycle.servic
       margin: 8px 0 0;
       line-height: 20px;
       overflow-wrap: anywhere;
-    }
-    .hint {
-      opacity: 0.7;
     }
   `,
 })

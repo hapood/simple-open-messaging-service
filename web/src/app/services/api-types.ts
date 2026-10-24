@@ -505,7 +505,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Get the current user profile */
+        /** Get the current account and default profile revision */
         post: operations["UserController_getMyProfile"];
         delete?: never;
         options?: never;
@@ -4418,6 +4418,32 @@ export interface components {
              */
             id: number;
         };
+        SelfAccountResponseDto: {
+            /** @example 1 */
+            id: number;
+            /**
+             * @description Login unique name
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Whether this identity is a group
+             * @example false
+             */
+            isGroup: boolean;
+            /**
+             * @description Identity namespace; 0 for identities created on this server
+             * @example 7
+             */
+            namespaceId: number;
+            /** @example false */
+            isDeleted: boolean;
+            /**
+             * @description Default profile revision; 0 means no profile has been published
+             * @example 0
+             */
+            profileRev: number;
+        };
         UserResponseDto: {
             /** @example 1 */
             id: number;
@@ -6148,7 +6174,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["UserResponseDto"];
+                        data?: components["schemas"]["SelfAccountResponseDto"];
                     };
                 };
             };

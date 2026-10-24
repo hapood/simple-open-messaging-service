@@ -15,7 +15,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { Observable } from 'rxjs';
-import { FederationDomainResolutionError } from '../federation/discovery.service.js';
+import { FederationDomainResolutionError } from '../federation/federation-transport.js';
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { MessageService } from '../message/message.service.js';
@@ -30,7 +30,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { normalizeAccount } from '../common/account.js';
-import { UserResponseDto } from '../dto/response.dto.js';
+import { SelfAccountResponseDto, UserResponseDto } from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserResolveDto,
@@ -117,15 +117,11 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/my-profile')
-  @ApiOperation({ summary: 'Get the current user profile' })
-  @ApiResultResponse(UserResponseDto)
+  @ApiOperation({ summary: 'Get the current account and default profile revision' })
+  @ApiResultResponse(SelfAccountResponseDto)
   async getMyProfile(@Request() req: FastifyRequest) {
-    // findSelfProfile omits hashPwd. Friend-request notification state travels in the unified state delta;
-    // its seen cursor is local to each device.
-    const profile = await this.userService.findSelfProfile(req.user.userId);
-    if (!profile) return profile;
-    const { defaultProfileRev, ...rest } = profile;
-    return { ...rest, profileRev: defaultProfileRev };
+    // The legacy route returns account facts only. Profile snapshots have their own resolver.
+    return this.userService.findSelfAccount(req.user.userId);
   }
 
   @ApiBearerAuth()

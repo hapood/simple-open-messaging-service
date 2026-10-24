@@ -966,7 +966,6 @@
     "pushProbe_device_received": "客户端已收到 · {{ms}} 毫秒",
     "pushProbe_failed": "测试失败：{{error}}",
     "pushProbe_timeout": "15 秒内未收到回执，推送送达或回执请求可能失败。",
-    "pushProbeDisclaimer": "回执仅确认客户端收到，不代表系统已展示通知。订阅恢复后可在冷却结束时重试。",
     "pushProbeNotification": "当前浏览器已收到你发送的测试推送。",
     "fcmActive": "已启用",
     "fcmUnavailable": "不可用（无 Google 服务）",

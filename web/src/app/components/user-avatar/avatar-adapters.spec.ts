@@ -132,7 +132,14 @@ describe('avatar source adapters', () => {
         provideZonelessChangeDetection(),
         {
           provide: UserService,
-          useValue: { sessionProfile: signal({ ...self, profileRev: 0 }) },
+          useValue: {
+            sessionProfile: signal({
+              ...self,
+              account: 'qifaai2',
+              name: 'qifaai2',
+              profileRev: 0,
+            }),
+          },
         },
         { provide: ProfileRepository, useValue: { resolve } },
       ],
@@ -141,8 +148,13 @@ describe('avatar source adapters', () => {
     fixture.componentRef.setInput('type', UserAvatarType.SELF);
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(fixture.componentInstance.view().name).toBe('Session Name');
+    expect(fixture.componentInstance.view().name).toBe('qifaai2');
     expect(fixture.componentInstance.view().imageUrl).toBeNull();
+    const renderer = fixture.debugElement.query(By.directive(AvatarComponent))
+      .componentInstance as AvatarComponent;
+    expect(renderer.initial()).toBe('QI');
+    expect(renderer.loading()).toBe(false);
+    expect(fixture.nativeElement.querySelector('.avatar-placeholder')).toBeNull();
     expect(resolve).not.toHaveBeenCalled();
     fixture.destroy();
   });

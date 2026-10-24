@@ -15,6 +15,35 @@ function setup(rows: { id: number; account: string }[]) {
   return { service: new UserService(database), insert, values };
 }
 
+describe('UserService self account', () => {
+  it('selects only account facts without joining or querying profiles', async () => {
+    const row = {
+      id: 3,
+      account: 'qifaai2',
+      namespaceId: 0,
+      profileRev: 0,
+      isGroup: false,
+      isDeleted: false,
+    };
+    const limit = vi.fn().mockResolvedValue([row]);
+    const where = vi.fn(() => ({ limit }));
+    // Deliberately provide no join or secondary query API.
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    const database = { db: { select } } as unknown as DatabaseService;
+    expect(await new UserService(database).findSelfAccount(3)).toEqual(row);
+    expect(from).toHaveBeenCalledExactlyOnceWith(account);
+    expect(select).toHaveBeenCalledExactlyOnceWith({
+      id: account.id,
+      account: account.account,
+      namespaceId: account.namespaceId,
+      profileRev: account.defaultProfileRev,
+      isGroup: expect.anything(),
+      isDeleted: expect.anything(),
+    });
+  });
+});
+
 describe('UserService account creation', () => {
   it('creates a normalized account at revision zero without inserting a Profile', async () => {
     const { service, insert, values } = setup([{ id: 7, account: 'alice' }]);

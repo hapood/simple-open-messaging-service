@@ -73,15 +73,36 @@ export async function uploadAvatar(
     .set('Authorization', `Bearer ${token}`)
     .send({})
     .expect(200);
-  return request(app.baseUrl)
+  if (current.body.code !== 0) {
+    throw new Error(
+      `Avatar fixture account lookup failed: ${JSON.stringify(current.body)}`,
+    );
+  }
+  const profile = await request(app.baseUrl)
+    .post('/api/v1/user/resolve')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ account: current.body.data.account })
+    .expect(200);
+  if (profile.body.code !== 0) {
+    throw new Error(
+      `Avatar fixture profile lookup failed: ${JSON.stringify(profile.body)}`,
+    );
+  }
+  const updated = await request(app.baseUrl)
     .post('/api/v1/user/update-profile')
     .set('Authorization', `Bearer ${token}`)
     .send({
-      name: current.body.data.name,
-      bio: current.body.data.bio,
+      name: profile.body.data.name,
+      bio: profile.body.data.bio,
       avatarBase64: png.toString('base64'),
     })
     .expect(200);
+  if (updated.body.code !== 0) {
+    throw new Error(
+      `Avatar fixture update failed: ${JSON.stringify(updated.body)}`,
+    );
+  }
+  return updated;
 }
 
 /** Hash a session token exactly as SessionTokenService does (sha256 hex) — replicated in the test process

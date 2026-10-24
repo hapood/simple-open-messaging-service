@@ -966,7 +966,6 @@
     "pushProbe_device_received": "Client received the test · {{ms}} ms",
     "pushProbe_failed": "Test failed: {{error}}",
     "pushProbe_timeout": "No receipt within 15 seconds. Delivery or the receipt request may have failed.",
-    "pushProbeDisclaimer": "Receipt confirms client delivery, not that the system displayed a notification. After subscription recovery, retry when the cooldown ends.",
     "pushProbeNotification": "This browser received your test push.",
     "fcmActive": "Active",
     "fcmUnavailable": "Unavailable (no Google services)",

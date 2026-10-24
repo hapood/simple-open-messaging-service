@@ -224,6 +224,62 @@ describe('UserService profile refresh', () => {
     expect(next).toHaveBeenCalledWith(response);
   });
 
+  it('publishes a revision-zero account without resolving a profile', async () => {
+    const result = firstValueFrom(svc.ensureProfile());
+    const account = {
+      id: 3,
+      account: 'qifaai2',
+      namespaceId: 0,
+      profileRev: 0,
+      isGroup: false,
+      isDeleted: false,
+    };
+    httpMock.expectOne(isMyProfile).flush({ code: 0, data: account });
+    const expected = { ...account, name: 'qifaai2', bio: '', avatar: '' };
+    expect(await result).toEqual(expected);
+    expect(svc.sessionProfile()).toEqual(expected);
+    expect(TestBed.inject(WebdbService).writeSelfProfile).toHaveBeenCalledWith(
+      expected,
+    );
+    expect(TestBed.inject(ProfileRepository).resolve).not.toHaveBeenCalled();
+  });
+
+  it('resolves the first published revision after a revision-zero account', async () => {
+    const account = {
+      id: 3,
+      account: 'qifaai2',
+      namespaceId: 0,
+      profileRev: 0,
+      isGroup: false,
+      isDeleted: false,
+    };
+    const initial = firstValueFrom(svc.ensureProfile());
+    httpMock.expectOne(isMyProfile).flush({ code: 0, data: account });
+    await initial;
+    const refreshed = firstValueFrom(svc.ensureProfile({ force: true }));
+    httpMock.expectOne(isMyProfile).flush({
+      code: 0,
+      data: { ...account, profileRev: 1 },
+    });
+    expect(await refreshed).toMatchObject({ profileRev: 1, name: 'A' });
+    expect(
+      TestBed.inject(ProfileRepository).resolve,
+    ).toHaveBeenCalledExactlyOnceWith({
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 0, account: 'qifaai2', rev: 1 },
+    });
+  });
+
+  it('rejects a missing account rather than interpreting it as revision zero', async () => {
+    const result = firstValueFrom(svc.ensureProfile());
+    const rejected = expect(result).rejects.toThrow('missing self account');
+    httpMock.expectOne(isMyProfile).flush({ code: 0, data: null });
+    await rejected;
+    expect(svc.sessionProfile()).toBeUndefined();
+    expect(TestBed.inject(ProfileRepository).resolve).not.toHaveBeenCalled();
+  });
+
   // The force-refresh contract guard. updateSessionProfile() must ALWAYS hit the network — it calls
   // ensureProfile({ force: true }). Before the fix it passed no `force`, so once sessionProfile was
   // populated ensureProfile short-circuited to of(cached): a live change never re-fetched, so the new
@@ -568,6 +624,37 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     expect(
       await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
     ).toBe(1);
+  });
+
+  it('loads and caches a fresh revision-zero account after HELLO without resolving a profile', async () => {
+    webdb.readAccountState.mockResolvedValue(accountStateBase());
+    await svc.establishSession(3, 0, 13);
+    const account = {
+      id: 3,
+      account: 'qifaai2',
+      namespaceId: 0,
+      profileRev: 0,
+      isGroup: false,
+      isDeleted: false,
+    };
+    (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush({
+      code: 0,
+      data: account,
+    });
+    const expected = { ...account, name: 'qifaai2', bio: '', avatar: '' };
+    await vi.waitFor(() => expect(svc.sessionProfile()).toEqual(expected));
+    expect(webdb.writeSelfProfile).toHaveBeenCalledWith(expected);
+    expect(TestBed.inject(ProfileRepository).resolve).not.toHaveBeenCalled();
+
+    svc.resetSessionState();
+    webdb.readAccountState.mockResolvedValue({
+      ...accountStateBase(),
+      selfProfile: expected,
+    });
+    await svc.establishSession(3, 0, 14);
+    await vi.waitFor(() => expect(svc.sessionProfile()).toEqual(expected));
+    httpMock.expectNone(isMyProfile);
+    expect(TestBed.inject(ProfileRepository).resolve).not.toHaveBeenCalled();
   });
 
   it('establishes a session without scheduling any local request garbage collection', async () => {

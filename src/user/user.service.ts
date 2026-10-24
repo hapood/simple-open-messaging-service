@@ -73,17 +73,18 @@ export class UserService {
       .then(([row]) => row ?? null);
   }
 
-  /** Profile responses require the exact stored snapshot, not account display fallbacks. */
-  findSelfProfile(userId: number) {
+  /** Session identity and its default revision are account facts, independent of profile resolution. */
+  findSelfAccount(userId: number) {
     return this.database.db
       .select({
-        ...publicUserColumns,
-        name: profileTable.displayName,
-        avatar: profileTable.avatar,
-        bio: profileTable.bio,
+        id: accountTable.id,
+        account: accountTable.account,
+        namespaceId: accountTable.namespaceId,
+        profileRev: accountTable.defaultProfileRev,
+        isGroup: sql<boolean>`${accountTable.kind} = 'GROUP'`,
+        isDeleted: sql<boolean>`${accountTable.availability} = 'REMOVED'`,
       })
       .from(accountTable)
-      .innerJoin(profileTable, selectedProfile)
       .where(eq(accountTable.id, userId))
       .limit(1)
       .then(([row]) => row ?? null);
