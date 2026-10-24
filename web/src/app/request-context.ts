@@ -10,9 +10,18 @@ import { HttpContextToken } from '@angular/common/http';
  */
 export const REPLAY_SAFE = new HttpContextToken<boolean>(() => false);
 
-/** Authentication transitions own their failures; their 401 must not recursively end a session. */
-export const AUTHENTICATION_REQUEST = new HttpContextToken<boolean>(
-  () => false,
+/** Client-side request ownership; does not change transport credentials or backend authorization. */
+export enum RequestScope {
+  /** Bound to the current session; a current 401 triggers global re-login. */
+  Session = 'session',
+  /** Bound to the authentication operation's lifetime; its caller owns failures, including 401. */
+  Authentication = 'authentication',
+  /** Server metadata survives login transitions. The caller owns cancellation and server generations. */
+  Server = 'server',
+}
+
+export const REQUEST_SCOPE = new HttpContextToken<RequestScope>(
+  () => RequestScope.Session,
 );
 
 /** Suppress the global degraded-network toast for requests whose caller owns a persistent, visible error

@@ -14,6 +14,7 @@ import {
 } from '@angular/common/http/testing';
 import { firstValueFrom, of } from 'rxjs';
 import { CACHE_REBUILD_RELOAD, UserService } from './user.service';
+import { REQUEST_SCOPE, RequestScope } from '../request-context';
 import { LocalCacheVersionMismatchError, WebdbService } from './webdb.service';
 import { ProfileRepository } from './profile-store.service';
 import { User } from './model';
@@ -209,6 +210,18 @@ describe('UserService profile refresh', () => {
 
   afterEach(() => {
     httpMock.verify();
+  });
+
+  it('classifies account registration as authentication rather than server metadata', () => {
+    const next = vi.fn();
+    svc.register({ account: 'alice', password: 'password' }).subscribe(next);
+    const request = httpMock.expectOne('/api/v1/user/register');
+    expect(request.request.context.get(REQUEST_SCOPE)).toBe(
+      RequestScope.Authentication,
+    );
+    const response = { code: 0, message: 'ok', data: { id: 1, account: 'alice' } };
+    request.flush(response);
+    expect(next).toHaveBeenCalledWith(response);
   });
 
   // The force-refresh contract guard. updateSessionProfile() must ALWAYS hit the network — it calls

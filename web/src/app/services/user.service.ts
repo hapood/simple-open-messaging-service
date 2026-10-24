@@ -7,7 +7,8 @@ import {
   computed,
   inject,
 } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
+import { REQUEST_SCOPE, RequestScope } from '../request-context';
 import {
   Observable,
   of,
@@ -577,7 +578,9 @@ export class UserService {
       code: number;
       message: string;
       data?: { id: number; account: string };
-    }>(`${apiPrefix()}/user/register`, params);
+    }>(`${apiPrefix()}/user/register`, params, {
+      context: new HttpContext().set(REQUEST_SCOPE, RequestScope.Authentication),
+    });
   }
 
   getMyProfile() {

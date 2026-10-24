@@ -21,7 +21,8 @@ import {
   pickLoginOrigin,
 } from './runtime';
 import {
-  AUTHENTICATION_REQUEST,
+  REQUEST_SCOPE,
+  RequestScope,
   SUPPRESS_HTTP_ERROR_TOAST,
 } from '../request-context';
 import { PushService } from './push.service';
@@ -225,7 +226,12 @@ export class AuthService {
             client,
             device: this.getDeviceLabel(),
           },
-          { context: new HttpContext().set(AUTHENTICATION_REQUEST, true) },
+          {
+            context: new HttpContext().set(
+              REQUEST_SCOPE,
+              RequestScope.Authentication,
+            ),
+          },
         )
         .pipe(
           mergeMap(async (res) => {
@@ -256,7 +262,12 @@ export class AuthService {
             client,
             device: params.device ?? this.getDeviceLabel(),
           },
-          { context: new HttpContext().set(AUTHENTICATION_REQUEST, true) },
+          {
+            context: new HttpContext().set(
+              REQUEST_SCOPE,
+              RequestScope.Authentication,
+            ),
+          },
         )
         .pipe(
           mergeMap(async (res) => {
@@ -282,7 +293,7 @@ export class AuthService {
         { client },
         {
           context: new HttpContext()
-            .set(AUTHENTICATION_REQUEST, true)
+            .set(REQUEST_SCOPE, RequestScope.Authentication)
             .set(SUPPRESS_HTTP_ERROR_TOAST, true),
         },
       ),
@@ -309,7 +320,7 @@ export class AuthService {
           },
           {
             context: new HttpContext()
-              .set(AUTHENTICATION_REQUEST, true)
+              .set(REQUEST_SCOPE, RequestScope.Authentication)
               .set(SUPPRESS_HTTP_ERROR_TOAST, true),
           },
         )
@@ -625,7 +636,7 @@ export class AuthService {
               {},
               {
                 context: new HttpContext()
-                  .set(AUTHENTICATION_REQUEST, true)
+                  .set(REQUEST_SCOPE, RequestScope.Authentication)
                   .set(SUPPRESS_HTTP_ERROR_TOAST, true),
               },
             ),

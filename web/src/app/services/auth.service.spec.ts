@@ -9,6 +9,7 @@ import {
 import { firstValueFrom } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { AuthService } from './auth.service';
+import { REQUEST_SCOPE, RequestScope } from '../request-context';
 import { RouteService } from './route.service';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
@@ -138,6 +139,9 @@ describe('AuthService (session-token contract, browser path)', () => {
     // its arrival at the mock instead of sleeping.
     const req = await vi.waitFor(() =>
       httpMock.expectOne((r) => /\/auth\/login$/.test(r.url)),
+    );
+    expect(req.request.context.get(REQUEST_SCOPE)).toBe(
+      RequestScope.Authentication,
     );
     expect(req.request.body.account).toBe('alice');
     // Headless browser test env → isTauri() false → client metadata is 'web'.

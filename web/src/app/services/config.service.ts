@@ -1,7 +1,8 @@
 import { computed, Injectable, signal } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import { firstValueFrom, Subject, takeUntil } from 'rxjs';
 import { apiPrefix } from './constants';
+import { REQUEST_SCOPE, RequestScope } from '../request-context';
 
 /** Mirror of the backend `LoginMode` (src/config/public-config.ts). 1=all, 2=app-otp+qr, 3=password-only. */
 export enum LoginMode {
@@ -60,7 +61,8 @@ export class ConfigService {
   readonly methodsForPlatform = computed<LoginMethod[]>(() => {
     const mode = this.loginMode();
     if (mode === null) return [];
-    const passwordOn = mode === LoginMode.ALL || mode === LoginMode.PASSWORD_ONLY;
+    const passwordOn =
+      mode === LoginMode.ALL || mode === LoginMode.PASSWORD_ONLY;
     const altOn = mode === LoginMode.ALL || mode === LoginMode.APP_OTP_AND_QR; // otp + qr, both on every platform
     const methods: LoginMethod[] = [];
     if (passwordOn) methods.push('password');
@@ -76,7 +78,9 @@ export class ConfigService {
     const generation = ++this.loadGeneration;
     this.loadPromise = firstValueFrom(
       this.http
-        .get<ConfigRes>(`${apiPrefix()}/config`)
+        .get<ConfigRes>(`${apiPrefix()}/config`, {
+          context: new HttpContext().set(REQUEST_SCOPE, RequestScope.Server),
+        })
         .pipe(takeUntil(this.cancelRequest)),
     )
       .then((res) => {
