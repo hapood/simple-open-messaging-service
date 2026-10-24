@@ -139,8 +139,8 @@ Native platform availability is tracked separately below; planned applications a
 
 ## Documentation
 
-See the [documentation index](docs/README.md) for setup, deployment, architecture,
-APIs, federation, and operations.
+- [Documentation index](docs/README.md) — setup, deployment, architecture, APIs, federation, and operations.
+- [Changelog](CHANGELOG.md) — changes in each release.
 
 ## License
 
