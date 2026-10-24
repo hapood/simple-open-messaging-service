@@ -61,11 +61,11 @@ test('host-network deployment isolates both internal listeners and selects datab
         JSON.stringify(v).includes('postgres-socket'),
       ),
     );
-    assert.ok(
-      builtin.services.migrate.volumes.some((v) =>
-        JSON.stringify(v).includes('postgres-socket'),
-      ),
-    );
+    assert.equal(builtin.services.migrate, undefined);
+    assert.deepEqual(Object.keys(builtin.services).sort(), ['app', 'postgres']);
+    assert.deepEqual(builtin.services.app.depends_on, {
+      postgres: { condition: 'service_healthy' },
+    });
 
     const remoteConfig = {
       ...config,
@@ -76,9 +76,9 @@ test('host-network deployment isolates both internal listeners and selects datab
     };
     assert.deepEqual(deploymentIssues(remoteConfig), []);
     const remote = parse(generateCompose(template, remoteConfig));
-    assert.deepEqual(Object.keys(remote.services).sort(), ['app', 'migrate']);
+    assert.deepEqual(Object.keys(remote.services), ['app']);
     assert.equal(remote.services.app.network_mode, 'host');
-    assert.equal(remote.services.migrate.network_mode, 'host');
+    assert.equal(remote.services.app.depends_on, undefined);
     assert.equal(remote['x-database-environment'].PGHOST, 'db.example.com');
     assert.equal(remote['x-database-environment'].PGPORT, '6432');
     for (const service of Object.values(remote.services)) {

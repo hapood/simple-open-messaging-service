@@ -16,11 +16,6 @@ import { PlaygroundControlsComponent } from './playground-controls.component';
     RootPopupComponent,
   ],
   template: `
-    <a
-      href="#/deploy"
-      style="position: fixed; bottom: 16px; left: 16px; z-index: 1000; background: var(--app-action-primary); color: var(--app-on-action-primary); padding: 10px 16px; border-radius: 10px; font-size: 12px; line-height: 20px; text-decoration: none"
-      >Deployment Studio ↗</a
-    >
     <app-home-shell />
     <app-playground-controls />
     <app-root-popup />

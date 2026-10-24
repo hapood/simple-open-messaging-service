@@ -38,7 +38,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
       const images = [...source.matchAll(/^    image: (.+)$/gm)]
         .map((match) => match[1])
         .filter((image) => !image.startsWith('postgres:'));
-      assert.deepEqual(images, [expectedImage, expectedImage], path);
+      assert.deepEqual(images, [expectedImage], path);
     }
     assert.equal(composeScalar('a$b'), '"a$$b"');
     const config = {
@@ -84,7 +84,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
     assert.equal(result.status, 0, result.stderr || 'Docker Compose required');
     const model = JSON.parse(result.stdout);
     assert.equal(model.services.app.image, releaseImage);
-    assert.equal(model.services.migrate.image, releaseImage);
+    assert.equal(model.services.migrate, undefined);
     // Compose config emits a re-loadable model, preserving dollar escapes.
     const escaped = config.databasePassword.replaceAll('$', () => '$$');
     assert.equal(model.services.app.environment.PGPASSWORD, escaped);
@@ -92,7 +92,8 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
       model.services.postgres.environment.POSTGRES_PASSWORD,
       escaped,
     );
-    assert.equal(model.services.migrate.environment.PGPASSWORD, escaped);
+    // The app's bootstrap performs migrations with these same database credentials.
+    assert.deepEqual(Object.keys(model.services).sort(), ['app', 'postgres']);
     assert.equal(model.services.app.ports, undefined);
     assert.equal(model.services.app.network_mode, 'host');
     assert.equal(model.services.app.environment.SOMS_EDGE_PORT, '7668');
@@ -112,7 +113,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
     assert.equal(publicResult.status, 0, publicResult.stderr);
     const publicModel = JSON.parse(publicResult.stdout);
     assert.equal(publicModel.services.app.image, releaseImage);
-    assert.equal(publicModel.services.migrate.image, releaseImage);
+    assert.equal(publicModel.services.migrate, undefined);
     assert.equal(
       publicModel.services.app.environment.SOMS_TLS_MODE,
       'standard',

@@ -89,6 +89,7 @@
               "outputHashing": "all"
             },
             "playground": {
+              "index": "src/playground/index.html",
               "browser": "src/playground/main.ts",
               "tsConfig": "tsconfig.playground.json",
               "optimization": true,
@@ -112,6 +113,7 @@
               ]
             },
             "playground-development": {
+              "index": "src/playground/index.html",
               "browser": "src/playground/main.ts",
               "tsConfig": "tsconfig.playground.json",
               "optimization": false,
@@ -174,6 +176,7 @@
               ]
             },
             "playground-output": {
+              "index": "src/playground/index.html",
               "outputPath": "dist/playground",
               "assets": [
                 {

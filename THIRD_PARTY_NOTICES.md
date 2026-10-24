@@ -2,6 +2,18 @@
 
 This project includes software and assets developed by third parties.
 
+## GitHub Logo
+
+The playground navigation in `web/src/playground/index.html` embeds the official
+white GitHub wordmark lockup, with its original artwork unchanged.
+
+Source: https://brand.github.com/GitHub_Logos.zip
+
+Usage guidelines: https://brand.github.com/foundations/logo
+
+GitHub and its logos are trademarks of GitHub, Inc. The logo links to this
+project's GitHub repository and does not imply endorsement by GitHub.
+
 ## Material Icons
 
 The send icon used in

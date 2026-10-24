@@ -19,6 +19,33 @@ npm --prefix web run start:playground -- --host 127.0.0.1 --port 4301
 Open `http://127.0.0.1:4301/`. Build and Angular cache output stay in the worktree.
 Do not run the federation lab startup/reset commands for playground validation.
 
+## GitHub Pages verification
+
+The [Pages workflow](../../.github/workflows/pages.yml) publishes the playground
+after matching changes are pushed to `main`, or when manually dispatched. It
+copies [the Google verification file](../../.github/pages/google81ab49229bacef40.html) unchanged
+to the root of the Pages artifact so it is served at
+`https://hapood.github.io/simple-open-messaging-service/google81ab49229bacef40.html`.
+Keep this file and the workflow copy step after verification succeeds so future
+deployments preserve Search Console ownership verification.
+
+The workflow also publishes [the sitemap](../../.github/pages/sitemap.xml) at
+`https://hapood.github.io/simple-open-messaging-service/sitemap.xml`. Submit this
+URL in Search Console after deployment. It lists the playground homepage.
+The homepage links to the GitHub repository, and the repository README links
+back to the live playground.
+
+Playground builds use a [dedicated HTML entry](../../web/src/playground/index.html)
+with the Pages canonical URL and a static About SOMS disclosure containing the
+project introduction, features, and repository link. This content remains outside
+the Angular root in a dedicated project bar so it is available before and after
+JavaScript runs, including when JavaScript is disabled. Self-hosted and native builds keep their existing
+HTML entry without the Pages canonical URL or project disclosure.
+
+The project bar reserves 56px above the demo and deployment studio. Its About
+menu, repository link, and deployment action stay outside the chat interface;
+all layout overrides are scoped to the playground HTML entry.
+
 ## Social fixtures
 
 The signed-in mock user is `me`. All seeded identities belong to the mock local
