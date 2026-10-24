@@ -1,59 +1,59 @@
-# Network addresses on the federation self-check page
+# Network diagnostics and local information
 
-The administration console groups the report into local/public IP addresses,
-federation overview, configuration, DNS, connectivity/TLS, discovery, keys and
-clock. Desktop navigation stays alongside the report; narrow screens use a
-horizontal navigation bar. Network inspection is independent of running the
-federation check.
+The admin navigation separates **Network** (`/admin/network`) from **Local Information**
+(`/admin/local-information`). The former network-info and self-check routes and APIs have been
+removed, not redirected. Update bookmarks and integrations to the new contracts.
 
-## Local addresses
+## Local information
 
-`POST /api/v1/admin/federation/network-info` requires an administrator session.
-It reads the current process's interface addresses using Node's OS API and returns
-the available public-IP sources. No external service is contacted. Loopback and
-link-local addresses are collapsed initially when other addresses are available.
+`POST /api/v1/admin/local-information` requires an administrator session (including viewers).
+It returns version, runtime, process start/uptime, server time, configured client origin and TLS mode,
+process-visible interfaces, and public federation identity material. Root history and published
+signing certificates are public data; private keys and authentication secrets are never returned.
 
-The final runtime stage of [Dockerfile](../../Dockerfile) declares
-`SOMS_RUNTIME=docker`. This is an image marker, not container detection: the API
-does not inspect cgroups, Docker sockets, host routing or Docker network modes.
-An unset marker is reported as unknown rather than assumed to be a host process.
-Existing containers must be recreated from an updated image to inherit the marker.
+This endpoint reads local state only: no DNS, HTTP, NTP, loopback, or key-rotation work. Configured
+origins do not prove reachability; the server timestamp does not prove clock synchronization.
+`SOMS_RUNTIME=docker` is an explicit image marker, not host/container autodetection. Interface
+addresses describe the process network namespace rather than all host interfaces.
 
-## Public egress IP
+## Explicit target diagnostics
 
-`POST /api/v1/admin/federation/network-ip` requires an administrator session and
-accepts a fixed source ID and address family (`4` or `6`). Sources are IP.SB,
-ipify and ident.me. The UI selects IP.SB initially; requests are only sent
-after the operator clicks **Detect public IP**. Multiple sources can be selected.
-Each source/family completes independently, without IPv6-to-IPv4 fallback.
+`POST /api/v1/admin/network/diagnose` requires an ADMIN or SUPER_ADMIN session and a body such as:
 
-The report shows the provider-observed egress IP, the socket's local source address
-when available, a timestamp, duration and any error code. Provider requests are
-sent directly rather than through environment-configured HTTP proxies. Selected
-providers necessarily observe the server's egress IP; credentials and local
-interface inventories are not sent to them.
+```json
+{ "target": "https://example.com:7668" }
+```
 
-The [inspection service](../../src/federation/self-check/network-inspection.service.ts)
-uses fixed HTTPS endpoints, a five-second overall deadline and a 256-byte response
-limit. Redirects, non-public resolved destinations, wrong address families and
-non-IP response bodies are rejected. Concurrent requests for the same source and
-family share a single probe; results are reused for ten seconds. This is not a
-background polling task or a Docker liveness check.
+A bare domain is interpreted as HTTPS. Explicit ports are preserved. Application paths are ignored;
+credentials, query parameters, fragments, and non-HTTPS schemes are rejected. Opening the page does
+not start a diagnostic.
 
-## Interpretation
+The backend resolves A/AAAA and reports SRV records independently. SRV records are observations only:
+they do not silently redirect probes away from the input origin. Up to eight addresses, interleaving
+IPv4 and IPv6, are probed concurrently. Results explicitly enumerate selected addresses. The HTTPS
+request uses `/.well-known/somfp`; TLS and HTTP reachability are reported separately from federation
+document validation. A 404/410 discovery response means no federation document, not broken HTTPS.
 
-- Local interface addresses belong to the backend process's network environment,
-  not the administrator's browser. In bridge containers they are container addresses.
-- Egress addresses need not equal the DNS entry or reverse proxy's ingress address.
-- Successful IPv6 ingress through a published Docker port does not prove IPv6 egress.
-- An individual provider's failure is not proof of general connectivity failure.
-- `EADDRNOTAVAIL` indicates local source-address unavailability; it is not a
-  certificate-validation error.
+Public unicast destinations only are accepted, including literal IPs. Mixed public/private DNS
+answers reject the target. Each socket is pinned to the validated address and address family; no
+redirect is followed. DNS has a three-second deadline and each HTTPS probe a seven-second deadline.
+Responses are capped at 256 KiB. There is one active diagnostic per process and a three-second
+completion cooldown. Diagnostic reports do not establish trust or update peer caches.
+
+Internal targets, external-IP providers, NTP comparisons, SRV endpoint probing, and browser-origin
+measurements are not part of this API.
+
+## Quota navigation
+
+**Quota** has a circuit-breaker overview and default policies. The overview filters existing tripped
+user/peer breakers and reuses the daily-addition dialog. It is not a complete near-limit inventory.
+Detailed usage remains under Users and Federation. Default forms have moved out of Settings, which
+links to Quota defaults. Existing quota API contracts and mutation roles remain unchanged.
 
 ## Verification
 
 ```sh
-npx vitest run src/federation/self-check/network-inspection.service.spec.ts src/admin/federation-self-check.service.spec.ts
+npx vitest run src/federation/self-check src/federation/federation-peer-lifecycle.spec.ts
 npm test --prefix admin-web
 npm run build:be
 npm run build --prefix admin-web

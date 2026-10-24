@@ -30,11 +30,18 @@ describe('matchNav', () => {
     expect(matchNav('/logs')?.group.labelKey).toBe('nav.group.system');
   });
 
-  it('matches the Federation hub and its child routes (prefix)', () => {
+  it('matches the Federation hub and peer detail (prefix)', () => {
     expect(matchNav('/federation')?.item.key).toBe('federation');
-    expect(matchNav('/federation/self-check')?.item.key).toBe('federation');
     expect(matchNav('/federation/example.com')?.item.key).toBe('federation');
     expect(matchNav('/federation')?.group.labelKey).toBe('nav.group.overview');
+  });
+
+  it('enables network, local information, quota, and settings without a legacy network entry', () => {
+    expect(matchNav('/network')?.item.key).toBe('networkInfo');
+    expect(matchNav('/local-information')?.item.key).toBe('localInformation');
+    expect(matchNav('/quota/defaults')?.item.key).toBe('quota');
+    expect(matchNav('/settings')?.item.key).toBe('settings');
+    expect(matchNav('/network-info')).toBeNull();
   });
 
   it('does not match disabled first-release entries or their child routes', () => {
@@ -48,17 +55,19 @@ describe('matchNav', () => {
       '/push/config',
       '/media',
       '/rate-limits',
-      '/settings',
     ]) {
       expect(matchNav(path)).toBeNull();
     }
   });
 
-  it('matches My Account in the footer Account group', () => {
+  it('matches My Account in the footer Account group and admin sessions in System', () => {
     const m = matchNav('/security');
     expect(m?.item.key).toBe('security');
     expect(m?.group.labelKey).toBe('nav.group.account');
     expect(m?.group.footer).toBe(true);
+    expect(matchNav('/admin-sessions')?.group.labelKey).toBe(
+      'nav.group.system',
+    );
   });
 
   it('returns null for an unknown path', () => {
@@ -67,11 +76,11 @@ describe('matchNav', () => {
 });
 
 describe('NAV_GROUPS shape', () => {
-  it('has exactly 14 primary items and both account pages in the footer', () => {
+  it('has exactly 18 primary items and only My Account in the footer', () => {
     const primary = NAV_GROUPS.filter((g) => !g.footer).flatMap((g) => g.items);
-    expect(primary).toHaveLength(14);
+    expect(primary).toHaveLength(18);
     const footer = NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items);
-    expect(footer.map((i) => i.key)).toEqual(['security', 'adminSessions']);
+    expect(footer.map((i) => i.key)).toEqual(['security']);
   });
 
   it('only enables the first-release navigation surface', () => {
@@ -83,8 +92,12 @@ describe('NAV_GROUPS shape', () => {
       'federation',
       'messageReports',
       'logs',
-      'security',
+      'networkInfo',
+      'localInformation',
+      'quota',
       'adminSessions',
+      'settings',
+      'security',
     ]);
   });
 

@@ -494,40 +494,6 @@ export class AdminContinueQuotaDto {
   addFileBytes?: number;
 }
 
-/** Inputs to the S2S self-check: which NTP server to compare the clock against, and which DNS resolver
- *  to run lookups through (default 'system' = /etc/resolv.conf; a public resolver surfaces split-horizon
- *  / propagation issues). Both optional. */
-export class AdminNetworkIpProbeDto {
-  @ApiProperty({ enum: ['ip-sb', 'ipify', 'ident-me'] })
-  @IsIn(['ip-sb', 'ipify', 'ident-me'])
-  source!: 'ip-sb' | 'ipify' | 'ident-me';
-
-  @ApiProperty({ enum: [4, 6] })
-  @IsIn([4, 6])
-  family!: 4 | 6;
-}
-
-export class AdminFederationSelfCheckDto {
-  @ApiProperty({
-    required: false,
-    example: 'ntp.aliyun.com',
-    description:
-      'NTP server used to measure clock skew (optional, default ntp.aliyun.com)',
-  })
-  @IsOptional()
-  @IsString()
-  ntpServer?: string;
-
-  @ApiProperty({
-    required: false,
-    example: '223.5.5.5',
-    description: "DNS resolver IP for lookups (optional, default 'system')",
-  })
-  @IsOptional()
-  @IsString()
-  dnsResolver?: string;
-}
-
 /** Audit-log query: pagination + filters. `action` is a substring match (e.g. 'user.' );
  *  `status` filters the lifecycle state; `adminId` scopes to one actor. */
 export class AdminAuditQueryDto {

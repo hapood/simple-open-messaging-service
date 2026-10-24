@@ -8,6 +8,7 @@ import {
   ListChecks,
   type LucideIcon,
   Monitor,
+  Network,
   Radio,
   ScrollText,
   Settings,
@@ -28,6 +29,9 @@ type NavKey =
   | 'bans'
   | 'push'
   | 'federation'
+  | 'networkInfo'
+  | 'localInformation'
+  | 'quota'
   | 'logs'
   | 'media'
   | 'settings'
@@ -50,8 +54,7 @@ export interface NavItem {
   icon: LucideIcon;
   /** Placeholder entry rendered as a disabled, non-navigating item. */
   disabled?: boolean;
-  /** Match this item only on exact path, not prefix. Set on section roots that share
-   *  a prefix with a deeper item (e.g. /federation vs /federation/self-check). */
+  /** Match this item only on exact path, not prefix. */
   end?: boolean;
 }
 
@@ -62,9 +65,7 @@ export interface NavGroup {
   footer?: boolean;
 }
 
-/** Sidebar structure, grouped by responsibility. Pages that share a URL prefix with a sub-view
- *  (Federation → /federation/self-check) keep the default prefix match so the parent stays
- *  highlighted on the sub-route. The footer group ("Account") renders separately at the bottom. */
+/** Sidebar structure grouped by responsibility. The footer Account group renders at the bottom. */
 export const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: 'nav.group.overview',
@@ -105,22 +106,23 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/push', key: 'push', icon: Bell, disabled: true },
       { to: '/media', key: 'media', icon: HardDrive, disabled: true },
       { to: '/logs', key: 'logs', icon: ScrollText },
+      { to: '/network', key: 'networkInfo', icon: Network },
+      { to: '/local-information', key: 'localInformation', icon: Monitor },
+      { to: '/quota', key: 'quota', icon: Gauge },
+      { to: '/admin-sessions', key: 'adminSessions', icon: Monitor },
       {
         to: '/rate-limits',
         key: 'rateLimits',
         icon: Gauge,
         disabled: true,
       },
-      { to: '/settings', key: 'settings', icon: Settings, disabled: true },
+      { to: '/settings', key: 'settings', icon: Settings },
     ],
   },
   {
     labelKey: 'nav.group.account',
     footer: true,
-    items: [
-      { to: '/security', key: 'security', icon: CircleUser },
-      { to: '/admin-sessions', key: 'adminSessions', icon: Monitor },
-    ],
+    items: [{ to: '/security', key: 'security', icon: CircleUser }],
   },
 ];
 

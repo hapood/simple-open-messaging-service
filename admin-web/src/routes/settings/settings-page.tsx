@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Clock, Download, Gauge, Globe, Loader2, Network } from 'lucide-react';
@@ -8,8 +9,6 @@ import {
   useSetFederationHttpLimits,
   useSetFederationHistoryAccess,
   useSetOtpTtl,
-  useSetUserQuotaDefaults,
-  useSetFederationQuotaDefaults,
   useSetAdminSessionPolicy,
   useSetFederationTransport,
 } from '@/hooks/use-settings';
@@ -42,8 +41,6 @@ export function SettingsPage() {
   const setDownloadLimits = useSetFederationDownloadLimits();
   const setHttpLimits = useSetFederationHttpLimits();
   const setHistoryAccess = useSetFederationHistoryAccess();
-  const setUserQuotaDefaults = useSetUserQuotaDefaults();
-  const setFederationQuotaDefaults = useSetFederationQuotaDefaults();
   const setAdminSessionPolicy = useSetAdminSessionPolicy();
   const setFederationTransport = useSetFederationTransport();
   const [ttlInput, setTtlInput] = useState('');
@@ -53,19 +50,6 @@ export function SettingsPage() {
   const [globalHttp, setGlobalHttp] = useState('');
   const [peerHttp, setPeerHttp] = useState('');
   const [historyAccessEnabled, setHistoryAccessEnabled] = useState(true);
-  const [userQuota, setUserQuota] = useState({
-    dailyMsgLimit: '',
-    dailyRequestLimit: '',
-    dailyFileLimit: '',
-    dailyFileBytesLimit: '',
-  });
-  const [federationQuota, setFederationQuota] = useState({
-    dailyMsgLimit: '',
-    dailyRequestLimit: '',
-    dailySignalLimit: '',
-    dailyFileLimit: '',
-    dailyFileBytesLimit: '',
-  });
   const [sessionPolicy, setSessionPolicy] = useState({
     ttlHours: '',
     idleMinutes: '',
@@ -100,26 +84,6 @@ export function SettingsPage() {
     if (typeof data?.federationHistoryAccessEnabled === 'boolean')
       setHistoryAccessEnabled(data.federationHistoryAccessEnabled);
   }, [data?.federationHistoryAccessEnabled]);
-  useEffect(() => {
-    if (!data?.userQuotaDefaults) return;
-    setUserQuota({
-      dailyMsgLimit: String(data.userQuotaDefaults.dailyMsgLimit),
-      dailyRequestLimit: String(data.userQuotaDefaults.dailyRequestLimit),
-      dailyFileLimit: String(data.userQuotaDefaults.dailyFileLimit),
-      dailyFileBytesLimit: data.userQuotaDefaults.dailyFileBytesLimit,
-    });
-  }, [data?.userQuotaDefaults]);
-  useEffect(() => {
-    if (!data?.federationQuotaDefaults) return;
-    setFederationQuota(
-      Object.fromEntries(
-        Object.entries(data.federationQuotaDefaults).map(([key, value]) => [
-          key,
-          String(value),
-        ]),
-      ) as typeof federationQuota,
-    );
-  }, [data?.federationQuotaDefaults]);
   useEffect(() => {
     if (!data?.adminSessionPolicy) return;
     setSessionPolicy({
@@ -192,39 +156,6 @@ export function SettingsPage() {
     try {
       await setHistoryAccess.mutateAsync(historyAccessEnabled);
       toast.success(t('settings.federationHistoryAccess.saved'));
-    } catch (e) {
-      toast.error(formatApiError(e));
-    }
-  }
-
-  async function onSaveUserQuota() {
-    try {
-      await setUserQuotaDefaults.mutateAsync({
-        dailyMsgLimit: Math.trunc(Number(userQuota.dailyMsgLimit)),
-        dailyRequestLimit: Math.trunc(Number(userQuota.dailyRequestLimit)),
-        dailyFileLimit: Math.trunc(Number(userQuota.dailyFileLimit)),
-        dailyFileBytesLimit: userQuota.dailyFileBytesLimit,
-      });
-      toast.success(t('settings.quotas.userSaved'));
-    } catch (e) {
-      toast.error(formatApiError(e));
-    }
-  }
-
-  async function onSaveFederationQuota() {
-    try {
-      await setFederationQuotaDefaults.mutateAsync({
-        dailyMsgLimit: Math.trunc(Number(federationQuota.dailyMsgLimit)),
-        dailyRequestLimit: Math.trunc(
-          Number(federationQuota.dailyRequestLimit),
-        ),
-        dailySignalLimit: Math.trunc(Number(federationQuota.dailySignalLimit)),
-        dailyFileLimit: Math.trunc(Number(federationQuota.dailyFileLimit)),
-        dailyFileBytesLimit: Math.trunc(
-          Number(federationQuota.dailyFileBytesLimit),
-        ),
-      });
-      toast.success(t('settings.quotas.federationSaved'));
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -534,115 +465,9 @@ export function SettingsPage() {
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Gauge className="size-4" /> {t('settings.quotas.userTitle')}
-          </CardTitle>
-          <CardDescription>{t('settings.quotas.userDesc')}</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-end gap-3">
-          {(
-            [
-              ['dailyMsgLimit', 'messages'],
-              ['dailyRequestLimit', 'requests'],
-              ['dailyFileLimit', 'files'],
-              ['dailyFileBytesLimit', 'fileBytes'],
-            ] as const
-          ).map(([key, label]) => (
-            <div className="flex flex-col gap-1" key={key}>
-              <Label className="text-xs text-muted-foreground">
-                {t(`settings.quotas.${label}`)}
-              </Label>
-              <Input
-                className="w-40"
-                type="number"
-                min={0}
-                step={1}
-                value={userQuota[key]}
-                disabled={!canEdit}
-                onChange={(event) =>
-                  setUserQuota((value) => ({
-                    ...value,
-                    [key]: event.target.value,
-                  }))
-                }
-              />
-            </div>
-          ))}
-          <Button
-            size="sm"
-            onClick={onSaveUserQuota}
-            disabled={
-              !canEdit ||
-              setUserQuotaDefaults.isPending ||
-              Object.values(userQuota).some((value) => value === '')
-            }
-          >
-            {setUserQuotaDefaults.isPending && (
-              <Loader2 className="size-3.5 animate-spin" />
-            )}
-            {t('settings.quotas.save')}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Network className="size-4" />{' '}
-            {t('settings.quotas.federationTitle')}
-          </CardTitle>
-          <CardDescription>
-            {t('settings.quotas.federationDesc')}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-end gap-3">
-          {(
-            [
-              ['dailyMsgLimit', 'messages'],
-              ['dailyRequestLimit', 'requests'],
-              ['dailySignalLimit', 'signals'],
-              ['dailyFileLimit', 'files'],
-              ['dailyFileBytesLimit', 'fileBytes'],
-            ] as const
-          ).map(([key, label]) => (
-            <div className="flex flex-col gap-1" key={key}>
-              <Label className="text-xs text-muted-foreground">
-                {t(`settings.quotas.${label}`)}
-              </Label>
-              <Input
-                className="w-40"
-                type="number"
-                min={0}
-                step={1}
-                value={federationQuota[key]}
-                disabled={!canEdit}
-                onChange={(event) =>
-                  setFederationQuota((value) => ({
-                    ...value,
-                    [key]: event.target.value,
-                  }))
-                }
-              />
-            </div>
-          ))}
-          <Button
-            size="sm"
-            onClick={onSaveFederationQuota}
-            disabled={
-              !canEdit ||
-              setFederationQuotaDefaults.isPending ||
-              Object.values(federationQuota).some((value) => value === '')
-            }
-          >
-            {setFederationQuotaDefaults.isPending && (
-              <Loader2 className="size-3.5 animate-spin" />
-            )}
-            {t('settings.quotas.save')}
-          </Button>
-        </CardContent>
-      </Card>
+      <Link className="text-primary underline" to="/quota/defaults">
+        {t('quotaCenter.manageDefaults')}
+      </Link>
 
       <div className="pt-2">
         <h2 className="text-lg font-semibold">

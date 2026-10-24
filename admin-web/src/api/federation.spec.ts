@@ -9,7 +9,6 @@ import {
   rejectFederationIdentityReview,
   rotateLocalFederationRoot,
   unpublishLocalFederationRoot,
-  runFederationSelfCheck,
   unblockFederationPeer,
   recognizeFederationPeer,
 } from './federation';
@@ -34,7 +33,7 @@ describe('federation admin API', () => {
     );
   });
 
-  it('maps block, unblock, and self-check mutations to their server contracts', async () => {
+  it('maps peer and root mutations to their server contracts', async () => {
     await blockFederationPeer('peer.test', 'incident');
     await unblockFederationPeer('peer.test');
     await recognizeFederationPeer('peer.test');
@@ -44,10 +43,6 @@ describe('federation admin API', () => {
     await localFederationRootEpochs();
     await rotateLocalFederationRoot();
     await unpublishLocalFederationRoot(3);
-    await runFederationSelfCheck({
-      ntpServer: 'ntp.example',
-      dnsResolver: '1.1.1.1',
-    });
 
     expect(request).toHaveBeenNthCalledWith(
       1,
@@ -89,14 +84,6 @@ describe('federation admin API', () => {
       9,
       '/admin/federation/local-root-epochs/3/unpublish',
       {},
-    );
-    expect(request).toHaveBeenNthCalledWith(
-      10,
-      '/admin/federation/self-check',
-      {
-        ntpServer: 'ntp.example',
-        dnsResolver: '1.1.1.1',
-      },
     );
   });
 });

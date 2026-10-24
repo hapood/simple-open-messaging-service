@@ -79,9 +79,13 @@ export function FederationPage() {
   const block = useBlockFederationPeer();
   const unblock = useUnblockFederationPeer();
   const isSuper = useIsSuperAdmin();
-  const { data: quotaNodes } = useQuotaNodes();
-  const quotaByDomain = new Map(
-    (quotaNodes ?? []).map((node) => [node.domain, node]),
+  const {
+    data: quotaNodes,
+    isPending: quotaPending,
+    error: quotaError,
+  } = useQuotaNodes();
+  const quotaByNamespace = new Map(
+    (quotaNodes ?? []).map((node) => [node.namespaceId, node]),
   );
 
   const onToggleBlock = async (domain: string, blocked: boolean) => {
@@ -116,8 +120,6 @@ export function FederationPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-sm text-muted-foreground">{t('federation.desc')}</p>
-
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2">
           {FILTERS.map((s) => (
@@ -197,9 +199,21 @@ export function FederationPage() {
                     <PeerStatusBadge level={p.trustLevel} />
                   </TableCell>
                   <TableCell>
-                    <QuotaHealth
-                      risk={quotaRisk(quotaByDomain.get(p.domain))}
-                    />
+                    {!p.active ? (
+                      <Badge variant="outline">
+                        {t('quota.notApplicable')}
+                      </Badge>
+                    ) : quotaError ? (
+                      <Badge variant="destructive">
+                        {t('quotaCenter.loadFailed')}
+                      </Badge>
+                    ) : quotaPending ? (
+                      <span>{t('common.loading')}</span>
+                    ) : (
+                      <QuotaHealth
+                        risk={quotaRisk(quotaByNamespace.get(p.id))}
+                      />
+                    )}
                   </TableCell>
                   <TableCell>
                     <Timestamp value={p.lastSuccessAt} />
@@ -280,7 +294,7 @@ export function FederationPage() {
 function QuotaHealth({ risk }: { risk: number | undefined }) {
   const { t } = useTranslation();
   if (risk === undefined)
-    return <Badge variant="outline">{t('quota.health.unknown')}</Badge>;
+    return <Badge variant="outline">{t('quota.unavailable')}</Badge>;
   const label = risk >= 1 ? 'exhausted' : risk >= 0.8 ? 'warning' : 'healthy';
   const variant =
     risk >= 1 ? 'destructive' : risk >= 0.8 ? 'outline' : 'secondary';
@@ -303,12 +317,8 @@ function FeedProgressSummary({ peer }: { peer: FederationPeerState }) {
       : t('federation.feed.behind', { count: profileLag.toString() });
   return (
     <div className="flex flex-col gap-1 font-mono text-xs text-muted-foreground">
-      <span title={t('federation.feed.state')}>
-        S {state}
-      </span>
-      <span title={t('federation.feed.profileNamespace')}>
-        P {profile}
-      </span>
+      <span title={t('federation.feed.state')}>S {state}</span>
+      <span title={t('federation.feed.profileNamespace')}>P {profile}</span>
     </div>
   );
 }

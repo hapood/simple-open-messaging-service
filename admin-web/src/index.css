@@ -5,35 +5,6 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Keep diagnostic rows measurable and long IPv6 addresses usable on narrow screens. */
-.self-check-page {
-  line-height: 20px;
-}
-.self-check-page .text-xs {
-  line-height: 18px;
-}
-.self-check-page .text-sm {
-  line-height: 20px;
-}
-.self-check-page .text-base {
-  line-height: 24px;
-}
-.self-check-page .text-xl {
-  line-height: 24px;
-}
-.self-check-page .text-\[10px\] {
-  line-height: 14px;
-}
-.self-check-ip-probe > .flex {
-  flex-wrap: wrap;
-}
-.self-check-ip-probe .font-mono {
-  overflow-wrap: anywhere;
-}
-.self-check-ip-probe > .flex > .flex-1 {
-  flex-basis: 100%;
-}
-
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Geist Variable', sans-serif;
@@ -156,4 +127,28 @@
   html {
     @apply font-sans;
   }
+}
+
+/* Custom slim modern scrollbar for sidebar / drawer */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sidebar-border) transparent;
+  overscroll-behavior: contain;
+}
+
+.sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: var(--sidebar-border);
+  border-radius: 9999px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--sidebar-ring);
 }

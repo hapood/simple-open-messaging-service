@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { AdminNetworkController } from './admin-network.controller.js';
+import { LocalInformationService } from '../federation/self-check/local-information.service.js';
+import { TargetNetworkDiagnosticsService } from '../federation/self-check/target-network-diagnostics.service.js';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -22,7 +25,6 @@ import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { AdminAuditInterceptor } from './admin-audit.interceptor.js';
 import { NetworkInspectionService } from '../federation/self-check/network-inspection.service.js';
-import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { DashboardService } from './dashboard.service.js';
 import { AuditTargetLabelService } from './audit-target-label.service.js';
 import { AdminManageService } from './admin-manage.service.js';
@@ -76,6 +78,7 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     QuotaModule,
   ],
   controllers: [
+    AdminNetworkController,
     AccountSecurityController,
     AdminController,
     AdminSettingsController,
@@ -95,13 +98,14 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     DurableTaskAdminController,
   ],
   providers: [
+    LocalInformationService,
+    TargetNetworkDiagnosticsService,
     AccountSecurityService,
     AdminAuthService,
     TwoFactorService,
     WebAuthnService,
     AdminAuthGuard,
     AdminRolesGuard,
-    FederationSelfCheckService,
     NetworkInspectionService,
     FederationRetireService,
     FederationNamespaceAdminService,
