@@ -20,8 +20,12 @@ import { TranslocoService } from '@jsverse/transloco';
 import { LanguageService } from '../../app/services/language.service';
 import { ThemeService } from '../../app/services/theme.service';
 import {
+  IconComponent,
+  AppIconType,
+} from '../../app/components/icon/icon.component';
+import {
   DeploymentConfig,
-  defaultsForMode,
+  DeploymentModeState,
   deploymentIssues,
   generateCompose,
   initialDeployment,
@@ -29,6 +33,11 @@ import {
   randomPassword,
 } from './compose-generator';
 import { deploymentMessages, issueMessages } from './deployment-i18n';
+
+/** Quote a configured path as one literal POSIX shell argument. */
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
 
 @Component({
   selector: 'app-deployment-page',
@@ -44,6 +53,7 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
     MatButtonToggleModule,
     MatTooltipModule,
     MatExpansionModule,
+    IconComponent,
   ],
   template: `
     <div class="tool" [class.rail-open]="!collapsed()">
@@ -59,7 +69,12 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
           (click)="collapsed.set(!collapsed())"
           [attr.aria-label]="collapsed() ? t().nav.expand : t().nav.collapse"
         >
-          <span class="icon">☰</span>
+          <app-icon
+            class="icon"
+            [type]="AppIconType.MENU"
+            [style]="navIconStyle"
+            aria-hidden="true"
+          />
           @if (!collapsed()) {
             <strong>SOMS</strong>
           }
@@ -70,7 +85,12 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
           [title]="t().nav.chat"
           [attr.aria-label]="t().nav.chat"
         >
-          <span class="icon">◫</span>
+          <app-icon
+            class="icon"
+            [type]="AppIconType.CHATS"
+            [style]="navIconStyle"
+            aria-hidden="true"
+          />
           @if (!collapsed()) {
             <span>{{ t().nav.chat }}</span>
           }
@@ -82,7 +102,12 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
           [title]="t().nav.deploy"
           [attr.aria-label]="t().nav.deploy"
         >
-          <span class="icon">⚙</span>
+          <app-icon
+            class="icon"
+            [type]="AppIconType.SETTINGS"
+            [style]="navIconStyle"
+            aria-hidden="true"
+          />
           @if (!collapsed()) {
             <span>{{ t().nav.deploy }}</span>
           }
@@ -95,7 +120,12 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
             [title]="themeTitle()"
             [attr.aria-label]="themeTitle()"
           >
-            <span class="icon">{{ themeIcon() }}</span>
+            <app-icon
+              class="icon"
+              [type]="themeIcon()"
+              [style]="navIconStyle"
+              aria-hidden="true"
+            />
             @if (!collapsed()) {
               <span>{{ themeLabel() }}</span>
             }
@@ -107,7 +137,12 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
             [title]="t().nav.language"
             [attr.aria-label]="t().nav.language"
           >
-            <span class="icon">文</span>
+            <app-icon
+              class="icon"
+              [type]="AppIconType.GLOBE"
+              [style]="navIconStyle"
+              aria-hidden="true"
+            />
             @if (!collapsed()) {
               <span>{{ language.langLabel() }}</span>
             }
@@ -175,33 +210,48 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().portHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().portHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
                 }
 
-                <div class="toggle-row">
-                  <mat-slide-toggle
-                    name="adminAccess"
-                    [checked]="config().adminAccess === 'lan'"
-                    (change)="
-                      update('adminAccess', $event.checked ? 'lan' : 'public')
-                    "
-                  >
-                    {{ t().adminOnly }}
-                  </mat-slide-toggle>
-                  <button
-                    mat-icon-button
-                    type="button"
-                    class="row-help-btn small"
-                    [matTooltip]="t().adminHint"
-                    aria-label="Help"
-                  >
-                    ?
-                  </button>
-                </div>
+                <mat-expansion-panel class="sub-expansion-panel">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title class="sub-panel-title">{{
+                      t().networkOptions
+                    }}</mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <div class="toggle-row">
+                    <mat-slide-toggle
+                      name="adminAccess"
+                      [checked]="config().adminAccess === 'lan'"
+                      (change)="
+                        update('adminAccess', $event.checked ? 'lan' : 'public')
+                      "
+                    >
+                      {{ t().adminOnly }}
+                    </mat-slide-toggle>
+                    <button
+                      mat-icon-button
+                      type="button"
+                      class="row-help-btn small"
+                      [matTooltip]="t().adminHint"
+                      [attr.aria-label]="t().adminHint"
+                    >
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
+                </mat-expansion-panel>
               </mat-card-content>
             </mat-card>
 
@@ -215,8 +265,6 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
               </mat-card-header>
 
               <mat-card-content>
-                <h4 class="sub-heading">{{ t().domains }}</h4>
-
                 <div class="input-row-with-help">
                   <mat-form-field appearance="outline" class="flex-field">
                     <mat-label>{{ t().domain }}</mat-label>
@@ -235,22 +283,26 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                     type="button"
                     class="row-help-btn"
                     [matTooltip]="t().domainHint"
-                    aria-label="Help"
+                    [attr.aria-label]="t().domainHint"
                   >
-                    ?
+                    <app-icon
+                      [type]="AppIconType.INFO"
+                      [style]="helpIconStyle"
+                      aria-hidden="true"
+                    />
                   </button>
                 </div>
 
                 <div class="input-row-with-help">
                   <mat-form-field appearance="outline" class="flex-field">
-                    <mat-label>{{ t().webDomain }}</mat-label>
+                    <mat-label>{{ t().dataDir }}</mat-label>
                     <input
                       matInput
-                      name="webDomain"
+                      name="dataDir"
                       required
-                      [placeholder]="'soms.example.com'"
-                      [ngModel]="config().webDomain"
-                      (ngModelChange)="update('webDomain', $event)"
+                      [placeholder]="'./data'"
+                      [ngModel]="config().dataDir"
+                      (ngModelChange)="update('dataDir', $event)"
                       spellcheck="false"
                     />
                   </mat-form-field>
@@ -258,39 +310,16 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                     mat-icon-button
                     type="button"
                     class="row-help-btn"
-                    [matTooltip]="t().webDomainHint"
-                    aria-label="Help"
+                    [matTooltip]="t().dataDirHint"
+                    [attr.aria-label]="t().dataDirHint"
                   >
-                    ?
-                  </button>
-                </div>
-
-                <div class="input-row-with-help">
-                  <mat-form-field appearance="outline" class="flex-field">
-                    <mat-label
-                      >{{ t().lanDomain }} ({{ t().optional }})</mat-label
-                    >
-                    <input
-                      matInput
-                      name="lanDomain"
-                      [placeholder]="'soms-lan.example.com'"
-                      [ngModel]="config().lanDomain"
-                      (ngModelChange)="update('lanDomain', $event)"
-                      spellcheck="false"
+                    <app-icon
+                      [type]="AppIconType.INFO"
+                      [style]="helpIconStyle"
+                      aria-hidden="true"
                     />
-                  </mat-form-field>
-                  <button
-                    mat-icon-button
-                    type="button"
-                    class="row-help-btn"
-                    [matTooltip]="t().lanDomainHint"
-                    aria-label="Help"
-                  >
-                    ?
                   </button>
                 </div>
-
-                <h4 class="sub-heading divider">{{ t().credentials }}</h4>
 
                 <div class="input-row-with-help">
                   <mat-form-field appearance="outline" class="flex-field">
@@ -301,7 +330,7 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       required
                       type="text"
                       autocomplete="new-password"
-                      [placeholder]="t().passwordHint"
+                      [placeholder]="t().passwordPlaceholder"
                       [ngModel]="config().adminPassword"
                       (ngModelChange)="update('adminPassword', $event)"
                     />
@@ -319,11 +348,85 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                     type="button"
                     class="row-help-btn"
                     [matTooltip]="t().adminPasswordHint"
-                    aria-label="Help"
+                    [attr.aria-label]="t().adminPasswordHint"
                   >
-                    ?
+                    <app-icon
+                      [type]="AppIconType.INFO"
+                      [style]="helpIconStyle"
+                      aria-hidden="true"
+                    />
                   </button>
                 </div>
+
+                <mat-accordion class="sub-accordion">
+                  <mat-expansion-panel class="sub-expansion-panel" #domainPanel>
+                    <mat-expansion-panel-header>
+                      <mat-panel-title class="sub-panel-title">
+                        <span>{{ t().customDomains }}</span>
+                      </mat-panel-title>
+                    </mat-expansion-panel-header>
+
+                    <div class="sub-expansion-body">
+                      <div class="input-row-with-help">
+                        <mat-form-field appearance="outline" class="flex-field">
+                          <mat-label
+                            >{{ t().webDomain }} ({{ t().optional }})</mat-label
+                          >
+                          <input
+                            matInput
+                            name="webDomain"
+                            [placeholder]="t().webDomainPlaceholder"
+                            [ngModel]="config().webDomain"
+                            (ngModelChange)="update('webDomain', $event)"
+                            spellcheck="false"
+                          />
+                        </mat-form-field>
+                        <button
+                          mat-icon-button
+                          type="button"
+                          class="row-help-btn"
+                          [matTooltip]="t().webDomainHint"
+                          [attr.aria-label]="t().webDomainHint"
+                        >
+                          <app-icon
+                            [type]="AppIconType.INFO"
+                            [style]="helpIconStyle"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </div>
+
+                      <div class="input-row-with-help">
+                        <mat-form-field appearance="outline" class="flex-field">
+                          <mat-label
+                            >{{ t().lanDomain }} ({{ t().optional }})</mat-label
+                          >
+                          <input
+                            matInput
+                            name="lanDomain"
+                            [placeholder]="'soms-lan.example.com'"
+                            [ngModel]="config().lanDomain"
+                            (ngModelChange)="update('lanDomain', $event)"
+                            spellcheck="false"
+                          />
+                        </mat-form-field>
+                        <button
+                          mat-icon-button
+                          type="button"
+                          class="row-help-btn"
+                          [matTooltip]="t().lanDomainHint"
+                          [attr.aria-label]="t().lanDomainHint"
+                        >
+                          <app-icon
+                            [type]="AppIconType.INFO"
+                            [style]="helpIconStyle"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
+                </mat-accordion>
               </mat-card-content>
             </mat-card>
 
@@ -362,9 +465,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                     type="button"
                     class="row-help-btn"
                     [matTooltip]="t().dnsProviderHint"
-                    aria-label="Help"
+                    [attr.aria-label]="t().dnsProviderHint"
                   >
-                    ?
+                    <app-icon
+                      [type]="AppIconType.INFO"
+                      [style]="helpIconStyle"
+                      aria-hidden="true"
+                    />
                   </button>
                 </div>
 
@@ -387,9 +494,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().dnsTokenHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().dnsTokenHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
                 }
@@ -413,9 +524,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().aliyunKeyIdHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().aliyunKeyIdHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
 
@@ -437,9 +552,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().aliyunKeySecretHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().aliyunKeySecretHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
                 }
@@ -463,9 +582,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().tencentSecretIdHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().tencentSecretIdHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
 
@@ -487,9 +610,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().tencentSecretKeyHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().tencentSecretKeyHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
                 }
@@ -513,6 +640,61 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                 </mat-expansion-panel-header>
 
                 <div class="advanced-body">
+                  <mat-form-field appearance="outline" class="flex-field">
+                    <mat-label>{{ t().databaseMode }}</mat-label>
+                    <mat-select
+                      name="databaseMode"
+                      [ngModel]="config().databaseMode"
+                      (ngModelChange)="update('databaseMode', $event)"
+                    >
+                      <mat-option value="builtin">{{
+                        t().databaseBuiltin
+                      }}</mat-option>
+                      <mat-option value="remote">{{
+                        t().databaseRemote
+                      }}</mat-option>
+                    </mat-select>
+                  </mat-form-field>
+                  @if (config().databaseMode === 'remote') {
+                    <mat-form-field appearance="outline" class="flex-field">
+                      <mat-label>{{ t().remoteHost }}</mat-label>
+                      <input
+                        matInput
+                        name="remoteHost"
+                        required
+                        [ngModel]="config().remoteHost"
+                        (ngModelChange)="update('remoteHost', $event)"
+                        spellcheck="false"
+                      />
+                    </mat-form-field>
+                    <mat-form-field appearance="outline" class="flex-field">
+                      <mat-label>{{ t().remotePort }}</mat-label>
+                      <input
+                        matInput
+                        name="remotePort"
+                        required
+                        type="number"
+                        [ngModel]="config().remotePort"
+                        (ngModelChange)="update('remotePort', $event)"
+                      />
+                    </mat-form-field>
+                    <mat-slide-toggle
+                      name="remoteTls"
+                      [checked]="config().remoteTls"
+                      (change)="update('remoteTls', $event.checked)"
+                      >{{ t().remoteTls }}</mat-slide-toggle
+                    >
+                    <mat-form-field appearance="outline" class="flex-field">
+                      <mat-label>{{ t().remoteCaPath }}</mat-label>
+                      <input
+                        matInput
+                        name="remoteCaPath"
+                        [ngModel]="config().remoteCaPath"
+                        (ngModelChange)="update('remoteCaPath', $event)"
+                        spellcheck="false"
+                      />
+                    </mat-form-field>
+                  }
                   <!-- Database Password lives here, auto-generated by default -->
                   <div class="input-row-with-help">
                     <mat-form-field appearance="outline" class="flex-field">
@@ -540,9 +722,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().databasePasswordHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().databasePasswordHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
 
@@ -563,9 +749,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().databaseHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().databaseHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
 
@@ -586,9 +776,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().databaseHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().databaseHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
 
@@ -610,9 +804,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       type="button"
                       class="row-help-btn"
                       [matTooltip]="t().imageHint"
-                      aria-label="Help"
+                      [attr.aria-label]="t().imageHint"
                     >
-                      ?
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
                     </button>
                   </div>
                 </div>
@@ -631,7 +829,7 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                   (click)="copy()"
                   [disabled]="!valid()"
                 >
-                  {{ t().copy }}
+                  {{ copied() ? t().copied : t().copy }}
                 </button>
                 <button
                   mat-flat-button
@@ -640,7 +838,13 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                   (click)="download()"
                   [disabled]="!valid()"
                 >
-                  ↓ {{ t().download }}
+                  <app-icon
+                    class="action-icon"
+                    [type]="AppIconType.DOWNLOAD"
+                    [style]="actionIconStyle"
+                    aria-hidden="true"
+                  />
+                  {{ t().download }}
                 </button>
               </div>
             </div>
@@ -677,11 +881,21 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
                       <button
                         type="button"
                         class="error-item-btn"
-                        (click)="focusIssue(key, advancedPanel)"
+                        (click)="focusIssue(key, domainPanel, advancedPanel)"
                       >
-                        <span class="badge">!</span>
+                        <app-icon
+                          class="badge"
+                          [type]="AppIconType.ERROR_OUTLINE"
+                          [style]="actionIconStyle"
+                          aria-hidden="true"
+                        />
                         <span class="err-text">{{ issue(key) }}</span>
-                        <span class="arrow">→</span>
+                        <app-icon
+                          class="arrow"
+                          [type]="AppIconType.ARROW_FORWARD"
+                          [style]="actionIconStyle"
+                          aria-hidden="true"
+                        />
                       </button>
                     </li>
                   }
@@ -692,16 +906,28 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
             } @else {
               <!-- Valid state: show YAML preview or deployment checklist -->
               @if (tab() === 'yaml') {
-                <pre><code>{{ yaml() }}</code></pre>
+                <pre
+                  tabindex="0"
+                  (keydown)="onYamlKeydown($event)"
+                  aria-label="YAML Preview"
+                ><code>{{ yaml() }}</code></pre>
               } @else {
                 <div class="checklist">
                   <h3>{{ t().dnsStep }}</h3>
-                  <p>{{ t().dnsHint }}</p>
+                  <p>
+                    {{
+                      config().lanDomain.trim()
+                        ? t().dnsHintWithLan
+                        : t().dnsHint
+                    }}
+                  </p>
                   <code
-                    >{{ config().webDomain }} → YOUR_SERVER_IP<br />_somfp._tcp.{{
-                      config().domain
-                    }}. 300 IN SRV 10 0 {{ srvPort() }}
-                    {{ config().webDomain }}.</code
+                    >{{ effectiveWebDomain() }} → YOUR_PUBLIC_IP<br />
+                    @if (config().lanDomain.trim()) {
+                      {{ config().lanDomain.trim() }} → YOUR_LAN_IP<br />
+                    }
+                    _somfp._tcp.{{ config().domain || 'example.com' }}. 300 IN
+                    SRV 10 0 {{ srvPort() }} {{ effectiveWebDomain() }}.</code
                   >
 
                   <h3>{{ t().portsStep }}</h3>
@@ -710,26 +936,27 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
 
                   <h3>{{ t().startStep }}</h3>
                   <code
-                    >mkdir -p soms && cd soms<br /># Save docker-compose.yml
-                    here<br />docker compose up -d<br />docker compose logs -f
-                    app</code
+                    >mkdir -p soms && cd soms<br />#
+                    {{ t().dataDirPermissionsComment }}<br />mkdir -p --
+                    {{ quotedDataDir() }}<br /># Save docker-compose.yml here<br />docker
+                    compose up -d<br />docker compose logs -f app</code
                   >
                   <p>{{ t().startHint }}</p>
 
                   <h3>{{ t().verifyStep }}</h3>
-                  <code>{{ verifyUrl() }}</code>
+                  <code>
+                    @if (config().lanDomain.trim()) {
+                      {{ t().verifyPublic }}{{ verifyUrl() }}<br />{{
+                        t().verifyLan
+                      }}{{ verifyLanUrl() }}
+                    } @else {
+                      {{ verifyUrl() }}
+                    }
+                  </code>
                   <p>{{ t().verifyHint }}</p>
                 </div>
               }
             }
-
-            <mat-card-footer class="output-footer">
-              <p>{{ t().privacy }}</p>
-              <p>{{ t().exportWarning }}</p>
-              @if (notice(); as key) {
-                <p class="notice" role="status">{{ t()[key] }}</p>
-              }
-            </mat-card-footer>
           </mat-card>
         </div>
       </main>
@@ -800,10 +1027,8 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
     }
     .rail-item .icon {
       width: 24px;
+      height: 24px;
       flex: none;
-      text-align: center;
-      line-height: 20px;
-      font-size: 15px;
     }
     .sidebar-footer {
       margin-top: auto;
@@ -920,10 +1145,9 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
       height: 36px !important;
       margin-top: 10px !important;
       border-radius: 50% !important;
-      border: 1px solid var(--app-border) !important;
-      background: var(--app-bg-muted) !important;
+      border: 0 !important;
+      background: transparent !important;
       color: var(--app-text-muted) !important;
-      font: 500 13px/20px system-ui !important;
       display: grid !important;
       place-items: center !important;
       padding: 0 !important;
@@ -931,10 +1155,10 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
       cursor: pointer;
       position: relative;
     }
-    .row-help-btn:hover {
+    .row-help-btn:hover,
+    .row-help-btn:focus-visible {
       background: var(--app-hover) !important;
       color: var(--app-text) !important;
-      border-color: var(--app-border-strong, var(--app-border)) !important;
     }
     /* Restrict touch-target to avoid weird overlap/protrusion */
     .row-help-btn .mat-mdc-button-touch-target {
@@ -968,9 +1192,6 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
     }
     .toggle-row .row-help-btn.small {
       margin-top: 0 !important;
-      width: 24px !important;
-      height: 24px !important;
-      font-size: 11px !important;
     }
 
     .ports-summary {
@@ -1011,6 +1232,34 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
       gap: 6px;
     }
 
+    /* Sub Expansion Panel for Optional Custom Domains */
+    .sub-accordion {
+      display: block;
+      margin-top: 4px;
+    }
+    .sub-expansion-panel {
+      box-shadow: none !important;
+      border: 1px solid var(--app-border) !important;
+      border-radius: 8px !important;
+      background: var(--app-bg-muted, rgba(0, 0, 0, 0.02)) !important;
+    }
+    .sub-expansion-panel mat-expansion-panel-header {
+      padding: 0 16px !important;
+      height: 42px !important;
+    }
+    .sub-panel-title {
+      font-size: 12px !important;
+      line-height: 20px !important;
+      color: var(--app-text-muted) !important;
+      font-weight: 500 !important;
+    }
+    .sub-expansion-body {
+      padding: 12px 16px 4px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
     /* Output Card on the Right */
     .output-card {
       padding: 0 !important;
@@ -1038,6 +1287,9 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
     .actions {
       display: flex;
       gap: 8px;
+    }
+    .action-icon {
+      margin-right: 4px;
     }
 
     .tabs {
@@ -1109,12 +1361,7 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
     .badge {
       width: 18px;
       height: 18px;
-      display: grid;
-      place-items: center;
-      border-radius: 50%;
-      background: var(--app-danger-soft, rgba(211, 47, 47, 0.12));
       color: var(--app-danger, #d32f2f);
-      font: 700 11px/18px monospace;
       flex: none;
     }
     .err-text {
@@ -1124,6 +1371,7 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
     .arrow {
       color: var(--app-text-muted);
       margin-left: auto;
+      flex: none;
     }
 
     /* Code & Checklist */
@@ -1139,24 +1387,15 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
         SFMono-Regular,
         Menlo,
         monospace;
+      outline: none;
+    }
+    pre:focus-visible {
+      outline: 1px solid var(--app-border-strong, #30363d);
+      outline-offset: -1px;
     }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       line-height: 20px;
-    }
-    .output-footer {
-      padding: 12px 18px;
-      border-top: 1px solid var(--app-border);
-      color: var(--app-text-muted);
-      font-size: 11px;
-      line-height: 16px;
-      background: var(--app-surface);
-      margin: 0 !important;
-    }
-    .notice {
-      color: var(--app-success, #2e7d32);
-      margin-top: 6px;
-      font-weight: 550;
     }
     .checklist {
       padding: 20px 22px;
@@ -1227,15 +1466,15 @@ export class DeploymentPageComponent {
   );
 
   readonly config = signal<DeploymentConfig>({ ...initialDeployment });
+  private readonly modeState = new DeploymentModeState();
   readonly collapsed = signal(
     typeof window !== 'undefined' &&
       window.matchMedia('(max-width: 600px)').matches,
   );
   readonly tab = signal<'yaml' | 'checklist'>('yaml');
   readonly failure = signal(false);
-  readonly notice = signal<'copied' | 'clipboardError' | 'downloaded' | null>(
-    null,
-  );
+  readonly copied = signal(false);
+  private copyTimer: ReturnType<typeof setTimeout> | null = null;
 
   readonly template = signal('');
 
@@ -1274,6 +1513,7 @@ export class DeploymentPageComponent {
         generateCompose(template, {
           ...this.config(),
           domain: 'check.example.com',
+          dataDir: './data',
           webDomain: 'soms.check.example.com',
           adminPassword: 'dummy-password-1234',
           dnsToken: 'dummy-token',
@@ -1283,9 +1523,22 @@ export class DeploymentPageComponent {
       .catch(() => this.failure.set(true));
   }
 
-  themeIcon() {
-    const mode = this.theme.effective();
-    return mode === 'dark' ? '☾' : '☼';
+  readonly effectiveWebDomain = computed(
+    () =>
+      this.config().webDomain.trim() ||
+      this.config().domain.trim() ||
+      'soms.example.com',
+  );
+
+  readonly AppIconType = AppIconType;
+  readonly navIconStyle = { width: '20px', height: '20px' };
+  readonly helpIconStyle = { width: '16px', height: '16px' };
+  readonly actionIconStyle = { width: '18px', height: '18px' };
+
+  themeIcon(): AppIconType {
+    const mode = this.theme.mode();
+    if (mode === 'system') return AppIconType.CONTRAST;
+    return mode === 'dark' ? AppIconType.MOON : AppIconType.SUN;
   }
 
   themeLabel() {
@@ -1306,6 +1559,10 @@ export class DeploymentPageComponent {
     return publishedPort(this.config());
   }
 
+  quotedDataDir() {
+    return shellQuote(this.config().dataDir.trim() || './data');
+  }
+
   portsSummary() {
     return this.config().mode === 'public'
       ? '80/TCP · 443/TCP+UDP'
@@ -1313,8 +1570,13 @@ export class DeploymentPageComponent {
   }
 
   verifyUrl() {
-    const c = this.config();
-    return `https://${c.webDomain}${c.mode === 'public' ? '' : ':' + c.port}/api/v1/config`;
+    return `https://${this.effectiveWebDomain()}${this.config().mode === 'public' ? '' : ':' + this.config().port}/api/v1/config`;
+  }
+
+  verifyLanUrl() {
+    const lan = this.config().lanDomain.trim();
+    if (!lan) return '';
+    return `https://${lan}${this.config().mode === 'public' ? '' : ':' + this.config().port}/api/v1/config`;
   }
 
   issue(key: string) {
@@ -1325,11 +1587,22 @@ export class DeploymentPageComponent {
     );
   }
 
-  focusIssue(key: string, expansionPanel: any) {
+  focusIssue(key: string, domainPanel?: any, advancedPanel?: any) {
+    if (['webDomain', 'lanDomain'].includes(key)) {
+      domainPanel?.open();
+    }
     if (
-      ['database', 'databasePassword', 'databaseUser', 'image'].includes(key)
+      [
+        'database',
+        'databasePassword',
+        'databaseUser',
+        'remoteHost',
+        'remotePort',
+        'remoteCaPath',
+        'image',
+      ].includes(key)
     ) {
-      expansionPanel?.open();
+      advancedPanel?.open();
     }
     const targetId = key === 'publicPort' ? 'port' : key;
     // Find input or select by name/id
@@ -1348,26 +1621,65 @@ export class DeploymentPageComponent {
   }
 
   setMode(mode: DeploymentConfig['mode']) {
-    this.config.update((c) => ({ ...c, mode, ...defaultsForMode(mode) }));
-    this.notice.set(null);
+    this.config.update((c) => this.modeState.switch(c, mode));
   }
 
   update<K extends keyof DeploymentConfig>(key: K, value: DeploymentConfig[K]) {
     this.config.update((c) => ({ ...c, [key]: value }));
-    this.notice.set(null);
   }
 
   randomize(key: 'databasePassword' | 'adminPassword') {
     this.update(key, randomPassword());
   }
 
+  onYamlKeydown(event: KeyboardEvent) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+      event.preventDefault();
+      const selection = window.getSelection();
+      if (!selection) return;
+
+      const pre = event.currentTarget as HTMLElement;
+      const code = pre.querySelector('code') || pre;
+
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }
+
   async copy() {
     if (!this.valid()) return;
-    try {
-      await navigator.clipboard.writeText(this.yaml());
-      this.notice.set('copied');
-    } catch {
-      this.notice.set('clipboardError');
+    const text = this.yaml();
+    let success = false;
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        success = true;
+      } catch {
+        // Fallback below
+      }
+    }
+    if (!success) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        success = document.execCommand('copy');
+      } catch {
+        success = false;
+      }
+      document.body.removeChild(textarea);
+    }
+    if (success) {
+      this.copied.set(true);
+      if (this.copyTimer) clearTimeout(this.copyTimer);
+      this.copyTimer = setTimeout(() => this.copied.set(false), 2000);
     }
   }
 
@@ -1383,6 +1695,5 @@ export class DeploymentPageComponent {
     a.download = 'docker-compose.yml';
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    this.notice.set('downloaded');
   }
 }

@@ -17,7 +17,7 @@ import { resolveSrv } from 'node:dns/promises';
 import { DiscoveryService } from './discovery.service.js';
 
 const state = vi.hoisted(() => ({
-  ca: Buffer.alloc(0),
+  ca: Buffer.alloc(0) as Buffer,
   lookups: [] as string[],
 }));
 vi.mock('node:dns/promises', () => ({ resolveSrv: vi.fn() }));
@@ -44,11 +44,8 @@ vi.mock('undici', async (original) => {
   const actual = await original<typeof import('undici')>();
   return {
     ...actual,
-    Agent: class extends actual.Agent {
-      constructor(options: any) {
-        super({ ...options, connect: { ...options.connect, ca: state.ca } });
-      }
-    },
+    buildConnector: (options: Parameters<typeof actual.buildConnector>[0]) =>
+      actual.buildConnector({ ...options, ca: state.ca }),
   };
 });
 
@@ -88,7 +85,11 @@ async function server(label: string) {
 async function request(s: DiscoveryService) {
   const base = await s.resolveBase('peer.example');
   const response = await s.request(`${base}/.well-known/somfp`);
-  return response.json();
+  return response.json() as Promise<{
+    label: string;
+    host: string;
+    path: string;
+  }>;
 }
 
 beforeAll(async () => {

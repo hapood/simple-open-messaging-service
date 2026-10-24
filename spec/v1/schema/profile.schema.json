@@ -3,32 +3,42 @@
   "$id": "urn:somfp:v1:profile",
   "title": "GET /s2s/v1/accounts/:account response data",
   "type": "object",
-  "required": [
-    "account",
-    "displayName",
-    "bio",
-    "avatar",
-    "profileRev",
-    "proof"
-  ],
+  "required": ["account", "profileRev", "profile", "proof"],
   "properties": {
-    "account": {
-      "$ref": "urn:somfp:v1:common#/$defs/account"
-    },
-    "displayName": { "type": "string", "minLength": 1, "maxLength": 31 },
-    "bio": { "type": "string", "maxLength": 120 },
-    "avatar": {
-      "oneOf": [
-        { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
-        { "type": "null" }
-      ]
-    },
+    "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
     "profileRev": {
-      "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+      "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
     },
-    "proof": {
-      "$ref": "urn:somfp:v1:common#/$defs/base64ChallengeAnswer"
-    }
+    "profile": {
+      "oneOf": [{ "$ref": "#/$defs/profileContent" }, { "type": "null" }]
+    },
+    "proof": { "$ref": "urn:somfp:v1:common#/$defs/base64ChallengeAnswer" }
   },
-  "additionalProperties": false
+  "allOf": [
+    {
+      "if": { "properties": { "profileRev": { "const": 0 } } },
+      "then": { "properties": { "profile": { "type": "null" } } },
+      "else": {
+        "properties": { "profile": { "$ref": "#/$defs/profileContent" } }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "profileContent": {
+      "type": "object",
+      "required": ["displayName", "bio", "avatar"],
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 31 },
+        "bio": { "type": "string", "maxLength": 120 },
+        "avatar": {
+          "oneOf": [
+            { "$ref": "urn:somfp:v1:common#/$defs/inlineProfileAvatar" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
 }

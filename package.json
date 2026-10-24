@@ -1,6 +1,6 @@
 {
   "name": "simple-open-messaging-service",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "A simple open messaging service for interoperable third-party clients.",
   "author": "",
   "private": true,
@@ -33,7 +33,7 @@
     "test:browser:install": "playwright install chromium",
     "test:browser:unit": "vitest run --config vitest.browser-e2e.config.ts",
     "test:cross-platform:unit": "vitest run --config vitest.cross-platform.config.ts",
-    "pi:webtest": "env -u npm_config_allow_scripts pi --extension ./tools/pi-web-testing/extension/index.ts --skill ./tools/pi-web-testing/skill --tools +browser_driver",
+    "pi:webtest": "env -u npm_config_allow_scripts pi --extension ./tools/pi-web-testing/extension/index.ts --skill ./tools/pi-web-testing/skill --tools +browser_driver,+webtest_run --webtest-wizard",
     "test:cross-platform": "tsx test/cross-platform/run.ts",
     "federation:conformance": "tsx tools/federation-conformance/conformance.ts --spec ./spec",
     "db:migrate": "tsx scripts/migrate-db.ts migrate",

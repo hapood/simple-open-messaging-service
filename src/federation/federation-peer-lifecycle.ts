@@ -4,6 +4,7 @@ import {
   count,
   desc,
   eq,
+  gt,
   ilike,
   inArray,
   isNull,
@@ -181,6 +182,11 @@ export class FederationPeerLifecycle {
     const existing = await this.database.db.query.identityNamespace.findFirst({
       where: eq(tables.identityNamespace.domain, domain),
     });
+    if (existing?.id === 0)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'local identity is not a federation peer',
+      );
     if (
       existing?.trustLevel === 'halted' &&
       existing.haltCode === BusinessCode.FEDERATION_PEER_BLOCKED
@@ -204,6 +210,11 @@ export class FederationPeerLifecycle {
     const existing = await this.database.db.query.identityNamespace.findFirst({
       where: eq(tables.identityNamespace.domain, domain),
     });
+    if (existing?.id === 0)
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'local identity is not a federation peer',
+      );
     if (
       !existing ||
       existing.trustLevel !== 'halted' ||
@@ -265,6 +276,7 @@ export class FederationPeerLifecycle {
     namespaceId?: number;
   }) {
     const where = and(
+      gt(tables.identityNamespace.id, 0),
       ...(opts.search
         ? [ilike(tables.identityNamespace.domain, `%${opts.search}%`)]
         : []),
@@ -296,9 +308,12 @@ export class FederationPeerLifecycle {
 
   async detail(domain: string) {
     const peer = await this.database.db.query.identityNamespace.findFirst({
-      where: eq(tables.identityNamespace.domain, domain),
+      where: and(
+        eq(tables.identityNamespace.domain, domain),
+        gt(tables.identityNamespace.id, 0),
+      ),
     });
-    if (!peer)
+    if (!peer || peer.id === 0)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'peer not found');
     return this.withFeedProgress(peer);
   }

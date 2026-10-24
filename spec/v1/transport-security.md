@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Transport and Security
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
 
 This document defines the Federation v1 discovery document, root identity, signing-key certificates, network discovery, TLS, HTTP request targets, Content-Digest, and HTTP Message Signature profile. It is a normative component explicitly referenced by the [Simple Open Messaging Federation Protocol v1](./protocol.md). An operation document cannot weaken its identity, transport, or signature-security requirements.
 

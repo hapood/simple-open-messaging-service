@@ -66,6 +66,23 @@ export class UserResponseDto {
   // device-local and never appears in an API response.
 }
 
+/** Account facts only; display fields are resolved separately for positive profile revisions. */
+export class SelfAccountResponseDto extends PickType(UserResponseDto, [
+  'id',
+  'account',
+  'namespaceId',
+  'isGroup',
+  'isDeleted',
+] as const) {
+  @ApiProperty({
+    example: 0,
+    minimum: 0,
+    description:
+      'Default profile revision; 0 means no profile has been published',
+  })
+  profileRev!: number;
+}
+
 export class ThreadFeedPreviewDto {
   @ApiProperty() seq!: number;
   @ApiProperty({ format: 'date-time' }) createdAt!: string;

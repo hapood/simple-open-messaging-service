@@ -1,15 +1,17 @@
 import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable, HttpStatus, OnModuleInit } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, createHmac, randomBytes } from 'crypto';
 import { and, count, desc, eq, gt, isNull, like } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   admin,
   adminSession,
+  adminLoginChallenge,
   systemSetting,
   account as user,
 } from '../database/schema.js';
+import { jwtConstants } from '../auth/constants.js';
 import { normalizeAccount } from '../common/account.js';
 import { AdminRole } from '../database/enums.js';
 import {
@@ -19,15 +21,12 @@ import {
   type BanStep,
 } from '../auth/brute-force.service.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
-import { TwoFactorService, type SetupBundle } from './two-factor.service.js';
+import { TwoFactorService } from './two-factor.service.js';
 import {
   WebAuthnService,
   type WebAuthnCredentialView,
 } from './webauthn.service.js';
-import {
-  type AuthenticationResponseJSON,
-  type RegistrationResponseJSON,
-} from '@simplewebauthn/server';
+import { type AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { WEBAUTHN_CONFIG } from './webauthn.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -94,6 +93,8 @@ export type AdminLoginResult =
 @Injectable()
 export class AdminAuthService implements OnModuleInit {
   private sessionPolicy = { ttlHours: 12, idleMinutes: 60 };
+  /** Coalesce activity writes within this process, without caching authentication state. */
+  private readonly activityWrites = new Map<bigint, Promise<void>>();
   constructor(
     private database: DatabaseService,
     private jwtService: JwtService,
@@ -164,7 +165,13 @@ export class AdminAuthService implements OnModuleInit {
       );
     }
     const [userRow] = await this.database.db
-      .select({ id: user.id, hashPwd: user.hashPwd })
+      .select({
+        id: user.id,
+        hashPwd: user.hashPwd,
+        updatedAt: user.updatedAt,
+        disabledAt: user.disabledAt,
+        availability: user.availability,
+      })
       .from(user)
       .where(and(eq(user.account, acct), eq(user.namespaceId, 0)))
       .limit(1);
@@ -176,10 +183,16 @@ export class AdminAuthService implements OnModuleInit {
           where: eq(admin.userId, userRow.id),
         })
       : null;
+    const loginState =
+      userRow && adminProfile
+        ? this.stateDigest(userRow.hashPwd, adminProfile, userRow.updatedAt)
+        : undefined;
     const passwordOk =
       !!adminProfile &&
       adminProfile.enabled &&
       !!userRow &&
+      userRow.disabledAt == null &&
+      userRow.availability !== 'REMOVED' &&
       !!userRow.hashPwd &&
       (await this.passwordHasher.verify(userRow.hashPwd, password));
     if (!passwordOk || !adminProfile) {
@@ -202,16 +215,23 @@ export class AdminAuthService implements OnModuleInit {
     if (hasTotp || hasWebauthn) {
       return {
         twoFactorRequired: true,
-        challengeToken: await this.twoFactor.signChallenge(adminProfile.id),
+        challengeToken: await this.twoFactor.signChallenge(
+          adminProfile.id,
+          loginState,
+        ),
         factors: { totp: hasTotp, webauthn: hasWebauthn },
       };
     }
     await this.completeLogin(adminProfile.id, ip);
     return {
-      sessionToken: await this.createAdminSession(adminProfile.id, {
-        ip,
-        userAgent,
-      }),
+      sessionToken: await this.createAdminSession(
+        adminProfile.id,
+        {
+          ip,
+          userAgent,
+        },
+        loginState,
+      ),
     };
   }
 
@@ -289,181 +309,16 @@ export class AdminAuthService implements OnModuleInit {
     this.bruteForce.clearFailures(BAN_DIM_ADMIN_2FA, acct);
     await this.completeLogin(adminRow.id, ip);
     return {
-      sessionToken: await this.createAdminSession(adminRow.id, {
-        ip,
-        userAgent,
-      }),
-    };
-  }
-
-  // ── Two-factor enrollment + management (self-service; the caller is the authenticated admin) ──────
-
-  /** Begin 2FA enrollment: mint a secret + provisioning URI + a signed pending token (stateless — no DB write
-   *  until the admin confirms with their first code). Refuses if already enrolled. */
-  async beginTwoFactorSetup(adminId: number): Promise<SetupBundle> {
-    const adminRow = await this.database.db.query.admin.findFirst({
-      where: eq(admin.id, adminId),
-      columns: { twoFactorEnabled: true },
-      with: {
-        account: {
-          columns: { account: true },
-          extras: { name: accountProfileFields().name.as('name') },
+      sessionToken: await this.createAdminSession(
+        adminRow.id,
+        {
+          ip,
+          userAgent,
         },
-      },
-    });
-    if (!adminRow)
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'admin not found',
-        HttpStatus.OK,
-      );
-    if (adminRow.twoFactorEnabled) {
-      throw new BusinessException(
-        BusinessCode.TWO_FACTOR_ALREADY_ENABLED,
-        'two-factor is already enabled; disable it first to re-enroll',
-        HttpStatus.OK,
-      );
-    }
-    return this.twoFactor.beginSetup(
-      adminId,
-      adminRow.account.account,
-      adminRow.account.name,
-    );
-  }
-
-  /** Confirm enrollment: verify the pending token + the first code, persist the encrypted secret + backup codes,
-   *  then invalidate every existing session so the admin re-logs in through the new 2FA challenge. Returns the
-   *  backup codes plaintext ONCE. */
-  async completeTwoFactorSetup(
-    adminId: number,
-    pendingToken: string,
-    code: string,
-  ): Promise<{ backupCodes: string[] }> {
-    const pending = this.twoFactor.verifyPending(pendingToken);
-    if (!pending || pending.adminId !== adminId) {
-      throw new BusinessException(
-        BusinessCode.TWO_FACTOR_CHALLENGE_EXPIRED,
-        'setup session expired; please start again',
-        HttpStatus.OK,
-      );
-    }
-    // No replay guard pre-enable (counter is null); window=1 tolerance covers phone/server clock drift.
-    if (!this.twoFactor.verifyTotp(pending.secret, code, null).ok) {
-      throw new BusinessException(
-        BusinessCode.TWO_FACTOR_INVALID,
-        'invalid verification code',
-        HttpStatus.OK,
-      );
-    }
-    const { backupCodes } = await this.twoFactor.enableWithBackupCodes(
-      adminId,
-      pending.secret,
-    );
-    // Revoking outstanding sessions forces an immediate re-login through the new 2FA challenge (rather
-    // than waiting for session expiry) — no pre-enrollment session can bypass the new factor. The admin
-    // just proved enrollment, so the forced re-login is expected.
-    await this.revokeSessionsByAdmin(adminId, '2fa_enabled');
-    return { backupCodes };
-  }
-
-  /** Disable 2FA. Requires the current password AND a live 2FA factor (TOTP or backup code) so a hijacked
-   *  session alone cannot turn the second factor off. Burns the consumed backup code (if used). */
-  async disableTwoFactor(
-    adminId: number,
-    password: string,
-    code: string | undefined,
-    backupCode: string | undefined,
-  ): Promise<void> {
-    const adminRow = await this.database.db.query.admin.findFirst({
-      where: eq(admin.id, adminId),
-      columns: {
-        id: true,
-        twoFactorEnabled: true,
-        twoFactorSecretCipher: true,
-        twoFactorLastUsedCounter: true,
-      },
-      with: {
-        account: { columns: { account: true, hashPwd: true } },
-      },
-    });
-    if (!adminRow)
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'admin not found',
-        HttpStatus.OK,
-      );
-    if (!adminRow.twoFactorEnabled) {
-      throw new BusinessException(
-        BusinessCode.TWO_FACTOR_NOT_ENABLED,
-        'two-factor is not enabled',
-        HttpStatus.OK,
-      );
-    }
-    const acct = adminRow.account.account;
-    if (
-      !adminRow.account.hashPwd ||
-      !(await this.passwordHasher.verify(adminRow.account.hashPwd, password))
-    ) {
-      throw new BusinessException(
-        BusinessCode.INVALID_CREDENTIALS,
-        'invalid credentials',
-        HttpStatus.OK,
-      );
-    }
-    // A wrong 2FA factor counts toward the lock (same surface as login verify).
-    if (
-      !(await this.verifyFactor(
-        adminRow,
-        code,
-        backupCode,
-        /*advanceCounter*/ false,
-      ))
-    ) {
-      this.failAdmin2FA(acct);
-    }
-    await this.twoFactor.disable(adminId);
-    await this.revokeSessionsByAdmin(adminId, '2fa_disabled');
-  }
-
-  /** Regenerate the backup-code set (requires a live TOTP or backup code). Returns the new codes plaintext ONCE. */
-  async regenerateBackupCodes(
-    adminId: number,
-    code: string | undefined,
-    backupCode: string | undefined,
-  ): Promise<{ backupCodes: string[] }> {
-    const adminRow = await this.database.db.query.admin.findFirst({
-      where: eq(admin.id, adminId),
-      columns: {
-        id: true,
-        twoFactorEnabled: true,
-        twoFactorSecretCipher: true,
-        twoFactorLastUsedCounter: true,
-      },
-      with: { account: { columns: { account: true } } },
-    });
-    if (
-      !adminRow ||
-      !adminRow.twoFactorEnabled ||
-      !adminRow.twoFactorSecretCipher
-    ) {
-      throw new BusinessException(
-        BusinessCode.TWO_FACTOR_NOT_ENABLED,
-        'two-factor is not enabled',
-        HttpStatus.OK,
-      );
-    }
-    const acct = adminRow.account.account;
-    if (
-      !(await this.verifyFactor(
-        adminRow,
-        code,
-        backupCode,
-        /*advanceCounter*/ false,
-      ))
-    ) {
-      this.failAdmin2FA(acct);
-    }
-    return this.twoFactor.regenerateBackupCodes(adminId);
+        decoded.state,
+        jti,
+      ),
+    };
   }
 
   /** 2FA status for the security card. */
@@ -496,19 +351,47 @@ export class AdminAuthService implements OnModuleInit {
    *  sessions so they re-login after the reset (a locked-out admin may still hold sessions from before
    *  the lockout). */
   async resetTwoFactorBySuper(targetAdminId: number): Promise<void> {
-    const adminRow = await this.database.db.query.admin.findFirst({
-      where: eq(admin.id, targetAdminId),
-      columns: { twoFactorEnabled: true },
+    await this.database.db.transaction(async (tx) => {
+      const owner = await tx.query.admin.findFirst({
+        where: eq(admin.id, targetAdminId),
+        columns: { userId: true },
+      });
+      if (!owner)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found');
+      await tx
+        .select({ id: user.id })
+        .from(user)
+        .where(eq(user.id, owner.userId))
+        .for('no key update');
+      const [row] = await tx
+        .select()
+        .from(admin)
+        .where(eq(admin.id, targetAdminId))
+        .for('no key update');
+      if (row.role === AdminRole.SUPER_ADMIN)
+        throw new BusinessException(
+          BusinessCode.FORBIDDEN,
+          'super-admin security must be managed by its owner',
+        );
+      if (!row.twoFactorEnabled) return;
+      await this.twoFactor.disable(targetAdminId, tx);
+      await tx
+        .update(user)
+        .set({ updatedAt: new Date() })
+        .where(eq(user.id, owner.userId));
+      await tx
+        .update(adminSession)
+        .set({ revokedAt: new Date(), revokeReason: '2fa_reset' })
+        .where(
+          and(
+            eq(adminSession.adminId, targetAdminId),
+            isNull(adminSession.revokedAt),
+          ),
+        );
+      await tx
+        .delete(adminLoginChallenge)
+        .where(eq(adminLoginChallenge.adminId, targetAdminId));
     });
-    if (!adminRow)
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'admin not found',
-        HttpStatus.OK,
-      );
-    if (!adminRow.twoFactorEnabled) return; // nothing to reset
-    await this.twoFactor.disable(targetAdminId);
-    await this.revokeSessionsByAdmin(targetAdminId, '2fa_reset');
   }
 
   // ── WebAuthn (passkey) login — consumed at the challenge step alongside TOTP ──────────────────
@@ -552,7 +435,7 @@ export class AdminAuthService implements OnModuleInit {
         { bannedUntil: ban },
       );
     }
-    return this.webAuthn.beginAssertion(adminId);
+    return this.webAuthn.beginAssertion(adminId, decoded.jti);
   }
 
   /** Finish a passkey login: re-decode the challenge token, verify the assertion, and on success issue the
@@ -602,6 +485,7 @@ export class AdminAuthService implements OnModuleInit {
       adminId,
       pendingToken,
       assertion,
+      jti,
     );
     if (!result.ok) this.failAdmin2FA(acct);
 
@@ -617,73 +501,16 @@ export class AdminAuthService implements OnModuleInit {
     this.bruteForce.clearFailures(BAN_DIM_ADMIN_2FA, acct);
     await this.completeLogin(adminId, ip);
     return {
-      sessionToken: await this.createAdminSession(adminId, { ip, userAgent }),
+      sessionToken: await this.createAdminSession(
+        adminId,
+        { ip, userAgent },
+        decoded.state,
+        jti,
+      ),
     };
   }
 
   // ── WebAuthn enrollment + management (self-service; caller is the authenticated admin) ──────────
-
-  /** Begin passkey enrollment. Requires the CURRENT password (re-auth) so a hijacked-but-still-valid
-   *  access token cannot enroll an attacker-controlled passkey — the Google/GitHub pattern. Passkeys are
-   *  an additive optional factor, so enroll/remove do NOT revoke existing sessions (unlike TOTP-enable). */
-  async beginWebAuthnRegistration(
-    adminId: number,
-    password: string,
-    nickname?: string,
-  ): Promise<{ options: unknown; pendingToken: string }> {
-    const adminRow = await this.database.db.query.admin.findFirst({
-      where: eq(admin.id, adminId),
-      columns: { id: true },
-      with: {
-        account: {
-          columns: { account: true, hashPwd: true },
-          extras: { name: accountProfileFields().name.as('name') },
-        },
-      },
-    });
-    if (!adminRow)
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'admin not found',
-        HttpStatus.OK,
-      );
-    if (
-      !adminRow.account.hashPwd ||
-      !(await this.passwordHasher.verify(adminRow.account.hashPwd, password))
-    ) {
-      throw new BusinessException(
-        BusinessCode.INVALID_CREDENTIALS,
-        'invalid credentials',
-        HttpStatus.OK,
-      );
-    }
-    return this.webAuthn.beginRegistration(
-      adminId,
-      adminRow.account.account,
-      adminRow.account.name,
-      nickname,
-    );
-  }
-
-  /** Confirm enrollment: verify the registration response + persist the credential. A passkey is an
-   *  additive optional factor, so this does NOT revoke existing sessions — enrollment already required
-   *  password re-auth at the begin step, so a session-hijacker cannot enroll their own passkey. */
-  async completeWebAuthnRegistration(
-    adminId: number,
-    pendingToken: string,
-    registration: RegistrationResponseJSON,
-  ): Promise<{
-    id: string;
-    nickname: string | null;
-    deviceType: string | null;
-    backed: boolean;
-  }> {
-    return this.webAuthn.completeRegistration(
-      adminId,
-      pendingToken,
-      registration,
-    );
-  }
 
   async listWebAuthnCredentials(
     adminId: number,
@@ -697,15 +524,6 @@ export class AdminAuthService implements OnModuleInit {
     nickname: string,
   ): Promise<void> {
     await this.webAuthn.renameCredential(adminId, rowId, nickname);
-  }
-
-  /** Remove a passkey credential. Additive factor — does NOT revoke existing sessions (mirrors
-   *  enrollment; see completeWebAuthnRegistration). */
-  async removeWebAuthnCredential(
-    adminId: number,
-    rowId: number,
-  ): Promise<{ remaining: number }> {
-    return this.webAuthn.removeCredential(adminId, rowId);
   }
 
   /** Passkey status for the security card. */
@@ -758,13 +576,27 @@ export class AdminAuthService implements OnModuleInit {
       );
       if (check.ok) {
         if (advanceCounter) {
-          await this.database.db
+          const rows = await this.database.db
             .update(admin)
-            .set({
-              twoFactorLastUsedCounter: check.counter,
-              updatedAt: new Date(),
-            })
-            .where(eq(admin.id, adminRecord.id));
+            .set({ twoFactorLastUsedCounter: check.counter })
+            .where(
+              and(
+                eq(admin.id, adminRecord.id),
+                eq(admin.twoFactorEnabled, true),
+                eq(
+                  admin.twoFactorSecretCipher,
+                  adminRecord.twoFactorSecretCipher,
+                ),
+                adminRecord.twoFactorLastUsedCounter === null
+                  ? isNull(admin.twoFactorLastUsedCounter)
+                  : eq(
+                      admin.twoFactorLastUsedCounter,
+                      adminRecord.twoFactorLastUsedCounter,
+                    ),
+              ),
+            )
+            .returning({ id: admin.id });
+          if (rows.length !== 1) return false;
         }
         return true;
       }
@@ -833,17 +665,87 @@ export class AdminAuthService implements OnModuleInit {
       );
   }
 
+  private stateDigest(
+    hash: string | null,
+    row: Pick<
+      typeof admin.$inferSelect,
+      'twoFactorEnabled' | 'twoFactorSecretCipher' | 'webauthnEnabled'
+    >,
+    updatedAt?: Date,
+  ) {
+    return createHmac('sha256', jwtConstants.adminSecret)
+      .update(
+        JSON.stringify([
+          hash,
+          row.twoFactorEnabled,
+          row.twoFactorSecretCipher,
+          row.webauthnEnabled,
+          updatedAt,
+        ]),
+      )
+      .digest('base64url');
+  }
+
   async createAdminSession(
     adminId: number,
     opts: AdminSessionOpts = {},
+    expectedState?: string,
+    challengeId?: string,
   ): Promise<string> {
     const token = randomBytes(32).toString('base64url');
-    await this.database.db.insert(adminSession).values({
-      adminId,
-      tokenHash: hashToken(token),
-      ip: opts.ip ?? null,
-      userAgent: opts.userAgent ?? null,
-      expiresAt: new Date(Date.now() + this.sessionTtlMs),
+    await this.database.db.transaction(async (tx) => {
+      const owner = await tx.query.admin.findFirst({
+        where: eq(admin.id, adminId),
+        columns: { userId: true },
+      });
+      if (!owner)
+        throw new BusinessException(
+          BusinessCode.UNAUTHENTICATED,
+          'account unavailable',
+        );
+      const [account] = await tx
+        .select()
+        .from(user)
+        .where(eq(user.id, owner.userId))
+        .for('no key update');
+      const [row] = await tx
+        .select()
+        .from(admin)
+        .where(eq(admin.id, adminId))
+        .for('no key update');
+      if (
+        !row?.enabled ||
+        !account ||
+        account.disabledAt != null ||
+        account.availability === 'REMOVED' ||
+        !expectedState ||
+        this.stateDigest(account.hashPwd, row, account.updatedAt) !==
+          expectedState
+      )
+        throw new BusinessException(
+          BusinessCode.UNAUTHENTICATED,
+          'authentication changed; sign in again',
+        );
+      if (challengeId) {
+        const challenge = await tx.query.adminLoginChallenge.findFirst({
+          where: and(
+            eq(adminLoginChallenge.jti, challengeId),
+            eq(adminLoginChallenge.adminId, adminId),
+          ),
+        });
+        if (!challenge?.consumedAt)
+          throw new BusinessException(
+            BusinessCode.UNAUTHENTICATED,
+            'authentication changed; sign in again',
+          );
+      }
+      await tx.insert(adminSession).values({
+        adminId,
+        tokenHash: hashToken(token),
+        ip: opts.ip ?? null,
+        userAgent: opts.userAgent ?? null,
+        expiresAt: new Date(Date.now() + this.sessionTtlMs),
+      });
     });
     return token;
   }
@@ -867,7 +769,12 @@ export class AdminAuthService implements OnModuleInit {
         lastAccessedAt: true,
       },
       with: {
-        admin: { columns: { userId: true, enabled: true, role: true } },
+        admin: {
+          columns: { userId: true, enabled: true, role: true },
+          with: {
+            account: { columns: { disabledAt: true, availability: true } },
+          },
+        },
       },
     });
     if (
@@ -875,20 +782,39 @@ export class AdminAuthService implements OnModuleInit {
       rec.revokedAt ||
       rec.expiresAt <= new Date() ||
       !rec.admin.enabled ||
+      !rec.admin.account ||
+      rec.admin.account.disabledAt != null ||
+      rec.admin.account.availability === 'REMOVED' ||
       (this.sessionIdleMs !== null &&
         Date.now() - rec.lastAccessedAt.getTime() > this.sessionIdleMs)
     )
       return null;
     if (Date.now() - rec.lastAccessedAt.getTime() >= 5 * 60 * 1000) {
-      await this.database.db
-        .update(adminSession)
-        .set({
-          lastAccessedAt: new Date(),
-          ...(ip === undefined ? {} : { ip }),
-        })
-        .where(
-          and(eq(adminSession.id, rec.id), isNull(adminSession.revokedAt)),
-        );
+      let write = this.activityWrites.get(rec.id);
+      if (!write) {
+        // Defer execution until the promise is registered, including synchronous failures.
+        // Concurrent requests share the first writer's timestamp and IP.
+        write = Promise.resolve()
+          .then(async () => {
+            await this.database.db
+              .update(adminSession)
+              .set({
+                lastAccessedAt: new Date(),
+                ...(ip === undefined ? {} : { ip }),
+              })
+              .where(
+                and(
+                  eq(adminSession.id, rec.id),
+                  isNull(adminSession.revokedAt),
+                ),
+              );
+          })
+          .finally(() => {
+            this.activityWrites.delete(rec.id);
+          });
+        this.activityWrites.set(rec.id, write);
+      }
+      await write;
     }
     return {
       userId: rec.admin.userId,
@@ -914,10 +840,20 @@ export class AdminAuthService implements OnModuleInit {
   // Owns the AdminSession table. Services return domain data; the controller wraps the envelope.
 
   /** Active admin refresh-session list (joins Admin → linked user account for display). */
-  async listAdminSessions(opts: { skip?: number; take?: number; ip?: string }) {
+  async listAdminSessions(
+    opts: { skip?: number; take?: number; ip?: string },
+    currentSessionId?: number,
+  ) {
     const where = and(
       isNull(adminSession.revokedAt),
       gt(adminSession.expiresAt, new Date()),
+      eq(admin.enabled, true),
+      this.sessionIdleMs === null
+        ? undefined
+        : gt(
+            adminSession.lastAccessedAt,
+            new Date(Date.now() - this.sessionIdleMs),
+          ),
       opts.ip ? like(adminSession.ip, `%${opts.ip}%`) : undefined,
     );
     const [rows, total] = await Promise.all([
@@ -942,6 +878,7 @@ export class AdminAuthService implements OnModuleInit {
       this.database.db
         .select({ value: count() })
         .from(adminSession)
+        .innerJoin(admin, eq(admin.id, adminSession.adminId))
         .where(where)
         .then(([row]) => row.value),
     ]);
@@ -949,6 +886,8 @@ export class AdminAuthService implements OnModuleInit {
     const list = rows.map(({ account, ...r }) => ({
       ...r,
       id: r.id.toString(),
+      isCurrent:
+        currentSessionId !== undefined && r.id === BigInt(currentSessionId),
       admin: { id: r.adminId, account },
     }));
     return { list, total };

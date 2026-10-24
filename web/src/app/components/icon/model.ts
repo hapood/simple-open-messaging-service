@@ -48,4 +48,5 @@ export enum AppIconType {
   CAMERA_SWITCH,
   CHEVRON_DOWN,
   SHARE,
+  DOWNLOAD,
 }

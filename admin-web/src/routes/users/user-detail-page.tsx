@@ -5,7 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { ArrowLeft } from 'lucide-react';
 import { useUserDetail } from '@/hooks/use-user-detail';
-import { useIsAdminPlus } from '@/hooks/use-me';
+import { useIsAdminPlus, useMe } from '@/hooks/use-me';
+import { usePublicConfig } from '@/hooks/use-public-config';
+import { isPasswordLoginEnabled } from '@/lib/constants';
 import {
   useDisableUser,
   useEnableUser,
@@ -48,6 +50,12 @@ export function UserDetailPage() {
   const userId = id ? Number(id) : null;
   const { data, isLoading, error } = useUserDetail(userId);
   const canManage = useIsAdminPlus();
+  const { data: publicConfig } = usePublicConfig();
+  // Password bootstrap only exists when the deployment's loginMode includes password login; the
+  // backend refuses LOGIN_METHOD_DISABLED otherwise, so the affordance disables instead of erroring.
+  const passwordLoginEnabled = publicConfig
+    ? isPasswordLoginEnabled(publicConfig.loginMode)
+    : false;
   const disable = useDisableUser();
   const enable = useEnableUser();
   const forceLogout = useForceLogoutUser();
@@ -67,8 +75,11 @@ export function UserDetailPage() {
   };
 
   const u = data?.user;
-  // Local users always carry their home domain in the detail payload.
-  const handle = u ? `${u.account}@${u.domain}` : '';
+  // The handle pairs the local account with the node domain from the /admin/me cache — the detail
+  // payload itself carries no domain, and the users are all local persons.
+  const { data: me } = useMe();
+  const handle =
+    u && me?.somsDomain ? `${u.account}@${me.somsDomain}` : (u?.account ?? '');
   const appSessionCount = data
     ? data.sessions.filter((s) => s.client === 'app').length
     : 0;
@@ -110,7 +121,7 @@ export function UserDetailPage() {
               </span>
             </div>
             <div className="flex items-center gap-2">
-              {canManage && u.namespaceId === 0 ? (
+              {canManage && u.namespaceId === 0 && !u.adminRole ? (
                 <>
                   {u.isDeleted ? (
                     <Button
@@ -159,6 +170,7 @@ export function UserDetailPage() {
                   <Button
                     variant="outline"
                     size="sm"
+                    disabled={!passwordLoginEnabled}
                     onClick={() => setDlg({ kind: 'genpwd' })}
                   >
                     {t('users.action.generateInitialPassword')}
@@ -173,14 +185,6 @@ export function UserDetailPage() {
               <CardTitle>{t('userDetail.section.profile')}</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm md:grid-cols-3">
-              <Field
-                label={t('userDetail.field.domain')}
-                value={u.domain ?? '—'}
-              />
-              <Field
-                label={t('userDetail.field.foreigner')}
-                value={u.namespaceId !== 0 ? t('common.yes') : t('common.no')}
-              />
               <Field
                 label={t('userDetail.field.createdAt')}
                 value={<Timestamp value={u.createdAt} />}
@@ -258,6 +262,9 @@ export function UserDetailPage() {
                   {t('userSessions.appCount', { count: appSessionCount })}
                 </span>
               </div>
+              <p className="text-sm leading-[20px] text-muted-foreground">
+                {t('userDetail.sessionsDesc')}
+              </p>
             </CardHeader>
             <CardContent>
               {data.sessions.length === 0 ? (
@@ -335,11 +342,17 @@ export function UserDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>{t('userDetail.section.push')}</CardTitle>
+              <p className="text-sm leading-[20px] text-muted-foreground">
+                {t('userDetail.push.desc')}
+              </p>
             </CardHeader>
             <CardContent>
               {data.pushTokens.length === 0 ? (
                 <p className="py-4 text-center text-sm text-muted-foreground">
                   {t('userDetail.empty.push')}
+                  <span className="mt-2 block leading-[20px]">
+                    {t('userDetail.push.emptyHint')}
+                  </span>
                 </p>
               ) : (
                 <Table>

@@ -42,6 +42,24 @@ export type SomfpSrvRrset =
   | { kind: 'invalid'; reason: 'mixed' | 'fields' }
   | { kind: 'targets'; records: SomfpSrvRecord[]; targets: SomfpSrvTarget[] };
 
+/** Select the lowest-priority group, then apply the outbound transport's weight policy. */
+export function selectSomfpSrvRecord(
+  records: readonly SomfpSrvRecord[],
+  random: () => number = Math.random,
+): SomfpSrvRecord {
+  if (!records.length) throw new Error('No SOMFP SRV targets');
+  const priority = Math.min(...records.map((record) => record.priority));
+  const candidates = records.filter((record) => record.priority === priority);
+  const total = candidates.reduce((sum, record) => sum + record.weight, 0);
+  if (total === 0) return candidates[Math.floor(random() * candidates.length)]!;
+  let selected = random() * total;
+  for (const record of candidates) {
+    selected -= record.weight;
+    if (selected < 0) return record;
+  }
+  return candidates[candidates.length - 1]!;
+}
+
 export function classifySomfpSrvRrset(records: SrvRecord[]): SomfpSrvRrset {
   if (records.length === 0) return { kind: 'empty' };
   if (records.some((record) => record.name === '.')) {

@@ -1,11 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import {
-  account as accountTable,
-  admin,
-  profileTable,
-} from '../database/schema.js';
+import { account as accountTable, admin } from '../database/schema.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
 
 /**
@@ -65,7 +61,8 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
     }
 
     const hash = await this.passwordHasher.hash(pwd);
-    // Create credentials, the initial immutable profile, and the administrative role atomically.
+    // Create credentials and the administrative role atomically. New accounts remain at profile
+    // rev 0 without a Profile row until their owner publishes their first profile edit.
     // A concurrent bootstrap reuses the existing local account without changing its credentials.
     const userId = await this.database.db.transaction(async (tx) => {
       const [created] = await tx
@@ -74,7 +71,7 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
           account: 'admin',
           namespaceId: 0,
           hashPwd: hash,
-          defaultProfileRev: 1,
+          defaultProfileRev: 0,
         })
         .onConflictDoNothing({ target: accountTable.account })
         .returning({ id: accountTable.id });
@@ -85,16 +82,6 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
           columns: { id: true },
         }));
       if (!local) throw new Error('bootstrap admin account was not created');
-      if (created)
-        await tx.insert(profileTable).values({
-          account: 'admin',
-          publisherNamespaceId: 0,
-          profileNamespaceId: 0,
-          profileRev: 1,
-          displayName: 'Admin',
-          avatar: '',
-          bio: '',
-        });
       await tx
         .insert(admin)
         .values({

@@ -32,6 +32,7 @@ vi.mock('argon2', () => ({
 describe('OtpLoginService', () => {
   const store = {
     user: { findUnique: vi.fn() },
+    admin: { findFirst: vi.fn() },
     loginCode: {
       create: vi.fn(),
       findMany: vi.fn(),
@@ -49,7 +50,10 @@ describe('OtpLoginService', () => {
   function databaseFake() {
     return {
       db: {
+        transaction: async (fn: (tx: unknown) => unknown) =>
+          fn(databaseFake().db),
         query: {
+          admin: store.admin,
           user: {
             findFirst: (...args: unknown[]) => store.user.findUnique(...args),
           },
@@ -67,6 +71,7 @@ describe('OtpLoginService', () => {
         select: vi.fn(() => ({
           from: vi.fn((table: unknown) => {
             const query = {
+              for: async () => query.limit(),
               innerJoin: () => query,
               where: () => query,
               orderBy: () => query,
@@ -79,7 +84,8 @@ describe('OtpLoginService', () => {
                         row
                           ? [
                               {
-                                availability: 'ACTIVE',
+                                namespaceId: 0,
+                                availability: 'AVAILABLE',
                                 disabledAt: null,
                                 mustChangePassword: false,
                                 ...row,
@@ -127,6 +133,7 @@ describe('OtpLoginService', () => {
       new BruteForceService(),
       settings as unknown as SettingsService,
     );
+    store.admin.findFirst.mockReset().mockResolvedValue(null);
     store.user.findUnique.mockReset();
     store.loginCode.create.mockReset();
     store.loginCode.findMany.mockReset();
@@ -167,6 +174,13 @@ describe('OtpLoginService', () => {
   }
 
   describe('issueCode', () => {
+    it('rejects administrator accounts, including disabled grants', async () => {
+      store.admin.findFirst.mockResolvedValue({ id: 3 });
+      await expect(svc.issueCode(7, 42)).rejects.toMatchObject({
+        bizCode: BusinessCode.FORBIDDEN,
+      });
+      expect(store.loginCode.create).not.toHaveBeenCalled();
+    });
     it('returns a 6-digit plaintext ONCE; uses the configured TTL; does NOT revoke prior codes (multi-issue)', async () => {
       const r = await issueAndCaptureHash();
       expect(r.code).toMatch(/^\d{6}$/);

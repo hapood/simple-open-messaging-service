@@ -153,17 +153,9 @@ async function establishWithPeers({
       `${reviewKind} review for ${sourceDomain} on ${peerDomain}`,
       timeoutMs,
     );
-    if (reviewKind === 'root-rotation') {
-      const continuity = await peer.admin.post(
-        `/admin/federation/identity-reviews/${review.id}/predecessor-check`,
-        {},
-        `check predecessor for ${sourceDomain}`,
-      );
-      if (continuity.ok !== true)
-        throw new Error(
-          `${peerDomain} could not verify ${sourceDomain} predecessor: ${continuity.detail}`,
-        );
-    }
+    // Approving a root-rotation review runs the predecessor possession
+    // challenge server-side; a failed continuity check rejects the approval
+    // with FEDERATION_ROOT_CHANGE_REJECTED, so no separate probe is needed.
     await peer.admin.post(
       `/admin/federation/identity-reviews/${review.id}/approve`,
       {},

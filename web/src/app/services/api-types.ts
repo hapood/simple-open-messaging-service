@@ -505,7 +505,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Get the current user profile */
+        /** Get the current account and default profile revision */
         post: operations["UserController_getMyProfile"];
         delete?: never;
         options?: never;
@@ -2983,23 +2983,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/federation/self-check": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** S2S handshake self-check — probes this server own DNS/SRV/TLS/well-known/key/clock from the external viewpoint (read-only) */
-        post: operations["AdminFederationController_selfCheck"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/admin/quota/nodes": {
         parameters: {
             query?: never;
@@ -4435,6 +4418,32 @@ export interface components {
              */
             id: number;
         };
+        SelfAccountResponseDto: {
+            /** @example 1 */
+            id: number;
+            /**
+             * @description Login unique name
+             * @example alice
+             */
+            account: string;
+            /**
+             * @description Whether this identity is a group
+             * @example false
+             */
+            isGroup: boolean;
+            /**
+             * @description Identity namespace; 0 for identities created on this server
+             * @example 7
+             */
+            namespaceId: number;
+            /** @example false */
+            isDeleted: boolean;
+            /**
+             * @description Default profile revision; 0 means no profile has been published
+             * @example 0
+             */
+            profileRev: number;
+        };
         UserResponseDto: {
             /** @example 1 */
             id: number;
@@ -4535,11 +4544,6 @@ export interface components {
              * @example alice
              */
             account: string;
-            /**
-             * @description Display name (1-31 chars; unicode/emoji allowed)
-             * @example Alice
-             */
-            name: string;
             /**
              * @description Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
              * @example P@ssw0rd
@@ -5054,11 +5058,6 @@ export interface components {
              */
             account: string;
             /**
-             * @description Display name (1-31 chars; unicode/emoji allowed)
-             * @example Alice
-             */
-            name: string;
-            /**
              * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.
              * @example P@ssw0rd
              */
@@ -5303,18 +5302,6 @@ export interface components {
              * @example spam source
              */
             note?: string;
-        };
-        AdminFederationSelfCheckDto: {
-            /**
-             * @description NTP server used to measure clock skew (optional, default ntp.aliyun.com)
-             * @example ntp.aliyun.com
-             */
-            ntpServer?: string;
-            /**
-             * @description DNS resolver IP for lookups (optional, default 'system')
-             * @example 223.5.5.5
-             */
-            dnsResolver?: string;
         };
         AdminContinueQuotaDto: {
             /**
@@ -6187,7 +6174,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["UserResponseDto"];
+                        data?: components["schemas"]["SelfAccountResponseDto"];
                     };
                 };
             };
@@ -9239,27 +9226,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AdminFederationController_selfCheck: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminFederationSelfCheckDto"];
-            };
-        };
         responses: {
             200: {
                 headers: {

@@ -35,10 +35,8 @@ const validateVerify = ajv.getSchema(
 const validateProfile = ajv.getSchema('urn:somfp:v1:profile')!;
 const profile = {
   account: 'alice',
-  displayName: 'Alice',
-  bio: '',
-  avatar: null,
   profileRev: 1,
+  profile: { displayName: 'Alice', bio: '', avatar: null },
 };
 
 for (const endpoint of ['verify', 'profile'] as const) {

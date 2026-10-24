@@ -1,31 +1,34 @@
 import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable } from '@nestjs/common';
-import { count, desc, eq, ilike, sql } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, isNull } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { admin, account as user } from '../database/schema.js';
+import {
+  admin,
+  adminSession,
+  adminLoginChallenge,
+  loginCode,
+  account as user,
+} from '../database/schema.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { AdminRole } from '../database/enums.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import type {
-  AdminManageListDto,
-  AdminCreateDto,
-  AdminSetRoleDto,
-} from './admin.dto.js';
+import type { AdminManageListDto, AdminSetRoleDto } from './admin.dto.js';
 
-type StateChange = { kind: 'disable' } | { kind: 'role'; role: AdminRole };
+import { SessionTokenService } from '../auth/session-token.service.js';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
+type StateChange =
+  | { kind: 'disable' }
+  | { kind: 'enable' }
+  | { kind: 'role'; role: AdminRole };
 
 /**
  * Admin self-management domain logic: list, promote, disable/enable, role change.
  *
- * The last-super guard is RACE-FREE. disable / demote of an enabled SUPER_ADMIN runs inside a
- * $transaction that SELECT ... FOR NO KEY UPDATE-locks every enabled super row before counting, so two
- * super-admins disabling each other concurrently cannot drive the enabled-super count to 0: the
- * second transaction blocks on the row lock, then re-reads the post-commit count and refuses. A
- * real state change (an actual disable, or a role transition) is followed by revokeSessionsByAdmin
- * so the affected admin's outstanding admin_session cookies fail validation on their next request;
- * a no-op same-role setRole (or disabling an already-disabled admin) changes nothing and revokes
- * nothing, so it never kicks the admin.
+ * Mutations lock Account → Admin before reading roles. Super-admin grants are immutable.
+ * Role changes and disables revoke sessions in the same transaction; no-op changes do not.
+ * Generic user management cannot disable administrator accounts.
  *
  * Errors throw BusinessException (the controller propagates → global AllExceptionsFilter renders
  * HTTP 200 + code); success returns the raw payload (list / created admin), and ack-only ops
@@ -36,6 +39,8 @@ export class AdminManageService {
   constructor(
     private readonly database: DatabaseService,
     private readonly adminAuth: AdminAuthService,
+    private readonly sessions: SessionTokenService,
+    private readonly events: EventEmitter2,
   ) {}
 
   async list(dto: AdminManageListDto) {
@@ -85,70 +90,74 @@ export class AdminManageService {
     return { list, total };
   }
 
-  async create(dto: AdminCreateDto) {
-    const candidate = await this.database.db.query.account.findFirst({
-      where: eq(user.id, dto.userId),
-      columns: { availability: true },
-      with: {
-        admins: { columns: { id: true } },
-      },
+  /** Grant only read-only access. Role escalation is a separate super-admin operation. */
+  async grantViewer(userId: number) {
+    const result = await this.database.db.transaction(async (tx) => {
+      const [candidate] = await tx
+        .select()
+        .from(user)
+        .where(eq(user.id, userId))
+        .for('no key update');
+      if (!candidate || candidate.namespaceId !== 0)
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'local user not found',
+        );
+      if (
+        candidate.availability === 'REMOVED' ||
+        candidate.disabledAt !== null ||
+        candidate.mustChangePassword
+      )
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'account must be active and finish password setup before receiving admin access',
+        );
+      const existing = await tx.query.admin.findFirst({
+        where: eq(admin.userId, userId),
+      });
+      if (existing)
+        throw new BusinessException(
+          BusinessCode.ALREADY_EXISTS,
+          'user already has admin access',
+        );
+      await tx
+        .update(loginCode)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(loginCode.userId, userId), isNull(loginCode.revokedAt)));
+      const [row] = await tx
+        .insert(admin)
+        .values({ userId, role: AdminRole.VIEWER, updatedAt: new Date() })
+        .returning({ id: admin.id, userId: admin.userId, role: admin.role });
+      const hashes = await this.sessions.revokeAllInTransaction(
+        tx,
+        userId,
+        'admin_access_granted',
+      );
+      return { row, hashes };
     });
-    if (!candidate)
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
-    if (candidate.availability === 'REMOVED') {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'a deleted user cannot become an admin',
-      );
-    }
-    if (candidate.admins.length > 0) {
-      throw new BusinessException(
-        BusinessCode.ALREADY_EXISTS,
-        'user is already an admin',
-      );
-    }
-    return this.database.db
-      .insert(admin)
-      .values({ userId: dto.userId, role: dto.role, updatedAt: new Date() })
-      .returning({ id: admin.id, userId: admin.userId, role: admin.role })
-      .then(([row]) => row);
+    await this.sessions.clearRevokedCache(result.hashes);
+    this.events.emit('auth.sessions-invalidated', {
+      userId,
+      reason: 'admin_access_granted',
+    });
+    return result.row;
   }
 
   async disable(adminId: number): Promise<void> {
-    const { changed } = await this.guardedStateChange(adminId, {
-      kind: 'disable',
-    });
-    // Revoke outstanding sessions only on a real disable (the admin was enabled) — deleting the linked
-    // AdminSession rows is what invalidates their admin_session cookie on the next request.
-    if (changed)
-      await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_disabled');
+    await this.guardedStateChange(adminId, { kind: 'disable' });
   }
 
   async enable(adminId: number): Promise<void> {
-    const existing = await this.database.db.query.admin.findFirst({
-      where: eq(admin.id, adminId),
-      columns: { id: true },
-    });
-    if (!existing)
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found');
-    // No session revocation: a disabled admin's sessions were already revoked at disable time and none
-    // can be created while disabled (login checks enabled), so there is nothing to revoke here. Revoking
-    // would only log out an already-enabled admin on a redundant enable call (a no-op must not kick).
-    await this.database.db
-      .update(admin)
-      .set({ enabled: true })
-      .where(eq(admin.id, adminId));
+    await this.guardedStateChange(adminId, { kind: 'enable' });
   }
 
   async setRole(adminId: number, dto: AdminSetRoleDto): Promise<void> {
-    const { changed } = await this.guardedStateChange(adminId, {
-      kind: 'role',
-      role: dto.role,
-    });
-    // A real role transition demotes/promotes the admin — revoke so they re-login at the new privilege
-    // level. A same-role reaffirmation is a no-op (changed:false) and must NOT kick the admin.
-    if (changed)
-      await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_role_change');
+    if (dto.role !== AdminRole.ADMIN && dto.role !== AdminRole.VIEWER)
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'super-admin access cannot be granted',
+      );
+    await this.guardedStateChange(adminId, { kind: 'role', role: dto.role });
   }
 
   /** SUPER_ADMIN lockout recovery: clear another admin's 2FA outright (no code — the role gate is the
@@ -157,60 +166,79 @@ export class AdminManageService {
     await this.adminAuth.resetTwoFactorBySuper(adminId);
   }
 
-  /**
-   * Race-free disable / demote. Within a transaction:
-   *   1. load the target's current (role, enabled);
-   *   2. if the change would remove an enabled SUPER_ADMIN from the enabled-super set, FOR NO KEY UPDATE-lock
-   *      the enabled super rows and refuse when only one remains;
-   *   3. apply the state change in one UPDATE (atomic).
-   * Throws BusinessException on NOT_FOUND (unknown admin) / FORBIDDEN (would remove the last super);
-   * returns `changed` so callers revoke sessions only for a real transition. Re-enable, promote-to-super,
-   * non-super disable, and same-role setRole skip the lock (no last-super risk); a no-op same-role
-   * setRole (or disabling an already-disabled admin) reports changed:false so it neither revokes
-   * sessions nor kicks the admin.
-   */
+  /** Lock before reading authorization state, protect super grants, and revoke atomically. */
   private async guardedStateChange(
     adminId: number,
     change: StateChange,
   ): Promise<{ changed: boolean }> {
     return this.database.db.transaction(async (tx) => {
-      const current = await tx.query.admin.findFirst({
+      const owner = await tx.query.admin.findFirst({
         where: eq(admin.id, adminId),
-        columns: { role: true, enabled: true },
       });
+      if (!owner)
+        throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found');
+      const [account] = await tx
+        .select()
+        .from(user)
+        .where(eq(user.id, owner.userId))
+        .for('no key update');
+      const [current] = await tx
+        .select()
+        .from(admin)
+        .where(eq(admin.id, adminId))
+        .for('no key update');
       if (!current)
         throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found');
 
-      const demotesSuper =
-        current.enabled &&
-        current.role === AdminRole.SUPER_ADMIN &&
-        (change.kind === 'disable' || change.role !== AdminRole.SUPER_ADMIN);
+      if (current.role === AdminRole.SUPER_ADMIN)
+        throw new BusinessException(
+          BusinessCode.FORBIDDEN,
+          'super-admin access cannot be modified',
+        );
 
-      if (demotesSuper) {
-        // Lock the enabled super rows so a concurrent disable/demote serializes behind this txn, then
-        // re-count under the lock (the count may have dropped if a concurrent txn already committed).
-        const locked = await tx.execute<{ id: number }>(sql`
-          SELECT id FROM "Admin" WHERE role = 'SUPER_ADMIN' AND enabled = true FOR NO KEY UPDATE
-        `);
-        if (locked.rows.length <= 1) {
-          throw new BusinessException(
-            BusinessCode.FORBIDDEN,
-            'cannot remove the last super admin',
-          );
-        }
-      }
-
-      // changed drives the caller's post-commit session revocation. A disable is a real change only when
-      // the admin was enabled; a role change is real only when the role actually differs (a same-role
-      // reaffirmation writes the same value and must not revoke anything).
+      if (
+        change.kind !== 'disable' &&
+        (!account ||
+          account.disabledAt !== null ||
+          account.availability === 'REMOVED')
+      )
+        throw new BusinessException(
+          BusinessCode.FORBIDDEN,
+          'account is unavailable',
+        );
       const changed =
-        change.kind === 'disable'
-          ? current.enabled
-          : change.role !== current.role;
+        change.kind === 'role'
+          ? change.role !== current.role
+          : current.enabled !== (change.kind === 'enable');
+      if (!changed) return { changed: false };
       const data =
-        change.kind === 'disable' ? { enabled: false } : { role: change.role };
-
-      await tx.update(admin).set(data).where(eq(admin.id, adminId));
+        change.kind === 'role'
+          ? { role: change.role }
+          : { enabled: change.kind === 'enable' };
+      await tx
+        .update(admin)
+        .set({ ...data, updatedAt: new Date() })
+        .where(eq(admin.id, adminId));
+      if (change.kind !== 'enable') {
+        await tx
+          .update(adminSession)
+          .set({
+            revokedAt: new Date(),
+            revokeReason:
+              change.kind === 'disable'
+                ? 'admin_disabled'
+                : 'admin_role_change',
+          })
+          .where(
+            and(
+              eq(adminSession.adminId, adminId),
+              isNull(adminSession.revokedAt),
+            ),
+          );
+        await tx
+          .delete(adminLoginChallenge)
+          .where(eq(adminLoginChallenge.adminId, adminId));
+      }
       return { changed };
     });
   }

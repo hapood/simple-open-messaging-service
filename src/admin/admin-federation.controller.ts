@@ -17,7 +17,6 @@ import { AdminRole } from '../database/enums.js';
 import {
   AdminListFederationPeersDto,
   AdminFederationBlockDto,
-  AdminFederationSelfCheckDto,
   AdminFederationRetireDto,
   AdminFederationReviewApproveDto,
   AdminFederationIdentityRecoverDto,
@@ -27,7 +26,6 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { FederationPeerLifecycle } from '../federation/federation-peer-lifecycle.js';
-import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { FederationRetireService } from './federation-retire.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
 import { KeypairService } from '../federation/keypair.service.js';
@@ -53,7 +51,6 @@ import { FederationAdminHealthProbeService } from '../federation/federation-admi
 export class AdminFederationController {
   constructor(
     private readonly peerLifecycle: FederationPeerLifecycle,
-    private readonly selfCheckService: FederationSelfCheckService,
     private readonly retireService: FederationRetireService,
     private readonly namespaceAdmin: FederationNamespaceAdminService,
     private readonly keypair: KeypairService,
@@ -256,6 +253,15 @@ export class AdminFederationController {
     summary: 'Start or retry outbound recognition with a federated peer',
   })
   async recognizePeer(@Param('domain') domain: string) {
+    if (
+      domain.trim().toLowerCase().replace(/\.+$/, '') ===
+      this.keypair.getIdentityDomain()
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'local identity is not a federation peer',
+      );
+    }
     return this.recognition.recognize(domain);
   }
 
@@ -313,19 +319,5 @@ export class AdminFederationController {
   })
   async unblockPeer(@Param('domain') domain: string): Promise<void> {
     await this.peerLifecycle.markUnblocked(domain);
-  }
-
-  @UseGuards(AdminAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/federation/self-check')
-  @ApiOperation({
-    summary:
-      'S2S handshake self-check — probes this server own DNS/SRV/TLS/well-known/key/clock from the external viewpoint (read-only)',
-  })
-  async selfCheck(@Body() dto: AdminFederationSelfCheckDto) {
-    return this.selfCheckService.run({
-      ntpServer: dto?.ntpServer,
-      dnsResolver: dto?.dnsResolver,
-    });
   }
 }

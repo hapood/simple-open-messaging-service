@@ -117,6 +117,7 @@ function makeService(overrides: Record<string, unknown> = {}) {
       ];
       const query = {
         from: () => query,
+        for: async () => [{ id: 7 }],
         where: () => query,
         then: (fn: (v: unknown[]) => unknown) => resolve().then(fn),
       };
@@ -262,6 +263,61 @@ describe('WebAuthnService', () => {
     expect(updateMany).toHaveBeenCalledWith({
       data: { counter: 5, lastUsedAt: expect.any(Date) },
     });
+  });
+
+  it('rejects an assertion bound to another login, session or operation before verification', async () => {
+    const findUnique = vi.fn();
+    const { svc } = makeService({
+      webAuthnCredential: {
+        findUnique,
+        findMany: vi.fn(async () => [
+          { credentialId: 'cred', transports: null },
+        ]),
+      },
+    });
+    const { pendingToken } = await svc.beginAssertion(7, 'login-challenge-A');
+    expect(
+      await svc.verifyAssertion(
+        7,
+        pendingToken,
+        { id: 'cred' } as never,
+        'login-challenge-B',
+      ),
+    ).toEqual({ ok: false });
+    expect(
+      await svc.verifyAssertion(7, pendingToken, { id: 'cred' } as never),
+    ).toEqual({ ok: false });
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects a lost counter CAS instead of accepting a removed or concurrently used credential', async () => {
+    mockVerifyAuth.mockResolvedValue({
+      verified: true,
+      authenticationInfo: { newCounter: 5 },
+    } as never);
+    const { svc } = makeService({
+      webAuthnCredential: {
+        findUnique: vi.fn(async () => ({
+          id: 9,
+          adminId: 7,
+          publicKey: Buffer.from([1]),
+          counter: 3,
+        })),
+        findMany: vi.fn(async () => [
+          { credentialId: 'cred', transports: null },
+        ]),
+        updateMany: vi.fn(async () => ({ count: 0 })),
+      },
+    });
+    const { pendingToken } = await svc.beginAssertion(7, 'operation');
+    expect(
+      await svc.verifyAssertion(
+        7,
+        pendingToken,
+        { id: 'cred' } as never,
+        'operation',
+      ),
+    ).toEqual({ ok: false });
   });
 
   it('verifyAssertion returns {ok:false} when the lib throws (clone / tamper)', async () => {

@@ -1,118 +1,181 @@
 ---
 name: web-testing
-description: Run project-specific browser E2E exploration, execute numbered acceptance cases, reproduce UI defects, or create and maintain Playwright browser tests for the standalone playground or three-node federation lab. Use only for Web/Admin browser automation and browser test planning or progress updates.
+description: Execute two-node main-workflow or three-node full SOMS Web/Admin browser acceptance using the Pi setup wizard, persistent Playwright driver, local progress records, and explicit operator gates for bugs and driver changes. Also supports targeted local playground and federation regression work.
 ---
 
 # Project Web testing
 
-Use the repository's existing browser harness and documentation as the source of truth. Do not create a parallel test plan, progress tracker, browser driver, or fixture convention under this skill directory.
+## Start and select scope
 
-## Read only what the task needs
+`npm run pi:webtest` opens the interactive setup wizard. `/webtest` opens it again.
+It collects quick (two nodes) or full (three nodes), each node's external SOMS URL,
+optional internal Admin URL, and optional Admin username (default `admin`). API
+routes and the default `/admin/` entrance are derived from the external URL.
+An internal Admin origin without a path gains `/admin/`. Passwords are entered
+through masked TUI dialogs. The extension alone saves reusable configuration in
+`test/browser-e2e/.local/config.json` (Git-ignored, private plaintext test credentials)
+and transfers passwords to the driver through a private pipe. Startup offers use
+or modify for saved settings instead of collecting them per session. Never ask
+for a password in chat, read `.env` or the local config into model context, or put
+credentials/OTPs in tool parameters, other files, command arguments, evidence,
+screenshots, or traces.
 
-First read `docs/development/browser-testing.md` to choose the environment and shared runtime. Playground tasks do not require federation credentials, HMR status files, or acceptance-plan history. Open a new profile with explicit `target: "playground"` or `target: "federation"`; the Pi startup command never binds a target. For federation acceptance, continue with these short routing reads. Browser and Android each have a plan,
-progress log, and handoff; route to the platform the task targets.
+The wizard authorizes dedicated test fixtures on the confirmed deployments,
+routine non-destructive local checks and temporary test-step creation/editing.
+Do not request repeated approval for these normal test operations. This includes
+checking Git state, reading/searching code, creating temporary directories and
+synthetic files, and writing/editing scenario `.mjs` files under the step directory.
+It does not authorize editing source, resetting databases/profiles, changing
+credentials, restarting services or mutating pre-existing business data.
 
-1. Read `docs/development/browser-e2e-progress.md` (or
-   `android-e2e-progress.md`) from the beginning through **Next Unfinished
-   Work** to learn current status. Read dated evidence only when the selected
-   case needs it.
-2. Read the **Resume here**, **Running environment**, and **Retained fixtures
-   and driver** sections of `docs/development/browser-e2e-handoff.md` (or
-   `android-e2e-handoff.md`) before continuing retained work.
-3. Read the selected numbered section and the applicable cross-cutting rules in
-   `docs/development/browser-e2e-test-plan.md` (or
-   `android-e2e-test-plan.md`). Do not load the entire plan when one section is
-   enough.
-4. Read `docs/development/browser-e2e-tools.md` before controlling the
-   persistent driver; its Android lab preflight applies to Android runs.
+Read `docs/development/browser-testing.md`, then the selected plan:
 
-Use `rg -n '^## |^### |<case id>|<feature term>'` to locate relevant sections before reading large documents.
+- Quick: `docs/development/browser-e2e-quick-test-plan.md` (two nodes).
+- Full: `docs/development/browser-e2e-test-plan.md` (three nodes, including
+  cross-cutting and viewport matrices). Browser runs never include Android 11.x.
 
-## Source ownership
+Use `rg -n '^## |^### |<case id>|<feature>'` to locate relevant detailed rules.
+Do not load an unrelated Android plan or obsolete shared progress/handoff files.
+Source and documentation comments remain English; communicate with the user in
+their language.
 
-- Reusable executable browser infrastructure belongs in `test/browser-e2e/`.
-- Deterministic regression specs belong in `test/browser-e2e/*.spec.ts` and run through `npm run test:browser`.
-- The canonical acceptance inventory belongs in `docs/development/browser-e2e-test-plan.md`.
-- Current coverage and concise evidence belong in `docs/development/browser-e2e-progress.md`.
-- Resume-only operational state belongs in `docs/development/browser-e2e-handoff.md`.
-- Android acceptance, progress, and resume state live in
-  `android-e2e-test-plan.md`, `android-e2e-progress.md`, and
-  `android-e2e-handoff.md`; Android defect records use the
-  `android-e2e-bug-*.md` prefix.
-- A reproducible open product defect or a fix awaiting required platform regression belongs in a focused `docs/development/browser-e2e-bug-*.md` record linked from progress. After durable regression coverage and the required browser regression pass, summarize the current outcome in progress and delete the bug record; Git history retains its investigation.
-- Do not duplicate those facts in this skill. Update the owning source instead.
+## Run state and progress
 
-## Temporary browser steps
+`webtest_run status` returns the active run and its local directory:
+`test-results/browser-e2e/acceptance/<run-id>/`.
 
-Put scenario-specific Playwright step modules under:
+- `run.json` is authoritative. `progress.md`, `handoff.md`, and `bugs/` are
+  tool-generated projections; do not edit them with shell/file tools.
+- Before business mutations, expand every selected matrix into stable,
+  assertion-sized case IDs with `webtest_run register`, using `cases: [{id, title}]`
+  in batches of up to 200. Registration creates only `NOT RUN` cases, preserves
+  existing results and evidence, and rejects duplicate IDs or changed existing
+  titles atomically. Use `record` for individual verdicts. Both actions return
+  compact summaries; use `status` when the full run state is needed.
+  Initial chapter placeholders are NOT coverage. Complete a chapter only after
+  every required child item has a recorded verdict.
+- Record each completed item immediately using `record`: ID, scope/title,
+  outcome and concrete evidence. Use `checkpoint` with `next` for fixture,
+  cleanup, profile mappings, build identities, next action and unresolved gaps.
+- Keep evidence concise and non-secret. Include participant/node/role, viewport,
+  UI actions, assertions, expected/actual, observation deadline and artifact paths.
+- `finish` refuses unfinished items. Execution completion is not a PASS when
+  BUG, BLOCKED, SKIPPED or NOT VERIFIED gaps remain.
+- `/webtest-status` shows progress. `/webtest-resume RUN_ID` reloads an existing
+  run with the shared local configuration, provided its mode/endpoints/account
+  match. Startup offers use/modify; selecting use skips credential entry. `/reload`
+  restores the session's progress run ID, not a session-specific credential copy.
+  New sessions share settings but need an explicit run ID to resume earlier work.
+  Delete the shared config to forget credentials; never print/read it into model
+  context. Verify deployment versions, identity and fixtures; historical PASS
+  does not verify a new build.
 
-```text
-/tmp/soms-browser-e2e/steps/
-```
+## Preflight and browser operation
 
-Create the directory when needed. Use descriptive, safe filenames ending in `.mjs`. `/tmp` is disposable and may be cleared on reboot or by system cleanup, so never treat it as durable evidence.
+1. Inspect `git status` as a routine check without another confirmation; preserve all
+   unrelated changes. Do not automatically start/restart/reset services.
+2. Call `browser_driver preflight` to check Web/Admin reachability and edge/backend
+   compatibility contracts. Record exact returned server/API versions. Reject
+   wrong nodes, invalid certificates, redirects to unapproved origins or
+   unavailable services as setup blocks, not product bugs.
+3. Call `status`. Open isolated profiles with explicit `target: "federation"`
+   and the selected node key (`alpha`, `bravo`, optionally `charlie`). These are
+   aliases for the user-confirmed deployment, not inferred hostnames.
+4. Use `adminLogin`, `issueOtp`, then `userLogin` sequentially. Every call to
+   these three helpers must include the explicit selected `node` (`alpha`,
+   `bravo`, or `charlie`), even when `user` identifies an existing profile.
+   Never infer the node from a profile name. Verify the actual
+   federation domain before mutations: `adminLogin` reads authenticated Admin
+   `/api/v1/admin/me` (`somsDomain`) and persists it in the run. Log into every
+   selected node's Admin before creating fixtures. Missing, changed or duplicate
+   identities pause the run; never guess from hostnames or ask for a manual domain
+   just to bypass discovery. Verify visible account identity in each user context.
+   Unsupported MFA/login/UI contracts are a pause, not permission to bypass them.
+5. Use one profile per account/session, a dedicated fixture prefix for this run,
+   and only authorized test data. OTPs are node/account scoped and memory-only.
+6. Temporary trusted `.mjs` steps belong in `/tmp/soms-browser-e2e/steps/`.
+   Export `default async ({ page, expect, pageOf, shot, nodes }) => { ... }`.
+   Use `browser_driver eval`; do not launch an alternate browser client.
+   Reuse `test/browser-e2e/steps/ui-fixtures.mjs` for UI fixture creation.
+7. Perform business actions through visible controls. APIs may prepare fixtures
+   or supplement assertions, but API-only behavior cannot establish a UI PASS/BUG.
+   Prefer semantic/structural selectors and Playwright web-first assertions;
+   fixed sleeps and visual intuition are not success conditions.
+8. Capture relevant screenshots, errors and bounded traces only after login.
+   Never trace authentication/OTP issuance or screenshot authentication surfaces.
+   Artifacts may still contain session data: keep local, private and uncommitted.
+9. State-dependent actions remain sequential. Close contexts cleanly; never
+   delete profile locks or reset a profile merely to resume.
 
-A temporary step exports one async default function:
+Configured deployments use HTTP/UI preflight, NOT local HMR status files.
+Never invent a successful local build for a remote deployment. Local lab and
+playground regression remain separate workflows in `browser-testing.md` and
+`browser-e2e-tools.md`; local lab federation still requires current successful
+Web/Admin HMR builds. Arbitrary URLs are not allowed: the driver restricts
+navigation to confirmed Web/Admin origins. Trusted step modules are not sandboxed.
 
-```js
-export default async ({ page, expect, pageOf, shot, nodes }) => {
-  await expect(page.locator('app-icon-rail .icon-rail')).toBeVisible();
-  return { ready: true };
-};
-```
+## Mandatory pause and confirmation
 
-Promote a temporary method into `test/browser-e2e/` only when it is generally reusable. For local user and friendship setup through visible controls, reuse `test/browser-e2e/steps/ui-fixtures.mjs`: `createLocalUser(adminPage, { account, displayName })`, `requestLocalFriend(senderPage, { account, displayName })`, and `acceptLocalFriend(recipientPage, { displayName })`. These helpers do not call APIs or write the database; login remains the browser driver's separate OTP setup. Keep reusable step source and comments in English and use structural/semantic selectors instead of localized labels. Promote a scenario into a committed `*.spec.ts` when it should become a deterministic regression gate. Do not preserve one-off fixture IDs, credentials, OTPs, cookies, or session state in source.
+On a browser-command failure, the extension automatically pauses acceptance and
+writes an unclassified issue. Do not continue mutations or call an alternate
+client before diagnosis. Read-only diagnostics (`status`, `inspect`, `errors`,
+`shot`, `traceStop`) and clean context closure remain available when safe.
 
-## Android network preflight
+Invocation mistakes and agent-authored temporary-step mistakes do NOT require
+operator confirmation. After safe diagnosis, call `webtest_run recover` with the
+current issue `id`, `scope: "arguments"` or `"temporary-step"`, and `evidence`
+explaining the observed contract, cause and exact correction. Temporary-step
+recovery also requires the absolute `path` of the `.mjs` file under
+`/tmp/soms-browser-e2e/steps/`. Recovery retains the failure and diagnosis, marks
+an agent retry (not an operator approval), and resumes the run without a dialog.
+Correct and locally check the arguments/temporary script, then rerun the failed
+assertion. For progress-tool parameter validation errors that leave the run
+running, simply correct the parameters and retry; `record` requires `id`,
+`title`, `outcome` and concrete `evidence`. Do not create an operator pause for
+these routine mistakes.
 
-For Android/Appium validation, follow the Android lab network preflight in
-`docs/development/browser-e2e-tools.md` before configuring the app or recording a
-native verdict. When validating Android FCM in a restricted network, remember
-that the backend Firebase Admin SDK uses the process/system `HTTPS_PROXY` or
-`https_proxy` environment variable for FCM credential and send requests; do not
-record or paste proxy URLs in evidence.
+This exception never authorizes driver, committed/shared helper, harness,
+configuration, credential, or product changes, destructive operations or resets.
+Do not use a temporary script to conceal or work around a product defect,
+unsupported driver capability or environment fault. Ambiguous failures and all
+other failures still require classification and an operator decision:
 
-## Browser-driver workflow
+- **PRODUCT_BUG**: reproducible UI-reachable expected/actual mismatch supported
+  by assertions. First rule out stale locators, wrong profiles, environment
+  problems and documented convergence behavior.
+- **DRIVER_MISMATCH**: unsupported deployed contract, stale selector, missing
+  capability or protocol mismatch. Never silently edit the driver, helpers,
+  timeouts, credentials or implementation to make a test pass.
+- **ENVIRONMENT**: unreachable service, incompatible build, TLS, permissions or
+  unavailable fixture. Do not automatically reset/restart anything.
 
-Federation acceptance is HMR-only. Playground regression owns a non-HMR server; interactive playground exploration may use its separate development server. Start `npm run dev:be` and `npm run dev:fe`; never use `dev:fe:built` for browser acceptance. Before changing or testing code, use `browser_driver` action `frontendStatus` to inspect the current Web and Admin HMR build. Do not issue a long-running `frontendWait` call without progress visibility. If waiting is needed, poll with short bounded waits (normally 10-20 seconds each), and between attempts report the current `frontendStatus`, relevant HMR status-file contents, or recent frontend logs. A failure or stale status is an environment/build failure, not a product PASS.
+For failures outside the routine test-error exception, call `webtest_run pause`
+with kind, title, evidence, optional case ID, and a
+concrete `proposal` describing exact files/behavior and required verification
+when a repair is appropriate. This persists an issue BEFORE showing the operator
+choices: retry, skip, stop, or authorize that proposed repair. Cancellation leaves
+the run paused. `webtest_run decision` reopens the decision dialog.
 
-The `browser_driver` tool wraps `test/browser-e2e/driver.mjs` and keeps isolated persistent Chromium profiles. Call state-dependent commands sequentially.
+For driver/shared-harness or product repairs, authorization applies ONLY to that issue/proposal. Once approved, perform
+its scoped edits and verification commands without asking again for each operation.
+Request new approval if scope expands. Do not use shell commands to evade source
+edit approval or perform unauthorized destructive operations. Browser mutations
+stay paused during repair. Run the focused harness checks, then request a new operator retry decision;
+re-run the failed case before assigning a verdict. A later driver mismatch needs
+new authorization; earlier approval never becomes blanket permission. A shell
+command or temporary step must not be used to evade these gates.
 
-1. Check running services and processes without restarting or resetting them automatically.
-2. Call `status`, then reopen only the required named profiles.
-3. Use `inspect` for the current URL and accessibility snapshot.
-4. Use `adminLogin`, `issueOtp`, and `userLogin` only when login is actually required. Never return or persist an OTP or password. For parallel sessions, pass a private admin profile via `user` (e.g. `admin-parallel-1`) to `adminLogin`/`issueOtp` instead of sharing `admin-<node>`; keep `/dev/shm/soms-admin-pw` in sync with `.env` after a lab reset.
-5. Write scenario-specific actions to the temporary step directory and invoke them with `eval`.
-6. Use semantic locators and Playwright web-first assertions. Do not use fixed sleeps as the success condition.
-7. On failure, collect `shot`, `errors`, and an explicit trace when useful. Distinguish harness, environment, and product failures.
-8. Close contexts cleanly when they should not remain available. Do not reset profiles or databases merely to resume work.
+## Result discipline and reusable knowledge
 
-Navigation is restricted by the profile target: playground uses `http://127.0.0.1:4301`, federation uses the three `http://localhost:3101-3103` edges. Never point the tool at production or an arbitrary URL. Only federation Playwright projects require successful lab HMR statuses. Install the shared browser with `npm run test:browser:install`. The Pi driver and automated projects use the same browser; do not silently substitute a system binary when installation fails.
+Report one explicit verdict for the exact scope: PASS, BUG, or BLOCKED/NOT VERIFIED.
+A quick PASS means two-node main workflows only, never full acceptance or Android.
+SKIPPED requires a reason and is a coverage gap. Do not overwrite reproduced bug
+evidence merely because the operator chose to continue. Distinguish fresh-server
+recovery, retained cache, live sync and offline catch-up.
 
-## Result discipline
-
-- Playwright assertions and command exit status determine test success, not visual intuition or the model's narrative.
-- State a single explicit verdict in the user-facing result: **PASS** for the exact assertion-backed scope, **BUG** for a reproduced UI-reachable defect, or **BLOCKED/NOT VERIFIED** when the setup or evidence cannot decide. Do not leave the verdict implicit in caveats. A PASS records only the exact tested scope; do not infer another platform, node combination, role, viewport, or local/federated variant.
-- Before marking BUG, reproduce the expected/actual difference with a scoped assertion and rule out a stale locator, mixed browser context, unavailable environment, or pending documented convergence. For time-dependent behavior, verify both server and browser-projection timestamps/clock before asserting expiry; changing DB timestamps alone does not age an already-synced browser projection. Record the clock/setup scope with the verdict.
-- A browser BUG must be reachable through the exposed UI workflow under test. Direct API calls, database mutations, or injected browser requests may be used for lab setup, deterministic expiry/concurrency preparation, backend diagnostics, and supplementary server assertions, but they do not by themselves establish a browser UI BUG. If direct API behavior differs from the UI's disabled or hidden controls, record it only as supplemental backend behavior unless the acceptance case explicitly covers that API contract.
-- Preserve existing user changes. Inspect `git status` before editing and never bulk-stage temporary scripts or unrelated documents.
-- Do not reset the federation lab unless the user explicitly authorizes that destructive shared-state operation.
-
-## Updating project knowledge
-
-After a completed case:
-
-- Add a terse, explicitly labeled PASS/BUG/BLOCKED/NOT VERIFIED result to the
-  current dashboard/evidence section in the platform's progress log
-  (`browser-e2e-progress.md` or `android-e2e-progress.md`); when a later run
-  supersedes a contradictory claim, correct that claim rather than leaving both
-  as current PASS evidence.
-- Update the corresponding unfinished checkbox only when its complete declared scope is covered.
-- Update `browser-e2e-handoff.md` (or `android-e2e-handoff.md`) only with state
-  needed by the next session: build identity, running services, reusable
-  profiles/fixtures, dirty cleanup, stop point, and exact next action.
-- Add or update a bug record for a real open defect; link it from progress. Delete it after the documented closure conditions pass, and never let historical defect evidence override a newer verified result.
-- Replace superseded progress evidence instead of appending a dated session diary.
-- Update the canonical test plan only when acceptance scope or rules change, not for ordinary run results.
-
-Before reporting completion, run the relevant deterministic command when a regression spec exists, normally `npm run test:browser` or a narrowed Playwright invocation.
+Canonical plans own stable scope; local run artifacts own results and resume state.
+Reusable infrastructure belongs in `test/browser-e2e/`; deterministic regressions
+belong in committed `*.spec.ts`. Do not commit secrets, browser profiles, temporary
+steps or one-off fixture IDs. Propose reusable driver fixes and regression tests
+only through the operator-approved repair workflow. Run relevant deterministic
+checks before claiming a harness or regression fix is verified.

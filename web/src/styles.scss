@@ -3,7 +3,6 @@
 @use 'photoswipe/dist/photoswipe.css';
 @use './app/assets/tokens';
 @use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
-@use './app/lib/chat-box/cb-skeleton'; // optional playground shimmer preview; globally available but not rendered by production MessageThread
 
 // Shared sticky-avatar handoff: retain the natural head's 40px layout slot while the viewport-level copy paints.
 // The marker lives on that exact avatar so a later group from the same sender remains visible.
@@ -168,6 +167,10 @@ $dark-theme: mat.define-theme(
   --mat-sys-on-secondary: var(--app-text-inverse);
   --mat-sys-secondary-container: var(--app-hover);
   --mat-sys-on-secondary-container: var(--app-text);
+
+  /* Match Material input placeholders to the app's light/dark placeholder role. */
+  --mat-form-field-outlined-input-text-placeholder-color: var(--app-text-faint);
+  --mat-form-field-filled-input-text-placeholder-color: var(--app-text-faint);
 
   /* One application-level color contract for every Material binary switch. */
   --mat-slide-toggle-selected-track-color: var(--app-toggle-active);

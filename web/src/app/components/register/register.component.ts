@@ -21,10 +21,6 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import {
-  limitUnicodeCodePoints,
-  unicodeCodePointLength,
-} from '../../lib/unicode-text';
 
 @Component({
   selector: 'app-register',
@@ -48,18 +44,14 @@ export class RegisterComponent {
   }>();
 
   readonly AppIcon = AppIconType;
-  readonly NAME_MAX = 31;
   private readonly transloco = inject(TranslocoService);
 
   account = signal('');
-  name = signal('');
   password = signal('');
   password2 = signal('');
   accountHint = signal('');
-  nameHint = signal('');
   passwordHint = signal('');
   isAccountVld = signal(false);
-  isNameVld = signal(false);
   isPwdVld = signal(false);
   resp = signal('');
   showPassword = signal(false);
@@ -69,7 +61,6 @@ export class RegisterComponent {
       this.isSuccess() ||
       this.isReging() ||
       this.isAccountVld() === false ||
-      this.isNameVld() === false ||
       this.isPwdVld() === false
     );
   });
@@ -94,19 +85,6 @@ export class RegisterComponent {
       }
     });
     effect(() => {
-      // Display name: lenient charset (unicode/emoji ok), only a length bound client-side. The backend
-      // (@IsDisplayName) additionally strips control chars + trims, so this is UX pre-feedback only.
-      const name = this.name().trim();
-      const nameLength = unicodeCodePointLength(name);
-      if (nameLength < 1 || nameLength > this.NAME_MAX) {
-        this.isNameVld.set(false);
-        this.nameHint.set(this.transloco.translate('auth.displayNameHint'));
-      } else {
-        this.isNameVld.set(true);
-        this.nameHint.set('');
-      }
-    });
-    effect(() => {
       const password = this.password();
       if (!this._passwordRegx.test(password)) {
         this.isPwdVld.set(false);
@@ -124,11 +102,6 @@ export class RegisterComponent {
 
   onAccountInput(v: string) {
     this.account.set(v);
-    this.clearError();
-  }
-
-  onNameInput(v: string) {
-    this.name.set(limitUnicodeCodePoints(v, this.NAME_MAX));
     this.clearError();
   }
 
@@ -160,7 +133,7 @@ export class RegisterComponent {
     }
     this.isReging.set(true);
     this.userService
-      .register({ account, name: this.name().trim(), password })
+      .register({ account, password })
       .subscribe({
         next: (res) => {
           if (res.code === 0) {

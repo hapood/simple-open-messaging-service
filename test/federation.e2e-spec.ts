@@ -405,7 +405,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     ));
 
     // Avatars are TEST FIXTURES (alice's profile must carry a real avatar over S2S; bob's must exist so
-    // alice's resolve localizes a real one). Uploaded via the real multipart /user/update-avatar route.
+    // alice's resolve localizes a real one). Uploaded via the complete JSON profile-update API.
     await uploadAvatar(appA, tokenA, await makePng(220));
     png2 = await makePng(40); // second avatar for the re-pull test (distinct bytes → distinct file)
     await uploadAvatar(appB, tokenB, await makePng(100));

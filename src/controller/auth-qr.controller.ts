@@ -102,6 +102,7 @@ export class AuthQrController {
     await this.qrLogin.confirm(
       dto.qrToken,
       (req.user as { userId: number }).userId,
+      req.user.sessionId ?? undefined,
     );
   }
 }

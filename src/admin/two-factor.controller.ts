@@ -14,11 +14,9 @@ import { AdminAuthGuard } from './admin-auth.guard.js';
 import { Audit } from './audit.decorator.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
-import {
-  TwoFactorSetupVerifyDto,
-  TwoFactorDisableDto,
-  TwoFactorRegenerateDto,
-} from './admin.dto.js';
+import { TwoFactorSetupVerifyDto } from './admin.dto.js';
+import { AccountSecurityService } from './account-security.service.js';
+import { SecurityProofDto } from './account-security.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
@@ -29,8 +27,8 @@ import { BusinessException } from '../common/business.exception.js';
  * the target, so RBAC is not involved (no @Roles — any role may harden its own account). State-changing
  * handlers carry @Audit so enrollment / disable / regeneration land in AdminActionLog.
  *
- * All domain logic lives in AdminAuthService (which delegates the TOTP/crypto/backup-code storage to
- * TwoFactorService); this controller only parses input, extracts the adminId principal, and returns raw
+ * Security mutations live in AccountSecurityService, which coordinates fresh proofs and atomic
+ * revocation. This controller only parses input, extracts the admin principal, and returns raw
  * data (the global SerializeInterceptor wraps the {code,message,data} envelope; failures throw
  * BusinessException).
  */
@@ -41,7 +39,10 @@ import { BusinessException } from '../common/business.exception.js';
 @Throttle('admin.two-factor')
 @Controller()
 export class TwoFactorController {
-  constructor(private readonly adminAuth: AdminAuthService) {}
+  constructor(
+    private readonly adminAuth: AdminAuthService,
+    private readonly security: AccountSecurityService,
+  ) {}
 
   @HttpCode(HttpStatus.OK)
   @Post('admin/2fa/status')
@@ -57,8 +58,13 @@ export class TwoFactorController {
   @ApiOperation({
     summary: 'Begin 2FA enrollment (otpauth URI + secret + pending token)',
   })
-  async setup(@Req() req: FastifyRequest) {
-    return this.adminAuth.beginTwoFactorSetup(this.adminId(req));
+  async setup(@Req() req: FastifyRequest, @Body() dto: SecurityProofDto) {
+    return this.security.beginEnrollment(
+      this.adminId(req),
+      req.user.sessionId!,
+      'totp-enable',
+      dto,
+    );
   }
 
   @Audit('admin.2fa_enable', { targetType: 'admin' })
@@ -72,8 +78,10 @@ export class TwoFactorController {
     @Req() req: FastifyRequest,
     @Body() dto: TwoFactorSetupVerifyDto,
   ) {
-    return this.adminAuth.completeTwoFactorSetup(
+    return this.security.completeEnrollment(
       this.adminId(req),
+      req.user.sessionId!,
+      'totp-enable',
       dto.pendingToken,
       dto.code,
     );
@@ -87,14 +95,13 @@ export class TwoFactorController {
   })
   async disable(
     @Req() req: FastifyRequest,
-    @Body() dto: TwoFactorDisableDto,
+    @Body() dto: SecurityProofDto,
   ): Promise<void> {
-    this.ensureFactorPresent(dto.code, dto.backupCode);
-    await this.adminAuth.disableTwoFactor(
+    await this.security.mutate(
       this.adminId(req),
-      dto.password,
-      dto.code,
-      dto.backupCode,
+      req.user.sessionId!,
+      'totp-disable',
+      dto,
     );
   }
 
@@ -105,15 +112,12 @@ export class TwoFactorController {
     summary:
       'Regenerate backup codes (requires a live 2FA factor) → new codes returned once',
   })
-  async regenerate(
-    @Req() req: FastifyRequest,
-    @Body() dto: TwoFactorRegenerateDto,
-  ) {
-    this.ensureFactorPresent(dto.code, dto.backupCode);
-    return this.adminAuth.regenerateBackupCodes(
+  async regenerate(@Req() req: FastifyRequest, @Body() dto: SecurityProofDto) {
+    return this.security.mutate(
       this.adminId(req),
-      dto.code,
-      dto.backupCode,
+      req.user.sessionId!,
+      'backup-regenerate',
+      dto,
     );
   }
 
@@ -127,17 +131,5 @@ export class TwoFactorController {
       );
     }
     return id;
-  }
-
-  /** A live factor is required to disable / regenerate — refuse early (400) so the service's 2FA
-   *  brute-force counter is not ticked by a missing-input request. */
-  private ensureFactorPresent(code?: string, backupCode?: string): void {
-    if (!code && !backupCode) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'code or backupCode is required',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
   }
 }

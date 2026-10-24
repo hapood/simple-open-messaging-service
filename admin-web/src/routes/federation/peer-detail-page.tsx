@@ -122,8 +122,12 @@ export function PeerDetailPage() {
   const approveReview = useApproveFederationIdentityReview();
   const rejectReview = useRejectFederationIdentityReview();
   const isSuper = useIsSuperAdmin();
-  const { data: quotaNodes, isLoading: quotaLoading } = useQuotaNodes();
-  const quotaNode = quotaNodes?.find((node) => node.domain === d);
+  const {
+    data: quotaNodes,
+    isLoading: quotaLoading,
+    error: quotaError,
+  } = useQuotaNodes();
+  const quotaNode = quotaNodes?.find((node) => node.namespaceId === peer?.id);
 
   const blocked = peer?.trustLevel === 'halted' && peer.haltCode === 50009;
   const onToggleBlock = async () => {
@@ -519,7 +523,9 @@ export function PeerDetailPage() {
               ) : null}
             </TabsContent>
             <TabsContent value="quota">
-              {quotaLoading ? (
+              {quotaError ? (
+                <p role="alert">{formatApiError(quotaError)}</p>
+              ) : quotaLoading ? (
                 <Skeleton className="h-40 w-full" />
               ) : quotaNode ? (
                 <PeerQuotaPanel node={quotaNode} />

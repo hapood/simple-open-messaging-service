@@ -8,7 +8,6 @@ import {
   Matches,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-import { IsDisplayName } from '../common/validators.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
 import { AUTO_TERMINATE_DAYS } from '../auth/session-policy.js';
 
@@ -72,16 +71,6 @@ export class RegisterDto {
       'account must be 1-30 chars: start alphanumeric, then letters, digits, dot, underscore or hyphen',
   })
   account!: string;
-
-  // Display name is the primary identity shown everywhere (lists, headers, avatars). Lenient on charset
-  // — any visible unicode incl. CJK/emoji — but required + length-capped (see IsDisplayName).
-  @ApiProperty({
-    example: 'Alice',
-    description: 'Display name (1-31 chars; unicode/emoji allowed)',
-  })
-  @IsDisplayName()
-  @IsNotEmpty()
-  name!: string;
 
   // 6-20 chars, allowed [a-zA-Z0-9.@!#$%^&*()] (original pwdRegex)
   @ApiProperty({

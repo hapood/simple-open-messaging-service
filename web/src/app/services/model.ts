@@ -26,6 +26,7 @@ export const MEDIA_STATUS = {
 export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
 
 export type User = S['UserResponseDto'];
+export type SelfAccount = S['SelfAccountResponseDto'];
 export type ContactCardTarget = {
   account: string;
   namespaceId: number;

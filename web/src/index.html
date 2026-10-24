@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <base href="/" />
     <!-- Static theme-color fallback. The FOUC script just below (and ThemeService at runtime)
        updates this to match the resolved theme, so the browser chrome blends from the very first
        frame — placed before the script so the script can find it via querySelector. -->
@@ -13,7 +14,6 @@
        so it resolves against <base href>, which the Pages build rewrites to the deploy sub-path. -->
     <script src="boot.js"></script>
     <title>SOMS — Self-Hosted, Federated Chat Platform</title>
-    <base href="/" />
     <meta
       name="description"
       content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."

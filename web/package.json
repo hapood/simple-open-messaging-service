@@ -1,6 +1,6 @@
 {
   "name": "soms-web",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "scripts": {
     "ng": "ng",
     "start": "node scripts/start.mjs web serve",

@@ -118,15 +118,19 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 ### POST `/user/register` `@Public`
 
-- **Body**: `{ account, password, name? }`. User accounts are 1–30 ASCII characters,
+- **Body**: `{ account, password }`. User accounts are 1–30 ASCII characters,
   start with an alphanumeric character, may then contain alphanumerics, `.`, `_`, or `-`,
   and are normalized to lowercase.
-- **Behavior**: creates a local `Account` and a separate immutable `Profile` snapshot (display name defaults to the account). Foreign identities do not get local login rows.
+- **Behavior**: creates a local `Account` at default profile revision 0 without a `Profile` row. The first profile edit publishes revision 1. Foreign identities do not get local login rows.
 - **Errors**: `10002` already exists · `10010` registration disabled (admin-provisioned accounts only — the common mode).
 
 ### POST `/user/my-profile` · `/user/update-profile`
 
-- `my-profile`: current user info (password hash omitted).
+- `my-profile`: returns only account facts: `{ id, account, namespaceId, isGroup, isDeleted, profileRev }`.
+  It queries `Account` only; it does not join or resolve `Profile`, and does not return display fields or credentials.
+  `profileRev` is `Account.defaultProfileRev`. At revision 0, clients use the account name for local display
+  and initials without making a profile-resolution request. Positive revisions use the profile resolver;
+  revision 0 remains invalid input to that resolver.
 - `update-profile`: `{ name, bio, avatarBase64? }` (handle cannot change; creates a complete immutable profile revision and advances `Account.defaultProfileRev`). `name` and `bio` are required.
   Set `avatarBase64` to a validated image payload to replace the avatar, or `null` to remove it.
   Avatar bytes are validated, kept byte-for-byte, and returned through the profile response; there is

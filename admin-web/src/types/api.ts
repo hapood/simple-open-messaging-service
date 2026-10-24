@@ -76,11 +76,12 @@ export interface WebAuthnLoginBegin {
 
 // User row (backend no longer exposes hashPwd; Date fields are serialized to ms-epoch numbers by the global interceptor)
 export interface User {
+  /** Present even when the associated admin access is disabled. */
+  adminRole?: AdminRole | null;
   id: number;
   account: string;
   /** Namespace 0 is the local namespace; other values are federated guests. */
   namespaceId: number;
-  domain: string | null;
   createdAt: number;
   updatedAt: number;
   isDeleted: boolean;
@@ -155,6 +156,7 @@ export interface SessionListResult {
 
 // Admin active session entry (POST /admin/admin-sessions; joins Admin for the account; no device field)
 interface AdminSessionListItem {
+  isCurrent: boolean;
   adminId: number;
   id: string;
   userAgent: string | null;
@@ -389,141 +391,6 @@ export interface ContinueQuotaInput {
   addFileBytes?: number;
 }
 
-// ─── S2S handshake self-check (POST /admin/federation/self-check) ───
-// Probes THIS server's federation prerequisites from the external viewpoint. Each network check
-// (tls-public / well-known) carries an `ips[]` evidence array — one independent probe per resolved IP,
-// because an SRV target can point at a DDNS host or the apex can have many A/AAAA records, and each
-// IP may present a different cert or be differently reachable.
-export type SelfCheckStatus = 'ok' | 'warn' | 'fail' | 'skip';
-export type SelfCheckGroup =
-  | 'config'
-  | 'dns'
-  | 'tls'
-  | 'well-known'
-  | 'crypto'
-  | 'clock';
-
-interface SelfCheckSummary {
-  ok: number;
-  warn: number;
-  fail: number;
-  skip: number;
-}
-
-export interface SelfCheckCertInfo {
-  subject: string;
-  issuer: string;
-  subjectCN: string | null;
-  issuerCN: string | null;
-  subjectAltName: string | null;
-  serialNumber: string;
-  validFrom: string;
-  validTo: string;
-  daysToExpiry: number;
-  signatureAlgorithm: string | null;
-  publicKey: {
-    algorithm: string | null;
-    bits: number | null;
-    curve: string | null;
-  };
-  fingerprintSha1: string;
-  fingerprintSha256: string;
-  ca: boolean;
-  keyUsage: string[] | null;
-  alpn: string | null;
-  sanMatched: boolean;
-}
-
-export interface SelfCheckChainNode {
-  subject: string;
-  issuer: string;
-  subjectCN: string | null;
-  validTo: string | null;
-  selfSigned: boolean;
-  isCA: boolean;
-}
-
-export interface SelfCheckIpTlsProbe {
-  ip: string;
-  family: 4 | 6;
-  /** `host:port` of the SRV target this connection was dialed through. */
-  target?: string | null;
-  reachable: boolean;
-  status: SelfCheckStatus;
-  detail: string;
-  cert?: SelfCheckCertInfo;
-  chain?: SelfCheckChainNode[];
-  chainComplete?: boolean;
-  errorClass?: 'reachability' | 'cert' | 'timeout';
-  code?: string;
-}
-
-export interface SelfCheckIpWellKnownProbe {
-  ip: string;
-  family: 4 | 6;
-  /** `host:port` of the SRV target this connection was dialed through. */
-  target?: string | null;
-  reachable: boolean;
-  status: SelfCheckStatus;
-  detail: string;
-  httpStatus?: number;
-  contentType?: string;
-  software?: string | null;
-  keyCount?: number;
-  keysValid?: boolean;
-  errorClass?: 'reachability' | 'cert' | 'timeout' | 'http' | 'parse';
-  code?: string;
-  phase?: 'connect' | 'tls' | 'http' | 'response' | 'parse';
-  httpVersion?: string;
-}
-
-export interface SelfCheckCheck {
-  key: string;
-  group: SelfCheckGroup;
-  title: string;
-  status: SelfCheckStatus;
-  detail: string;
-  evidence?: Record<string, unknown>;
-  blockedBy?: string;
-  durationMs: number;
-}
-
-export interface SelfCheckReport {
-  domain: string;
-  runAt: number; // ms epoch
-  durationMs: number;
-  summary: SelfCheckSummary;
-  target: {
-    host: string;
-    port: number;
-    hasSrv: boolean;
-  };
-  resolver: string;
-  ntpServer: string;
-  checks: SelfCheckCheck[];
-}
-
-// Reference NTP / DNS resolver options for the controls. `alias` is a brand/region tag shown alongside
-// the technical value (not localized — Aliyun / Tencent are recognized in either language).
-export const NTP_SERVERS: ReadonlyArray<{ value: string; alias: string }> = [
-  { value: 'ntp.aliyun.com', alias: 'Aliyun' },
-  { value: 'time1.cloud.tencent.com', alias: 'Tencent Cloud' },
-  { value: 'cn.ntp.org.cn', alias: 'China NTP' },
-  { value: 'pool.ntp.org', alias: 'NTP Pool' },
-  { value: 'time.google.com', alias: 'Google' },
-  { value: 'time.cloudflare.com', alias: 'Cloudflare' },
-  { value: 'time.windows.com', alias: 'Microsoft' },
-];
-
-export const DNS_RESOLVERS: ReadonlyArray<{ value: string; alias: string }> = [
-  { value: 'system', alias: 'System' },
-  { value: '223.5.5.5', alias: 'AliDNS' },
-  { value: '119.29.29.29', alias: 'DNSPod' },
-  { value: '114.114.114.114', alias: '114 DNS' },
-  { value: '8.8.8.8', alias: 'Google' },
-  { value: '1.1.1.1', alias: 'Cloudflare' },
-];
-
 // ── RBAC (mirrors backend AdminRole enum) ────────────────────────────────────
 export type AdminRole = 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER';
 
@@ -532,16 +399,18 @@ export interface MeResult {
   account: string;
   name: string;
   role: AdminRole;
+  /** This node's home domain (sidebar tag). Null only in the degraded local-identity state. */
+  somsDomain: string | null;
 }
 
 // ── User 360° detail (POST /admin/users/:id/detail) ──────────────────────────
 interface UserDetailUser {
+  adminRole?: AdminRole | null;
   id: number;
   account: string;
   name: string;
   avatar: string;
   bio: string;
-  domain: string | null;
   /** Namespace 0 is the local namespace; the detail surface serves local persons. */
   namespaceId: number;
   isDeleted: boolean;

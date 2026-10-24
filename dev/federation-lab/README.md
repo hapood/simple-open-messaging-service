@@ -1,8 +1,11 @@
 # Three-node federation lab
 
-This lab starts three independent development SOMS nodes on one machine. It intentionally bypasses
-DNS/SRV and TLS through `SOMS_DEV_FEDERATION_ROUTES`; recognition, key pinning, HTTP signatures,
-state/message feeds, media, and persistence remain real.
+This lab starts three independent development SOMS nodes on one machine. Its dedicated
+[entry](app.main.mjs) injects a [disposable transport](fixed-transport.mjs) with connection targets
+from [the lab topology](topology.mjs), bypassing DNS/SRV and TLS. Request authority remains the peer
+domain; recognition, key pinning, HTTP signatures, state/message feeds, media, and persistence remain
+real. Production configuration has no fixed-route map. HTTPS test targets require certificates with
+the peer domain in their DNS SAN; loopback IP SANs are only for direct test clients.
 
 ## Layout
 

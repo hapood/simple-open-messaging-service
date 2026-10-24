@@ -89,7 +89,12 @@ export class AuthController {
       const session_token = await this.sessionTokens.issue(
         authInfo.userId!,
         client,
-        { device: body.device, userAgent, ip },
+        {
+          device: body.device,
+          userAgent,
+          ip,
+          expectedPasswordHash: authInfo.passwordHash,
+        },
       );
       setSessionCookies(reply, session_token);
       // mustChangePassword flags an admin-generated INITIAL password the user must change before the

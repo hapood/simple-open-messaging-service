@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   composeScalar,
+  DeploymentModeState,
   defaultsForMode,
   deploymentIssues,
   initialDeployment,
@@ -10,15 +11,22 @@ describe('deployment configuration validation', () => {
   const valid = {
     ...initialDeployment,
     domain: 'example.com',
+    dataDir: './data',
     webDomain: 'soms.example.com',
     adminPassword: 'admin-password-123',
     dnsToken: 'test-token',
   };
   it('validates required fields before export', () => {
-    // initialDeployment now includes pre-generated databasePassword
-    // domain, webDomain, adminPassword, and dnsToken are remaining required fields
-    expect(deploymentIssues(initialDeployment)).toHaveLength(4);
+    // domain, adminPassword, and dnsToken are remaining required fields (webDomain is optional, dataDir defaults to ./data)
+    expect(deploymentIssues(initialDeployment)).toEqual([
+      'domain',
+      'adminPassword',
+      'dnsToken',
+    ]);
     expect(deploymentIssues(valid)).toEqual([]);
+    expect(deploymentIssues({ ...valid, webDomain: '' })).toEqual([]);
+    expect(deploymentIssues({ ...valid, dataDir: '' })).toContain('dataDir');
+    expect(deploymentIssues({ ...valid, adminPassword: 'admin' })).toEqual([]);
   });
   it('fixes public ports and sets appropriate admin access default per mode', () => {
     expect(defaultsForMode('public')).toEqual({
@@ -34,6 +42,23 @@ describe('deployment configuration validation', () => {
       deploymentIssues({ ...valid, mode: 'public', port: 7668 }),
     ).toContain('publicPort');
     expect(deploymentIssues({ ...valid, mode: 'nas', port: 7668 })).toEqual([]);
+  });
+  it('keeps host-port and admin policy settings independent across tabs', () => {
+    const state = new DeploymentModeState();
+    const nas = { ...valid, port: 8888, adminAccess: 'public' as const };
+    let current = state.switch(nas, 'public');
+    expect(current).toMatchObject({
+      mode: 'public',
+      port: 7667,
+      adminAccess: 'public',
+    });
+    current = state.switch({ ...current, adminAccess: 'lan' }, 'nas');
+    expect(current).toMatchObject({
+      mode: 'nas',
+      port: 8888,
+      adminAccess: 'public',
+    });
+    expect(state.switch(current, 'public').adminAccess).toBe('lan');
   });
   it('requires credentials matching chosen DNS provider', () => {
     expect(

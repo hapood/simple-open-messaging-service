@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The working `v1.0.0-draft.0` package is in final review and accepts protocol security corrections. A pre-freeze draft or release candidate may include an incompatible security fix; the protocol must not retain a confirmed vulnerability merely to preserve pre-release compatibility.
+The working `v1.0.0-draft.1` package is in final review and accepts protocol security corrections. A pre-freeze draft or release candidate may include an incompatible security fix; the protocol must not retain a confirmed vulnerability merely to preserve pre-release compatibility.
 
 ## Reporting
 

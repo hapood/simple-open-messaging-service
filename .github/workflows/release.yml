@@ -85,16 +85,40 @@ jobs:
         with:
           name: soms-android-release
           path: release-assets
+      - name: Extract release notes from changelog
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const version = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          const changelog = readFileSync('CHANGELOG.md', 'utf8');
+          const sections = [...changelog.matchAll(/^## (.+)\r?$/gm)];
+          const index = sections.findIndex((section) => section[1] === version);
+          if (index === -1) {
+            throw new Error(`Missing changelog entry for ${version}`);
+          }
+          const section = sections[index];
+          const notes = changelog.slice(
+            section.index + section[0].length,
+            sections[index + 1]?.index ?? changelog.length,
+          ).trim();
+          if (!notes) {
+            throw new Error(`Empty changelog entry for ${version}`);
+          }
+          writeFileSync(join(process.env.RUNNER_TEMP, 'release-notes.md'), `${notes}\n`);
+          NODE
       - name: Attach artifacts to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
             gh release upload "$GITHUB_REF_NAME" release-assets/*.apk release-assets/SHA256SUMS --clobber
           else
             RELEASE_FLAGS=()
             if [[ "$GITHUB_REF_NAME" == *-* ]]; then
               RELEASE_FLAGS+=(--prerelease --latest=false)
             fi
-            gh release create "$GITHUB_REF_NAME" release-assets/*.apk release-assets/SHA256SUMS --verify-tag --generate-notes "${RELEASE_FLAGS[@]}"
+            gh release create "$GITHUB_REF_NAME" release-assets/*.apk release-assets/SHA256SUMS --verify-tag --notes-file "$RUNNER_TEMP/release-notes.md" "${RELEASE_FLAGS[@]}"
           fi

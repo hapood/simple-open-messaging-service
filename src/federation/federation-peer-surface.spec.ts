@@ -332,9 +332,7 @@ describe('FederationProfileService resource path', () => {
       expect(url.searchParams.get('challenge')).toMatch(/^[A-Za-z0-9+/=]+$/);
       return {
         account: '!group',
-        displayName: 'Group',
-        bio: '',
-        avatar: null,
+        profile: { displayName: 'Group', bio: '', avatar: null },
         profileRev: 1,
         proof: canonicalProof('!group', 'peer.test'),
       };
@@ -359,9 +357,7 @@ describe('FederationProfileService resource path', () => {
       expect(url.searchParams.get('publicKey')).toBe(VOUCHED_ROOT);
       return {
         account: 'alice',
-        displayName: 'Alice',
-        bio: '',
-        avatar: null,
+        profile: { displayName: 'Alice', bio: '', avatar: null },
         profileRev: 1,
         proof: canonicalProof('alice', 'peer.test'),
       };
@@ -429,9 +425,7 @@ describe('FederationProfileService resource path', () => {
     Object.assign(peerHttp, {
       get: vi.fn().mockResolvedValue({
         account: 'alice',
-        displayName: 'Alice',
-        bio: '',
-        avatar: null,
+        profile: { displayName: 'Alice', bio: '', avatar: null },
         profileRev: 1,
         proof: canonicalProof('alice', 'other.test'),
       }),
@@ -470,15 +464,13 @@ describe('FederationProfileService resource path', () => {
     });
   });
 
-  it.each([0, -1])(
-    'rejects a non-positive public profile revision (%i)',
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects an invalid public profile revision (%i)',
     async (profileRev) => {
       const { profiles, peerHttp } = makeStubs();
       const getSigned = vi.fn().mockResolvedValue({
         account: 'alice',
-        displayName: 'Alice',
-        bio: '',
-        avatar: null,
+        profile: { displayName: 'Alice', bio: '', avatar: null },
         profileRev,
         proof: canonicalProof('alice', 'peer.test'),
       });
@@ -495,6 +487,58 @@ describe('FederationProfileService resource path', () => {
       });
     },
   );
+
+  it('accepts a verified no-profile result without storing a snapshot', async () => {
+    const { profiles, peerHttp } = makeStubs();
+    Object.assign(peerHttp, {
+      get: vi.fn().mockResolvedValue({
+        account: 'alice',
+        profileRev: 0,
+        profile: null,
+        proof: canonicalProof('alice', 'peer.test'),
+      }),
+    });
+    const store = vi.spyOn(profiles, 'materializeExactForeignProfile');
+    await expect(
+      profiles.fetchRemoteAccount(
+        { account: 'alice', domain: 'peer.test' },
+        { kind: 'PIN' },
+      ),
+    ).resolves.toMatchObject({
+      account: 'alice',
+      profileRev: 0,
+      displayName: 'alice',
+      bio: '',
+      avatar: null,
+    });
+    expect(store).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { profileRev: 0, profile: { displayName: 'Alice', bio: '', avatar: null } },
+    { profileRev: 1, profile: null },
+    {
+      profileRev: 1,
+      profile: { displayName: 'Alice', bio: '', avatar: null, extra: true },
+    },
+    { profileRev: 1, displayName: 'Alice', bio: '', avatar: null },
+    { profileRev: 0, profile: null, proof: 'wrong' },
+  ])('rejects malformed public profile content: %j', async (fields) => {
+    const { profiles, peerHttp } = makeStubs();
+    Object.assign(peerHttp, {
+      get: vi.fn().mockResolvedValue({
+        account: 'alice',
+        proof: canonicalProof('alice', 'peer.test'),
+        ...fields,
+      }),
+    });
+    await expect(
+      profiles.fetchRemoteAccount(
+        { account: 'alice', domain: 'peer.test' },
+        { kind: 'PIN' },
+      ),
+    ).rejects.toMatchObject({ code: BusinessCode.FEDERATION_MALFORMED });
+  });
 
   it('projects the public profile with the canonical inline avatar shape', async () => {
     const { profiles } = makeStubs();

@@ -9,7 +9,7 @@ import { account, admin, profileTable as user } from '../database/schema.js';
  * contract that matters:
  *   1. idempotent — an existing admin is a no-op (no second create, no password needed);
  *   2. no password → WARN + continue, never creates and never throws (the chat product stays up);
- *   3. password present → creates Account + exact Profile + SUPER_ADMIN role with a peppered argon2id-hashed password;
+ *   3. password present → creates Account at rev 0 + SUPER_ADMIN role with a hashed password, no Profile;
  *   4. a DB failure during seed is swallowed (logged) so the app still boots.
  * Pure-vitest, hand-rolled Drizzle fake (no Nest DI container).
  */
@@ -105,18 +105,14 @@ describe('AdminBootstrapService', () => {
     expect(warn).toHaveBeenCalled();
   });
 
-  it('creates the Account + exact Profile + SUPER_ADMIN role with a hashed password when the password is set', async () => {
+  it('creates the Account at rev 0 + SUPER_ADMIN role without a Profile when the password is set', async () => {
     process.env.ADMIN_BOOTSTRAP_PASSWORD = 's3cret-bootstrap-pw';
     const { svc, userInsert, accountInsert, adminInsert } = makeService({
       existingUser: null,
     });
     await svc.onApplicationBootstrap();
 
-    expect(userInsert).toHaveBeenCalledTimes(1);
-    const userCreate = userInsert.mock.calls[0][0] as Record<string, unknown>;
-    expect(userCreate.account).toBe('admin');
-    expect(userCreate.publisherNamespaceId).toBe(0);
-    expect(userCreate.profileNamespaceId).toBe(0);
+    expect(userInsert).not.toHaveBeenCalled();
 
     expect(accountInsert).toHaveBeenCalledTimes(1);
     const accountCreate = accountInsert.mock.calls[0][0] as Record<
@@ -124,6 +120,7 @@ describe('AdminBootstrapService', () => {
       unknown
     >;
     expect(accountCreate.account).toBe('admin');
+    expect(accountCreate.defaultProfileRev).toBe(0);
     expect(accountCreate.hashPwd).not.toBe('s3cret-bootstrap-pw');
     expect(typeof accountCreate.hashPwd).toBe('string');
     expect((accountCreate.hashPwd as string).length).toBeGreaterThan(0);

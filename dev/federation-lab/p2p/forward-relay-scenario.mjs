@@ -270,7 +270,7 @@ export async function executeForwardRelayScenario({
         bio: '',
         avatarBase64: png.toString('base64'),
       });
-      const sourceProfile = await b.myProfile();
+      const sourceProfile = await b.resolveOwnProfile();
       const avatarResponse = await fetch(
         `${b.node.backendBaseUrl}${sourceProfile.avatar}`,
         {
@@ -325,8 +325,10 @@ export async function executeForwardRelayScenario({
         assert.equal(Object.hasOwn(snapshot, 'domain'), false);
         assert.equal(Object.hasOwn(snapshot, 'publicRootKey'), false);
       }
+      // A never publishes a profile: the relayed snapshot carries the
+      // account-facts fallback (account as displayName), not a provisioned name.
       assert.deepEqual(original.messages[2].profile, {
-        displayName: 'Relay 0',
+        displayName: a.account,
       });
       assert.deepEqual(
         original.messages.map(({ content }) => parseContent(content).text),

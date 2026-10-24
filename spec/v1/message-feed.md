@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Message Query
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
 Normative scope: this entire document is normative.
 
 This document defines the per-thread message-content query

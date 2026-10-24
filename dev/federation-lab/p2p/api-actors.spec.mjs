@@ -60,6 +60,38 @@ test('preserves an HTTP 200 profile denial in the reported error', async () => {
   }
 });
 
+test('resolveOwnProfile resolves the full local profile projection', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const profile = {
+    id: 5,
+    account: 'p2p-b-005',
+    name: 'Snapshot DIRECT',
+    avatar: '/api/v1/media/avatar/abc.webp',
+    bio: '',
+  };
+  globalThis.fetch = async (...args) => {
+    calls.push(args);
+    return response(profile);
+  };
+  try {
+    const actor = new LabUserActor({
+      node: { domain: 'bravo.test', backendBaseUrl: 'http://127.0.0.1:3202' },
+      id: 5,
+      account: 'p2p-b-005',
+      token: 'private-test-token',
+    });
+    assert.deepEqual(await actor.resolveOwnProfile(), profile);
+    assert.equal(calls.length, 1);
+    const [url, init] = calls[0];
+    assert.equal(url, 'http://127.0.0.1:3202/api/v1/user/resolve');
+    assert.equal(init.method, 'POST');
+    assert.deepEqual(JSON.parse(init.body), { account: 'p2p-b-005' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('keeps three administrators and API-provisioned OTP users in memory', async () => {
   const responses = [
     response(

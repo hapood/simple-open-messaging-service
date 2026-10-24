@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Peer Recognition
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
 
 Operations:
 

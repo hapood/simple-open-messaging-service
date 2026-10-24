@@ -28,8 +28,9 @@ import { registerAndLogin } from './federation-test-helpers.js';
  * peer. Production S2S transport is always https; the ordinary loopback harness bypasses
  * TLS with http routes. This spec instead runs BOTH apps as real TLS listeners:
  *
- *   - a per-run test CA signs each app's leaf certificate (SAN IP:127.0.0.1 — the loopback
- *     base URL is the TLS authority, exactly what the peers connect to);
+ *   - a per-run test CA signs each app's leaf certificate (SAN DNS:<peer-domain> for the
+ *     production-shaped SNI/hostname verification, plus IP:127.0.0.1 for the test-process
+ *     clients that dial the loopback listener directly);
  *   - each subprocess trusts the CA through NODE_EXTRA_CA_CERTS, so undici verifies the
  *     peer's certificate chain with default hostname checking;
  *   - the S2S identity keys are the deterministic in-memory keypair — this spec isolates
@@ -73,8 +74,14 @@ function makeCa(name: string): { cert: string; key: string } {
   return { cert: join(tmp, `${name}.pem`), key: join(tmp, `${name}.key`) };
 }
 
-/** Issue a leaf certificate for the loopback endpoint under the given CA. */
-function issueLeaf(name: string, ca: { cert: string; key: string }): void {
+/** Issue a leaf certificate for the loopback endpoint under the given CA. The DNS SAN carries the
+ *  peer domain (the production-shaped dispatcher verifies hostname + SNI against the domain); the
+ *  IP SAN lets the TEST-PROCESS clients, which dial 127.0.0.1 directly, verify the same leaf. */
+function issueLeaf(
+  name: string,
+  ca: { cert: string; key: string },
+  domain: string,
+): void {
   openssl([
     'req',
     '-newkey',
@@ -85,9 +92,12 @@ function issueLeaf(name: string, ca: { cert: string; key: string }): void {
     '-out',
     `${name}.csr`,
     '-subj',
-    '/CN=127.0.0.1',
+    `/CN=${domain}`,
   ]);
-  writeFileSync(join(tmp, `${name}.ext`), 'subjectAltName=IP:127.0.0.1\n');
+  writeFileSync(
+    join(tmp, `${name}.ext`),
+    `subjectAltName=DNS:${domain},IP:127.0.0.1\n`,
+  );
   openssl([
     'x509',
     '-req',
@@ -239,8 +249,8 @@ describe('federation survives a TLS certificate replacement', () => {
     copyFileSync(trustedCa.cert, caPem);
     caMaterial = readFileSync(caPem, 'utf8');
     // appA's certificate is issued once; appB's is replaced by the rotation tests.
-    issueLeaf('a', trustedCa);
-    issueLeaf('b1', trustedCa);
+    issueLeaf('a', trustedCa, 'aaa.test');
+    issueLeaf('b1', trustedCa, 'bbb.test');
     copyFileSync(join(tmp, 'b1.pem'), bCertPath);
     copyFileSync(join(tmp, 'b1.key'), bKeyPath);
 
@@ -276,7 +286,7 @@ describe('federation survives a TLS certificate replacement', () => {
   it('continues federation transparently across a certificate replacement', async () => {
     // Re-issue appB's certificate from the SAME CA with a fresh key and restart it —
     // a routine renewal. Recognition must not be disturbed in either direction.
-    issueLeaf('b2', { cert: caPem, key: join(tmp, 'ca.key') });
+    issueLeaf('b2', { cert: caPem, key: join(tmp, 'ca.key') }, 'bbb.test');
     copyFileSync(join(tmp, 'b2.pem'), bCertPath);
     copyFileSync(join(tmp, 'b2.key'), bKeyPath);
     await appB.restart();
@@ -327,7 +337,7 @@ describe('federation survives a TLS certificate replacement', () => {
     // A certificate from a DIFFERENT CA with the same SAN: hostname matches, but the
     // chain does not anchor at anything appA trusts. Verification must fail closed.
     const untrustedCa = makeCa('ca2');
-    issueLeaf('bad', untrustedCa);
+    issueLeaf('bad', untrustedCa, 'bbb.test');
     copyFileSync(join(tmp, 'bad.pem'), bCertPath);
     copyFileSync(join(tmp, 'bad.key'), bKeyPath);
     await appB.restart();

@@ -18,15 +18,6 @@
 
   <div class="input-line">
     <mat-form-field class="field" appearance="fill">
-      <mat-label>{{ 'auth.displayName' | transloco }}</mat-label>
-      <input matInput name="name" autocomplete="nickname"
-        [ngModel]="name()" (ngModelChange)="onNameInput($event)">
-    </mat-form-field>
-    <div class="hint">{{nameHint()}}</div>
-  </div>
-
-  <div class="input-line">
-    <mat-form-field class="field" appearance="fill">
       <mat-label>{{ 'auth.password' | transloco }}</mat-label>
       <input matInput name="password" autocomplete="new-password"
         [type]="showPassword() ? 'text' : 'password'"

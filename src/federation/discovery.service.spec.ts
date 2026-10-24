@@ -3,6 +3,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { signingCertificateStatement } from './federation-certificate.js';
 import { DiscoveryService } from './discovery.service.js';
 import type { WellKnownDoc } from './discovery.service.js';
+import { validateWellKnownDocument } from './well-known-document.js';
 
 process.env.SOMS_DOMAIN = 'local.example';
 
@@ -49,7 +50,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
   ).toString('base64');
 
   it('accepts an overlap set for online signing-key rotation', () => {
-    const document = service().validateWellKnown('peer.example', {
+    const document = validateWellKnownDocument('peer.example', {
       protocolVersions: [1],
       roots: [
         {
@@ -72,7 +73,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
   it('rejects a certificate not authorized by the published root', () => {
     const otherRoot = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
     expect(() =>
-      service().validateWellKnown('peer.example', {
+      validateWellKnownDocument('peer.example', {
         protocolVersions: [1],
         roots: [
           {
@@ -89,7 +90,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
   it('rejects duplicate key IDs and cross-domain certificates', () => {
     const key = certificate(rootPrivateKey, 'peer.example/key-1', 32);
     expect(() =>
-      service().validateWellKnown('peer.example', {
+      validateWellKnownDocument('peer.example', {
         protocolVersions: [1],
         roots: [
           {
@@ -102,7 +103,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
       }),
     ).toThrow('invalid signing certificate');
     expect(() =>
-      service().validateWellKnown('peer.example', {
+      validateWellKnownDocument('peer.example', {
         protocolVersions: [1],
         roots: [
           {

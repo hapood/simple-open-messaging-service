@@ -1,6 +1,17 @@
 {
   "vectors": [
     {
+      "name": "public profile rejects flat content and inconsistent nullness",
+      "schema": "urn:somfp:v1:profile",
+      "values": [
+        { "account": "alice", "profileRev": 1, "displayName": "Alice", "bio": "", "avatar": null, "proof": "Y2hhbGxlbmdl" },
+        { "account": "alice", "profileRev": 0, "profile": { "displayName": "Alice", "bio": "", "avatar": null }, "proof": "Y2hhbGxlbmdl" },
+        { "account": "alice", "profileRev": 1, "profile": null, "proof": "Y2hhbGxlbmdl" },
+        { "account": "alice", "profileRev": 1, "profile": { "displayName": "Alice", "bio": "", "avatar": null, "extra": true }, "proof": "Y2hhbGxlbmdl" },
+        { "account": "alice", "profileRev": 0, "profile": null }
+      ]
+    },
+    {
       "name": "Group Meta item variants reject the reserved recovery coordinate",
       "schema": "urn:somfp:v1:group-meta#/$defs/item",
       "values": [
@@ -93,11 +104,9 @@
       "value": {
         "account": "alice",
         "domain": "a.example",
-        "displayName": "Alice",
-        "bio": "",
-        "avatar": null,
+        "profile": { "displayName": "Alice", "bio": "", "avatar": null },
         "profileRev": 1,
-        "proof": "challenge"
+        "proof": "Y2hhbGxlbmdl"
       }
     },
     {
@@ -1419,10 +1428,8 @@
       "schema": "urn:somfp:v1:profile",
       "value": {
         "account": "alice",
-        "displayName": "Alice",
-        "bio": "",
-        "avatar": null,
-        "proof": "challenge"
+        "profile": { "displayName": "Alice", "bio": "", "avatar": null },
+        "proof": "Y2hhbGxlbmdl"
       }
     },
     {

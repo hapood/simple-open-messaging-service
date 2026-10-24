@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // 401 path can be asserted without a real navigation.
 vi.mock('@/auth/force-logout', () => ({ forceLogout: vi.fn() }))
 
-import { request, rateLimitConfig } from './client'
+import { request } from './client'
 import { ApiError } from '@/lib/api-error'
 import { CODE } from '@/lib/constants'
 import { forceLogout } from '@/auth/force-logout'
@@ -15,11 +15,11 @@ function res(status: number, body: unknown): Response {
 }
 
 /**
- * request() now retries the ThrottleGuard burst rate-limit (429 / code 10005) with full-jitter backoff.
- * These pin: success (1 fetch); 429×N→200 (retried, succeeds); 429 exhausted (throws after max retries);
- * 5xx NOT retried (side-effect unknown); 401 force-logouts without retry; public/login 429 NOT retried
- * (the form surfaces it immediately instead of hanging). The backoff delays are zeroed (rateLimitConfig)
- * so the loop runs in real time at ~0ms per retry.
+ * request() does NOT retry rate limits: a 429 may come from a pre-handler guard (ThrottleGuard) or
+ * from a handler's own cooldown (self-check, diagnostics) — the client cannot tell them apart, so the
+ * error is returned to the caller immediately. These pin: success (1 fetch); 429 throws
+ * ApiError(10005) on the first response (no silent backoff); 5xx throws immediately; 401
+ * force-logouts without retry; a 429 on public/login paths surfaces the same way.
  */
 describe('admin-web api/client request()', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -28,14 +28,9 @@ describe('admin-web api/client request()', () => {
     fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     vi.mocked(forceLogout).mockClear()
-    // Zero the backoff so retries are ~instant under real timers (no fake-timer/microtask driving needed).
-    rateLimitConfig.baseMs = 0
-    rateLimitConfig.capMs = 0
   })
   afterEach(() => {
     vi.unstubAllGlobals()
-    rateLimitConfig.baseMs = 1000
-    rateLimitConfig.capMs = 8000
   })
 
   it('returns data on success (single fetch)', async () => {
@@ -44,25 +39,16 @@ describe('admin-web api/client request()', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('retries a 429 burst rate-limit with backoff and succeeds', async () => {
-    fetchMock
-      .mockResolvedValueOnce(res(429, { code: CODE.RATE_LIMITED, message: 'too many requests' }))
-      .mockResolvedValueOnce(res(429, { code: CODE.RATE_LIMITED, message: 'too many requests' }))
-      .mockResolvedValueOnce(res(200, { code: CODE.OK, message: 'ok', data: { ok: true } }))
-
-    await expect(request('/admin/users')).resolves.toEqual({ ok: true })
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-  })
-
-  it('gives up after the max retries and throws ApiError(10005, 429)', async () => {
+  it('throws ApiError(10005, 429) immediately on a rate limit — no silent retry/backoff', async () => {
     fetchMock.mockResolvedValue(res(429, { code: CODE.RATE_LIMITED, message: 'too many requests' }))
 
     const err = (await request('/admin/users').catch((e: unknown) => e)) as ApiError
     expect(err).toBeInstanceOf(ApiError)
     expect(err.code).toBe(CODE.RATE_LIMITED)
     expect(err.httpStatus).toBe(429)
-    // 1 initial attempt + 4 retries (rateLimitConfig.maxRetries) = 5 fetches total.
-    expect(fetchMock).toHaveBeenCalledTimes(1 + rateLimitConfig.maxRetries)
+    // A single fetch — the caller decides how to react; the client neither hammers the limiter
+    // nor hides the outcome behind a backoff loop.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('does NOT retry a 5xx (side-effect unknown) — throws immediately, single fetch', async () => {
@@ -86,6 +72,7 @@ describe('admin-web api/client request()', () => {
     const err = (await request('/admin/login').catch((e: unknown) => e)) as ApiError
     expect(err).toBeInstanceOf(ApiError)
     expect(err.code).toBe(CODE.RATE_LIMITED)
+    expect(forceLogout).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

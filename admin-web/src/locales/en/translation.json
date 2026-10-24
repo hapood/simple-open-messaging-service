@@ -1,5 +1,6 @@
 {
   "common": {
+    "confirm": "Confirm",
     "appName": "Admin Console",
     "loading": "Loading…",
     "noData": "No data",
@@ -22,7 +23,6 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Copy failed",
-    "workspace": "Operations workspace",
     "client": {
       "app": "Android",
       "web": "Web",
@@ -58,6 +58,9 @@
     "bans": "Ban Management",
     "push": "Push Management",
     "federation": "Federation",
+    "networkInfo": "Network",
+    "localInformation": "Local Information",
+    "quota": "Quota",
     "logs": "Logs",
     "rateLimits": "Rate Limits",
     "media": "Media Transfers",
@@ -66,12 +69,15 @@
     "durableTasks": "Durable Tasks",
     "messageReports": "Message Reports",
     "logout": "Log Out",
+    "collapse": "Collapse navigation",
+    "expand": "Expand navigation",
     "group": {
       "overview": "Common tasks",
       "access": "Access & Activity",
       "system": "System",
-      "account": "Account"
-    }
+      "account": "Account & security"
+    },
+    "adminSessions": "Administrator sessions"
   },
   "quota": {
     "title": "Daily Quotas",
@@ -158,8 +164,6 @@
       "usersDesc": "Find users, create accounts, or resolve access issues",
       "connections": "View live connections",
       "connectionsDesc": "Investigate online presence and unusual connections",
-      "selfCheck": "Run federation check",
-      "selfCheckDesc": "Verify domain, certificate, and federation reachability",
       "settings": "System settings",
       "settingsDesc": "Review instance configuration and runtime options"
     },
@@ -222,14 +226,14 @@
     "backToPassword": "Back to password"
   },
   "users": {
+    "grantViewerConfirm": "Grant {{account}} read-only access to the admin console? Existing user sessions and issued login codes will be revoked. Only a super administrator can change this role later.",
+    "grantViewerSuccess": "Read-only admin access granted",
     "title": "User Management",
     "create": "Create user",
     "searchPlaceholder": "Search account",
     "col": {
       "id": "ID",
       "account": "account",
-      "domain": "domain",
-      "foreigner": "Foreign",
       "status": "Status",
       "quota": "Quota",
       "createdAt": "Created",
@@ -244,6 +248,8 @@
       "ban": "Ban",
       "forceLogout": "Force Logout",
       "viewSessions": "View Sessions",
+      "viewDetails": "View details",
+      "grantViewer": "Set as administrator",
       "issueLoginCode": "Issue login code",
       "generateInitialPassword": "Generate initial password"
     },
@@ -266,6 +272,7 @@
   "userDetail": {
     "back": "Back to users",
     "notFound": "User not found",
+    "sessionsDesc": "Only unrevoked, unexpired sessions are shown, not a complete login history. Signed-out or expired sessions are excluded; reusing a session does not create another record.",
     "section": {
       "profile": "Profile",
       "groups": "Groups",
@@ -273,8 +280,6 @@
       "push": "Push devices"
     },
     "field": {
-      "domain": "Domain",
-      "foreigner": "Foreigner",
       "createdAt": "Created",
       "updatedAt": "Updated",
       "bio": "Bio"
@@ -290,7 +295,9 @@
       "push": "No push devices"
     },
     "push": {
-      "deviceId": "Device ID"
+      "deviceId": "Device ID",
+      "desc": "Only devices with a push subscription registered on the server are shown, not all logged-in devices. Browser login does not grant notification permission; admin-console login does not register chat push notifications.",
+      "emptyHint": "Browser users should allow notifications in the chat client's Settings → Notifications. Web Push support, a working server push configuration, and successful subscription registration are also required. If permission is already granted, check site permissions, connectivity, and push configuration, then refresh this page."
     }
   },
   "userQuota": {
@@ -368,7 +375,7 @@
   "adminSessions": {
     "title": "Admin Sessions",
     "searchPlaceholder": "Filter by IP",
-    "desc": "Active opaque administrator sessions, physically isolated from user sessions. {{count}} total. Revocation takes effect on the next request.",
+    "desc": "{{count}} valid administrator sessions. Read-only; a valid session does not imply the device is online.",
     "revoke": "Revoke",
     "revoked": "Admin session revoked (its access remains valid for up to 15m)",
     "revokeFailed": "Revoke failed",
@@ -420,15 +427,114 @@
       "config": "Transport config"
     }
   },
+  "networkInspection": {
+    "tabExternal": "Local & Public IP",
+    "tabDiagnostics": "Federation Diagnostics",
+    "local": "Local interfaces",
+    "showLocal": "Show loopback & link-local addresses ({{count}})",
+    "hideLocal": "Hide loopback & link-local addresses",
+    "external": "Public egress IP",
+    "refreshLocal": "Refresh addresses",
+    "detect": "Detect public IP",
+    "sources": "IP sources (multiple allowed)",
+    "localHint": "Addresses visible to the backend process, not your browser. In Docker these are container addresses; inbound IPv6 forwarding does not imply IPv6 egress.",
+    "externalHint": "Each source is contacted directly over IPv4 and IPv6. The reported server egress IP may differ from your DNS entry or reverse proxy address.",
+    "privacy": "Manual probes disclose the server egress IP to selected providers. Results may be reused for 10 seconds; no background probing.",
+    "loading": "Checking…",
+    "notRun": "Not checked",
+    "noInterfaces": "No interface addresses available.",
+    "sourceAddress": "Local source",
+    "sourceFailure": "This source could not be verified. A provider failure does not prove general network failure or public ingress failure.",
+    "runAt": "Checked at",
+    "runtime": {
+      "docker": "Docker image",
+      "unknown": "Runtime not declared"
+    },
+    "scope": {
+      "loopback": "Loopback",
+      "private": "Private",
+      "linkLocal": "Link-local",
+      "uniqueLocal": "Unique local",
+      "unicast": "Global unicast",
+      "carrierGradeNat": "Shared address",
+      "reserved": "Reserved"
+    },
+    "error": {
+      "EADDRNOTAVAIL": "No usable local source address. Check the backend/container IPv6 configuration.",
+      "ENETUNREACH": "The backend network has no route to this destination.",
+      "ETIMEDOUT": "This provider did not complete within 5 seconds. Try another source.",
+      "ENOTFOUND": "The provider hostname could not be resolved for this address family.",
+      "ECONNREFUSED": "The connection to this provider was refused."
+    }
+  },
+  "networkTools": {
+    "description": "Enter a federation domain only, without https:// or a port. The backend discovers the host and port through SOMFP SRV. Nothing is probed until you run diagnostics.",
+    "target": "Federation domain",
+    "route": "Selected SRV endpoint",
+    "identity": "TLS identity",
+    "policy": "Fresh connection using the shared federation transport; DNS answers are shown as-is, including CNAME chains and resolver error codes. Connect timeout: {{connectTimeoutMs}} ms; request timeout: {{callTimeoutMs}} ms.",
+    "run": "Run diagnostics",
+    "scope": "DNS answers are reported verbatim: the addresses actually dialed appear next to the raw resolver view, and a mismatch between them is itself a clue. TLS verifies the federation domain, not the SRV hostname. Missing or invalid SRV records stop the diagnostic; there is no port 443 fallback. Redirects are not followed. Local configuration and keys are available under Local Information.",
+    "dns": "DNS addresses",
+    "srv": "Published federation SRV records",
+    "https": "HTTPS connectivity and certificate",
+    "federation": "Federation discovery",
+    "evidence": "View evidence",
+    "ok": "Passed",
+    "warn": "Warning",
+    "fail": "Failed",
+    "skip": "Not applicable"
+  },
+  "localInfo": {
+    "description": "Local configuration and public identity material only. No external or loopback probes are performed.",
+    "refresh": "Refresh",
+    "runtime": "Runtime",
+    "version": "Version",
+    "startedAt": "Process started",
+    "uptime": "Uptime",
+    "serverTime": "Server time",
+    "identity": "Federation identity",
+    "identityUnavailable": "Local federation identity is unavailable.",
+    "keyCreated": "Signing key created",
+    "keyId": "Key ID",
+    "publicKey": "Signing public key",
+    "rootPublicKey": "Root public key",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "roots": "Root key history",
+    "unpublished": "Unpublished",
+    "current": "Current root",
+    "predecessor": "Predecessor root",
+    "certificates": "Published signing certificates",
+    "configuration": "Configured transport",
+    "configHint": "Configured values are not proof of external reachability.",
+    "origin": "Configured client origin",
+    "lanDomain": "LAN domain",
+    "insecureHttp": "Insecure HTTP enabled",
+    "interfaces": "Process-visible interfaces",
+    "interfaceHint": "Inside a container these are container interfaces, not all host interfaces."
+  },
+  "quotaCenter": {
+    "overview": "Overview",
+    "defaults": "Default policies",
+    "description": "Review quota circuit breakers and add today's allowance. Full per-object usage and limits remain in User and Federation details. Budgets are independent and reset at 00:00 UTC.",
+    "defaultHint": "Changes apply immediately to dimensions inheriting defaults. They do not erase today's usage. Zero is a zero base allowance, not unlimited.",
+    "manageDefaults": "Manage default policies in Quota",
+    "search": "Search limited objects",
+    "scope": "Object type",
+    "all": "All",
+    "user": "Local user",
+    "peer": "Federation peer",
+    "counts": "Tripped breakers: {{users}} users, {{peers}} peers",
+    "empty": "No matching tripped quota breakers.",
+    "limitedDimensions": "Limited dimensions",
+    "loadFailed": "Quota load failed"
+  },
   "federation": {
     "title": "Federation",
-    "desc": "Peer servers and their Federation v1 bidirectional recognition lifecycle. Open a peer for recognition facts, reachability, and namespace state.",
     "searchPlaceholder": "Search domain",
     "namespaceFilterPlaceholder": "Namespace ID",
-    "tabs": {
-      "peers": "Peers",
-      "selfCheck": "Self-check"
-    },
     "status": {
       "all": "All",
       "available": "Available",
@@ -506,125 +612,6 @@
       },
       "retired": "retired"
     },
-    "selfCheck": {
-      "title": "S2S Handshake Self-Check",
-      "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/somfp, key consistency, signature loopback and clock skew. Real network probes run per SRV target and per resolved IP, over exactly the HTTPS path production peers use; in insecure dev mode (allowInsecureHttp) network probes are skipped.",
-      "entry": "Self-check",
-      "ntpServer": "Reference clock (NTP)",
-      "dnsResolver": "DNS resolver",
-      "run": "Run checks",
-      "rerun": "Re-run",
-      "copyJson": "Copy JSON",
-      "placeholder": "Pick a reference clock and DNS resolver, then run the probe set.",
-      "target": "Target",
-      "noSrv": "SRV unresolved; no federation endpoint determined",
-      "runAt": "Run at",
-      "totalDuration": "Total",
-      "primaryIssue": "Primary issue",
-      "blocked": "Blocked upstream",
-      "blockedCount": "{{count}} additional check(s) were not run because of this issue.",
-      "error": {
-        "HPE_INVALID_CONSTANT": "HTTP protocol parse failure: the response did not match the negotiated protocol"
-      },
-      "check": {
-        "config": "Local configuration",
-        "key-file": "Key file permissions",
-        "key-age": "Key creation time",
-        "dns-srv": "SRV record _somfp._tcp",
-        "dns-a": "A records (IPv4)",
-        "dns-aaaa": "AAAA records (IPv6)",
-        "tls-public": "TLS certificate (per IP)",
-        "tls-loopback": "Local process loopback",
-        "well-known": ".well-known/somfp (per IP)",
-        "key-consistency": "Published key consistency",
-        "sign-loopback": "Signature loopback",
-        "clock-skew": "Clock skew"
-      },
-      "status": {
-        "ok": "Passed",
-        "warn": "Warning",
-        "fail": "Failed",
-        "skip": "Skipped"
-      },
-      "group": {
-        "config": "Local configuration",
-        "dns": "DNS resolution",
-        "tls": "TLS certificate",
-        "well-known": ".well-known/somfp",
-        "crypto": "Key & signature",
-        "clock": "Clock skew"
-      },
-      "toast": {
-        "ok": "All checks passed",
-        "hasFails": "{{count}} check(s) failed — review below",
-        "copied": "Report copied to clipboard",
-        "copyFailed": "Copy failed"
-      },
-      "field": {
-        "domain": "domain",
-        "keyId": "keyId",
-        "allowInsecureHttp": "allowInsecureHttp",
-        "nodeEnv": "NODE_ENV",
-        "tlsConfigured": "local TLS",
-        "listenPort": "listen port",
-        "path": "path",
-        "mode": "file mode",
-        "createdAt": "createdAt",
-        "ageDays": "age (days)",
-        "record": "SRV record",
-        "records": "SRV records",
-        "resolvedHost": "host",
-        "resolvedPort": "port",
-        "targets": "probe targets",
-        "endpoints": "endpoints",
-        "error": "error",
-        "documentsConsistent": "documents consistent",
-        "publishedKeyFound": "published key found",
-        "addresses": "addresses",
-        "authority": "authority",
-        "verified": "verified",
-        "ntpServer": "NTP server",
-        "dnsResolver": "resolver",
-        "offsetSec": "offset (s)",
-        "roundTripMs": "round-trip (ms)",
-        "clockSkewBudgetMs": "clock-skew budget (ms)",
-        "warnSec": "warn threshold (s)",
-        "failSec": "fail threshold (s)",
-        "host": "host",
-        "port": "port",
-        "originTls": "origin TLS",
-        "keyIdDomain": "keyId domain",
-        "expectedDomain": "expected domain",
-        "keyMatch": "key matches",
-        "domainMatch": "domain matches",
-        "localPubB64": "local pub (b64)",
-        "localPubSha256": "local pub sha256",
-        "publishedPubB64": "published pub (b64)",
-        "publishedKeyCount": "published keys"
-      },
-      "cert": {
-        "show": "cert",
-        "hide": "hide",
-        "subject": "Subject",
-        "issuer": "Issuer",
-        "serial": "Serial",
-        "sigAlg": "Signature alg",
-        "pubKey": "Public key",
-        "validFrom": "Valid from",
-        "validTo": "Valid to",
-        "san": "SAN",
-        "keyUsage": "Key usage",
-        "alpn": "ALPN",
-        "sanMatched": "SAN match",
-        "fpSha256": "SHA-256",
-        "fpSha1": "SHA-1",
-        "daysLeft": "{{days}}d left",
-        "chainTitle": "Trust chain",
-        "chainComplete": "chain anchors at a trusted root",
-        "chainIncomplete": "chain does NOT reach a trusted root",
-        "section": "Certificate"
-      }
-    },
     "reviews": {
       "title": "Identity reviews",
       "col": {
@@ -692,8 +679,6 @@
     "title": "Create user",
     "account": "Account",
     "accountHint": "1-30 chars: letters, digits, dot, underscore or hyphen; start with a letter or digit",
-    "name": "Display name",
-    "nameHint": "1 to 31 characters",
     "password": "Initial password",
     "passwordHint": "6-20 chars; letters, digits and .@!#$%^&*()",
     "passwordRequired": "Password login is enabled; an initial password is required",
@@ -724,7 +709,8 @@
   },
   "loginCodes": {
     "title": "Login codes",
-    "desc": "Admin-issued one-time login codes.",
+    "desc": "Each row is an admin-issued one-time login code, newest first. Each code can be used at most once and records its consumption time, IP, device, and associated session. Password logins, QR logins, and existing session reuse are not included.",
+    "summary": "{{issued}} issued · {{consumed}} consumed (not the account's total login count)",
     "col": {
       "status": "Status",
       "issuedAt": "Issued",
@@ -732,7 +718,7 @@
       "consumedAt": "Consumed",
       "consumedIp": "Consumed IP",
       "device": "Device",
-      "session": "Resulting session"
+      "session": "Session ID"
     },
     "status": {
       "pending": "Pending",
@@ -848,10 +834,7 @@
   "admins": {
     "title": "Admin Accounts",
     "desc": "Manage who can sign in to the console and their role. Disabling or demoting revokes their sessions immediately.",
-    "add": "Add admin",
-    "addTitle": "Promote a user to admin",
-    "userIdLabel": "User ID",
-    "userIdHint": "Numeric id of an existing user to promote (find it on the Users page).",
+    "roleConfirm": "Change the backend role for {{account}}? Existing backend sessions will be revoked. This does not change whether access is enabled.",
     "roleLabel": "Role",
     "empty": "No admins",
     "col": {
@@ -864,11 +847,11 @@
     "action": {
       "disable": "Disable",
       "enable": "Enable",
-      "reset2fa": "Reset 2FA"
+      "reset2fa": "Reset 2FA",
+      "setRole": "Set role"
     },
     "reset2faConfirm": "Reset two-factor for {{name}}? They will be able to sign in with their password only. Use this to recover a locked-out admin who lost their device.",
     "toast": {
-      "created": "Admin created",
       "disabled": "Admin disabled",
       "enabled": "Admin enabled",
       "role": "Role updated",
@@ -1048,7 +1031,7 @@
     "desc": "Manage your own sign-in security — two-factor authentication and recovery codes.",
     "totp": {
       "title": "Authenticator App",
-      "desc": "Require a rotating 6-digit code from Google / Microsoft Authenticator at every sign-in.",
+      "desc": "Use an authenticator code or recovery code as a second factor. If a passkey is also enrolled, either factor can be used.",
       "on": "On",
       "off": "Off",
       "enable": "Enable 2FA",
@@ -1097,6 +1080,23 @@
     "regen": {
       "title": "Regenerate backup codes",
       "desc": "Confirm with a valid code. The previous backup codes stop working immediately."
+    },
+    "account": {
+      "current": "Current account and sign-in",
+      "ip": "Current access IP",
+      "ipHint": "The source identified by the server for this request, not the original sign-in IP.",
+      "password": "Password",
+      "changePassword": "Change password",
+      "currentPassword": "Current password",
+      "newPassword": "New password",
+      "confirmPassword": "Confirm new password",
+      "passwordHint": "Use 6–20 letters, digits or .@!#$%^&*(). Both new password entries must match.",
+      "factor": "Second factor",
+      "logoutWarning": "Changing your password or security settings signs out all your admin and chat sessions, including this session.",
+      "changed": "Updated. Please sign in again.",
+      "refresh": "Refresh",
+      "lastActive": "Last active",
+      "thisSession": "Current session"
     }
   },
   "rateLimits": {

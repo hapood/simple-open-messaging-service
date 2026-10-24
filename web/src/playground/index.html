@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <base href="/" />
+    <meta name="theme-color" content="#f3f3f1" />
+    <script src="boot.js"></script>
+    <link
+      rel="canonical"
+      href="https://hapood.github.io/simple-open-messaging-service/"
+    />
+    <title>SOMS — Self-Hosted, Federated Chat Platform</title>
+    <meta
+      name="description"
+      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."
+    />
+    <meta
+      name="keywords"
+      content="self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
+    />
+
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:url"
+      content="https://hapood.github.io/simple-open-messaging-service/"
+    />
+    <meta
+      property="og:title"
+      content="SOMS — Self-Hosted, Federated Chat Platform"
+    />
+    <meta
+      property="og:description"
+      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+    />
+    <meta
+      property="og:image"
+      content="https://hapood.github.io/simple-open-messaging-service/social-preview.png"
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:url"
+      content="https://hapood.github.io/simple-open-messaging-service/"
+    />
+    <meta
+      name="twitter:title"
+      content="SOMS — Self-Hosted, Federated Chat Platform"
+    />
+    <meta
+      name="twitter:description"
+      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+    />
+    <meta
+      name="twitter:image"
+      content="https://hapood.github.io/simple-open-messaging-service/social-preview.png"
+    />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="logo.svg" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="SOMS" />
+    <style>
+      body.playground-page {
+        height: 100dvh;
+        overflow: hidden;
+      }
+      .playground-page .project-bar {
+        position: relative;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        box-sizing: border-box;
+        height: 56px;
+        padding: 0 24px;
+        border-bottom: 1px solid var(--app-border, #e4e4e7);
+        background: var(--app-surface-elevated, #fff);
+        color: var(--app-text, #17191c);
+        font:
+          13px/20px system-ui,
+          sans-serif;
+      }
+      .project-bar a {
+        text-decoration: none;
+        color: inherit;
+      }
+      .project-brand,
+      .project-actions,
+      .project-action {
+        display: flex;
+        align-items: center;
+      }
+      .project-brand {
+        gap: 10px;
+      }
+      .project-brand img {
+        width: 24px;
+        height: 24px;
+      }
+      .project-brand strong {
+        font-size: 15px;
+        letter-spacing: -0.4px;
+      }
+      .project-label {
+        border-left: 1px solid var(--app-border, #e4e4e7);
+        padding-left: 12px;
+        margin-left: 2px;
+        color: var(--app-text-muted, #71717a);
+        font-size: 12px;
+      }
+      .project-actions {
+        gap: 6px;
+      }
+      .project-action {
+        justify-content: center;
+        gap: 7px;
+        box-sizing: border-box;
+        min-height: 36px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-weight: 500;
+        cursor: pointer;
+        list-style: none;
+        transition: background 140ms ease;
+      }
+      .project-action::-webkit-details-marker {
+        display: none;
+      }
+      .project-action:hover {
+        background: var(--app-hover, #f4f4f5);
+      }
+
+      .project-bar .project-github {
+        min-width: 88px;
+        padding: 8px 6px;
+      }
+      .project-github img {
+        display: block;
+        height: 20px;
+        width: auto;
+      }
+      .project-bar .project-deploy {
+        margin-left: 6px;
+        padding: 8px 14px;
+        color: var(--app-on-action-primary, #fff);
+        background: var(--app-action-primary, #24262b);
+      }
+      .project-deploy:hover {
+        opacity: 0.88;
+      }
+      .project-bar a:focus-visible,
+      .project-bar summary:focus-visible {
+        outline: 2px solid var(--app-focus-ring, #6750a4);
+        outline-offset: 2px;
+      }
+      .project-overview {
+        position: relative;
+      }
+      .project-overview[open] summary {
+        background: var(--app-hover, #f4f4f5);
+      }
+      .project-about {
+        position: absolute;
+        top: 44px;
+        right: 0;
+        box-sizing: border-box;
+        width: min(380px, calc(100vw - 24px));
+        max-height: calc(100dvh - 88px);
+        overflow-y: auto;
+        padding: 24px;
+        border: 1px solid var(--app-border, #e4e4e7);
+        border-radius: 14px;
+        background: var(--app-surface-elevated, #fff);
+        box-shadow: 0 12px 40px #0002;
+        line-height: 22px;
+      }
+      .project-about h1 {
+        margin: 0 0 12px;
+        font-size: 20px;
+        line-height: 28px;
+      }
+      .project-about p,
+      .project-about ul {
+        margin: 12px 0;
+      }
+      .project-about ul {
+        padding-left: 20px;
+      }
+      .project-about li {
+        margin: 6px 0;
+      }
+      .project-about a {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .project-about .demo-note {
+        color: var(--app-text-muted, #71717a);
+      }
+      .playground-page .playground-viewport {
+        display: block;
+        height: calc(100dvh - 56px);
+        min-height: 0;
+      }
+      .playground-viewport app-home-shell,
+      .playground-viewport app-deployment-page {
+        height: 100%;
+      }
+      .playground-viewport app-deployment-page {
+        position: relative;
+      }
+      .playground-page .app-splash {
+        height: 100%;
+      }
+      @media (max-width: 600px) {
+        .playground-page .project-bar {
+          padding: 0 12px;
+        }
+        .project-label,
+        .deploy-project-name {
+          display: none;
+        }
+        .project-brand {
+          gap: 7px;
+        }
+        .project-actions {
+          gap: 2px;
+        }
+        .project-action {
+          min-height: 40px;
+          padding: 10px;
+        }
+        .project-bar .project-deploy {
+          padding: 10px;
+          margin-left: 2px;
+        }
+        .project-about {
+          position: fixed;
+          top: 64px;
+          right: 12px;
+        }
+        .playground-viewport app-deployment-page .sidebar,
+        .playground-viewport app-deployment-page .backdrop {
+          position: absolute;
+        }
+      }
+    </style>
+  </head>
+  <body class="playground-page">
+    <header class="project-bar" lang="en">
+      <a class="project-brand" href="#/" aria-label="SOMS Playground home">
+        <img src="logo.svg" alt="" width="24" height="24" />
+        <strong>SOMS</strong>
+        <span class="project-label">Playground</span>
+      </a>
+      <nav class="project-actions" aria-label="Project links">
+        <details class="project-overview" lang="en">
+          <summary class="project-action">About</summary>
+          <section class="project-about" aria-label="About SOMS">
+            <h1>SOMS — Simple Open Messaging Service</h1>
+            <p>
+              An open-source, self-hosted, federated chat platform for web and
+              native devices. Independently operated servers communicate through
+              the SOMFP protocol, without a central authority.
+            </p>
+            <ul>
+              <li>
+                Cross-server friendships, direct messages, and group
+                conversations.
+              </li>
+              <li>
+                Images, files, voice messages, and WebRTC voice and video calls.
+              </li>
+              <li>
+                Self-hosted server, web client, and administration console.
+              </li>
+            </ul>
+            <p class="demo-note">
+              This playground uses in-memory demo data. It does not connect to a
+              real chat server, and reloading resets the demo.
+            </p>
+            <p>
+              <a href="https://github.com/hapood/simple-open-messaging-service"
+                >View the SOMS source code and deployment guide on GitHub</a
+              >
+            </p>
+          </section>
+        </details>
+        <a
+          class="project-action project-github"
+          href="https://github.com/hapood/simple-open-messaging-service"
+          target="_blank"
+          rel="noopener"
+          aria-label="GitHub repository (opens in a new tab)"
+        >
+          <img
+            src="https://img.shields.io/github/stars/hapood/simple-open-messaging-service?style=social&amp;logo=github&amp;label=GitHub"
+            alt="GitHub stars"
+            height="20"
+            referrerpolicy="no-referrer"
+          />
+        </a>
+        <a class="project-action project-deploy" href="#/deploy">
+          <span>Deploy<span class="deploy-project-name"> SOMS</span></span>
+        </a>
+      </nav>
+    </header>
+    <app-root class="playground-viewport">
+      <div class="app-splash">
+        <img class="app-splash__mark" src="logo.svg" alt="" />
+        <div class="app-splash__word">SOMS</div>
+        <div class="app-splash__spinner"></div>
+      </div>
+    </app-root>
+  </body>
+</html>

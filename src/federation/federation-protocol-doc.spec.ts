@@ -86,7 +86,7 @@ describe('Federation v1 protocol documentation', () => {
       readFileSync(join(process.cwd(), 'spec/RELEASE.json'), 'utf8'),
     );
     expect(release).toMatchObject({
-      version: '1.0.0-draft.0',
+      version: '1.0.0-draft.1',
       status: 'draft',
       reviewStage: 'final-review',
       language: 'en',
@@ -269,16 +269,51 @@ describe('Federation v1 protocol documentation', () => {
     ajv.addSchema(readSchema('common.schema.json'));
     for (const name of ['profile', 'evidence-profile']) {
       const validate = ajv.compile(readSchema(`${name}.schema.json`));
-      const profile = {
-        account: 'alice',
-        displayName: 'Alice',
-        bio: '',
-        avatar: null,
-        ...(name === 'profile' ? { profileRev: 1, proof: 'Y2hhbGxlbmdl' } : {}),
-      };
+      const content = { displayName: 'Alice', bio: '', avatar: null };
+      const profile =
+        name === 'profile'
+          ? {
+              account: 'alice',
+              profileRev: 1,
+              profile: content,
+              proof: 'Y2hhbGxlbmdl',
+            }
+          : { account: 'alice', ...content };
       expect(validate(profile)).toBe(true);
       expect(validate({ ...profile, domain: 'a.example' })).toBe(false);
     }
+  });
+
+  it('validates the revision/nullness contract and rejects flattened public profiles', () => {
+    const ajv = new Ajv2020Module.default({ strict: false });
+    ajv.addSchema(readSchema('common.schema.json'));
+    const validate = ajv.compile(readSchema('profile.schema.json'));
+    const empty = {
+      account: 'alice',
+      profileRev: 0,
+      profile: null,
+      proof: 'Y2hhbGxlbmdl',
+    };
+    const content = { displayName: 'Alice', bio: '', avatar: null };
+    expect(validate(empty)).toBe(true);
+    expect(validate({ ...empty, profileRev: 1 })).toBe(false);
+    expect(validate({ ...empty, profile: content })).toBe(false);
+    expect(validate({ ...empty, profileRev: 1, profile: content })).toBe(true);
+    expect(
+      validate({
+        ...empty,
+        profileRev: 1,
+        profile: { ...content, extra: true },
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        account: 'alice',
+        profileRev: 1,
+        proof: empty.proof,
+        ...content,
+      }),
+    ).toBe(false);
   });
 
   it('validates closed provenance batches and result states', () => {

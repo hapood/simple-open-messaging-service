@@ -7,6 +7,7 @@ import { validate } from 'class-validator';
 import { ValidationPipe } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
+import { AdminRole } from '../database/enums.js';
 import { LogViewerController } from './log-viewer.controller.js';
 import { Test } from '@nestjs/testing';
 import { LoggerModule } from './logger.module.js';
@@ -132,7 +133,13 @@ describe('process-local log output level', () => {
       controllers: [LogViewerController],
     })
       .overrideGuard(AdminAuthGuard)
-      .useValue({ canActivate: () => authorized })
+      .useValue({
+        canActivate: (context: import('@nestjs/common').ExecutionContext) => {
+          if (!authorized) return false;
+          context.switchToHttp().getRequest().user = { role: AdminRole.ADMIN };
+          return true;
+        },
+      })
       .compile();
     const adapter = new FastifyAdapter();
     const app = module.createNestApplication(adapter, { logger: false });

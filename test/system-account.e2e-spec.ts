@@ -45,9 +45,7 @@ describe('system account attribution', () => {
       list: [],
       total: 0,
     });
-    expect(() =>
-      users.addUser({ account: '$system', name: 'Impersonator' }),
-    ).toThrow();
+    expect(() => users.addUser({ account: '$system' })).toThrow();
   });
 
   it('enforces the reserved system sender independently of event participants', async () => {

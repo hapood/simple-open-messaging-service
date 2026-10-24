@@ -181,8 +181,7 @@ describe('profile wire contracts across isolated federation servers', () => {
       expect(envelope.data).toMatchObject({
         account: owner,
         profileRev: 1,
-        displayName: 'Wire Alice',
-        avatar: null,
+        profile: { displayName: 'Wire Alice', avatar: null, bio: '' },
       });
     }
     const cached = await appB.database.query.profileTable.findFirst({
@@ -194,6 +193,29 @@ describe('profile wire contracts across isolated federation servers', () => {
       ),
     });
     expect(cached?.displayName).toBe('Wire Alice');
+  });
+
+  it('resolves an existing account with no profile across signed HTTP', async () => {
+    const account = 'wireempty';
+    await appA.database.insert(tables.account).values({ account });
+    const caller = await registerAndLogin(appB, 'wirelookup', 'Wire Lookup');
+    const result = await resolveFederatedCard(appB, caller.token, account, FED_DOMAIN_A);
+    expect(result.event).toBe('resolved');
+    const responses = proxy.requestLog().filter((entry) =>
+      entry.status === 200 && new URL(entry.path, appA.baseUrl).pathname === `/s2s/v1/accounts/${account}`,
+    );
+    expect(responses.length).toBeGreaterThan(0);
+    for (const response of responses) {
+      const envelope = JSON.parse(response.responseBody!);
+      expect(envelope.code).toBe(BusinessCode.OK);
+      assertFederationWireSchema('urn:somfp:v1:profile', envelope.data);
+      expect(envelope.data).toMatchObject({ account, profileRev: 0, profile: null });
+      expect(typeof envelope.data.proof).toBe('string');
+    }
+    const snapshots = await appB.database.query.profileTable.findMany({
+      where: eq(tables.profileTable.account, account),
+    });
+    expect(snapshots).toEqual([]);
   });
 
   it.each(['account', 'group-member'] as const)(

@@ -10,7 +10,11 @@ describe('Account login queries', () => {
     '%s reads the local account without a duplicate table join',
     async (operation) => {
       // Use the real SQL builder and intercept only the PostgreSQL transport.
-      const query = vi.fn(async () => ({ rows: [] }));
+      const query = vi.fn(
+        async (_statement: { text: string }, _params: unknown[]) => ({
+          rows: [],
+        }),
+      );
       const database = { db: drizzle({ client: { query } as never }) };
       const bruteForce = new BruteForceService();
       const adminAuth = new AdminAuthService(
@@ -41,14 +45,16 @@ describe('Account login queries', () => {
               ? BusinessCode.OTP_INVALID
               : BusinessCode.INVALID_CREDENTIALS,
       });
-      expect(query).toHaveBeenCalledOnce();
-      const [statement, params] = query.mock.calls[0] as unknown as [
-        { text: string },
-        unknown[],
-      ];
+      const accountCalls = query.mock.calls.filter(([statement]) =>
+        statement.text.includes('from "Account"'),
+      );
+      expect(accountCalls).toHaveLength(1);
+      const [statement, params] = accountCalls[0];
       expect(statement.text).toContain('from "Account"');
       expect(statement.text).not.toMatch(/\bjoin\b/i);
-      expect(params).toEqual([operation === 'issue OTP' ? 42 : 'admin', 0, 1]);
+      expect(params).toEqual(
+        operation === 'issue OTP' ? [42] : ['admin', 0, 1],
+      );
     },
   );
 });

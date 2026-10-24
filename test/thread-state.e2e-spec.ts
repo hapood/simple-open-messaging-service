@@ -1,4 +1,6 @@
 import { UserService } from '../src/user/user.service.js';
+import { UserController } from '../src/controller/user.controller.js';
+import type { FastifyRequest } from 'fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, or, sql } from 'drizzle-orm';
@@ -29,31 +31,46 @@ describe('account-owned THREAD_STATE and default profiles', () => {
   });
   afterAll(async () => mod.close());
 
-  it('does not return an account fallback as an unresolved self profile', async () => {
-    const [owner] = await database.db
-      .insert(tables.account)
-      .values({
-        account: 'self-profile-unresolved',
-        defaultProfileRev: 9,
-      })
-      .returning();
-    const users = mod.get(UserService);
-    expect(await users.findSelfProfile(owner.id)).toBeNull();
-    await database.db.insert(tables.profileTable).values({
-      account: owner.account,
-      publisherNamespaceId: 0,
-      profileNamespaceId: 0,
-      profileRev: 9,
-      displayName: 'Resolved self',
-      avatar: '',
-      bio: 'Complete',
-    });
-    expect(await users.findSelfProfile(owner.id)).toMatchObject({
-      name: 'Resolved self',
-      defaultProfileRev: 9,
-      bio: 'Complete',
-    });
-  });
+  it.each([0, 9])(
+    'returns account facts independently of profile rows at revision %i',
+    async (rev) => {
+      const [owner] = await database.db
+        .insert(tables.account)
+        .values({
+          account: `self-account-${rev}`,
+          defaultProfileRev: rev,
+        })
+        .returning();
+      const users = mod.get(UserService);
+      const expected = {
+        id: owner.id,
+        account: owner.account,
+        namespaceId: 0,
+        profileRev: rev,
+        isGroup: false,
+        isDeleted: false,
+      };
+      expect(await users.findSelfAccount(owner.id)).toEqual(expected);
+      const request = { user: { userId: owner.id } } as FastifyRequest;
+      expect(await mod.get(UserController).getMyProfile(request)).toEqual(
+        expected,
+      );
+      await database.db.insert(tables.profileTable).values({
+        account: owner.account,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
+        profileRev: 9,
+        displayName: 'Resolved self',
+        avatar: '',
+        bio: 'Complete',
+      });
+      // Even an available snapshot must not leak display fields into the account endpoint.
+      expect(await users.findSelfAccount(owner.id)).toEqual(expected);
+      expect(await mod.get(UserController).getMyProfile(request)).toEqual(
+        expected,
+      );
+    },
+  );
 
   async function fixture(foreign = false) {
     const id = ++counter;

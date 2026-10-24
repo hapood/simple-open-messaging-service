@@ -1,5 +1,6 @@
 {
   "common": {
+    "confirm": "确认",
     "appName": "Admin 控制台",
     "loading": "加载中…",
     "noData": "无数据",
@@ -22,7 +23,6 @@
     "copy": "复制",
     "copied": "已复制",
     "copyFailed": "复制失败",
-    "workspace": "运营工作台",
     "client": {
       "app": "安卓",
       "web": "网页",
@@ -58,6 +58,9 @@
     "bans": "封禁管理",
     "push": "推送管理",
     "federation": "联邦",
+    "networkInfo": "网络",
+    "localInformation": "本机信息",
+    "quota": "额度",
     "logs": "日志",
     "rateLimits": "限流监控",
     "media": "媒体传输",
@@ -66,12 +69,15 @@
     "durableTasks": "持久任务",
     "messageReports": "消息举报",
     "logout": "登出",
+    "collapse": "收起导航",
+    "expand": "展开导航",
     "group": {
       "overview": "常用功能",
       "access": "访问与活动",
       "system": "系统",
-      "account": "账户"
-    }
+      "account": "账户与安全"
+    },
+    "adminSessions": "管理员会话"
   },
   "quota": {
     "title": "每日配额",
@@ -158,8 +164,6 @@
       "usersDesc": "查找用户、创建账号或处理访问问题",
       "connections": "查看在线连接",
       "connectionsDesc": "排查当前在线状态与异常连接",
-      "selfCheck": "运行联邦自检",
-      "selfCheckDesc": "验证域名、证书和联邦可达性",
       "settings": "系统设置",
       "settingsDesc": "检查实例配置与运行参数"
     },
@@ -222,14 +226,14 @@
     "backToPassword": "返回密码步骤"
   },
   "users": {
+    "grantViewerConfirm": "确认授予 {{account}} 只读管理员权限？现有用户会话和已签发的登录码将被撤销。后续仅超级管理员可以调整其角色。",
+    "grantViewerSuccess": "已授予只读管理员权限",
     "title": "用户管理",
     "create": "新建用户",
     "searchPlaceholder": "搜索 账户名",
     "col": {
       "id": "ID",
       "account": "账户名",
-      "domain": "domain",
-      "foreigner": "外宾",
       "status": "状态",
       "quota": "额度",
       "createdAt": "创建时间",
@@ -244,6 +248,8 @@
       "ban": "封禁",
       "forceLogout": "强制下线",
       "viewSessions": "查看会话",
+      "viewDetails": "查看详情",
+      "grantViewer": "设置管理员",
       "issueLoginCode": "签发登录码",
       "generateInitialPassword": "生成初始密码"
     },
@@ -266,6 +272,7 @@
   "userDetail": {
     "back": "返回用户列表",
     "notFound": "用户不存在",
+    "sessionsDesc": "仅展示尚未撤销且未过期的会话，不是完整登录历史。退出或过期的会话不会出现在这里；复用已有会话不会新增记录。",
     "section": {
       "profile": "资料",
       "groups": "群组",
@@ -273,8 +280,6 @@
       "push": "推送设备"
     },
     "field": {
-      "domain": "域",
-      "foreigner": "境外",
       "createdAt": "创建时间",
       "updatedAt": "更新时间",
       "bio": "简介"
@@ -290,7 +295,9 @@
       "push": "无推送设备"
     },
     "push": {
-      "deviceId": "设备 ID"
+      "deviceId": "设备 ID",
+      "desc": "仅展示已向服务端注册推送订阅的设备，不代表全部登录设备。浏览器登录本身不会自动获得通知权限；登录管理后台也不会注册聊天推送。",
+      "emptyHint": "浏览器用户请在聊天客户端的「设置 → 通知」中允许通知。还需浏览器支持 Web Push、服务端推送配置可用且订阅注册成功；如已允许，请检查浏览器站点权限、网络连接及推送配置，再刷新此页。"
     }
   },
   "userQuota": {
@@ -368,7 +375,7 @@
   "adminSessions": {
     "title": "管理员会话",
     "searchPlaceholder": "按 IP 筛选",
-    "desc": "管理员的活跃 opaque session，与普通用户会话物理隔离。共 {{count}} 条，吊销后下一次请求立即失效。",
+    "desc": "当前有效的管理员会话（共 {{count}} 个），仅供查看。有效会话不代表设备当前在线。",
     "revoke": "吊销",
     "revoked": "已吊销该管理员会话（其 access 15m 内仍有效）",
     "revokeFailed": "吊销失败",
@@ -420,15 +427,114 @@
       "config": "传输配置"
     }
   },
+  "networkInspection": {
+    "tabExternal": "本机外部网络检测",
+    "tabDiagnostics": "联邦网络连通诊断",
+    "local": "本机网卡地址",
+    "showLocal": "展开回环与链路本地地址（{{count}}）",
+    "hideLocal": "收起回环与链路本地地址",
+    "external": "外部检测 · 出口 IP",
+    "refreshLocal": "刷新本机地址",
+    "detect": "检测外部 IP",
+    "sources": "检测来源（可多选）",
+    "localHint": "这里显示后端进程可见的地址，不是浏览器地址。Docker 环境下显示容器地址；IPv6 入站转发正常，不代表容器具备 IPv6 出站能力。",
+    "externalHint": "从服务器分别通过 IPv4 / IPv6 直连检测来源，返回出口公网 IP；它不一定与 DNS 入口或反向代理地址一致。",
+    "privacy": "仅手动检测，所选服务会看到服务器出口 IP。10 秒内可能复用检测结果，不会在后台定时探测。",
+    "loading": "检测中…",
+    "notRun": "尚未检测",
+    "noInterfaces": "暂无可用的网卡地址。",
+    "sourceAddress": "本地源地址",
+    "sourceFailure": "未能完成该来源的检测。单个来源失败不代表网络整体不可用，也不能证明外网无法访问本实例。",
+    "runAt": "检测时间",
+    "runtime": {
+      "docker": "Docker 镜像环境",
+      "unknown": "运行环境未声明"
+    },
+    "scope": {
+      "loopback": "回环",
+      "private": "私有地址",
+      "linkLocal": "链路本地",
+      "uniqueLocal": "唯一本地",
+      "unicast": "全球单播",
+      "carrierGradeNat": "共享地址",
+      "reserved": "保留地址"
+    },
+    "error": {
+      "EADDRNOTAVAIL": "本地源地址不可用，请检查后端或容器的 IPv6 配置。",
+      "ENETUNREACH": "后端运行环境没有到该目标的可用路由。",
+      "ETIMEDOUT": "该来源未在 5 秒内完成响应，可换其他来源对比。",
+      "ENOTFOUND": "无法为该地址协议解析检测服务的域名。",
+      "ECONNREFUSED": "连接被检测服务或网络设备拒绝。"
+    }
+  },
+  "networkTools": {
+    "description": "只需输入联邦域名，不要填写 https:// 或端口。后端通过 SOMFP SRV 自动发现目标主机和端口，点击检测后才会发起请求。",
+    "target": "联邦域名",
+    "route": "选中的 SRV 入口",
+    "identity": "TLS 校验域名",
+    "policy": "使用共用联邦传输代码新建连接,DNS 结果原样展示(含 CNAME 链与解析器错误码)。连接超时 {{connectTimeoutMs}} ms,请求超时 {{callTimeoutMs}} ms。",
+    "run": "开始检测",
+    "scope": "DNS 结果原样展示:实际拨号使用的地址与原始 DNS 查询并列对比,两者不一致时正是线索。TLS 校验联邦域名而非 SRV 主机名。SRV 缺失或无效时停止检测,不回退到 443 端口,不跟随重定向。本机配置和公钥请查看「本机信息」。",
+    "dns": "DNS 地址",
+    "srv": "已发布的联邦 SRV 记录",
+    "https": "HTTPS 连通性与证书",
+    "federation": "联邦协议发现",
+    "evidence": "查看详情",
+    "ok": "通过",
+    "warn": "警告",
+    "fail": "失败",
+    "skip": "不适用"
+  },
+  "localInfo": {
+    "description": "仅展示本地配置和公开身份信息，不执行外部请求或回环探测。",
+    "refresh": "刷新",
+    "runtime": "运行信息",
+    "version": "版本",
+    "startedAt": "进程启动时间",
+    "uptime": "运行时长",
+    "serverTime": "服务器时间",
+    "identity": "联邦身份",
+    "identityUnavailable": "本机联邦身份当前不可用。",
+    "keyCreated": "签名密钥创建时间",
+    "keyId": "密钥 ID",
+    "publicKey": "签名公钥",
+    "rootPublicKey": "根公钥",
+    "copy": "复制",
+    "copied": "已复制",
+    "copyFailed": "复制失败",
+    "roots": "根公钥历史",
+    "unpublished": "已停止发布",
+    "current": "当前根身份",
+    "predecessor": "前任根身份",
+    "certificates": "已发布的签名证书",
+    "configuration": "传输配置",
+    "configHint": "这里只展示配置值，不代表已经验证外部可达性。",
+    "origin": "配置的客户端入口",
+    "lanDomain": "内网域名",
+    "insecureHttp": "已启用不安全 HTTP",
+    "interfaces": "当前进程可见网卡",
+    "interfaceHint": "容器内展示的是容器网卡，不代表宿主机全部网卡。"
+  },
+  "quotaCenter": {
+    "overview": "总览",
+    "defaults": "默认策略",
+    "description": "集中查看额度熔断对象、追加今日额度。完整用量和对象限额仍在用户或联邦详情中管理。各对象独立计量，每日 UTC 00:00 重置。",
+    "defaultHint": "修改立即影响继承默认值的维度，不清空今日用量。0 表示基础额度为零，不是无限制。",
+    "manageDefaults": "前往「额度」管理默认策略",
+    "search": "搜索受限对象",
+    "scope": "对象类型",
+    "all": "全部",
+    "user": "本地用户",
+    "peer": "联邦对端",
+    "counts": "额度熔断：{{users}} 个用户，{{peers}} 个对端",
+    "empty": "没有匹配的额度熔断对象。",
+    "limitedDimensions": "受限维度",
+    "loadFailed": "额度加载失败"
+  },
   "federation": {
     "title": "联邦",
-    "desc": "对端服务器及其 Federation v1 双向认可生命周期。点开节点可查看认可事实、可达性与完整时间线。",
     "searchPlaceholder": "搜索域名",
     "namespaceFilterPlaceholder": "命名空间 ID",
-    "tabs": {
-      "peers": "节点",
-      "selfCheck": "自检"
-    },
     "status": {
       "all": "全部",
       "available": "可用",
@@ -507,125 +613,6 @@
       },
       "retired": "已退役"
     },
-    "selfCheck": {
-      "title": "S2S 握手自检",
-      "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/somfp、密钥一致性、签名回环与时钟偏移。网络探测真实发起，按 SRV 目标 × 解析出的每个 IP 逐端点执行，且只走生产对端使用的 HTTPS 路径；不安全 dev 模式（allowInsecureHttp）下自动跳过网络探测。",
-      "entry": "握手自检",
-      "ntpServer": "参考时钟 (NTP)",
-      "dnsResolver": "DNS 解析器",
-      "run": "运行检查",
-      "rerun": "重新运行",
-      "copyJson": "复制 JSON",
-      "placeholder": "选择参考时钟与 DNS 解析器，然后运行检测。",
-      "target": "目标",
-      "noSrv": "未解析到 SRV，无法确定联邦端点",
-      "runAt": "运行时间",
-      "totalDuration": "总耗时",
-      "primaryIssue": "首要问题",
-      "blocked": "受上游阻断",
-      "blockedCount": "另有 {{count}} 项检查因该问题未执行。",
-      "error": {
-        "HPE_INVALID_CONSTANT": "HTTP 协议解析失败：响应与协商的协议不一致"
-      },
-      "check": {
-        "config": "本地配置",
-        "key-file": "密钥文件权限",
-        "key-age": "密钥创建时间",
-        "dns-srv": "SRV 记录 _somfp._tcp",
-        "dns-a": "A 记录（IPv4）",
-        "dns-aaaa": "AAAA 记录（IPv6）",
-        "tls-public": "TLS 证书（逐 IP）",
-        "tls-loopback": "本地进程回环",
-        "well-known": ".well-known/somfp（逐 IP）",
-        "key-consistency": "已发布密钥一致性",
-        "sign-loopback": "签名回环",
-        "clock-skew": "时钟偏移"
-      },
-      "status": {
-        "ok": "通过",
-        "warn": "警告",
-        "fail": "失败",
-        "skip": "跳过"
-      },
-      "group": {
-        "config": "本地配置",
-        "dns": "DNS 解析",
-        "tls": "TLS 证书",
-        "well-known": ".well-known/somfp",
-        "crypto": "密钥与签名",
-        "clock": "时钟偏移"
-      },
-      "toast": {
-        "ok": "全部检查通过",
-        "hasFails": "{{count}} 项失败——请查看下方",
-        "copied": "报告已复制到剪贴板",
-        "copyFailed": "复制失败"
-      },
-      "field": {
-        "domain": "域名",
-        "keyId": "keyId",
-        "allowInsecureHttp": "允许HTTP",
-        "nodeEnv": "NODE_ENV",
-        "tlsConfigured": "本地TLS",
-        "listenPort": "监听端口",
-        "path": "路径",
-        "mode": "文件权限",
-        "createdAt": "创建时间",
-        "ageDays": "密龄(天)",
-        "record": "SRV记录",
-        "records": "SRV 记录集",
-        "resolvedHost": "主机",
-        "resolvedPort": "端口",
-        "targets": "探测目标",
-        "endpoints": "端点",
-        "error": "错误",
-        "documentsConsistent": "文档一致",
-        "publishedKeyFound": "已发布密钥命中",
-        "addresses": "地址",
-        "authority": "authority",
-        "verified": "已验证",
-        "ntpServer": "NTP服务器",
-        "dnsResolver": "解析器",
-        "offsetSec": "偏移(秒)",
-        "roundTripMs": "往返(毫秒)",
-        "clockSkewBudgetMs": "时钟偏差预算(毫秒)",
-        "warnSec": "警告阈值(秒)",
-        "failSec": "失败阈值(秒)",
-        "host": "主机",
-        "port": "端口",
-        "originTls": "源站TLS",
-        "keyIdDomain": "keyId域",
-        "expectedDomain": "期望域",
-        "keyMatch": "密钥匹配",
-        "domainMatch": "域匹配",
-        "localPubB64": "本地公钥(b64)",
-        "localPubSha256": "本地公钥sha256",
-        "publishedPubB64": "发布公钥(b64)",
-        "publishedKeyCount": "已发布密钥数"
-      },
-      "cert": {
-        "show": "证书",
-        "hide": "收起",
-        "subject": "主体",
-        "issuer": "签发者",
-        "serial": "序列号",
-        "sigAlg": "签名算法",
-        "pubKey": "公钥",
-        "validFrom": "生效自",
-        "validTo": "到期",
-        "san": "SAN",
-        "keyUsage": "密钥用途",
-        "alpn": "ALPN",
-        "sanMatched": "SAN匹配",
-        "fpSha256": "SHA-256",
-        "fpSha1": "SHA-1",
-        "daysLeft": "剩{{days}}天",
-        "chainTitle": "信任链",
-        "chainComplete": "信任链锚定到可信根",
-        "chainIncomplete": "信任链未到达可信根",
-        "section": "证书"
-      }
-    },
     "reviews": {
       "title": "身份审核",
       "col": {
@@ -693,8 +680,6 @@
     "title": "新建用户",
     "account": "账户名",
     "accountHint": "1-30 位：字母、数字、点号、下划线或连字符，首位须为字母或数字",
-    "name": "显示名称",
-    "nameHint": "1 到 31 个字符",
     "password": "初始密码",
     "passwordHint": "6-20 位，允许字母数字和 .@!#$%^&*()",
     "passwordRequired": "密码登录已启用，需设置初始密码",
@@ -725,15 +710,16 @@
   },
   "loginCodes": {
     "title": "登录码",
-    "desc": "管理员签发的一次性登录码记录。",
+    "desc": "每行对应一个管理员签发的一次性登录码，按签发时间倒序排列，每个码最多使用一次。使用后记录时间、IP、设备及关联会话；不包含密码登录、扫码登录或已有会话的复用记录。",
+    "summary": "共签发 {{issued}} 个 · 已使用 {{consumed}} 个（不是账号总登录次数）",
     "col": {
       "status": "状态",
       "issuedAt": "签发时间",
       "expiresAt": "过期时间",
-      "consumedAt": "消费时间",
-      "consumedIp": "消费 IP",
+      "consumedAt": "使用时间",
+      "consumedIp": "使用 IP",
       "device": "设备",
-      "session": "产生的会话"
+      "session": "会话 ID"
     },
     "status": {
       "pending": "待使用",
@@ -849,10 +835,7 @@
   "admins": {
     "title": "管理员账号",
     "desc": "管理可登录控制台的人员及其角色。禁用或降级会立即吊销其会话。",
-    "add": "添加管理员",
-    "addTitle": "将用户提升为管理员",
-    "userIdLabel": "用户 ID",
-    "userIdHint": "要提升的已有用户的数字 ID（在用户页查找）。",
+    "roleConfirm": "确认修改 {{account}} 的后台角色？现有后台会话将被撤销，不会改变该账号后台访问的启用状态。",
     "roleLabel": "角色",
     "empty": "无管理员",
     "col": {
@@ -865,11 +848,11 @@
     "action": {
       "disable": "禁用",
       "enable": "启用",
-      "reset2fa": "重置二次验证"
+      "reset2fa": "重置二次验证",
+      "setRole": "设置角色"
     },
     "reset2faConfirm": "重置 {{name}} 的二次验证？重置后该账号将仅凭密码登录。用于为丢失设备的被锁管理员解锁。",
     "toast": {
-      "created": "已创建管理员",
       "disabled": "已禁用管理员",
       "enabled": "已启用管理员",
       "role": "角色已更新",
@@ -1049,7 +1032,7 @@
     "desc": "管理你自己的登录安全——二次验证与恢复码。",
     "totp": {
       "title": "身份验证器",
-      "desc": "每次登录时要求来自 Google / Microsoft 身份验证器的轮换 6 位数字代码。",
+      "desc": "使用验证器动态验证码或恢复码完成二次验证；同时绑定通行密钥时可任选一种。",
       "on": "已开启",
       "off": "未开启",
       "enable": "启用二次验证",
@@ -1098,6 +1081,23 @@
     "regen": {
       "title": "重新生成备用代码",
       "desc": "请用有效验证码确认。旧的备用代码将立即失效。"
+    },
+    "account": {
+      "current": "当前账户与登录",
+      "ip": "当前访问 IP",
+      "ipHint": "这是服务端识别的当前请求来源，不是本次会话最初的登录 IP。",
+      "password": "密码",
+      "changePassword": "修改密码",
+      "currentPassword": "当前密码",
+      "newPassword": "新密码",
+      "confirmPassword": "确认新密码",
+      "passwordHint": "新密码须为 6–20 位，使用字母、数字或 .@!#$%^&*()，且两次输入一致。",
+      "factor": "二次验证方式",
+      "logoutWarning": "修改密码或安全设置成功后，本人的管理台和聊天客户端全部会话将退出，包括当前会话。",
+      "changed": "已更新，请重新登录",
+      "refresh": "刷新",
+      "lastActive": "最近活动",
+      "thisSession": "当前会话"
     }
   },
   "rateLimits": {

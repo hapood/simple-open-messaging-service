@@ -13,11 +13,13 @@
 //   {"id":6,"action":"errors","user":"alice"}
 //   {"id":7,"action":"resetUser","user":"alice"}   // wipe profile (fresh identity)
 //   {"id":8,"action":"close"}
-// Secrets (admin password, OTPs) are read from .env / kept in memory only.
-import { chromium, expect } from '@playwright/test';
+// Configured credentials arrive on a private pipe; OTPs stay in memory.
+// Direct local-lab mode retains explicit environment/tmpfs credential overrides.
+import { chromium, expect, request } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import {
   readFileSync,
+  writeFileSync,
   rmSync,
   existsSync,
   mkdirSync,
@@ -26,17 +28,52 @@ import {
 } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import readline from 'node:readline';
+import { Socket } from 'node:net';
 
 import { browserLaunchOptions } from './infrastructure/browser-runtime.mjs';
 import {
-  federationNodes as NODES,
-  navigationUrl,
+  federationNodes,
+  navigationUrl as targetNavigationUrl,
   assertProfileTarget,
 } from './infrastructure/targets.mjs';
 import {
   profileTarget,
   profileDirectory,
 } from './infrastructure/profile-targets.mjs';
+import {
+  resolveDeploymentIdentity,
+  validateDeployment,
+} from './infrastructure/acceptance-run.mjs';
+import { otpKey, redactSecrets } from './infrastructure/driver-secrets.mjs';
+const deployment = process.env.BROWSER_DEPLOYMENT_FILE
+  ? JSON.parse(readFileSync(process.env.BROWSER_DEPLOYMENT_FILE, 'utf8'))
+  : undefined;
+const NODES = deployment
+  ? validateDeployment(deployment.mode, deployment.nodes)
+  : federationNodes;
+const navigationUrl = (target, node, url) =>
+  targetNavigationUrl(target, node, url, NODES);
+// The private pipe is not a command argument, environment secret, or model tool parameter.
+const credentials = deployment
+  ? await new Promise((resolve, reject) => {
+      const pipe = new Socket({ fd: 3, readable: true, writable: false });
+      let text = '';
+      pipe.setEncoding('utf8');
+      pipe.on('data', (chunk) => {
+        text += chunk;
+      });
+      pipe.on('error', reject);
+      pipe.on('end', () => {
+        try {
+          resolve(JSON.parse(text));
+        } catch {
+          reject(new Error('Invalid private credential transport.'));
+        }
+      });
+    })
+  : {};
+const knownSecrets = new Set(Object.values(credentials));
+const safe = (value) => redactSecrets(value, knownSecrets);
 const ARTIFACT_ROOT =
   process.env.BROWSER_ARTIFACT_DIR || '/tmp/soms-browser-e2e';
 const SHOTS = `${ARTIFACT_ROOT}/runs/${Date.now()}-${randomUUID()}`;
@@ -54,7 +91,7 @@ function validName(name) {
   return name;
 }
 const env = Object.fromEntries(
-  (existsSync('.env') ? readFileSync('.env', 'utf8') : '')
+  (!deployment && existsSync('.env') ? readFileSync('.env', 'utf8') : '')
     .split('\n')
     .filter((l) => l && !l.startsWith('#') && l.includes('='))
     .map((l) => {
@@ -73,16 +110,19 @@ const env = Object.fromEntries(
 // Temporary lab credential override lives in tmpfs (memory-backed), never in the repo.
 let tmpPw = '';
 try {
-  tmpPw = readFileSync('/dev/shm/soms-admin-pw', 'utf8').trim();
+  if (!deployment)
+    tmpPw = readFileSync('/dev/shm/soms-admin-pw', 'utf8').trim();
 } catch {}
 const ADMIN_PASSWORD =
   process.env.BROWSER_ADMIN_PASSWORD || tmpPw || env.ADMIN_BOOTSTRAP_PASSWORD;
-function requireAdminPassword() {
-  if (!ADMIN_PASSWORD)
+if (!deployment && ADMIN_PASSWORD) knownSecrets.add(ADMIN_PASSWORD);
+function requireAdminPassword(node) {
+  const password = deployment ? credentials[node] : ADMIN_PASSWORD;
+  if (!password)
     throw new Error(
       'Set BROWSER_ADMIN_PASSWORD or provide /dev/shm/soms-admin-pw',
     );
-  return ADMIN_PASSWORD;
+  return password;
 }
 
 const contexts = new Map(); // name -> { context, page, consoleErrors[], pageErrors[] }
@@ -141,14 +181,18 @@ function externalProfiles() {
 const otps = new Map(); // account -> code (memory only, never printed)
 
 function out(id, ok, data) {
-  process.stdout.write(JSON.stringify({ id, ok, data }) + '\n');
+  process.stdout.write(
+    JSON.stringify({ id, ok, data }, (_key, value) =>
+      typeof value === 'string' ? safe(value) : value,
+    ) + '\n',
+  );
 }
 function fail(id, err) {
   process.stdout.write(
     JSON.stringify({
       id,
       ok: false,
-      error: String((err && err.stack) || err).slice(0, 3000),
+      error: safe(String((err && err.stack) || err)).slice(0, 3000),
     }) + '\n',
   );
 }
@@ -171,7 +215,7 @@ async function newSession(name, viewport, requestedTarget) {
     profileDirectory(PROFILES, name, target),
     {
       ...browserLaunchOptions(),
-      ignoreHTTPSErrors: true,
+      ignoreHTTPSErrors: !deployment,
       viewport: viewport || { width: 1440, height: 1000 },
       args: [
         '--disable-backgrounding-occluded-windows',
@@ -233,18 +277,37 @@ async function newSession(name, viewport, requestedTarget) {
   return rec;
 }
 
+function bindLoginProfile(name, role, node, account) {
+  const file = `${profileDirectory(PROFILES, name, 'federation')}/.soms-test-identity.json`;
+  const identity = { role, node, account };
+  if (existsSync(file)) {
+    const existing = JSON.parse(readFileSync(file, 'utf8'));
+    if (JSON.stringify(existing) !== JSON.stringify(identity))
+      throw new Error(
+        'Profile belongs to another node/account/role; use a separate profile.',
+      );
+  } else
+    writeFileSync(file, JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
+}
+
 async function adminLogin(node, profile) {
   const name = validName(profile || `admin-${node}`);
   navigationUrl('federation', node);
-  const { page } = await newSession(name, undefined, 'federation');
+  const rec = await newSession(name, undefined, 'federation');
+  if (rec.adminNode && rec.adminNode !== node)
+    throw new Error('Admin profile belongs to another node.');
+  if (rec.tracing) throw new Error('Stop tracing before authentication.');
+  bindLoginProfile(name, 'admin', node, NODES[node].account || 'admin');
+  rec.adminNode = node;
+  const { page } = rec;
   const base = NODES[node].admin;
   try {
     await page.goto(base, { waitUntil: 'domcontentloaded' });
     // The SPA may still be redirecting to /login; settle before checking.
     await page.waitForURL(/\/admin\/login/, { timeout: 5000 }).catch(() => {});
     if (page.url().includes('/login')) {
-      await page.locator('#account').fill('admin');
-      await page.locator('#password').fill(requireAdminPassword());
+      await page.locator('#account').fill(NODES[node].account || 'admin');
+      await page.locator('#password').fill(requireAdminPassword(node));
       await page.locator('form button[type="submit"]').click();
     }
     // Users page renders a search input; this is the reliable logged-in signal.
@@ -254,6 +317,14 @@ async function adminLogin(node, profile) {
     });
     // The login page can also expose a searchbox, so confirm the URL.
     if (page.url().includes('/login')) throw new Error('admin login failed');
+    const identityResponse = await page.request.post(
+      new URL('/api/v1/admin/me', base).href,
+      { maxRedirects: 0 },
+    );
+    const identity = await identityResponse.json();
+    if (!identityResponse.ok() || identity.code !== 0)
+      throw new Error('Cannot read authenticated Admin identity.');
+    resolveDeploymentIdentity(NODES, node, identity.data?.somsDomain);
   } catch (error) {
     // Drop the half-open session so the next attempt retries login instead of
     // silently reusing a logged-out page.
@@ -264,7 +335,7 @@ async function adminLogin(node, profile) {
     }
     throw error;
   }
-  return { node, url: page.url() };
+  return { node, url: page.url(), domain: NODES[node].domain };
 }
 
 async function issueOtp(node, account, profile) {
@@ -277,7 +348,11 @@ async function issueOtp(node, account, profile) {
     contexts.delete(name);
   }
   if (!contexts.has(name)) await adminLogin(node, profile);
-  const { page } = contexts.get(name);
+  const rec = contexts.get(name);
+  if (rec.adminNode !== node)
+    throw new Error('Admin profile belongs to another node.');
+  if (rec.tracing) throw new Error('Stop tracing before issuing an OTP.');
+  const { page } = rec;
   const base = NODES[node].admin;
   const matches = [];
   const take = 20;
@@ -299,11 +374,12 @@ async function issueOtp(node, account, profile) {
     }
     total = users.data.total;
     matches.push(
-      // Local accounts carry their node's own home domain (e.g. alpha.test);
-      // federated stubs carry a peer domain and must never match.
+      // Current Admin user lists contain local accounts only. Older responses may
+      // include domain labels; never accept a peer-labelled entry from those versions.
       ...users.data.list.filter(
         (user) =>
-          user.account === account && user.domain === NODES[node].domain,
+          user.account === account &&
+          (user.domain === undefined || user.domain === NODES[node].domain),
       ),
     );
     skip += take;
@@ -320,7 +396,6 @@ async function issueOtp(node, account, profile) {
   );
   await openIssue.waitFor({ state: 'visible', timeout: 10000 });
   await openIssue.click();
-  await page.waitForTimeout(600);
   const dialog = page.locator('#issue-login-code-dialog');
   await dialog.waitFor({ state: 'visible', timeout: 10000 });
   const confirm = dialog.locator('button[type="submit"]');
@@ -329,14 +404,18 @@ async function issueOtp(node, account, profile) {
   const codeInput = dialog.locator('#ilc-code');
   await codeInput.waitFor({ state: 'visible', timeout: 15000 });
   const code = await codeInput.inputValue();
-  otps.set(account, code);
+  otps.set(otpKey(node, account), code);
+  knownSecrets.add(code);
   await page.keyboard.press('Escape');
-  await page.waitForTimeout(400);
+  await dialog.waitFor({ state: 'hidden' });
   return { account, codeLength: code.length };
 }
 
 async function userLogin(user, node, account) {
-  const { page } = await newSession(user);
+  const rec = await newSession(user, undefined, 'federation');
+  bindLoginProfile(user, 'user', node, account);
+  if (rec.tracing) throw new Error('Stop tracing before authentication.');
+  const { page } = rec;
   await page.goto(NODES[node].edge, { waitUntil: 'domcontentloaded' });
   // Wait for either the authenticated shell or the login entry.
   const hint = page.locator('app-icon-rail .icon-rail');
@@ -344,7 +423,7 @@ async function userLogin(user, node, account) {
   await expect(hint.or(other)).toBeVisible({ timeout: 30000 });
   if (await hint.isVisible())
     return { user, node, url: page.url(), resumed: true };
-  const code = otps.get(account);
+  const code = otps.get(otpKey(node, account));
   if (!code) throw new Error(`no OTP in memory for ${account}; issue first`);
   if (await other.isVisible().catch(() => false)) {
     await other.click();
@@ -356,7 +435,7 @@ async function userLogin(user, node, account) {
   await page.locator('form button[type="submit"]').click();
   // Wait for the authenticated shell, including when a thread is selected.
   await hint.waitFor({ state: 'visible', timeout: 30000 });
-  otps.delete(account);
+  otps.delete(otpKey(node, account));
   return { user, node, url: page.url() };
 }
 
@@ -364,6 +443,7 @@ async function shot(user, name) {
   validName(name);
   const rec = contexts.get(user);
   if (!rec) throw new Error(`no session ${user}`);
+  await assertEvidenceSafe(rec);
   // Background headless pages produce stale/blank frames; activate first.
   await rec.page.bringToFront();
   await rec.page.waitForTimeout(350);
@@ -372,7 +452,91 @@ async function shot(user, name) {
   return { path };
 }
 
+async function assertEvidenceSafe(rec) {
+  if (
+    /\/(login|auth)(\/|$)/.test(new URL(rec.page.url()).pathname) ||
+    (await rec.page
+      .locator('input[type="password"]:visible, #ilc-code:visible')
+      .count())
+  )
+    throw new Error('Authentication surfaces must not be captured.');
+}
+
 const actions = {
+  async preflight() {
+    const client = await request.newContext({
+      ignoreHTTPSErrors: !deployment,
+      timeout: 15_000,
+    });
+    try {
+      const result = {};
+      for (const [key, node] of Object.entries(NODES)) {
+        const health = {};
+        for (const [label, url] of [
+          ['web', node.edge],
+          ['admin', node.admin],
+          ['edgeCompat', new URL('/api/v1/client/compat', node.edge).href],
+          [
+            'serviceCompat',
+            new URL('/api/v1/client/compat', node.service || node.edge).href,
+          ],
+        ]) {
+          const approved = label.endsWith('Compat')
+            ? [new URL(url).origin]
+            : [new URL(node.edge).origin, new URL(node.admin).origin];
+          let destination = url;
+          let response;
+          for (let hop = 0; hop < 5; hop++) {
+            response = await client.get(destination, { maxRedirects: 0 });
+            if (![301, 302, 303, 307, 308].includes(response.status())) break;
+            const location = response.headers().location;
+            if (!location)
+              throw new Error(`${key} ${label}: redirect missing Location.`);
+            const next = new URL(location, destination);
+            if (
+              next.username ||
+              next.password ||
+              !approved.includes(next.origin)
+            )
+              throw new Error(
+                `${key} ${label}: redirect outside approved origins.`,
+              );
+            destination = next.href;
+          }
+          if (!response.ok())
+            throw new Error(
+              `${key} ${label}: HTTP ${response.status()}; verify the configured canonical URL.`,
+            );
+          if (label.endsWith('Compat')) {
+            const body = await response.json();
+            const data = body.data ?? body;
+            if (
+              typeof data.serverVersion !== 'string' ||
+              data.apiVersion === undefined
+            )
+              throw new Error(
+                `${key} ${label}: unexpected compatibility contract; classify environment versus driver mismatch.`,
+              );
+            health[label] = {
+              serverVersion: data.serverVersion,
+              apiVersion: data.apiVersion,
+            };
+          } else health[label] = { status: response.status() };
+        }
+        if (
+          JSON.stringify(health.edgeCompat) !==
+          JSON.stringify(health.serviceCompat)
+        )
+          throw new Error(
+            `${key}: edge/backend compatibility identity differs; verify routing and deployed versions.`,
+          );
+        result[key] = health;
+      }
+      return result;
+    } finally {
+      await client.dispose();
+    }
+  },
   async closeUser(c) {
     const rec = contexts.get(c.user);
     if (rec) {
@@ -383,11 +547,13 @@ const actions = {
   },
   async traceStart(c) {
     const rec = await newSession(c.user);
+    await assertEvidenceSafe(rec);
     await rec.context.tracing.start({
       screenshots: true,
       snapshots: true,
       sources: true,
     });
+    rec.tracing = true;
     return { started: c.user };
   },
   async traceStop(c) {
@@ -395,6 +561,7 @@ const actions = {
     if (!rec) throw new Error(`no session ${c.user}`);
     const path = `${SHOTS}/${validName(c.name)}.zip`;
     await rec.context.tracing.stop({ path });
+    rec.tracing = false;
     return { path };
   },
   status: () => ({
@@ -415,7 +582,9 @@ const actions = {
     return { user: c.user, target, url: page.url() };
   },
   async inspect(c) {
-    const { page } = await newSession(c.user);
+    const rec = await newSession(c.user);
+    await assertEvidenceSafe(rec);
+    const { page } = rec;
     return {
       url: page.url(),
       snapshot: await page.locator('body').ariaSnapshot(),
@@ -456,8 +625,6 @@ const actions = {
       shot,
       nodes: NODES,
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-      // In-memory only; steps must not return or persist this value.
-      adminPassword: ADMIN_PASSWORD,
     };
     const data = await mod.default(helpers);
     return data === undefined ? { done: true } : data;

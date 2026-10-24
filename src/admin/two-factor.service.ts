@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ConflictException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import {
   createCipheriv,
@@ -9,7 +9,11 @@ import {
 } from 'node:crypto';
 import { Secret, TOTP } from 'otpauth';
 import { and, count, eq, isNull, lt } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
+import {
+  DatabaseService,
+  type Database,
+  type DatabaseTransaction,
+} from '../database/database.service.js';
 import {
   admin,
   adminLoginChallenge,
@@ -190,7 +194,7 @@ export class TwoFactorService {
    *  consumed on the first successful second-factor verify (see {@link consumeChallenge}), so a captured
    *  challenge cannot be replayed for a second session — closes the counter=0 passkey replay window that
    *  TOTP already covered via twoFactorLastUsedCounter. Also lazily GCs expired rows to bound the table. */
-  async signChallenge(adminId: number): Promise<string> {
+  async signChallenge(adminId: number, state?: string): Promise<string> {
     const jti = randomUUID();
     // Best-effort GC: drop rows older than 1h (the challenge TTL is 5m, so these are long-expired).
     await this.database.db
@@ -204,19 +208,22 @@ export class TwoFactorService {
       .catch(() => {});
     await this.database.db.insert(adminLoginChallenge).values({ jti, adminId });
     return this.jwtService.sign(
-      { sub: adminId, scope: 'admin-2fa-challenge', jti },
+      { sub: adminId, scope: 'admin-2fa-challenge', jti, state },
       { secret: jwtConstants.adminSecret, expiresIn: CHALLENGE_TTL },
     );
   }
 
   /** Decode a login challenge token → { adminId, jti }. Returns null on any failure (invalid / expired /
    *  wrong scope). The jti is what {@link consumeChallenge} marks single-use. */
-  verifyChallenge(token: string): { adminId: number; jti: string } | null {
+  verifyChallenge(
+    token: string,
+  ): { adminId: number; jti: string; state?: string } | null {
     try {
       const payload = this.jwtService.verify<{
         sub?: number;
         scope?: string;
         jti?: string;
+        state?: string;
       }>(token, {
         secret: jwtConstants.adminSecret,
       });
@@ -227,7 +234,7 @@ export class TwoFactorService {
       ) {
         return null;
       }
-      return { adminId: payload.sub, jti: payload.jti };
+      return { adminId: payload.sub, jti: payload.jti, state: payload.state };
     } catch {
       return null;
     }
@@ -261,35 +268,45 @@ export class TwoFactorService {
   async enableWithBackupCodes(
     adminId: number,
     secretBase32: string,
+    transaction?: DatabaseTransaction,
+    counter: number | null = null,
   ): Promise<{ backupCodes: string[] }> {
     const cipher = this.encrypt(secretBase32);
     const codes = Array.from({ length: BACKUP_CODE_COUNT }, () =>
       generateBackupCode(),
     );
-    await this.database.db.transaction(async (tx) => {
-      await tx
+    const enable = async (tx: DatabaseTransaction) => {
+      const changed = await tx
         .update(admin)
         .set({
           twoFactorEnabled: true,
           twoFactorSecretCipher: cipher,
           twoFactorEnabledAt: new Date(),
-          twoFactorLastUsedCounter: null,
+          twoFactorLastUsedCounter: counter,
           updatedAt: new Date(),
         })
-        .where(eq(admin.id, adminId));
+        .where(and(eq(admin.id, adminId), eq(admin.twoFactorEnabled, false)))
+        .returning({ id: admin.id });
+      if (changed.length !== 1)
+        throw new ConflictException('authenticator already enabled');
       await tx
         .delete(twoFactorBackupCode)
         .where(eq(twoFactorBackupCode.adminId, adminId));
       await tx
         .insert(twoFactorBackupCode)
         .values(codes.map((c) => ({ adminId, codeHash: hashBackupCode(c) })));
-    });
+    };
+    if (transaction) await enable(transaction);
+    else await this.database.db.transaction(enable);
     return { backupCodes: codes.map(formatBackupCode) };
   }
 
   /** Atomically disable 2FA: clear the secret + flags and drop all backup codes. */
-  async disable(adminId: number): Promise<void> {
-    await this.database.db.transaction(async (tx) => {
+  async disable(
+    adminId: number,
+    transaction?: DatabaseTransaction,
+  ): Promise<void> {
+    const disable = async (tx: DatabaseTransaction) => {
       await tx
         .update(admin)
         .set({
@@ -303,24 +320,29 @@ export class TwoFactorService {
       await tx
         .delete(twoFactorBackupCode)
         .where(eq(twoFactorBackupCode.adminId, adminId));
-    });
+    };
+    if (transaction) await disable(transaction);
+    else await this.database.db.transaction(disable);
   }
 
   /** Replace all backup codes with a fresh set (requires a fresh TOTP at the call site). Returns plaintext ONCE. */
   async regenerateBackupCodes(
     adminId: number,
+    transaction?: DatabaseTransaction,
   ): Promise<{ backupCodes: string[] }> {
     const codes = Array.from({ length: BACKUP_CODE_COUNT }, () =>
       generateBackupCode(),
     );
-    await this.database.db.transaction(async (tx) => {
+    const regenerate = async (tx: DatabaseTransaction) => {
       await tx
         .delete(twoFactorBackupCode)
         .where(eq(twoFactorBackupCode.adminId, adminId));
       await tx
         .insert(twoFactorBackupCode)
         .values(codes.map((c) => ({ adminId, codeHash: hashBackupCode(c) })));
-    });
+    };
+    if (transaction) await regenerate(transaction);
+    else await this.database.db.transaction(regenerate);
     return { backupCodes: codes.map(formatBackupCode) };
   }
 
@@ -328,10 +350,14 @@ export class TwoFactorService {
    *  lookup by (adminId, codeHash) finds the match in O(1) — no verify loop. Single-use is enforced by an
    *  updateMany(consumedAt IS NULL) guard: only the first concurrent verifier wins. Returns false if the
    *  code is unknown/malformed or a concurrent verifier already consumed it. */
-  async consumeBackupCode(adminId: number, rawCode: string): Promise<boolean> {
+  async consumeBackupCode(
+    adminId: number,
+    rawCode: string,
+    db: Database | DatabaseTransaction = this.database.db,
+  ): Promise<boolean> {
     const code = normalizeBackupCode(rawCode);
     if (!code) return false;
-    const row = await this.database.db.query.twoFactorBackupCode.findFirst({
+    const row = await db.query.twoFactorBackupCode.findFirst({
       where: and(
         eq(twoFactorBackupCode.adminId, adminId),
         eq(twoFactorBackupCode.codeHash, hashBackupCode(code)),
@@ -340,7 +366,7 @@ export class TwoFactorService {
       columns: { id: true },
     });
     if (!row) return false;
-    const claimed = await this.database.db
+    const claimed = await db
       .update(twoFactorBackupCode)
       .set({ consumedAt: new Date() })
       .where(

@@ -7,6 +7,7 @@ import { RouteErrorPage } from '@/routes/route-error-page';
 import { UsersLayout } from '@/routes/users/users-layout';
 import { SessionsLayout } from '@/routes/sessions/sessions-layout';
 import { FederationLayout } from '@/routes/federation/federation-layout';
+import { QuotaLayout } from '@/routes/quota/quota-layout';
 import { PushLayout } from '@/routes/push/push-layout';
 import { LogsLayout } from '@/routes/logs/logs-layout';
 
@@ -18,14 +19,14 @@ import { LogsLayout } from '@/routes/logs/logs-layout';
  *
  * `lazy` returns `{ Component }` (it may also return `loader`/`action`/`ErrorBoundary`); the route's
  * `element` must be omitted when `lazy` is used. The layout routes (RootLayout, ProtectedRoute, and
- * the five hub layouts — Users/Sessions/Federation/Push/Logs) stay eager: they are tiny <Outlet/>
+ * the hub layouts — Users/Sessions/Federation/NetworkInfo/Push/Logs) stay eager: they are tiny <Outlet/>
  * wrappers that must render before any lazy child resolves.
  *
  * Multi-tab hubs use route-driven tabs: a hub layout (e.g. UsersLayout) renders the title + tab bar
  * and an <Outlet/>, with the tabs as child routes (the index route + named sub-routes). Detail pages
  * (/users/:id, /federation/:domain) are full-page siblings outside the hub layout. react-router v7
- * ranks static segments ahead of dynamic ones, so /users/operators and /federation/self-check resolve
- * to their hub children rather than to the :id / :domain siblings.
+ * ranks static segments ahead of dynamic ones, so /users/operators resolves to the hub child
+ * rather than to the :id sibling.
  *
  */
 
@@ -103,12 +104,16 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'admins',
-                  lazy: () =>
-                    import('@/routes/admin-sessions/admin-sessions-page').then(
-                      (m) => ({ Component: m.AdminSessionsPage }),
-                    ),
+                  element: <Navigate to="/admin-sessions" replace />,
                 },
               ],
+            },
+            {
+              path: '/admin-sessions',
+              lazy: () =>
+                import('@/routes/admin-sessions/admin-sessions-page').then(
+                  (m) => ({ Component: m.AdminSessionsPage }),
+                ),
             },
             {
               path: '/connections',
@@ -135,11 +140,38 @@ export const router = createBrowserRouter(
                       Component: m.FederationPage,
                     })),
                 },
+              ],
+            },
+            {
+              path: '/network',
+              lazy: () =>
+                import('@/routes/network/network-page').then((m) => ({
+                  Component: m.NetworkPage,
+                })),
+            },
+            {
+              path: '/local-information',
+              lazy: () =>
+                import(
+                  '@/routes/local-information/local-information-page'
+                ).then((m) => ({ Component: m.LocalInformationPage })),
+            },
+            {
+              path: '/quota',
+              element: <QuotaLayout />,
+              children: [
                 {
-                  path: 'self-check',
+                  index: true,
                   lazy: () =>
-                    import('@/routes/federation/self-check-page').then((m) => ({
-                      Component: m.SelfCheckPage,
+                    import('@/routes/quota/quota-overview-page').then((m) => ({
+                      Component: m.QuotaOverviewPage,
+                    })),
+                },
+                {
+                  path: 'defaults',
+                  lazy: () =>
+                    import('@/routes/quota/quota-defaults-page').then((m) => ({
+                      Component: m.QuotaDefaultsPage,
                     })),
                 },
               ],

@@ -9,7 +9,6 @@ import type {
   LocalFederationRootEpoch,
   LocalFederationRootRotationResult,
   LocalFederationRootUnpublishResult,
-  SelfCheckReport,
 } from '@/types/api';
 
 export interface FederationPeersQuery {
@@ -116,13 +115,4 @@ export function recognizeFederationPeer(
   return request<FederationRecognizeResult>(
     `/admin/federation/peers/${encodeURIComponent(domain)}/recognize`,
   );
-}
-
-/** Run the S2S handshake self-check. Both options are optional; the server defaults to
- *  ntp.aliyun.com and the system DNS resolver. */
-export function runFederationSelfCheck(opts?: {
-  ntpServer?: string;
-  dnsResolver?: string;
-}): Promise<SelfCheckReport> {
-  return request<SelfCheckReport>('/admin/federation/self-check', opts);
 }

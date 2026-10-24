@@ -62,6 +62,7 @@ describe('SessionTokenService', () => {
         return query;
       },
       innerJoin: () => query,
+      for: () => resolve(),
       where: () => query,
       limit: () => ({
         then: (fn: (rows: unknown[]) => unknown) => resolve().then(fn),
@@ -186,6 +187,33 @@ describe('SessionTokenService', () => {
       expect(arg.autoTerminateDays).toBe(30);
     });
 
+    it('initializes the cache before the issuance transaction releases its lock', async () => {
+      let inside = false;
+      transaction.mockImplementationOnce(async (callback) => {
+        inside = true;
+        const result = await callback(db);
+        expect(kv.initPersistent).toHaveBeenCalledOnce();
+        inside = false;
+        return result;
+      });
+      kv.initPersistent.mockImplementationOnce(async () => {
+        expect(inside).toBe(true);
+      });
+      await svc.issue(7, 'web');
+    });
+
+    it('removes the initialized cache entry when the transaction commit fails', async () => {
+      transaction.mockImplementationOnce(async (callback) => {
+        await callback(db);
+        throw new Error('commit failed');
+      });
+      await expect(svc.issue(7, 'web')).rejects.toThrow('commit failed');
+      expect(kv.initPersistent).toHaveBeenCalledOnce();
+      expect(kv.delPersistent).toHaveBeenCalledWith(
+        kv.initPersistent.mock.calls[0][0],
+      );
+    });
+
     it('stores the sha256 hash, never the plaintext', async () => {
       const plaintext = await svc.issue(7, 'web');
       const stored = store.sessionToken.create.mock.calls[0][0].data.tokenHash;
@@ -235,7 +263,7 @@ describe('SessionTokenService', () => {
       expect(kv.updatePersistent).not.toHaveBeenCalled();
     });
 
-    it('serves an issued persistent-cache hit without a DB read', async () => {
+    it('serves a fresh issued cache entry without a database read', async () => {
       kv.getPersistent.mockResolvedValue(
         JSON.stringify({
           userId: 7,
@@ -253,7 +281,20 @@ describe('SessionTokenService', () => {
         autoTerminateDays: 180,
         mustChangePassword: false,
       });
-      expect(store.sessionToken.findUnique).not.toHaveBeenCalled();
+      expect(select).not.toHaveBeenCalled();
+    });
+
+    it('does not accept an expired payload even if the cache adapter returns it', async () => {
+      kv.getPersistent.mockResolvedValue(
+        JSON.stringify({
+          userId: 7,
+          sessionId: 101,
+          exp: Date.now() - 1,
+          nextTouchAt: Date.now() + 60_000,
+        }),
+      );
+      await expect(svc.validate('a'.repeat(64))).resolves.toBeNull();
+      expect(select).toHaveBeenCalled();
     });
 
     it('rejects an expired web token (expiresAt in the past)', async () => {

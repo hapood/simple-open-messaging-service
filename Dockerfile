@@ -79,13 +79,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # `docker image inspect`, /client/compat (serverVersion), and /.well-known/somfp. Default "dev".
 ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version="${APP_VERSION}"
-ENV NODE_ENV=production APP_VERSION=${APP_VERSION}
+ENV NODE_ENV=production APP_VERSION=${APP_VERSION} SOMS_RUNTIME=docker
 # Secrets and runtime configuration are injected by Compose as environment variables, never baked in.
 # --chown=node:node so the non-root runtime user owns every file (node:*-slim ships uid-1000 `node`).
 COPY --chown=node:node package.json ./
 COPY --chown=node:node --from=server-build /build/node_modules ./node_modules
 COPY --chown=node:node --from=server-build /build/dist ./dist
-# Pure SQL migrations + compiled checksum/lock runner used by the one-shot compose migrate service.
+# Pure SQL migrations + compiled checksum/lock runner used by the container bootstrap
+# (docker/supervisor.sh runs `wait` then `migrate` before starting the origin) and by manual
+# operator runs (`docker compose run --rm app node dist/scripts/migrate-db.js migrate`).
 COPY --chown=node:node --from=server-build /build/database ./database
 # Angular's application builder emits client files under dist/web/browser/ (SSR-ready layout); copy its
 # contents flat into public/web so index.html sits at public/web/index.html for Caddy file_server.
@@ -103,8 +105,10 @@ RUN --mount=type=bind,source=docker,target=/checks \
 USER node
 # Reuse the existing pre-login client bootstrap response for HTTP liveness;
 # the federation health endpoint retains its separate signed contract.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||'3000')+'/api/v1/client/compat').then(async r=>{let j=r.ok?await r.json():null;process.exit(j?.code===0&&Number.isInteger(j?.data?.apiVersion)?0:1)}).catch(()=>process.exit(1))"
+# Start period covers the in-container bootstrap (wait + migrations) on upgrade, during which
+# no port listens yet; compose does not act on unhealthy by itself.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+  CMD node -e "const h=require('node:http'); const s=process.env.SOMS_BACKEND_SOCKET; const r=h.get(s?{socketPath:s,path:'/api/v1/client/compat'}:{hostname:'127.0.0.1',port:process.env.PORT||3000,path:'/api/v1/client/compat'},res=>{let b='';res.on('data',c=>b+=c);res.on('end',()=>{try{let j=JSON.parse(b);process.exit(res.statusCode===200&&j.code===0&&Number.isInteger(j.data?.apiVersion)?0:1)}catch{process.exit(1)}})});r.setTimeout(4000,()=>r.destroy());r.on('error',()=>process.exit(1))"
 # Only 7667 is published (Caddy edge: HTTPS web UI + API + SSE + federation S2S; +udp for HTTP/3).
 EXPOSE 7667/tcp
 EXPOSE 7667/udp

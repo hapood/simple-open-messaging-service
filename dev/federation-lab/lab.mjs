@@ -17,11 +17,7 @@ import { ensureLabDatabase } from './database.mjs';
 import { assertPortsFree } from './ports.mjs';
 import { writeHmrSession } from './hmr-session.mjs';
 import { signalProcessGroup, stopLabChildren } from './shutdown.mjs';
-import {
-  federationLabDatabaseUrl,
-  federationLabNodes,
-  federationLabRoutes,
-} from './topology.mjs';
+import { federationLabDatabaseUrl, federationLabNodes } from './topology.mjs';
 
 const labDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(labDir, '..', '..');
@@ -273,17 +269,17 @@ if (runFrontend) {
 }
 await assertPortsFree(preflightPorts);
 
-const routes = federationLabRoutes;
-
-function labEnvironment(node, peerRoutes) {
+function labEnvironment(node) {
   const env = {
     ...process.env,
     NODE_ENV: 'development',
     PORT: String(node.backendPort),
+    // The lab Caddy edge connects over loopback. Trust only that local proxy,
+    // not deployment-specific proxy ranges inherited from the repository environment.
+    TRUSTED_PROXY_CIDRS: '127.0.0.1/32,::1/128',
     SOMS_DOMAIN: node.domain,
     SOMS_TLS_MODE: 'disabled',
     SOMS_ALLOW_INSECURE_HTTP: '1',
-    SOMS_DEV_FEDERATION_ROUTES: JSON.stringify(peerRoutes),
     DATABASE_URL: databaseUrl(node.database),
     SOMS_DATA_DIR: join(runtimeDir, node.name, 'data'),
     SOMS_CONFIG_DIR: join(labDir, 'local', node.name),
@@ -345,9 +341,6 @@ async function stopBackendChild(child) {
 }
 
 function startBackendNode(node, domain = node.domain) {
-  const peerRoutes = { ...routes };
-  delete peerRoutes[node.domain];
-  delete peerRoutes[node.transitionDomain];
   const diagnosticsArgs = process.env.SOMS_DIAGNOSTICS_DIR
     ? [
         '--import',
@@ -356,11 +349,11 @@ function startBackendNode(node, domain = node.domain) {
     : [];
   const child = spawn(
     'node',
-    [...diagnosticsArgs, join(root, 'dist', 'src', 'main.js')],
+    [...diagnosticsArgs, join(labDir, 'app.main.mjs')],
     {
       cwd: root,
       stdio: ['inherit', 'pipe', 'inherit'],
-      env: labEnvironment({ ...node, domain }, peerRoutes),
+      env: labEnvironment({ ...node, domain }),
       detached: true,
     },
   );

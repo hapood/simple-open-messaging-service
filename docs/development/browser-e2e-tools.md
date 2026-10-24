@@ -8,8 +8,13 @@ JSON commands. Scenario steps stay in temporary modules; only generally useful
 operations belong in the driver. The driver and Playwright suite share browser
 installation, target definitions, and build-status interpretation; their context
 lifecycles remain separate. Start with [browser testing architecture](browser-testing.md).
-`npm run pi:webtest` does not bind an environment. New `open` commands select
-`target: "playground"` or `target: "federation"`; retained profiles keep their target.
+`npm run pi:webtest` opens a two-node quick / three-node full acceptance wizard.
+See [the Pi entry point](../../tools/pi-web-testing/README.md) for configured
+deployments, private credential entry, progress documents and mandatory pause
+confirmation. The local-lab defaults and HMR instructions below apply only when
+running the driver directly or loading the extension without `--webtest-wizard`.
+New `open` commands select `target: "playground"` or `target: "federation"`;
+retained profiles keep their target.
 
 ## Start and reconnect
 
@@ -244,6 +249,7 @@ adb shell am instrument -w -e class com.soms.client.ClientStateDbTest \
 
 | Action       | Fields beyond `id` and `action`                         | Behavior                                                                          |
 | ------------ | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `preflight`  | none | Bounded Web/Admin and edge/backend compatibility checks; redirects remain within approved origins |
 | `status`     | none                                                    | Current contexts, externally locked profiles, URLs, lab nodes, artifact directory |
 | `open`       | `user`, optional `node`, `url`, `viewport`              | Open/reuse a profile and navigate; viewport applies when creating it              |
 | `inspect`    | `user`                                                  | URL and accessible page snapshot                                                  |
@@ -384,8 +390,8 @@ export default async ({ page, expect, pageOf }) => {
 ```
 
 Other helpers are `context`, `shot(user, name)`, `nodes`, and `sleep(ms)`.
-A legacy `adminPassword` helper remains for existing local steps; never return
-or log it. The driver imports a fresh module instance for each invocation.
+Steps do not receive administrator passwords; use the driver's dedicated login
+helpers. The driver imports a fresh module instance for each invocation.
 Scripts must return JSON-serializable, non-secret summaries and throw on failed
 assertions. Keep browser actions bounded: locator and navigation timeouts exist,
 but an arbitrary JavaScript loop or promise has no driver-wide deadline.
@@ -418,8 +424,10 @@ expected/actual behavior, build identity and artifact paths. Distinguish selecto
 or setup failures from application bugs. Separate retained-cache reload, fresh
 server recovery, live multi-session sync and offline catch-up assertions.
 
-Before switching conversations, update the handoff with current code/build,
-running services, profile-to-account mapping, restored/dirty fixture state,
-unfinished checks and the next command. Use `close` to release browser profiles
+Before switching conversations, use `webtest_run checkpoint` to save current
+code/build, running services, profile-to-account mapping, restored/dirty fixture
+state, unfinished checks and the next action in the run-local handoff. Direct
+local-driver exploration should keep equivalent non-secret notes in its local
+artifact directory, not a shared documentation dashboard. Use `close` to release browser profiles
 if the next conversation cannot reuse the current driver. Do not reset databases
 or profiles merely to resume work.

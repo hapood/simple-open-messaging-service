@@ -73,17 +73,18 @@ export class UserService {
       .then(([row]) => row ?? null);
   }
 
-  /** Profile responses require the exact stored snapshot, not account display fallbacks. */
-  findSelfProfile(userId: number) {
+  /** Session identity and its default revision are account facts, independent of profile resolution. */
+  findSelfAccount(userId: number) {
     return this.database.db
       .select({
-        ...publicUserColumns,
-        name: profileTable.displayName,
-        avatar: profileTable.avatar,
-        bio: profileTable.bio,
+        id: accountTable.id,
+        account: accountTable.account,
+        namespaceId: accountTable.namespaceId,
+        profileRev: accountTable.defaultProfileRev,
+        isGroup: sql<boolean>`${accountTable.kind} = 'GROUP'`,
+        isDeleted: sql<boolean>`${accountTable.availability} = 'REMOVED'`,
       })
       .from(accountTable)
-      .innerJoin(profileTable, selectedProfile)
       .where(eq(accountTable.id, userId))
       .limit(1)
       .then(([row]) => row ?? null);
@@ -174,7 +175,11 @@ export class UserService {
     return { list, total };
   }
 
-  addUser(params: { account: string; name: string; hashPwd?: string | null }) {
+  /** Single account-creation choke point. Creates the Account at profile rev 0 — the established
+   *  "no profile published yet" state (same as the SYSTEM account) — with no Profile row. Every
+   *  display path COALESCEes displayName back to the account, and the user's first own profile edit
+   *  (updateProfile) inserts the first Profile row and bumps rev 0→1. */
+  addUser(params: { account: string; hashPwd?: string | null }) {
     const address = normalizeAccount(params.account);
     if (!isValidUserAccount(address))
       throw new BusinessException(
@@ -188,21 +193,12 @@ export class UserService {
         .values({
           account: address,
           namespaceId: 0,
-          defaultProfileRev: 1,
+          defaultProfileRev: 0,
           hashPwd: params.hashPwd ?? null,
         })
         .onConflictDoNothing({ target: accountTable.account })
         .returning({ id: accountTable.id, account: accountTable.account });
       if (!created) return { status: 2 };
-      await tx.insert(profileTable).values({
-        account: address,
-        publisherNamespaceId: 0,
-        profileNamespaceId: 0,
-        profileRev: 1,
-        displayName: params.name,
-        avatar: '',
-        bio: '',
-      });
       return { status: 0, data: created };
     });
   }

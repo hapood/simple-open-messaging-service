@@ -2,7 +2,7 @@
 
 Status: `DRAFT` — Final Review
 
-Release: `v1.0.0-draft.0`
+Release: `v1.0.0-draft.1`
 
 This directory ships with the v1 normative text as a non-normative validation
 resource and uses JSON Schema Draft 2020-12. The normative text defines atomic
@@ -48,7 +48,7 @@ operation.
 
 ## Validation
 
-Using the separate SOMFP offline validator **1.0.0-draft.0**, run from its
+Using the separate SOMFP offline validator **1.0.0-draft.1**, run from its
 directory and point it at the copied specification package:
 
 ```bash

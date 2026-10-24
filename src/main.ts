@@ -5,7 +5,12 @@ import {
   FastifyAdapter,
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import { readFileSync } from 'fs';
+import { readFileSync, chmodSync } from 'fs';
+import {
+  backendSocketPath,
+  listenerProxyTrust,
+  prepareBackendSocket,
+} from './common/http-listener.js';
 import { randomUUID } from 'crypto';
 import { AppModule } from './app.module.js';
 import { configureApp } from './bootstrap.js';
@@ -28,11 +33,13 @@ async function bootstrap() {
   const trustedProxies = parseTrustedProxyConfig(
     process.env.TRUSTED_PROXY_CIDRS,
   );
+  const socketPath = backendSocketPath();
+  const trustProxy = listenerProxyTrust(socketPath, trustedProxies.isTrusted);
   const adapter = new FastifyAdapter(
     enableH2
       ? {
           // Only explicitly configured proxy networks may supply X-Forwarded-*.
-          trustProxy: trustedProxies.isTrusted,
+          trustProxy,
           // Correlation ID: honor an inbound X-Request-Id (reverse-proxy / upstream) else mint a UUID.
           // Fastify owns request.id; pino-http reuses it, so every access + app log for one request
           // shares the id, and bootstrap's onSend hook echoes it back on the response header.
@@ -52,7 +59,7 @@ async function bootstrap() {
           bodyLimit: 1_048_576,
         }
       : {
-          trustProxy: trustedProxies.isTrusted,
+          trustProxy,
           // Correlation ID — see the h2 branch above.
           requestIdHeader: 'x-request-id',
           genReqId: () => randomUUID(),
@@ -93,6 +100,13 @@ async function bootstrap() {
   await configureApp(app, adapter);
   app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
 
+  if (socketPath) {
+    await prepareBackendSocket(socketPath);
+    await app.listen({ path: socketPath });
+    chmodSync(socketPath, 0o600);
+    console.log(`[main] listening on unix:${socketPath} (HTTP/1.1)`);
+    return;
+  }
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port, '0.0.0.0');
   console.log(

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationTransportError } from './federation-errors.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
@@ -29,6 +30,48 @@ function subject(peer: Record<string, unknown> | undefined) {
 }
 
 describe('FederationPeerLifecycle recognition and reachability gates', () => {
+  it('uses the same remote-only predicate for page data and total', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const where = vi.fn().mockResolvedValue([{ value: 0 }]);
+    const database = {
+      db: {
+        query: { identityNamespace: { findMany } },
+        select: () => ({ from: () => ({ where }) }),
+      },
+    };
+    const lifecycle = new FederationPeerLifecycle(
+      database as never,
+      {} as never,
+      {} as never,
+    );
+    await expect(
+      lifecycle.list({
+        skip: 20,
+        take: 20,
+        search: 'local',
+        status: 'unrecognized',
+        namespaceId: 0,
+      }),
+    ).resolves.toEqual({ list: [], total: 0 });
+    const predicate = findMany.mock.calls[0][0].where;
+    expect(where).toHaveBeenCalledWith(predicate);
+    const query = new PgDialect().sqlToQuery(predicate);
+    expect(query.sql).toContain('"IdentityNamespace"."id" >');
+    expect(query.params[0]).toBe(0);
+    expect(findMany.mock.calls[0][0]).toMatchObject({ offset: 20, limit: 20 });
+  });
+  it('rejects local namespace detail and local block/unblock operations', async () => {
+    const { lifecycle } = subject({ id: 0, domain: 'local.example' });
+    await expect(lifecycle.detail('local.example')).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    await expect(lifecycle.markBlocked('local.example')).rejects.toMatchObject({
+      bizCode: BusinessCode.VALIDATION_FAILED,
+    });
+    await expect(
+      lifecycle.markUnblocked('local.example'),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.VALIDATION_FAILED });
+  });
   it('reports complete recognition independently of degraded reachability', async () => {
     const { lifecycle } = subject({
       trustLevel: 'degraded',

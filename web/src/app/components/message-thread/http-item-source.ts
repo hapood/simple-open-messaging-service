@@ -40,6 +40,7 @@ import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { messageAuthorAvatarProfile } from '../../services/avatar-profile-ref';
 import { messageAuthorProfileDemand } from '../../services/profile-demand';
+import { unevidencedProfileDemand } from '../../../../../shared/profile-demand';
 import { MsgService } from '../../services/message.service';
 import {
   isRenderableMessageTomb,
@@ -1081,10 +1082,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const key = this.creatorKey(message.creator)!;
         const identity = parseUserIdentityKey(key);
         if (!identity) throw new Error('invalid profile identity key');
-        const cached = await (this.profileRepo
+        // Batch shaping consumes only what caches already hold: the
+        // unevidenced form reads the local durable cache plus this server's
+        // durable cache — one bounded request that never federates and never
+        // returns PENDING — so a remote author can neither stall nor fail the
+        // batch. A miss or error degrades this author to the account
+        // identity; the sender avatar demand keeps resolving the full
+        // evidenced form in the background.
+        const demand = messageAuthorProfileDemand(message);
+        const cached = await (this.profileRepo && demand
           ? firstValueFrom(
-              this.profileRepo.resolve(messageAuthorProfileDemand(message)!),
-            )
+              this.profileRepo.resolve(unevidencedProfileDemand(demand)),
+            ).catch(() => undefined)
           : Promise.resolve(undefined));
         const presentation = {
           name: cached?.name ?? identity.account,

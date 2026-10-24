@@ -204,8 +204,12 @@ export async function configureApp(
 
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true, // strip fields not declared on the DTO
-      forbidNonWhitelisted: true, // reject requests with undeclared fields (400)
+      // Undeclared fields are STRIPPED, never rejected: handlers never see them (anti
+      // mass-assignment), but clients keep working across contract drift — an older client
+      // sending a field a newer backend no longer declares (or vice versa) must not 400.
+      // Rejecting unknown fields outright would freeze the request contract against any
+      // forward evolution, so forbidNonWhitelisted stays off.
+      whitelist: true,
       transform: true, // convert plain objects to DTO instances and coerce scalars via @Type
     }),
   );

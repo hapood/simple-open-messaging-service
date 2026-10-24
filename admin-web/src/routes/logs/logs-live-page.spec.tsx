@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LogsLivePage } from './logs-live-page';
 import { getLogOutputLevel, setLogOutputLevel } from '@/api/logs';
 import { useLogStream } from '@/hooks/use-log-stream';
+import { useIsAdminPlus } from '@/hooks/use-me';
+vi.mock('@/hooks/use-me', () => ({ useIsAdminPlus: vi.fn(() => true) }));
 
 vi.mock('react-i18next', async (original) => ({
   ...(await original<typeof import('react-i18next')>()),
@@ -50,10 +52,20 @@ function mount() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(useIsAdminPlus).mockReturnValue(true);
   vi.mocked(getLogOutputLevel).mockResolvedValue({ level: 'error' });
 });
 
 describe('live log output control', () => {
+  it('allows read-only viewers to read logs but not change output level', async () => {
+    vi.mocked(useIsAdminPlus).mockReturnValue(false);
+    mount();
+    const select = screen.getByRole('combobox', { name: 'logs.outputLevel' });
+    await waitFor(() => expect(select).toHaveTextContent('ERROR'));
+    expect(select).toBeDisabled();
+    expect(screen.getByText('retained log')).toBeInTheDocument();
+    expect(setLogOutputLevel).not.toHaveBeenCalled();
+  });
   it('reads server state and changes production without filtering or clearing retained logs', async () => {
     vi.mocked(setLogOutputLevel).mockImplementation(async (level) => {
       vi.mocked(getLogOutputLevel).mockResolvedValue({ level });

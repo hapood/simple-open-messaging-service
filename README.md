@@ -13,16 +13,8 @@
   <a href="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://hapood.github.io/simple-open-messaging-service/"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a.svg"></a>
-  <img alt="SOMS 0.1.0 alpha 0" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.0-7c3aed.svg">
-  <a href="spec/v1/README.md"><img alt="SOMFP v1 final-review draft" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.0-e95420.svg"></a>
-</p>
-
-<p align="center">
-  <a href="spec/README.md">Federation specification</a>
-  ·
-  <a href="docs/development/local-development.md">Development setup</a>
-  ·
-  <a href="docs/deployment/deployment.md">Deployment</a>
+  <img alt="SOMS 0.1.0 alpha 1" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.1-7c3aed.svg">
+  <a href="spec/v1/README.md"><img alt="SOMFP v1.0.0 draft 1" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.1-e95420.svg"></a>
 </p>
 
 <p align="center">
@@ -34,7 +26,7 @@
 </p>
 
 > [!IMPORTANT]
-> SOMS `0.1.0-alpha.0` and the federation protocol (`v1.0.0-draft.0`) are under active development; the wire contract remains subject to closeout revisions prior to stable release.
+> SOMS `0.1.0-alpha.1` and SOMFP `v1.0.0-draft.1` are currently available for **technical preview only**. Before beta, stable operation and upgrade compatibility are not guaranteed; APIs, the federation wire contract, and storage formats may change incompatibly. Use isolated test deployments with disposable data, not production or critical communications.
 
 ## Features
 
@@ -101,24 +93,28 @@ Use the [**Compose configuration generator**][gen] in the live playground. Choos
 `docker-compose.yml`. All editable settings are grouped at the top of this single file. The
 page also provides the DNS records and published ports for the selected mode.
 
-The generator and NAS template pin
-`ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0` for both the application and migrations.
-This alpha image supports Linux amd64 and arm64 and is published after the corresponding release
-tag is created from `main`. See [GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases)
-for availability and release notes. The public deployment template uses `:latest`, which follows
-published versions including alpha releases; its first release will point to `v0.1.0-alpha.0`.
-The rolling `:dev` image is intended for development testing and never updates `latest`.
+The generator and deployment templates use
+`ghcr.io/hapood/simple-open-messaging-service:latest`. The application container applies database
+migrations during startup. Published images support Linux amd64 and arm64; `:latest` follows
+published versions, including alpha releases. Select an explicit version tag to control upgrades.
+The current source version is `0.1.0-alpha.1`; its release image becomes available only after the
+corresponding release tag is published from `main`. See
+[GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases) for availability
+and release notes. The rolling `:dev` image is intended for development testing and never updates
+`latest`.
 
 After downloading:
 
 ```bash
-mkdir soms && cd soms   # place docker-compose.yml here
-sudo install -d -m 0750 -o 1000 -g 1000 data
+mkdir -p soms && cd soms   # place docker-compose.yml here
+# Create the configured data directory (default ./data) and ensure the container can write to it
+mkdir -p -- ./data
 docker compose up -d
 docker compose logs -f app
 ```
 
 - Public mode uses HTTPS on port 443; NAS mode uses one configurable port, defaulting to 7667.
+- Create whichever data directory path was configured in the generator (the generator checklist displays the exact command) and ensure Docker has write permissions to it (the application container runs as non-root UID/GID `1000:1000`).
 - Admin access defaults to public with mandatory login in public mode, and private source IPs only
   in NAS mode. Either mode lets you change that restriction.
 - Configuration inputs, YAML preview, copy, and download show plaintext credentials. Keep the file
@@ -143,17 +139,8 @@ Native platform availability is tracked separately below; planned applications a
 
 ## Documentation
 
-| Topic                   | Entry point                                                                                                                 |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Documentation           | [Documentation index](docs/README.md)                                                                                       |
-| Development             | [Local initialization and development](docs/development/local-development.md) · [Repository conventions](AGENTS.md)         |
-| Federation protocol     | [Specification index](spec/README.md) · [SOMFP v1](spec/v1/README.md) · [Schemas and conformance](spec/v1/schema/README.md) |
-| Architecture and stack  | [Architecture and technology stack](docs/overview/architecture.md) · [Database model](docs/overview/database.md)            |
-| APIs                    | [Client/admin HTTP API](docs/api/api.md) · [Federation HTTP surface](spec/v1/protocol.md#3-federation-v1-http-surface)      |
-| Deployment              | [Deployment guide](docs/deployment/deployment.md) · [Compose configuration generator][gen]                                  |
-| Operations              | [Rate limiting](docs/operations/rate-limiting.md)                                                                           |
-| Native client           | [Tauri workspace](src-tauri/README.md) · [Android calls](docs/platform/android/calls.md)                                    |
-| Security and governance | [Protocol security](spec/SECURITY.md) · [Protocol governance](spec/GOVERNANCE.md)                                           |
+- [Documentation index](docs/README.md) — setup, deployment, architecture, APIs, federation, and operations.
+- [Changelog](CHANGELOG.md) — changes in each release.
 
 ## License
 

@@ -178,7 +178,7 @@ export function DashboardPage() {
                 desc: t('dashboard.workflows.health.peersDesc'),
               },
               {
-                to: '/federation/self-check',
+                to: '/network',
                 icon: ShieldCheck,
                 title: t('dashboard.workflows.health.check'),
                 desc: t('dashboard.workflows.health.checkDesc'),

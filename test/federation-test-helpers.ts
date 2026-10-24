@@ -73,15 +73,36 @@ export async function uploadAvatar(
     .set('Authorization', `Bearer ${token}`)
     .send({})
     .expect(200);
-  return request(app.baseUrl)
+  if (current.body.code !== 0) {
+    throw new Error(
+      `Avatar fixture account lookup failed: ${JSON.stringify(current.body)}`,
+    );
+  }
+  const profile = await request(app.baseUrl)
+    .post('/api/v1/user/resolve')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ account: current.body.data.account })
+    .expect(200);
+  if (profile.body.code !== 0) {
+    throw new Error(
+      `Avatar fixture profile lookup failed: ${JSON.stringify(profile.body)}`,
+    );
+  }
+  const updated = await request(app.baseUrl)
     .post('/api/v1/user/update-profile')
     .set('Authorization', `Bearer ${token}`)
     .send({
-      name: current.body.data.name,
-      bio: current.body.data.bio,
+      name: profile.body.data.name,
+      bio: profile.body.data.bio,
       avatarBase64: png.toString('base64'),
     })
     .expect(200);
+  if (updated.body.code !== 0) {
+    throw new Error(
+      `Avatar fixture update failed: ${JSON.stringify(updated.body)}`,
+    );
+  }
+  return updated;
 }
 
 /** Hash a session token exactly as SessionTokenService does (sha256 hex) — replicated in the test process
@@ -143,6 +164,19 @@ export async function registerAndLogin(
   });
   const token = await seedSessionToken(app.database, u.id, 'app');
   return { id: u.id, account, token };
+}
+
+/** Seed a real no-profile account and session without creating a snapshot. */
+export async function seedUserWithoutProfile(
+  app: Pick<AppLike, 'database'>,
+  account: string,
+): Promise<{ id: number; account: string; token: string }> {
+  const [created] = await app.database
+    .insert(user)
+    .values({ account })
+    .returning({ id: user.id });
+  const token = await seedSessionToken(app.database, created.id, 'app');
+  return { id: created.id, account, token };
 }
 
 export async function resolveFederatedCard(

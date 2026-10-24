@@ -181,10 +181,8 @@ describe('S2sController public account profiles', () => {
     );
     await expect(controller.getAccountProfile(req)).resolves.toEqual({
       account: 'alice',
-      displayName: 'Alice',
-      bio: '',
-      avatar: null,
       profileRev: 5,
+      profile: { displayName: 'Alice', bio: '', avatar: null },
       proof: Buffer.from(
         '{"account":"alice","domain":"local.example"}',
       ).toString('base64'),
@@ -192,6 +190,31 @@ describe('S2sController public account profiles', () => {
     expect(profiles.getLocalAccountProfile).toHaveBeenCalledWith({
       account: 'alice',
       domain: 'local.example',
+    });
+  });
+
+  it('returns null content with a possession proof for an existing no-profile account', async () => {
+    const { controller, profiles } = target();
+    profiles.getLocalAccountProfile.mockResolvedValueOnce({
+      namespaceId: 0,
+      account: 'alice',
+      profileRev: 0,
+      displayName: 'alice',
+      bio: '',
+      avatar: null,
+    });
+    const req = mediaRequest('');
+    setRequestUrl(
+      req,
+      `/s2s/v1/accounts/alice?publicKey=${encodeURIComponent('A'.repeat(43) + '=')}&challenge=${encodeURIComponent('B'.repeat(64))}`,
+    );
+    await expect(controller.getAccountProfile(req)).resolves.toEqual({
+      account: 'alice',
+      profileRev: 0,
+      profile: null,
+      proof: Buffer.from(
+        '{"account":"alice","domain":"local.example"}',
+      ).toString('base64'),
     });
   });
 

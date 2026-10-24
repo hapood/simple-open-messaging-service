@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
+import { readFileSync } from 'node:fs';
 
 const MIGRATIONS_DIR = join(process.cwd(), 'database', 'migrations');
 const LOCK_NAME = 'soms-schema-migrations';
@@ -233,8 +234,99 @@ async function status(
   }
 }
 
+/** TLS options shared by every pool this script builds (remote databases may require them). */
+function sslOptions() {
+  return process.env.SOMS_DB_TLS === 'verify-full'
+    ? {
+        ssl: {
+          rejectUnauthorized: true,
+          ...(process.env.SOMS_DB_CA_FILE
+            ? { ca: readFileSync(process.env.SOMS_DB_CA_FILE, 'utf8') }
+            : {}),
+        },
+      }
+    : {};
+}
+
+/** Connection-level failures that are EXPECTED while a database or network is still
+ *  coming up; everything else (bad credentials, SSL misconfiguration, SQL errors) is a
+ *  deployment misconfiguration and fails fast instead of burning the retry budget. */
+const TRANSIENT_CODES = new Set([
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNRESET',
+  'EPIPE',
+]);
+function isTransientError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (typeof code === 'string' && TRANSIENT_CODES.has(code)) return true;
+  // PostgreSQL answers "cannot_connect_now" (57P03) while starting up or in recovery.
+  return code === '57P03';
+}
+
+/** Connectivity gate for the container bootstrap: retry SELECT 1 until the server answers or the
+ *  deadline passes. Uses the SAME connection configuration as the real pool (DATABASE_URL or
+ *  PG* variables, TLS options), so "ready" means the app will actually connect — a TCP probe
+ * could not vouch for credentials or TLS. Transient connection failures retry in-process; any
+ * other error is a misconfiguration and exits immediately. */
+async function waitForDatabase(
+  connectionString: string | undefined,
+): Promise<void> {
+  const timeoutSec = Math.min(
+    Math.max(Number(process.env.SOMS_DB_WAIT_TIMEOUT_SEC ?? 120) || 120, 1),
+    3600,
+  );
+  const deadline = Date.now() + timeoutSec * 1000;
+  const intervalMs = 2000;
+  const pool = new Pool({
+    ...(connectionString ? { connectionString } : {}),
+    ...sslOptions(),
+    max: 1,
+  });
+  let attempt = 0;
+  let lastError = 'unknown';
+  try {
+    for (;;) {
+      attempt += 1;
+      try {
+        const client = await pool.connect();
+        try {
+          await client.query('SELECT 1');
+        } finally {
+          client.release();
+        }
+        console.log(
+          `database accepts connections (attempt ${attempt}, ${timeoutSec}s budget)`,
+        );
+        return;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        if (!isTransientError(error)) {
+          throw new Error(
+            `database connection failed on attempt ${attempt} (not retryable): ${lastError}`,
+          );
+        }
+        if (Date.now() + intervalMs >= deadline) break;
+        console.log(
+          `database not ready (attempt ${attempt}: ${lastError}); retrying in 2s`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+  } finally {
+    await pool.end();
+  }
+  throw new Error(
+    `database not accepting connections within ${timeoutSec}s (${attempt} attempts, last error: ${lastError})`,
+  );
+}
+
 async function main(): Promise<void> {
-  const connectionString = process.env.DATABASE_URL?.trim();
+  const connectionString = process.env.DATABASE_URL?.trim() || undefined;
   if (!connectionString) {
     const missing = ['PGHOST', 'PGDATABASE', 'PGUSER', 'PGPASSWORD'].filter(
       (name) => !process.env[name]?.trim(),
@@ -246,12 +338,17 @@ async function main(): Promise<void> {
     }
   }
   const command = process.argv[2] ?? 'migrate';
-  if (!['migrate', 'baseline', 'status'].includes(command)) {
+  if (!['migrate', 'baseline', 'status', 'wait'].includes(command)) {
     throw new Error(`unknown command: ${command}`);
+  }
+  if (command === 'wait') {
+    await waitForDatabase(connectionString);
+    return;
   }
 
   const pool = new Pool({
     ...(connectionString ? { connectionString } : {}),
+    ...sslOptions(),
     max: 1,
     options: '-c timezone=UTC',
   });

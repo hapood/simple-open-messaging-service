@@ -201,9 +201,7 @@ function EditQuotaDialog({
       dailyFileLimit: parseCount(counts.dailyFileLimit),
       dailyRequestLimit: parseCount(counts.dailyRequestLimit),
       dailyFileBytesLimit:
-        fileBytesMb.trim() === ''
-          ? null
-          : Math.round(Number(fileBytesMb) * MB),
+        fileBytesMb.trim() === '' ? null : Math.round(Number(fileBytesMb) * MB),
     };
     try {
       await setLimits.mutateAsync({ domain: node.domain, overrides });

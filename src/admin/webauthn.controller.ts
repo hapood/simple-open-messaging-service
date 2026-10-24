@@ -15,11 +15,12 @@ import { AdminAuthGuard } from './admin-auth.guard.js';
 import { Audit } from './audit.decorator.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
+import { WebAuthnRegFinishDto, WebAuthnRenameDto } from './admin.dto.js';
+import { AccountSecurityService } from './account-security.service.js';
 import {
-  WebAuthnRegBeginDto,
-  WebAuthnRegFinishDto,
-  WebAuthnRenameDto,
-} from './admin.dto.js';
+  SecurityEnrollmentDto,
+  SecurityProofDto,
+} from './account-security.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
@@ -42,7 +43,10 @@ import { BusinessException } from '../common/business.exception.js';
 @Throttle('admin.webauthn')
 @Controller()
 export class WebAuthnController {
-  constructor(private readonly adminAuth: AdminAuthService) {}
+  constructor(
+    private readonly adminAuth: AdminAuthService,
+    private readonly security: AccountSecurityService,
+  ) {}
 
   @HttpCode(HttpStatus.OK)
   @Post('admin/webauthn/status')
@@ -63,11 +67,13 @@ export class WebAuthnController {
   })
   async registrationBegin(
     @Req() req: FastifyRequest,
-    @Body() dto: WebAuthnRegBeginDto,
+    @Body() dto: SecurityEnrollmentDto,
   ) {
-    return this.adminAuth.beginWebAuthnRegistration(
+    return this.security.beginEnrollment(
       this.adminId(req),
-      dto.password,
+      req.user.sessionId!,
+      'passkey-add',
+      dto,
       dto.nickname,
     );
   }
@@ -84,9 +90,12 @@ export class WebAuthnController {
     @Req() req: FastifyRequest,
     @Body() dto: WebAuthnRegFinishDto,
   ) {
-    return this.adminAuth.completeWebAuthnRegistration(
+    return this.security.completeEnrollment(
       this.adminId(req),
+      req.user.sessionId!,
+      'passkey-add',
       dto.pendingToken,
+      undefined,
       dto.registrationResponse,
     );
   }
@@ -124,9 +133,17 @@ export class WebAuthnController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/webauthn/credentials/:id/delete')
   @ApiOperation({ summary: 'Delete a saved passkey' })
-  async delete(@Req() req: FastifyRequest, @Param('id') id: string) {
-    return this.adminAuth.removeWebAuthnCredential(
+  async delete(
+    @Req() req: FastifyRequest,
+    @Param('id') id: string,
+    @Body() dto: SecurityProofDto,
+  ) {
+    return this.security.mutate(
       this.adminId(req),
+      req.user.sessionId!,
+      'passkey-remove',
+      dto,
+      undefined,
       this.parseRowId(id),
     );
   }

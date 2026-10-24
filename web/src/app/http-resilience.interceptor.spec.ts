@@ -17,7 +17,11 @@ import {
 import { ToastService } from './services/toast.service';
 import { BusinessCode } from './services/biz-code';
 import { TranslocoService } from '@jsverse/transloco';
-import { SUPPRESS_HTTP_ERROR_TOAST } from './request-context';
+import {
+  SUPPRESS_HTTP_ERROR_TOAST,
+  REQUEST_SCOPE,
+  RequestScope,
+} from './request-context';
 import { SessionLifecycleService } from './services/session-lifecycle.service';
 import { SessionSupersededError } from './services/session/session-identity';
 
@@ -94,6 +98,58 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
     });
     return state;
   }
+
+  it('delivers server results after a session transition', () => {
+    const response = new Subject<HttpEvent<unknown>>();
+    const context = new HttpContext().set(REQUEST_SCOPE, RequestScope.Server);
+    const next = vi.fn();
+    const error = vi.fn();
+    TestBed.runInInjectionContext(() =>
+      httpResilienceInterceptor(req(context), () => response),
+    ).subscribe({ next, error });
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    const result = new HttpResponse({ body: { ok: true } });
+    response.next(result);
+    expect(next).toHaveBeenCalledWith(result);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('allows an independent retry after a session transition during backoff', () => {
+    const backoff = new Subject<void>();
+    TestBed.overrideProvider(HTTP_RETRY_CONFIG, {
+      useValue: { maxRetries: 1, retryDelay: () => backoff },
+    });
+    const context = new HttpContext().set(REQUEST_SCOPE, RequestScope.Server);
+    const next = vi.fn();
+    TestBed.runInInjectionContext(() =>
+      httpResilienceInterceptor(
+        req(context),
+        nextQueue([
+          throwError(() => err(429, { code: BusinessCode.RATE_LIMITED })),
+          of(new HttpResponse({ body: { ok: true } })),
+        ]),
+      ),
+    ).subscribe(next);
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    backoff.next();
+    expect(nextCalls).toBe(2);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('surfaces independent server failures after a session transition', () => {
+    const response = new Subject<HttpEvent<unknown>>();
+    const context = new HttpContext().set(REQUEST_SCOPE, RequestScope.Server);
+    const error = vi.fn();
+    TestBed.runInInjectionContext(() =>
+      httpResilienceInterceptor(req(context), () => response),
+    ).subscribe({ error });
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    const failure = err(500);
+    response.error(failure);
+    expect(error).toHaveBeenCalledWith(failure);
+    expect(warnSpy).toHaveBeenCalledWith('errors.serverError');
+  });
 
   it('passes a success through with no toast (single attempt)', () => {
     const s = run(

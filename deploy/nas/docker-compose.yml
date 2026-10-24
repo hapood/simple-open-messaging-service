@@ -2,7 +2,8 @@
 # This file contains secrets: keep it private and outside the Git checkout.
 # Compose interpolates dollar signs even in quoted YAML values. Write $$ for a literal $.
 
-# Database credentials are defined once and shared by PostgreSQL, migrations, and the app.
+# Database credentials are defined once and shared by PostgreSQL and the app; the app
+# container applies schema migrations itself during startup (see docker/supervisor.sh).
 # Set a strong password before the first start: edit the PGPASSWORD line below directly (the file
 # stays the single source of truth) or export SOMS_DB_PASSWORD. An unedited file refuses to start
 # instead of initializing a passwordless database. Ambient PGPASSWORD values from the host shell
@@ -13,7 +14,7 @@ x-database-environment: &database-environment
   PGPORT: '5432'
   PGDATABASE: &database-name soms
   PGUSER: &database-user timescale
-  PGPASSWORD: &database-password "${SOMS_DB_PASSWORD:?set a strong database password (edit the PGPASSWORD line or export SOMS_DB_PASSWORD)}"
+  PGPASSWORD: &database-password '${SOMS_DB_PASSWORD:?set a strong database password (edit the PGPASSWORD line or export SOMS_DB_PASSWORD)}'
 
 services:
   postgres:
@@ -33,18 +34,8 @@ services:
       retries: 10
     restart: unless-stopped
 
-  migrate:
-    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
-    environment:
-      <<: *database-environment
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']
-    restart: 'no'
-
   app:
-    image: ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0
+    image: ghcr.io/hapood/simple-open-messaging-service:latest
     environment:
       <<: *database-environment
       # Federation identity, used in handles such as @alice@example.com.
@@ -112,8 +103,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     init: true
     stop_grace_period: 60s
     volumes:

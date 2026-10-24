@@ -35,8 +35,18 @@ export function useSetAdminSessionPolicy() {
   });
 }
 
+function useInvalidateQuotaSettings() {
+  const qc = useQueryClient();
+  return () =>
+    Promise.all([
+      qc.invalidateQueries({ queryKey: ['admin', 'settings'] }),
+      qc.invalidateQueries({ queryKey: ['admin', 'quota'] }),
+      qc.invalidateQueries({ queryKey: ['admin', 'users'] }),
+    ]);
+}
+
 export function useSetFederationQuotaDefaults() {
-  const invalidate = useInvalidateSettings();
+  const invalidate = useInvalidateQuotaSettings();
   return useMutation({
     mutationFn: setFederationQuotaDefaults,
     onSuccess: invalidate,
@@ -44,7 +54,7 @@ export function useSetFederationQuotaDefaults() {
 }
 
 export function useSetUserQuotaDefaults() {
-  const invalidate = useInvalidateSettings();
+  const invalidate = useInvalidateQuotaSettings();
   return useMutation({
     mutationFn: setUserQuotaDefaults,
     onSuccess: invalidate,

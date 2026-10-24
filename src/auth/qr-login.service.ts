@@ -19,6 +19,7 @@ interface QrState {
   client: QrClient;
   /** Set at confirm — the scanner's account becomes the QR-displaying client's session owner. */
   userId?: number;
+  authorizingSessionId?: number;
   /** The scanner's userId at scan (audit). */
   scannedBy?: number;
   /** Fixed epoch-ms deadline preserved across rewrites (so scan/confirm don't slide the window). */
@@ -111,6 +112,7 @@ export class QrLoginService {
         device: opts.device,
         userAgent: opts.userAgent,
         ip: opts.ip,
+        authorizingSessionId: state.authorizingSessionId,
       },
     );
     return { status: 'confirmed', sessionToken };
@@ -140,7 +142,11 @@ export class QrLoginService {
 
   /** The phone confirms → marks the token 'confirmed' with the scanner's userId (the desktop session will
    *  belong to THIS account). Only a scanned token can be confirmed — the two-step gate. */
-  async confirm(qrToken: string, scannerUserId: number): Promise<void> {
+  async confirm(
+    qrToken: string,
+    scannerUserId: number,
+    authorizingSessionId?: number,
+  ): Promise<void> {
     const state = await this.read(qrToken);
     if (!state)
       throw new BusinessException(
@@ -165,6 +171,7 @@ export class QrLoginService {
       ...state,
       status: 'confirmed',
       userId: scannerUserId,
+      authorizingSessionId,
     });
   }
 }

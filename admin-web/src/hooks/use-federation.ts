@@ -9,7 +9,6 @@ import {
   blockFederationPeer,
   unblockFederationPeer,
   recognizeFederationPeer,
-  runFederationSelfCheck,
   type FederationPeersQuery,
 } from '@/api/federation';
 
@@ -99,14 +98,5 @@ export function useRecognizeFederationPeer() {
   return useMutation({
     mutationFn: (domain: string) => recognizeFederationPeer(domain),
     onSuccess: invalidate,
-  });
-}
-
-/** Manual-trigger self-check (not cached — it does real outbound probing each click). The report is the
- *  mutation's return value; callers render it in local state. */
-export function useFederationSelfCheck() {
-  return useMutation({
-    mutationFn: (opts?: { ntpServer?: string; dnsResolver?: string }) =>
-      runFederationSelfCheck(opts),
   });
 }

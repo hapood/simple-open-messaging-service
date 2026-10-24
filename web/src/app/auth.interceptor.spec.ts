@@ -1,5 +1,6 @@
 import {
   HttpRequest,
+  HttpContext,
   HttpHandler,
   HttpErrorResponse,
   HttpEvent,
@@ -9,6 +10,7 @@ import { AuthInterceptor } from './auth.interceptor';
 import { AuthService } from './services/auth.service';
 import { SessionLifecycleService } from './services/session-lifecycle.service';
 import { SessionSupersededError } from './services/session/session-identity';
+import { REQUEST_SCOPE, RequestScope } from './request-context';
 
 /**
  * AuthInterceptor — the session-auth ERROR handler (401 → re-login).
@@ -123,6 +125,70 @@ describe('AuthInterceptor (401 → re-login)', () => {
     expect(handled).toHaveBeenCalledTimes(1);
     expect(next).toHaveBeenCalledTimes(1);
   });
+
+  it('lets authentication own a current 401 without global re-login', () => {
+    const { ic, auth } = makeInterceptor();
+    const failure = new HttpErrorResponse({ status: 401 });
+    const error = vi.fn();
+    const context = new HttpContext().set(
+      REQUEST_SCOPE,
+      RequestScope.Authentication,
+    );
+    ic.intercept(
+      new HttpRequest('POST', '/api/v1/auth/login', {}, { context }),
+      {
+        handle: () => throwError(() => failure),
+      },
+    ).subscribe({ error });
+    expect(error).toHaveBeenCalledWith(failure);
+    expect(auth.redoLoginAuth).not.toHaveBeenCalled();
+  });
+
+  it('still rejects obsolete authentication responses', () => {
+    const { ic, auth, lifecycle } = makeInterceptor();
+    const response = new Subject<HttpEvent<unknown>>();
+    const error = vi.fn();
+    const context = new HttpContext().set(
+      REQUEST_SCOPE,
+      RequestScope.Authentication,
+    );
+    ic.intercept(
+      new HttpRequest('POST', '/api/v1/auth/login', {}, { context }),
+      {
+        handle: () => response,
+      },
+    ).subscribe({ error });
+    lifecycle.invalidateSession();
+    response.error(new HttpErrorResponse({ status: 401 }));
+    expect(error).toHaveBeenCalledWith(expect.any(SessionSupersededError));
+    expect(auth.redoLoginAuth).not.toHaveBeenCalled();
+  });
+
+  it.each([200, 401, 500])(
+    'delivers an independent response (%i) across session transitions without re-login',
+    (status) => {
+      const { ic, auth, lifecycle } = makeInterceptor();
+      const response = new Subject<HttpEvent<unknown>>();
+      const next = vi.fn();
+      const error = vi.fn();
+      const context = new HttpContext().set(REQUEST_SCOPE, RequestScope.Server);
+      ic.intercept(new HttpRequest('GET', '/api/v1/config', { context }), {
+        handle: () => response,
+      }).subscribe({ next, error });
+      lifecycle.invalidateSession();
+      if (status === 200) {
+        const event = {} as HttpEvent<unknown>;
+        response.next(event);
+        expect(next).toHaveBeenCalledWith(event);
+        expect(error).not.toHaveBeenCalled();
+      } else {
+        const failure = new HttpErrorResponse({ status });
+        response.error(failure);
+        expect(error).toHaveBeenCalledWith(failure);
+      }
+      expect(auth.redoLoginAuth).not.toHaveBeenCalled();
+    },
+  );
 
   it('a non-401 error propagates unchanged (no re-login)', () => {
     const { ic, auth } = makeInterceptor();

@@ -7,7 +7,8 @@ import {
   computed,
   inject,
 } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
+import { REQUEST_SCOPE, RequestScope } from '../request-context';
 import {
   Observable,
   of,
@@ -19,6 +20,7 @@ import {
 import { apiPrefix } from './constants';
 import {
   User,
+  SelfAccount,
   ConversationItem,
   StandardResponse,
   PersonalQuotaState,
@@ -484,7 +486,11 @@ export class UserService {
       return this.profileFetch;
     }
     const fetch = this.getMyProfile().pipe(
-      switchMap((res) => this.publishSelfProfile(res.data as User)),
+      switchMap((res) => {
+        if (res.code !== 0 || !res.data)
+          throw new Error(res.message || 'missing self account');
+        return this.publishSelfProfile(res.data);
+      }),
       shareReplay(1),
     );
     if (!opts?.force) this.profileFetch = fetch;
@@ -492,33 +498,41 @@ export class UserService {
   }
 
   /** The self endpoint owns account metadata; only the runtime resolves profile bytes. */
-  private publishSelfProfile(user: User): Observable<User> {
+  private publishSelfProfile(user: SelfAccount): Observable<User> {
     const scope = this.sessionLifecycle.capture();
-    return this.profileRepo
-      .resolve({
-        publisherNamespaceId: 0,
-        lookup: 'ACCOUNT_PROFILE',
-        target: {
-          profileNamespaceId: 0,
+    // Revision zero is an account without a published profile, not a resolver demand.
+    const display =
+      user.profileRev === 0
+        ? of({ name: user.account, bio: '' })
+        : this.profileRepo.resolve({
+            publisherNamespaceId: 0,
+            lookup: 'ACCOUNT_PROFILE',
+            target: {
+              profileNamespaceId: 0,
+              account: user.account,
+              rev: user.profileRev,
+            },
+          });
+    return display.pipe(
+      map((profile) => {
+        const resolved: User = {
+          id: user.id,
           account: user.account,
-          rev: user.profileRev,
-        },
-      })
-      .pipe(
-        map((profile) => {
-          const resolved = {
-            ...user,
-            name: profile.name,
-            bio: profile.bio,
-            avatar: '',
-          };
-          if (this.sessionLifecycle.isCurrent(scope)) {
-            this.sessionProfile.set(resolved);
-            void this.webdb.writeSelfProfile(resolved);
-          }
-          return resolved;
-        }),
-      );
+          namespaceId: user.namespaceId,
+          profileRev: user.profileRev,
+          isGroup: user.isGroup,
+          isDeleted: user.isDeleted,
+          name: profile.name,
+          bio: profile.bio,
+          avatar: '',
+        };
+        if (this.sessionLifecycle.isCurrent(scope)) {
+          this.sessionProfile.set(resolved);
+          void this.webdb.writeSelfProfile(resolved);
+        }
+        return resolved;
+      }),
+    );
   }
 
   /** Fire-and-forget profile refresh — ALWAYS hits the network (`force: true`), because every caller
@@ -570,16 +584,20 @@ export class UserService {
     if (cur === undefined || feedId > cur) this._stateFeedCursor.set(feedId);
   }
 
-  register(params: { account: string; name: string; password: string }) {
+  /** Account-only registration: the account is created at profile rev 0 and the user sets
+   *  their display name through their own first profile edit afterwards. */
+  register(params: { account: string; password: string }) {
     return this.http.post<{
       code: number;
       message: string;
       data?: { id: number; account: string };
-    }>(`${apiPrefix()}/user/register`, params);
+    }>(`${apiPrefix()}/user/register`, params, {
+      context: new HttpContext().set(REQUEST_SCOPE, RequestScope.Authentication),
+    });
   }
 
   getMyProfile() {
-    return this.http.post<StandardResponse<User>>(
+    return this.http.post<StandardResponse<SelfAccount>>(
       `${apiPrefix()}/user/my-profile`,
       {},
     );

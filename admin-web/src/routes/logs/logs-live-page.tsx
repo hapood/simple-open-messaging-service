@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
+import { useIsAdminPlus } from '@/hooks/use-me';
 import { useTranslation } from 'react-i18next';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { ArrowDown, Eraser } from 'lucide-react';
@@ -69,6 +70,7 @@ export function LogsLivePage() {
 
 function LivePanel() {
   const { t } = useTranslation();
+  const canManage = useIsAdminPlus();
   const output = useLogOutputLevel();
   const setOutput = useSetLogOutputLevel();
   const { lines, state, clear } = useLogStream();
@@ -121,9 +123,14 @@ function LivePanel() {
           </span>
           <Select
             value={output.data?.level ?? null}
-            disabled={!output.data || output.isError || setOutput.isPending}
+            disabled={
+              !canManage ||
+              !output.data ||
+              output.isError ||
+              setOutput.isPending
+            }
             onValueChange={(value) => {
-              if (value && value !== output.data?.level)
+              if (canManage && value && value !== output.data?.level)
                 setOutput.mutate(value as LogOutputLevel);
             }}
             items={items}

@@ -30,7 +30,8 @@ const text = require('node:fs').readFileSync(process.argv[2], 'utf8');
 const blocks = text.split('\thandle /.well-known/* {').slice(1);
 assert.ok(blocks.length, 'no backend handlers generated');
 for (const block of blocks) {
-  const rule = '\thandle /s2s/* {\n\t\treverse_proxy 127.0.0.1:3000\n\t}';
+  const upstream = text.includes('admin off') ? 'unix//tmp/soms/backend.sock' : '127.0.0.1:3000';
+  const rule = `\thandle /s2s/* {\n\t\treverse_proxy ${upstream}\n\t}`;
   assert.ok(block.includes(rule), 'missing path-preserving federation proxy');
   assert.ok(block.indexOf(rule) < block.indexOf('\thandle {'), 'federation proxy follows SPA');
 }
@@ -63,9 +64,19 @@ contains 'header @web_immutable Cache-Control "public, max-age=31536000, immutab
 contains 'header @admin_immutable Cache-Control "public, max-age=31536000, immutable"'
 test "$(stat -c %a "$SANDBOX/run/Caddyfile")" = 600
 
+render disabled lan SOMS_BACKEND_SOCKET=/tmp/soms/backend.sock SOMS_EDGE_PORT=7668
+contains 'admin off'
+contains 'reverse_proxy unix//tmp/soms/backend.sock'
+contains 'http://test.local:7668, http://*.test.local:7668 {'
+! grep -Fq '127.0.0.1:3000' "$SANDBOX/run/Caddyfile"
+! grep -Fq ':7667' "$SANDBOX/run/Caddyfile"
+
 render standard
 contains 'https://test.local, https://*.test.local {'
 contains 'https://test.local:7667, https://*.test.local:7667 {'
+render standard lan SOMS_BACKEND_SOCKET=/tmp/soms/backend.sock
+contains 'https://test.local, https://*.test.local {'
+! grep -Fq ':7667' "$SANDBOX/run/Caddyfile"
 
 render disabled lan
 contains 'http://test.local:7667, http://*.test.local:7667 {'

@@ -25,8 +25,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
       deploymentIssues,
     } = await import(output);
     const template = await readFile('deploy/nas/docker-compose.yml', 'utf8');
-    const { version } = JSON.parse(await readFile('package.json', 'utf8'));
-    const releaseImage = `ghcr.io/hapood/simple-open-messaging-service:v${version}`;
+    const releaseImage = 'ghcr.io/hapood/simple-open-messaging-service:latest';
     assert.equal(initialDeployment.image, releaseImage);
     for (const [path, expectedImage] of [
       ['deploy/nas/docker-compose.yml', releaseImage],
@@ -39,7 +38,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
       const images = [...source.matchAll(/^    image: (.+)$/gm)]
         .map((match) => match[1])
         .filter((image) => !image.startsWith('postgres:'));
-      assert.deepEqual(images, [expectedImage, expectedImage], path);
+      assert.deepEqual(images, [expectedImage], path);
     }
     assert.equal(composeScalar('a$b'), '"a$$b"');
     const config = {
@@ -47,6 +46,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
       domain: 'example.com',
       webDomain: 'soms.example.com',
       port: 7668,
+      dataDir: './data',
       databasePassword: 'password$with"quotes\nand more',
       adminPassword: 'admin-password-long',
       dnsToken: 'dummy-token',
@@ -64,7 +64,8 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
     assert.ok(yaml.includes(composeScalar(config.databasePassword)));
     assert.ok(!yaml.includes('<hidden>'));
     assert.ok(yaml.indexOf('database_password:') < yaml.indexOf('services:'));
-    assert.ok(yaml.includes('published: *published-port'));
+    assert.ok(yaml.includes('network_mode: host'));
+    assert.ok(!yaml.includes('    ports:'));
     assert.throws(() =>
       generateCompose(template.replace('PGPASSWORD:', 'CHANGED:'), config),
     );
@@ -83,7 +84,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
     assert.equal(result.status, 0, result.stderr || 'Docker Compose required');
     const model = JSON.parse(result.stdout);
     assert.equal(model.services.app.image, releaseImage);
-    assert.equal(model.services.migrate.image, releaseImage);
+    assert.equal(model.services.migrate, undefined);
     // Compose config emits a re-loadable model, preserving dollar escapes.
     const escaped = config.databasePassword.replaceAll('$', () => '$$');
     assert.equal(model.services.app.environment.PGPASSWORD, escaped);
@@ -91,8 +92,11 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
       model.services.postgres.environment.POSTGRES_PASSWORD,
       escaped,
     );
-    assert.equal(model.services.migrate.environment.PGPASSWORD, escaped);
-    assert.equal(model.services.app.ports[0].published, '7668');
+    // The app's bootstrap performs migrations with these same database credentials.
+    assert.deepEqual(Object.keys(model.services).sort(), ['app', 'postgres']);
+    assert.equal(model.services.app.ports, undefined);
+    assert.equal(model.services.app.network_mode, 'host');
+    assert.equal(model.services.app.environment.SOMS_EDGE_PORT, '7668');
     assert.equal(
       model.services.app.environment.SOMS_WEBAUTHN_ALLOWED_ORIGINS,
       'https://soms.example.com:7668',
@@ -109,7 +113,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
     assert.equal(publicResult.status, 0, publicResult.stderr);
     const publicModel = JSON.parse(publicResult.stdout);
     assert.equal(publicModel.services.app.image, releaseImage);
-    assert.equal(publicModel.services.migrate.image, releaseImage);
+    assert.equal(publicModel.services.migrate, undefined);
     assert.equal(
       publicModel.services.app.environment.SOMS_TLS_MODE,
       'standard',
@@ -118,10 +122,8 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
       publicModel.services.app.environment.SOMS_WEBAUTHN_ALLOWED_ORIGINS,
       'https://soms.example.com',
     );
-    assert.deepEqual(
-      publicModel.services.app.ports.map((p) => p.published),
-      ['80', '443', '443'],
-    );
+    assert.equal(publicModel.services.app.ports, undefined);
+    assert.equal(publicModel.services.app.network_mode, 'host');
     await writeFile(
       file,
       generateCompose(template, {
@@ -133,10 +135,7 @@ test('NAS UI generator preserves canonical services and safely escapes Compose v
     );
     const noRedirect = parse();
     assert.equal(noRedirect.status, 0, noRedirect.stderr);
-    assert.deepEqual(
-      JSON.parse(noRedirect.stdout).services.app.ports.map((p) => p.published),
-      ['80', '443', '443'],
-    );
+    assert.equal(JSON.parse(noRedirect.stdout).services.app.ports, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

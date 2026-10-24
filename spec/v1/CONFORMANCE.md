@@ -151,6 +151,13 @@ observable requirements:
   namespace are in the body. Member upsert/depart share a body shape;
   GROUP_PROFILE names the page's group account; announcement contains only text.
 - Public and exact profile response objects carry no `domain`.
+- Public current-profile responses have exactly `account`, `profileRev`, `profile`,
+  and `proof`. Revision 0 requires `profile: null`; a positive revision requires
+  a closed complete `profile` object. Flattened responses, mismatched nullness,
+  and extra nested fields are rejected. Possession proof is checked even for
+  revision 0. No-profile results must not become stored snapshots or trigger
+  exact-revision requests. Exact evidence responses and positive-only path
+  revisions are unchanged.
 - Group user mentions retain the group origin's namespace interpretation across
   submission and mirror hops; the current message publisher never re-scopes a token.
 
@@ -185,7 +192,7 @@ observable requirements:
 ## Independent validation
 
 The specification and its non-normative validator are separate distributions.
-Use the SOMFP offline validator **1.0.0-draft.0**, including its dependency lock
+Use the SOMFP offline validator **1.0.0-draft.1**, including its dependency lock
 and CLI regression tests. With Node.js 22.18.0 or newer and npm, run from the
 validator directory; replace `/path/to/spec` with the absolute path to the copied
 specification directory containing `RELEASE.json`:
