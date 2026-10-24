@@ -39,7 +39,8 @@ function composeConfig(source, env) {
         : baseArgs;
     return spawnSync(
       command,
-      [...args,
+      [
+        ...args,
         '--env-file',
         '/dev/null',
         '--project-directory',
@@ -101,11 +102,7 @@ test(
   options,
   () => {
     const { services } = resolveConfig();
-    assert.deepEqual(Object.keys(services).sort(), [
-      'app',
-      'migrate',
-      'postgres',
-    ]);
+    assert.deepEqual(Object.keys(services).sort(), ['app', 'postgres']);
     for (const service of Object.values(services)) {
       assert.equal(service.env_file, undefined);
     }
@@ -116,15 +113,16 @@ test(
       services.postgres.environment.POSTGRES_PASSWORD,
       'fixture-from-harness',
     );
-    assert.equal(
-      services.app.depends_on.migrate.condition,
-      'service_completed_successfully',
-    );
+    // Migrations run inside the app container's bootstrap, not a one-shot service: the app
+    // must not carry a command override (Compose serializes an absent command as null), and it
+    // still waits for a healthy built-in database before starting.
+    assert.equal(services.app.command, null);
+    assert.equal(services.app.depends_on.postgres.condition, 'service_healthy');
   },
 );
 
 test(
-  'database anchors share credentials across all three services and escape dollars',
+  'database anchors share credentials between postgres and the app, and escape dollars',
   options,
   () => {
     const source = template
@@ -147,7 +145,7 @@ test(
       // Canonical Compose output re-escapes literal dollars so it can be loaded again.
       POSTGRES_PASSWORD: 'fixture-$$token:#',
     });
-    for (const service of [services.app, services.migrate]) {
+    for (const service of [services.app]) {
       assert.equal(service.environment.PGDATABASE, 'custom_db');
       assert.equal(service.environment.PGUSER, 'custom_user');
       assert.equal(service.environment.PGPASSWORD, 'fixture-$$token:#');
@@ -181,7 +179,7 @@ test(
       services.app.environment.CLOUDFLARE_API_TOKEN,
       'fixture-$$token',
     );
-    for (const service of [services.postgres, services.migrate]) {
+    for (const service of [services.postgres]) {
       assert.equal(service.environment.CLOUDFLARE_API_TOKEN, undefined);
       assert.equal(service.environment.ADMIN_BOOTSTRAP_PASSWORD, undefined);
     }

@@ -36,7 +36,7 @@ export const deploymentMessages = {
       'The identity domain used in user handles (e.g. user@example.com).',
     dataDir: 'Data Directory',
     dataDirHint:
-      'Host directory for server state and certificates (e.g. ./data or an absolute path). Ensure this folder exists on the host before launching.',
+      'Host directory for server state and certificates (e.g. ./data or an absolute path). Create it before launching and ensure the container can write to it.',
     customDomains: 'Independent Server / LAN Hostnames (Optional)',
     webDomain: 'Server Hostname',
     webDomainPlaceholder: 'Defaults to identity domain (e.g. soms.example.com)',
@@ -113,7 +113,9 @@ export const deploymentMessages = {
       'Forward required ports in router or firewall (UDP enables HTTP/3):',
     startStep: '3. Start Stack',
     startHint:
-      'Save as docker-compose.yml in a dedicated directory and launch:',
+      'Create the configured data directory, save docker-compose.yml in the deployment directory, then start the stack:',
+    dataDirPermissionsComment:
+      'Create the data directory; ensure the container can write to it before starting.',
     verifyStep: '4. Verification',
     verifyHint: 'Access the URL in a browser to verify the service status.',
     verifyPublic: 'Public: ',
@@ -153,7 +155,7 @@ export const deploymentMessages = {
     domainHint: '用于用户身份标识（如 user@example.com 中的 example.com）。',
     dataDir: '数据目录',
     dataDirHint:
-      '存放服务端数据与证书的宿主机目录（如 ./data 或绝对路径）。启动前需确保该目录已在宿主机中创建。',
+      '存放服务端数据与证书的宿主机目录（如 ./data 或绝对路径）。启动前请创建目录，并确保容器有写入权限。',
     customDomains: '独立服务域名 / 内网域名（选填）',
     webDomain: '服务域名',
     webDomainPlaceholder: '默认同身份域名，如 soms.example.com',
@@ -221,7 +223,9 @@ export const deploymentMessages = {
     portsStep: '2. 网络与端口映射',
     portsHint: '在路由器或防火墙中开放对应端口（UDP 用于 HTTP/3 提速）：',
     startStep: '3. 启动服务',
-    startHint: '保存为 docker-compose.yml 并执行启动命令：',
+    startHint:
+      '创建所填数据目录，将配置保存到部署目录中的 docker-compose.yml，然后启动：',
+    dataDirPermissionsComment: '创建数据目录；启动前请确保容器对其有写入权限。',
     verifyStep: '4. 运行验证',
     verifyHint: '在浏览器或客户端中访问服务地址验证运行状态。',
     verifyPublic: '公网：',

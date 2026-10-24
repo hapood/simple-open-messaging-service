@@ -140,20 +140,8 @@ emit_static_files() {
 
 emit_handlers() {
   printf '\tencode zstd gzip\n'
-  # Keep network diagnostics without recording credentials in headers or URL query parameters.
-  # stderr is collected by the container log driver; access logs are independent of backend log levels.
-  printf '%s\n' \
-    ' log {' \
-    '  output stderr' \
-    '  format filter {' \
-    '   wrap json' \
-    '   fields {' \
-    '    request>headers delete' \
-    '    resp_headers delete' \
-    '    request>uri regexp "[?].*$" ""' \
-    '   }' \
-    '  }' \
-    ' }'
+  # Do not emit per-request Caddy access logs. Caddy's operational logs (including
+  # certificate issuance and renewal failures) still go to container stderr.
   # Fixed-name worker scripts must revalidate and must never fall back to SPA HTML.
   printf '\thandle /push/*.js {\n\t\troot * /app/public/web\n\t\theader Cache-Control "no-cache"\n\t\tfile_server\n\t}\n'
   printf '\t# Federation discovery is served by Fastify, not the SPA fallback.\n'

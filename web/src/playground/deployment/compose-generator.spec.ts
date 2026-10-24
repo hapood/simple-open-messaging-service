@@ -17,10 +17,9 @@ describe('deployment configuration validation', () => {
     dnsToken: 'test-token',
   };
   it('validates required fields before export', () => {
-    // domain, dataDir, adminPassword, and dnsToken are remaining required fields (webDomain is optional)
+    // domain, adminPassword, and dnsToken are remaining required fields (webDomain is optional, dataDir defaults to ./data)
     expect(deploymentIssues(initialDeployment)).toEqual([
       'domain',
-      'dataDir',
       'adminPassword',
       'dnsToken',
     ]);

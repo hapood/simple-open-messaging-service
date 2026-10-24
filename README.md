@@ -104,13 +104,15 @@ The rolling `:dev` image is intended for development testing and never updates `
 After downloading:
 
 ```bash
-mkdir soms && cd soms   # place docker-compose.yml here
-sudo install -d -m 0750 -o 1000 -g 1000 data
+mkdir -p soms && cd soms   # place docker-compose.yml here
+# Create the configured data directory (default ./data) and ensure the container can write to it
+mkdir -p -- ./data
 docker compose up -d
 docker compose logs -f app
 ```
 
 - Public mode uses HTTPS on port 443; NAS mode uses one configurable port, defaulting to 7667.
+- Create whichever data directory path was configured in the generator (the generator checklist displays the exact command) and ensure Docker has write permissions to it (the application container runs as non-root UID/GID `1000:1000`).
 - Admin access defaults to public with mandatory login in public mode, and private source IPs only
   in NAS mode. Either mode lets you change that restriction.
 - Configuration inputs, YAML preview, copy, and download show plaintext credentials. Keep the file

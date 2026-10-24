@@ -34,7 +34,7 @@ export const initialDeployment: DeploymentConfig = {
   domain: '',
   webDomain: '',
   lanDomain: '',
-  dataDir: '',
+  dataDir: './data',
   database: 'soms',
   databaseUser: 'timescale',
   databasePassword: randomPassword(),
@@ -229,7 +229,6 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
   replace(
     /^    image: ghcr\.io\/hapood\/simple-open-messaging-service:.*$/,
     '    image: *app-image',
-    2,
   );
   for (const [key, anchor] of [
     ['SOMS_DOMAIN', 'identity-domain'],
@@ -286,29 +285,19 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
       '      - postgres-data:/var/lib/postgresql\n      - postgres-socket:/var/run/postgresql',
     );
     replace(
-      /^    command: \['node', 'dist\/scripts\/migrate-db.js', 'migrate'\]$/,
-      "    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']\n    volumes:\n      - postgres-socket:/var/run/postgresql",
-    );
-    replace(
       /^        target: \/app\/data$/,
       '        target: /app/data\n      - postgres-socket:/var/run/postgresql',
     );
   } else {
     replace(/^  PGHOST: postgres$/, '  PGHOST: *database-host');
     replace(/^  PGPORT: '5432'$/, '  PGPORT: *database-port');
-    // Remove only the postgres service, and its dependencies. Both jobs use the remote host.
-    replace(/^  postgres:\n[\s\S]*?(?=  migrate:\n)/m, '');
+    // Remote mode has no local postgres service; the app bootstraps itself against the
+    // remote host (wait → migrate run inside the app container), so no compose dependency
+    // is needed either.
+    replace(/^  postgres:\n[\s\S]*?(?=  app:\n)/m, '');
     replace(
-      /^    depends_on:\n      postgres:\n        condition: service_healthy\n    command:/,
-      '    command:',
-    );
-    replace(
-      /^      postgres:\n        condition: service_healthy\n      migrate:/,
-      '      migrate:',
-    );
-    replace(
-      /^    command: \['node', 'dist\/scripts\/migrate-db.js', 'migrate'\]$/,
-      "    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']\n    network_mode: host",
+      /^    depends_on:\n      postgres:\n        condition: service_healthy\n/m,
+      '',
     );
     if (c.remoteTls) {
       replace(
@@ -320,10 +309,6 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
       replace(
         /^  PGPASSWORD: \*database-password$/,
         '  PGPASSWORD: *database-password\n  SOMS_DB_CA_FILE: /tmp/soms/db-ca.pem',
-      );
-      replace(
-        /^    command: \['node', 'dist\/scripts\/migrate-db.js', 'migrate'\]\n    network_mode: host$/,
-        `    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']\n    network_mode: host\n    volumes:\n      - type: bind\n        source: ${scalar(c.remoteCaPath.trim())}\n        target: /tmp/soms/db-ca.pem\n        read_only: true`,
       );
       replace(
         /^        target: \/app\/data$/,

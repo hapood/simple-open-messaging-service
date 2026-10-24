@@ -34,6 +34,11 @@ import {
 } from './compose-generator';
 import { deploymentMessages, issueMessages } from './deployment-i18n';
 
+/** Quote a configured path as one literal POSIX shell argument. */
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
 @Component({
   selector: 'app-deployment-page',
   imports: [
@@ -931,9 +936,10 @@ import { deploymentMessages, issueMessages } from './deployment-i18n';
 
                   <h3>{{ t().startStep }}</h3>
                   <code
-                    >mkdir -p {{ startDirHint() }} && cd soms<br /># Save
-                    docker-compose.yml here<br />docker compose up -d<br />docker
-                    compose logs -f app</code
+                    >mkdir -p soms && cd soms<br />#
+                    {{ t().dataDirPermissionsComment }}<br />mkdir -p --
+                    {{ quotedDataDir() }}<br /># Save docker-compose.yml here<br />docker
+                    compose up -d<br />docker compose logs -f app</code
                   >
                   <p>{{ t().startHint }}</p>
 
@@ -1553,11 +1559,8 @@ export class DeploymentPageComponent {
     return publishedPort(this.config());
   }
 
-  startDirHint() {
-    const dir = this.config().dataDir.trim();
-    if (!dir) return 'soms/data';
-    if (dir.startsWith('/')) return dir;
-    return 'soms/' + dir.replace(/^\.\//, '');
+  quotedDataDir() {
+    return shellQuote(this.config().dataDir.trim() || './data');
   }
 
   portsSummary() {

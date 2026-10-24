@@ -29,10 +29,6 @@ const assert = require('node:assert/strict');
 const text = require('node:fs').readFileSync(process.argv[2], 'utf8');
 const blocks = text.split('\thandle /.well-known/* {').slice(1);
 assert.ok(blocks.length, 'no backend handlers generated');
-assert.equal((text.match(/output stderr/g) ?? []).length, blocks.length, 'every handler group must enable access logs');
-for (const filter of ['request>headers delete', 'resp_headers delete', 'request>uri regexp "[?].*$" ""']) {
-  assert.equal(text.split(filter).length - 1, blocks.length, `missing access-log privacy filter: ${filter}`);
-}
 for (const block of blocks) {
   const upstream = text.includes('admin off') ? 'unix//tmp/soms/backend.sock' : '127.0.0.1:3000';
   const rule = `\thandle /s2s/* {\n\t\treverse_proxy ${upstream}\n\t}`;

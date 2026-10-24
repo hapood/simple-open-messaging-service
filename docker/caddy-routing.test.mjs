@@ -12,7 +12,7 @@ const available = spawnSync(binary, ['version']).status === 0;
 
 for (const adminStatus of [200, 403]) {
   test(
-    `generated Caddy routing and sanitized access logs (admin ${adminStatus})`,
+    `generated Caddy routing (admin ${adminStatus})`,
     { skip: !available, timeout: 20000 },
     async () => {
       const directory = await mkdtemp(join(tmpdir(), 'soms-caddy-routing-'));
@@ -157,37 +157,6 @@ for (const adminStatus of [200, 403]) {
         );
         assert.equal(adminResponse.status, adminStatus);
         await adminResponse.text();
-        const accessLogs = () =>
-          logs.split('\n').flatMap((line) => {
-            try {
-              const value = JSON.parse(line);
-              return value.logger?.startsWith('http.log.access') ? [value] : [];
-            } catch {
-              return [];
-            }
-          });
-        let entry;
-        for (let i = 0; i < 100; i++) {
-          entry = accessLogs().find((log) => log.request.uri === adminPath);
-          if (entry) break;
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        assert.ok(entry, logs);
-        assert.equal(entry.request.remote_ip, '127.0.0.1');
-        assert.equal(
-          entry.request.client_ip,
-          '127.0.0.1',
-          'untrusted forwarded headers must not replace the client IP',
-        );
-        assert.equal(entry.request.method, 'GET');
-        assert.equal(entry.request.host, `127.0.0.1:${edge}`);
-        assert.equal(entry.status, adminStatus);
-        assert.equal(typeof entry.duration, 'number');
-        for (const log of accessLogs()) {
-          assert.equal(log.request.headers, undefined);
-          assert.equal(log.resp_headers, undefined);
-        }
-        assert.ok(!JSON.stringify(accessLogs()).includes('secret-marker'));
       } finally {
         if (child && child.exitCode === null) {
           const exited = once(child, 'exit');

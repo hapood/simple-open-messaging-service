@@ -21,21 +21,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  migrate:
-    image: ghcr.io/hapood/simple-open-messaging-service:latest
-    env_file: ${SOMS_ENV_FILE:-.env}
-    environment:
-      PGHOST: postgres
-      PGPORT: 5432
-      PGDATABASE: ${PGDATABASE:-soms}
-      PGUSER: ${PGUSER:-timescale}
-      PGPASSWORD: ${PGPASSWORD:?set PGPASSWORD in .env}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ['node', 'dist/scripts/migrate-db.js', 'migrate']
-    restart: 'no'
-
   app:
     image: ghcr.io/hapood/simple-open-messaging-service:latest
     env_file: ${SOMS_ENV_FILE:-.env}
@@ -50,8 +35,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     init: true
     stop_grace_period: 60s
     volumes:

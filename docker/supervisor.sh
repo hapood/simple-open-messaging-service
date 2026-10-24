@@ -1,14 +1,57 @@
 #!/usr/bin/env bash
-# All-in-one container supervisor (CMD of the `full` image): runs the node app (origin, :3000) and
-# Caddy (TLS edge, :7667) in ONE container. PID 1 is tini (compose `init: true`); this script is PID 2.
-# It is the default CMD; Compose has injected the container environment and the image entrypoint has
-# already validated it and rendered Caddy's internal configuration.
+# All-in-one container supervisor (CMD of the `full` image). Bootstraps the deployment —
+# database readiness, then schema migrations — and only afterwards runs the node app
+# (origin, :3000) and Caddy (TLS edge, :7667) in ONE container. PID 1 is tini
+# (compose `init: true`); this script is PID 2.
 #
-# Fail-fast: if EITHER process exits on its own, the container exits so compose `restart: unless-stopped`
-# recycles both. Caddy is stable; node is the more likely failure. "Either dies = container died" is the
-# correct unit here — they are a 1:1 dedicated couple, not independently scalable, so a real supervisor
-# (s6-overlay) would buy nothing.
+# Bootstrap failure semantics: a failed step exits the container non-zero, so compose
+# `restart: unless-stopped` retries with Docker's built-in backoff (capped around once a
+# minute). Permanent failures (e.g. a modified applied migration) therefore stay visible in
+# `docker compose logs app` and self-heal as soon as the underlying cause is fixed, without
+# leaving a separate exited one-shot container behind.
+#
+# Fail-fast after bootstrap: if EITHER process exits on its own, the container exits so
+# compose `restart: unless-stopped` recycles both. Caddy is stable; node is the more likely
+# failure. "Either dies = container died" is the correct unit here — they are a 1:1 dedicated
+# couple, not independently scalable, so a real supervisor (s6-overlay) would buy nothing.
 set -euo pipefail
+
+# --- 0. Bootstrap: prove database connectivity, then apply pending migrations ---
+# `wait` retries connection failures IN-PROCESS (a starting database is normal); it never
+# exits while the budget lasts. `migrate` is a single attempt: idempotent via the
+# schema_migrations ledger and serialized across replicas by the pg advisory lock, so
+# concurrent app containers boot safely (first migrates, the rest no-op).
+BOOTSTRAP_PID=0
+on_bootstrap_signal() {
+  trap '' TERM INT
+  if [ "$BOOTSTRAP_PID" -gt 0 ]; then
+    kill -TERM "$BOOTSTRAP_PID" 2>/dev/null || true
+    wait "$BOOTSTRAP_PID" 2>/dev/null || true
+  fi
+  echo '[bootstrap] interrupted; exiting' >&2
+  exit 143
+}
+bootstrap_step() {
+  local label="$1"; shift
+  echo "[bootstrap] $label" >&2
+  "$@" &
+  BOOTSTRAP_PID=$!
+  set +e
+  wait "$BOOTSTRAP_PID"
+  local rc=$?
+  set -e
+  BOOTSTRAP_PID=0
+  if [ "$rc" -ne 0 ]; then
+    echo "[bootstrap] FAILED (exit $rc): $label" >&2
+    exit "$rc"
+  fi
+}
+trap on_bootstrap_signal TERM INT
+bootstrap_step 'waiting for the database to accept connections' \
+  node dist/scripts/migrate-db.js wait
+bootstrap_step 'applying database migrations' \
+  node dist/scripts/migrate-db.js migrate
+trap - TERM INT
 
 # --- 1. Start the node origin (plain HTTP/1.1 on :3000; Caddy terminates TLS at the edge) ---
 if [ -n "${SOMS_BACKEND_SOCKET:-}" ]; then
