@@ -42,8 +42,6 @@ export type TransportObservation =
       certificate: FederationCertificateEvidence | null;
     };
 export interface TransportPolicy {
-  /** An explicit caller restriction, never an alternative DNS or connection path. */
-  validateAddresses?: (addresses: string[]) => void;
   observe?: (event: TransportObservation) => void;
 }
 
@@ -118,18 +116,11 @@ export function createFederationDispatcher(
           if (agent.destroyed || agent.closed)
             return callback(new Error('Federation dispatcher closed'), [], 0);
           if (error) return callback(error, [], 0);
-          try {
-            const ips = addresses.map((entry) => entry.address);
-            policy.observe?.({
-              phase: 'dns',
-              host: route.connectHost,
-              addresses: ips,
-            });
-            policy.validateAddresses?.(ips);
-          } catch (error) {
-            callback(error as Error, [], 0);
-            return;
-          }
+          policy.observe?.({
+            phase: 'dns',
+            host: route.connectHost,
+            addresses: addresses.map((entry) => entry.address),
+          });
           if (options.all) callback(null, addresses);
           else if (addresses[0])
             callback(null, addresses[0].address, addresses[0].family);

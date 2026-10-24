@@ -234,7 +234,6 @@
     "col": {
       "id": "ID",
       "account": "account",
-      "foreigner": "Foreign",
       "status": "Status",
       "quota": "Quota",
       "createdAt": "Created",
@@ -281,7 +280,6 @@
       "push": "Push devices"
     },
     "field": {
-      "foreigner": "Foreigner",
       "createdAt": "Created",
       "updatedAt": "Updated",
       "bio": "Bio"
@@ -429,14 +427,54 @@
       "config": "Transport config"
     }
   },
+  "networkInspection": {
+    "tabExternal": "Local & Public IP",
+    "tabDiagnostics": "Federation Diagnostics",
+    "local": "Local interfaces",
+    "showLocal": "Show loopback & link-local addresses ({{count}})",
+    "hideLocal": "Hide loopback & link-local addresses",
+    "external": "Public egress IP",
+    "refreshLocal": "Refresh addresses",
+    "detect": "Detect public IP",
+    "sources": "IP sources (multiple allowed)",
+    "localHint": "Addresses visible to the backend process, not your browser. In Docker these are container addresses; inbound IPv6 forwarding does not imply IPv6 egress.",
+    "externalHint": "Each source is contacted directly over IPv4 and IPv6. The reported server egress IP may differ from your DNS entry or reverse proxy address.",
+    "privacy": "Manual probes disclose the server egress IP to selected providers. Results may be reused for 10 seconds; no background probing.",
+    "loading": "Checking…",
+    "notRun": "Not checked",
+    "noInterfaces": "No interface addresses available.",
+    "sourceAddress": "Local source",
+    "sourceFailure": "This source could not be verified. A provider failure does not prove general network failure or public ingress failure.",
+    "runAt": "Checked at",
+    "runtime": {
+      "docker": "Docker image",
+      "unknown": "Runtime not declared"
+    },
+    "scope": {
+      "loopback": "Loopback",
+      "private": "Private",
+      "linkLocal": "Link-local",
+      "uniqueLocal": "Unique local",
+      "unicast": "Global unicast",
+      "carrierGradeNat": "Shared address",
+      "reserved": "Reserved"
+    },
+    "error": {
+      "EADDRNOTAVAIL": "No usable local source address. Check the backend/container IPv6 configuration.",
+      "ENETUNREACH": "The backend network has no route to this destination.",
+      "ETIMEDOUT": "This provider did not complete within 5 seconds. Try another source.",
+      "ENOTFOUND": "The provider hostname could not be resolved for this address family.",
+      "ECONNREFUSED": "The connection to this provider was refused."
+    }
+  },
   "networkTools": {
     "description": "Enter a federation domain only, without https:// or a port. The backend discovers the host and port through SOMFP SRV. Nothing is probed until you run diagnostics.",
     "target": "Federation domain",
     "route": "Selected SRV endpoint",
     "identity": "TLS identity",
-    "policy": "Fresh connection using the shared federation transport; public destinations only. Connect timeout: {{connectTimeoutMs}} ms; request timeout: {{callTimeoutMs}} ms. Cached connections and internal peers may behave differently.",
+    "policy": "Fresh connection using the shared federation transport; DNS answers are shown as-is, including CNAME chains and resolver error codes. Connect timeout: {{connectTimeoutMs}} ms; request timeout: {{callTimeoutMs}} ms.",
     "run": "Run diagnostics",
-    "scope": "Public HTTPS destinations only. TLS verifies the federation domain, not the SRV hostname. Missing or invalid SRV records stop the diagnostic; there is no port 443 fallback. Redirects are not followed. Local configuration and keys are available under Local Information.",
+    "scope": "DNS answers are reported verbatim: the addresses actually dialed appear next to the raw resolver view, and a mismatch between them is itself a clue. TLS verifies the federation domain, not the SRV hostname. Missing or invalid SRV records stop the diagnostic; there is no port 443 fallback. Redirects are not followed. Local configuration and keys are available under Local Information.",
     "dns": "DNS addresses",
     "srv": "Published federation SRV records",
     "https": "HTTPS connectivity and certificate",

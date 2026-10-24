@@ -8,10 +8,6 @@ import type { AddressInfo } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import { TargetNetworkDiagnosticsService } from './target-network-diagnostics.service.js';
 import { DiscoveryService } from '../discovery.service.js';
-import {
-  createFederationDispatcher,
-  requestFederation,
-} from '../federation-transport.js';
 
 const state = vi.hoisted(() => ({
   ca: Buffer.alloc(0) as Buffer,
@@ -30,10 +26,17 @@ vi.mock('node:dns/promises', () => ({
       { name: 'edge.example.net', port: state.port, priority: 0, weight: 0 },
     ];
   },
-}));
-// Allow the loopback fixture only in this test. Production rejects private destinations.
-vi.mock('./network-inspection.service.js', () => ({
-  isPublicAddress: () => true,
+  resolveCname: async (name: string) => {
+    state.queries.push(name);
+    return [];
+  },
+  resolve4: async (name: string) => {
+    state.queries.push(name);
+    return ['127.0.0.1'];
+  },
+  resolve6: async () => {
+    throw Object.assign(new Error('no AAAA'), { code: 'ENODATA' });
+  },
 }));
 vi.mock('node:dns', async (original) => ({
   ...(await original<typeof import('node:dns')>()),
@@ -123,6 +126,23 @@ describe('diagnostic SRV routing with real TLS', () => {
     expect(report.checks).toContainEqual(
       expect.objectContaining({ name: 'https', status: 'ok' }),
     );
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({
+        name: 'dns',
+        status: 'ok',
+        evidence: {
+          host: 'edge.example.net',
+          dial: [{ address: '127.0.0.1', family: 4, scope: 'loopback' }],
+          resolved: {
+            host: 'edge.example.net',
+            v4: ['127.0.0.1'],
+            v6: [],
+            cnameChain: [],
+            errors: { v6: 'ENODATA' },
+          },
+        },
+      }),
+    );
     expect(state.requests).toContainEqual({
       host: `peer.example:${state.port}`,
       sni: 'peer.example',
@@ -149,32 +169,6 @@ describe('diagnostic SRV routing with real TLS', () => {
     } finally {
       await discovery.onApplicationShutdown();
       vi.unstubAllEnvs();
-    }
-  });
-  it('enforces the caller address restriction before the shared connector opens a socket', async () => {
-    const count = state.requests.length;
-    const dispatcher = createFederationDispatcher(
-      { domain: 'peer.example', connectHost: 'edge.example.net' },
-      2000,
-      {
-        validateAddresses: (addresses) => {
-          expect(addresses).toEqual(['127.0.0.1']);
-          throw new Error('destination denied');
-        },
-      },
-    );
-    try {
-      await expect(
-        requestFederation(
-          `https://peer.example:${state.port}/.well-known/somfp`,
-          dispatcher,
-        ),
-      ).rejects.toMatchObject({
-        cause: expect.objectContaining({ message: 'destination denied' }),
-      });
-      expect(state.requests).toHaveLength(count);
-    } finally {
-      await dispatcher.destroy();
     }
   });
   it('rejects a certificate for a different identity even when the SRV endpoint connects', async () => {

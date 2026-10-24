@@ -231,7 +231,6 @@ export function UsersPage() {
               </TableHead>
               <TableHead className="w-16">{t('users.col.id')}</TableHead>
               <TableHead>{t('users.col.account')}</TableHead>
-              <TableHead className="w-16">{t('users.col.foreigner')}</TableHead>
               <TableHead className="w-20">{t('users.col.status')}</TableHead>
               <TableHead className="w-28">{t('users.col.quota')}</TableHead>
               <TableHead>{t('users.col.createdAt')}</TableHead>
@@ -245,7 +244,7 @@ export function UsersPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={9}
+              colSpan={7}
             >
               {data?.list.map((u) => (
                 <TableRow key={u.id}>
@@ -266,9 +265,6 @@ export function UsersPage() {
                     <Link to={`/users/${u.id}`} className="hover:underline">
                       {u.account}
                     </Link>
-                  </TableCell>
-                  <TableCell>
-                    {u.namespaceId !== 0 ? t('common.yes') : t('common.no')}
                   </TableCell>
                   <TableCell>
                     {u.isDeleted ? (

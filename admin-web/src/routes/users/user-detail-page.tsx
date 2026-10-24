@@ -186,10 +186,6 @@ export function UserDetailPage() {
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm md:grid-cols-3">
               <Field
-                label={t('userDetail.field.foreigner')}
-                value={u.namespaceId !== 0 ? t('common.yes') : t('common.no')}
-              />
-              <Field
                 label={t('userDetail.field.createdAt')}
                 value={<Timestamp value={u.createdAt} />}
               />

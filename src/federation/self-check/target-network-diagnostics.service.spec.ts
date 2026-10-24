@@ -4,12 +4,16 @@ import {
   TargetNetworkDiagnosticsService,
 } from './target-network-diagnostics.service.js';
 import type { TransportPolicy } from '../federation-transport.js';
+
 const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
   create: vi.fn(),
   request: vi.fn(),
   read: vi.fn(),
   destroy: vi.fn(),
+  cname: vi.fn(),
+  v4: vi.fn(),
+  v6: vi.fn(),
 }));
 vi.mock('../federation-transport.js', () => ({
   resolveFederationRoute: mocks.resolve,
@@ -17,6 +21,12 @@ vi.mock('../federation-transport.js', () => ({
   requestFederation: mocks.request,
   readFederationDiscovery: mocks.read,
 }));
+vi.mock('node:dns/promises', () => ({
+  resolveCname: mocks.cname,
+  resolve4: mocks.v4,
+  resolve6: mocks.v6,
+}));
+const noRecord = (code: string) => Object.assign(new Error(code), { code });
 const service = () =>
   new TargetNetworkDiagnosticsService({
     get: () => ({ connectTimeoutSec: 12, callTimeoutSec: 15 }),
@@ -45,7 +55,6 @@ beforeEach(() => {
       host: 'edge.example.net',
       addresses: ['1.1.1.1'],
     });
-    policy.validateAddresses?.(['1.1.1.1']);
     policy.observe?.({
       phase: 'tls',
       address: '1.1.1.1',
@@ -57,6 +66,9 @@ beforeEach(() => {
     });
   });
   mocks.read.mockResolvedValue({ protocolVersions: [1], roots: [], keys: [] });
+  mocks.cname.mockRejectedValue(noRecord('ENODATA'));
+  mocks.v4.mockResolvedValue(['1.1.1.1']);
+  mocks.v6.mockRejectedValue(noRecord('ENODATA'));
 });
 afterEach(() => vi.useRealTimers());
 
@@ -107,12 +119,13 @@ describe('target diagnostics adapter', () => {
       host: 'edge.example.net',
       port: 7668,
       domain: 'example.com',
+      origin: 'https://example.com:7668',
     });
     expect(report.policy).toMatchObject({
-      publicDestinationsOnly: true,
       freshConnection: true,
       callTimeoutMs: 15000,
     });
+    expect(report.policy).not.toHaveProperty('publicDestinationsOnly');
     expect(report.checks.map((c) => [c.name, c.status])).toEqual([
       ['srv', 'ok'],
       ['dns', 'ok'],
@@ -130,33 +143,111 @@ describe('target diagnostics adapter', () => {
       { name: 'srv', status: 'fail', detail: 'Missing SRV' },
     ]);
     expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.v4).not.toHaveBeenCalled();
   });
-  it.each([['127.0.0.1'], ['1.1.1.1', '::1'], []])(
-    'applies an explicit public-destination restriction: %j',
-    async (...addresses) => {
-      const ips = addresses.flat() as string[];
+  it.each([
+    ['192.168.108.7', 'private'],
+    ['198.18.0.101', 'reserved'],
+    ['2605:52c0:2:28ad:44c:2dff:feaf:5011', 'unicast'],
+  ])(
+    'dials whatever the resolver returned and labels its scope: %s',
+    async (address, scope) => {
       mocks.request.mockImplementation(async () => {
         policy.observe?.({
           phase: 'dns',
           host: 'edge.example.net',
-          addresses: ips,
+          addresses: [address],
         });
-        policy.validateAddresses?.(ips);
-        throw new Error('must reject before connection');
+        policy.observe?.({
+          phase: 'tls',
+          address,
+          port: 7668,
+          certificate: null,
+        });
+        return new Response('{}', {
+          headers: { 'content-type': 'application/json' },
+        });
       });
       const report = await service().run('example.com');
-      expect(report.checks.at(-1)).toMatchObject({
-        name: 'dns',
-        status: 'fail',
-        detail: expect.stringContaining('safety policy'),
+      const dns = report.checks.find((check) => check.name === 'dns');
+      expect(dns).toMatchObject({
+        status: 'ok',
+        detail: expect.stringContaining(`${address} (${scope})`),
       });
-      expect(mocks.read).not.toHaveBeenCalled();
+      expect(dns?.evidence?.dial).toEqual([
+        { address, family: address.includes(':') ? 6 : 4, scope },
+      ]);
+      expect(mocks.read).toHaveBeenCalled();
       expect(mocks.destroy).toHaveBeenCalledOnce();
     },
   );
+  it('reports an empty resolver answer as a dial failure without inventing evidence', async () => {
+    mocks.request.mockImplementation(async () => {
+      policy.observe?.({
+        phase: 'dns',
+        host: 'edge.example.net',
+        addresses: [],
+      });
+      throw new TypeError('fetch failed', {
+        cause: new Error('Destination has no IP addresses'),
+      });
+    });
+    const report = await service().run('example.com');
+    expect(report.checks.filter((check) => check.name === 'dns')).toEqual([
+      {
+        name: 'dns',
+        status: 'fail',
+        detail: 'Destination has no IP addresses',
+      },
+    ]);
+  });
+  it('shows the walked CNAME chain and warns about the RFC 2782 SRV-target rule', async () => {
+    mocks.cname
+      .mockResolvedValueOnce(['relay.example.net'])
+      .mockRejectedValueOnce(noRecord('ENODATA'));
+    mocks.v4.mockResolvedValue(['203.0.113.9']);
+    const report = await service().run('example.com');
+    const dns = report.checks.find((check) => check.name === 'dns');
+    expect(dns?.status).toBe('warn');
+    expect(dns?.detail).toContain(
+      'edge.example.net -> relay.example.net (RFC 2782',
+    );
+    expect(dns?.evidence?.resolved).toEqual({
+      host: 'relay.example.net',
+      v4: ['203.0.113.9'],
+      v6: [],
+      cnameChain: [
+        { name: 'edge.example.net', targets: ['relay.example.net'] },
+      ],
+      errors: { v6: 'ENODATA' },
+    });
+  });
+  it('surfaces raw resolver failure codes beside the dial result', async () => {
+    mocks.v4.mockRejectedValue(
+      Object.assign(new Error('server failure'), { code: 'ESERVFAIL' }),
+    );
+    const report = await service().run('example.com');
+    const dns = report.checks.find((check) => check.name === 'dns');
+    expect(dns?.status).toBe('ok');
+    expect(dns?.evidence?.resolved.errors).toEqual({
+      v4: 'ESERVFAIL',
+      v6: 'ENODATA',
+    });
+    expect(dns?.evidence?.dial).toEqual([
+      { address: '1.1.1.1', family: 4, scope: 'unicast' },
+    ]);
+    expect(report.checks.at(-1)).toMatchObject({
+      name: 'federation',
+      status: 'ok',
+    });
+  });
   it('reports a real connection failure and disposes the isolated pool', async () => {
     mocks.request.mockImplementation(async () => {
-      policy.validateAddresses?.(['1.1.1.1']);
+      policy.observe?.({
+        phase: 'dns',
+        host: 'edge.example.net',
+        addresses: ['1.1.1.1'],
+      });
       throw new TypeError('fetch failed', {
         cause: new Error('connect timeout'),
       });

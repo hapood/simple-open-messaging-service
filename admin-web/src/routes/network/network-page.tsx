@@ -6,20 +6,20 @@ import { useMe } from '@/hooks/use-me';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Timestamp } from '@/components/common/timestamp';
 import { formatApiError } from '@/lib/format-error';
+import { ExternalNetworkPanel } from './external-network-panel';
 
-export function NetworkPage() {
+function TargetDiagnosticsPanel() {
   const { t } = useTranslation();
   const [target, setTarget] = useState('');
   const { data: me } = useMe();
   const canProbe = me?.role === 'ADMIN' || me?.role === 'SUPER_ADMIN';
   const probe = useMutation({ mutationFn: diagnoseNetwork });
+
   return (
-    <div className="space-y-4 text-sm leading-[20px]">
-      <h1 className="text-2xl leading-[32px] font-semibold">
-        {t('nav.networkInfo')}
-      </h1>
+    <div className="space-y-4">
       <p className="text-muted-foreground">{t('networkTools.description')}</p>
       <form
         className="flex gap-2"
@@ -96,6 +96,33 @@ export function NetworkPage() {
           ))}
         </section>
       )}
+    </div>
+  );
+}
+
+export function NetworkPage() {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-4 text-sm leading-[20px]">
+      <h1 className="text-2xl leading-[32px] font-semibold">
+        {t('nav.networkInfo')}
+      </h1>
+      <Tabs defaultValue="external">
+        <TabsList>
+          <TabsTrigger value="external">
+            {t('networkInspection.tabExternal')}
+          </TabsTrigger>
+          <TabsTrigger value="diagnostics">
+            {t('networkInspection.tabDiagnostics')}
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="external" className="pt-2">
+          <ExternalNetworkPanel />
+        </TabsContent>
+        <TabsContent value="diagnostics" className="pt-2">
+          <TargetDiagnosticsPanel />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

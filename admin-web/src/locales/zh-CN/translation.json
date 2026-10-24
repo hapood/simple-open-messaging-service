@@ -234,7 +234,6 @@
     "col": {
       "id": "ID",
       "account": "账户名",
-      "foreigner": "外宾",
       "status": "状态",
       "quota": "额度",
       "createdAt": "创建时间",
@@ -281,7 +280,6 @@
       "push": "推送设备"
     },
     "field": {
-      "foreigner": "境外",
       "createdAt": "创建时间",
       "updatedAt": "更新时间",
       "bio": "简介"
@@ -429,14 +427,54 @@
       "config": "传输配置"
     }
   },
+  "networkInspection": {
+    "tabExternal": "本机外部网络检测",
+    "tabDiagnostics": "联邦网络连通诊断",
+    "local": "本机网卡地址",
+    "showLocal": "展开回环与链路本地地址（{{count}}）",
+    "hideLocal": "收起回环与链路本地地址",
+    "external": "外部检测 · 出口 IP",
+    "refreshLocal": "刷新本机地址",
+    "detect": "检测外部 IP",
+    "sources": "检测来源（可多选）",
+    "localHint": "这里显示后端进程可见的地址，不是浏览器地址。Docker 环境下显示容器地址；IPv6 入站转发正常，不代表容器具备 IPv6 出站能力。",
+    "externalHint": "从服务器分别通过 IPv4 / IPv6 直连检测来源，返回出口公网 IP；它不一定与 DNS 入口或反向代理地址一致。",
+    "privacy": "仅手动检测，所选服务会看到服务器出口 IP。10 秒内可能复用检测结果，不会在后台定时探测。",
+    "loading": "检测中…",
+    "notRun": "尚未检测",
+    "noInterfaces": "暂无可用的网卡地址。",
+    "sourceAddress": "本地源地址",
+    "sourceFailure": "未能完成该来源的检测。单个来源失败不代表网络整体不可用，也不能证明外网无法访问本实例。",
+    "runAt": "检测时间",
+    "runtime": {
+      "docker": "Docker 镜像环境",
+      "unknown": "运行环境未声明"
+    },
+    "scope": {
+      "loopback": "回环",
+      "private": "私有地址",
+      "linkLocal": "链路本地",
+      "uniqueLocal": "唯一本地",
+      "unicast": "全球单播",
+      "carrierGradeNat": "共享地址",
+      "reserved": "保留地址"
+    },
+    "error": {
+      "EADDRNOTAVAIL": "本地源地址不可用，请检查后端或容器的 IPv6 配置。",
+      "ENETUNREACH": "后端运行环境没有到该目标的可用路由。",
+      "ETIMEDOUT": "该来源未在 5 秒内完成响应，可换其他来源对比。",
+      "ENOTFOUND": "无法为该地址协议解析检测服务的域名。",
+      "ECONNREFUSED": "连接被检测服务或网络设备拒绝。"
+    }
+  },
   "networkTools": {
     "description": "只需输入联邦域名，不要填写 https:// 或端口。后端通过 SOMFP SRV 自动发现目标主机和端口，点击检测后才会发起请求。",
     "target": "联邦域名",
     "route": "选中的 SRV 入口",
     "identity": "TLS 校验域名",
-    "policy": "使用共用联邦传输代码新建连接，仅允许公网目标。连接超时 {{connectTimeoutMs}} ms，请求超时 {{callTimeoutMs}} ms。缓存连接或内网节点的结果可能不同。",
+    "policy": "使用共用联邦传输代码新建连接,DNS 结果原样展示(含 CNAME 链与解析器错误码)。连接超时 {{connectTimeoutMs}} ms,请求超时 {{callTimeoutMs}} ms。",
     "run": "开始检测",
-    "scope": "仅检测公网 HTTPS 目标，TLS 校验联邦域名而非 SRV 主机名。SRV 缺失或无效时停止检测，不回退到 443 端口，不跟随重定向。本机配置和公钥请查看「本机信息」。",
+    "scope": "DNS 结果原样展示:实际拨号使用的地址与原始 DNS 查询并列对比,两者不一致时正是线索。TLS 校验联邦域名而非 SRV 主机名。SRV 缺失或无效时停止检测,不回退到 443 端口,不跟随重定向。本机配置和公钥请查看「本机信息」。",
     "dns": "DNS 地址",
     "srv": "已发布的联邦 SRV 记录",
     "https": "HTTPS 连通性与证书",

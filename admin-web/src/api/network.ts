@@ -37,7 +37,17 @@ type NetworkCheck = {
 } & (
   | {
       name: 'dns';
-      evidence?: { host: string; addresses: string[] };
+      evidence?: {
+        host: string;
+        dial: { address: string; family: number; scope: string }[];
+        resolved: {
+          host: string;
+          v4: string[];
+          v6: string[];
+          cnameChain: { name: string; targets: string[] }[];
+          errors: { chain?: string; v4?: string; v6?: string };
+        };
+      };
     }
   | { name: 'srv'; evidence?: SrvEvidence }
   | {
@@ -102,7 +112,6 @@ export interface NetworkReport {
   target: string;
   policy: {
     freshConnection: boolean;
-    publicDestinationsOnly: boolean;
     connectTimeoutMs: number;
     callTimeoutMs: number;
   };
@@ -116,7 +125,46 @@ export interface NetworkReport {
   durationMs: number;
   checks: NetworkCheck[];
 }
+
+export type IpSource = 'ip-sb' | 'ipify' | 'ident-me';
+
+export interface IpProbeSource {
+  id: IpSource;
+  label: string;
+  ipv4: string;
+  ipv6: string;
+}
+
+export interface NetworkInfoResponse {
+  checkedAt: number;
+  runtime: 'docker' | 'unknown';
+  interfaces: {
+    name: string;
+    address: string;
+    family: 4 | 6;
+    cidr: string | null;
+    scope: string;
+  }[];
+  sources: IpProbeSource[];
+}
+
+export interface IpProbeResult {
+  source: IpSource;
+  family: 4 | 6;
+  url: string;
+  checkedAt: number;
+  durationMs: number;
+  status: 'ok' | 'warn';
+  ip?: string;
+  localAddress?: string;
+  code?: string;
+}
+
 export const getLocalInformation = () =>
   request<LocalInformation>('/admin/local-information');
 export const diagnoseNetwork = (target: string) =>
   request<NetworkReport>('/admin/network/diagnose', { target });
+export const getNetworkInfo = () =>
+  request<NetworkInfoResponse>('/admin/network/info');
+export const probeNetworkIp = (source: IpSource, family: 4 | 6) =>
+  request<IpProbeResult>('/admin/network/probe', { source, family });

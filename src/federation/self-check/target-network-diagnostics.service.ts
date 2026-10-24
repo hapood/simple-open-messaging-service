@@ -5,7 +5,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { isIP } from 'node:net';
-import { isPublicAddress } from './network-inspection.service.js';
+import { addressScope } from './network-inspection.service.js';
+import { resolveDnsEvidence, type ResolvedDnsView } from './dns-evidence.js';
 import { normalizeFederationDomain } from '../well-known-document.js';
 import type { SomfpSrvRrset } from '../srv-rrset.js';
 import type {
@@ -37,10 +38,17 @@ export function parseDiagnosticTarget(input: string): string {
 }
 
 type CheckBase = { status: 'ok' | 'warn' | 'fail' | 'skip'; detail: string };
+type DnsEvidence = {
+  host: string;
+  /** Addresses the shared connector actually dialed (OS resolver view). */
+  dial: { address: string; family: number; scope: string }[];
+  /** Raw DNS protocol view from the configured resolvers. */
+  resolved: ResolvedDnsView;
+};
 type Check = CheckBase &
   (
     | { name: 'srv'; evidence?: SomfpSrvRrset }
-    | { name: 'dns'; evidence?: { host: string; addresses: string[] } }
+    | { name: 'dns'; evidence?: DnsEvidence }
     | {
         name: 'https';
         evidence?: {
@@ -59,7 +67,43 @@ type Check = CheckBase &
       }
   );
 
-/** A fresh, isolated use of the real federation transport. No trust or business state is changed. */
+/** Never throws: an unparseable answer is itself diagnostic information. */
+function safeAddressScope(address: string): string {
+  try {
+    return addressScope(address);
+  } catch {
+    return 'invalid';
+  }
+}
+
+function pendingView(host: string): ResolvedDnsView {
+  return { host, v4: [], v6: [], cnameChain: [], errors: {} };
+}
+
+/** Bounded so a stalled resolver can never extend the diagnostic beyond its report. */
+async function mergeDnsEvidence(
+  evidence: Promise<ResolvedDnsView> | undefined,
+  check: Extract<Check, { name: 'dns' }> | undefined,
+): Promise<void> {
+  if (!evidence || !check?.evidence) return;
+  const deadline = new Promise<undefined>((resolve) => {
+    setTimeout(() => resolve(undefined), 5000).unref();
+  });
+  const view = await Promise.race([evidence.catch(() => undefined), deadline]);
+  if (!view) return;
+  check.evidence.resolved = view;
+  if (view.cnameChain.length) {
+    check.status = 'warn';
+    const names = [
+      check.evidence.host,
+      ...view.cnameChain.map((hop) => hop.targets[0]),
+    ];
+    check.detail = `${check.detail}; CNAME chain ${names.join(' -> ')} (RFC 2782 advises against CNAME SRV targets)`;
+  }
+}
+
+/** A fresh, isolated use of the real federation transport. No trust or business
+ * state is changed. Resolver answers and their failures are reported verbatim. */
 @Injectable()
 export class TargetNetworkDiagnosticsService {
   private running = false;
@@ -87,6 +131,8 @@ export class TargetNetworkDiagnosticsService {
       origin: string;
     } | null = null;
     let dispatcher: ReturnType<typeof createFederationDispatcher> | undefined;
+    let dnsCheck: Extract<Check, { name: 'dns' }> | undefined;
+    let evidencePromise: Promise<ResolvedDnsView> | undefined;
     let phase: Check['name'] = 'srv';
     const observe = (event: TransportObservation) => {
       if (event.phase === 'srv') {
@@ -101,12 +147,29 @@ export class TargetNetworkDiagnosticsService {
         });
       } else if (event.phase === 'dns') {
         phase = 'dns';
-        checks.push({
-          name: 'dns',
-          status: 'ok',
-          detail: event.host,
-          evidence: { host: event.host, addresses: event.addresses },
-        });
+        // Only a non-empty answer describes a dialable resolver verdict; an
+        // empty answer leaves the phase on 'dns' so the connector's dial
+        // failure keeps this phase's name.
+        if (event.addresses.length) {
+          dnsCheck = {
+            name: 'dns',
+            status: 'ok',
+            detail: `${event.host} -> ${event.addresses
+              .map((address) => `${address} (${safeAddressScope(address)})`)
+              .join(', ')}`,
+            evidence: {
+              host: event.host,
+              dial: event.addresses.map((address) => ({
+                address,
+                family: isIP(address),
+                scope: safeAddressScope(address),
+              })),
+              resolved: pendingView(event.host),
+            },
+          };
+          checks.push(dnsCheck);
+          phase = 'https';
+        }
       } else {
         phase = 'https';
         checks.push({
@@ -134,22 +197,12 @@ export class TargetNetworkDiagnosticsService {
         origin: resolved.baseUrl,
       };
       phase = 'dns';
+      // Collected in parallel with the dial so both views describe the same moment.
+      evidencePromise = resolveDnsEvidence(resolved.connectHost);
       dispatcher = createFederationDispatcher(
         resolved,
         config.connectTimeoutSec * 1000,
-        {
-          observe,
-          validateAddresses: (addresses) => {
-            if (
-              !addresses.length ||
-              addresses.some((address) => !isPublicAddress(address))
-            )
-              throw new Error(
-                'Diagnostic safety policy rejects non-public or empty DNS answers; ordinary federation may allow this destination',
-              );
-            phase = 'https';
-          },
-        },
+        { observe },
       );
       const response = await requestFederation(
         `${resolved.baseUrl}/.well-known/somfp`,
@@ -182,6 +235,7 @@ export class TargetNetworkDiagnosticsService {
         detail: cause instanceof Error ? cause.message : 'Diagnostic failed',
       });
     } finally {
+      await mergeDnsEvidence(evidencePromise, dnsCheck);
       try {
         await dispatcher?.destroy();
       } finally {
@@ -196,7 +250,6 @@ export class TargetNetworkDiagnosticsService {
       durationMs: Date.now() - startedAt,
       policy: {
         freshConnection: true,
-        publicDestinationsOnly: true,
         connectTimeoutMs: config.connectTimeoutSec * 1000,
         callTimeoutMs: config.callTimeoutSec * 1000,
       },
