@@ -25,31 +25,37 @@ export function assertTarget(target) {
   return target;
 }
 
-export function navigationUrl(target, node, rawUrl) {
+export function navigationUrl(target, node, rawUrl, nodes = federationNodes) {
   assertTarget(target);
   if (target === 'playground' && node !== undefined)
     throw new Error('Playground has no federation node.');
   if (
     target === 'federation' &&
     node !== undefined &&
-    !Object.hasOwn(federationNodes, node)
+    !Object.hasOwn(nodes, node)
   )
     throw new Error('Unknown federation node.');
   const url = new URL(
     rawUrl ??
       (target === 'playground'
         ? `${playgroundOrigin}/`
-        : federationNodes[node ?? 'alpha'].edge),
+        : nodes[node ?? 'alpha'].edge),
   );
   const allowed =
     target === 'playground'
       ? [playgroundOrigin]
-      : Object.values(federationNodes).map(
-          (entry) => new URL(entry.edge).origin,
-        );
+      : Object.values(nodes).flatMap((entry) => [
+          new URL(entry.edge).origin,
+          new URL(entry.admin).origin,
+        ]);
   if (url.username || url.password || !allowed.includes(url.origin))
-    throw new Error(`Navigation is outside the ${target} local origins.`);
-  if (node && url.origin !== new URL(federationNodes[node].edge).origin)
+    throw new Error(`Navigation is outside the ${target} approved origins.`);
+  if (
+    node &&
+    ![nodes[node].edge, nodes[node].admin].some(
+      (base) => url.origin === new URL(base).origin,
+    )
+  )
     throw new Error('URL does not match the selected federation node.');
   return url.href;
 }

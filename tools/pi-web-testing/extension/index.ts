@@ -2,6 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
+import type { Writable } from 'node:stream';
+import { installAcceptance } from './acceptance';
 import { Type } from '@earendil-works/pi-ai';
 import {
   defineTool,
@@ -49,6 +51,7 @@ type FrontendStatus = {
 const BrowserDriverParameters = Type.Object({
   action: Type.Union([
     Type.Literal('status'),
+    Type.Literal('preflight'),
     Type.Literal('open'),
     Type.Literal('inspect'),
     Type.Literal('adminLogin'),
@@ -90,7 +93,7 @@ const BrowserDriverParameters = Type.Object({
   url: Type.Optional(
     Type.String({
       description:
-        'Optional local URL within the selected target. The driver enforces target origins.',
+        'Optional URL within the selected target. The driver enforces approved deployment origins.',
     }),
   ),
   viewport: Type.Optional(
@@ -344,6 +347,8 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
     }
   }
 
+  const acceptance = installAcceptance(pi, stopDriver);
+
   async function ensureDriver(cwd: string): Promise<void> {
     if (child && childCwd === cwd && readyPromise) {
       return readyPromise;
@@ -353,11 +358,27 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
     }
 
     const absoluteDriverPath = join(cwd, DRIVER_PATH);
+    const config = acceptance.configuration();
     const spawned = spawn(process.execPath, [absoluteDriverPath], {
       cwd,
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        ...(config
+          ? {
+              BROWSER_DEPLOYMENT_FILE: config.deploymentFile,
+              BROWSER_ARTIFACT_DIR: config.directory,
+              BROWSER_PROFILE_DIR: join(config.directory, 'profiles'),
+            }
+          : {}),
+      },
+      stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+    }) as unknown as ChildProcessWithoutNullStreams;
+    // Secrets are transferred through a private inherited pipe, never persisted.
+    const credentialPipe = spawned.stdio[3] as Writable | null;
+    credentialPipe?.on('error', () => {
+      /* Startup/exit handlers report transport failure. */
     });
+    credentialPipe?.end(JSON.stringify(config?.credentials ?? {}));
     child = spawned;
     childCwd = cwd;
     stderrTail.length = 0;
@@ -472,11 +493,23 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
   const browserDriverTool = defineTool({
     name: 'browser_driver',
     label: 'Project browser driver',
+    executionMode: 'sequential',
     description:
       'Control the project-specific persistent Playwright driver. It supports isolated user/admin profiles, lab login helpers, accessibility snapshots, trusted repository-local step modules, screenshots, traces, and captured browser errors. Read the web-testing skill before using it. Commands sharing state must be called sequentially.',
     parameters: BrowserDriverParameters,
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const operationSignal = signal ?? new AbortController().signal;
+      acceptance.assertAction(params.action);
+      if (
+        acceptance.configuration() &&
+        ['frontendStatus', 'frontendWait', 'frontendLogs'].includes(
+          params.action,
+        )
+      )
+        throw new Error(
+          'Configured deployment acceptance uses HTTP/UI preflight, not local HMR files.',
+        );
       if (params.action === 'frontendStatus') {
         const services = params.services ?? ['web', 'admin'];
         const data = await frontendStatus(services);
@@ -492,7 +525,7 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
           webBuildId: params.webBuildId,
           adminBuildId: params.adminBuildId,
           timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-          signal,
+          signal: operationSignal,
         });
         return {
           content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
@@ -522,15 +555,21 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
           ([key, value]) => key !== 'timeoutMs' && value !== undefined,
         ),
       );
-      const response = await sendCommand(
-        ctx.cwd,
-        command,
-        params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        signal,
-      );
-
-      if (!response.ok) {
-        throw new Error(response.error || 'Browser driver command failed.');
+      let response: DriverResponse;
+      try {
+        response = await sendCommand(
+          ctx.cwd,
+          command,
+          params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          operationSignal,
+        );
+        if (!response.ok)
+          throw new Error(response.error || 'Browser driver command failed.');
+      } catch (error) {
+        acceptance.driverFailed(
+          error instanceof Error ? error.message : String(error),
+        );
+        throw error;
       }
 
       const serialized = JSON.stringify(response.data, null, 2);
@@ -572,5 +611,6 @@ export default function browserTestingExtension(pi: ExtensionAPI) {
 
   pi.on('session_shutdown', async () => {
     await stopDriver('Pi session shutdown');
+    await acceptance.shutdown();
   });
 }

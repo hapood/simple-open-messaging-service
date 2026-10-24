@@ -44,9 +44,26 @@ federation scenarios still need disjoint accounts and fixture data.
 
 ## Interactive Pi entry
 
-`npm run pi:webtest` only loads Pi's browser extension and skill. It does not
-select an environment or start servers. The agent checks existing services and
-opens a profile with an explicit target:
+`npm run pi:webtest` loads the project extension and opens a setup wizard:
+**full acceptance requires three nodes**, while **main-workflow acceptance requires
+two nodes**. The wizard collects confirmed Web/backend/Admin URLs and federation
+identity domains, asks for fixture authorization, and accepts Admin passwords in
+masked TUI dialogs. It explicitly loads the Skill and starts preflight without
+starting or resetting services. Configured deployments use HTTP/UI health and
+version checks, not local HMR status files. See the
+[entry point and pause protocol](../../tools/pi-web-testing/README.md) and
+[two-node quick plan](browser-e2e-quick-test-plan.md).
+
+The `webtest_run` tool writes local progress, handoff and issue documents beneath
+`test-results/browser-e2e/acceptance/<run-id>/`. Browser failures pause mutations;
+product bugs and driver mismatches require an explicit operator decision. A
+specific repair approval does not authorize automatic retry or later repairs.
+Use `/webtest-status` or `/webtest-resume RUN_ID`; resumed sessions re-enter
+credentials and revalidate deployment/fixtures.
+
+For targeted local exploration without the wizard, load the same extension and
+Skill directly without `--webtest-wizard` (see its README). The agent checks
+existing services and opens a profile with an explicit target:
 
 ```json
 {"action":"open","target":"playground","user":"composer-debug"}
@@ -63,8 +80,11 @@ Subsequent commands identify the profile by `user`; its target is retained on
 disk and cannot silently change. Existing unlabelled profiles remain federation
 profiles. Playground profile data lives separately under `.playground/` in the
 profile root. Neither profile root is placed in test-runner output directories.
-Login helpers apply only to federation. Document navigation is restricted to the
-selected local origins, including redirects. Trusted Node step modules are not
+Login helpers apply only to federation. Configured acceptance uses run-isolated
+profile roots, per-node credentials, node/account-scoped OTPs and verified TLS.
+Document navigation is restricted to selected local origins or explicitly
+confirmed deployment Web/Admin origins, including redirects. Backend service
+origins do not automatically become browser navigation destinations. Trusted Node step modules are not
 sandboxed; this guard is not a general network isolation mechanism.
 
 The Pi extension owns tool transport, timeouts, cancellation, and driver lifetime.

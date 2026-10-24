@@ -4,6 +4,12 @@ This document is the canonical natural-language acceptance suite for the local
 three-node federation lab. The numbered business cases run against the Web
 client in a browser. Android acceptance cases are defined separately in
 [android-e2e-test-plan.md](./android-e2e-test-plan.md).
+Guided full acceptance also supports three user-confirmed deployments through
+`npm run pi:webtest`; node names are aliases for their confirmed identity domains
+and Web/backend/Admin addresses, not assumptions about hostnames. Two-node quick
+acceptance has an independent execution checklist in
+[browser-e2e-quick-test-plan.md](browser-e2e-quick-test-plan.md).
+
 It covers account isolation, local and federated users, direct messages, group
 messages, media, calls, administrative actions, and visual defects. Backend API
 calls may be used only to prepare fixtures or verify a result after a visible
@@ -31,8 +37,13 @@ reuse retained fixtures only after confirming their current roles and state.
 
 ## Test Rules
 
-The deterministic browser runner is Playwright against the HMR frontend only.
-Start the backend and HMR frontend first:
+The deterministic local-lab browser runner uses Playwright against the HMR
+frontend only. Guided acceptance on user-confirmed deployments instead checks
+HTTP/UI health, TLS and server/API versions; it does not require local HMR files
+or start services. The local topology and fixed entrances below describe the lab
+only; substitute confirmed node identities/addresses for guided deployments.
+
+For local-lab regression, start the backend and HMR frontend first:
 
 ```bash
 npm run dev:be
@@ -71,10 +82,11 @@ state.
 Run this self-check before product acceptance work and after changing the browser
 harness. A harness failure is **BLOCKED**, not a product **FAIL** or **BUG**.
 
-- The three edge URLs are reachable through the HMR frontend at ports 3101,
-  3102, and 3103; browser acceptance must not use built frontend assets.
-- The Web and Admin HMR status files report the current lab session and a
-  successful build; a compilation failure is surfaced before browser actions.
+- All three confirmed Web/Admin entrances and edge/backend compatibility
+  endpoints are reachable. Record server/API versions and actual identity domains.
+- For the local lab only, edge ports 3101–3103 use HMR and Web/Admin status files
+  must report current successful builds. Configured deployed acceptance must not
+  substitute local status files for checks of the actual deployment.
 - Persistent driver `status`, `open`, `inspect`, and `close` work without
   resetting a profile or database.
 - Headful mode is available through `BROWSER_HEADFUL=1`; default runs remain
@@ -176,10 +188,10 @@ the standalone Vite development entry and is not the federation edge.
 2. Sign in as `admin` with the current lab Admin password. The bootstrap value
    in `.env` is only valid for a newly created Admin row; it is not a reliable
    password after a previous run changed that row. A stale retained Admin
-   password is a test-fixture condition, not a project blocker: the test agent
-   may use the controlled local lab credential-reset procedure to restore the
-   Admin account, without resetting lab databases or recording the replacement
-   password. The reset must be followed by a real Admin-page login check.
+   password is a test-fixture condition. Pause and ask the operator for corrected
+   credentials or a separately authorized local-lab repair. Never reset a password
+   automatically, including during guided acceptance. Any authorized credential
+   repair must be followed by a real Admin-page login check.
 3. Open Users, locate the target account, open its detail view, and choose the
    visible issue-login-code action.
 4. Read the one-time value from `#ilc-code` immediately. Never write it to a

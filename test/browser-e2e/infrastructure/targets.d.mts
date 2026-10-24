@@ -9,6 +9,7 @@ export function navigationUrl(
   target: BrowserTarget,
   node?: string,
   rawUrl?: string,
+  nodes?: Record<string, { edge: string; admin: string; domain: string }>,
 ): string;
 export function assertProfileTarget(
   existing: BrowserTarget | undefined,
