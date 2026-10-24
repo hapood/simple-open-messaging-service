@@ -1,6 +1,6 @@
 [package]
 name = "soms-client"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 description = "SOMS cross-platform client (Tauri v2 shell around the Angular consumer client)"
 authors = ["hapood"]
 edition = "2021"

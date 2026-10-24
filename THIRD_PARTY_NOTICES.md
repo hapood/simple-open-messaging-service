@@ -2,16 +2,14 @@
 
 This project includes software and assets developed by third parties.
 
-## GitHub Logo
+## Shields.io GitHub Stars Badge
 
-The playground navigation in `web/src/playground/index.html` embeds the official
-white GitHub wordmark lockup, with its original artwork unchanged.
+The playground navigation in `web/src/playground/index.html` displays a GitHub
+repository star-count badge served by Shields.io, a third-party service.
 
-Source: https://brand.github.com/GitHub_Logos.zip
+Service documentation: https://shields.io/badges/git-hub-repo-stars
 
-Usage guidelines: https://brand.github.com/foundations/logo
-
-GitHub and its logos are trademarks of GitHub, Inc. The logo links to this
+GitHub and its logos are trademarks of GitHub, Inc. The badge links to this
 project's GitHub repository and does not imply endorsement by GitHub.
 
 ## Material Icons

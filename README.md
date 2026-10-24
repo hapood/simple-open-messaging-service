@@ -13,8 +13,8 @@
   <a href="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://hapood.github.io/simple-open-messaging-service/"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a.svg"></a>
-  <img alt="SOMS 0.1.0 alpha 0" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.0-7c3aed.svg">
-  <a href="spec/v1/README.md"><img alt="SOMFP v1 final-review draft" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.0-e95420.svg"></a>
+  <img alt="SOMS 0.1.0 alpha 1" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.1-7c3aed.svg">
+  <a href="spec/v1/README.md"><img alt="SOMFP v1.0.0 draft 1" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.1-e95420.svg"></a>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
 </p>
 
 > [!IMPORTANT]
-> SOMS `0.1.0-alpha.0` and the federation protocol (`v1.0.0-draft.0`) are under active development; the wire contract remains subject to closeout revisions prior to stable release.
+> SOMS `0.1.0-alpha.1` and SOMFP `v1.0.0-draft.1` are currently available for **technical preview only**. Before beta, stable operation and upgrade compatibility are not guaranteed; APIs, the federation wire contract, and storage formats may change incompatibly. Use isolated test deployments with disposable data, not production or critical communications.
 
 ## Features
 
@@ -93,13 +93,15 @@ Use the [**Compose configuration generator**][gen] in the live playground. Choos
 `docker-compose.yml`. All editable settings are grouped at the top of this single file. The
 page also provides the DNS records and published ports for the selected mode.
 
-The generator and NAS template pin
-`ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0` for both the application and migrations.
-This alpha image supports Linux amd64 and arm64 and is published after the corresponding release
-tag is created from `main`. See [GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases)
-for availability and release notes. The public deployment template uses `:latest`, which follows
-published versions including alpha releases; its first release will point to `v0.1.0-alpha.0`.
-The rolling `:dev` image is intended for development testing and never updates `latest`.
+The generator and deployment templates use
+`ghcr.io/hapood/simple-open-messaging-service:latest`. The application container applies database
+migrations during startup. Published images support Linux amd64 and arm64; `:latest` follows
+published versions, including alpha releases. Select an explicit version tag to control upgrades.
+The current source version is `0.1.0-alpha.1`; its release image becomes available only after the
+corresponding release tag is published from `main`. See
+[GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases) for availability
+and release notes. The rolling `:dev` image is intended for development testing and never updates
+`latest`.
 
 After downloading:
 
