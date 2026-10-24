@@ -31,7 +31,7 @@ export function NetworkPage() {
       >
         <Input
           aria-label={t('networkTools.target')}
-          placeholder="https://example.com:443"
+          placeholder="example.com"
           value={target}
           onChange={(event) => setTarget(event.target.value)}
           disabled={probe.isPending}
@@ -55,6 +55,19 @@ export function NetworkPage() {
             {probe.data.target} · <Timestamp value={probe.data.checkedAt} /> ·{' '}
             {probe.data.durationMs} ms
           </p>
+          <p className="text-muted-foreground">
+            {t('networkTools.policy', probe.data.policy)}
+          </p>
+          {probe.data.route && (
+            <p className="break-all font-mono">
+              {t('networkTools.route')}: {probe.data.route.host}:
+              {probe.data.route.port}
+              {' · '}
+              {t('networkTools.identity')}: {probe.data.route.domain}
+              {' · '}
+              {probe.data.route.origin}/.well-known/somfp
+            </p>
+          )}
           {probe.data.checks.map((check, index) => (
             <article
               key={`${check.name}:${index}`}

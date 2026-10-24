@@ -249,6 +249,7 @@
       "ban": "封禁",
       "forceLogout": "强制下线",
       "viewSessions": "查看会话",
+      "viewDetails": "查看详情",
       "grantViewer": "设置管理员",
       "issueLoginCode": "签发登录码",
       "generateInitialPassword": "生成初始密码"
@@ -272,6 +273,7 @@
   "userDetail": {
     "back": "返回用户列表",
     "notFound": "用户不存在",
+    "sessionsDesc": "仅展示尚未撤销且未过期的会话，不是完整登录历史。退出或过期的会话不会出现在这里；复用已有会话不会新增记录。",
     "section": {
       "profile": "资料",
       "groups": "群组",
@@ -295,7 +297,9 @@
       "push": "无推送设备"
     },
     "push": {
-      "deviceId": "设备 ID"
+      "deviceId": "设备 ID",
+      "desc": "仅展示已向服务端注册推送订阅的设备，不代表全部登录设备。浏览器登录本身不会自动获得通知权限；登录管理后台也不会注册聊天推送。",
+      "emptyHint": "浏览器用户请在聊天客户端的「设置 → 通知」中允许通知。还需浏览器支持 Web Push、服务端推送配置可用且订阅注册成功；如已允许，请检查浏览器站点权限、网络连接及推送配置，再刷新此页。"
     }
   },
   "userQuota": {
@@ -426,10 +430,13 @@
     }
   },
   "networkTools": {
-    "description": "从后端服务器检测指定的 HTTPS 目标。输入网址并点击检测后才会发起请求。",
-    "target": "目标网址",
+    "description": "只需输入联邦域名，不要填写 https:// 或端口。后端通过 SOMFP SRV 自动发现目标主机和端口，点击检测后才会发起请求。",
+    "target": "联邦域名",
+    "route": "选中的 SRV 入口",
+    "identity": "TLS 校验域名",
+    "policy": "使用共用联邦传输代码新建连接，仅允许公网目标。连接超时 {{connectTimeoutMs}} ms，请求超时 {{callTimeoutMs}} ms。缓存连接或内网节点的结果可能不同。",
     "run": "开始检测",
-    "scope": "仅允许公网 HTTPS 入口；忽略网址路径，不跟随重定向。本机配置和公钥请查看「本机信息」。",
+    "scope": "仅检测公网 HTTPS 目标，TLS 校验联邦域名而非 SRV 主机名。SRV 缺失或无效时停止检测，不回退到 443 端口，不跟随重定向。本机配置和公钥请查看「本机信息」。",
     "dns": "DNS 地址",
     "srv": "已发布的联邦 SRV 记录",
     "https": "HTTPS 连通性与证书",
@@ -665,15 +672,16 @@
   },
   "loginCodes": {
     "title": "登录码",
-    "desc": "管理员签发的一次性登录码记录。",
+    "desc": "每行对应一个管理员签发的一次性登录码，按签发时间倒序排列，每个码最多使用一次。使用后记录时间、IP、设备及关联会话；不包含密码登录、扫码登录或已有会话的复用记录。",
+    "summary": "共签发 {{issued}} 个 · 已使用 {{consumed}} 个（不是账号总登录次数）",
     "col": {
       "status": "状态",
       "issuedAt": "签发时间",
       "expiresAt": "过期时间",
-      "consumedAt": "消费时间",
-      "consumedIp": "消费 IP",
+      "consumedAt": "使用时间",
+      "consumedIp": "使用 IP",
       "device": "设备",
-      "session": "产生的会话"
+      "session": "会话 ID"
     },
     "status": {
       "pending": "待使用",

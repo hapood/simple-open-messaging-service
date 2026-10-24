@@ -89,6 +89,13 @@ describe('UserDetailPage mutation authorization', () => {
     forceLogout.mutateAsync.mockResolvedValue(undefined);
   });
 
+  it('explains active-session scope and how browsers register push devices', () => {
+    renderPage();
+    expect(screen.getByText('userDetail.sessionsDesc')).toBeInTheDocument();
+    expect(screen.getByText('userDetail.push.desc')).toBeInTheDocument();
+    expect(screen.getByText('userDetail.push.emptyHint')).toBeInTheDocument();
+  });
+
   it('does not expose user mutations to a VIEWER', () => {
     renderPage();
 

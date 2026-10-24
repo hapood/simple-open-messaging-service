@@ -312,6 +312,15 @@ export function UsersPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
+                      <Link
+                        to={`/users/${u.id}`}
+                        className={buttonVariants({
+                          variant: 'outline',
+                          size: 'sm',
+                        })}
+                      >
+                        {t('users.action.viewDetails')}
+                      </Link>
                       {canManageUser(u) && !u.isDeleted ? (
                         <Button
                           variant="outline"

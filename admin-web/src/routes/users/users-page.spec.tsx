@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UsersPage } from './users-page';
 const state = vi.hoisted(() => ({
@@ -53,7 +53,10 @@ vi.mock('./generate-initial-password-dialog', () => ({
 function mount() {
   render(
     <MemoryRouter>
-      <UsersPage />
+      <Routes>
+        <Route path="/" element={<UsersPage />} />
+        <Route path="/users/:id" element={<div>User detail destination</div>} />
+      </Routes>
     </MemoryRouter>,
   );
 }
@@ -69,6 +72,24 @@ beforeEach(() => {
   state.adminRole = null;
   grant.mutateAsync.mockReset().mockResolvedValue({ id: 8 });
 });
+describe('user detail quick action', () => {
+  it.each(['SUPER_ADMIN', 'ADMIN', 'VIEWER'])(
+    'lets %s navigate directly from the quick-action link',
+    async (role) => {
+      state.role = role;
+      mount();
+      const link = screen.getByRole('link', {
+        name: 'users.action.viewDetails',
+      });
+      expect(link).toHaveAttribute('href', '/users/42');
+      fireEvent.click(link);
+      expect(
+        await screen.findByText('User detail destination'),
+      ).toBeInTheDocument();
+    },
+  );
+});
+
 describe('user admin grant', () => {
   it('requires confirmation and sends only the target ID, regardless of account name', async () => {
     mount();

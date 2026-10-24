@@ -249,6 +249,7 @@
       "ban": "Ban",
       "forceLogout": "Force Logout",
       "viewSessions": "View Sessions",
+      "viewDetails": "View details",
       "grantViewer": "Set as administrator",
       "issueLoginCode": "Issue login code",
       "generateInitialPassword": "Generate initial password"
@@ -272,6 +273,7 @@
   "userDetail": {
     "back": "Back to users",
     "notFound": "User not found",
+    "sessionsDesc": "Only unrevoked, unexpired sessions are shown, not a complete login history. Signed-out or expired sessions are excluded; reusing a session does not create another record.",
     "section": {
       "profile": "Profile",
       "groups": "Groups",
@@ -295,7 +297,9 @@
       "push": "No push devices"
     },
     "push": {
-      "deviceId": "Device ID"
+      "deviceId": "Device ID",
+      "desc": "Only devices with a push subscription registered on the server are shown, not all logged-in devices. Browser login does not grant notification permission; admin-console login does not register chat push notifications.",
+      "emptyHint": "Browser users should allow notifications in the chat client's Settings → Notifications. Web Push support, a working server push configuration, and successful subscription registration are also required. If permission is already granted, check site permissions, connectivity, and push configuration, then refresh this page."
     }
   },
   "userQuota": {
@@ -426,10 +430,13 @@
     }
   },
   "networkTools": {
-    "description": "Diagnose an explicit HTTPS target from this backend. Nothing is probed automatically.",
-    "target": "Target URL",
+    "description": "Enter a federation domain only, without https:// or a port. The backend discovers the host and port through SOMFP SRV. Nothing is probed until you run diagnostics.",
+    "target": "Federation domain",
+    "route": "Selected SRV endpoint",
+    "identity": "TLS identity",
+    "policy": "Fresh connection using the shared federation transport; public destinations only. Connect timeout: {{connectTimeoutMs}} ms; request timeout: {{callTimeoutMs}} ms. Cached connections and internal peers may behave differently.",
     "run": "Run diagnostics",
-    "scope": "Public HTTPS origins only. Paths are ignored; redirects are not followed. Local configuration and keys are available under Local Information.",
+    "scope": "Public HTTPS destinations only. TLS verifies the federation domain, not the SRV hostname. Missing or invalid SRV records stop the diagnostic; there is no port 443 fallback. Redirects are not followed. Local configuration and keys are available under Local Information.",
     "dns": "DNS addresses",
     "srv": "Published federation SRV records",
     "https": "HTTPS connectivity and certificate",
@@ -664,7 +671,8 @@
   },
   "loginCodes": {
     "title": "Login codes",
-    "desc": "Admin-issued one-time login codes.",
+    "desc": "Each row is an admin-issued one-time login code, newest first. Each code can be used at most once and records its consumption time, IP, device, and associated session. Password logins, QR logins, and existing session reuse are not included.",
+    "summary": "{{issued}} issued · {{consumed}} consumed (not the account's total login count)",
     "col": {
       "status": "Status",
       "issuedAt": "Issued",
@@ -672,7 +680,7 @@
       "consumedAt": "Consumed",
       "consumedIp": "Consumed IP",
       "device": "Device",
-      "session": "Resulting session"
+      "session": "Session ID"
     },
     "status": {
       "pending": "Pending",

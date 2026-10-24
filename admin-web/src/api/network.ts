@@ -37,24 +37,23 @@ type NetworkCheck = {
 } & (
   | {
       name: 'dns';
-      evidence?: { addresses: string[]; testedAddresses: string[] };
+      evidence?: { host: string; addresses: string[] };
     }
   | { name: 'srv'; evidence?: SrvEvidence }
   | {
       name: 'https';
-      evidence: {
+      evidence?: {
         address: string;
         port: number;
-        certificate?: CertificateEvidence | null;
+        certificate: CertificateEvidence | null;
       };
     }
   | {
       name: 'federation';
-      evidence: {
-        address: string;
-        protocolVersions?: number[];
-        roots?: PublicRoot[];
-        keys?: SigningCertificate[];
+      evidence?: {
+        protocolVersions: number[];
+        roots: PublicRoot[];
+        keys: SigningCertificate[];
       };
     }
 );
@@ -101,6 +100,18 @@ export interface LocalInformation {
 }
 export interface NetworkReport {
   target: string;
+  policy: {
+    freshConnection: boolean;
+    publicDestinationsOnly: boolean;
+    connectTimeoutMs: number;
+    callTimeoutMs: number;
+  };
+  route: {
+    domain: string;
+    host: string;
+    port: number;
+    origin: string;
+  } | null;
   checkedAt: number;
   durationMs: number;
   checks: NetworkCheck[];

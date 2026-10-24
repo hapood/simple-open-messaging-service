@@ -266,6 +266,9 @@ export function UserDetailPage() {
                   {t('userSessions.appCount', { count: appSessionCount })}
                 </span>
               </div>
+              <p className="text-sm leading-[20px] text-muted-foreground">
+                {t('userDetail.sessionsDesc')}
+              </p>
             </CardHeader>
             <CardContent>
               {data.sessions.length === 0 ? (
@@ -343,11 +346,17 @@ export function UserDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>{t('userDetail.section.push')}</CardTitle>
+              <p className="text-sm leading-[20px] text-muted-foreground">
+                {t('userDetail.push.desc')}
+              </p>
             </CardHeader>
             <CardContent>
               {data.pushTokens.length === 0 ? (
                 <p className="py-4 text-center text-sm text-muted-foreground">
                   {t('userDetail.empty.push')}
+                  <span className="mt-2 block leading-[20px]">
+                    {t('userDetail.push.emptyHint')}
+                  </span>
                 </p>
               ) : (
                 <Table>
