@@ -6,7 +6,10 @@ import {
   type ThreadListRecord,
 } from './model';
 
-/** Merge only structural state; feed previews and local read progress have independent ownership. */
+/** Merge only structural state; feed previews and local read progress have independent
+ *  ownership. Profile selection is not projected here: the attention snapshot carries the
+ *  selected revision into storage feed-gated, and the in-memory list adopts it in
+ *  `applyThreadFeedOrder`. */
 export function applyThreadStateSnapshot(
   current: ThreadListRecord | undefined,
   snapshot: ThreadFeedSnapshot,
@@ -31,7 +34,7 @@ export function applyThreadStateSnapshot(
           ...identity,
           id: snapshot.threadId,
         }));
-  const next = {
+  return {
     ...base,
     threadFeedId: feedId,
     visible: true,
@@ -45,26 +48,4 @@ export function applyThreadStateSnapshot(
         ? snapshot.conversationState === 'ACTIVE'
         : undefined,
   };
-  if (next.type === 'P2P') {
-    const sameAddress =
-      next.peerUser.account === identity.account &&
-      next.peerUser.namespaceId === identity.namespaceId;
-    if (!sameAddress) {
-      next.peerProfileMessageSeq = undefined;
-      next.profileRev = identity.profileRev;
-    } else if (next.peerProfileMessageSeq == null) {
-      next.profileRev = Math.max(next.profileRev, identity.profileRev);
-    }
-    if (next.peerProfileMessageSeq == null) {
-      const { profileRev: _rev, ...peerIdentity } = identity;
-      next.peerUser = {
-        ...next.peerUser,
-        ...peerIdentity,
-        ...(sameAddress && next.profileRev === identity.profileRev
-          ? { name: next.peerUser.name }
-          : { avatar: '', bio: '' }),
-      };
-    }
-  }
-  return next;
 }

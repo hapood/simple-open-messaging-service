@@ -55,10 +55,14 @@ export class PlaygroundProfiles
   resolve(input: Parameters<ProfileRepository['resolve']>[0]) {
     return defer(() => {
       const demand = 'demand' in input ? input.demand : input;
-      const user = this.state.user(
-        demand.target.account,
-        demand.publisherNamespaceId || demand.target.profileNamespaceId,
-      );
+      const user =
+        demand.publisherNamespaceId === 0
+          ? this.state.profile(
+              demand.target.account,
+              demand.target.profileNamespaceId,
+              demand.target.rev,
+            )
+          : undefined;
       const profile: ResolvedProfile = {
         publisherNamespaceId: demand.publisherNamespaceId,
         namespaceId: demand.target.profileNamespaceId,

@@ -12,7 +12,6 @@ import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight'
 import { WebdbService } from './webdb.service';
 import type { ThreadAttentionProjection } from './webdb-storage';
 import type { GroupMetaCommitPatch } from './group-meta-model';
-import { preserveThreadProfile } from './thread-profile-projection';
 import { homeProfileDemand } from './profile-demand';
 import {
   unevidencedProfileDemand,
@@ -366,7 +365,6 @@ export class ThreadRepository {
                 group: {
                   ...current.group,
                   name: profile.name,
-                  avatar: '',
                   description: profile.bio,
                 },
               }
@@ -375,7 +373,6 @@ export class ThreadRepository {
                 peerUser: {
                   ...current.peerUser,
                   name: profile.name,
-                  avatar: '',
                   bio: profile.bio,
                 },
               };
@@ -646,14 +643,22 @@ export class ThreadRepository {
       if (
         !found ||
         found.type !== 'P2P' ||
-        found.peerProfileMessageSeq != null ||
         user.profileRev !== found.profileRev ||
         user.account !== found.peerUser.account ||
         user.namespaceId !== found.peerUser.namespaceId
       )
         return list;
-      const { id: _localId, profileRev: _profileRev, ...peerUser } = user;
-      changed = { ...found, peerUser };
+      changed = {
+        ...found,
+        peerUser: {
+          account: user.account,
+          namespaceId: user.namespaceId,
+          name: user.name,
+          bio: user.bio,
+          isGroup: false,
+          isDeleted: user.isDeleted,
+        },
+      };
       return list.map((t) =>
         t.threadId === threadId && t.type === 'P2P' ? changed! : t,
       );
@@ -669,7 +674,6 @@ export class ThreadRepository {
     patch: {
       name?: string;
       description?: string;
-      avatar?: string;
       dissolvedAt?: number | null;
       memberCount?: number;
       groupMetaFeedId?: string;
@@ -685,19 +689,18 @@ export class ThreadRepository {
         if (patch.name !== undefined) group.name = patch.name;
         if (patch.description !== undefined)
           group.description = patch.description;
-        if (patch.avatar !== undefined) group.avatar = patch.avatar;
         if (patch.dissolvedAt !== undefined)
           group.dissolvedAt = patch.dissolvedAt;
         if (patch.memberCount !== undefined)
           group.memberCount = patch.memberCount;
         if (patch.groupMetaFeedId !== undefined)
           group.groupMetaFeedId = patch.groupMetaFeedId;
+        // patch.profileRev is deliberately a no-op: the committed msg-feed
+        // snapshot is the only group profile-selection refresher; Meta and
+        // optimistic paths never write a revision here.
         changed = {
           ...t,
           ...(patch.role !== undefined ? { role: patch.role } : {}),
-          ...(patch.profileRev !== undefined
-            ? { profileRev: Math.max(t.profileRev, patch.profileRev) }
-            : {}),
           group,
         };
         return changed;
@@ -705,8 +708,6 @@ export class ThreadRepository {
     );
     if (changed) {
       void this.persistThread(changed);
-      if (patch.profileRev !== undefined)
-        void this.resolveThreadProfile(changed);
     }
   }
 
@@ -799,22 +800,6 @@ export class ThreadRepository {
         base.unshift(this.withConfirmedAlias(reconciled));
       } else {
         const current = base[idx];
-        if (
-          current.type === 'P2P' &&
-          reconciled.type === 'P2P' &&
-          current.peerProfileMessageSeq != null &&
-          current.peerProfileMessageSeq >
-            (reconciled.peerProfileMessageSeq ?? 0) &&
-          current.peerUser.account === reconciled.peerUser.account &&
-          current.peerUser.namespaceId === reconciled.peerUser.namespaceId
-        ) {
-          reconciled = {
-            ...reconciled,
-            peerUser: current.peerUser,
-            peerProfileMessageSeq: current.peerProfileMessageSeq,
-          };
-        }
-        reconciled = preserveThreadProfile(reconciled, current);
         reconciled = {
           ...reconciled,
           lastReadSeq: current.lastReadSeq,
@@ -1290,18 +1275,29 @@ export class ThreadRepository {
       const index = items.findIndex((item) => item.threadId === threadId);
       if (index < 0) return items;
       const current = items[index];
+      // The committed snapshot's feed position is the freshness authority:
+      // adopt its revision outright. A newer snapshot may legitimately carry
+      // a lower revision; the number never ranks selections.
       if (
         current.visible !== false &&
         current.threadFeedId === threadFeedId &&
-        current.profileRev >= profileRev
+        current.profileRev === profileRev
       )
         return items;
-      changed = {
+      const selectionChanged = current.profileRev !== profileRev;
+      const adopted: ConversationItem = {
         ...current,
         visible: true,
         threadFeedId,
-        profileRev: Math.max(current.profileRev, profileRev),
+        profileRev,
       };
+      changed =
+        selectionChanged && adopted.type === 'P2P'
+          ? {
+              ...adopted,
+              peerUser: { ...adopted.peerUser, name: '', bio: '' },
+            }
+          : adopted;
       const next = items.slice();
       next[index] = changed;
       return sortThreadItems(next);

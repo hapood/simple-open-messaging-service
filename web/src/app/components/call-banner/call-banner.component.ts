@@ -173,7 +173,6 @@ export class CallBannerComponent {
   );
   readonly peer = this.peerView.peer;
   readonly peerName = this.peerView.name;
-  readonly peerAvatar = this.peerView.avatarSrc;
   readonly peerProfile = this.peerView.profile;
   readonly visible = computed(
     () => this.presentation.minimized() && this.state().phase !== 'idle',

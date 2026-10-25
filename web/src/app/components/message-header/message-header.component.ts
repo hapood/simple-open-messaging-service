@@ -113,8 +113,6 @@ export class MessageHeaderComponent {
       thread.threadId,
       uuid(),
       'AUDIO',
-      peer.name ?? '',
-      peer.avatar ?? '',
       peer.account,
       peer.namespaceId,
     );

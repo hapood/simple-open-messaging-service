@@ -38,7 +38,8 @@ const profile = (
     name: 'A',
     avatar: '',
     bio: '',
-    domain: 'local',
+    isGroup: false,
+    isDeleted: false,
     account: 'alice',
     namespaceId: 0,
     profileRev: 1,
@@ -235,11 +236,11 @@ describe('UserService profile refresh', () => {
       isDeleted: false,
     };
     httpMock.expectOne(isMyProfile).flush({ code: 0, data: account });
-    const expected = { ...account, name: 'qifaai2', bio: '', avatar: '' };
+    const expected = { ...account, name: 'qifaai2', bio: '' };
     expect(await result).toEqual(expected);
     expect(svc.sessionProfile()).toEqual(expected);
     expect(TestBed.inject(WebdbService).writeSelfProfile).toHaveBeenCalledWith(
-      expected,
+      account,
     );
     expect(TestBed.inject(ProfileRepository).resolve).not.toHaveBeenCalled();
   });
@@ -317,7 +318,7 @@ describe('UserService profile refresh', () => {
     await vi.waitFor(() => expect(svc.sessionProfile()?.name).toBe('B'));
   });
 
-  it('uses runtime avatar presence without caching base64 in the self profile', async () => {
+  it('persists only account facts and derives self display from the runtime profile', async () => {
     const result = firstValueFrom(svc.ensureProfile());
     vi.mocked(TestBed.inject(ProfileRepository).resolve).mockReturnValue(
       of({
@@ -336,10 +337,12 @@ describe('UserService profile refresh', () => {
     (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
       profile({ profileRev: 2, avatar: '/uploads/old-path.webp' }),
     );
-    expect(await result).toMatchObject({
+    const view = await result;
+    expect(view).toMatchObject({
       name: 'Resolved Alice',
-      avatar: '',
+      bio: 'Resolved bio',
     });
+    expect(view).not.toHaveProperty('avatar');
     expect(TestBed.inject(ProfileRepository).resolve).toHaveBeenCalledWith({
       publisherNamespaceId: 0,
       lookup: 'ACCOUNT_PROFILE',
@@ -349,9 +352,14 @@ describe('UserService profile refresh', () => {
         rev: 2,
       },
     });
-    expect(TestBed.inject(WebdbService).writeSelfProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ avatar: '' }),
-    );
+    expect(TestBed.inject(WebdbService).writeSelfProfile).toHaveBeenCalledWith({
+      id: 1,
+      account: 'alice',
+      namespaceId: 0,
+      profileRev: 2,
+      isGroup: false,
+      isDeleted: false,
+    });
   });
 
   // Contrast: ensureProfile() (no force) is the idempotent get-or-load — it DOES short-circuit to the
@@ -367,7 +375,7 @@ describe('UserService profile refresh', () => {
     expect(svc.sessionProfile()?.name).toBe('A');
 
     // Second call: sessionProfile is set → returns of(cached) synchronously, NO HTTP request.
-    let emitted: User | undefined;
+    let emitted: ReturnType<UserService['sessionProfile']>;
     svc.ensureProfile().subscribe((u) => (emitted = u));
     expect(emitted?.name).toBe('A'); // served from cache, not the network
     httpMock.expectNone(isMyProfile);
@@ -548,9 +556,6 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
                 selfProfile: {
                   id: 1,
                   profileRev: 0,
-                  name: 'A',
-                  avatar: '',
-                  bio: '',
                   isGroup: false,
                   account: 'me',
                   namespaceId: 0,
@@ -641,15 +646,15 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       code: 0,
       data: account,
     });
-    const expected = { ...account, name: 'qifaai2', bio: '', avatar: '' };
+    const expected = { ...account, name: 'qifaai2', bio: '' };
     await vi.waitFor(() => expect(svc.sessionProfile()).toEqual(expected));
-    expect(webdb.writeSelfProfile).toHaveBeenCalledWith(expected);
+    expect(webdb.writeSelfProfile).toHaveBeenCalledWith(account);
     expect(TestBed.inject(ProfileRepository).resolve).not.toHaveBeenCalled();
 
     svc.resetSessionState();
     webdb.readAccountState.mockResolvedValue({
       ...accountStateBase(),
-      selfProfile: expected,
+      selfProfile: account,
     });
     await svc.establishSession(3, 0, 14);
     await vi.waitFor(() => expect(svc.sessionProfile()).toEqual(expected));
@@ -780,12 +785,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('rebuilds an unreadable cache discovered when HELLO establishes the session', async () => {
     webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
-
     await expect(svc.establishSession(1, 0, 11)).resolves.not.toThrow();
-
-    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
-
-    expect(webdb.recreateForUser).toHaveBeenCalledWith('1');
+    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('1');
   });
 
   it('establishSession is idempotent for the same user on reconnect', async () => {
@@ -904,18 +905,30 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('restoreWebdb opens the DB and restores the matching self profile for offline eager paint', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    const cached = profile({
+    const cached = {
       id: 7,
-      name: 'Cached Alice',
-      avatar: '/cached.webp',
-    }).data;
+      account: 'alice',
+      namespaceId: 0,
+      profileRev: 1,
+      isGroup: false,
+      isDeleted: false,
+    };
     webdb.readAccountState.mockResolvedValue({
       ...accountStateBase(),
       selfProfile: cached,
     });
     await svc.restoreWebdb();
     expect(webdb.openExistingForUser).toHaveBeenCalledWith('7');
-    expect(svc.sessionProfile()).toEqual(cached);
+    expect(svc.sessionProfile()).toEqual({
+      ...cached,
+      name: 'A',
+      bio: '',
+    });
+    expect(TestBed.inject(ProfileRepository).resolve).toHaveBeenCalledWith({
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 0, account: 'alice', rev: 1 },
+    });
     // sessionUserId is NOT set by restoreWebdb — it stays HELLO-driven (establishSession owns it on HELLO).
     expect(svc.sessionUserId()).toBeNull();
   });
@@ -926,12 +939,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       new LocalCacheVersionMismatchError('soms-webdb-u7'),
     );
     webdb.readAccountState.mockResolvedValue(accountStateBase());
-
     await svc.restoreWebdb();
-
-    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
-
-    expect(webdb.recreateForUser).toHaveBeenCalledWith('7');
+    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('7');
     expect(svc.sessionUserId()).toBeNull();
   });
 
@@ -939,12 +948,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
     webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
     webdb.readAccountState.mockResolvedValue(accountStateBase());
-
     await svc.restoreWebdb();
-
-    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
-
-    expect(webdb.recreateForUser).toHaveBeenCalledWith('7');
+    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('7');
     expect(svc.sessionUserId()).toBeNull();
   });
 

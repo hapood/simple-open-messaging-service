@@ -80,9 +80,6 @@ describe('Push thread-feed synchronization', () => {
     await storage.writeSelfProfile({
       id: userId,
       account: 'me',
-      name: 'Me',
-      avatar: '',
-      bio: '',
       isGroup: false,
       namespaceId: 0,
       profileRev: 1,

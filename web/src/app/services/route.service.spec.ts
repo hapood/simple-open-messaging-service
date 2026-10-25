@@ -156,6 +156,10 @@ describe('RouteService adaptive account surfaces', () => {
           namespaceId: 0,
           name: 'Alice',
           bio: '',
+          profile: {
+            account: 'alice', publisherNamespaceId: 0,
+            profileNamespaceId: 0, rev: 1, linked: true,
+          },
         },
       },
       undefined,

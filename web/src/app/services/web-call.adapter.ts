@@ -149,18 +149,16 @@ export class WebCallAdapter implements CallAdapter {
     threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
-    peerName: string,
-    peerAvatar: string,
+    _peerAccount: string,
+    _peerNamespaceId: number,
   ): void {
-    void this.startOutgoing(threadId, callSid, callType, peerName, peerAvatar);
+    void this.startOutgoing(threadId, callSid, callType);
   }
 
   private async startOutgoing(
     threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
-    peerName: string,
-    peerAvatar: string,
   ): Promise<void> {
     if (this.outgoingBusy || this.state.phase !== 'idle') return;
     this.outgoingBusy = true;
@@ -179,8 +177,6 @@ export class WebCallAdapter implements CallAdapter {
         threadId,
         callType,
         isCaller: true,
-        peerName,
-        peerAvatar,
       });
       const response = await this.postResponse<{ threadId: number }>(
         'calls/initiate',
@@ -206,8 +202,6 @@ export class WebCallAdapter implements CallAdapter {
         peerUserId: 0,
         callType,
         isCaller: true,
-        peerName,
-        peerAvatar,
       });
       await this.createPeerConnection();
       if (generation !== this.generation) return;

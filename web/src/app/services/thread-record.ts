@@ -3,8 +3,7 @@ import type { ConversationItem } from './model';
 
 export type StoredThreadAttention = Omit<LocalThreadAttention, 'previews'>;
 
-/** One typed row per conversation. State owns the identity, selected avatar revision and
- * server/local read positions; presentation owns only locally materialized display fields. */
+/** One typed row per conversation. Profile content is stored only in the revision-keyed profile store. */
 export type StoredThread = StoredThreadAttention & {
   lastMessageAt: number | null;
   lastMessageSeq: number | null;
@@ -18,11 +17,7 @@ export type StoredThread = StoredThreadAttention & {
   mentionMe: boolean;
   mentionAll: boolean;
   subjectId?: number;
-  subjectName: string;
-  subjectAvatar: string;
-  subjectBio: string;
   subjectDeleted?: boolean;
-  peerProfileMessageSeq?: number;
   groupDissolvedAt?: number | null;
   groupMemberCount?: number;
   groupMetaFeedId?: string;
@@ -38,7 +33,6 @@ export type StoredThread = StoredThreadAttention & {
 export function storeThreadPresentation(
   item: ConversationItem,
 ): Omit<StoredThread, keyof StoredThreadAttention> {
-  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
   const common = {
     lastMessageAt: item.lastMessageAt,
     lastMessageSeq: item.lastMessageSeq,
@@ -51,16 +45,11 @@ export function storeThreadPresentation(
     projectedUnreadCount: item.unreadCount,
     mentionMe: item.mentionUnread.includes('me'),
     mentionAll: item.mentionUnread.includes('all'),
-    subjectName: subject.name,
-    subjectAvatar: subject.avatar,
-    subjectBio:
-      item.type === 'GROUP' ? item.group.description : item.peerUser.bio,
   };
   if (item.type === 'P2P')
     return {
       ...common,
       subjectDeleted: item.peerUser.isDeleted,
-      peerProfileMessageSeq: item.peerProfileMessageSeq,
     };
   if (!Number.isSafeInteger(item.group.id) || item.group.id < 1)
     throw new Error('group thread has no positive local group id');
@@ -82,6 +71,7 @@ export function storeThreadPresentation(
 
 export interface RestoredThreadSubject {
   namespaceId: number;
+  profile?: { name: string; bio: string };
 }
 
 /** Restore a stored row into a presentation object without mutable display domains. */
@@ -125,13 +115,11 @@ export function restoreThread(
     return {
       ...common,
       type: 'P2P',
-      peerProfileMessageSeq: row.peerProfileMessageSeq,
       peerUser: {
         account: row.profileAccount,
         namespaceId: subject.namespaceId,
-        name: row.subjectName,
-        avatar: row.subjectAvatar,
-        bio: row.subjectBio,
+        name: subject.profile?.name ?? row.profileAccount,
+        bio: subject.profile?.bio ?? '',
         isGroup: false,
         isDeleted: row.subjectDeleted ?? false,
       },
@@ -156,9 +144,8 @@ export function restoreThread(
       id: row.subjectId,
       account: row.profileAccount,
       namespaceId: subject.namespaceId,
-      name: row.subjectName,
-      avatar: row.subjectAvatar,
-      description: row.subjectBio,
+      name: subject.profile?.name ?? row.profileAccount,
+      description: subject.profile?.bio ?? '',
       dissolvedAt: row.groupDissolvedAt,
       memberCount: row.groupMemberCount,
       groupMetaFeedId: row.groupMetaFeedId,
@@ -183,9 +170,9 @@ export function restoreThread(
   };
 }
 
-/** Storage mutations use an unresolved subject only inside a transaction. */
+/** Restore known subject coordinates without resolving display content inside a write transaction. */
 export function restoreThreadForStorageMutation(
   row: StoredThread,
 ): ConversationItem {
-  return restoreThread(row, { namespaceId: 0 });
+  return restoreThread(row, { namespaceId: row.publisherNamespaceId });
 }

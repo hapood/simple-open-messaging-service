@@ -20,13 +20,14 @@ import { InputDeviceService } from '../../services/input-device.service';
 import { baseKeymap } from '@tiptap/pm/commands';
 import { serializeEditorBlocks } from './editor-message-serializer';
 import { ALL_MENTION_ID } from '../../lib/message-entity';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 
 /** A mention candidate — id is stored on the chip (data-id, a full SOMFP user address), label is
  *  shown. Produced by the host's memberSearch lookup. */
 export interface ChatMember {
   id: string;
   label: string;
-  avatarUrl?: string;
+  profile?: AvatarProfileRef;
 }
 
 export interface ComposerLinkMarker {

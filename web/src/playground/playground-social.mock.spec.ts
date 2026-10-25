@@ -81,7 +81,7 @@ describe('playground social contracts', () => {
   it('resolves exact accounts, not display-name or prefix searches', async () => {
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emma' }))).data?.name,
-    ).toBe('emma');
+    ).toBe('Emma');
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emm' }))).code,
     ).not.toBe(0);

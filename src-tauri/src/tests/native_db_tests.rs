@@ -274,6 +274,41 @@ fn native_thread_state_restores_history_and_ignores_old_snapshots() {
 }
 
 #[test]
+fn newer_thread_snapshot_with_lower_revision_moves_the_selection() {
+    let mut conn = profile_cache_db();
+    let mut high = test_thread_snapshot("P2P", 5, "ACTIVE");
+    high["profileRev"] = 5.into();
+    commit_test_thread_state(&mut conn, &high);
+    // The rev-3 profile is cached; a newer feed position selecting it must win
+    // over the locally higher rev-5 number: feed order decides, never magnitude.
+    super::contacts::write_profile(
+        &conn,
+        1,
+        &serde_json::json!({
+            "account":"bob","domain":serde_json::Value::Null,
+            "publisherNamespaceId":0,"profileNamespaceId":0,
+            "profileRev":3,"name":"Bob Three","avatarDigest":null,"bio":"third"
+        }),
+    )
+    .unwrap();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 6, "ACTIVE"));
+    let thread = super::client_state::read_threads(&conn, 1)
+        .unwrap()
+        .remove(0);
+    assert_eq!(thread["profileRev"], 3);
+    assert_eq!(thread["peerUser"]["name"], "Bob Three");
+    assert_eq!(thread["peerUser"]["bio"], "third");
+    let stored: i64 = conn
+        .query_row(
+            "SELECT thread_profile_rev FROM threads WHERE user_id=1 AND thread_id=52",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, 3);
+}
+
+#[test]
 fn native_read_only_and_reestablishment_preserve_group_roster() {
     let mut conn = profile_cache_db();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));

@@ -3,6 +3,7 @@ import {
   signal,
   inject,
   ChangeDetectionStrategy,
+  OnDestroy,
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
@@ -17,7 +18,7 @@ import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.componen
 import { UserAvatarType } from '../user-avatar/model';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import { apiPrefix } from '../../services/constants';
-import { finalize } from 'rxjs';
+import { finalize, type Subscription } from 'rxjs';
 import { translateBizResult } from '../../services/biz-code';
 import { ToastService } from '../../services/toast.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
@@ -46,15 +47,19 @@ import {
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './new-group.component.scss',
 })
-export class NewGroupComponent {
+export class NewGroupComponent implements OnDestroy {
   readonly fitOpts = { settleMs: 600, minHeight: 360 } as const;
   readonly UserAvatarType = UserAvatarType;
   readonly NAME_MAX = 31;
   /** Max length of the optional group description. */
   readonly DESC_MAX = 240;
 
-  /** Staged group avatar URL (uploaded before creation), if any. */
+  /** Staged avatar write value: the uploaded server-side storage coordinate submitted on create. */
   readonly pendingAvatar = signal<string | undefined>(undefined);
+  /** Local cropped-file preview for the staged upload; display only, never persisted. */
+  readonly avatarPreviewUrl = signal<string | undefined>(undefined);
+  private avatarUpload?: Subscription;
+  private destroyed = false;
   /** True while an avatar crop is uploading. */
   readonly avatarUploading = signal(false);
   /** True from the first create attempt until its response settles; guards clicks and Enter. */
@@ -96,23 +101,25 @@ export class NewGroupComponent {
     this.routeService.closeDlg();
   }
 
-  /** Pick a group photo via the cropper, upload it, stage the returned URL (not yet persisted). */
+  /** Pick a group photo via the cropper, preview it locally, and stage the uploaded write value. */
   pickAvatar(fileInput: HTMLInputElement) {
     const file = fileInput.files?.[0];
     fileInput.value = '';
     if (!file) return;
     this.routeService.popupDlg(PopupType.AVATAR_EDITOR, { file }, (res) => {
-      if (res?.file) this.uploadAvatar(res.file);
+      if (res?.file && !this.destroyed) this.uploadAvatar(res.file);
     });
   }
 
   private uploadAvatar(file: File) {
+    // Local preview from the cropped file; the uploaded URL is only the write value for creation.
+    this.setAvatarPreview(file);
     this.avatarUploading.set(true);
     // /upload/avatar runs the server-side sharp cover-crop, so it needs only the file (no w/h —
     // avatars are square). Returns { avatar } (a /uploads/avatars/ url) staged until group creation.
     const fd = new FormData();
     fd.append('file', file);
-    this.http
+    this.avatarUpload = this.http
       .post<{ code: number; data?: { avatar: string } }>(
         `${apiPrefix()}/upload/avatar`,
         fd,
@@ -121,11 +128,34 @@ export class NewGroupComponent {
         next: (res) => {
           if (res?.code === 0 && res.data?.avatar)
             this.pendingAvatar.set(res.data.avatar);
+          else this.clearStagedAvatar();
         },
-        error: () =>
-          this.toast.warn(this.transloco.translate('errors.networkError')),
-      })
-      .add(() => this.avatarUploading.set(false));
+        error: () => {
+          this.clearStagedAvatar();
+          this.toast.warn(this.transloco.translate('errors.networkError'));
+        },
+      });
+    this.avatarUpload.add(() => this.avatarUploading.set(false));
+  }
+
+  private setAvatarPreview(file: File): void {
+    this.clearStagedAvatar();
+    this.avatarPreviewUrl.set(URL.createObjectURL(file));
+  }
+
+  /** A staged write value is only valid together with its preview and a successful upload. */
+  private clearStagedAvatar(): void {
+    this.avatarUpload?.unsubscribe();
+    this.avatarUpload = undefined;
+    const url = this.avatarPreviewUrl();
+    if (url) URL.revokeObjectURL(url);
+    this.avatarPreviewUrl.set(undefined);
+    this.pendingAvatar.set(undefined);
+  }
+
+  ngOnDestroy(): void {
+    this.destroyed = true;
+    this.clearStagedAvatar();
   }
 
   /** Create the group, then close the dialog. */

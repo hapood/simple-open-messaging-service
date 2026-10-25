@@ -1,4 +1,4 @@
-import type { ConversationItem } from './model';
+import type { ConversationItem, GroupConversationItem } from './model';
 import type { ProfileDemand } from '../../../../shared/profile-demand';
 import {
   unevidencedProfileDemand,
@@ -62,7 +62,10 @@ const refCache = new Map<string, AvatarProfileRef>();
 const REF_CACHE_LIMIT = 512;
 
 function memoizeRef(ref: AvatarProfileRef): AvatarProfileRef {
-  const key = `${ref.linked ? 'L' : 'U'}:${ref.publisherNamespaceId}:${ref.profileNamespaceId}:${ref.account}:${ref.rev}`;
+  const key = JSON.stringify([
+    ref.linked, ref.publisherNamespaceId, ref.profileNamespaceId,
+    ref.account, ref.rev, ref.groupAccount ?? null,
+  ]);
   const cached = refCache.get(key);
   if (cached) {
     refCache.delete(key);
@@ -107,5 +110,22 @@ export function messageAuthorAvatarProfile(message: {
     profileNamespaceId: message.profileNamespaceId,
     rev: message.profileRev,
     linked: true,
+  });
+}
+
+/** Group-roster member ref. The group's authority owns the member profile namespace
+ *  and the roster row pins each member's revision. */
+export function groupMemberAvatarProfile(
+  thread: GroupConversationItem,
+  member: { account: string; namespaceId: number; profileRev: number },
+): AvatarProfileRef | undefined {
+  if (member.profileRev < 1) return undefined;
+  return memoizeRef({
+    account: member.account,
+    publisherNamespaceId: thread.publisherNamespaceId,
+    profileNamespaceId: member.namespaceId,
+    rev: member.profileRev,
+    linked: thread.conversationState === 'ACTIVE',
+    groupAccount: thread.group.account,
   });
 }

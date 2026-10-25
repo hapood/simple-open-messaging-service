@@ -12,11 +12,11 @@ import {
 } from './webdb.service';
 
 /**
- * Reproduction for docs/development/browser-e2e-bug-group-meta-not-materialized.md:
+ * Reproduction of a stale renderer write overwriting committed Group Meta progress:
  * the renderer's fire-and-forget `putThread` write-through (projectThread /
  * applyThreadFeedOrder / applyGroupProjectionHeads) carries the in-memory
  * ConversationItem, whose GROUP presentation columns (groupMetaFeedId,
- * memberCount, subjectName) are never refreshed after a Group Meta drain
+ * memberCount) are never refreshed after a Group Meta drain
  * commits in the database worker. If any such persist lands after the drain's
  * atomic page commit, the drained cursor and roster count regress to their
  * pre-drain defaults while the `members` store keeps the applied roster —
@@ -133,7 +133,7 @@ describe('group-meta drain vs renderer write-through (bug repro)', () => {
     // The regression the browser lab observed: cursor and member count are
     // back at their pre-drain defaults while the roster row survives.
     expect(after).toMatchObject({
-      group: { memberCount: 0, groupMetaFeedId: '0', name: '' },
+      group: { memberCount: 0, groupMetaFeedId: '0', name: '!four-one-alpha' },
     });
     expect(
       await webdb.queryGroupMembers({ threadId: 15, take: 20 }),

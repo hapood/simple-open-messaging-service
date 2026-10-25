@@ -780,7 +780,6 @@ export class CallScreenComponent implements OnDestroy {
   );
   readonly peer = this.peerView.peer;
   readonly peerName = this.peerView.name;
-  readonly peerAvatar = this.peerView.avatarSrc;
   readonly peerProfile = this.peerView.profile;
 
   /** A 1s ticking clock so the connected timer updates; read by `timer()`. Cleared in ngOnDestroy. */

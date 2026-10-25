@@ -56,34 +56,6 @@ describe('complete thread-feed structure projection', () => {
     expect(applyThreadStateSnapshot(blocked, firstSnapshot, 2)).toBe(blocked);
   });
 
-  it('changes the default reference on re-establishment without replacing a message-selected peer', () => {
-    const initial = threadFeedSnapshot(9, {
-      threadFeedId: 2,
-      profileAccount: 'bob',
-      publisherNamespaceId: 0,
-      profileRev: 1,
-    });
-    const first = applyThreadStateSnapshot(undefined, initial, 2);
-    if (first.type !== 'P2P') throw new Error('P2P expected');
-    const messageProfile = {
-      ...first,
-      peerProfileMessageSeq: 5,
-      peerUser: { ...first.peerUser, name: 'Message author', profileRev: 2 },
-    };
-    const reopened = applyThreadStateSnapshot(
-      messageProfile,
-      {
-        ...initial,
-        threadFeedId: 4,
-        profileRev: 3,
-      },
-      4,
-    );
-    expect(reopened).toMatchObject({
-      peerUser: { name: 'Message author', profileRev: 2 },
-    });
-  });
-
   it('retains a newer group-meta profile, roster and cursor across lifecycle changes', () => {
     const initial = threadFeedSnapshot(9, {
       threadFeedId: 2,

@@ -21,12 +21,6 @@ export function conversationAvatarNamespaceId(t: ConversationItem): number {
   return t.type === 'P2P' ? t.peerUser.namespaceId : t.group.namespaceId;
 }
 
-export function conversationAvatarSrc(
-  t: ConversationItem,
-): string | null | undefined {
-  return t.type === 'P2P' ? t.peerUser.avatar : t.group.avatar;
-}
-
 // The thread→profile mapping (pinned revision, ACTIVE-linked authorization) lives in
 // services/avatar-profile-ref.ts as `conversationAvatarProfile`; components pass the returned
 // domain ref to <app-demand-avatar [profile]>, which owns the demand form and resolution.

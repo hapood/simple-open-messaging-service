@@ -54,7 +54,6 @@ describe('database worker Group Meta completion', () => {
           account: 'room',
           namespaceId: 7,
           name: '',
-          avatar: '',
           description: '',
           profileRev: 1,
         }),

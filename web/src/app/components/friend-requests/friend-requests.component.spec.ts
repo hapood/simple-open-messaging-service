@@ -257,6 +257,35 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(fixture.componentInstance.inviteUser()).toBe(local);
   });
 
+  it('still resolves a foreign profile shortcut by address instead of bypassing discovery', () => {
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: {
+          sessionUserId: signal<number | null>(null),
+          relationshipRequestStateRevision: signal(0),
+          relationshipIntentStateRevision: signal(0), friendReqBadge: signal(false),
+        } },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: TranslocoService, useValue: { translate: (key: string) => key } },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const fixture = TestBed.createComponent(FriendRequestsComponent);
+    fixture.componentRef.setInput('initialUser', {
+      id: 0, account: 'alice', name: 'Alice', bio: '', isGroup: false,
+      namespaceId: 7, domain: 'remote.test',
+      profile: { account: 'alice', publisherNamespaceId: 7, profileNamespaceId: 0, rev: 3, linked: true },
+    });
+    const search = vi.spyOn(fixture.componentInstance, 'searchUser').mockImplementation(() => undefined);
+    fixture.detectChanges();
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(fixture.componentInstance.searchText()).toBe('alice@remote.test');
+    expect(fixture.componentInstance.inviteUser()).toBeNull();
+    fixture.destroy();
+  });
+
   it('loads both online buckets once on open without extra refreshes', async () => {
     const userService = {
       sessionUserId: signal<number | null>(null),

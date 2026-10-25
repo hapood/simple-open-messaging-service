@@ -1,6 +1,5 @@
 import { BusinessCode } from './biz-code';
 import { applyThreadStateSnapshot } from './thread-state-projection';
-import { preserveThreadProfile } from './thread-profile-projection';
 import {
   restoreThread,
   restoreThreadForStorageMutation,
@@ -26,7 +25,6 @@ export type {
 } from './group-meta-model';
 import { openDB, deleteDB, type DBSchema, type IDBPDatabase } from 'idb';
 import {
-  localSubjectIdentity,
   parseUserIdentityKey,
   type ConversationItem,
   type DeletedMessageItem,
@@ -1827,60 +1825,30 @@ export class WebdbStorage implements AccountStateStorage {
           userId: Number(this.currentUserId),
         },
       );
-      return threads.map((thread) => ({
-        ...this.normalizeThreadSubject(thread),
-        alias: thread.alias,
-      }));
+      return threads;
     }
-    const tx = (await this.db()).transaction('threads', 'readonly');
+    const tx = (await this.db()).transaction(['threads', 'profiles'], 'readonly');
     const threads = await tx.objectStore('threads').getAll();
+    const restored = await Promise.all(threads.map(async (thread) => {
+      const profile = thread.profileRev > 0
+        ? await tx.objectStore('profiles').get([
+            thread.publisherNamespaceId,
+            0,
+            thread.profileAccount,
+            thread.profileRev,
+          ])
+        : undefined;
+      return restoreThread(thread, {
+        namespaceId: thread.publisherNamespaceId,
+        profile,
+      });
+    }));
     await tx.done;
-    return threads
-      .map((thread) =>
-        restoreThread(thread, {
-          namespaceId: thread.publisherNamespaceId,
-        }),
-      )
-      .map((thread) => ({
-        ...this.normalizeThreadSubject(thread),
-        alias: thread.alias,
-      }));
-  }
-
-  private normalizeThreadSubject(item: ConversationItem): ConversationItem {
-    // The feed-state columns own private aliases; presentation writes never replace them.
-    item = { ...item };
-    delete item.alias;
-    if (item.type === 'P2P') {
-      const peer = localSubjectIdentity(item.peerUser);
-      // Ignore the numeric user id in caches written by older clients; conversation peers are addresses.
-      const {
-        id: _legacyId,
-        profileRev: _nestedRev,
-        ...peerUser
-      } = peer as typeof peer & {
-        id?: number;
-        profileRev?: number;
-      };
-      return { ...item, peerUser };
-    }
-    const group = localSubjectIdentity(item.group);
-    const { profileRev: _nestedRev, ...groupProfile } =
-      group as typeof group & {
-        profileRev?: number;
-      };
-    return {
-      ...item,
-      group: groupProfile,
-    };
+    return restored;
   }
 
   async replaceThreads(items: ConversationItem[]): Promise<void> {
-    return this.runAccountOperation(() =>
-      this.replaceThreadsInternal(
-        items.map((item) => this.normalizeThreadSubject(item)),
-      ),
-    );
+    return this.runAccountOperation(() => this.replaceThreadsInternal(items));
   }
 
   private async replaceThreadsInternal(
@@ -1902,7 +1870,6 @@ export class WebdbStorage implements AccountStateStorage {
         item,
       ]),
     );
-    const selected: ConversationItem[] = [];
     for (const item of items) {
       const state = previous.get(item.threadId);
       try {
@@ -1912,14 +1879,8 @@ export class WebdbStorage implements AccountStateStorage {
         await tx.done.catch(() => undefined);
         throw error;
       }
-      selected.push(
-        preserveThreadProfile(
-          { ...item, profileRev: state.profileRev },
-          restoreThreadForStorageMutation(state),
-        ),
-      );
     }
-    for (const item of selected) {
+    for (const item of items) {
       await tx.objectStore('threads').put({
         ...previous.get(item.threadId)!,
         ...storeThreadPresentation(item),
@@ -2056,10 +2017,7 @@ export class WebdbStorage implements AccountStateStorage {
       });
       return;
     }
-    const tx = (await this.db()).transaction(
-      ['threads', 'profiles'],
-      'readwrite',
-    );
+    const tx = (await this.db()).transaction('threads', 'readwrite');
     const state = await tx.objectStore('threads').get(item.threadId);
     try {
       requireThreadIdentity(item, state);
@@ -2067,48 +2025,9 @@ export class WebdbStorage implements AccountStateStorage {
       await tx.done;
       throw error;
     }
-    const current = restoreThreadForStorageMutation(state);
-    item = preserveThreadProfile(
-      { ...item, profileRev: state.profileRev },
-      current,
-    );
-    if ((current?.threadFeedId ?? 0) <= (item.threadFeedId ?? 0)) {
-      // Attention writes can carry presentation captured before resolution.
-      // The selected immutable profile owns these fields, not the caller's
-      // copy of the conversation. Read it in this same write transaction.
-      const identity = item.type === 'GROUP' ? item.group : item.peerUser;
-      const profile =
-        item.profileRev > 0
-          ? await tx
-              .objectStore('profiles')
-              .get([
-                identity.namespaceId,
-                identity.namespaceId,
-                identity.account,
-                item.profileRev,
-              ])
-          : undefined;
-      if (profile)
-        item =
-          item.type === 'GROUP'
-            ? {
-                ...item,
-                group: {
-                  ...item.group,
-                  name: profile.name,
-                  avatar: '',
-                  description: profile.bio,
-                },
-              }
-            : {
-                ...item,
-                peerUser: {
-                  ...item.peerUser,
-                  name: profile.name,
-                  avatar: '',
-                  bio: profile.bio,
-                },
-              };
+    if (state.threadFeedId <= (item.threadFeedId ?? 0)) {
+      // Persist list presentation only. Selected profile coordinates remain feed-owned;
+      // immutable display content is materialized separately when reading the thread.
       await tx.objectStore('threads').put({
         ...state,
         ...storeThreadPresentation(item),
@@ -2899,7 +2818,6 @@ export class WebdbStorage implements AccountStateStorage {
     });
   }
 
-  /** Resolve an demand to an already materialized local snapshot. */
   /** Resolve a demand to an already materialized local snapshot. */
   async findProfileForDemand(
     demand: ProfileDemand,
@@ -3219,12 +3137,6 @@ export class WebdbStorage implements AccountStateStorage {
       });
       if (decodedAvatar)
         await tx.objectStore('profileAvatarBlobs').put(decodedAvatar);
-      await tx.objectStore('threads').put({
-        ...thread,
-        subjectName: profile.name,
-        subjectAvatar: '',
-        subjectBio: profile.bio,
-      });
       await tx.done;
       return true;
     });
@@ -3252,7 +3164,7 @@ export class WebdbStorage implements AccountStateStorage {
     });
     const written = await this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
-        ['profiles', 'profileAvatarBlobs', 'threads'],
+        ['profiles', 'profileAvatarBlobs'],
         'readwrite',
       );
       if (avatar) await tx.objectStore('profileAvatarBlobs').put(avatar);
@@ -3260,19 +3172,6 @@ export class WebdbStorage implements AccountStateStorage {
         tx.objectStore('profiles'),
         snapshot,
       );
-      for (const thread of await tx.objectStore('threads').getAll()) {
-        if (
-          thread.profileAccount === snapshot.account &&
-          thread.publisherNamespaceId === snapshot.publisherNamespaceId &&
-          thread.profileRev === snapshot.profileRev
-        )
-          await tx.objectStore('threads').put({
-            ...thread,
-            subjectName: snapshot.name,
-            subjectAvatar: '',
-            subjectBio: snapshot.bio,
-          });
-      }
       await tx.done;
       return written;
     });

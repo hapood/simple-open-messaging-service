@@ -58,7 +58,11 @@ import {
 } from '../../lib/unicode-text';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
-import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
+import {
+  conversationAvatarProfile,
+  groupMemberAvatarProfile,
+  type AvatarProfileRef,
+} from '../../services/avatar-profile-ref';
 import {
   currentGroupAnnouncement,
   isGroupMetaCurrent,
@@ -117,31 +121,19 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly threadId = this.convList.openThreadId;
 
   groupProfileRef(): AvatarProfileRef | undefined {
-    const group = this.group();
-    const threadId = this.threadId();
-    const rev = this.userMsgTrd()?.profileRev;
-    return group && threadId !== undefined && rev && rev > 0
-      ? {
-          account: group.account,
-          publisherNamespaceId: group.namespaceId,
-          profileNamespaceId: 0,
-          rev,
-          linked: true,
-        }
+    const thread = this.userMsgTrd();
+    return thread?.type === 'GROUP'
+      ? conversationAvatarProfile(thread)
       : undefined;
   }
 
-  memberProfileRef(member: ResolvedMemberProfile): AvatarProfileRef | undefined {
+  memberProfileRef(
+    member: ResolvedMemberProfile,
+  ): AvatarProfileRef | undefined {
     const thread = this.userMsgTrd();
-    if (thread?.type !== 'GROUP') return undefined;
-    return {
-      account: member.account,
-      publisherNamespaceId: thread.publisherNamespaceId,
-      profileNamespaceId: member.namespaceId,
-      rev: member.profileRev,
-      linked: true,
-      groupAccount: thread.group.account,
-    };
+    return thread?.type === 'GROUP'
+      ? groupMemberAvatarProfile(thread, member)
+      : undefined;
   }
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
@@ -175,8 +167,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly DESC_MAX = 240;
   /** Staged description while editing (admin+); seeded from the current value on beginEdit. */
   readonly descEdit = signal('');
-  /** staged new avatar URL (uploaded already); undefined = unchanged. */
+  /** Staged avatar write value: the uploaded server-side storage coordinate submitted on save. */
   readonly pendingAvatar = signal<string | undefined>(undefined);
+  /** Local cropped-file preview of the staged upload; display only, never persisted. */
+  readonly avatarPreviewUrl = signal<string | undefined>(undefined);
+  private avatarUpload?: Subscription;
+  private destroyed = false;
 
   nameEditLength(): number {
     return unicodeCodePointLength(this.nameEdit());
@@ -327,10 +323,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       this.dissolved() || this.userMsgTrd()?.conversationState === 'READ_ONLY',
   );
   readonly groupId = computed(() => this.group()?.id);
-  /** The avatar currently shown: the staged edit, else the persisted one. */
-  readonly avatarUrl = computed(
-    () => this.pendingAvatar() ?? this.group()?.avatar ?? '',
-  );
 
   constructor() {
     effect(() => {
@@ -362,7 +354,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
     this.rosterSub?.unsubscribe();
+    this.clearStagedAvatar();
   }
 
   private rosterRequest = 0;
@@ -745,48 +739,70 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       return;
     this.nameEdit.set(this.group()!.name);
     this.descEdit.set(this.group()!.description ?? '');
-    this.pendingAvatar.set(undefined);
+    this.clearStagedAvatar();
     this.editing.set(true);
   }
   cancelEdit() {
     this.editing.set(false);
-    this.pendingAvatar.set(undefined);
+    this.clearStagedAvatar();
   }
 
-  /** Pick a new avatar via the cropper, upload it, stage the returned URL (not yet saved on the group). */
+  /** Pick a new avatar via the cropper; preview locally and stage the uploaded write value. */
   pickAvatar(fileInput: HTMLInputElement) {
     const file = fileInput.files?.[0];
     fileInput.value = '';
     if (!file) return;
     this.routeService.popupDlg(PopupType.AVATAR_EDITOR, { file }, (res) => {
-      if (res?.file) this.uploadAvatar(res.file);
+      if (res?.file && !this.destroyed && this.editing())
+        this.uploadAvatar(res.file);
     });
   }
 
   private uploadAvatar(file: File) {
+    // Local preview from the cropped file; the uploaded URL is only the write value for saving.
+    this.clearStagedAvatar();
     this.busy.set(true);
+    this.avatarPreviewUrl.set(URL.createObjectURL(file));
     // /upload/avatar runs the server-side sharp cover-crop, so it needs only the file (no w/h —
     // avatars are square). Returns { avatar } (a /uploads/avatars/ url) which we stage on the group.
     const fd = new FormData();
     fd.append('file', file);
-    this.http
+    this.avatarUpload = this.http
       .post<{
         code: number;
         data?: { avatar: string };
       }>(`${apiPrefix()}/upload/avatar`, fd)
+      .pipe(finalize(() => this.busy.set(false)))
       .subscribe({
         next: (res) => {
           this.busy.set(false);
           if (res?.code === 0 && res.data?.avatar)
             this.pendingAvatar.set(res.data.avatar);
+          else this.clearStagedAvatar();
         },
-        error: () => this.busy.set(false),
+        error: () => {
+          this.clearStagedAvatar();
+          this.busy.set(false);
+        },
       });
+  }
+
+  /** A staged write value is only valid together with its preview and a successful upload. */
+  private clearStagedAvatar(): void {
+    this.avatarUpload?.unsubscribe();
+    this.avatarUpload = undefined;
+    const url = this.avatarPreviewUrl();
+    if (url) URL.revokeObjectURL(url);
+    this.avatarPreviewUrl.set(undefined);
+    this.pendingAvatar.set(undefined);
   }
 
   saveEdit() {
     const id = this.groupId();
-    if (id === undefined) return;
+    // Entry-visibility already gates the editor to admins; the server remains
+    // the authority, so a mid-edit demotion surfaces through its business
+    // error instead of a silent client-side refusal.
+    if (id === undefined || this.busy() || !this.editing()) return;
     const name = this.nameEdit().trim();
     if (!name) return;
     const avatar = this.pendingAvatar();
@@ -798,6 +814,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         next: (res) => {
           if (res.code !== 0) return this.showBusinessError(res);
           this.editing.set(false);
+          this.clearStagedAvatar();
           // The persisted group name/avatar changed; refresh the shared conversation list so the chat
           // list + the open chat header re-render with the new identity.
           this.convList.load();

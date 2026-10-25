@@ -14,7 +14,6 @@ export interface ResolvedMemberProfile {
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   isOwner: boolean;
   name: string;
-  avatar: string;
   bio: string;
   profileRev: number;
   profileResolved: boolean;
@@ -40,7 +39,6 @@ export function resolvedMemberProfile(
     name: profileResolved
       ? (member.profileName ?? member.user.name)
       : member.account,
-    avatar: '',
     bio: profileResolved ? member.profileBio : '',
     profileRev: member.profileRev,
     profileResolved,

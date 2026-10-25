@@ -1,5 +1,6 @@
 import {
   Component,
+  DestroyRef,
   computed,
   effect,
   ElementRef,
@@ -15,7 +16,12 @@ import {
   viewChild,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { catchError, firstValueFrom, map, of, Subscription } from 'rxjs';
+import {
+  catchError, defer, filter, firstValueFrom, from, fromEvent, map, of,
+  Subscription, switchMap, takeUntil,
+} from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { nativeMentionPresentation } from './native-mention-presentation';
 import { HttpClient } from '@angular/common/http';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
@@ -64,6 +70,7 @@ import {
 import {
   avatarProfileDemand,
   conversationAvatarProfile,
+  groupMemberAvatarProfile,
   type AvatarProfileRef,
 } from '../../services/avatar-profile-ref';
 import {
@@ -78,12 +85,13 @@ import { LinkCardGenerationService } from '../../services/link-card-generation.s
 import { ChatboxStickyOverlaysComponent } from '../message-cards/chatbox-sticky-overlays/chatbox-sticky-overlays.component';
 import { uuid } from '../../lib/uuid';
 import { assetUrl, isAndroidNative } from '../../services/runtime';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { MessageRepository } from '../../services/message-repository.service';
 import {
   MediaAvailabilityRegistration,
   MediaAvailabilityService,
 } from '../../services/media-availability.service';
-import { avatarUrl, UserService } from '../../services/user.service';
+import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -480,6 +488,8 @@ export class MessageThreadComponent implements OnDestroy {
     () => this.newClientMessageId(),
   );
   private readonly memberProfiles = inject(MemberProfileRepository);
+  private readonly profileSession = inject(SessionLifecycleService);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly chatAppearance = inject(ChatAppearanceService);
   private readonly http = inject(HttpClient);
   readonly nativeComposer = inject(NativeComposerService);
@@ -492,6 +502,7 @@ export class MessageThreadComponent implements OnDestroy {
   readonly searchMentionMembers = async (
     query: string,
   ): Promise<ChatMember[]> => {
+    const session = this.profileSession.capture();
     const threadId = this.threadId();
     const trd = this.userMsgTrd();
     if (threadId === undefined || trd?.type !== 'GROUP') return [];
@@ -499,25 +510,26 @@ export class MessageThreadComponent implements OnDestroy {
       take: 20,
       search: query,
     });
-    const members = roster
-      .filter(
-        (member) =>
-          !isSelfMentionMember(
-            selfMentionIdentity(
-              trd,
-              this.userService.sessionProfile()?.account,
-            ),
-            member,
+    const eligible = roster.filter(
+      (member) =>
+        !isSelfMentionMember(
+          selfMentionIdentity(
+            trd,
+            this.userService.sessionProfile()?.account,
           ),
-      )
-      .map((member) => ({
-        // Mention entity ids are serialized as v1 user entities:
-        // somfp://user/<namespaceId>/<account>. The member's namespaceId is the
-        // group origin's subject namespace (0 for a member hosted by the origin).
-        id: `${member.namespaceId}/${member.account}`,
-        label: member.name,
-        avatarUrl: assetUrl(avatarUrl(member.avatar)),
-      }));
+          member,
+        ),
+    );
+    if (!this.profileSession.isCurrent(session) || this.threadId() !== threadId)
+      return [];
+    const members: ChatMember[] = eligible.map((member) => ({
+      // Mention entity ids are serialized as v1 user entities:
+      // somfp://user/<namespaceId>/<account>. The member's namespaceId is the
+      // group origin's subject namespace (0 for a member hosted by the origin).
+      id: `${member.namespaceId}/${member.account}`,
+      label: member.name,
+      profile: groupMemberAvatarProfile(trd, member),
+    }));
     if (
       this.canAdministerGroup() &&
       this.transloco
@@ -528,7 +540,6 @@ export class MessageThreadComponent implements OnDestroy {
       members.unshift({
         id: ALL_MENTION_ID,
         label: this.transloco.translate('chat.mentionAll'),
-        avatarUrl: '',
       });
     return members;
   };
@@ -1097,34 +1108,21 @@ export class MessageThreadComponent implements OnDestroy {
   /** The native composer owns no roster of its own: every mention popup, native or web, resolves
    *  through searchMentionMembers so both surfaces present the same candidates (self excluded).
    *  A failed lookup answers with an empty page — the native popup renders it as "no matches". */
-  private async answerNativeMentionQuery(
+  private answerNativeMentionQuery(
     event: Extract<NativeComposerEvent, { kind: 'queryMentions' }>,
-  ): Promise<void> {
-    try {
-      const members = await this.searchMentionMembers(event.query);
-      const items = members.map((member) => ({
-        kind:
-          member.id === ALL_MENTION_ID ? ('all' as const) : ('user' as const),
-        id: member.id,
-        label: member.label,
-        avatar:
-          member.id === ALL_MENTION_ID
-            ? ({ kind: 'builtin', icon: 'everyone' } as const)
-            : ({
-                kind: 'user',
-                url: member.avatarUrl || undefined,
-                fallbackText: avatarFallbackText(member.label),
-                colorSeed: member.id,
-              } as const),
-      }));
-      this.nativeComposer.update(event.contextId, {
+  ): void {
+    const session = this.profileSession.capture();
+    defer(() => from(this.searchMentionMembers(event.query)))
+      .pipe(
+        switchMap((members) => nativeMentionPresentation(members, this.profileRepo)),
+        catchError(() => of([])),
+        takeUntil(fromEvent(session.signal, 'abort')),
+        takeUntilDestroyed(this.destroyRef),
+        filter(() => this.nativeComposerContextId === event.contextId),
+      )
+      .subscribe((items) => this.nativeComposer.update(event.contextId, {
         mentionResults: { requestId: event.requestId, items },
-      });
-    } catch {
-      this.nativeComposer.update(event.contextId, {
-        mentionResults: { requestId: event.requestId, items: [] },
-      });
-    }
+      }));
   }
 
   private async resolveNativeMentionMedia(
@@ -1653,6 +1651,7 @@ export class MessageThreadComponent implements OnDestroy {
       this.nav.openAside('profile');
       return;
     }
+    const session = this.profileSession.capture();
     const threadId = this.threadId();
     if (threadId === undefined || !profileRef) return;
     const demand = avatarProfileDemand(profileRef);
@@ -1678,6 +1677,8 @@ export class MessageThreadComponent implements OnDestroy {
           catchError(() => of(null)),
         ),
     );
+    if (!this.profileSession.isCurrent(session) || this.threadId() !== threadId)
+      return;
     const friendThreadId = this.convList
       .items()
       .find(
@@ -1692,7 +1693,7 @@ export class MessageThreadComponent implements OnDestroy {
         identity: {
           account: profile.account,
           name: profile.name,
-          avatar: profile.avatarDigest ?? '',
+          profile: profileRef,
           bio: profile.bio,
           domain: memberHomeDomain ?? '',
           namespaceId: profile.namespaceId,
@@ -3183,13 +3184,6 @@ function blobToBase64(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error('read failed'));
     reader.readAsDataURL(blob);
   });
-}
-
-function avatarFallbackText(label: string): string {
-  const words = label.trim().split(/\s+/).filter(Boolean);
-  if (words.length > 1)
-    return `${Array.from(words[0])[0] ?? ''}${Array.from(words[1])[0] ?? ''}`.toLocaleUpperCase();
-  return (Array.from(words[0] ?? '')[0] ?? '?').toLocaleUpperCase();
 }
 
 /** Probe a video's real dimensions + duration via <video> loadedmetadata (for the optimistic cell +

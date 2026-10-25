@@ -1,5 +1,5 @@
 import type { Mock } from 'vitest';
-import { Subject } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco } from '@jsverse/transloco';
@@ -13,11 +13,20 @@ import { CallEventService } from '../../services/call-event.service';
 import { CallRingtoneService } from '../../services/call-ringtone.service';
 import { CallPresentationService } from '../../services/call-presentation.service';
 import { CallScreenComponent } from './call-screen.component';
+import { CallBannerComponent } from '../call-banner/call-banner.component';
+import { By } from '@angular/platform-browser';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import {
+  ProfileRepository,
+  type ResolvedProfile,
+} from '../../services/profile-store.service';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import { UserService } from '../../services/user.service';
 import { WebdbService, WebdbStorage } from '../../services/webdb.service';
 import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import type { ConversationItem } from '../../services/model';
+import type { ConversationItem, P2PConversationItem } from '../../services/model';
+import { createP2PConversation } from '../../services/model';
 
 describe('CallScreenComponent', () => {
   const callState = signal<CallSnapshot>({ ...IDLE_CALL });
@@ -132,7 +141,7 @@ describe('CallScreenComponent', () => {
     const fixture = TestBed.createComponent(CallScreenComponent);
     const component = fixture.componentInstance;
     expect(component.peerName()).toBe('Local alias');
-    expect(component.peerAvatar()).toBe('local-avatar');
+    expect(component).not.toHaveProperty('peerAvatar');
     expect(component.peerProfile()).toEqual({
       account: 'bob',
       publisherNamespaceId: 2,
@@ -144,9 +153,105 @@ describe('CallScreenComponent', () => {
     expect(component.peerName()).toBe('Bob');
     conversations.set([]);
     expect(component.peerName()).toBe('');
-    expect(component.peerAvatar()).toBeUndefined();
+    expect(component.peerProfile()).toBeUndefined();
     fixture.destroy();
   });
+
+  for (const componentType of [CallScreenComponent, CallBannerComponent]) {
+    it(`${componentType.name} consumes the shared demand and refreshed conversation presentation`, async () => {
+      const updates = new Subject<ResolvedProfile>();
+      const resolve = vi.fn(() => updates);
+      TestBed.overrideProvider(ProfileRepository, { useValue: { resolve } });
+      TestBed.overrideProvider(ProfileNamespaceRepository, {
+        useValue: {
+          resolve: vi.fn(() => of({ domain: 'remote.test', status: 'ACTIVE' })),
+        },
+      });
+      const createImage = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:call-profile');
+      const revokeImage = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+      const seed = createP2PConversation(4, {
+        account: 'bob',
+        namespaceId: 2,
+        profileRev: 7,
+      });
+      const thread: P2PConversationItem = {
+        ...seed,
+        peerUser: { ...seed.peerUser, name: 'bob' },
+      };
+      const refreshed: P2PConversationItem = {
+        ...thread,
+        peerUser: { ...thread.peerUser, name: 'Selected Bob' },
+      };
+      const aliased: P2PConversationItem = { ...thread, alias: 'Local alias' };
+      const selectedProfile: ResolvedProfile = {
+        publisherNamespaceId: 2,
+        namespaceId: 0,
+        account: 'bob',
+        rev: 7,
+        name: 'Selected Bob',
+        bio: '',
+        avatarDigest: 'b'.repeat(64),
+        avatarBlob: new Blob(['profile']),
+      };
+      conversations.set([thread]);
+      presentation.minimized.set(componentType === CallBannerComponent);
+      callState.update((state) => ({
+        ...state,
+        phase: 'incoming',
+        threadId: 4,
+        peerName: 'Transport name',
+        peerAvatar: 'data:image/png;base64,dHJhbnNwb3J0',
+      }));
+      const fixture = TestBed.createComponent<CallScreenComponent | CallBannerComponent>(componentType);
+      try {
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const avatar = fixture.debugElement.query(By.directive(DemandAvatarComponent))
+          .componentInstance as DemandAvatarComponent;
+        expect(resolve).toHaveBeenCalledWith({
+          publisherNamespaceId: 2,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { account: 'bob', profileNamespaceId: 0, rev: 7 },
+        });
+        expect(avatar.view().imageUrl).toBeNull();
+        expect(fixture.componentInstance.peerName()).toBe('bob');
+
+        updates.next(selectedProfile);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(avatar.view().imageUrl).toBe('blob:call-profile');
+        expect(avatar.view().name).toBe('Selected Bob');
+
+        // The thread repository publishes the same selected profile's display fields.
+        conversations.set([refreshed]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(fixture.componentInstance.peerName()).toBe('Selected Bob');
+        expect((fixture.nativeElement as HTMLElement).textContent).toContain('Selected Bob');
+        expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('Transport name');
+        // A new presentation source re-resolves; the same shared demand delivers it.
+        updates.next(selectedProfile);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(avatar.view().imageUrl).toBe('blob:call-profile');
+
+        conversations.set([aliased]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(fixture.componentInstance.peerName()).toBe('Local alias');
+        updates.next(selectedProfile);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(avatar.view().imageUrl).toBe('blob:call-profile');
+      } finally {
+        fixture.destroy();
+        expect(updates.observed).toBe(false);
+        expect(revokeImage).toHaveBeenCalledWith('blob:call-profile');
+        createImage.mockRestore();
+        revokeImage.mockRestore();
+      }
+    });
+  }
 
   it('maps incoming and ringing phases to distinct call tones', () => {
     callState.update((state) => ({ ...state, phase: 'incoming' }));

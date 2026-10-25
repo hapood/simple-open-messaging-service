@@ -54,6 +54,12 @@ export class PlaygroundSocialState {
     isDeleted: false,
     isGroup: account.startsWith('!'),
   }));
+  private readonly profiles = new Map(
+    this.users
+      .filter((user) => user.profileRev > 0)
+      .map((user) => [this.profileKey(user), { ...user }]),
+  );
+
   readonly self = this.users[0];
   readonly requests: Array<{ record: RequestRecord; groupId?: number }> = [];
   readonly incomingHead = signal({ requestEndId: '0', requestReadId: '0' });
@@ -146,6 +152,37 @@ export class PlaygroundSocialState {
     );
   }
 
+  private profileKey(
+    user: Pick<User, 'namespaceId' | 'account' | 'profileRev'>,
+  ): string {
+    return JSON.stringify([user.namespaceId, user.account, user.profileRev]);
+  }
+
+  profile(
+    account: string,
+    namespaceId: number,
+    profileRev: number,
+  ): User | undefined {
+    if (profileRev === 0) return undefined;
+    const key = this.profileKey({ account, namespaceId, profileRev });
+    const snapshot = this.profiles.get(key);
+    if (snapshot) return { ...snapshot };
+    const current = this.user(account, namespaceId);
+    if (current?.profileRev !== profileRev) return undefined;
+    this.profiles.set(key, { ...current });
+    return { ...current };
+  }
+
+  publishProfile(
+    user: User,
+    patch: Pick<User, 'name' | 'bio' | 'avatar'>,
+  ): void {
+    if (user.profileRev > 0)
+      this.profiles.set(this.profileKey(user), { ...user });
+    Object.assign(user, patch, { profileRev: user.profileRev + 1 });
+    this.profiles.set(this.profileKey(user), { ...user });
+  }
+
   allocateThreadId(): number {
     return this.nextThreadId++;
   }
@@ -178,7 +215,6 @@ export class PlaygroundSocialState {
       role,
       isOwner: role === 'OWNER',
       name: user.name,
-      avatar: user.avatar,
       bio: user.bio,
       profileRev: user.profileRev,
       profileResolved: true,

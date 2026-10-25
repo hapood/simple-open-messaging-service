@@ -26,7 +26,7 @@ import {
   PersonalQuotaState,
 } from './model';
 import { WebdbService } from './webdb.service';
-import { ProfileRepository } from './profile-store.service';
+import { ProfileRepository, type ResolvedProfile } from './profile-store.service';
 import { PreferenceStore } from './preference-store.service';
 import { isTauri, tauriInvoke } from './runtime';
 import { SessionLifecycleService } from './session-lifecycle.service';
@@ -111,12 +111,15 @@ export const CACHE_REBUILD_RELOAD = new InjectionToken<() => void>(
   { providedIn: 'root', factory: () => () => window.location.reload() },
 );
 
+/** Transient self presentation; only account facts are persisted in account state. */
+export type SelfProfileView = SelfAccount & Pick<ResolvedProfile, 'name' | 'bio'>;
+
 @Injectable({
   providedIn: 'root',
 })
 export class UserService {
-  /** Fatal startup/open failure (missing or unreadable stable cache, excluding a handled version reset). */
-  sessionProfile = signal<User | undefined>(undefined);
+  /** Self display hydrated from the revision-keyed profile store, never a persisted display copy. */
+  sessionProfile = signal<SelfProfileView | undefined>(undefined);
   /** The authenticated user's id — sourced from the HELLO connect handshake (the session token is OPAQUE,
    *  server-side-lookup only, so HELLO is the client's sole pre-profile-fetch source of its own userId).
    *  The per-user IDB store opens on this id via {@link establishSession}; it replaces the old coupling
@@ -323,15 +326,14 @@ export class UserService {
     });
   }
 
-  /** Gate the /user/my-profile fetch on the IDB-cached profileRev. Cache hit + fresh → skip the fetch;
-   *  cache miss (first boot) or stale → fetch + cache the full profile. */
+  /** Matching account metadata skips HTTP; display content still comes from the selected profile revision. */
   private async gateSelfProfile(
     userId: number,
     profileRev: number,
   ): Promise<void> {
     const cached = (await this.webdb.readAccountState()).selfProfile;
     if (cached && cached.id === userId && cached.profileRev === profileRev) {
-      this.sessionProfile.set(cached);
+      await firstValueFrom(this.publishSelfProfile(cached));
       return;
     }
     try {
@@ -429,7 +431,8 @@ export class UserService {
   private async restoreCachedSelfProfile(userId: number, signal?: AbortSignal): Promise<void> {
     const cached = (await this.webdb.readAccountState()).selfProfile;
     if (signal?.aborted) throw new SessionSupersededError();
-    if (cached?.id === userId) this.sessionProfile.set(cached);
+    if (cached?.id === userId)
+      await firstValueFrom(this.publishSelfProfile(cached));
   }
 
   /** Read the persisted last-logged-in userId, or null when absent / unparseable / storage unavailable. */
@@ -472,15 +475,15 @@ export class UserService {
    *  Cached here (shareReplay) so concurrent callers ride one HTTP request; once it resolves,
    *  sessionProfile is set and late callers take the short-circuit branch. `force:true` bypasses the
    *  cache (reconnect always re-fetches). */
-  private profileFetch?: Observable<User>;
+  private profileFetch?: Observable<SelfProfileView>;
 
   /** Idempotent self-profile get-or-load: returns the cached sessionProfile if already loaded (set by
    *  {@link establishSession} from HELLO, or a prior fetch), else fetches /user/my-profile. `force:true`
    *  re-fetches for live refresh (the friend-request state delta and post-edit re-read).
    *  The state-feed cursor is NOT seeded here — HELLO owns the sole feed-end source now. */
-  ensureProfile(opts?: { force?: boolean }): Observable<User> {
+  ensureProfile(opts?: { force?: boolean }): Observable<SelfProfileView> {
     if (!opts?.force && this.sessionProfile() !== undefined) {
-      return of(this.sessionProfile() as User);
+      return of(this.sessionProfile() as SelfProfileView);
     }
     if (!opts?.force && this.profileFetch) {
       return this.profileFetch;
@@ -498,7 +501,7 @@ export class UserService {
   }
 
   /** The self endpoint owns account metadata; only the runtime resolves profile bytes. */
-  private publishSelfProfile(user: SelfAccount): Observable<User> {
+  private publishSelfProfile(user: SelfAccount): Observable<SelfProfileView> {
     const scope = this.sessionLifecycle.capture();
     // Revision zero is an account without a published profile, not a resolver demand.
     const display =
@@ -514,8 +517,8 @@ export class UserService {
             },
           });
     return display.pipe(
-      map((profile) => {
-        const resolved: User = {
+      switchMap(async (profile) => {
+        const resolved: SelfProfileView = {
           id: user.id,
           account: user.account,
           namespaceId: user.namespaceId,
@@ -524,11 +527,18 @@ export class UserService {
           isDeleted: user.isDeleted,
           name: profile.name,
           bio: profile.bio,
-          avatar: '',
         };
         if (this.sessionLifecycle.isCurrent(scope)) {
-          this.sessionProfile.set(resolved);
-          void this.webdb.writeSelfProfile(resolved);
+          await this.webdb.writeSelfProfile({
+            id: user.id,
+            account: user.account,
+            namespaceId: user.namespaceId,
+            profileRev: user.profileRev,
+            isGroup: user.isGroup,
+            isDeleted: user.isDeleted,
+          });
+          if (this.sessionLifecycle.isCurrent(scope))
+            this.sessionProfile.set(resolved);
         }
         return resolved;
       }),
@@ -879,11 +889,6 @@ export class UserService {
       params,
     );
   }
-}
-
-/** Return the one canonical avatar resource without deriving local variants. */
-export function avatarUrl(base: string | undefined | null): string {
-  return base ?? '';
 }
 
 /**

@@ -27,7 +27,6 @@ describe('thread notification presentation', () => {
             account: 'peer',
             namespaceId: 0,
             name: 'Peer',
-            avatar: '',
             bio: '',
             isGroup: false,
             isDeleted: false,

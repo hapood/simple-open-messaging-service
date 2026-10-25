@@ -9,7 +9,7 @@ use super::{contacts, profile_avatars};
 /// Resolve only the exact P2P identity selected by this local thread. The Android call surface
 /// must never open the Rust-owned SQLite file with the OS SQLite library, which may be older.
 /// The display name follows the shared ordering (the same chain as the web `displayThreadName`):
-/// thread alias → cached profile name → cached thread peer name → account; the result is non-empty.
+/// thread alias → selected immutable profile name → account; the result is non-empty.
 #[cfg(target_os = "android")]
 pub(crate) fn read_call_peer(
     user_id: i64,
@@ -27,7 +27,7 @@ pub(crate) fn read_call_peer(
     })
 }
 
-fn read_call_peer_from_connection(
+pub(crate) fn read_call_peer_from_connection(
     conn: &rusqlite::Connection,
     user_id: i64,
     thread_id: i64,
@@ -73,7 +73,7 @@ fn read_call_peer_from_connection(
             &conn,
             user_id,
             namespace_id,
-            namespace_id,
+            0,
             account,
             profile_rev,
         )?
@@ -89,7 +89,6 @@ fn read_call_peer_from_connection(
                 .and_then(|value| value["name"].as_str())
                 .filter(|name| !name.is_empty())
         })
-        .or_else(|| peer["name"].as_str().filter(|name| !name.is_empty()))
         .unwrap_or(account);
     let avatar = profile
         .as_ref()
@@ -111,12 +110,6 @@ fn read_call_peer_from_connection(
                 "data:{mime};base64,{}",
                 base64::engine::general_purpose::STANDARD.encode(bytes)
             ))
-        })
-        .or_else(|| {
-            peer["avatar"]
-                .as_str()
-                .filter(|url| url.starts_with("data:image/") && url.contains(";base64,"))
-                .map(str::to_owned)
         });
     Ok(Some(json!({ "name": name, "avatarDataUrl": avatar })))
 }
@@ -157,13 +150,13 @@ mod tests {
             read_call_peer_from_connection(&conn, 41, 7, "bob", 1)
                 .unwrap()
                 .unwrap()["name"],
-            "Bob"
+            "bob"
         );
         assert_eq!(
             read_call_peer_from_connection(&conn, 41, 7, "", -1)
                 .unwrap()
                 .unwrap()["name"],
-            "Bob",
+            "bob",
         );
         assert!(read_call_peer_from_connection(&conn, 41, 7, "alice", -1)
             .unwrap()
@@ -201,12 +194,12 @@ mod tests {
             "serverUnreadCount":0,"lastMentionSeq":null,"localReadSeq":0
         });
         super::super::thread_store::write(&conn, 41, 7, &thread).unwrap();
-        // No profile and no alias: the cached thread name, then the account, are the fallbacks.
+        // No selected profile and no alias: renderer-supplied names are not a source of truth.
         assert_eq!(
             read_call_peer_from_connection(&conn, 41, 7, "", -1)
                 .unwrap()
                 .unwrap()["name"],
-            "Cached Bob"
+            "bob"
         );
         let mut aliased = thread.clone();
         aliased["alias"] = json!("Best Friend");
@@ -222,6 +215,28 @@ mod tests {
                 .unwrap()
                 .unwrap()["name"],
             "Best Friend"
+        );
+        conn.execute_batch(
+            "CREATE TABLE profiles(user_id INTEGER,publisher_namespace_id INTEGER,
+               profile_namespace_id INTEGER,account TEXT,profile_rev INTEGER,
+               name TEXT,avatar_digest TEXT,bio TEXT);
+             INSERT INTO profiles VALUES(41,1,0,'bob',2,'Selected Bob',NULL,'Selected bio');
+             INSERT INTO profiles VALUES(41,1,1,'bob',2,'Wrong namespace',NULL,'');
+             INSERT INTO profiles VALUES(41,1,0,'bob',3,'Newer revision',NULL,'');
+             UPDATE threads SET thread_profile_rev=2,alias=NULL WHERE user_id=41 AND thread_id=7;",
+        ).unwrap();
+        assert_eq!(
+            read_call_peer_from_connection(&conn, 41, 7, "bob", 1).unwrap().unwrap()["name"],
+            "Selected Bob"
+        );
+        let mut presentation = super::super::thread_store::read(&conn, 41, 7).unwrap().unwrap();
+        super::super::thread_store::apply_selected_profile(&conn, 41, 7, &mut presentation).unwrap();
+        assert_eq!(presentation["peerUser"]["name"], "Selected Bob");
+        assert_eq!(presentation["peerUser"]["bio"], "Selected bio");
+        conn.execute("UPDATE threads SET thread_profile_rev=4 WHERE user_id=41 AND thread_id=7", []).unwrap();
+        assert_eq!(
+            read_call_peer_from_connection(&conn, 41, 7, "bob", 1).unwrap().unwrap()["name"],
+            "bob"
         );
     }
 }

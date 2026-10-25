@@ -5,12 +5,13 @@ import {
   HttpContext,
   HttpErrorResponse,
   HttpRequest,
+  HttpResponse,
   HttpHeaders,
   provideHttpClient,
   withFetch,
   withXhr,
 } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import { filter, firstValueFrom } from 'rxjs';
 import { TauriHttpBackend } from './tauri-http.backend';
 import { REPLAY_SAFE } from './request-context';
 
@@ -306,6 +307,28 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
   afterEach(() => {
     tauriWindow().__TAURI_INTERNALS__ = undefined;
     tauriWindow().__TAURI__ = undefined;
+  });
+
+  it('decodes native mention data URLs locally without an authenticated media or API request', async () => {
+    const event = await firstValueFrom(
+      TestBed.inject(HttpBackend)
+        .handle(
+          new HttpRequest('GET', 'data:image/webp;base64,eA==', null, {
+            responseType: 'blob',
+          }),
+        )
+        .pipe(
+          filter(
+            (value): value is HttpResponse<Blob> =>
+              value instanceof HttpResponse,
+          ),
+        ),
+    );
+    expect(calls).toEqual([]);
+    expect(event.body?.type).toBe('image/webp');
+    expect(Array.from(new Uint8Array(await event.body!.arrayBuffer()))).toEqual(
+      [120],
+    );
   });
 
   for (const url of [

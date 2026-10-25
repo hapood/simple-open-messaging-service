@@ -197,7 +197,6 @@ export class ConversationListService {
     patch: {
       name?: string;
       description?: string;
-      avatar?: string;
       dissolvedAt?: number | null;
     },
   ): void {

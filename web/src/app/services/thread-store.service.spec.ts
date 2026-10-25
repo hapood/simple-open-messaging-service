@@ -9,7 +9,11 @@ import { MessageRepository } from './message-repository.service';
 import { MemberProfileRepository } from './member-profile-store.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { parseLoginSessionId } from './session/session-identity';
-import { createGroupConversation } from './model';
+import {
+  createGroupConversation,
+  createP2PConversation,
+  type P2PConversationItem,
+} from './model';
 import { threadFeedSnapshot } from './thread-feed.test-helper';
 import { ProfileRepository } from './profile-store.service';
 
@@ -235,6 +239,65 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     expect(repo.navigationReady()).toBe(true);
     TestBed.inject(SessionLifecycleService).endSession();
     expect(repo.navigationReady()).toBe(false);
+  });
+
+  it('adopts a committed snapshot revision by feed order, not revision magnitude', async () => {
+    const webdb = TestBed.inject(WebdbService);
+    const user = TestBed.inject(UserService);
+    user.sessionUserId.set(1);
+    Object.assign(user, { sessionProfile: signal(null) });
+    const seed = createP2PConversation(9, {
+      account: 'bob',
+      namespaceId: 0,
+      profileRev: 5,
+    });
+    const peer: P2PConversationItem = {
+      ...seed,
+      threadFeedId: 1,
+      peerUser: { ...seed.peerUser, name: 'Bob rev five', bio: 'five bio' },
+    };
+    Object.assign(webdb, {
+      getThreads: vi.fn().mockResolvedValue([peer]),
+      putThread: vi.fn().mockResolvedValue(undefined),
+      projectThreadAttention: vi.fn().mockResolvedValue(null),
+    });
+    Object.assign(TestBed.inject(MessageRepository), {
+      applyThreadContentHead: vi.fn(),
+    });
+    const repo = TestBed.inject(ThreadRepository);
+    TestBed.tick();
+    const committed = webdb.threadFeedCommitted$ as Subject<{
+      userId: number;
+      states: Array<
+        ReturnType<typeof threadFeedSnapshot> & { localReadSeq: number }
+      >;
+    }>;
+    // A newer feed position carries a lower revision: the snapshot wins and
+    // the moved selection resets display fields until re-resolution.
+    committed.next({
+      userId: 1,
+      states: [
+        {
+          ...threadFeedSnapshot(9, {
+            type: 'P2P',
+            publisherNamespaceId: 0,
+            profileAccount: 'bob',
+            profileRev: 3,
+            threadFeedId: 2,
+          }),
+          localReadSeq: 0,
+        },
+      ],
+    });
+    await vi.waitFor(() => {
+      const item = repo.items().find((entry) => entry.threadId === 9);
+      expect(item?.type).toBe('P2P');
+      if (item?.type !== 'P2P') throw new Error('P2P expected');
+      expect(item.profileRev).toBe(3);
+      expect(item.peerUser.name).toBe('');
+      expect(item.peerUser.bio).toBe('');
+    });
+    TestBed.inject(SessionLifecycleService).endSession();
   });
 
   it('updates an existing conversation role in both directions from committed feed snapshots', async () => {

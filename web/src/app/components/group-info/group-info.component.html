@@ -342,16 +342,23 @@
       <div class="profile-editor-body">
         <label class="avatar-edit">
           @if (group(); as identity) {
-            <app-snapshot-avatar
-              [type]="UserAvatarType.GROUP"
-              [name]="nameEdit()"
-              [account]="identity.account"
-              [src]="avatarUrl()"
-              [domainSource]="{
-                type: 'namespace',
-                namespaceId: identity.namespaceId,
-              }"
-            />
+            @if (avatarPreviewUrl(); as preview) {
+              <app-snapshot-avatar
+                [type]="UserAvatarType.GROUP"
+                [name]="nameEdit()"
+                [account]="identity.account"
+                [src]="preview"
+                [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+              />
+            } @else {
+              <app-demand-avatar
+                [type]="UserAvatarType.GROUP"
+                [name]="nameEdit()"
+                [account]="identity.account"
+                [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                [profile]="groupProfileRef()"
+              />
+            }
           }
           <span class="avatar-hint">{{
             'group.changeAvatarHint' | transloco

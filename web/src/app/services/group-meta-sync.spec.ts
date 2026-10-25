@@ -14,7 +14,6 @@ function fixture() {
     account: 'room',
     namespaceId: 7,
     name: 'Room',
-    avatar: '',
     description: '',
     profileRev: 1,
   });

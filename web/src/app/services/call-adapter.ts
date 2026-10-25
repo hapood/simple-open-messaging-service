@@ -114,15 +114,11 @@ export type CallSignalPayload = {
  */
 export abstract class CallAdapter {
   abstract setSnapshotListener(listener?: CallSnapshotListener): void;
-  /** Caller begins a call (POST /calls/initiate + createOffer happen natively). `callType` ∈ AUDIO|VIDEO.
-   *  `peerName` + `peerAvatar` are renderer-WebRTC presentation data. Android ignores them and resolves
-   *  presentation from native SQLite by `peerAccount` + `peerNamespaceId`. */
+  /** Caller begins a call. Native presentation resolves the selected profile from the thread identity. */
   abstract initiate(
     threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
-    peerName: string,
-    peerAvatar: string,
     peerAccount: string,
     peerNamespaceId: number,
   ): void;
@@ -168,8 +164,6 @@ class AndroidCallAdapter extends CallAdapter {
     threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
-    _peerName: string,
-    _peerAvatar: string,
     peerAccount: string,
     peerNamespaceId: number,
   ): void {
@@ -313,8 +307,6 @@ export class CallAdapterService {
     threadId: number,
     callSid: string,
     callType: 'AUDIO' | 'VIDEO',
-    peerName: string,
-    peerAvatar: string,
     peerAccount: string,
     peerNamespaceId: number,
   ): void {
@@ -322,8 +314,6 @@ export class CallAdapterService {
       threadId,
       callSid,
       callType,
-      peerName,
-      peerAvatar,
       peerAccount,
       peerNamespaceId,
     );

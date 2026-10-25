@@ -2,13 +2,23 @@
   <div class="dialog-body">
     <div class="user-summary">
       <div class="avatar">
-        <app-snapshot-avatar
-          [type]="user().isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER"
-          [name]="user().name"
-          [account]="user().account"
-          [src]="user().avatar"
-          [domainSource]="{ type: 'namespace', namespaceId: user().namespaceId }"
-        ></app-snapshot-avatar>
+        @if (profile(); as ref) {
+          <app-demand-avatar
+            [type]="user().isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER"
+            [name]="user().name"
+            [account]="user().account"
+            [profile]="ref"
+            [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: ref.publisherNamespaceId, profileNamespaceId: ref.profileNamespaceId }"
+          />
+        } @else {
+          <app-snapshot-avatar
+            [type]="user().isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER"
+            [name]="user().name"
+            [account]="user().account"
+            [src]="snapshotAvatar()"
+            [domainSource]="{ type: 'namespace', namespaceId: user().namespaceId }"
+          />
+        }
       </div>
       <div class="user-meta">
         <div class="user-name">{{ displayUserName(user()) }}</div>

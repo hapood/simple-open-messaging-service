@@ -84,7 +84,6 @@ describe('resolved thread profile identity', () => {
         group: expect.objectContaining({
           name: 'Created group',
           description: 'Description',
-          avatar: '',
         }),
       }),
     ]);
@@ -160,14 +159,14 @@ describe('resolved thread profile identity', () => {
     await seedThread(group(4));
     await storage.commitResolvedProfile(profile);
     expect((await storage.getThreads())[0]).toMatchObject({
-      group: { name: '' },
+      group: { name: '!group' },
     });
     await seedThread(group(0, 2, 92));
     await storage.commitResolvedProfile(profile);
     expect(
       (await storage.getThreads()).find((item) => item.threadId === 92),
     ).toMatchObject({
-      group: { name: '' },
+      group: { name: '!group' },
       profileRev: 2,
     });
   });

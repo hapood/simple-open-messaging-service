@@ -1034,9 +1034,6 @@ describe('WebdbService', () => {
       await webdb.writeSelfProfile({
         id: 1,
         account: 'me',
-        name: 'Kept',
-        avatar: '',
-        bio: '',
         isGroup: false,
         namespaceId: 0,
         profileRev: 1,
@@ -1046,7 +1043,10 @@ describe('WebdbService', () => {
 
       await webdb.openExistingForUser('1');
 
-      expect((await webdb.readAccountState()).selfProfile?.name).toBe('Kept');
+      expect((await webdb.readAccountState()).selfProfile).toEqual({
+        id: 1, account: 'me', isGroup: false, namespaceId: 0,
+        profileRev: 1, isDeleted: false,
+      });
     });
 
     it('strict startup open reports a version mismatch without deleting the cache', async () => {
@@ -1054,9 +1054,6 @@ describe('WebdbService', () => {
       await webdb.writeSelfProfile({
         id: 1,
         account: 'me',
-        name: 'Still Present',
-        avatar: '',
-        bio: '',
         isGroup: false,
         namespaceId: 0,
         profileRev: 1,
@@ -1076,8 +1073,8 @@ describe('WebdbService', () => {
       );
       const raw = await openDB(session.indexedDbName);
       expect(
-        (await raw.get('accountState', 'account')).selfProfile?.name,
-      ).toBe('Still Present');
+        (await raw.get('accountState', 'account')).selfProfile?.account,
+      ).toBe('me');
       raw.close();
     });
 
@@ -1086,9 +1083,6 @@ describe('WebdbService', () => {
       await webdb.writeSelfProfile({
         id: 1,
         account: 'me',
-        name: 'Old Cache',
-        avatar: '',
-        bio: '',
         isGroup: false,
         namespaceId: 0,
         profileRev: 1,
@@ -1533,7 +1527,6 @@ describe('WebdbService', () => {
       expect(await db.get('threads', 9)).toMatchObject({ profileRev: 4 });
       expect(await db.get('threads', 9)).not.toHaveProperty('group');
       expect(await db.get('threads', 9)).toMatchObject({
-        subjectName: 'Old group name',
         groupMemberCount: 2,
         groupMetaFeedId: '3',
       });
@@ -1787,9 +1780,6 @@ describe('WebdbService', () => {
       await webdb.writeSelfProfile({
         id: 1,
         account: 'self',
-        name: 'Self',
-        avatar: '',
-        bio: '',
         isGroup: false,
         namespaceId: 0,
         profileRev: 1,
@@ -2103,7 +2093,7 @@ describe('WebdbService', () => {
           type: 'GROUP',
           group: expect.objectContaining({
             account: '!dev',
-            name: '',
+            name: '!dev',
             memberCount: 2,
             groupMetaFeedId: '2',
           }),
@@ -2211,7 +2201,7 @@ describe('WebdbService', () => {
           role: 'OWNER',
           group: expect.objectContaining({
             account: group.account,
-            name: '',
+            name: group.account,
           }),
         }),
       ]);
@@ -2243,9 +2233,6 @@ describe('WebdbService', () => {
       await webdb.writeSelfProfile({
         id: 1,
         account: 'me',
-        name: 'Core',
-        avatar: '',
-        bio: '',
         isGroup: false,
         namespaceId: 0,
         profileRev: 1,
@@ -2270,7 +2257,7 @@ describe('WebdbService', () => {
 
       await webdb.recreateMessageCache();
 
-      expect((await webdb.readAccountState()).selfProfile?.name).toBe('Core');
+      expect((await webdb.readAccountState()).selfProfile?.account).toBe('me');
       expect(
         await (await webdb.getProfileAvatarBlob(profile.avatarDigest!))?.text(),
       ).toBe('x');

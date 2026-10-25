@@ -646,7 +646,8 @@ fn commit_group_meta_profile(
     profile: &Value,
 ) -> Result<(), String> {
     if profile.get("account").and_then(Value::as_str) != Some(reference.account.as_str())
-        || profile.get("profileNamespaceId").and_then(Value::as_i64) != Some(reference.namespace_id)
+        || profile.get("profileNamespaceId").and_then(Value::as_i64)
+            != Some(if reference.is_group { 0 } else { reference.namespace_id })
         || profile.get("rev").and_then(Value::as_i64) != Some(reference.rev)
         || (reference.is_group
             && profile.get("publisherNamespaceId").and_then(Value::as_i64)
@@ -695,25 +696,6 @@ fn commit_group_meta_profile(
     }
     // Preserve the group's publisher and the member namespace in that publisher's space.
     commit_resolved_profile(conn, user_id, profile)?;
-    if reference.is_group {
-        conn.execute(
-            "UPDATE threads SET subject_name=?3,subject_avatar='',subject_bio=?4
-             WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
-            params![
-                user_id,
-                reference.thread_id,
-                profile
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .ok_or("resolved profile has no name")?,
-                profile
-                    .get("bio")
-                    .and_then(Value::as_str)
-                    .ok_or("resolved profile has no bio")?,
-            ],
-        )
-        .map_err(|e| format!("update resolved group profile: {e}"))?;
-    }
     Ok(())
 }
 
@@ -723,7 +705,7 @@ async fn resolve_group_meta_profile(
 ) -> Result<bool, String> {
     let user_id = intent.user_id;
     let target = serde_json::json!({
-        "profileNamespaceId": reference.namespace_id,
+        "profileNamespaceId": if reference.is_group { 0 } else { reference.namespace_id },
         "account": reference.account,
         "rev": reference.rev,
     });
@@ -802,7 +784,7 @@ fn unresolved_group_meta_profiles(
                  SELECT 1 FROM profiles profile WHERE profile.user_id=state.user_id
                    AND profile.account=state.subject_account
                    AND profile.publisher_namespace_id=state.subject_namespace_id
-                   AND profile.profile_namespace_id=state.subject_namespace_id
+                   AND profile.profile_namespace_id=0
                    AND profile.profile_rev=state.thread_profile_rev)",
         )
         .map_err(|e| format!("prepare unresolved group profiles: {e}"))?;
@@ -2117,7 +2099,10 @@ mod tests {
             .unwrap();
         assert!(!columns.contains(&"payload_json".to_string()));
         assert!(columns.contains(&"thread_profile_rev".to_string()));
-        assert!(columns.contains(&"subject_name".to_string()));
+        assert!(!columns.contains(&"peer_profile_message_seq".to_string()));
+        for obsolete in ["subject_name", "subject_avatar", "subject_bio"] {
+            assert!(!columns.contains(&obsolete.to_string()));
+        }
         let old_state_table: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='thread_states'",
@@ -2265,7 +2250,7 @@ mod tests {
             super::super::thread_store::read(&conn, 1, 7)
                 .unwrap()
                 .unwrap()["peerUser"]["name"],
-            ""
+            "peer"
         );
     }
 
@@ -2484,10 +2469,38 @@ mod tests {
         assert!(commit_group_meta_profile(&conn, 1, &reference, &profile).is_err());
         profile["rev"] = serde_json::json!(2);
         commit_group_meta_profile(&conn, 1, &reference, &profile).unwrap();
-        let stored = super::super::thread_store::read(&conn, 1, 7)
+        let mut stored = super::super::thread_store::read(&conn, 1, 7)
             .unwrap()
             .unwrap();
+        assert_eq!(stored["group"]["name"], "!team");
+        super::super::thread_store::apply_selected_profile(&conn, 1, 7, &mut stored).unwrap();
         assert_eq!(stored["group"]["name"], "Team");
+        assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn remote_group_profile_uses_home_namespace_not_the_local_publisher_id() {
+        let mut conn = db();
+        let mut group = snapshot(1, 0);
+        group.kind = "GROUP".into();
+        group.role = Some("OWNER".into());
+        group.subject_account = "!team".into();
+        group.authority_namespace_id = 7;
+        group.thread_profile_rev = 2;
+        merge_states(&mut conn, 1, vec![group], None).unwrap();
+        let reference = GroupMetaProfileReference {
+            is_group: true, thread_id: 7, account: "!team".into(), namespace_id: 7, rev: 2,
+        };
+        let mut profile = serde_json::json!({
+            "publisherNamespaceId": 7, "profileNamespaceId": 7,
+            "account": "!team", "rev": 2, "name": "Remote Team", "bio": "About",
+            "avatarBase64": null,
+        });
+        assert!(commit_group_meta_profile(&conn, 1, &reference, &profile).is_err());
+        profile["profileNamespaceId"] = 0.into();
+        commit_group_meta_profile(&conn, 1, &reference, &profile).unwrap();
+        let list = super::super::client_state::read_threads(&conn, 1).unwrap();
+        assert_eq!(list[0]["group"]["name"], "Remote Team");
         assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
     }
 

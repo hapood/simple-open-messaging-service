@@ -2,7 +2,6 @@ import {
   conversationAvatarType,
   conversationAvatarAccount,
   conversationAvatarNamespaceId,
-  conversationAvatarSrc,
 } from './conversation-avatar.util';
 import {
   conversationAvatarProfile,
@@ -74,7 +73,6 @@ describe('conversation-avatar util', () => {
         account: 'alice',
         namespaceId: 7,
         name: 'Alice',
-        avatar: '',
         bio: '',
         isGroup: false,
         isDeleted: false,
@@ -135,11 +133,6 @@ describe('conversation-avatar util', () => {
   it('maps P2P → OTHER and GROUP → GROUP', () => {
     expect(conversationAvatarType(p2p)).toBe(UserAvatarType.OTHER);
     expect(conversationAvatarType(group)).toBe(UserAvatarType.GROUP);
-  });
-
-  it('derives the avatar src from the active party', () => {
-    expect(conversationAvatarSrc(p2p)).toBe('/uploads/u7.png');
-    expect(conversationAvatarSrc(group)).toBe('/uploads/g12.png');
   });
 
   it('derives required identity coordinates without a domain', () => {

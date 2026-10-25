@@ -28,13 +28,9 @@ CREATE TABLE threads (
   server_unread_count INTEGER NOT NULL,
   last_mention_seq INTEGER,
   local_read_seq INTEGER NOT NULL,
-  subject_name TEXT NOT NULL DEFAULT '',
-  subject_avatar TEXT NOT NULL DEFAULT '',
-  subject_bio TEXT NOT NULL DEFAULT '',
   subject_created_at INTEGER NOT NULL DEFAULT 0,
   subject_updated_at INTEGER NOT NULL DEFAULT 0,
   peer_is_deleted INTEGER NOT NULL DEFAULT 0,
-  peer_profile_message_seq INTEGER,
   group_id INTEGER,
   group_dissolved_at INTEGER,
   group_member_count INTEGER NOT NULL DEFAULT 0,
@@ -198,9 +194,8 @@ pub(super) fn write(
           join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
           server_last_read_seq,announcement_read_feed_id,server_unread_count,
           last_mention_seq,local_read_seq,
-          subject_name,subject_avatar,
-          subject_bio,subject_created_at,subject_updated_at,peer_is_deleted,
-          peer_profile_message_seq,group_id,group_dissolved_at,
+          subject_created_at,subject_updated_at,peer_is_deleted,
+          group_id,group_dissolved_at,
           group_member_count,group_meta_feed_id,group_announcement_feed_id,
           group_announcement_text,group_meta_recovery_through,
           group_meta_target_feed_id,group_recovery_announcement_feed_id,
@@ -222,12 +217,8 @@ pub(super) fn write(
            json_extract(?8,'$.serverUnreadCount'),
            json_extract(?8,'$.lastMentionSeq'),
            json_extract(?8,'$.localReadSeq'),
-           COALESCE(json_extract(?7,'$.name'),''),
-           COALESCE(json_extract(?7,'$.avatar'),''),
-           COALESCE(json_extract(?7,'$.bio'),json_extract(?7,'$.description'),''),
            COALESCE(json_extract(?7,'$.createdAt'),0),COALESCE(json_extract(?7,'$.updatedAt'),0),
            COALESCE(json_extract(?7,'$.isDeleted'),0),
-           json_extract(?8,'$.peerProfileMessageSeq'),
            CASE WHEN ?3='GROUP' THEN json_extract(?7,'$.id') END,
            json_extract(?7,'$.dissolvedAt'),COALESCE(json_extract(?7,'$.memberCount'),0),
            COALESCE(json_extract(?7,'$.groupMetaFeedId'),'0'),
@@ -248,10 +239,9 @@ pub(super) fn write(
          ON CONFLICT(user_id,thread_id) DO UPDATE SET
            kind=excluded.kind,authority_namespace_id=excluded.authority_namespace_id,
            subject_account=excluded.subject_account,
-           subject_namespace_id=excluded.subject_namespace_id,subject_name=excluded.subject_name,
-           subject_avatar=excluded.subject_avatar,subject_bio=excluded.subject_bio,
+           subject_namespace_id=excluded.subject_namespace_id,
            subject_created_at=excluded.subject_created_at,subject_updated_at=excluded.subject_updated_at,
-           peer_is_deleted=excluded.peer_is_deleted,peer_profile_message_seq=excluded.peer_profile_message_seq,
+           peer_is_deleted=excluded.peer_is_deleted,
            group_id=excluded.group_id,
            group_dissolved_at=excluded.group_dissolved_at,group_member_count=excluded.group_member_count,
            group_meta_feed_id=excluded.group_meta_feed_id,
@@ -285,8 +275,8 @@ pub(super) fn read(
              WHERE binding.user_id=threads.user_id
                AND binding.publisher_namespace_id=threads.subject_namespace_id
                AND binding.profile_namespace_id=threads.subject_namespace_id),''),subject_namespace_id,
-           subject_name,subject_avatar,subject_bio,subject_created_at,subject_updated_at,
-           peer_is_deleted,peer_profile_message_seq,group_id,group_dissolved_at,
+           subject_account,'','',subject_created_at,subject_updated_at,
+           peer_is_deleted,group_id,group_dissolved_at,
            group_member_count,group_meta_feed_id,group_announcement_feed_id,group_announcement_text,
            group_meta_recovery_through,group_meta_target_feed_id,
            group_recovery_announcement_feed_id,group_recovery_announcement_text,
@@ -306,77 +296,75 @@ pub(super) fn read(
             let namespace: i64 = row.get(4)?;
             let mut item = serde_json::json!({
                 "threadId": thread_id, "type": kind, "authorityNamespaceId": row.get::<_, i64>(1)?,
-                "lastMessageAt": row.get::<_, Option<i64>>(22)?,
-                "lastMessageSeq": row.get::<_, Option<i64>>(23)?,
-                "muted": row.get::<_, bool>(24)?, "pinned": row.get::<_, bool>(25)?,
-                "pinnedAt": row.get::<_, Option<i64>>(26)?,
-                "lastMessagePreview": row.get::<_, Option<String>>(27)?,
-                "lastMessageSenderAccount": row.get::<_, Option<String>>(28)?,
-                "lastMessageSenderNamespaceId": row.get::<_, Option<i64>>(29)?,
+                "lastMessageAt": row.get::<_, Option<i64>>(21)?,
+                "lastMessageSeq": row.get::<_, Option<i64>>(22)?,
+                "muted": row.get::<_, bool>(23)?, "pinned": row.get::<_, bool>(24)?,
+                "pinnedAt": row.get::<_, Option<i64>>(25)?,
+                "lastMessagePreview": row.get::<_, Option<String>>(26)?,
+                "lastMessageSenderAccount": row.get::<_, Option<String>>(27)?,
+                "lastMessageSenderNamespaceId": row.get::<_, Option<i64>>(28)?,
                 "mentionUnread": [],
-                "unreadCount": row.get::<_, i64>(32)?,
-                "lastReadSeq": row.get::<_, Option<i64>>(33)?,
-                "role": row.get::<_, Option<String>>(34)?,
-                "threadFeedId": row.get::<_, i64>(35)?,
-                "conversationState": row.get::<_, String>(36)?,
-                "blocked": row.get::<_, bool>(37)?,
-                "alias": row.get::<_, Option<String>>(38)?,
-                "threadProfileRev": row.get::<_, i64>(39)?,
-                "messageEndSeq": row.get::<_, i64>(40)?,
-                "tombstoneEndSeq": row.get::<_, i64>(41)?,
-                "groupMetaFeedEndId": row.get::<_, Option<String>>(42)?,
-                "joinRequestEndFeedId": row.get::<_, i64>(43)?,
-                "joinRequestReadFeedId": row.get::<_, i64>(44)?,
-                "groupInviteEndFeedId": row.get::<_, i64>(45)?,
-                "serverLastReadSeq": row.get::<_, i64>(46)?,
-                "announcementReadFeedId": row.get::<_, i64>(47)?,
-                "serverUnreadCount": row.get::<_, i64>(48)?,
-                "lastMentionSeq": row.get::<_, Option<i64>>(49)?,
-                "localReadSeq": row.get::<_, i64>(50)?,
-                "selfMentionNamespaceId": row.get::<_, Option<i64>>(51)?,
+                "unreadCount": row.get::<_, i64>(31)?,
+                "lastReadSeq": row.get::<_, Option<i64>>(32)?,
+                "role": row.get::<_, Option<String>>(33)?,
+                "threadFeedId": row.get::<_, i64>(34)?,
+                "conversationState": row.get::<_, String>(35)?,
+                "blocked": row.get::<_, bool>(36)?,
+                "alias": row.get::<_, Option<String>>(37)?,
+                "threadProfileRev": row.get::<_, i64>(38)?,
+                "messageEndSeq": row.get::<_, i64>(39)?,
+                "tombstoneEndSeq": row.get::<_, i64>(40)?,
+                "groupMetaFeedEndId": row.get::<_, Option<String>>(41)?,
+                "joinRequestEndFeedId": row.get::<_, i64>(42)?,
+                "joinRequestReadFeedId": row.get::<_, i64>(43)?,
+                "groupInviteEndFeedId": row.get::<_, i64>(44)?,
+                "serverLastReadSeq": row.get::<_, i64>(45)?,
+                "announcementReadFeedId": row.get::<_, i64>(46)?,
+                "serverUnreadCount": row.get::<_, i64>(47)?,
+                "lastMentionSeq": row.get::<_, Option<i64>>(48)?,
+                "localReadSeq": row.get::<_, i64>(49)?,
+                "selfMentionNamespaceId": row.get::<_, Option<i64>>(50)?,
             });
             let mut mentions = Vec::new();
-            if row.get::<_, bool>(30)? { mentions.push("me"); }
-            if row.get::<_, bool>(31)? { mentions.push("all"); }
+            if row.get::<_, bool>(29)? { mentions.push("me"); }
+            if row.get::<_, bool>(30)? { mentions.push("all"); }
             item["mentionUnread"] = serde_json::json!(mentions);
             let name: String = row.get(5)?;
-            let avatar: String = row.get(6)?;
             let bio: String = row.get(7)?;
             let created_at: i64 = row.get(8)?;
             let updated_at: i64 = row.get(9)?;
             if kind == "P2P" {
                 item["peerUser"] = serde_json::json!({
                     "account":account,"domain":domain,"namespaceId":namespace,
-                    "name":name,"avatar":avatar,"bio":bio,
+                    "name":name,"bio":bio,
                     "createdAt":created_at,"updatedAt":updated_at,
                     "isDeleted":row.get::<_, bool>(10)?,"isGroup":false,
                 });
-                if let Some(seq) = row.get::<_, Option<i64>>(11)? { item["peerProfileMessageSeq"] = seq.into(); }
             } else {
                 let mut group = serde_json::json!({
-                    "id":row.get::<_, Option<i64>>(12)?,
+                    "id":row.get::<_, Option<i64>>(11)?,
                     "account":account,"domain":domain,"namespaceId":namespace,
-                    "name":name,"avatar":avatar,"description":bio,
+                    "name":name,"description":bio,
                     "createdAt":created_at,"updatedAt":updated_at,
-                    "dissolvedAt":row.get::<_, Option<i64>>(13)?,
-                    "memberCount":row.get::<_, i64>(14)?,"groupMetaFeedId":row.get::<_, String>(15)?,
+                    "dissolvedAt":row.get::<_, Option<i64>>(12)?,
+                    "memberCount":row.get::<_, i64>(13)?,"groupMetaFeedId":row.get::<_, String>(14)?,
                     "isGroup":true,
                 });
-                group["announcement"] = match row.get::<_, Option<String>>(16)? {
+                group["announcement"] = match row.get::<_, Option<String>>(15)? {
                     Some(feed_id) => serde_json::json!({
-                        "feedId":feed_id,"text":row.get::<_, Option<String>>(17)?,
+                        "feedId":feed_id,"text":row.get::<_, Option<String>>(16)?,
                     }),
                     None => Value::Null,
                 };
                 item["group"] = group;
-                item["groupMetaRecoveryThrough"] = serde_json::json!(row.get::<_, Option<String>>(18)?);
-                if let Some(target) = row.get::<_, Option<String>>(19)? {
+                item["groupMetaRecoveryThrough"] = serde_json::json!(row.get::<_, Option<String>>(17)?);
+                if let Some(target) = row.get::<_, Option<String>>(18)? {
                     item["groupMetaTargetFeedId"] = target.into();
                 }
                 item["groupMetaRecoveryAnnouncement"] =
-                    match row.get::<_, Option<String>>(20)? {
+                    match row.get::<_, Option<String>>(19)? {
                         Some(feed_id) => serde_json::json!({
-                            "feedId":feed_id,"text":row.get::<_, Option<String>>(21)?,
+                            "feedId":feed_id,"text":row.get::<_, Option<String>>(20)?,
                         }),
                         None => Value::Null,
                     };
@@ -401,7 +389,7 @@ pub(super) fn apply_selected_profile(
          JOIN profiles profile ON profile.user_id=state.user_id
            AND profile.account=state.subject_account
            AND profile.publisher_namespace_id=state.subject_namespace_id
-           AND profile.profile_namespace_id=state.subject_namespace_id
+           AND profile.profile_namespace_id=0
            AND profile.profile_rev=state.thread_profile_rev
          WHERE state.user_id=?1 AND state.thread_id=?2 AND state.thread_profile_rev>0",
             params![user_id, thread_id],
@@ -416,7 +404,6 @@ pub(super) fn apply_selected_profile(
             "peerUser"
         };
         item[key]["name"] = name.into();
-        item[key]["avatar"] = "".into();
         item[key][if key == "group" { "description" } else { "bio" }] = bio.into();
     }
     Ok(())
@@ -455,7 +442,7 @@ mod tests {
         });
         write(&conn, 1, 7, &input).unwrap();
         let restored = read(&conn, 1, 7).unwrap().unwrap();
-        assert_eq!(restored["group"]["name"], "Team");
+        assert_eq!(restored["group"]["name"], "!room");
         assert_eq!(restored["selfMentionNamespaceId"], 12);
         let mut missing = input.clone();
         missing

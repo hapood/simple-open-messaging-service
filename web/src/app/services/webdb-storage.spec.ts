@@ -357,10 +357,45 @@ describe('shared background storage', () => {
     expect(persisted).toMatchObject({
       type: 'P2P',
       profileAccount: 'peer',
-      subjectName: '',
     });
+    for (const field of ['subjectName', 'subjectAvatar', 'subjectBio'])
+      expect(persisted).not.toHaveProperty(field);
     expect(persisted).not.toHaveProperty('peerUser');
     expect(persisted).not.toHaveProperty('group');
+  });
+
+  it('materializes only the exact selected home profile without storing display copies in threads', async () => {
+    await storage.openForUser(userId);
+    await storage.mergeThreadStates([
+      threadFeedSnapshot(7, {
+        profileAccount: 'peer', publisherNamespaceId: 7, profileRev: 2,
+      }),
+    ]);
+    const thread = createP2PConversation(7, {
+      account: 'peer', namespaceId: 7, profileRev: 2,
+    }, { threadFeedId: 1 });
+    await storage.putThread(thread);
+    const db = await storage.db();
+    const original = await db.get('threads', 7);
+    for (const profile of [
+      { profileNamespaceId: 7, rev: 2, name: 'Wrong namespace' },
+      { profileNamespaceId: 0, rev: 3, name: 'Newer revision' },
+      { profileNamespaceId: 0, rev: 2, name: 'Selected peer' },
+    ]) {
+      await storage.commitResolvedProfile({
+        publisherNamespaceId: 7, account: 'peer', bio: 'Exact bio',
+        avatarBase64: null, ...profile,
+      });
+    }
+    expect(await db.get('threads', 7)).toEqual(original);
+    expect((await storage.getThreads())[0].peerUser).toMatchObject({
+      name: 'Selected peer', bio: 'Exact bio',
+    });
+    await storage.putThread(thread);
+    expect((await storage.getThreads())[0].peerUser?.name).toBe('Selected peer');
+    await storage.close();
+    await storage.openForUser(userId);
+    expect((await storage.getThreads())[0].peerUser?.name).toBe('Selected peer');
   });
 
   it('restores aliases from feed state after structural writes, stale replay and reopening', async () => {

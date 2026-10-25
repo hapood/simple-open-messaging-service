@@ -40,8 +40,8 @@ import {
 import { PopupType, RouteService } from '../../services/route.service';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { assetUrl } from '../../services/runtime';
-import type { ContactCardTarget } from '../../services/model';
 import { ToastService } from '../../services/toast.service';
+import type { ContactCardPreview } from '../../services/model';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -55,15 +55,7 @@ export type ChatSendIntent =
   | { kind: 'file'; files: readonly File[] }
   | { kind: 'native-files'; files: readonly NativeUploadSelection[] }
   | { kind: 'link'; generationId: string; content: LinkCardContent }
-  | {
-      kind: 'contact';
-      target: ContactCardTarget;
-      account: string;
-      domain: string;
-      name: string;
-      avatar: string;
-      bio: string;
-    }
+  | ({ kind: 'contact' } & ContactCardPreview)
   | { kind: 'paste'; text: string; files: readonly File[] }
   | { kind: 'audio'; blob: Blob; duration: number; mimeType: string };
 

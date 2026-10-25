@@ -1,5 +1,6 @@
 import type { ThreadStateSnapshot } from '../../../../shared/thread-state';
 import type { components } from './api-types';
+import type { AvatarProfileRef } from './avatar-profile-ref';
 import type { MessageTomb } from '../../../../shared/message-tomb';
 
 /**
@@ -36,6 +37,16 @@ export type ContactCardTarget = {
  * coordinates the server cannot derive: account, namespaceId, and profileRev.
  * The server resolves the display `domain` from `IdentityNamespace`. */
 export type ContactCardSendTarget = ContactCardTarget;
+/** The contact picker's selection result: pinned identity coordinates plus the
+ *  already-materialized display fields used for the optimistic preview. The
+ *  server freezes the authoritative card content (domain, root key, avatar)
+ *  from the target when the message is sent. */
+export interface ContactCardPreview {
+  target: ContactCardTarget;
+  account: string;
+  name: string;
+  bio: string;
+}
 export interface MessageCreator {
   account: string;
   namespaceId: number;
@@ -82,7 +93,6 @@ export function localSubjectIdentity<T extends { namespaceId: number }>(
 export interface ThreadPeerUser {
   account: string;
   name: string;
-  avatar: string;
   bio: string;
   namespaceId: number;
   isGroup: false;
@@ -97,12 +107,20 @@ export interface UserRef {
   id: number;
   account: string;
   name: string;
+  /** Display data supplied directly by identity lookup endpoints, not a profile-store reference. */
   avatar: string;
   bio: string;
   namespaceId: number;
   isGroup: boolean;
   domain?: string;
 }
+
+/** Known identities carry a pinned demand reference, never an avatar string. */
+export interface ProfileUserRef extends Omit<UserRef, 'avatar'> {
+  profile: AvatarProfileRef;
+}
+
+export type InviteSubject = UserRef | ProfileUserRef;
 
 export function messageCreatorKey(creator: MessageCreator): string {
   return JSON.stringify([creator.namespaceId, creator.account]);
@@ -135,7 +153,6 @@ interface Group {
   id: number;
   account: string;
   name: string;
-  avatar: string;
   profileRev: number;
   description: string;
   namespaceId: number;
@@ -191,8 +208,6 @@ export type ConversationItem = ConversationItemBase &
     | {
         type: 'P2P';
         peerUser: ThreadPeerUser;
-        /** Greatest peer-authored message coordinate selecting this thread's display profile. */
-        peerProfileMessageSeq?: number;
         group?: never;
       }
     | {
@@ -231,7 +246,6 @@ export function createP2PConversation(
 ): P2PConversationItem {
   const peerUser: ThreadPeerUser = {
     name: '',
-    avatar: '',
     bio: '',
     isDeleted: false,
     ...overrides.peerUser,
@@ -275,7 +289,6 @@ export function createGroupConversation(
   overrides: Partial<GroupConversationItem> = {},
 ): GroupConversationItem {
   const groupInput = localSubjectIdentity({
-    avatar: '',
     description: '',
     threadId,
     profileRev: 0,

@@ -233,7 +233,7 @@ describe('approved call signaling correlation', () => {
     });
     const create = vi.fn();
     Object.assign(adapter, { createPeerConnection: create });
-    adapter.initiate(1, 'old-admission', 'AUDIO', '', '');
+    adapter.initiate(1, 'old-admission', 'AUDIO', 'peer', 0);
     await vi.waitFor(() => expect(adapter.snapshot().phase).toBe('starting'));
     adapter.cancel('old-admission');
     adapter.applyLifecycle({
@@ -293,7 +293,7 @@ describe('approved call signaling correlation', () => {
           .mockRejectedValue(new Error('setup failed')),
       });
       if (role === 'outgoing')
-        adapter.initiate(1, 'old-setup', 'AUDIO', '', '');
+        adapter.initiate(1, 'old-setup', 'AUDIO', 'peer', 0);
       else {
         await adapter.onIncoming({
           ...IDLE_CALL,
@@ -547,8 +547,8 @@ describe('approved call signaling correlation', () => {
       { post } as unknown as HttpClient,
       IDLE_CALL,
     );
-    adapter.initiate(1, 'late-media', 'AUDIO', '', '');
-    adapter.initiate(1, 'duplicate-click', 'AUDIO', '', '');
+    adapter.initiate(1, 'late-media', 'AUDIO', 'peer', 0);
+    adapter.initiate(1, 'duplicate-click', 'AUDIO', 'peer', 0);
     expect(getUserMedia).toHaveBeenCalledOnce();
     adapter.cancel('late-media');
     const stop = vi.fn();
@@ -850,7 +850,7 @@ describe('WebCallAdapter multi-device ownership', () => {
       const snapshots: CallSnapshot[] = [];
       adapter.setSnapshotListener((snapshot) => snapshots.push(snapshot));
 
-      adapter.initiate(12, 'busy-call', 'AUDIO', 'B', '');
+      adapter.initiate(12, 'busy-call', 'AUDIO', 'b', 0);
       await vi.waitFor(() =>
         expect(snapshots.at(-1)?.terminalReason).toBe('busy'),
       );
@@ -904,7 +904,7 @@ describe('WebCallAdapter multi-device ownership', () => {
         const snapshots: CallSnapshot[] = [];
         adapter.setSnapshotListener((snapshot) => snapshots.push(snapshot));
 
-        adapter.initiate(12, 'failed-call', 'AUDIO', 'B', '');
+        adapter.initiate(12, 'failed-call', 'AUDIO', 'b', 0);
         await vi.waitFor(() => expect(snapshots).toHaveLength(1));
 
         expect(notify).toHaveBeenCalledWith(step);
@@ -912,7 +912,7 @@ describe('WebCallAdapter multi-device ownership', () => {
         expect(adapter.snapshot()).toEqual(IDLE_CALL);
         expect(snapshots).toEqual([IDLE_CALL]);
 
-        adapter.initiate(12, 'retry-call', 'AUDIO', 'B', '');
+        adapter.initiate(12, 'retry-call', 'AUDIO', 'b', 0);
         await vi.waitFor(() =>
           expect(snapshots.at(-1)?.terminalReason).toBe('busy'),
         );

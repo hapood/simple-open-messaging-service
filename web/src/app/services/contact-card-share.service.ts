@@ -36,6 +36,9 @@ export class ContactCardShareService {
     const isGroup = chat.type === 'GROUP';
     const target = isGroup ? chat.group : chat.peerUser;
     const bio = isGroup ? chat.group.description : chat.peerUser.bio;
+    // The card is built from already-materialized thread display fields; the
+    // routable address and root key come from the namespace binding. The
+    // server still freezes the authoritative content from the pinned target.
     const binding = await firstValueFrom(
       this.profileNamespaces.resolve({
         publisherNamespaceId: 0,
@@ -53,7 +56,6 @@ export class ContactCardShareService {
       publicKey: binding.rootPublicKey,
       displayName: target.name,
       bio: bio ?? '',
-      ...(target.avatar ? { avatar: target.avatar } : {}),
     });
     const preview: ChatMsgData = {
       type: 'msg',

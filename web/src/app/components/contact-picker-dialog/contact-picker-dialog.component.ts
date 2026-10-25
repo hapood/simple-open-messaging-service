@@ -7,7 +7,6 @@ import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import {
   conversationAvatarAccount,
   conversationAvatarNamespaceId,
-  conversationAvatarSrc,
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
 import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
@@ -15,10 +14,7 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
 @Component({
   selector: 'app-contact-picker-dialog',
   standalone: true,
-  imports: [
-    DemandAvatarComponent,
-        TranslocoPipe,
-  ],
+  imports: [DemandAvatarComponent, TranslocoPipe],
   templateUrl: './contact-picker-dialog.component.html',
   styleUrl: './contact-picker-dialog.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -32,8 +28,11 @@ export class ContactPickerDialogComponent {
   readonly avatarAccount = conversationAvatarAccount;
   readonly avatarNamespaceId = conversationAvatarNamespaceId;
   readonly avatarProfile = conversationAvatarProfile;
-  readonly avatarSrc = conversationAvatarSrc;
 
+  /** Selection is immediate: the preview uses already-materialized thread display
+   *  fields, and the server freezes the authoritative card (address, root key,
+   *  avatar) from the pinned target when the message is sent. Identity
+   *  verification belongs to the add-friend flow, not this picker. */
   choose(item: ConversationItem): void {
     const target = item.type === 'GROUP' ? item.group : item.peerUser;
     this.route.closeDlg({
@@ -42,9 +41,8 @@ export class ContactPickerDialogComponent {
         namespaceId: target.namespaceId,
         profileRev: item.profileRev,
       },
-      account: item.type === 'GROUP' ? item.group.account : item.peerUser.account,
+      account: target.account,
       name: this.displayName(item),
-      avatar: this.avatarSrc(item),
       bio:
         (item.type === 'GROUP' ? item.group.description : item.peerUser.bio) ??
         '',

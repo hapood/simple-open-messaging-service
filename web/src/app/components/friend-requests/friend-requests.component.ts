@@ -33,7 +33,7 @@ import {
   UserService,
   User,
 } from '../../services/user.service';
-import { UserRef, type StandardResponse } from '../../services/model';
+import { type InviteSubject, type StandardResponse } from '../../services/model';
 import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
 import { UserAvatarType } from '../user-avatar/model';
@@ -129,7 +129,7 @@ export class FriendRequestsComponent implements OnDestroy {
   private searchGeneration = 0;
   /** Exact account resolution always yields zero or one row. */
   readonly localResults = signal<User[]>([]);
-  readonly inviteUser = signal<UserRef | null>(null);
+  readonly inviteUser = signal<InviteSubject | null>(null);
   readonly errMsg = signal('');
   readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT);
   readonly relationshipStates = signal<ReadonlyMap<string, RelationshipState>>(
@@ -173,7 +173,7 @@ export class FriendRequestsComponent implements OnDestroy {
   /** Optional profile-card shortcut. Local targets can open the shared invite step immediately;
    * federated targets first run the normal exact-address resolve so first-contact handshake progress
    * remains visible and cancellable in this dialog. */
-  initialUser = input<UserRef | undefined>(undefined);
+  initialUser = input<InviteSubject | undefined>(undefined);
   /** Fixed address snapshots are resolved before assigning namespace coordinates or relationship state. */
   initialAddress = input<
     | {
@@ -437,7 +437,7 @@ export class FriendRequestsComponent implements OnDestroy {
     this.addTabStatus.set(AddTabStatus.SUCCESS);
   }
 
-  activateResult(user: UserRef) {
+  activateResult(user: InviteSubject) {
     if (this.isSelf(user)) return;
     const status =
       this.relationshipStates().get(this.userIdentity(user)) ?? 'NONE';
@@ -448,7 +448,7 @@ export class FriendRequestsComponent implements OnDestroy {
     if (status === 'NONE') this.openInviteDialog(user);
   }
 
-  openInviteDialog(user: UserRef) {
+  openInviteDialog(user: InviteSubject) {
     if (this.isSelf(user)) return;
     this.inviteUser.set(user);
   }

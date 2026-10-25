@@ -407,7 +407,7 @@ mod tests {
         save(&conn, &delivered);
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
-        assert_eq!(metadata["threads"][0]["title"], "Profile name");
+        assert_eq!(metadata["threads"][0]["title"], "!group");
         delivered.server.as_mut().unwrap().thread_profile_rev = 3;
         save(&conn, &delivered);
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
@@ -421,7 +421,7 @@ mod tests {
             super::super::thread_store::read(&conn, 1, 7)
                 .unwrap()
                 .unwrap()["group"]["name"],
-            "Profile name"
+            "!group"
         );
         delivered.notification_changed = false;
         let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();

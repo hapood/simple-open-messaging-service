@@ -2,33 +2,6 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-fn preserve_thread_profile(incoming: &mut Value, current: &Value) {
-    if incoming["type"] != current["type"]
-        || !matches!(incoming["type"].as_str(), Some("P2P" | "GROUP"))
-    {
-        return;
-    }
-    let field = if incoming["type"] == "P2P" {
-        "peerUser"
-    } else {
-        "group"
-    };
-    if ["account", "namespaceId"]
-        .iter()
-        .any(|key| incoming[field][*key] != current[field][*key])
-        || current["profileRev"].as_i64().unwrap_or(0)
-            <= incoming["profileRev"].as_i64().unwrap_or(0)
-    {
-        return;
-    }
-    incoming["profileRev"] = current["profileRev"].clone();
-    for key in ["name", "avatar", "bio", "description"] {
-        if let Some(value) = current[field].get(key) {
-            incoming[field][key] = value.clone();
-        }
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientStateFeedItem {
@@ -163,7 +136,7 @@ pub(crate) async fn native_db_put_thread(
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin thread write: {e}"))?;
         let mut item = item;
-        let (feed_id, revision) = presentation_state(&tx, user_id, thread_id, &item)?;
+        let (feed_id, _) = presentation_state(&tx, user_id, thread_id, &item)?;
         if item
             .get("threadFeedId")
             .and_then(Value::as_i64)
@@ -171,11 +144,8 @@ pub(crate) async fn native_db_put_thread(
         {
             return Ok(());
         }
-        let mut current = super::thread_store::read(&tx, user_id, thread_id)?
+        let current = super::thread_store::read(&tx, user_id, thread_id)?
             .ok_or("thread presentation has no matching feed state")?;
-        current["profileRev"] = revision.into();
-        item["profileRev"] = revision.into();
-        preserve_thread_profile(&mut item, &current);
         copy_presentation_state(&mut item, &current);
         super::thread_store::write(&tx, user_id, thread_id, &item)?;
         tx.commit().map_err(|e| format!("commit thread write: {e}"))
@@ -304,14 +274,7 @@ pub(crate) async fn native_db_replace_threads(
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
             for id in ids {
-                if let Some(mut item) = super::thread_store::read(&tx, user_id, id)? {
-                    let rev: Option<i64> = tx.query_row(
-                        "SELECT thread_profile_rev FROM threads WHERE user_id=?1 AND thread_id=?2",
-                        params![user_id, id], |row| row.get(0),
-                    ).optional().map_err(|e| e.to_string())?;
-                    if let Some(rev) = rev {
-                        item["profileRev"] = rev.into();
-                    }
+                if let Some(item) = super::thread_store::read(&tx, user_id, id)? {
                     previous.insert(id, item);
                 }
             }
@@ -321,12 +284,10 @@ pub(crate) async fn native_db_replace_threads(
                 .get("threadId")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| "thread item has no numeric threadId".to_string())?;
-            let (_, revision) = presentation_state(&tx, user_id, thread_id, &item)?;
+            presentation_state(&tx, user_id, thread_id, &item)?;
             let current = previous
                 .get(&thread_id)
                 .ok_or("thread presentation has no matching feed state")?;
-            item["profileRev"] = revision.into();
-            preserve_thread_profile(&mut item, current);
             copy_presentation_state(&mut item, current);
             super::thread_store::write(&tx, user_id, thread_id, &item)?;
         }
@@ -764,18 +725,14 @@ pub(super) fn apply_thread_state(
     if old_state.is_some() && !same_address {
         return Err("thread feed changed a conversation identity".into());
     }
-    let preserve_message = kind == "P2P"
-        && same_address
-        && (thread
-            .get("peerProfileMessageSeq")
-            .and_then(Value::as_i64)
-            .is_some()
-            || thread["profileRev"].as_i64().unwrap_or(0)
-                > profile["profileRev"].as_i64().unwrap_or(0));
+    // The committed snapshot's feed position is the freshness authority (the
+    // feed guard above already rejected stale positions): the revision is
+    // adopted outright for P2P. A newer snapshot may legitimately carry a
+    // lower revision; the number never ranks selections.
     // Group Meta exclusively owns the materialized group presentation. Relationship state only
     // creates the initial structural reference and must never rewind an already-applied Meta page.
     let preserve_group = kind == "GROUP" && thread.get("group").is_some();
-    if !preserve_message && !preserve_group {
+    if !preserve_group {
         let mut presentation = thread.get(field).cloned().unwrap_or_else(|| serde_json::json!({
             "id": if kind == "GROUP" { thread_id } else { 0 },
         "createdAt": 0, "updatedAt": 0, "memberCount": 0, "groupMetaFeedId": "0", "isGroup": kind == "GROUP", "isDeleted": false

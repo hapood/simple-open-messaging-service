@@ -112,9 +112,7 @@ describe('ThreadMessageSendController', () => {
         profileRev: 2,
       },
       account: 'maya',
-      domain: 'chat.example.test',
       name: 'Maya',
-      avatar: '',
       bio: '',
     });
     await vi.waitFor(() => expect(host.accept).toHaveBeenCalledWith(item));
