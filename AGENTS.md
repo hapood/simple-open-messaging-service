@@ -150,9 +150,22 @@ coverage threshold is enforced; use `npm run test:cov` for substantial changes.
 
 History follows Conventional Commit-style subjects, commonly
 `feat(scope):`, `fix(scope):`, `test(scope):`, `docs(scope):`, and `chore(scope):`.
-Write imperative, narrowly scoped commits. Pull requests should explain the
-solution, list verification commands, link issues, call out migrations or
-configuration changes, and include screenshots for visible UI changes.
+Write imperative, narrowly scoped commits. Keep each pull request focused on one
+purpose and follow `.github/pull_request_template.md`, including when creating
+pull requests through the CLI or API.
+
+- Summary: explain what changes and why in one or two sentences. Do not repeat
+  implementation steps, commit history, or local operational activity.
+- Testing: report meaningful validation specific to the change and relevant
+  testing gaps. Commands are useful when needed for reproduction, but do not
+  duplicate routine CI results or inflate trivial checks into separate claims.
+  If runtime testing is not applicable, briefly explain why.
+- Add sections for breaking changes, migrations, screenshots, or deployment only
+  when relevant. Call out required operator actions and configuration changes;
+  include screenshots for visible UI changes and link related issues when available.
+- Ordinary pull requests describe their own changes, not the product release.
+  Release pull requests should link to the changelog instead of duplicating it.
+  Keep one-off release coordination in comments rather than a default checklist.
 
 ## Security & Configuration
 
