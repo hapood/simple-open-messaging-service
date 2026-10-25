@@ -53,15 +53,15 @@
     "dashboard": "仪表盘",
     "users": "用户管理",
     "groups": "群组",
-    "sessions": "会话总览",
+    "sessions": "登录会话",
     "connections": "实时连接",
-    "bans": "封禁管理",
+    "bans": "登录防护封禁",
     "push": "推送管理",
-    "federation": "联邦",
+    "federation": "联邦健康",
     "networkInfo": "网络",
     "localInformation": "本机信息",
     "quota": "额度",
-    "logs": "日志",
+    "logs": "日志与诊断",
     "rateLimits": "限流监控",
     "media": "媒体传输",
     "settings": "设置",
@@ -72,12 +72,13 @@
     "collapse": "收起导航",
     "expand": "展开导航",
     "group": {
-      "overview": "常用功能",
-      "access": "访问与活动",
-      "system": "系统",
+      "users": "用户与内容",
+      "security": "登录与安全",
+      "monitoring": "运行监控",
+      "network": "联邦与网络",
+      "services": "服务与配置",
       "account": "账户与安全"
-    },
-    "adminSessions": "管理员会话"
+    }
   },
   "quota": {
     "title": "每日配额",
@@ -153,52 +154,49 @@
   },
   "dashboard": {
     "title": "仪表盘",
-    "desc": "掌握系统状态，并快速处理日常管理任务。",
+    "desc": "查看系统在线状态、监控任务队列与媒体传输，把控联邦健康与安全审计。",
     "autoRefresh": "每 15 秒自动刷新",
+    "createUser": "新建用户",
+    "onlineSub": "共 {{count}} 个实时连接",
+    "totalUsersSub": "系统本地注册账号",
+    "activeSessionsSub": "有效登录令牌",
     "mediaSub": "{{assets}} 个资源 · {{live}} 个存活",
-    "noRecentActions": "暂无管理员操作记录",
-    "quickActions": {
-      "title": "快捷任务",
-      "desc": "从最常用的管理操作开始。",
-      "users": "管理用户",
-      "usersDesc": "查找用户、创建账号或处理访问问题",
-      "connections": "查看在线连接",
-      "connectionsDesc": "排查当前在线状态与异常连接",
-      "settings": "系统设置",
-      "settingsDesc": "检查实例配置与运行参数"
-    },
-    "workflows": {
-      "title": "开始处理",
-      "desc": "最常用的两类工作集中在这里。",
-      "health": {
-        "title": "服务器健康",
-        "desc": "查看本机运行状态，检查与对端服务器的联通情况。",
-        "current": "当前服务器",
-        "currentDesc": "在线连接与实时状态",
-        "peers": "对端服务器",
-        "peersDesc": "查看信任及健康状态",
-        "check": "运行健康检查",
-        "checkDesc": "检查 DNS、TLS 与联通性"
-      },
-      "users": {
-        "title": "用户管理",
-        "desc": "从创建账号到检查状态，快速完成用户日常管理。",
-        "create": "新建用户",
-        "createDesc": "立即创建一个新账号",
-        "manage": "管理用户",
-        "manageDesc": "搜索、启用或停用用户",
-        "status": "查看用户状态",
-        "statusDesc": "检查登录与会话情况"
-      }
-    },
     "tile": {
-      "systemStatus": "系统状态",
-      "onlineNow": "当前在线",
-      "onlineConnections": "在线连接",
+      "onlineUsers": "在线用户",
+      "totalUsers": "注册用户",
       "activeSessions": "活跃会话",
-      "federationHealth": "联邦健康",
-      "storageUsage": "媒体存储",
-      "recentActions": "近期管理员操作"
+      "storageUsage": "媒体存储"
+    },
+    "tasks": {
+      "title": "后台任务队列",
+      "desc": "异步持久化任务执行与排队状态",
+      "processing": "处理中",
+      "pending": "排队等待",
+      "failed": "失败异常",
+      "idle": "队列空闲，运行平稳",
+      "viewAll": "查看任务"
+    },
+    "transfers": {
+      "title": "媒体传输通道",
+      "desc": "分块断点续传与跨节点下载",
+      "uploads": "客户端上传中",
+      "downloads": "联邦下载批次",
+      "failed": "传输失败",
+      "idle": "当前无活动文件传输",
+      "viewAll": "传输详情"
+    },
+    "federation": {
+      "title": "联邦健康",
+      "desc": "外部对端节点的网络与信任状态",
+      "peersCount": "共 {{count}} 个外部对端",
+      "noPeers": "暂无外部联邦节点",
+      "manage": "管理节点"
+    },
+    "recentActions": {
+      "title": "最近操作审计",
+      "desc": "管理员最近的安全与配置变更",
+      "viewAll": "全部日志",
+      "noRecentActions": "暂无管理员操作记录"
     }
   },
   "language": {
@@ -226,6 +224,10 @@
     "backToPassword": "返回密码步骤"
   },
   "users": {
+    "backendRole": "后台角色",
+    "ordinaryRole": "普通用户",
+    "adminAccessDisabled": "后台已停用",
+    "adminAccessConfirm": "确认更改 {{account}} 的后台访问状态？停用会立即结束其管理台会话，不改变账号封禁状态。",
     "grantViewerConfirm": "确认授予 {{account}} 只读管理员权限？现有用户会话和已签发的登录码将被撤销。后续仅超级管理员可以调整其角色。",
     "grantViewerSuccess": "已授予只读管理员权限",
     "title": "用户管理",
@@ -263,20 +265,36 @@
     "selected": "已选 {{count}} 项",
     "selectAll": "全选",
     "selectRow": "选择 {{name}}",
-    "total": "共 {{count}} 条",
-    "tabs": {
-      "users": "用户",
-      "operators": "管理员"
-    }
+    "total": "共 {{count}} 条"
+  },
+  "userAccess": {
+    "title": "访问与连接状态",
+    "account": "账号状态",
+    "restrictions": "账户级登录限制",
+    "unavailable": "暂时无法查询",
+    "restricted": "存在临时登录限制",
+    "unrestricted": "未发现账户级限制",
+    "restrictionScope": "仅检查账户限制，不包含请求来源 IP 的限制。",
+    "connectionCount": "当前连接数：{{count}}",
+    "observedAt": "最后成功观测：",
+    "connectionScope": "连接数不是设备数，无连接不代表登录已失效。",
+    "viewConnections": "查看连接详情",
+    "push": "推送注册",
+    "pushCount": "已登记 {{count}} 条推送注册",
+    "pushScope": "有注册不代表推送一定可达。"
   },
   "userDetail": {
+    "adminAccess": "后台访问",
+    "adminEnabled": "已启用",
+    "adminAuthenticator": "动态验证码（TOTP）",
+    "adminLastLogin": "最近后台登录",
     "back": "返回用户列表",
     "notFound": "用户不存在",
     "sessionsDesc": "仅展示尚未撤销且未过期的会话，不是完整登录历史。退出或过期的会话不会出现在这里；复用已有会话不会新增记录。",
     "section": {
       "profile": "资料",
       "groups": "群组",
-      "sessions": "活跃会话",
+      "sessions": "有效登录会话",
       "push": "推送设备"
     },
     "field": {
@@ -313,32 +331,49 @@
     "editHint": "留空表示使用本地账号默认值；0 表示关闭该账号的对应能力。修改即时生效，但不会清除今日用量。"
   },
   "bans": {
-    "title": "封禁管理",
-    "desc": "当前生效的登录封禁（IP、密码账户或一次性登录码账户，由各登录方式共用的暴力破解滑窗产生）。",
+    "title": "登录防护封禁",
+    "desc": "登录防暴力破解触发的临时限制，不是用户管理中的账号封禁。解除登录限制不会恢复被封禁的账号；后续失败仍可能再次触发限制。",
+    "confirmTitle": "解除登录限制？",
+    "confirmIp": "解除 IP {{value}} 的登录限制。",
+    "confirmAccount": "解除该账户所有登录方式的临时限制，不影响账号封禁状态。",
+    "search": "搜索账户或 IP",
+    "accounts": "账户限制",
+    "ips": "IP 限制",
+    "emptyAccounts": "当前筛选下没有账户限制",
+    "emptyIps": "当前筛选下没有 IP 限制",
+    "ipScope": "同一 IP 可能由多个账户共用，不按历史登录记录归属到账户。",
+    "restrictionCount": "{{count}} 项限制",
+    "remainingMinutes": "剩余 {{count}} 分钟",
+    "release": "解除限制",
+    "released": "登录限制已解除",
     "col": {
-      "type": "类型",
+      "type": "登录入口",
       "value": "值",
       "until": "解禁时间",
       "remaining": "剩余"
     },
     "type": {
       "ip": "IP",
-      "user": "密码",
-      "otp": "登录码"
+      "user": "聊天客户端密码",
+      "otp": "一次性登录码",
+      "adminPassword": "管理台密码",
+      "adminSecondFactor": "管理台二次验证"
     },
     "empty": "当前无封禁",
-    "unban": "解封"
+    "unban": "解除登录限制"
   },
   "sessions": {
-    "title": "会话总览",
+    "title": "登录会话",
+    "userFilter": "用户 ID",
+    "invalidFilters": "请输入正整数用户 ID 并选择有效的客户端类型。",
     "searchPlaceholder": "按 IP 筛选",
-    "desc": "所有用户的活跃会话（未吊销且未过期）。共 {{count}} 条。",
-    "purge": "一键清理",
-    "purgeTitle": "清理所有活跃会话？",
-    "purgeBody": "将吊销全部 {{count}} 条活跃会话，所有用户被强制重登（access 立即失效）。此操作不可撤销。",
-    "purgeConfirm": "确认清理",
-    "purged": "已清理全部活跃会话（{{count}} 个用户被强制重登）",
-    "purgeFailed": "清理失败",
+    "desc": "当前筛选下的有效用户登录会话（未撤销且未过期），共 {{count}} 条。有效登录不代表设备当前在线。",
+    "purge": "登出所有用户",
+    "purgeTitle": "登出所有用户？",
+    "purgeBody": "所有聊天客户端将退出登录，不影响管理控制台。此操作不受筛选条件影响。",
+    "purgeConfirm": "确认登出",
+    "purged": "已登出 {{count}} 个用户",
+    "purgeFailed": "登出失败",
     "revoke": "吊销",
     "revoked": "已吊销该会话，该设备已被强制登出",
     "confirmRevoke": "确认吊销",
@@ -360,8 +395,14 @@
   },
   "connections": {
     "title": "实时连接",
-    "desc": "当前在线的 SSE 实时下行连接（内存态，按用户聚合）。与「会话总览」不同：这里只看此刻挂着的长连接，不看持久的登录会话。",
-    "updatedAt": "更新于 {{time}}（每 3s 自动刷新）",
+    "desc": "当前在线的 SSE 实时下行连接（内存态，按用户聚合）。有效登录会话不代表设备在线；连接数量也不等于登录设备数量。",
+    "userFilter": "搜索用户名或用户 ID",
+    "scopedUser": "当前仅查看用户 #{{id}}",
+    "clearFilter": "查看全部用户",
+    "refresh": "刷新连接状态",
+    "paused": "刷新失败，自动刷新已暂停。显示的数据可能已过期，请手动重试。",
+    "polling": "每 3 秒自动刷新",
+    "updatedAt": "最后成功更新于 {{time}}",
     "totalConn": "总连接数",
     "onlineUsers": "在线用户",
     "col": {
@@ -375,9 +416,11 @@
   "adminSessions": {
     "title": "管理员会话",
     "searchPlaceholder": "按 IP 筛选",
-    "desc": "当前有效的管理员会话（共 {{count}} 个），仅供查看。有效会话不代表设备当前在线。",
-    "revoke": "吊销",
-    "revoked": "已吊销该管理员会话（其 access 15m 内仍有效）",
+    "desc": "共 {{count}} 个有效管理员会话。可登出自己的其他会话，超级管理员还可登出他人的会话。有效会话不代表设备在线。",
+    "revoke": "登出",
+    "confirmTitle": "登出该管理台会话？",
+    "confirmBody": "{{account}} 的该会话将立即失效，不影响其他会话。",
+    "revoked": "已登出该管理台会话",
     "revokeFailed": "吊销失败",
     "col": {
       "admin": "管理员",
@@ -735,7 +778,9 @@
     }
   },
   "userSessions": {
-    "title": "{{name}} 的活跃会话",
+    "inactivityDays": "连续 {{count}} 天未活动",
+    "title": "{{name}} 的有效登录会话",
+    "viewAll": "在登录会话中查看",
     "loadFailed": "加载失败",
     "empty": "无活跃会话",
     "appCount": "手机端会话：{{count}}",
@@ -750,8 +795,9 @@
       "ip": "IP",
       "lastIp": "最近 IP",
       "created": "创建",
-      "lastActive": "最近活跃",
-      "expires": "过期"
+      "lastActive": "最近活动",
+      "inactivity": "未活动失效时长",
+      "expires": "有效至"
     }
   },
   "durableTasks": {
@@ -1023,9 +1069,9 @@
   },
   "routeError": {
     "title": "页面出现错误",
-    "desc": "管理控制台无法显示此页面。你可以重新加载，或返回仪表盘。",
+    "desc": "管理控制台无法显示此页面。你可以重新加载，或返回上一页。",
     "reload": "重新加载",
-    "home": "返回仪表盘"
+    "back": "返回上一页"
   },
   "security": {
     "title": "我的账户",

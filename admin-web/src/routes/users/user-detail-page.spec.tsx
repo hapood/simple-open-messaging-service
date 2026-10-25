@@ -3,7 +3,14 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UserDetailPage } from './user-detail-page';
 
-const state = vi.hoisted(() => ({ canManage: false, isDeleted: false }));
+const state = vi.hoisted(() => ({
+  canManage: false,
+  isDeleted: false,
+  adminRole: null as string | null,
+  adminEnabled: false,
+  adminTwoFactorEnabled: false,
+  adminLastLoginAt: null as number | null,
+}));
 const disable = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 const enable = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 const forceLogout = vi.hoisted(() => ({
@@ -17,6 +24,9 @@ vi.mock('react-i18next', async (importOriginal) => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 vi.mock('sonner', () => ({ toast }));
+vi.mock('@/hooks/use-sessions', () => ({
+  useRevokeSession: () => ({ isPending: false, mutateAsync: vi.fn() }),
+}));
 vi.mock('@/hooks/use-me', () => ({
   useIsAdminPlus: () => state.canManage,
   useMe: () => ({
@@ -27,7 +37,7 @@ vi.mock('@/hooks/use-me', () => ({
       somsDomain: 'alpha.test',
     },
   }),
-}))
+}));
 vi.mock('@/hooks/use-public-config', () => ({
   usePublicConfig: () => ({
     data: { registrationOpen: false, loginMode: 1 },
@@ -40,6 +50,10 @@ vi.mock('@/hooks/use-user-detail', () => ({
     data: {
       user: {
         id: 42,
+        adminRole: state.adminRole,
+        adminEnabled: state.adminEnabled,
+        adminTwoFactorEnabled: state.adminTwoFactorEnabled,
+        adminLastLoginAt: state.adminLastLoginAt,
         account: 'alice',
         name: 'Alice',
         avatar: '',
@@ -68,6 +82,7 @@ vi.mock('./generate-initial-password-dialog', () => ({
 }));
 vi.mock('./login-codes-section', () => ({ LoginCodesSection: () => null }));
 vi.mock('./user-quota-panel', () => ({ UserQuotaPanel: () => null }));
+vi.mock('./user-access-status', () => ({ UserAccessStatus: () => null }));
 
 function renderPage() {
   return render(
@@ -83,10 +98,48 @@ describe('UserDetailPage mutation authorization', () => {
   beforeEach(() => {
     state.canManage = false;
     state.isDeleted = false;
+    state.adminRole = null;
+    state.adminEnabled = false;
+    state.adminTwoFactorEnabled = false;
+    state.adminLastLoginAt = null;
     vi.clearAllMocks();
     disable.mutateAsync.mockResolvedValue(undefined);
     enable.mutateAsync.mockResolvedValue(undefined);
     forceLogout.mutateAsync.mockResolvedValue(undefined);
+  });
+
+  it.each([true, false])(
+    'shows console access and authenticator state independently (%s)',
+    (enabled) => {
+      state.adminRole = 'VIEWER';
+      state.adminEnabled = enabled;
+      state.adminTwoFactorEnabled = enabled;
+      state.adminLastLoginAt = enabled ? 1700000000000 : null;
+      renderPage();
+      expect(screen.getByText('roles.viewer')).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          enabled ? 'userDetail.adminEnabled' : 'users.adminAccessDisabled',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(enabled ? 'security.totp.on' : 'security.totp.off'),
+      ).toBeInTheDocument();
+      expect(screen.getByText('users.status.active')).toBeInTheDocument();
+      const login = screen.getByText(
+        'userDetail.adminLastLogin',
+      ).parentElement!;
+      expect(login.textContent).not.toBe('userDetail.adminLastLogin');
+      if (!enabled) expect(login).toHaveTextContent('—');
+      else expect(login).not.toHaveTextContent('—');
+    },
+  );
+
+  it('hides administrator observations for an ordinary user', () => {
+    renderPage();
+    expect(
+      screen.queryByText('userDetail.adminLastLogin'),
+    ).not.toBeInTheDocument();
   });
 
   it('explains active-session scope and how browsers register push devices', () => {

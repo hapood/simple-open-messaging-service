@@ -4,11 +4,18 @@ import request from 'supertest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import { admin, adminActionLog, account as user } from '../src/database/schema';
+import {
+  admin,
+  adminActionLog,
+  account as user,
+  groupAccount,
+} from '../src/database/schema';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';
 import { AdminRole } from '../src/database/enums.js';
 import { SessionTokenService } from '../src/auth/session-token.service.js';
+import { SseService } from '../src/gateway/sse.service.js';
+import { BruteForceService } from '../src/auth/brute-force.service.js';
 import { createTestApp } from './support/app';
 import { truncateTablesForTest } from './support/truncate';
 
@@ -99,6 +106,446 @@ describe('Admin RBAC + revocation + audit', () => {
       .post('/api/v1/' + path)
       .set('Cookie', cookie)
       .send(body ?? {});
+
+  it('filters real user sessions and revokes only the selected credential', async () => {
+    const operator = await seedAdmin('session-operator', AdminRole.ADMIN);
+    const target = await seedUser('session-target');
+    const sessions = app.get(SessionTokenService);
+    const webToken = await sessions.issue(target.id, 'web', {
+      ip: '192.0.2.10',
+    });
+    const desktopToken = await sessions.issue(target.id, 'desktop', {
+      ip: '192.0.2.11',
+    });
+    const list = await post(operator.cookie, 'admin/sessions', {
+      userId: target.id,
+      client: 'web',
+      ip: '192.0.2.10',
+    });
+    expect(list.body.code).toBe(BusinessCode.OK);
+    expect(list.body.data.total).toBe(1);
+    expect(list.body.data.list).toHaveLength(1);
+    const id = list.body.data.list[0].id;
+    await sessions.setAutoTerminateDays(target.id, 90);
+    const updated = await post(operator.cookie, 'admin/sessions', {
+      userId: target.id,
+    });
+    const perUser = await post(
+      operator.cookie,
+      `admin/users/${target.id}/sessions`,
+    );
+    const detail = await post(
+      operator.cookie,
+      `admin/users/${target.id}/detail`,
+    );
+    for (const rows of [
+      updated.body.data.list,
+      perUser.body.data,
+      detail.body.data.sessions,
+    ]) {
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.autoTerminateDays).toBe(90);
+        expect(row.expiresAt).toBe(row.lastSeenAt + 90 * 86400000);
+      }
+    }
+    const viewer = await seedAdmin('session-viewer', AdminRole.VIEWER);
+    expect(
+      (await post(viewer.cookie, `admin/sessions/${id}/revoke`)).body.code,
+    ).toBe(BusinessCode.FORBIDDEN);
+    expect(
+      (await post(operator.cookie, `admin/sessions/${id}/revoke`)).body.code,
+    ).toBe(BusinessCode.OK);
+    expect(await sessions.validate(webToken)).toBeNull();
+    expect(await sessions.validate(desktopToken)).not.toBeNull();
+    expect((await post(operator.cookie, 'admin/me')).body.code).toBe(
+      BusinessCode.OK,
+    );
+    const remaining = await post(operator.cookie, 'admin/sessions', {
+      userId: target.id,
+    });
+    expect(
+      remaining.body.data.list.map((row: { client: string }) => row.client),
+    ).toEqual(['desktop']);
+  });
+
+  it('signs out all chat clients, including administrator accounts, without revoking console sessions', async () => {
+    const operator = await seedAdmin('purge-operator', AdminRole.SUPER_ADMIN);
+    const otherAdmin = await seedAdmin('purge-other', AdminRole.ADMIN);
+    const target = await seedUser('purge-target');
+    const sessions = app.get(SessionTokenService);
+    const tokens = await Promise.all([
+      sessions.issue(operator.userId, 'web'),
+      sessions.issue(otherAdmin.userId, 'desktop'),
+      sessions.issue(target.id, 'app'),
+    ]);
+    const result = await post(operator.cookie, 'admin/sessions/purge');
+    expect(result.body.code).toBe(BusinessCode.OK);
+    expect(result.body.data.purgedUsers).toBe(3);
+    for (const token of tokens)
+      expect(await sessions.validate(token)).toBeNull();
+    expect(
+      (await post(operator.cookie, 'admin/sessions')).body.data.total,
+    ).toBe(0);
+    for (const owner of [operator, otherAdmin]) {
+      expect((await post(owner.cookie, 'admin/me')).body.code).toBe(
+        BusinessCode.OK,
+      );
+    }
+  });
+
+  it.each([AdminRole.VIEWER, AdminRole.ADMIN, AdminRole.SUPER_ADMIN])(
+    'enforces console-session ownership for %s and revokes immediately with audit',
+    async (role) => {
+      const owner = await seedAdmin('console-owner', role);
+      const other = await seedAdmin('console-other', AdminRole.ADMIN);
+      const extraToken = await seedAdminSession(database, owner.adminId);
+      const extraCookie = `${ADMIN_SESSION_COOKIE}=${extraToken}`;
+      const list = await post(owner.cookie, 'admin/admin-sessions');
+      const current = list.body.data.list.find(
+        (row: { isCurrent: boolean }) => row.isCurrent,
+      );
+      const ownOther = list.body.data.list.find(
+        (row: { adminId: number; isCurrent: boolean }) =>
+          row.adminId === owner.adminId && !row.isCurrent,
+      );
+      const foreign = list.body.data.list.find(
+        (row: { adminId: number }) => row.adminId === other.adminId,
+      );
+      expect(current.canRevoke).toBe(false);
+      expect(ownOther.canRevoke).toBe(true);
+      expect(foreign.canRevoke).toBe(role === AdminRole.SUPER_ADMIN);
+      expect(
+        (await post(owner.cookie, `admin/admin-sessions/${current.id}/revoke`))
+          .body.code,
+      ).toBe(BusinessCode.FORBIDDEN);
+      const foreignResult = await post(
+        owner.cookie,
+        `admin/admin-sessions/${foreign.id}/revoke`,
+      );
+      expect(foreignResult.body.code).toBe(
+        role === AdminRole.SUPER_ADMIN
+          ? BusinessCode.OK
+          : BusinessCode.NOT_FOUND,
+      );
+      expect((await post(other.cookie, 'admin/me')).status).toBe(
+        role === AdminRole.SUPER_ADMIN ? 401 : 200,
+      );
+      expect(
+        (await post(owner.cookie, `admin/admin-sessions/${ownOther.id}/revoke`))
+          .body.code,
+      ).toBe(BusinessCode.OK);
+      expect((await post(extraCookie, 'admin/me')).status).toBe(401);
+      expect((await post(owner.cookie, 'admin/me')).body.code).toBe(
+        BusinessCode.OK,
+      );
+      expect(
+        (await post(owner.cookie, `admin/admin-sessions/${ownOther.id}/revoke`))
+          .body.code,
+      ).toBe(BusinessCode.NOT_FOUND);
+      const audit = await database.db.query.adminActionLog.findMany({
+        where: and(
+          eq(adminActionLog.adminId, owner.adminId),
+          eq(adminActionLog.action, 'admin_session.revoke'),
+        ),
+      });
+      expect(audit.some((row) => row.targetId === ownOther.id)).toBe(true);
+    },
+  );
+
+  it('rejects invalid console-session identifiers without a server error', async () => {
+    const owner = await seedAdmin('invalid-id-owner', AdminRole.VIEWER);
+    for (const id of ['invalid', '0', '-1', '999999999999999999999']) {
+      expect(
+        (await post(owner.cookie, `admin/admin-sessions/${id}/revoke`)).body
+          .code,
+      ).toBe(BusinessCode.VALIDATION_FAILED);
+    }
+  });
+
+  it('closes only the revoked live SSE stream and keeps the other device usable', async () => {
+    const operator = await seedAdmin('sse-operator', AdminRole.ADMIN);
+    const target = await seedUser('sse-target');
+    const sessions = app.get(SessionTokenService);
+    const tokens = await Promise.all([
+      sessions.issue(target.id, 'web'),
+      sessions.issue(target.id, 'desktop'),
+    ]);
+    const address = app.getHttpServer().address();
+    if (!address || typeof address === 'string')
+      throw new Error('missing test server address');
+    const aborter = new AbortController();
+    const timer = setTimeout(() => aborter.abort(), 12_000).unref();
+    const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+    const open = async (token: string) => {
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/api/v1/events`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: aborter.signal,
+        },
+      );
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      readers.push(reader);
+      let buffer = '';
+      return {
+        reader,
+        async event(name: string) {
+          const pattern = new RegExp(
+            `event: ${name}\\r?\\n(?:id: [^\\r\\n]*\\r?\\n)?data: ([^\\r\\n]+)`,
+          );
+          for (;;) {
+            const match = pattern.exec(buffer);
+            if (match) {
+              buffer = buffer.slice(match.index + match[0].length);
+              return JSON.parse(match[1]);
+            }
+            const chunk = await reader.read();
+            if (chunk.done) throw new Error(`SSE closed before ${name}`);
+            buffer += new TextDecoder().decode(chunk.value);
+          }
+        },
+      };
+    };
+    try {
+      const first = await open(tokens[0]);
+      const second = await open(tokens[1]);
+      await first.event('HELLO');
+      await second.event('HELLO');
+      const list = await post(operator.cookie, 'admin/sessions', {
+        userId: target.id,
+        client: 'web',
+      });
+      const id = list.body.data.list[0].id;
+      expect(
+        (await post(operator.cookie, `admin/sessions/${id}/revoke`)).body.code,
+      ).toBe(BusinessCode.OK);
+      expect(await first.event('FORCE_LOGOUT')).toMatchObject({
+        event: 'FORCE_LOGOUT',
+        message: 'admin_revoke',
+      });
+      expect((await first.reader.read()).done).toBe(true);
+      expect(
+        app
+          .get(SseService)
+          .snapshot()
+          .clients.find((entry) => entry.userId === target.id)?.connections,
+      ).toBe(1);
+      const survivor = await sessions.validate(tokens[1]);
+      expect(survivor).not.toBeNull();
+      app.get(SseService).onThreadFeedUpdated(target.id, {
+        threadFeedEndId: 10,
+        notificationRelevant: true,
+      });
+      expect(await second.event('THREAD_FEED_UPDATED')).toMatchObject({
+        threadFeedEndId: 10,
+      });
+      const reconnect = await fetch(
+        `http://127.0.0.1:${address.port}/api/v1/events`,
+        {
+          headers: { Authorization: `Bearer ${tokens[0]}` },
+          signal: aborter.signal,
+        },
+      );
+      expect(reconnect.status).toBe(401);
+      await reconnect.body?.cancel();
+    } finally {
+      clearTimeout(timer);
+      aborter.abort();
+      await Promise.all(
+        readers.map((reader) => reader.cancel().catch(() => undefined)),
+      );
+    }
+  });
+
+  it('lists console roles and disabled access in the user roster without a separate admin list', async () => {
+    const operator = await seedAdmin('roster-owner', AdminRole.SUPER_ADMIN);
+    const target = await seedAdmin('roster-target', AdminRole.VIEWER);
+    await post(operator.cookie, `admin/admins/${target.adminId}/disable`);
+    const result = await post(operator.cookie, 'admin/users', {
+      search: 'roster-target',
+    });
+    expect(result.body.code).toBe(BusinessCode.OK);
+    expect(result.body.data.list).toEqual([
+      expect.objectContaining({
+        id: target.userId,
+        adminId: target.adminId,
+        adminRole: AdminRole.VIEWER,
+        adminEnabled: false,
+        adminTwoFactorEnabled: false,
+        isDeleted: false,
+      }),
+    ]);
+    expect((await post(operator.cookie, 'admin/admins')).status).toBe(404);
+  });
+
+  it('preserves console observations in user details without exposing credentials', async () => {
+    const viewer = await seedAdmin('detail-viewer', AdminRole.VIEWER);
+    const target = await seedAdmin('detail-target', AdminRole.ADMIN);
+    const lastLoginAt = new Date('2026-01-02T03:04:05Z');
+    await database.db
+      .update(admin)
+      .set({ enabled: false, twoFactorEnabled: true, lastLoginAt })
+      .where(eq(admin.id, target.adminId));
+    const result = await post(
+      viewer.cookie,
+      `admin/users/${target.userId}/detail`,
+    );
+    expect(result.body.code).toBe(BusinessCode.OK);
+    expect(result.body.data.user).toMatchObject({
+      adminRole: AdminRole.ADMIN,
+      adminEnabled: false,
+      adminTwoFactorEnabled: true,
+      adminLastLoginAt: lastLoginAt.getTime(),
+      isDeleted: false,
+    });
+    expect(result.body.data.user).not.toHaveProperty('hashPwd');
+    expect(result.body.data.user).not.toHaveProperty('twoFactorSecret');
+    const ordinary = await seedUser('detail-ordinary');
+    const plain = await post(
+      viewer.cookie,
+      `admin/users/${ordinary.id}/detail`,
+    );
+    expect(plain.body.data.user).toMatchObject({
+      adminRole: null,
+      adminEnabled: null,
+      adminTwoFactorEnabled: null,
+      adminLastLoginAt: null,
+    });
+    const neverLoggedIn = await post(
+      viewer.cookie,
+      `admin/users/${viewer.userId}/detail`,
+    );
+    expect(neverLoggedIn.body.data.user.adminLastLoginAt).toBeNull();
+  });
+
+  it('resolves restrictions to exact local persons, never unknown accounts, groups or IPs', async () => {
+    const viewer = await seedAdmin('restriction-viewer', AdminRole.VIEWER);
+    const target = await seedUser('restriction-person');
+    await database.db
+      .update(user)
+      .set({ disabledAt: new Date() })
+      .where(eq(user.id, target.id));
+    await database.db
+      .insert(groupAccount)
+      .values({ account: '!restriction-group' });
+    const bruteForce = app.get(BruteForceService);
+    const observations = [
+      ['user', 'restriction-person'],
+      ['otp', 'restriction-person'],
+      ['admin_pwd', 'restriction-person'],
+      ['admin_2fa', 'restriction-person'],
+      ['user', 'restriction-pers'],
+      ['user', 'restriction-unknown'],
+      ['user', '!restriction-group'],
+      ['ip', 'restriction-person'],
+    ];
+    try {
+      for (const [dimension, value] of observations)
+        bruteForce.registerFailure(dimension, value, [
+          { count: 0, banMs: 60000 },
+        ]);
+      const result = await post(viewer.cookie, 'admin/bans');
+      expect(result.body.code).toBe(BusinessCode.OK);
+      for (const [type, value] of observations) {
+        expect(result.body.data).toContainEqual(
+          expect.objectContaining({
+            type,
+            value,
+            userId:
+              type !== 'ip' && value === 'restriction-person'
+                ? target.id
+                : null,
+          }),
+        );
+      }
+    } finally {
+      for (const [, value] of observations)
+        bruteForce.unban({ account: value, ip: value });
+    }
+  });
+
+  it('releases all account restriction dimensions without enabling the account or clearing IP restrictions', async () => {
+    const viewer = await seedAdmin('release-viewer', AdminRole.VIEWER);
+    const operator = await seedAdmin('release-operator', AdminRole.ADMIN);
+    const target = await seedUser('release-target');
+    await database.db
+      .update(user)
+      .set({ disabledAt: new Date() })
+      .where(eq(user.id, target.id));
+    const bruteForce = app.get(BruteForceService);
+    const dimensions = ['user', 'otp', 'admin_pwd', 'admin_2fa'];
+    const ip = '192.0.2.42';
+    try {
+      for (const dimension of dimensions)
+        bruteForce.registerFailure(dimension, 'release-target', [
+          { count: 0, banMs: 60000 },
+        ]);
+      bruteForce.registerFailure('ip', ip, [{ count: 0, banMs: 60000 }]);
+      expect(
+        (
+          await post(viewer.cookie, 'admin/bans/unban', {
+            account: 'release-target',
+          })
+        ).body.code,
+      ).toBe(BusinessCode.FORBIDDEN);
+      expect(
+        bruteForce.listBans().filter((ban) => ban.value === 'release-target'),
+      ).toHaveLength(4);
+      expect(
+        (
+          await post(operator.cookie, 'admin/bans/unban', {
+            account: 'release-target',
+          })
+        ).body.code,
+      ).toBe(BusinessCode.OK);
+      expect(
+        bruteForce.listBans().filter((ban) => ban.value === 'release-target'),
+      ).toEqual([]);
+      expect(
+        bruteForce.activeBanUntil([{ dimension: 'ip', value: ip }]),
+      ).toBeDefined();
+      const account = await database.db.query.account.findFirst({
+        where: eq(user.id, target.id),
+      });
+      expect(account?.disabledAt).toBeInstanceOf(Date);
+      expect(
+        (await post(operator.cookie, 'admin/bans/unban', { ip })).body.code,
+      ).toBe(BusinessCode.OK);
+      expect(
+        bruteForce.activeBanUntil([{ dimension: 'ip', value: ip }]),
+      ).toBeUndefined();
+    } finally {
+      bruteForce.unban({ account: 'release-target', ip });
+    }
+  });
+
+  it('returns the operational dashboard to viewers without counting groups as registered users', async () => {
+    const viewer = await seedAdmin('dashboard-viewer', AdminRole.VIEWER);
+    await seedUser('dashboard-person');
+    await database.db
+      .insert(groupAccount)
+      .values({ account: '!dashboard-group' });
+    await app.get(SessionTokenService).issue(viewer.userId, 'web');
+    const response = await post(viewer.cookie, 'admin/dashboard');
+    expect(response.body.code).toBe(BusinessCode.OK);
+    expect(response.body.data).toMatchObject({
+      totalUsers: 2,
+      activeSessions: 1,
+      tasks: {
+        processing: expect.any(Number),
+        pending: expect.any(Number),
+        failed: expect.any(Number),
+      },
+      transfers: {
+        activeUploads: expect.any(Number),
+        activeDownloads: expect.any(Number),
+        failedTransfers: expect.any(Number),
+      },
+    });
+    expect(response.body.data.federation.unrecognized).toBe(0);
+  });
 
   // ── 1. RBAC tiers ─────────────────────────────────────────────────────────────
   it('VIEWER may read but is forbidden from routine + high-impact mutations', async () => {

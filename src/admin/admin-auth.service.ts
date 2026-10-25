@@ -30,6 +30,7 @@ import { type AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { WEBAUTHN_CONFIG } from './webauthn.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import type { AdminPrincipal } from './admin-session.js';
 
 /**
  * Admin auth service: opaque admin sessions persisted in the separate AdminSession table (token-hashed,
@@ -842,7 +843,7 @@ export class AdminAuthService implements OnModuleInit {
   /** Active admin refresh-session list (joins Admin → linked user account for display). */
   async listAdminSessions(
     opts: { skip?: number; take?: number; ip?: string },
-    currentSessionId?: number,
+    actor: AdminPrincipal,
   ) {
     const where = and(
       isNull(adminSession.revokedAt),
@@ -886,21 +887,48 @@ export class AdminAuthService implements OnModuleInit {
     const list = rows.map(({ account, ...r }) => ({
       ...r,
       id: r.id.toString(),
-      isCurrent:
-        currentSessionId !== undefined && r.id === BigInt(currentSessionId),
+      isCurrent: r.id === BigInt(actor.sessionId),
+      canRevoke:
+        r.id !== BigInt(actor.sessionId) &&
+        (r.adminId === actor.adminId || actor.role === AdminRole.SUPER_ADMIN),
       admin: { id: r.adminId, account },
     }));
     return { list, total };
   }
 
-  /** Revoke a single admin session by jti (its access token stays valid for up to the access TTL). */
-  async revokeAdminSession(id: string): Promise<void> {
-    await this.database.db
+  /** End another console session immediately; ownership is enforced in the write predicate. */
+  async revokeAdminSession(id: string, actor: AdminPrincipal): Promise<void> {
+    if (!/^[1-9]\d{0,18}$/.test(id) || BigInt(id) > 9223372036854775807n) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid session id',
+      );
+    }
+    if (BigInt(id) === BigInt(actor.sessionId)) {
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'use logout for the current session',
+      );
+    }
+    const [revoked] = await this.database.db
       .update(adminSession)
       .set({ revokedAt: new Date(), revokeReason: 'admin_revoke' })
       .where(
-        and(eq(adminSession.id, BigInt(id)), isNull(adminSession.revokedAt)),
+        and(
+          eq(adminSession.id, BigInt(id)),
+          isNull(adminSession.revokedAt),
+          actor.role === AdminRole.SUPER_ADMIN
+            ? undefined
+            : eq(adminSession.adminId, actor.adminId),
+        ),
+      )
+      .returning({ id: adminSession.id });
+    if (!revoked) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'session unavailable or not permitted',
       );
+    }
   }
 
   /** Current admin identity for the console header + role gating. null when the profile is gone. */

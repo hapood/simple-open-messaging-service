@@ -53,15 +53,15 @@
     "dashboard": "Dashboard",
     "users": "User Management",
     "groups": "Groups",
-    "sessions": "Sessions",
+    "sessions": "Login Sessions",
     "connections": "Live Connections",
-    "bans": "Ban Management",
+    "bans": "Login Protection",
     "push": "Push Management",
-    "federation": "Federation",
+    "federation": "Federation Health",
     "networkInfo": "Network",
     "localInformation": "Local Information",
     "quota": "Quota",
-    "logs": "Logs",
+    "logs": "Logs & Diagnostics",
     "rateLimits": "Rate Limits",
     "media": "Media Transfers",
     "settings": "Settings",
@@ -72,12 +72,13 @@
     "collapse": "Collapse navigation",
     "expand": "Expand navigation",
     "group": {
-      "overview": "Common tasks",
-      "access": "Access & Activity",
-      "system": "System",
+      "users": "Users & Content",
+      "security": "Login & Security",
+      "monitoring": "Monitoring",
+      "network": "Federation & Network",
+      "services": "Services & Configuration",
       "account": "Account & security"
-    },
-    "adminSessions": "Administrator sessions"
+    }
   },
   "quota": {
     "title": "Daily Quotas",
@@ -153,52 +154,49 @@
   },
   "dashboard": {
     "title": "Dashboard",
-    "desc": "Monitor system health and get everyday admin work done.",
+    "desc": "Monitor online presence, durable task queues, media transfers, federation health, and audit logs.",
     "autoRefresh": "Auto-refresh every 15s",
+    "createUser": "New User",
+    "onlineSub": "{{count}} active connections",
+    "totalUsersSub": "Local registered accounts",
+    "activeSessionsSub": "Valid session tokens",
     "mediaSub": "{{assets}} assets · {{live}} live",
-    "noRecentActions": "No admin actions recorded yet",
-    "quickActions": {
-      "title": "Quick tasks",
-      "desc": "Start with the admin tasks you use most.",
-      "users": "Manage users",
-      "usersDesc": "Find users, create accounts, or resolve access issues",
-      "connections": "View live connections",
-      "connectionsDesc": "Investigate online presence and unusual connections",
-      "settings": "System settings",
-      "settingsDesc": "Review instance configuration and runtime options"
-    },
-    "workflows": {
-      "title": "Get started",
-      "desc": "Your two most common areas of work, in one place.",
-      "health": {
-        "title": "Server health",
-        "desc": "Monitor this server and check connectivity with remote peers.",
-        "current": "Current server",
-        "currentDesc": "Live connections and status",
-        "peers": "Remote servers",
-        "peersDesc": "Review trust and health",
-        "check": "Run health check",
-        "checkDesc": "Test DNS, TLS, and connectivity"
-      },
-      "users": {
-        "title": "User management",
-        "desc": "Create accounts and quickly inspect or manage user status.",
-        "create": "Create user",
-        "createDesc": "Provision a new account now",
-        "manage": "Manage users",
-        "manageDesc": "Search, enable, or disable users",
-        "status": "View user status",
-        "statusDesc": "Inspect login and session activity"
-      }
-    },
     "tile": {
-      "systemStatus": "System status",
-      "onlineNow": "Online now",
-      "onlineConnections": "Online connections",
-      "activeSessions": "Active sessions",
-      "federationHealth": "Federation health",
-      "storageUsage": "Media storage",
-      "recentActions": "Recent admin actions"
+      "onlineUsers": "Online Users",
+      "totalUsers": "Registered Users",
+      "activeSessions": "Active Sessions",
+      "storageUsage": "Media Storage"
+    },
+    "tasks": {
+      "title": "Durable Task Queue",
+      "desc": "Execution and queue state of background durable tasks",
+      "processing": "Processing",
+      "pending": "Pending",
+      "failed": "Failed",
+      "idle": "Queue is idle, running smoothly",
+      "viewAll": "View Tasks"
+    },
+    "transfers": {
+      "title": "Media Transfers",
+      "desc": "Resumable uploads and inbound federation downloads",
+      "uploads": "Client Uploads",
+      "downloads": "Federation Downloads",
+      "failed": "Failed Transfers",
+      "idle": "No active media transfers",
+      "viewAll": "Transfer Details"
+    },
+    "federation": {
+      "title": "Federation Health",
+      "desc": "Network and trust status of remote federation peers",
+      "peersCount": "{{count}} remote peers",
+      "noPeers": "No remote federation peers",
+      "manage": "Manage Peers"
+    },
+    "recentActions": {
+      "title": "Recent Actions",
+      "desc": "Recent administrative actions and security changes",
+      "viewAll": "All Logs",
+      "noRecentActions": "No admin actions recorded yet"
     }
   },
   "language": {
@@ -226,6 +224,10 @@
     "backToPassword": "Back to password"
   },
   "users": {
+    "backendRole": "Console role",
+    "ordinaryRole": "User",
+    "adminAccessDisabled": "Console access disabled",
+    "adminAccessConfirm": "Change console access for {{account}}? Disabling ends console sessions immediately without changing the account ban state.",
     "grantViewerConfirm": "Grant {{account}} read-only access to the admin console? Existing user sessions and issued login codes will be revoked. Only a super administrator can change this role later.",
     "grantViewerSuccess": "Read-only admin access granted",
     "title": "User Management",
@@ -263,20 +265,36 @@
     "selected": "{{count}} selected",
     "selectAll": "Select all",
     "selectRow": "Select {{name}}",
-    "total": "{{count}} total",
-    "tabs": {
-      "users": "Users",
-      "operators": "Operators"
-    }
+    "total": "{{count}} total"
+  },
+  "userAccess": {
+    "title": "Access & Connection Status",
+    "account": "Account status",
+    "restrictions": "Account login restrictions",
+    "unavailable": "Status unavailable",
+    "restricted": "Temporary login restrictions found",
+    "unrestricted": "No account restrictions found",
+    "restrictionScope": "Checks account restrictions only, not restrictions on the request IP.",
+    "connectionCount": "Current connections: {{count}}",
+    "observedAt": "Last successful observation:",
+    "connectionScope": "Connections are not devices. No connection does not mean the login has expired.",
+    "viewConnections": "View connection details",
+    "push": "Push registrations",
+    "pushCount": "{{count}} push registrations recorded",
+    "pushScope": "A registration does not guarantee push delivery."
   },
   "userDetail": {
+    "adminAccess": "Console access",
+    "adminEnabled": "Enabled",
+    "adminAuthenticator": "Authenticator (TOTP)",
+    "adminLastLogin": "Last console sign-in",
     "back": "Back to users",
     "notFound": "User not found",
     "sessionsDesc": "Only unrevoked, unexpired sessions are shown, not a complete login history. Signed-out or expired sessions are excluded; reusing a session does not create another record.",
     "section": {
       "profile": "Profile",
       "groups": "Groups",
-      "sessions": "Active sessions",
+      "sessions": "Valid login sessions",
       "push": "Push devices"
     },
     "field": {
@@ -313,32 +331,49 @@
     "editHint": "Leave blank to use the local-account default; 0 disables that capability for this account. Changes apply immediately without clearing today's usage."
   },
   "bans": {
-    "title": "Ban Management",
-    "desc": "Currently active login bans (IP, password-account, or one-time-code account — from the brute-force sliding window shared across login methods).",
+    "title": "Login Protection",
+    "desc": "Temporary brute-force login restrictions, not account bans. Releasing a restriction does not enable a banned account; further failed attempts can trigger another restriction.",
+    "confirmTitle": "Release login restriction?",
+    "confirmIp": "Release the login restriction for IP {{value}}.",
+    "confirmAccount": "Release all login restrictions for this account without changing its account ban state.",
+    "search": "Search account or IP",
+    "accounts": "Account restrictions",
+    "ips": "IP restrictions",
+    "emptyAccounts": "No account restrictions match the filters",
+    "emptyIps": "No IP restrictions match the filters",
+    "ipScope": "An IP may be shared by several accounts; past logins do not establish ownership.",
+    "restrictionCount": "{{count}} restrictions",
+    "remainingMinutes": "{{count}} minutes remaining",
+    "release": "Release restriction",
+    "released": "Login restriction released",
     "col": {
-      "type": "Type",
+      "type": "Login entry",
       "value": "Value",
       "until": "Expires",
       "remaining": "Remaining"
     },
     "type": {
       "ip": "IP",
-      "user": "Password",
-      "otp": "OTP"
+      "user": "Chat password",
+      "otp": "One-time login code",
+      "adminPassword": "Console password",
+      "adminSecondFactor": "Console second factor"
     },
     "empty": "No active bans",
-    "unban": "Unban"
+    "unban": "Release restriction"
   },
   "sessions": {
-    "title": "Sessions",
+    "title": "Login Sessions",
+    "userFilter": "User ID",
+    "invalidFilters": "Enter a positive integer user ID and select a valid client type.",
     "searchPlaceholder": "Filter by IP",
-    "desc": "Active sessions of all users (not revoked and not expired). {{count}} total.",
-    "purge": "Purge All",
-    "purgeTitle": "Purge all active sessions?",
-    "purgeBody": "This will revoke all {{count}} active sessions and force every user to re-login (access tokens expire immediately). This action cannot be undone.",
-    "purgeConfirm": "Confirm Purge",
-    "purged": "Purged all active sessions ({{count}} users forced to re-login)",
-    "purgeFailed": "Purge failed",
+    "desc": "{{count}} valid user login sessions matching the filters (not revoked or expired). A valid login does not imply the device is online.",
+    "purge": "Sign out all users",
+    "purgeTitle": "Sign out all users?",
+    "purgeBody": "All chat clients will be signed out. Admin console sessions are unaffected. This action applies regardless of filters.",
+    "purgeConfirm": "Confirm sign-out",
+    "purged": "Signed out {{count}} users",
+    "purgeFailed": "Sign-out failed",
     "revoke": "Revoke",
     "revoked": "Session revoked — that device was forced to sign out",
     "confirmRevoke": "Confirm revoke",
@@ -360,8 +395,14 @@
   },
   "connections": {
     "title": "Live Connections",
-    "desc": "Currently online SSE real-time downlinks (in-memory, aggregated by user). Unlike Sessions: this only shows the long-lived connections held right now, not persistent login sessions.",
-    "updatedAt": "Updated at {{time}} (auto-refresh every 3s)",
+    "desc": "Currently online SSE downlinks (in-memory, aggregated by user). Valid logins do not imply online devices; connection counts are not device counts.",
+    "userFilter": "Search account or user ID",
+    "scopedUser": "Showing only user #{{id}}",
+    "clearFilter": "Show all users",
+    "refresh": "Refresh connections",
+    "paused": "Refresh failed and automatic refresh is paused. Displayed data may be stale; retry manually.",
+    "polling": "Auto-refresh every 3s",
+    "updatedAt": "Last successful update at {{time}}",
     "totalConn": "Total Connections",
     "onlineUsers": "Online Users",
     "col": {
@@ -375,9 +416,11 @@
   "adminSessions": {
     "title": "Admin Sessions",
     "searchPlaceholder": "Filter by IP",
-    "desc": "{{count}} valid administrator sessions. Read-only; a valid session does not imply the device is online.",
-    "revoke": "Revoke",
-    "revoked": "Admin session revoked (its access remains valid for up to 15m)",
+    "desc": "{{count}} valid administrator sessions. Sign out your other sessions; super administrators can also sign out others. A valid session does not imply the device is online.",
+    "revoke": "Sign out",
+    "confirmTitle": "Sign out this console session?",
+    "confirmBody": "This session for {{account}} will end immediately. Other sessions are unaffected.",
+    "revoked": "Console session signed out",
     "revokeFailed": "Revoke failed",
     "col": {
       "admin": "Admin",
@@ -734,7 +777,9 @@
     }
   },
   "userSessions": {
-    "title": "Active sessions of {{name}}",
+    "inactivityDays": "{{count}} days without activity",
+    "title": "Valid login sessions of {{name}}",
+    "viewAll": "View in login sessions",
     "loadFailed": "Load failed",
     "empty": "No active sessions",
     "appCount": "App sessions: {{count}}",
@@ -749,8 +794,9 @@
       "ip": "IP",
       "lastIp": "Last IP",
       "created": "Created",
-      "lastActive": "Last active",
-      "expires": "Expires"
+      "lastActive": "Last activity",
+      "inactivity": "Inactivity timeout",
+      "expires": "Valid until"
     }
   },
   "durableTasks": {
@@ -1022,9 +1068,9 @@
   },
   "routeError": {
     "title": "Something went wrong",
-    "desc": "The administration console could not display this page. Reload it or return to the dashboard.",
+    "desc": "The administration console could not display this page. Reload it or go back to the previous page.",
     "reload": "Reload page",
-    "home": "Back to dashboard"
+    "back": "Back to previous page"
   },
   "security": {
     "title": "My Account",

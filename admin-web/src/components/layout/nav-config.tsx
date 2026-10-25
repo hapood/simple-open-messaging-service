@@ -18,8 +18,6 @@ import {
   Users,
 } from 'lucide-react';
 
-/** The `key` suffix under the `nav.*` i18n namespace. Typed as a finite union so the
- *  `t(\`nav.${key}\`)` template literal resolves to a known key (the typed t() rejects `string`). */
 type NavKey =
   | 'dashboard'
   | 'users'
@@ -36,63 +34,44 @@ type NavKey =
   | 'media'
   | 'settings'
   | 'security'
-  | 'adminSessions'
   | 'durableTasks'
   | 'rateLimits'
   | 'messageReports';
 
-/** Full i18n key for a group header (under nav.group.*). */
 type NavGroupKey =
-  | 'nav.group.overview'
-  | 'nav.group.access'
-  | 'nav.group.system'
+  | 'nav.group.users'
+  | 'nav.group.security'
+  | 'nav.group.monitoring'
+  | 'nav.group.network'
+  | 'nav.group.services'
   | 'nav.group.account';
 
 export interface NavItem {
   to: string;
   key: NavKey;
   icon: LucideIcon;
-  /** Placeholder entry rendered as a disabled, non-navigating item. */
-  disabled?: boolean;
-  /** Match this item only on exact path, not prefix. */
   end?: boolean;
 }
 
 export interface NavGroup {
-  labelKey: NavGroupKey;
+  /** Unlabelled groups render standalone entries without a collapse control. */
+  labelKey?: NavGroupKey;
   items: NavItem[];
-  /** Render in the bottom personal cluster (My Account) rather than the main nav list. */
   footer?: boolean;
 }
 
-/** Sidebar structure grouped by responsibility. The footer Account group renders at the bottom. */
+/** Organize by administrative responsibility, not assumed usage frequency. */
 export const NAV_GROUPS: NavGroup[] = [
   {
-    labelKey: 'nav.group.overview',
     items: [
-      {
-        to: '/dashboard',
-        key: 'dashboard',
-        icon: LayoutDashboard,
-        disabled: true,
-      },
-      { to: '/users', key: 'users', icon: Users },
-      { to: '/federation', key: 'federation', icon: Globe },
-      { to: '/connections', key: 'connections', icon: Radio, disabled: true },
+      { to: '/dashboard', key: 'dashboard', icon: LayoutDashboard, end: true },
     ],
   },
   {
-    labelKey: 'nav.group.access',
+    labelKey: 'nav.group.users',
     items: [
-      { to: '/sessions', key: 'sessions', icon: Monitor, disabled: true },
-      { to: '/groups', key: 'groups', icon: Hash, disabled: true },
-      { to: '/bans', key: 'bans', icon: ShieldBan, disabled: true },
-      {
-        to: '/durable-tasks',
-        key: 'durableTasks',
-        icon: ListChecks,
-        disabled: true,
-      },
+      { to: '/users', key: 'users', icon: Users },
+      { to: '/groups', key: 'groups', icon: Hash },
       {
         to: '/message-reports',
         key: 'messageReports',
@@ -101,21 +80,35 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    labelKey: 'nav.group.system',
+    labelKey: 'nav.group.security',
     items: [
-      { to: '/push', key: 'push', icon: Bell, disabled: true },
-      { to: '/media', key: 'media', icon: HardDrive, disabled: true },
+      { to: '/sessions', key: 'sessions', icon: Monitor },
+      { to: '/bans', key: 'bans', icon: ShieldBan },
+    ],
+  },
+  {
+    labelKey: 'nav.group.monitoring',
+    items: [
+      { to: '/connections', key: 'connections', icon: Radio },
+      { to: '/durable-tasks', key: 'durableTasks', icon: ListChecks },
       { to: '/logs', key: 'logs', icon: ScrollText },
+      { to: '/rate-limits', key: 'rateLimits', icon: Gauge },
+    ],
+  },
+  {
+    labelKey: 'nav.group.network',
+    items: [
+      { to: '/federation', key: 'federation', icon: Globe },
       { to: '/network', key: 'networkInfo', icon: Network },
-      { to: '/local-information', key: 'localInformation', icon: Monitor },
+    ],
+  },
+  {
+    labelKey: 'nav.group.services',
+    items: [
+      { to: '/push', key: 'push', icon: Bell },
+      { to: '/media', key: 'media', icon: HardDrive },
       { to: '/quota', key: 'quota', icon: Gauge },
-      { to: '/admin-sessions', key: 'adminSessions', icon: Monitor },
-      {
-        to: '/rate-limits',
-        key: 'rateLimits',
-        icon: Gauge,
-        disabled: true,
-      },
+      { to: '/local-information', key: 'localInformation', icon: Monitor },
       { to: '/settings', key: 'settings', icon: Settings },
     ],
   },
@@ -126,21 +119,18 @@ export const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-/** Most-specific active nav match for a pathname (longest matching `to` wins). Powers the
- *  sidebar active state and the top-bar breadcrumb. */
+/** Most-specific matching destination powers the top-bar breadcrumb. */
 export function matchNav(
   pathname: string,
 ): { item: NavItem; group: NavGroup } | null {
   let best: { item: NavItem; group: NavGroup } | null = null;
   for (const group of NAV_GROUPS) {
     for (const item of group.items) {
-      if (item.disabled) continue;
       const match = item.end
         ? pathname === item.to
         : pathname === item.to || pathname.startsWith(item.to + '/');
-      if (match && (!best || item.to.length > best.item.to.length)) {
+      if (match && (!best || item.to.length > best.item.to.length))
         best = { item, group };
-      }
     }
   }
   return best;

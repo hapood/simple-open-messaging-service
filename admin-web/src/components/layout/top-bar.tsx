@@ -1,29 +1,29 @@
-import { useLocation } from 'react-router-dom'
-import { useTheme } from 'next-themes'
-import { useTranslation } from 'react-i18next'
-import { Menu, Moon, Search, Sun } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { LanguageSwitcher } from '@/components/layout/language-switcher'
-import { matchNav } from '@/components/layout/nav-config'
-import { useMe } from '@/hooks/use-me'
-import type { AdminRole } from '@/types/api'
+import { useLocation } from 'react-router-dom';
+import { useTheme } from 'next-themes';
+import { useTranslation } from 'react-i18next';
+import { Menu, Moon, Search, Sun } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { LanguageSwitcher } from '@/components/layout/language-switcher';
+import { matchNav } from '@/components/layout/nav-config';
+import { useMe } from '@/hooks/use-me';
+import type { AdminRole } from '@/types/api';
 
 const ROLE_KEY: Record<AdminRole, 'super' | 'admin' | 'viewer'> = {
   SUPER_ADMIN: 'super',
   ADMIN: 'admin',
   VIEWER: 'viewer',
-}
+};
 
 /** Sticky top bar: a "section / page" breadcrumb derived from the active nav match on the left;
  *  current-admin identity chip + theme toggle on the right. */
 export function TopBar({ onOpenNavigation }: { onOpenNavigation: () => void }) {
-  const { t } = useTranslation()
-  const { pathname } = useLocation()
-  const { resolvedTheme, setTheme } = useTheme()
-  const me = useMe()
-  const active = matchNav(pathname)
-  const isDark = resolvedTheme === 'dark'
+  const { t } = useTranslation();
+  const { pathname } = useLocation();
+  const { resolvedTheme, setTheme } = useTheme();
+  const me = useMe();
+  const active = matchNav(pathname);
+  const isDark = resolvedTheme === 'dark';
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-3 backdrop-blur sm:px-6 lg:px-8">
@@ -39,8 +39,16 @@ export function TopBar({ onOpenNavigation }: { onOpenNavigation: () => void }) {
         </Button>
         {active ? (
           <>
-            <span className="hidden text-muted-foreground sm:inline">{t(active.group.labelKey)}</span>
-            <span className="hidden text-muted-foreground/50 sm:inline">/</span>
+            {active.group.labelKey && (
+              <>
+                <span className="hidden text-muted-foreground sm:inline">
+                  {t(active.group.labelKey)}
+                </span>
+                <span className="hidden text-muted-foreground/50 sm:inline">
+                  /
+                </span>
+              </>
+            )}
             <span className="font-medium">{t(`nav.${active.item.key}`)}</span>
           </>
         ) : (
@@ -57,11 +65,15 @@ export function TopBar({ onOpenNavigation }: { onOpenNavigation: () => void }) {
         >
           <Search className="size-4" />
           <span className="hidden md:inline">{t('topBar.search')}</span>
-          <kbd className="hidden rounded border bg-muted px-1 text-[10px] md:inline">⌘K</kbd>
+          <kbd className="hidden rounded border bg-muted px-1 text-[10px] md:inline">
+            ⌘K
+          </kbd>
         </Button>
         {me.data ? (
           <div className="hidden items-center gap-2 sm:flex">
-            <span className="max-w-32 truncate text-sm text-muted-foreground">{me.data.name || me.data.account}</span>
+            <span className="max-w-32 truncate text-sm text-muted-foreground">
+              {me.data.name || me.data.account}
+            </span>
             <Badge
               variant={me.data.role === 'SUPER_ADMIN' ? 'default' : 'outline'}
               className="text-[10px]"
@@ -82,5 +94,5 @@ export function TopBar({ onOpenNavigation }: { onOpenNavigation: () => void }) {
         </Button>
       </div>
     </header>
-  )
+  );
 }

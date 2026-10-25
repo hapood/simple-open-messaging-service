@@ -76,6 +76,9 @@ export interface WebAuthnLoginBegin {
 
 // User row (backend no longer exposes hashPwd; Date fields are serialized to ms-epoch numbers by the global interceptor)
 export interface User {
+  adminId?: number | null;
+  adminEnabled?: boolean | null;
+  adminTwoFactorEnabled?: boolean | null;
   /** Present even when the associated admin access is disabled. */
   adminRole?: AdminRole | null;
   id: number;
@@ -99,8 +102,7 @@ export interface UserListResult {
 }
 
 // Active sessions of a user (POST /admin/users/:id/sessions + embedded in the 360° detail).
-// SessionToken rows: client is 'app' | 'web' | 'desktop'; expiresAt is null for trusted (permanent)
-// devices whose token lives in OS secure storage (flagged by `trusted`).
+// Every client has a sliding inactivity deadline and a user-selected timeout in days.
 export interface Session {
   id: number;
   client: string;
@@ -110,8 +112,8 @@ export interface Session {
   lastSeenIp: string | null;
   createdAt: number;
   lastSeenAt: number;
-  expiresAt: number | null;
-  trusted: boolean;
+  expiresAt: number;
+  autoTerminateDays: number;
 }
 
 // Admin-issued one-time login codes (POST /admin/users/:id/login-codes + issue-login-code).
@@ -134,18 +136,8 @@ export interface IssuedLoginCode extends LoginCodeView {
 }
 
 // System-wide active session overview entry (POST /admin/sessions; joins user for the account)
-interface SessionListItem {
-  id: number;
+interface SessionListItem extends Session {
   userId: number;
-  client: string;
-  device: string | null;
-  userAgent: string | null;
-  ip: string | null;
-  lastSeenIp: string | null;
-  createdAt: number;
-  lastSeenAt: number;
-  expiresAt: number | null;
-  trusted: boolean;
   user: { id: number; account: string } | null;
 }
 
@@ -156,6 +148,7 @@ export interface SessionListResult {
 
 // Admin active session entry (POST /admin/admin-sessions; joins Admin for the account; no device field)
 interface AdminSessionListItem {
+  canRevoke: boolean;
   isCurrent: boolean;
   adminId: number;
   id: string;
@@ -175,8 +168,10 @@ export interface AdminSessionListResult {
 // Active login ban entry (POST /admin/bans; type is the locked login surface — IP / password-account /
 // one-time-code-account, the brute-force dimensions shared across login methods)
 export interface Ban {
+  /** Exact local-person match; IP restrictions and unknown accounts have no user. */
+  userId: number | null;
   key: string;
-  type: 'ip' | 'user' | 'otp';
+  type: 'ip' | 'user' | 'otp' | 'admin_pwd' | 'admin_2fa';
   value: string;
   until: number;
   remainingMs: number;
@@ -406,6 +401,9 @@ export interface MeResult {
 // ── User 360° detail (POST /admin/users/:id/detail) ──────────────────────────
 interface UserDetailUser {
   adminRole?: AdminRole | null;
+  adminEnabled: boolean | null;
+  adminTwoFactorEnabled: boolean | null;
+  adminLastLoginAt: number | null;
   id: number;
   account: string;
   name: string;
@@ -476,8 +474,21 @@ interface DashboardAction {
   at: number;
 }
 
+export interface DashboardTasks {
+  processing: number;
+  pending: number;
+  failed: number;
+}
+
+export interface DashboardTransfers {
+  activeUploads: number;
+  activeDownloads: number;
+  failedTransfers: number;
+}
+
 export interface DashboardSummary {
   online: { totalConnections: number; uniqueUsers: number };
+  totalUsers: number;
   activeSessions: number;
   federation: DashboardFederation;
   media: {
@@ -486,6 +497,8 @@ export interface DashboardSummary {
     live: number;
     deleted: number;
   };
+  tasks: DashboardTasks;
+  transfers: DashboardTransfers;
   recentActions: DashboardAction[];
 }
 
@@ -532,25 +545,6 @@ export interface MediaStats {
     deleted: number;
   };
   onDisk: { files: number; bytes: string };
-}
-
-// ── Admin self-management (POST /admin/admins*) ──────────────────────────────
-export interface AdminAccount {
-  id: number;
-  userId: number;
-  account: string;
-  name: string;
-  role: AdminRole;
-  enabled: boolean;
-  twoFactorEnabled: boolean;
-  lastLoginAt: number | null;
-  lastLoginIp: string | null;
-  createdAt: number;
-}
-
-export interface AdminListResult {
-  list: AdminAccount[];
-  total: number;
 }
 
 // ── Groups/threads (POST /admin/groups) ──────────────────────────────────────

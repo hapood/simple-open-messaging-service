@@ -104,12 +104,20 @@ export class UserManageService {
     ]);
     const operator = await this.database.db.query.admin.findFirst({
       where: eq(admin.userId, id),
-      columns: { role: true },
+      columns: {
+        role: true,
+        enabled: true,
+        twoFactorEnabled: true,
+        lastLoginAt: true,
+      },
     });
     return {
       user: {
         ...profile,
         adminRole: operator?.role ?? null,
+        adminEnabled: operator?.enabled ?? null,
+        adminTwoFactorEnabled: operator?.twoFactorEnabled ?? null,
+        adminLastLoginAt: operator?.lastLoginAt ?? null,
         isDeleted: localAccount.disabledAt !== null,
       },
       groups,
@@ -138,6 +146,9 @@ export class UserManageService {
         .select({
           id: user.id,
           adminRole: admin.role,
+          adminId: admin.id,
+          adminEnabled: admin.enabled,
+          adminTwoFactorEnabled: admin.twoFactorEnabled,
           account: user.account,
           name: accountProfileFields(user).name,
           avatar: accountProfileFields(user).avatar,

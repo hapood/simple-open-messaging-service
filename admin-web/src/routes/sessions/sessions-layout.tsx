@@ -13,7 +13,10 @@ export function SessionsLayout() {
         {t('sessions.title')}
       </h1>
       <RouteTabs
-        tabs={[{ to: '/sessions', label: t('sessions.tabs.users') }]}
+        tabs={[
+          { to: '/sessions', label: t('sessions.tabs.users') },
+          { to: '/sessions/admins', label: t('sessions.tabs.admins') },
+        ]}
       />
       <Outlet />
     </div>

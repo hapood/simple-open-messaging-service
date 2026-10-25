@@ -72,11 +72,15 @@ introduce distributed cache invalidation or claim multi-instance cache coherence
 
 ## Console behavior
 
-My Account and Administrator Sessions share the Account & security navigation
-section. My Account shows the server-observed current request IP, not an immutable
-historical login IP. Administrator Sessions is read-only and flags the current
-session. It excludes revoked, expired, idle-expired, and disabled-admin sessions;
-valid does not mean currently online.
+My Account is in the personal-account footer. Administrator Sessions is the
+`/sessions/admins` tab under Login & security, separate from consumer sessions.
+My Account shows the server-observed current request IP, not an immutable
+historical login IP. Every administrator, including VIEWER, can end their own
+other console sessions. Only SUPER_ADMIN can end another administrator's session.
+The current session is flagged and must be ended through Logout, not a row action.
+Revocation is immediate and audited; the server enforces ownership and supplies
+`canRevoke` for presentation. The list excludes revoked, expired, idle-expired,
+and disabled-admin sessions; valid does not mean currently online.
 
 Security dialogs warn about signing out all devices. Recovery codes are displayed
 once after commit; account queries are paused while the dialog is open to avoid

@@ -5,6 +5,7 @@ import { UsersPage } from './users-page';
 const state = vi.hoisted(() => ({
   role: 'SUPER_ADMIN',
   adminRole: null as string | null,
+  adminEnabled: true,
 }));
 const grant = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 vi.mock('react-i18next', async (original) => ({
@@ -15,7 +16,13 @@ vi.mock('@/hooks/use-me', () => ({
   useMe: () => ({ data: { role: state.role } }),
   useIsAdminPlus: () => state.role !== 'VIEWER',
 }));
-vi.mock('@/hooks/use-admins', () => ({ useGrantViewer: () => grant }));
+vi.mock('@/hooks/use-admins', () => ({
+  useGrantViewer: () => grant,
+  useSetAdminRole: () => grant,
+  useDisableAdmin: () => grant,
+  useEnableAdmin: () => grant,
+  useResetAdminTwoFactor: () => grant,
+}));
 vi.mock('@/hooks/use-admin-users', () => ({
   useAdminUsers: () => ({
     data: {
@@ -26,6 +33,9 @@ vi.mock('@/hooks/use-admin-users', () => ({
           account: 'admin',
           namespaceId: 0,
           adminRole: state.adminRole,
+          adminId: state.adminRole ? 8 : null,
+          adminEnabled: state.adminEnabled,
+          adminTwoFactorEnabled: true,
           isDeleted: false,
           createdAt: 1,
         },
@@ -70,6 +80,7 @@ async function openMenu() {
 beforeEach(() => {
   state.role = 'SUPER_ADMIN';
   state.adminRole = null;
+  state.adminEnabled = true;
   grant.mutateAsync.mockReset().mockResolvedValue({ id: 8 });
 });
 describe('user detail quick action', () => {
@@ -88,6 +99,59 @@ describe('user detail quick action', () => {
       ).toBeInTheDocument();
     },
   );
+});
+
+describe('console access in the unified roster', () => {
+  it('shows role and disabled console access separately from account status', () => {
+    state.adminRole = 'VIEWER';
+    state.adminEnabled = false;
+    mount();
+    expect(screen.getByText('roles.viewer')).toBeInTheDocument();
+    expect(screen.getByText('users.adminAccessDisabled')).toBeInTheDocument();
+    expect(screen.getByText('users.status.active')).toBeInTheDocument();
+  });
+  it.each(['ADMIN', 'VIEWER'])(
+    'does not expose console administration to %s',
+    async (role) => {
+      state.role = role;
+      state.adminRole = 'VIEWER';
+      mount();
+      await openMenu();
+      expect(
+        screen.queryByRole('menuitem', { name: 'admins.action.setRole' }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('menuitem', { name: 'admins.action.disable' }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('menuitem', { name: 'admins.action.reset2fa' }),
+      ).not.toBeInTheDocument();
+    },
+  );
+  it('offers confirmed role changes to super administrators', async () => {
+    state.adminRole = 'VIEWER';
+    mount();
+    await openMenu();
+    fireEvent.click(
+      screen.getByRole('menuitem', { name: 'admins.action.setRole' }),
+    );
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(grant.mutateAsync).not.toHaveBeenCalled();
+  });
+  it('protects super-administrator targets from row mutations', async () => {
+    state.adminRole = 'SUPER_ADMIN';
+    mount();
+    await openMenu();
+    expect(
+      screen.queryByRole('menuitem', { name: 'admins.action.setRole' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('menuitem', { name: 'admins.action.disable' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('menuitem', { name: 'admins.action.reset2fa' }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe('user admin grant', () => {

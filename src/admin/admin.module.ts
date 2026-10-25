@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { LoginRestrictionService } from './login-restriction.service.js';
 import { AdminNetworkController } from './admin-network.controller.js';
 import { LocalInformationService } from '../federation/self-check/local-information.service.js';
 import { TargetNetworkDiagnosticsService } from '../federation/self-check/target-network-diagnostics.service.js';
@@ -98,6 +99,7 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     DurableTaskAdminController,
   ],
   providers: [
+    LoginRestrictionService,
     LocalInformationService,
     TargetNetworkDiagnosticsService,
     AccountSecurityService,

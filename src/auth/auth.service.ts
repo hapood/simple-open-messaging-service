@@ -302,11 +302,13 @@ export class AuthService {
     take?: number;
     userId?: number;
     ip?: string;
+    client?: 'app' | 'web' | 'desktop';
   }) {
     const where = and(
       isNull(sessionToken.revokedAt),
       gt(sessionToken.expiresAt, new Date()),
       opts.userId ? eq(sessionToken.userId, opts.userId) : undefined,
+      opts.client ? eq(sessionToken.client, opts.client) : undefined,
       opts.ip
         ? or(
             like(sessionToken.ip, `%${opts.ip}%`),

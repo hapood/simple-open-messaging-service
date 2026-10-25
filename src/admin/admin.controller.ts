@@ -1,4 +1,5 @@
 import { Public } from '../common/public.decorator.js';
+import { LoginRestrictionService } from './login-restriction.service.js';
 import {
   Controller,
   Post,
@@ -29,6 +30,7 @@ import {
   AdminListUsersDto,
   AdminUnbanDto,
   AdminListSessionsDto,
+  AdminListUserSessionsDto,
   AdminListPushTokensDto,
   AdminPushTestDto,
   AdminUserBatchDto,
@@ -77,6 +79,7 @@ export class AdminController {
     private readonly authService: AuthService,
     private readonly userManageService: UserManageService,
     private readonly bruteForce: BruteForceService,
+    private readonly loginRestrictions: LoginRestrictionService,
     private readonly sseService: SseService,
     private readonly pushService: PushService,
     private readonly otpLoginService: OtpLoginService,
@@ -503,10 +506,11 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/bans')
   @ApiOperation({
-    summary: 'List active login bans (IP / account — password + OTP)',
+    summary:
+      'List login restrictions with local user IDs (IP, user password, login code, console password and second factor)',
   })
   async listBans() {
-    return this.bruteForce.listBans();
+    return this.loginRestrictions.list();
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -516,7 +520,7 @@ export class AdminController {
   @Post('admin/bans/unban')
   @ApiOperation({
     summary:
-      'Unban (IP and/or account — clears every account-keyed dimension: password + OTP)',
+      'Release IP restrictions and/or all account restrictions, including console password and second factor; account bans are unchanged',
   })
   async unban(@Body() dto: AdminUnbanDto): Promise<void> {
     this.bruteForce.unban({ ip: dto.ip, account: dto.account });
@@ -529,9 +533,9 @@ export class AdminController {
   @Post('admin/sessions')
   @ApiOperation({
     summary:
-      'System-wide active session overview (cross-user; filter by userId/ip)',
+      'System-wide active session overview (filter by userId, IP, and client)',
   })
-  async listAllSessions(@Body() dto: AdminListSessionsDto) {
+  async listAllSessions(@Body() dto: AdminListUserSessionsDto) {
     return this.authService.listAllSessions(dto);
   }
 
@@ -606,16 +610,13 @@ export class AdminController {
   })
   async listAdminSessions(
     @Body() dto: AdminListSessionsDto,
-    @Req() req: FastifyRequest,
+    @Req()
+    req: FastifyRequest & { user: import('./admin-session.js').AdminPrincipal },
   ) {
-    return this.adminAuthService.listAdminSessions(
-      dto,
-      req.user.sessionId ?? undefined,
-    );
+    return this.adminAuthService.listAdminSessions(dto, req.user);
   }
 
-  @UseGuards(AdminAuthGuard, AdminRolesGuard)
-  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @UseGuards(AdminAuthGuard)
   @Audit('admin_session.revoke', {
     targetType: 'admin_session',
     targetParam: 'id',
@@ -623,7 +624,11 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/admin-sessions/:id/revoke')
   @ApiOperation({ summary: 'Revoke an opaque admin session immediately' })
-  async revokeAdminSession(@Param('id') id: string): Promise<void> {
-    await this.adminAuthService.revokeAdminSession(id);
+  async revokeAdminSession(
+    @Param('id') id: string,
+    @Req()
+    req: FastifyRequest & { user: import('./admin-session.js').AdminPrincipal },
+  ): Promise<void> {
+    await this.adminAuthService.revokeAdminSession(id, req.user);
   }
 }

@@ -2,24 +2,38 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Activity,
+  ArrowDownToLine,
   ArrowRight,
+  ArrowUpFromLine,
   CheckCircle2,
   CircleDashed,
-  CircleUserRound,
+  Globe,
+  HardDrive,
+  KeyRound,
+  ListTodo,
   Radio,
-  ShieldCheck,
+  Repeat,
+  UserCheck,
   UserPlus,
-  UsersRound,
+  Users,
   XCircle,
 } from 'lucide-react';
 import { useDashboard } from '@/hooks/use-dashboard';
+import { useIsAdminPlus } from '@/hooks/use-me';
 import type { DashboardFederation } from '@/types/api';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { buttonVariants } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Timestamp } from '@/components/common/timestamp';
 import { formatApiError } from '@/lib/format-error';
+import { cn } from '@/lib/utils';
 
 /** Compact human byte size: "1.2 GB" / "512 MB" / "0 B". */
 function formatBytes(bytes: number): string {
@@ -37,50 +51,85 @@ function MetricTile({
   value,
   sub,
   to,
+  icon: Icon,
 }: {
   label: string;
   value: ReactNode;
   sub?: ReactNode;
   to: string;
+  icon: typeof Users;
 }) {
   return (
     <Link
       to={to}
       className="group rounded-xl border bg-card p-4 transition hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <div className="text-sm text-muted-foreground">{label}</div>
+      <div className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
+        <span>{label}</span>
+        <span className="rounded-md bg-muted/60 p-1.5 text-muted-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary">
+          <Icon className="size-4" />
+        </span>
+      </div>
       <div className="mt-2 flex items-end justify-between gap-2">
-        <div className="text-3xl font-semibold tabular-nums">{value}</div>
+        <div className="text-2xl font-semibold tabular-nums sm:text-3xl">
+          {value}
+        </div>
         <ArrowRight className="mb-1 size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
       </div>
       {sub ? (
-        <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+        <div className="mt-1 truncate text-xs text-muted-foreground">{sub}</div>
       ) : null}
     </Link>
   );
 }
 
-const FED_ROWS: { key: keyof DashboardFederation; tone: string }[] = [
-  { key: 'unrecognized', tone: 'text-muted-foreground' },
-  { key: 'establishing', tone: 'text-blue-600 dark:text-blue-400' },
-  { key: 'available', tone: 'text-emerald-600 dark:text-emerald-400' },
-  { key: 'degraded', tone: 'text-amber-600 dark:text-amber-400' },
-  { key: 'halted', tone: 'text-destructive' },
+const FED_ROWS: {
+  key: keyof DashboardFederation;
+  tone: string;
+  dotColor: string;
+}[] = [
+  {
+    key: 'available',
+    tone: 'text-emerald-600 dark:text-emerald-400',
+    dotColor: 'bg-emerald-500',
+  },
+  {
+    key: 'establishing',
+    tone: 'text-blue-600 dark:text-blue-400',
+    dotColor: 'bg-blue-500',
+  },
+  {
+    key: 'unrecognized',
+    tone: 'text-muted-foreground',
+    dotColor: 'bg-muted-foreground/60',
+  },
+  {
+    key: 'degraded',
+    tone: 'text-amber-600 dark:text-amber-400',
+    dotColor: 'bg-amber-500',
+  },
+  {
+    key: 'halted',
+    tone: 'text-destructive',
+    dotColor: 'bg-destructive',
+  },
 ];
 
-/** Landing overview. Tiles + federation breakdown + the last admin actions (sourced from
- *  AdminActionLog, written by the Phase 1 audit interceptor). Polled every 15s by useDashboard. */
+/** Modern console overview with 4 metrics + 2x2 operational and telemetry cards. Polled every 15s. */
 export function DashboardPage() {
   const { t } = useTranslation();
+  const canManage = useIsAdminPlus();
   const { data, isLoading, error } = useDashboard();
-  // An initial request error leaves `data` undefined while React Query sets
-  // `isLoading` to false. Keep rendering placeholders until data exists so the
-  // error banner can be shown without dereferencing an absent response.
   const loading = isLoading || !data;
+
+  const totalPeers = data
+    ? Object.values(data.federation).reduce((sum, count) => sum + count, 0)
+    : 0;
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between gap-4">
+      {/* Header bar: title + auto refresh indicator + quick create user button */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
             {t('dashboard.title')}
@@ -89,10 +138,24 @@ export function DashboardPage() {
             {t('dashboard.desc')}
           </p>
         </div>
-        <span className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
-          <span className="size-1.5 rounded-full bg-emerald-500" />
-          {t('dashboard.autoRefresh')}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
+            <span className="size-1.5 rounded-full bg-emerald-500" />
+            {t('dashboard.autoRefresh')}
+          </span>
+          {canManage && (
+            <Link
+              to="/users?create=1"
+              className={cn(
+                buttonVariants({ variant: 'default', size: 'sm' }),
+                'gap-1.5 shadow-sm',
+              )}
+            >
+              <UserPlus className="size-4" />
+              {t('dashboard.createUser')}
+            </Link>
+          )}
+        </div>
       </div>
 
       {error ? (
@@ -101,10 +164,12 @@ export function DashboardPage() {
         </div>
       ) : null}
 
+      {/* Top 4 Metric Tiles */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <MetricTile
           to="/connections"
-          label={t('dashboard.tile.onlineNow')}
+          icon={Radio}
+          label={t('dashboard.tile.onlineUsers')}
           value={
             loading ? (
               <Skeleton className="h-8 w-16" />
@@ -112,27 +177,33 @@ export function DashboardPage() {
               data!.online.uniqueUsers
             )
           }
-        />
-        <MetricTile
-          to="/connections"
-          label={t('dashboard.tile.onlineConnections')}
-          value={
-            loading ? (
-              <Skeleton className="h-8 w-16" />
-            ) : (
-              data!.online.totalConnections
-            )
+          sub={
+            loading
+              ? undefined
+              : t('dashboard.onlineSub', {
+                  count: data!.online.totalConnections,
+                })
           }
         />
         <MetricTile
+          to="/users"
+          icon={UserCheck}
+          label={t('dashboard.tile.totalUsers')}
+          value={loading ? <Skeleton className="h-8 w-16" /> : data!.totalUsers}
+          sub={loading ? undefined : t('dashboard.totalUsersSub')}
+        />
+        <MetricTile
           to="/sessions"
+          icon={KeyRound}
           label={t('dashboard.tile.activeSessions')}
           value={
             loading ? <Skeleton className="h-8 w-16" /> : data!.activeSessions
           }
+          sub={loading ? undefined : t('dashboard.activeSessionsSub')}
         />
         <MetricTile
           to="/media"
+          icon={HardDrive}
           label={t('dashboard.tile.storageUsage')}
           value={
             loading ? (
@@ -152,95 +223,227 @@ export function DashboardPage() {
         />
       </div>
 
-      <section>
-        <div className="mb-3">
-          <h2 className="font-semibold">{t('dashboard.workflows.title')}</h2>
-          <p className="text-sm text-muted-foreground">
-            {t('dashboard.workflows.desc')}
-          </p>
-        </div>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <WorkflowCard
-            icon={Activity}
-            title={t('dashboard.workflows.health.title')}
-            desc={t('dashboard.workflows.health.desc')}
-            actions={[
-              {
-                to: '/connections',
-                icon: Radio,
-                title: t('dashboard.workflows.health.current'),
-                desc: t('dashboard.workflows.health.currentDesc'),
-              },
-              {
-                to: '/federation',
-                icon: CircleUserRound,
-                title: t('dashboard.workflows.health.peers'),
-                desc: t('dashboard.workflows.health.peersDesc'),
-              },
-              {
-                to: '/network',
-                icon: ShieldCheck,
-                title: t('dashboard.workflows.health.check'),
-                desc: t('dashboard.workflows.health.checkDesc'),
-              },
-            ]}
-          />
-          <WorkflowCard
-            icon={UsersRound}
-            title={t('dashboard.workflows.users.title')}
-            desc={t('dashboard.workflows.users.desc')}
-            actions={[
-              {
-                to: '/users?create=1',
-                icon: UserPlus,
-                title: t('dashboard.workflows.users.create'),
-                desc: t('dashboard.workflows.users.createDesc'),
-                primary: true,
-              },
-              {
-                to: '/users',
-                icon: UsersRound,
-                title: t('dashboard.workflows.users.manage'),
-                desc: t('dashboard.workflows.users.manageDesc'),
-              },
-              {
-                to: '/users',
-                icon: Activity,
-                title: t('dashboard.workflows.users.status'),
-                desc: t('dashboard.workflows.users.statusDesc'),
-              },
-            ]}
-          />
-        </div>
-      </section>
-
-      <div className="grid gap-4 xl:grid-cols-5">
-        <Card className="xl:col-span-2">
-          <CardHeader>
-            <CardTitle>{t('dashboard.tile.federationHealth')}</CardTitle>
+      {/* 2x2 Grid: Durable Tasks, Media Transfers, Federation Health, Recent Actions */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Card 1: Durable Task Queue */}
+        <Card className="flex flex-col justify-between">
+          <CardHeader className="flex flex-row items-start justify-between pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <ListTodo className="size-4 text-primary" />
+                <CardTitle>{t('dashboard.tasks.title')}</CardTitle>
+              </div>
+              <CardDescription className="mt-1">
+                {t('dashboard.tasks.desc')}
+              </CardDescription>
+            </div>
+            <Link
+              to="/durable-tasks"
+              className={cn(
+                buttonVariants({ variant: 'ghost', size: 'sm' }),
+                'gap-1 text-xs text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t('dashboard.tasks.viewAll')}
+              <ArrowRight className="size-3.5" />
+            </Link>
           </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-2">
-            {FED_ROWS.map((r) => (
-              <div
-                key={r.key}
-                className="flex items-center justify-between rounded-md border px-3 py-2"
-              >
-                <span className="text-sm text-muted-foreground">
-                  {t(`federation.status.${r.key}`)}
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="flex flex-col justify-between rounded-lg border bg-muted/20 p-3">
+                <span className="text-xs text-muted-foreground">
+                  {t('dashboard.tasks.processing')}
                 </span>
-                <span
-                  className={`text-lg font-semibold tabular-nums ${r.tone}`}
-                >
-                  {loading ? '—' : data!.federation[r.key]}
+                <span className="mt-1 text-xl font-semibold tabular-nums text-blue-600 dark:text-blue-400">
+                  {loading ? '—' : data!.tasks.processing}
                 </span>
               </div>
-            ))}
+              <div className="flex flex-col justify-between rounded-lg border bg-muted/20 p-3">
+                <span className="text-xs text-muted-foreground">
+                  {t('dashboard.tasks.pending')}
+                </span>
+                <span className="mt-1 text-xl font-semibold tabular-nums text-muted-foreground">
+                  {loading ? '—' : data!.tasks.pending}
+                </span>
+              </div>
+              <div className="flex flex-col justify-between rounded-lg border bg-muted/20 p-3">
+                <span className="text-xs text-muted-foreground">
+                  {t('dashboard.tasks.failed')}
+                </span>
+                <span
+                  className={cn(
+                    'mt-1 text-xl font-semibold tabular-nums',
+                    !loading && data!.tasks.failed > 0
+                      ? 'text-destructive'
+                      : 'text-muted-foreground',
+                  )}
+                >
+                  {loading ? '—' : data!.tasks.failed}
+                </span>
+              </div>
+            </div>
+            {!loading &&
+              data!.tasks.processing === 0 &&
+              data!.tasks.pending === 0 &&
+              data!.tasks.failed === 0 && (
+                <div className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  {t('dashboard.tasks.idle')}
+                </div>
+              )}
           </CardContent>
         </Card>
 
-        <Card className="xl:col-span-3">
-          <CardHeader>
-            <CardTitle>{t('dashboard.tile.recentActions')}</CardTitle>
+        {/* Card 2: Media Transfers */}
+        <Card className="flex flex-col justify-between">
+          <CardHeader className="flex flex-row items-start justify-between pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Repeat className="size-4 text-primary" />
+                <CardTitle>{t('dashboard.transfers.title')}</CardTitle>
+              </div>
+              <CardDescription className="mt-1">
+                {t('dashboard.transfers.desc')}
+              </CardDescription>
+            </div>
+            <Link
+              to="/media"
+              className={cn(
+                buttonVariants({ variant: 'ghost', size: 'sm' }),
+                'gap-1 text-xs text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t('dashboard.transfers.viewAll')}
+              <ArrowRight className="size-3.5" />
+            </Link>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="flex flex-col justify-between rounded-lg border bg-muted/20 p-3">
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <ArrowUpFromLine className="size-3" />
+                  <span className="truncate">
+                    {t('dashboard.transfers.uploads')}
+                  </span>
+                </div>
+                <span className="mt-1 text-xl font-semibold tabular-nums text-blue-600 dark:text-blue-400">
+                  {loading ? '—' : data!.transfers.activeUploads}
+                </span>
+              </div>
+              <div className="flex flex-col justify-between rounded-lg border bg-muted/20 p-3">
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <ArrowDownToLine className="size-3" />
+                  <span className="truncate">
+                    {t('dashboard.transfers.downloads')}
+                  </span>
+                </div>
+                <span className="mt-1 text-xl font-semibold tabular-nums text-blue-600 dark:text-blue-400">
+                  {loading ? '—' : data!.transfers.activeDownloads}
+                </span>
+              </div>
+              <div className="flex flex-col justify-between rounded-lg border bg-muted/20 p-3">
+                <span className="text-xs text-muted-foreground">
+                  {t('dashboard.transfers.failed')}
+                </span>
+                <span
+                  className={cn(
+                    'mt-1 text-xl font-semibold tabular-nums',
+                    !loading && data!.transfers.failedTransfers > 0
+                      ? 'text-destructive'
+                      : 'text-muted-foreground',
+                  )}
+                >
+                  {loading ? '—' : data!.transfers.failedTransfers}
+                </span>
+              </div>
+            </div>
+            {!loading &&
+              data!.transfers.activeUploads === 0 &&
+              data!.transfers.activeDownloads === 0 &&
+              data!.transfers.failedTransfers === 0 && (
+                <div className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  {t('dashboard.transfers.idle')}
+                </div>
+              )}
+          </CardContent>
+        </Card>
+
+        {/* Card 3: Federation Health */}
+        <Card className="flex flex-col justify-between">
+          <CardHeader className="flex flex-row items-start justify-between pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Globe className="size-4 text-primary" />
+                <CardTitle>{t('dashboard.federation.title')}</CardTitle>
+              </div>
+              <CardDescription className="mt-1">
+                {loading
+                  ? '...'
+                  : totalPeers > 0
+                    ? t('dashboard.federation.peersCount', {
+                        count: totalPeers,
+                      })
+                    : t('dashboard.federation.noPeers')}
+              </CardDescription>
+            </div>
+            <Link
+              to="/federation"
+              className={cn(
+                buttonVariants({ variant: 'ghost', size: 'sm' }),
+                'gap-1 text-xs text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t('dashboard.federation.manage')}
+              <ArrowRight className="size-3.5" />
+            </Link>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
+              {FED_ROWS.map((r) => (
+                <div
+                  key={r.key}
+                  className="flex flex-col justify-between rounded-lg border bg-muted/20 p-2.5"
+                >
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className={cn('size-1.5 rounded-full', r.dotColor)} />
+                    <span className="truncate">
+                      {t(`federation.status.${r.key}`)}
+                    </span>
+                  </div>
+                  <span
+                    className={cn(
+                      'mt-2 text-xl font-semibold tabular-nums',
+                      r.tone,
+                    )}
+                  >
+                    {loading ? '—' : data!.federation[r.key]}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Card 4: Recent Actions Audit */}
+        <Card className="flex flex-col justify-between">
+          <CardHeader className="flex flex-row items-start justify-between pb-3">
+            <div>
+              <CardTitle>{t('dashboard.recentActions.title')}</CardTitle>
+              <CardDescription className="mt-1">
+                {t('dashboard.recentActions.desc')}
+              </CardDescription>
+            </div>
+            <Link
+              to="/logs"
+              className={cn(
+                buttonVariants({ variant: 'ghost', size: 'sm' }),
+                'gap-1 text-xs text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t('dashboard.recentActions.viewAll')}
+              <ArrowRight className="size-3.5" />
+            </Link>
           </CardHeader>
           <CardContent>
             {loading ? (
@@ -251,11 +454,11 @@ export function DashboardPage() {
               </div>
             ) : data!.recentActions.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                {t('dashboard.noRecentActions')}
+                {t('dashboard.recentActions.noRecentActions')}
               </p>
             ) : (
               <ul className="flex flex-col gap-1">
-                {data!.recentActions.map((a) => (
+                {data!.recentActions.slice(0, 5).map((a) => (
                   <li
                     key={a.id}
                     className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50"
@@ -292,77 +495,5 @@ export function DashboardPage() {
         </Card>
       </div>
     </div>
-  );
-}
-
-type WorkflowAction = {
-  to: string;
-  icon: typeof Activity;
-  title: string;
-  desc: string;
-  primary?: boolean;
-};
-
-function WorkflowCard({
-  icon: Icon,
-  title,
-  desc,
-  actions,
-}: {
-  icon: typeof Activity;
-  title: string;
-  desc: string;
-  actions: WorkflowAction[];
-}) {
-  return (
-    <Card className="gap-0 py-0">
-      <div className="flex items-start gap-3 border-b bg-muted/25 p-5">
-        <span className="rounded-xl bg-primary p-2.5 text-primary-foreground">
-          <Icon className="size-5" />
-        </span>
-        <div>
-          <h3 className="text-base font-semibold">{title}</h3>
-          <p className="mt-0.5 text-sm text-muted-foreground">{desc}</p>
-        </div>
-      </div>
-      <div className="grid gap-2 p-3 sm:grid-cols-3">
-        {actions.map(
-          ({
-            to,
-            icon: ActionIcon,
-            title: actionTitle,
-            desc: actionDesc,
-            primary,
-          }) => (
-            <Link
-              key={`${to}-${actionTitle}`}
-              to={to}
-              className={[
-                'group rounded-lg p-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                primary
-                  ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                  : 'hover:bg-muted',
-              ].join(' ')}
-            >
-              <ActionIcon className="mb-3 size-4" />
-              <span className="flex items-center gap-1 text-sm font-medium">
-                {actionTitle}
-                <ArrowRight className="size-3.5 transition group-hover:translate-x-0.5" />
-              </span>
-              <span
-                className={[
-                  'mt-1 block text-xs leading-relaxed',
-                  primary
-                    ? 'text-primary-foreground/75'
-                    : 'text-muted-foreground',
-                ].join(' ')}
-              >
-                {actionDesc}
-              </span>
-            </Link>
-          ),
-        )}
-      </div>
-    </Card>
   );
 }

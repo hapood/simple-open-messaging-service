@@ -18,10 +18,10 @@ export function RouteErrorPage() {
             {detail}
           </pre>
         ) : null}
-        <div className="mt-5 flex gap-2">
+        <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => window.location.reload()}>{t('routeError.reload')}</Button>
-          <Button variant="outline" onClick={() => navigate('/')}>
-            {t('routeError.home')}
+          <Button variant="outline" onClick={() => navigate(-1)}>
+            {t('routeError.back')}
           </Button>
         </div>
       </div>

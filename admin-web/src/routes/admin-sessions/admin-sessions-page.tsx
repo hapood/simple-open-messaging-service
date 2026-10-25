@@ -1,6 +1,19 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
+import { formatApiError } from '@/lib/format-error';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import { Search } from 'lucide-react';
-import { useAdminSessions } from '@/hooks/use-admin-sessions';
+import {
+  useAdminSessions,
+  useRevokeAdminSession,
+} from '@/hooks/use-admin-sessions';
 import { useListParams } from '@/hooks/use-list-params';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -31,12 +44,24 @@ export function AdminSessionsPage() {
     ip: search || undefined,
   });
   const total = data?.total ?? 0;
+  const revoke = useRevokeAdminSession();
+  const [selected, setSelected] = useState<{
+    id: string;
+    account: string;
+  } | null>(null);
+  const signOut = async () => {
+    if (!selected) return;
+    try {
+      await revoke.mutateAsync(selected.id);
+      setSelected(null);
+      toast.success(t('adminSessions.revoked'));
+    } catch (error) {
+      toast.error(formatApiError(error));
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-2xl font-semibold leading-[32px]">
-        {t('nav.adminSessions')}
-      </h1>
       <Button
         variant="outline"
         className="self-start"
@@ -69,6 +94,7 @@ export function AdminSessionsPage() {
               <TableHead>{t('adminSessions.col.created')}</TableHead>
               <TableHead>{t('adminSessions.col.expires')}</TableHead>
               <TableHead>{t('security.account.lastActive')}</TableHead>
+              <TableHead>{t('adminSessions.revoke')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -76,7 +102,7 @@ export function AdminSessionsPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={6}
+              colSpan={7}
               skeletonRows={6}
               emptyMessage={t('adminSessions.empty')}
             >
@@ -110,6 +136,23 @@ export function AdminSessionsPage() {
                   <TableCell>
                     <Timestamp value={s.lastAccessedAt} />
                   </TableCell>
+                  <TableCell>
+                    {s.canRevoke && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={revoke.isPending}
+                        onClick={() =>
+                          setSelected({
+                            id: s.id,
+                            account: s.admin?.account ?? `#${s.adminId}`,
+                          })
+                        }
+                      >
+                        {t('adminSessions.revoke')}
+                      </Button>
+                    )}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBodyState>
@@ -124,6 +167,37 @@ export function AdminSessionsPage() {
           onPageChange={setPage}
         />
       </div>
+      <Dialog
+        open={selected !== null}
+        onOpenChange={(open) => !open && setSelected(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('adminSessions.confirmTitle')}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm leading-[20px]">
+            {t('adminSessions.confirmBody', {
+              account: selected?.account ?? '',
+            })}
+          </p>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={revoke.isPending}
+              onClick={() => setSelected(null)}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={revoke.isPending}
+              onClick={() => void signOut()}
+            >
+              {t('adminSessions.revoke')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

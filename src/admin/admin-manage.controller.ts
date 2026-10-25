@@ -19,7 +19,7 @@ import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
 import { AdminManageService } from './admin-manage.service.js';
 import { AdminRole } from '../database/enums.js';
-import { AdminManageListDto, AdminSetRoleDto } from './admin.dto.js';
+import { AdminSetRoleDto } from './admin.dto.js';
 
 /**
  * Admin self-management (SUPER_ADMIN only — the whole controller is gated). HTTP adapter over
@@ -36,13 +36,6 @@ import { AdminManageListDto, AdminSetRoleDto } from './admin.dto.js';
 @Controller()
 export class AdminManageController {
   constructor(private readonly svc: AdminManageService) {}
-
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/admins')
-  @ApiOperation({ summary: 'Admin account list (paginated + searchable)' })
-  async list(@Body() dto: AdminManageListDto) {
-    return this.svc.list(dto);
-  }
 
   @Audit('admin.grant_viewer', { targetType: 'user', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)

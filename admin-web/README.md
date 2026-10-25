@@ -1,136 +1,92 @@
 # admin-web
 
-The admin console for **SOMS** — a React single-page app that drives user
-management, session auditing, and login-ban control.
-It talks to the same NestJS API as the Angular client (`web/`) but authenticates
-through a **physically isolated admin account system** (independent JWT secret,
-`scope: 'admin'` claims, separate `Admin` / `AdminRefreshToken` tables). Admin
-and user credentials never cross.
+The SOMS administration console is a React single-page app for user management,
+session administration, login restrictions, and operational monitoring. It talks to
+the same NestJS API as the Angular client, but uses a separate opaque console session.
+Administrators share their linked local account's password; roles and second factors
+belong to the Admin record. Consumer and console sessions are independent.
 
-> See the repo root `README.md` for the tri-client architecture
-> (API `:3000` / web `:4200` / admin-web `:5180`) and `docs/overview/architecture.md`
-> for the admin auth subsystem.
+See [administrator access](../docs/design/admin-access.md),
+[account security](../docs/design/admin-account-security.md), and the
+[Admin API](../docs/api/api.md#admin-api) for authorization and protocol details.
 
-## Tech stack
+## Development
 
-| Concern | Choice |
-| --- | --- |
-| Framework | React 19 |
-| Language | TypeScript |
-| Bundler / dev server | Vite 8 |
-| Styling | Tailwind CSS v4 (`@tailwindcss/vite`) |
-| UI primitives | **shadcn (`base-nova` style) on [Base UI](https://base-ui.com/) (`@base-ui/react`)** — **not Radix**. There are zero Radix dependencies in this repo; components compose via Base UI's `render` prop (no `asChild`). |
-| Data fetching | TanStack Query v5 (one `useQuery` / `useMutation` hook per domain) |
-| Routing | react-router v7 (`createBrowserRouter`) |
-| Forms | react-hook-form + zod |
-| HTTP | native `fetch` (no axios) — all requests are `POST` |
-| Icons / toasts / theme | lucide-react, sonner, next-themes |
-| Linter | **Oxlint** (not ESLint) |
+Start the API on port 3000, then run from the repository root:
 
-## Quick start
-
-The API server must be running on `:3000` (see repo root). From the repo root:
-
-```bash
+```sh
 npm install --prefix admin-web
-npm run dev --prefix admin-web     # http://localhost:5180
+npm run dev --prefix admin-web
+npm run build --prefix admin-web
+npm test --prefix admin-web
+npm run lint --prefix admin-web
 ```
 
-Other scripts:
+Vite serves port 5180 with `strictPort` and LAN access. `/api` proxies to
+`http://localhost:3000`. `VITE_API_BASE` overrides the default `/api/v1` base;
+console authentication requires same-origin cookies. The API can bootstrap the
+initial administrator using `ADMIN_BOOTSTRAP_PASSWORD` when no administrator exists.
+Never put credentials in frontend configuration.
 
-```bash
-npm run build --prefix admin-web   # tsc -b && vite build
-npm run preview --prefix admin-web # serve the production build
-npm run lint --prefix admin-web    # oxlint
-```
+## Stack and organization
 
-## Configuration
+- React 19, TypeScript, Vite 8, Tailwind CSS v4.
+- shadcn Base UI primitives (`@base-ui/react`), not Radix; use `render`, not `asChild`.
+- TanStack Query v5, React Router v7, react-hook-form and zod.
+- Native fetch, lucide-react, sonner, next-themes; Oxlint for linting.
+- `src/api/`: API calls and envelope handling.
+- `src/auth/`: authentication context and sign-out handling.
+- `src/components/`: shared widgets, layout, route guards, and UI primitives.
+- `src/hooks/`: query and mutation hooks.
+- `src/routes/`: feature pages; `src/types/`: response types.
 
-- **Dev port:** `5180`, `strictPort: true` (Vite fails hard if the port is busy,
-  so the access URL is deterministic), `host: true` (LAN-accessible, matching
-  `ng serve --host 0.0.0.0` on the Angular client).
-- **API proxy:** `/api` is proxied to `http://localhost:3000` in dev, so the
-  client uses same-origin relative URLs and avoids hard-coded hosts.
-- **`API_BASE`** (`src/lib/constants.ts`): `import.meta.env.VITE_API_BASE ?? '/api/v1'`.
-  Override with `VITE_API_BASE` only for non-proxy deployments; the default works
-  for dev and same-origin production.
-- **Path alias:** `@` → `src/`.
-- **Admin bootstrap:** the API self-seeds the initial admin (`account=admin`) on startup from
-  `ADMIN_BOOTSTRAP_PASSWORD` when none exists — no manual seed step is required.
-  does the same via dotenv. Then log in here.
+## Authentication and requests
 
-## Project layout
+The browser sends the httpOnly `admin_session` cookie with same-origin requests.
+There is no browser-stored bearer or refresh token and no token-renewal request.
+Protected navigation checks `/admin/me` before mounting the console. Login may
+require a TOTP, recovery-code, or passkey challenge before a session is issued.
+Logout revokes the console session and clears administrator query state.
 
-```
-admin-web/src/
-├── api/            # per-domain API functions (auth, users, sessions, bans, …)
-│   └── client.ts   # unified request(): Bearer injection, envelope unwrap, 401 retry
-├── auth/           # AuthProvider, token-store, single-flight refresh, force-logout
-├── components/
-│   ├── common/     # shared widgets (e.g. timestamp)
-│   ├── layout/     # admin shell / nav
-│   ├── route/      # ProtectedRoute guard
-│   └── ui/         # shadcn / Base UI primitives
-├── hooks/          # TanStack Query hooks
-├── lib/            # constants, api-error, utils
-├── routes/         # one folder per page (login, users, sessions, admin-sessions, bans)
-└── types/          # ApiResult<T> envelope + domain types
-```
+`src/api/client.ts` unwraps `{ code, message, data }` and throws `ApiError` for
+business errors. Protected HTTP 401 or code 10003 signs the user out rather than
+retrying with a refresh token. Login challenge endpoints bypass that redirect.
+The client also handles code 10006 defensively as sign-out. Rate-limit responses
+are not automatically retried. Management requests use POST; public configuration
+reads and streaming interfaces use their respective protocols.
 
-## Auth model
+## Navigation and management
 
-Mirrors the Angular client's pattern but is **fully isolated** from it:
+Dashboard is standalone. The remaining navigation groups are Users & content,
+Login & security, Monitoring, Federation & network, and Services & configuration.
+My Account and Logout belong to the personal footer.
 
-- **Access token:** held in memory only (a module-level variable in
-  `src/auth/token-store.ts`). Lost on page refresh and rebuilt via the refresh
-  flow — never persisted.
-- **Refresh token:** persisted in `localStorage` under the dedicated key
-  **`admin_refresh_token`** (the user client uses `refresh_token`), so the two
-  systems cannot collide in the same origin.
-- **Single-flight refresh:** `src/auth/refresh-singleton.ts` ensures concurrent
-  401s share one refresh request.
-- **Transparent retry (`src/api/client.ts`):** a protected request that receives
-  HTTP 401 **or** business code `10003` (unauthenticated) triggers one refresh,
-  then retries the original call exactly once.
-- **Reuse detection:** business code `10006` (`REFRESH_REUSE_DETECTED`) triggers
-  `forceLogout` anywhere in the app — the admin's refresh-token family has been
-  revoked on the server and a full re-login is required.
-- **Public paths:** `/admin/login` and `/admin/renew-access` skip the
-  `Authorization` header and the retry loop (otherwise the refresh chain would
-  recurse).
-
-## API client
-
-Every call goes through `request<T>(path, body?)` in `src/api/client.ts`, which:
-
-1. Sends a `POST` with `Content-Type: application/json` and a `Bearer` access
-   token (unless the path is public).
-2. Unwraps the `ApiResult<T>` envelope (`{ code, message, data?, hasMore? }`).
-3. On `code !== 0`, throws an `ApiError(code, message, status)`.
-
-Business codes handled client-side (`src/lib/constants.ts`, aligned with the
-API's `src/common/business-code.ts`):
-
-| Code | Meaning |
+| Path | Purpose |
 | --- | --- |
-| `0` | OK |
-| `10000` | validation failed |
-| `10003` | unauthenticated → transparent refresh + retry |
-| `10004` | forbidden |
-| `10005` | rate limited |
-| `10006` | refresh reuse detected → force logout |
+| `/login` | Password and second-factor sign-in |
+| `/` | Redirect to `/dashboard` |
+| `/dashboard` | Operational overview |
+| `/users` | Single personnel roster, console role, and authorized row actions |
+| `/users/:id` | User details, console observations, sessions, restrictions, connections, and push registrations |
+| `/sessions` | Valid consumer sessions, filtered by user ID, IP, and client |
+| `/sessions/admins` | Console sessions; end own other sessions or, as SUPER_ADMIN, another administrator's |
+| `/connections` | Live SSE connections aggregated by user, not by device/session |
+| `/bans` | Account-grouped login restrictions and independent IP restrictions |
+| `/security` | My Account and self-service security |
 
-## Routes
+The old `/admin-sessions` and separate administrator-roster routes are removed,
+without compatibility redirects. The API `/admin/admin-sessions` remains the
+canonical console-session endpoint; it is not a page route or a compatibility API.
 
-| Path | Page | Notes |
-| --- | --- | --- |
-| `/login` | `LoginPage` | public; admin credentials |
-| `/` | — | redirects to `/users` |
-| `/users` | `UsersPage` | list, search, disable/enable, force-logout, reset password |
-| `/sessions` | `SessionsPage` | active **user** sessions across the system |
-| `/admin-sessions` | `AdminSessionsPage` | active **admin** sessions (audits who is logged into the console itself) |
-| `/bans` | `BansPage` | login bans (IP / account), unban |
-| `*` | `NotFoundPage` | |
+Consumer session tables share revocation, recent activity, inactivity timeout,
+and current validity deadline across the global list, user details, and quick view.
+All clients have sliding expiry; none are displayed as permanently trusted.
+"Sign out all users" ignores filters and ends chat sessions, not console sessions.
+Console role/status operations live in the user row menu. Details retain TOTP
+status and last console sign-in without widening the roster.
 
-All non-login routes are wrapped in `ProtectedRoute`, which redirects to
-`/login` when no admin session exists.
+Login restrictions are not account bans. Account release clears all four account
+login dimensions; IP release is separate. Unknown accounts stay visible without
+invented user links. Queries that fail must not be presented as zero connections
+or no restrictions. Full login-security history and device-level online association
+are deferred; see the access document for logging and audit limitations.

@@ -4,7 +4,6 @@ import { ProtectedRoute } from '@/components/route/protected-route';
 import { LoginPage } from '@/routes/login/login-page';
 import { NotFoundPage } from '@/routes/not-found-page';
 import { RouteErrorPage } from '@/routes/route-error-page';
-import { UsersLayout } from '@/routes/users/users-layout';
 import { SessionsLayout } from '@/routes/sessions/sessions-layout';
 import { FederationLayout } from '@/routes/federation/federation-layout';
 import { QuotaLayout } from '@/routes/quota/quota-layout';
@@ -22,11 +21,9 @@ import { LogsLayout } from '@/routes/logs/logs-layout';
  * the hub layouts — Users/Sessions/Federation/NetworkInfo/Push/Logs) stay eager: they are tiny <Outlet/>
  * wrappers that must render before any lazy child resolves.
  *
- * Multi-tab hubs use route-driven tabs: a hub layout (e.g. UsersLayout) renders the title + tab bar
- * and an <Outlet/>, with the tabs as child routes (the index route + named sub-routes). Detail pages
- * (/users/:id, /federation/:domain) are full-page siblings outside the hub layout. react-router v7
- * ranks static segments ahead of dynamic ones, so /users/operators resolves to the hub child
- * rather than to the :id sibling.
+ * Multi-tab hubs use route-driven tabs: each layout renders a title, tab bar, and <Outlet/>.
+ * Users has one roster without a tab shell. Detail pages (/users/:id, /federation/:domain)
+ * are full-page siblings outside their corresponding lists.
  *
  */
 
@@ -49,7 +46,7 @@ export const router = createBrowserRouter(
         {
           element: <ProtectedRoute />,
           children: [
-            { path: '/', element: <Navigate to="/users" replace /> },
+            { path: '/', element: <Navigate to="/dashboard" replace /> },
             {
               path: '/dashboard',
               lazy: () =>
@@ -59,23 +56,10 @@ export const router = createBrowserRouter(
             },
             {
               path: '/users',
-              element: <UsersLayout />,
-              children: [
-                {
-                  index: true,
-                  lazy: () =>
-                    import('@/routes/users/users-page').then((m) => ({
-                      Component: m.UsersPage,
-                    })),
-                },
-                {
-                  path: 'operators',
-                  lazy: () =>
-                    import('@/routes/admins/admins-page').then((m) => ({
-                      Component: m.AdminsPage,
-                    })),
-                },
-              ],
+              lazy: () =>
+                import('@/routes/users/users-page').then((m) => ({
+                  Component: m.UsersPage,
+                })),
             },
             {
               path: '/users/:id',
@@ -104,16 +88,12 @@ export const router = createBrowserRouter(
                 },
                 {
                   path: 'admins',
-                  element: <Navigate to="/admin-sessions" replace />,
+                  lazy: () =>
+                    import('@/routes/admin-sessions/admin-sessions-page').then(
+                      (m) => ({ Component: m.AdminSessionsPage }),
+                    ),
                 },
               ],
-            },
-            {
-              path: '/admin-sessions',
-              lazy: () =>
-                import('@/routes/admin-sessions/admin-sessions-page').then(
-                  (m) => ({ Component: m.AdminSessionsPage }),
-                ),
             },
             {
               path: '/connections',

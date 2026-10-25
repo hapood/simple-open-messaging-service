@@ -654,17 +654,41 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 
 ### Management
 
-- `POST /admin/users` `{ skip?, take?, search? }` → `{ list, total }`.
+- `POST /admin/users` `{ skip?, take?, search? }` → `{ list, total }`. Rows include
+  `adminId`, `adminRole`, `adminEnabled`, and `adminTwoFactorEnabled`; ordinary users
+  have null administrator fields. `POST /admin/users/:id/detail` also exposes
+  `adminRole`, `adminEnabled`, `adminTwoFactorEnabled` (TOTP), and `adminLastLoginAt`.
+  A null last-login timestamp means no recorded console sign-in; no credential secrets are returned.
 - `POST /admin/users/:id/{disable,enable,force-logout,sessions,generate-initial-password}` — disable (soft-delete + invalidate sessions), enable, force logout, view sessions, or generate an initial password (password generation invalidates existing sessions). There is no `/reset-password` route.
 - `POST /admin/threads/clear-history` `{ threadId, seq? }` — advances the thread-wide history boundary through `seq` (inclusive), or through the thread's current message sequence when omitted. Requires `ADMIN` or `SUPER_ADMIN` and is audited.
-- `POST /admin/bans` · `/admin/bans/unban` `{ ip?, account? }` — list/unban login bans (the shared `BruteForceService`; one unban clears all account-keyed dims — password + OTP).
-- `POST /admin/sessions` `{ skip?, take?, userId?, ip? }` · `/admin/sessions/purge` — system-wide session overview / one-click purge.
+- `POST /admin/bans` lists current restrictions (`ip`, `user`, `otp`, `admin_pwd`,
+  `admin_2fa`) with `key`, `value`, `until`, `remainingMs`, and `userId`. `userId` is
+  an exact local-person match, or null for unknown accounts, groups, and IP restrictions.
+- `POST /admin/bans/unban` `{ ip?, account? }` requires ADMIN or SUPER_ADMIN. An account
+  release clears user-password, login-code, console-password, and console-second-factor
+  restrictions together. IP release is independent. Neither enables a banned account;
+  subsequent failures can trigger another restriction.
+- `POST /admin/sessions` `{ skip?, take?, userId?, ip?, client? }` lists valid consumer
+  sessions; `client` is `app`, `web`, or `desktop`. Rows expose `lastSeenAt`,
+  `autoTerminateDays`, and `expiresAt`. Per-user lists and detail sessions expose the
+  same lifetime fields. All clients use sliding inactivity expiry: 7, 30, 90, 180,
+  or 365 days (default 30). Activity writes extend the deadline at most once per five
+  minutes, on authenticated use, not on a periodic renewal timer. Changing the user's
+  policy recalculates existing deadlines from each session's last recorded activity.
+- `POST /admin/sessions/:id/revoke` requires ADMIN or SUPER_ADMIN and revokes only
+  the selected consumer credential. `POST /admin/sessions/purge` requires SUPER_ADMIN
+  and signs out all chat clients, including those of administrator accounts, regardless
+  of list filters. Neither operation revokes console sessions.
+- `POST /admin/admin-sessions` `{ skip?, take?, ip? }` lists console sessions with
+  `isCurrent` and `canRevoke`. `POST /admin/admin-sessions/:id/revoke` lets every
+  administrator end their own other sessions; only SUPER_ADMIN may end someone else's.
+  The current session must use `/admin/logout`. Revocation is immediate and audited.
 - `POST /admin/audit` — `@Audit`-tagged action log (`AdminActionLog`).
 - `POST /admin/durable-tasks` — paginated durable-task execution history with status and search filters.
 - `POST /admin/logs/output-level` → `{ level }`; `POST /admin/logs/output-level/set`
   `{ level }` changes the process-wide output threshold for console, files, and live logs.
   Supported levels: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. The value stays in memory
-  and resets to `error` on every restart. The live stream returns all captured records;
+  and resets to `warn` on every restart. The live stream returns all captured records;
   historical log search retains its independent minimum-level filter.
 - Federation / quota admin: `AdminFederationController` (peer trust timeline), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
 

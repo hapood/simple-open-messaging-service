@@ -325,6 +325,14 @@ export class AdminListSessionsDto {
   ip?: string;
 }
 
+/** User credential filters are separate from administrator-session filters. */
+export class AdminListUserSessionsDto extends AdminListSessionsDto {
+  @ApiPropertyOptional({ enum: ['app', 'web', 'desktop'] })
+  @IsOptional()
+  @IsIn(['app', 'web', 'desktop'])
+  client?: 'app' | 'web' | 'desktop';
+}
+
 /** Pagination + filter for the Federation v1 recognition lifecycle list. */
 export class AdminListFederationPeersDto {
   @ApiProperty({
@@ -585,31 +593,6 @@ export class AdminDurableTaskQueryDto {
     | 'REJECTED'
     | 'FAILED'
     | 'SUPERSEDED';
-}
-
-/** Admin self-management: paginated, searchable list of admin accounts. */
-export class AdminManageListDto {
-  @ApiPropertyOptional({ default: 0 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  skip?: number;
-
-  @ApiPropertyOptional({ default: 50, minimum: 1, maximum: 200 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(200)
-  take?: number;
-
-  @ApiPropertyOptional({
-    description: 'Fuzzy search by linked user account (optional)',
-  })
-  @IsOptional()
-  @IsString()
-  search?: string;
 }
 
 /** Super-admin access cannot be granted through account-management APIs. */
