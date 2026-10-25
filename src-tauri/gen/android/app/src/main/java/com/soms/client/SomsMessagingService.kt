@@ -59,30 +59,14 @@ class SomsMessagingService : FirebaseMessagingService() {
                 // FCM also covers a temporarily disconnected SSE while the app is visible. Both paths post
                 // the same CallStyle notification; avoid a redundant start when SSE already seeded this call.
                 // A high-priority FCM grant permits the phoneCall FGS start when backgrounded or killed.
+                val loginUuid = SomsSecureStore.getLoginSessionId(this) ?: return
                 val sid = data["callSid"] ?: return
-                // A late/duplicate push for a call already past incoming (the SSE path answered/ended it) —
-                // don't re-ring. seedIncoming is itself idempotent on the same incoming callSid; this guards
-                // the ring for a call the SSE already advanced.
-                val p = CallController.phase
-                if (CallController.callSid == sid && p != "idle") return
-                val callerUserId = data["callerUserId"]?.toIntOrNull()
-                val callerAccount = data["callerAccount"]?.takeIf { it.isNotEmpty() } ?: return
-                val callerNamespaceId = data["callerNamespaceId"]?.toIntOrNull() ?: -1
-                val threadId = data["threadId"]?.toIntOrNull()?.takeIf { it > 0 } ?: return
-                // A push must match this account's local P2P thread. Never ring by guessing an identity
-                // when the thread is missing or its cached coordinates disagree with the payload.
-                val peer = ClientStateDb.getCallPeer(this, callerAccount, callerNamespaceId, threadId)
-                    ?: return
-                val callType = data["callType"] ?: "AUDIO"
-                SomsLog.i("Notif") { "CALL_INCOMING sid=$sid from=$callerUserId type=$callType -> ring" }
-                CallController.seedIncoming(
-                    sid, callerUserId ?: 0, callerAccount, callerNamespaceId,
-                    peer.name, peer.avatarDataUrl(), threadId, callType,
-                )
-                CallService.startIncoming(
-                    this, sid, callerAccount, callerNamespaceId, threadId, callType,
-                    peer.name, peer.avatarDataUrl(),
-                )
+                val callerUserId = data["callerUserId"]?.toIntOrNull() ?: 0
+                val account = data["callerAccount"] ?: return
+                val namespaceId = data["callerNamespaceId"]?.toIntOrNull() ?: -1
+                val threadId = data["threadId"]?.toIntOrNull() ?: return
+                CallController.seedIncoming(sid, callerUserId, account, namespaceId, threadId,
+                    data["callType"] ?: "AUDIO", "fcm", loginUuid)
             }
         }
     }

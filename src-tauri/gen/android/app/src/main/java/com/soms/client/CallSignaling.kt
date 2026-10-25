@@ -2,47 +2,8 @@ package com.soms.client
 
 /** Endpoint-only SDP inspection. Signaling bodies are never rewritten. */
 internal object CallSignaling {
-    private val uuid = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
     private val iceUfrag = Regex("[A-Za-z0-9+/]{4,256}")
     fun validIceUfrag(value: String): Boolean = iceUfrag.matches(value)
-    fun canonicalId(value: String): Boolean = uuid.matches(value)
-    fun validReference(kind: String, present: Boolean, reference: String): Boolean =
-        if (kind == "answer") present && canonicalId(reference) else !present
-
-    data class Offer(val id: String, val sdp: String)
-
-    enum class AnswerDecision { APPLY, IGNORE, CONFLICT }
-
-    /** Executor-confined caller offer lane; admission is not SDP completion. */
-    class OfferLane {
-        var activeId: String? = null
-            private set
-        var applying = false
-            private set
-        private val completed = HashSet<String>()
-        fun begin(id: String): Boolean {
-            if (!canonicalId(id) || activeId != null) return false
-            activeId = id
-            return true
-        }
-        fun beginAnswer(reply: String, haveLocalOffer: Boolean): AnswerDecision {
-            if (!canonicalId(reply)) return AnswerDecision.CONFLICT
-            if (reply in completed) return AnswerDecision.IGNORE
-            if (reply != activeId) return AnswerDecision.CONFLICT
-            if (applying) return AnswerDecision.IGNORE
-            if (!haveLocalOffer) return AnswerDecision.CONFLICT
-            applying = true
-            return AnswerDecision.APPLY
-        }
-        fun complete(id: String): Boolean {
-            if (activeId != id || !applying) return false
-            completed.add(id)
-            activeId = null
-            applying = false
-            return true
-        }
-        fun reset() { activeId = null; applying = false; completed.clear() }
-    }
     data class Section(val mid: String?, val ufrag: String?, val kind: String,
                        val active: Boolean, val direction: String)
 

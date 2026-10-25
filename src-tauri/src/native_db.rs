@@ -146,7 +146,7 @@ where
     })
 }
 
-fn with_owned_database<T>(
+pub(crate) fn with_owned_database<T>(
     work: &crate::login_connection::DatabaseWork,
     operation: impl FnOnce(&mut Connection) -> Result<T, String>,
 ) -> Result<T, String> {

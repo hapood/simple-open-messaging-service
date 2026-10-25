@@ -346,7 +346,7 @@ declare global {
       code?: number;
       retryAfter?: number;
     }) => void;
-    /** Kotlin→JS push (CallController.pushSnapshot): the native call FSM's current snapshot
+    /** Native media adapter→JS push: the Rust call runtime's current snapshot
      *  ({phase, callSid, …, mediaState, startedAt, muted}) whenever a transition the native layer owns
      *  fires (media connect/disconnect/failed, mute, phase changes). Installed by {@link CallEventService};
      *  absent on browser/desktop (no native call layer there). CallEventService merges this into its

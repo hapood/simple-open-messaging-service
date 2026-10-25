@@ -19,19 +19,6 @@ class NativeCallResourceCancellationTest {
         fun drain() { while (queue.isNotEmpty()) queue.removeFirst().invoke() }
     }
 
-    @Test fun cancellationInterruptsTransportBeforeQueuedRelease() {
-        val f = Fixture()
-        f.scope.registerNetwork { f.events += "cancel-http" }
-        val cancel = f.scope.prepare()
-        assertTrue(f.scope.isClosing)
-        assertTrue(f.events.isEmpty())
-        cancel()
-        assertEquals(listOf("cancel-http"), f.events)
-        f.drain()
-        assertEquals(listOf("cancel-http", "release-call-a"), f.events)
-        assertFalse(f.scope.isClosing)
-    }
-
     @Test fun oldQueuedWorkCannotRunAfterSessionReplacement() {
         val f = Fixture()
         f.scope.execute { f.events += "old-request-with-new-token" }
@@ -84,41 +71,6 @@ class NativeCallResourceCancellationTest {
         assertEquals("call-a", f.owner)
     }
 
-    @Test fun requestRegistrationAfterClosingIsRejected() {
-        val f = Fixture()
-        val cancel = f.scope.prepare()
-        assertFalse(f.scope.registerNetwork { fail("request must never run") })
-        cancel()
-        f.drain()
-    }
-
-    @Test fun staleUnregistrationCannotRemoveNewRequestCancellation() {
-        val f = Fixture()
-        val old = { f.events += "cancel-old"; Unit }
-        val current = { f.events += "cancel-current"; Unit }
-        assertTrue(f.scope.registerNetwork(old))
-        f.scope.prepare().invoke()
-        f.drain()
-        assertTrue(f.scope.registerNetwork(current))
-        f.scope.unregisterNetwork(old)
-        f.scope.prepare().invoke()
-        assertEquals(listOf("cancel-old", "release-call-a", "cancel-current"), f.events)
-    }
-
-    @Test fun reorderedOldCancellationNeverCancelsNewRequest() {
-        val f = Fixture()
-        f.scope.registerNetwork { f.events += "cancel-old" }
-        val first = f.scope.prepare()
-        val second = f.scope.prepare()
-        second()
-        f.drain()
-        f.owner = "call-b"
-        f.scope.registerNetwork { fail("old release must not cancel the new request") }
-        first()
-        f.drain()
-        assertEquals("call-b", f.owner)
-    }
-
     @Test fun admittedWorkKeepsItsOriginalRevisionAcrossSubmissionDelay() {
         val f = Fixture()
         val admission = f.scope.admitWhileOpen { f.owner = "admitted"; true }!!
@@ -142,27 +94,6 @@ class NativeCallResourceCancellationTest {
         })
         val current = f.scope.admitWhileOpen { true }!!
         assertNotNull(f.scope.admitWhileOpen(current) { true })
-    }
-
-    @Test fun incomingAdmissionCannotOverwriteAnotherAdmittedCall() {
-        val f = Fixture()
-        f.owner = null
-        var phase = "idle"
-        assertNotNull(f.scope.admitWhileOpen {
-            f.owner = "call-b"
-            phase = "incoming"
-            true
-        })
-        assertNull(f.scope.admitWhileOpen {
-            if (f.owner != null && f.owner != "call-a" && phase != "starting") {
-                false
-            } else {
-                f.owner = "call-a"
-                true
-            }
-        })
-        assertEquals("call-b", f.owner)
-        assertEquals("incoming", phase)
     }
 
     @Test fun admissionIsRejectedWhileClosing() {

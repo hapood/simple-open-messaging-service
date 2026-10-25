@@ -18,6 +18,8 @@
 mod android_realtime;
 #[cfg(target_os = "android")]
 mod android_runtime;
+#[cfg(any(target_os = "android", test))]
+mod call;
 mod client_compat;
 mod diagnostics;
 mod login_connection;

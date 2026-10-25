@@ -64,7 +64,7 @@ const PHASE_BY_EVENT: Record<string, CallPhase> = {
  *  - the SSE `CALL_EVENT` lifecycle (the incoming frame carries the peer's display name/avatar, which the
  *    native snapshot does NOT);
  *  - the native `window.__SOMS_CALL_EVENT__` snapshot push (authoritative for phase/mediaState/startedAt/
- *    muted — the native CallController FSM owns the RTCPeerConnection).
+ *    muted — the Rust call runtime owns signaling and the native adapter owns the RTCPeerConnection).
  * Last-write-wins per field; peerName + peerAvatar prefer the native value when present (the caller passes
  * the callee's at initiate; the callee's come from the FCM push / SSE frame), else keep the SSE-set one.
  * On Android the WebRTC signaling (CALL_SIGNAL) is handled entirely natively, so this

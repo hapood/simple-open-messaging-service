@@ -1430,25 +1430,6 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    /** Start the active-call foreground service (CallService — the process anchor + the call's audio
-     *  routing). Idempotent: starting an already-running service re-delivers onStartCommand (harmless —
-     *  acquireAudio is replace-by-token). Guarded against the Android 12+ background-service-start
-     *  restriction: a call begins from a user gesture while foregrounded (Phase 2), so this path is allowed;
-     *  the catch is belt-and-suspenders for the rare fg/bg race during the init→main window handoff, mirroring
-     *  onResume's RealtimeService start guard. Called by SomsCallInterface.initiate / accept. */
-    internal fun startCallService() {
-        try {
-            val binding = NotificationSessionBinding.capture(this) ?: return
-            val serviceIntent = Intent(this, CallService::class.java)
-            val sid = CallController.callSid ?: return
-            serviceIntent.putExtra(CallService.EXTRA_SID, sid)
-            binding.attach(serviceIntent, "outgoing-service", sid)
-            startForegroundService(serviceIntent)
-        } catch (e: RuntimeException) {
-            Log.w("SomsActivity", "call service start skipped: ${e.javaClass.simpleName}: ${e.message}")
-        }
-    }
-
     /** The deferred call-start action awaiting a RECORD_AUDIO (+ CAMERA for VIDEO) grant. One-shot: cleared
      *  in [onRequestPermissionsResult] whether granted or not. Null when no call is pending a permission. */
     private var pendingCallStart: (() -> Unit)? = null
@@ -1484,7 +1465,7 @@ class MainActivity : TauriActivity() {
     }
 
     /** Ensure RECORD_AUDIO (+ CAMERA for VIDEO) is granted before a call captures media; run [andThen]
-     *  (startCallService + CallController.initiate/accept) once granted. The native RTCPeerConnection is NOT
+     *  (CallController.initiate/accept) once granted. The native RTCPeerConnection is NOT
      *  the WebView, so RustWebChromeClient.onPermissionRequest (which grants AUDIO_CAPTURE to the WebView
      *  only) does NOT cover it — without this the mic captures SILENCE (WebRtcAudioRecord releases its
      *  resources with no permission) and the call connects with no audio. The grant persists, so this prompts
@@ -2073,32 +2054,16 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun initiate(threadId: Int, callSid: String, callType: String, peerAccount: String, peerNamespaceId: Int) {
             val a = activityRef.get() ?: return
+            val loginUuid = SomsSecureStore.getLoginSessionId(a) ?: return
             val revision = CallController.captureSessionResourceRevision() ?: return
             val binding = NotificationSessionBinding.capture(a) ?: return
             a.runOnUiThread {
                 if (!binding.isCurrent(a)) return@runOnUiThread
                 a.ensureCallPermissions(callType) {
                     if (!binding.isCurrent(a)) return@ensureCallPermissions
-                    // Native SQLite is the presentation authority. Resolve it off the UI thread and only
-                    // publish the starting snapshot after the name/avatar are ready.
                     Thread {
-                        val peer = ClientStateDb.getCallPeer(a.applicationContext, peerAccount, peerNamespaceId, threadId)
-                        a.runOnUiThread seed@{
-                            if (!binding.isCurrent(a)) return@seed
-                            if (CallController.initiate(
-                                    threadId,
-                                    callSid,
-                                    callType,
-                                    peerAccount,
-                                    peerNamespaceId,
-                                    peer?.name ?: "",
-                                    peer?.avatarDataUrl() ?: "",
-                                    revision,
-                                )) {
-                                a.startCallService()
-                            }
-                            // A false return means this device already owns a different call. Do not emit
-                            // a rejection for that attempt: the existing call must keep its UI and media.
+                        if (binding.isCurrent(a)) {
+                            CallController.initiate(threadId, callSid, callType, peerAccount, peerNamespaceId, revision, loginUuid)
                         }
                     }.start()
                 }
@@ -2116,7 +2081,6 @@ class MainActivity : TauriActivity() {
             a.runOnUiThread {
                 a.ensureCallPermissions(CallController.callType) {
                     if (!binding.isCurrent(a) || CallController.callSid != callSid) return@ensureCallPermissions
-                    a.startCallService()
                     CallController.accept(callSid)
                 }
             }

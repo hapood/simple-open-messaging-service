@@ -135,7 +135,9 @@ impl Sink for Callbacks {
                         )?;
                     }
                 }
-                Output::IncomingCall(data) => {
+                Output::IncomingCall(mut data) => {
+                    let Some(envelope) = run.event_payload("CALL_RECOVERY", "", serde_json::Value::Null) else { return Ok(()); };
+                    data["loginSessionId"] = envelope["loginSessionId"].clone();
                     let data = JObject::from(env.new_string(data.to_string())?);
                     env.call_method(
                         callback,

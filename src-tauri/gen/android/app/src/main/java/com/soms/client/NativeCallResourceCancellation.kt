@@ -11,7 +11,6 @@ internal class NativeCallResourceCancellation(
     private val monitor = Any()
     private var revision = 0L
     private var released = CompletableFuture.completedFuture(Unit)
-    private var networkCancellation: (() -> Unit)? = null
     val isClosing: Boolean get() = synchronized(monitor) { !released.isDone }
 
     // Admission and owner snapshot writes must be atomic. The action only mutates in-memory fields.
@@ -36,37 +35,21 @@ internal class NativeCallResourceCancellation(
         completion.thenRun { action() }
     }
 
-    fun registerNetwork(cancel: () -> Unit): Boolean = synchronized(monitor) {
-        if (!released.isDone) false else {
-            networkCancellation = cancel
-            true
-        }
-    }
-
-    fun unregisterNetwork(cancel: () -> Unit) = synchronized(monitor) {
-        if (networkCancellation === cancel) networkCancellation = null
-    }
-
     // Preparing only closes admission; execute the returned action outside the credential monitor.
     fun prepare(): () -> Unit {
         val completion = CompletableFuture<Unit>()
         val captured = synchronized(monitor) {
             revision += 1
             released = completion
-            currentOwner() to networkCancellation
+            currentOwner()
         }
-        val (owner, cancelNetwork) = captured
+        val owner = captured
         return {
-            // Interrupt the executing request now, not from the queue blocked by that request.
-            try {
-                cancelNetwork?.invoke()
-            } finally {
-                enqueue {
-                    try {
-                        if (!owner.isNullOrEmpty() && currentOwner() == owner) release()
-                    } finally {
-                        completion.complete(Unit)
-                    }
+            enqueue {
+                try {
+                    if (!owner.isNullOrEmpty() && currentOwner() == owner) release()
+                } finally {
+                    completion.complete(Unit)
                 }
             }
         }
