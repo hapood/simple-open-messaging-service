@@ -26,6 +26,7 @@ import { UserService } from './user.service';
 import { ToastService } from './toast.service';
 import { BROWSER_SESSION } from './browser-session.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { ServerConfigDialogService } from './server-config-dialog.service';
 import { SessionSupersededError } from './session/session-identity';
 
 /**
@@ -122,7 +123,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           [
             'set_session_token',
             'clear_session_token',
-            'set_active_origin',
             'native_db_validate_cache',
             'native_db_recreate_cache',
             'desktop_notifications_clear',
@@ -320,6 +320,35 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       },
     );
   }
+
+  it('does not start native authentication while server setup is visible', async () => {
+    desktopGlobals();
+    TestBed.inject(ServerConfigDialogService).open();
+    const result = await firstValueFrom(
+      svc.login({ account: 'old', password: 'pw' }),
+      { defaultValue: null },
+    );
+    expect(result).toBeNull();
+    expect(invokeSpy).not.toHaveBeenCalledWith('native_db_begin_login');
+    httpMock.expectNone((request) => /auth\/login$/.test(request.url));
+  });
+
+  it('opening server setup cancels the pending login and invalidates its existing work lease', async () => {
+    desktopGlobals();
+    const result = firstValueFrom(
+      svc.login({ account: 'old', password: 'pw' }),
+      { defaultValue: null },
+    );
+    const request = await loginRequest();
+    const work = TestBed.inject(SessionLifecycleService).capture();
+    TestBed.inject(ServerConfigDialogService).open();
+    expect(await result).toBeNull();
+    expect(request.cancelled).toBe(true);
+    expect(work.signal.aborted).toBe(true);
+    expect(
+      invokeSpy.mock.calls.some(([command]) => command === 'set_session_token'),
+    ).toBe(false);
+  });
 
   describe('immutable native authentication ownership', () => {
     const firstId = '11111111-2222-4d9e-af01-234567890abc';
@@ -737,11 +766,8 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     it('restoreSession with no stored token leaves the user logged out', async () => {
       const { pick } = androidGlobals(null);
       await svc.restoreSession();
-      expect(pick).toHaveBeenCalledTimes(1);
-      expect(invokeSpy).toHaveBeenCalledWith('set_active_origin', {
-        url: 'http://lan.test',
-      });
-      expect(invokeSpy).not.toHaveBeenCalledWith('init_pick_origin', undefined);
+      expect(pick).not.toHaveBeenCalled();
+      expect(invokeSpy).toHaveBeenCalledWith('init_pick_origin', undefined);
       expect(svc.loggedIn()).toBe(false);
       expect(svc.isLoggedIn()).toBe(false);
     });

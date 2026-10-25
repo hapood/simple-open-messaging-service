@@ -8,9 +8,11 @@ import {
   from,
   mergeMap,
   tap,
+  takeUntil,
 } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { RouteService, RoutePage } from './route.service';
+import { ServerConfigDialogService } from './server-config-dialog.service';
 import { apiPrefix } from './constants';
 import {
   apiOrigin,
@@ -119,6 +121,7 @@ export class AuthService {
   private readonly sessionState = inject(SessionStateService);
   private readonly browserSession = inject(BROWSER_SESSION);
   private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly serverConfigDialog = inject(ServerConfigDialogService);
   readonly loggedIn = this.sessionState.loggedIn;
 
   constructor(
@@ -130,7 +133,11 @@ export class AuthService {
     private transloco: TranslocoService,
     private toast: ToastService,
     private sendOutbox: ThreadSendOutbox,
-  ) {}
+  ) {
+    this.serverConfigDialog.opened$.subscribe(() => {
+      if (isTauri() && !this.isLoggedIn()) this.lifecycle.invalidateSession();
+    });
+  }
 
   /** Resolve a transloco key to the active-locale string (falls back to the key). Mirrors WebPushService.t. */
   private t(key: string): string {
@@ -159,16 +166,17 @@ export class AuthService {
     request: (context: Authentication) => Observable<T>,
   ): Observable<T> {
     if (isTauri()) {
-      return defer(() =>
-        from(this.prepareNativeLogin()).pipe(
+      return defer(() => {
+        if (this.serverConfigDialog.visible()) return EMPTY;
+        return from(this.prepareNativeLogin()).pipe(
           mergeMap(async (context) => {
             await pickLoginOrigin();
             this.lifecycle.assertCurrent(context.work);
             return context;
           }),
           mergeMap(request),
-        ),
-      );
+        );
+      }).pipe(takeUntil(this.serverConfigDialog.opened$));
     }
     const browser = this.requireBrowserSession();
     return defer(() =>

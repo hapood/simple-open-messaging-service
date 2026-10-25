@@ -319,6 +319,7 @@ pub(crate) async fn pick_origin_race_with_commit(
     state: &ServerSessionState,
     commit: impl FnOnce(&str, OriginMode) -> bool,
 ) -> Option<String> {
+    let _guard = state.select_lock.lock().await;
     let Some(secondary) = state
         .api_origin_secondary
         .lock()
@@ -340,7 +341,6 @@ pub(crate) async fn pick_origin_race_with_commit(
 
     // Single-flight the race. Do not serially "cheap-check" the current address first: when it is down,
     // every such check burns a full timeout before the reachable fallback is even considered.
-    let _guard = state.select_lock.lock().await;
     let chosen = race_origin_candidates(&primary, &secondary).await;
     let Some((origin, mode)) = chosen else {
         warn!("pick_origin_race: both origins unreachable; staying on {active}");

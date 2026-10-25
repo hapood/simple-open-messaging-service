@@ -13,6 +13,7 @@ import {
 import { PreferenceStore } from '../preference-store.service';
 import { SessionLifecycleService } from '../session-lifecycle.service';
 import { SessionStateService } from '../session-state.service';
+import { ServerConfigDialogService } from '../server-config-dialog.service';
 import { WebdbStorage } from '../webdb-storage';
 import { parseLoginSessionId } from './session-identity';
 
@@ -95,6 +96,7 @@ function client(
   const toast = { warn: vi.fn(), info: vi.fn() };
   const injector = Injector.create({
     providers: [
+      ServerConfigDialogService,
       { provide: SessionStateService, useValue: state },
       { provide: SessionLifecycleService, useValue: lifecycle },
       {

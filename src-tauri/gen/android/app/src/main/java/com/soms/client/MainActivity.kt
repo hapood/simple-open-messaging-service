@@ -735,10 +735,8 @@ class MainActivity : TauriActivity() {
         // main.ts, before bootstrap) to set --soms-safe-top for a FOUC-free first paint. Android WebView's
         // env(safe-area-inset-top) is 0, so this @JavascriptInterface is the only source.
         webView.addJavascriptInterface(SomsShellInterface(this), "SomsShell")
-        // window.SomsSecureStore.getApiOrigin()/setApiOrigin() — the WebView-independent persistence the
-        // web seeds apiOrigin from at boot and the native SSE (RealtimeService)
-        // reads. Added here, before the page boots, so runtime.ts's synchronous seed read resolves the
-        // native store (not a stale injected global).
+        // The platform store mirrors Rust's committed origin pair for synchronous presentation reads.
+        // Install the bridge before bootstrap so runtime.ts seeds from this mirror, not injected globals.
         webView.addJavascriptInterface(SomsSecureStoreInterface(this), "SomsSecureStore")
         // window.SomsCall.* — the command direction of the native call bridge (initiate / accept / … /
         // getSnapshot); the Angular CallAdapter facade calls these. The EVENT direction rides the existing
@@ -2014,35 +2012,26 @@ class MainActivity : TauriActivity() {
             return SomsSecureStore.getApiOrigin(a)
         }
 
-        /** Persist the backend origin (null/empty clears). Called from JS `setApiOrigin` on a
-         *  server-config save — the single writer; the web never mirrors a boot value back here (that
-         *  was the stale-global corruption path). */
         @JavascriptInterface
-        fun setApiOrigin(origin: String?) {
+        fun recordServerOrigins(primary: String, secondary: String?, mode: String) {
             val a = activityRef.get() ?: return
-            SomsSecureStore.setApiOrigin(a, origin)
+            SomsSecureStore.recordServerOrigins(a, primary, secondary, mode)
         }
 
-        /** The optional LAN (secondary) origin (null = no fallback). Pushed by JS `setApiOriginSecondary`
-         *  on a server-config save; RealtimeService reads it to pick the reachable /events origin. */
+        /** Read the optional backup from the committed configuration's platform mirror. */
         @JavascriptInterface
         fun getApiOriginSecondary(): String? {
             val a = activityRef.get() ?: return null
             return SomsSecureStore.getApiOriginSecondary(a)
         }
 
-        @JavascriptInterface
-        fun setApiOriginSecondary(origin: String?) {
-            val a = activityRef.get() ?: return
-            SomsSecureStore.setApiOriginSecondary(a, origin)
-        }
     }
 
     /** JS-callable surface exposed as window.SomsCall — the COMMAND direction of the native call bridge.
      *  The web's CallAdapter facade (the mirror of NotificationAdapter) calls these; they delegate to the
-     *  process-global [CallController] (the RTCPeerConnection + lifecycle FSM owner). The EVENT direction
-     *  flows the other way: RealtimeService → CallController, and CallController.pushSnapshot evals
-     *  window.__SOMS_CALL_EVENT__ back to JS. The begin-a-call methods (initiate/accept) also start the
+     *  process-global [CallController] media adapter for Rust-owned calls. The EVENT direction
+     *  flows the other way: RealtimeService → CallController, and CallController publishes
+     *  window.__SOMS_CALL_EVENT__ back to JS. Rust commands start the
      *  [CallService] FGS (the process anchor + audio routing). @JavascriptInterface runs on a background JS
      *  thread; CallController hops to its own serial executor, and getSnapshot reads only @Volatile fields,
      *  so no UI-thread hop is needed. */

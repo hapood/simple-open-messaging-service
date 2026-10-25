@@ -1,40 +1,21 @@
-import {
-  resolveOriginSelection,
-  singleOriginAfterDecliningPair,
-} from './server-config-page.component';
+import { resolveOriginSelection } from './server-config-page.component';
 
 describe('resolveOriginSelection', () => {
-  it('keeps the entered reachable address when the advertised pair is declined', () => {
-    const selection = resolveOriginSelection(
-      'http://127.0.0.1:3101/',
-      'http://alpha.test:7667',
-      null,
-    );
-    expect(selection).toEqual({
-      primary: 'http://alpha.test:7667',
-      lan: 'http://127.0.0.1:3101',
-      confirmPair: true,
-    });
-    expect(singleOriginAfterDecliningPair('http://127.0.0.1:3101/')).toBe(
-      'http://127.0.0.1:3101',
-    );
-  });
-
-  it('pairs an unadvertised LAN IP with the advertised public domain', () => {
+  it('does not invent a backup from an unadvertised entered address', () => {
     expect(
       resolveOriginSelection(
-        'http://10.0.0.1:3000',
+        'http://10.0.0.1:3000/',
         'https://chat.example',
         null,
       ),
     ).toEqual({
       primary: 'https://chat.example',
-      lan: 'http://10.0.0.1:3000',
-      confirmPair: true,
+      lan: null,
+      confirmPair: false,
     });
   });
 
-  it('retains the known-reachable address when it is outside the advertised pair', () => {
+  it('uses the server-advertised backup even when entered through another address', () => {
     expect(
       resolveOriginSelection(
         'http://10.0.0.1:3000/',
@@ -43,8 +24,22 @@ describe('resolveOriginSelection', () => {
       ),
     ).toEqual({
       primary: 'https://chat.example',
-      lan: 'http://10.0.0.1:3000',
+      lan: 'https://lan.chat.example',
       confirmPair: true,
+    });
+  });
+
+  it('keeps one address when the server advertises identical origins', () => {
+    expect(
+      resolveOriginSelection(
+        'https://chat.example',
+        'https://chat.example/',
+        'https://chat.example/',
+      ),
+    ).toEqual({
+      primary: 'https://chat.example',
+      lan: null,
+      confirmPair: false,
     });
   });
 

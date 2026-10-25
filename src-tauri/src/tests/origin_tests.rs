@@ -21,6 +21,12 @@ fn admitted_token_updates_require_matching_owner_and_do_not_clear_successor() {
         .unwrap()
         .commit("token-1".into())
         .unwrap();
+    state
+        .auth_lifecycle
+        .enter(crate::auth_lifecycle::Phase::Login)
+        .unwrap()
+        .register_login(&id1.to_string())
+        .unwrap();
 
     // Setting token without setting state.login_session fails with superseded.
     assert_eq!(
@@ -66,6 +72,12 @@ fn admitted_token_updates_require_matching_owner_and_do_not_clear_successor() {
         .begin_activation()
         .unwrap()
         .commit("token-2".into())
+        .unwrap();
+    state
+        .auth_lifecycle
+        .enter(crate::auth_lifecycle::Phase::Login)
+        .unwrap()
+        .register_login(&id2.to_string())
         .unwrap();
     *state.login_session.lock().unwrap() = Some(id2.clone());
     state

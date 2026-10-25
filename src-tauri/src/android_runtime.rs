@@ -189,49 +189,12 @@ pub(crate) fn proxy_state() -> Result<&'static crate::ServerSessionState, String
         .ok_or_else(|| "Android Rust runtime is not initialized".into())
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeOrigins {
-    primary: Option<String>,
-    secondary: Option<String>,
-    mode: String,
-}
-
-fn apply_origins(state: &crate::ServerSessionState, origins: RuntimeOrigins) -> Result<(), String> {
-    let normalize = |value: Option<String>| -> Result<Option<String>, String> {
-        value
-            .map(|raw| crate::validate_origin(&raw).ok_or_else(|| "invalid runtime origin".into()))
-            .transpose()
-    };
-    let primary = normalize(origins.primary)?.unwrap_or_else(|| crate::DEFAULT_API_ORIGIN.into());
-    let secondary = normalize(origins.secondary)?;
-    let (active, mode) = if origins.mode == "secondary" {
-        match secondary.as_ref() {
-            Some(value) => (value.clone(), crate::OriginMode::Secondary),
-            None => (primary.clone(), crate::OriginMode::Primary),
-        }
-    } else {
-        (primary.clone(), crate::OriginMode::Primary)
-    };
-    *state
-        .api_origin_primary
-        .lock()
-        .map_err(|_| "primary lock poisoned")? = primary;
-    *state
-        .api_origin_secondary
-        .lock()
-        .map_err(|_| "secondary lock poisoned")? = secondary;
-    crate::activate_origin(state, &active, mode);
-    Ok(())
-}
-
 /// Loading the library and admitting database access do not create a Tauri app or WebView.
 #[no_mangle]
 pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
     mut env: JNIEnv,
     _receiver: JObject,
     data_directory: JString,
-    origins_json: JString,
     token: JString,
 ) -> jstring {
     let result = (|| -> Result<jstring, String> {
@@ -244,12 +207,6 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
         if let Err(error) = crate::native_db::initialize_login_cache() {
             log::warn!("login cache initialization requires repair: {error}");
         }
-        let origins: String = env
-            .get_string(&origins_json)
-            .map_err(|e| e.to_string())?
-            .into();
-        let origins: RuntimeOrigins =
-            serde_json::from_str(&origins).map_err(|_| "invalid runtime origins")?;
         let token = if token.is_null() {
             None
         } else {
@@ -259,7 +216,6 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
         let state = crate::ServerSessionState::new();
         // Eagerly start the same async runtime Tauri uses later; this performs no network I/O.
         let _ = tauri::async_runtime::handle();
-        apply_origins(&state, origins)?;
         if let Some(token) = token {
             if let Some(id) = crate::native_db::restore_login_credential(&token)? {
                 *state
@@ -277,6 +233,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
             .parent()
             .ok_or("missing database parent")?
             .join(crate::CONFIG_FILENAME);
+        crate::server_setup::restore(&state)?;
         PROXY
             .set(state)
             .map_err(|_| "Android Rust runtime already initialized")?;
@@ -340,20 +297,40 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_clearResidualToken
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_setOrigins(
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_getServerOrigins(
     mut env: JNIEnv,
     _receiver: JObject,
-    origins_json: JString,
-) {
-    let result = (|| -> Result<(), String> {
-        let json: String = env
-            .get_string(&origins_json)
-            .map_err(|e| e.to_string())?
-            .into();
-        let origins = serde_json::from_str(&json).map_err(|_| "invalid runtime origins")?;
-        apply_origins(proxy_state()?, origins)
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        let state = proxy_state()?;
+        let primary = state
+            .api_origin_primary
+            .lock()
+            .map_err(|_| "primary lock poisoned")?
+            .clone();
+        let secondary = state
+            .api_origin_secondary
+            .lock()
+            .map_err(|_| "secondary lock poisoned")?
+            .clone();
+        let mode = match *state.origin_mode.lock().map_err(|_| "mode lock poisoned")? {
+            crate::OriginMode::Primary => "primary",
+            crate::OriginMode::Secondary => "secondary",
+        };
+        Ok(
+            serde_json::json!({ "primary": primary, "secondary": secondary, "mode": mode,
+            "configured": primary != crate::DEFAULT_API_ORIGIN })
+            .to_string(),
+        )
     })();
-    if let Err(error) = result {
-        let _ = env.throw_new("java/lang/IllegalStateException", error);
+    match result {
+        Ok(value) => env
+            .new_string(value)
+            .map(|value| value.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(error) => {
+            let _ = env.throw_new("java/lang/IllegalStateException", error);
+            std::ptr::null_mut()
+        }
     }
 }

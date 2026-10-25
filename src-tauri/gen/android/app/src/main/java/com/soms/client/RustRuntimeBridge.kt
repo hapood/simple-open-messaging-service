@@ -20,8 +20,14 @@ object RustRuntimeBridge {
         check(databasePath == null) { "Rust runtime is already initialized" }
         databasePath = initializeRuntime(
             ctx.applicationContext.dataDir.absolutePath,
-            origins(ctx),
             SomsSecureStore.getSessionToken(ctx),
+        )
+        val restored = JSONObject(getServerOrigins())
+        SomsSecureStore.recordServerOrigins(
+            ctx,
+            if (restored.getBoolean("configured")) restored.getString("primary") else "",
+            restored.optString("secondary").takeIf { !restored.isNull("secondary") },
+            restored.getString("mode"),
         )
     }
 
@@ -30,17 +36,6 @@ object RustRuntimeBridge {
     external fun getNotificationPreference(key: String): String?
     external fun setNotificationPreference(key: String, value: String)
     external fun queryCallPeer(userId: Int, threadId: Int, account: String, namespaceId: Int): String?
-
-    private fun origins(ctx: Context): String = JSONObject().apply {
-        put("primary", SomsSecureStore.getApiOrigin(ctx) ?: JSONObject.NULL)
-        put("secondary", SomsSecureStore.getApiOriginSecondary(ctx) ?: JSONObject.NULL)
-        put("mode", SomsSecureStore.getOriginMode(ctx))
-    }.toString()
-
-    fun updateOrigins(ctx: Context) {
-        checkNotNull(databasePath) { "Rust runtime is not initialized" }
-        setOrigins(origins(ctx))
-    }
 
     @Synchronized
     fun setSessionToken(token: String?, sessionUuid: String) {
@@ -90,6 +85,6 @@ object RustRuntimeBridge {
 
     private external fun syncStateFeed(userId: Int, target: Long): String
     private external fun queryNotifications(userId: Int, threadFeedEndId: Int): NativeNotificationBatch
-    private external fun setOrigins(originsJson: String)
-    private external fun initializeRuntime(dataDirectory: String, originsJson: String, token: String?): String
+    private external fun getServerOrigins(): String
+    private external fun initializeRuntime(dataDirectory: String, token: String?): String
 }

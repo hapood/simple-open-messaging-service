@@ -5,6 +5,7 @@ import {
   inject,
   ChangeDetectionStrategy,
 } from '@angular/core';
+import { finalize } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
@@ -101,6 +102,7 @@ export class OtpLoginPageComponent {
     this.isSubmitting.set(true);
     this.auth
       .otpLogin({ account: this.account(), code: this.code() })
+      .pipe(finalize(() => this.isSubmitting.set(false)))
       .subscribe({
         next: (res) => {
           if (res.code === 0) {
@@ -111,12 +113,10 @@ export class OtpLoginPageComponent {
             );
           } else {
             this.resp.set(translateBizResult(res, this.transloco));
-            this.isSubmitting.set(false);
           }
         },
         error: () => {
           this.resp.set(this.transloco.translate('auth.unknownError'));
-          this.isSubmitting.set(false);
         },
       });
   }

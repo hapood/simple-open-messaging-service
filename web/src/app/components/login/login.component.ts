@@ -7,6 +7,7 @@ import {
   inject,
   ChangeDetectionStrategy,
 } from '@angular/core';
+import { finalize } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { AuthService } from '../../services/auth.service';
@@ -101,21 +102,19 @@ export class LoginComponent {
         account: this.account(),
         password: this.password(),
       })
+      .pipe(finalize(() => this.isLoging.set(false)))
       .subscribe({
         next: (res) => {
           if (res.code === 0) {
             this.onSuccess.emit(!!res.data?.mustChangePassword);
             this.isSuccess.set(true);
-            this.isLoging.set(false);
           } else {
             this.resp.set(translateBizResult(res, this.transloco));
-            this.isLoging.set(false);
           }
         },
         error: (err) => {
           console.error(err);
           this.resp.set(this.transloco.translate('auth.unknownError'));
-          this.isLoging.set(false);
         },
       });
   }

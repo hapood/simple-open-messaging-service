@@ -7,9 +7,9 @@
 # packaging. tauri-build reads this file to generate the capability schema.
 
 [[permission]]
-identifier = "allow-set-api-origin"
-description = "Enables the set_api_origin command (validate + persist the backend origin)."
-commands.allow = ["set_api_origin"]
+identifier = "allow-server-setup"
+description = "Runs cancellable signed-out server verification and commits the verified server configuration."
+commands.allow = ["begin_server_setup", "cancel_server_setup", "check_server_setup", "commit_server_setup"]
 
 [[permission]]
 identifier = "allow-get-api-origin"
@@ -34,11 +34,6 @@ description = "Enables get_api_origin_secondary — the configured LAN origin (n
 commands.allow = ["get_api_origin_secondary"]
 
 [[permission]]
-identifier = "allow-set-api-origin-secondary"
-description = "Enables set_api_origin_secondary — validate + persist the LAN origin (empty clears it, disabling fallback)."
-commands.allow = ["set_api_origin_secondary"]
-
-[[permission]]
 identifier = "allow-get-origin-mode"
 description = "Enables get_origin_mode — which origin is ACTIVE (primary | secondary), for the 'using LAN server' indicator."
 commands.allow = ["get_origin_mode"]
@@ -47,11 +42,6 @@ commands.allow = ["get_origin_mode"]
 identifier = "allow-init-pick-origin"
 description = "Enables init_pick_origin — the login-init concurrent race (probe both /client/compat, pick reachable, set active)."
 commands.allow = ["init_pick_origin"]
-
-[[permission]]
-identifier = "allow-set-active-origin"
-description = "Enables set_active_origin — Android passive-accept (Kotlin signals the active origin; Rust sets it without deciding)."
-commands.allow = ["set_active_origin"]
 
 [[permission]]
 identifier = "allow-set-session-token"
@@ -275,16 +265,14 @@ commands.allow = ["desktop_notification_update", "desktop_notifications_clear", 
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
 permissions = [
+  "allow-server-setup",
   "allow-desktop-notifications",
-  "allow-set-api-origin",
   "allow-get-api-origin",
   "allow-get-active-api-origin",
   "allow-is-origin-configured",
   "allow-get-api-origin-secondary",
-  "allow-set-api-origin-secondary",
   "allow-get-origin-mode",
   "allow-init-pick-origin",
-  "allow-set-active-origin",
   "allow-set-session-token",
   "allow-clear-session-token",
   "allow-login-session-for-token",

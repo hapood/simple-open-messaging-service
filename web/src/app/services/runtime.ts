@@ -30,16 +30,19 @@ import type { StandardMessage } from './realtime-transport';
  *    reads, so the web and the native realtime layer can never disagree on the host.
  *  - Desktop / browser: `window.SomsSecureStore` is absent, so `secureStore` falls back to an inert
  *    stub (reads return null, writes no-op) — the desktop origin's persistence is the Rust app-data
- *    config file (`set_api_origin`), synced into the signal by the config-guard self-heal. The web
+ *    configuration file, synced into the signal by the config guard. The web
  *    talks to this single interface regardless of platform — no isAndroid() branching at the call sites.
  */
 interface SomsSecureStore {
   getApiOrigin(): string | null;
-  setApiOrigin(origin: string | null): void;
+  recordServerOrigins(
+    primary: string,
+    secondary: string | null,
+    mode: 'primary' | 'secondary',
+  ): void;
   /** Secondary (LAN) origin for native fallback — null when no fallback is configured. Same surface so the
    *  Android Kotlin SSE (RealtimeService) reads the same store the web writes. */
   getApiOriginSecondary(): string | null;
-  setApiOriginSecondary(origin: string | null): void;
 }
 
 declare global {
@@ -505,7 +508,7 @@ export function originIsInsecure(origin: string): boolean {
 
 /** The concrete persistence surface: the native `@JavascriptInterface` on Android; an inert stub
  *  (reads return null, writes no-op) on desktop/browser, where the origin's persistence is the Rust
- *  config file (see `setApiOrigin`). Resolved once at module load — `window.SomsSecureStore` is injected before
+ *  configuration file. Resolved once at module load — `window.SomsSecureStore` is injected before
  *  any page script by the Android shell (same window as the other @JavascriptInterface surfaces), so the
  *  native store is available synchronously at seed time, with no async and no race. */
 const secureStore: SomsSecureStore =
@@ -513,9 +516,8 @@ const secureStore: SomsSecureStore =
     ? window.SomsSecureStore
     : {
         getApiOrigin: () => null,
-        setApiOrigin: () => {},
+        recordServerOrigins: () => {},
         getApiOriginSecondary: () => null,
-        setApiOriginSecondary: () => {},
       };
 
 /** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin (browser) /
@@ -523,7 +525,7 @@ const secureStore: SomsSecureStore =
  *  the data layer points. Seeded from the persisted store (`secureStore`), NOT from a frozen init-script
  *  global, so a renderer-reclaim reload after a server-config change re-reads the live value instead of
  *  a stale snapshot. `''` (not a localhost default) means "no server configured yet"; the server-config
- *  form pre-fills a placeholder. Read via `apiOrigin()`; only `setApiOrigin` writes it. */
+ *  form pre-fills a placeholder. Updated from Rust's committed server configuration. */
 export const apiOrigin = signal<string>(
   canonicalOrigin(secureStore.getApiOrigin() ?? ''),
 );
@@ -531,7 +533,7 @@ export const apiOrigin = signal<string>(
 /** The configured LAN (secondary) origin for native fallback, or null when no fallback is configured (dev /
  *  a server without SOMS_LAN_DOMAIN). Seeded from the same persistence surface as {@link apiOrigin}. This is
  *  the user's field-2 CONFIG — it does NOT track the swapping ACTIVE origin (Rust-internal; read
- *  {@link getOriginMode} for which is active). Written only by {@link setApiOriginSecondary}. */
+ *  {@link getOriginMode} for which is active). Updated from Rust's committed server configuration. */
 export const apiOriginSecondary = signal<string | null>(
   ((): string | null => {
     const raw = secureStore.getApiOriginSecondary();
@@ -662,68 +664,33 @@ export async function openExternalUrl(url: string): Promise<void> {
 
 /** True when no backend origin is configured yet (the signal is empty). Under Tauri the app gates
  *  first-run on this to force the server-config page before login; the form pre-fills a placeholder
- *  origin for the user to edit. Once `setApiOrigin` persists a real origin this reads false. The browser
+ *  origin for the user to edit. Once server setup persists a real origin this reads false. The browser
  *  build is same-origin (`''`) but never hits this gate — the guard requires `isTauri()`. */
 export function apiOriginIsEmpty(): boolean {
   return apiOrigin() === '';
 }
 
-/**
- * Persist a new backend origin and repoint the live data layer to it (Tauri only). Rust validates +
- * canonicalizes the URL, writes the app-data config file, AND updates the media proxy's live Arc (so
- * `/uploads/*` immediately uses the new host); here we mirror the same value into the Android platform
- * store (EncryptedSharedPreferences via `window.SomsSecureStore`; the desktop call is a no-op — the
- * Rust config file just written is the persistence) — the same store the native SSE reads — and mirror
- * it into the {@link apiOrigin} signal so every in-process
- * consumer (HttpClient via `apiPrefix()`, the SSE worker's reconnect, the guest guard, the Settings
- * label) picks up the new host at once, with NO page reload. Returns the canonical origin Rust stored.
- */
-export async function setApiOrigin(url: string): Promise<string> {
-  if (!isTauri())
-    throw new Error('setApiOrigin is only available under the Tauri shell');
-  const normalized = await tauriInvoke<string>('set_api_origin', { url });
-  apiOrigin.set(normalized);
-  secureStore.setApiOrigin(normalized);
-  return normalized;
+/** Mirror one committed Rust configuration. Android records the pair without sending an
+ * intermediate configuration back into Rust; the Rust configuration is authoritative at restart. */
+export function syncServerOrigins(
+  primary: string,
+  secondary: string | null,
+  active: string,
+): void {
+  loginPickPromise = null;
+  apiOrigin.set(primary);
+  apiOriginSecondary.set(secondary);
+  window.SomsSecureStore?.recordServerOrigins(
+    primary,
+    secondary,
+    secondary === active ? 'secondary' : 'primary',
+  );
 }
 
-/** Sync the apiOrigin signal + secureStore from an authoritative value WITHOUT re-persisting to Rust
- *  (the origin is already in the Rust config file — this is the self-heal path the configGuard uses when
- *  `is_origin_configured` is true but the SPA signal is empty, i.e. secureStore drift on a device that
- *  configured via an older build). Cheaper than `setApiOrigin`, which would re-run the Rust writer. */
+/** Restore the presentation signal from Rust without writing configuration or platform mirrors. */
 export function syncApiOriginSignal(origin: string): void {
   const c = canonicalOrigin(origin);
   apiOrigin.set(c);
-  secureStore.setApiOrigin(c);
-}
-
-/** Persist the LAN (secondary) origin (field-2) and mirror it into {@link apiOriginSecondary} (Tauri only).
- *  `null`/empty clears it (disables fallback). Rust validates + persists it (a separate file from the
- *  primary) and `select_origin` begins using it; the same value is written to the platform store (Android
- *  EncryptedSharedPreferences — the store RealtimeService reads). Returns the canonical value Rust stored. */
-export async function setApiOriginSecondary(
-  url: string | null,
-): Promise<string | null> {
-  if (!isTauri())
-    throw new Error(
-      'setApiOriginSecondary is only available under the Tauri shell',
-    );
-  const normalized = await tauriInvoke<string | null>(
-    'set_api_origin_secondary',
-    { url },
-  );
-  const canonical = normalized ? canonicalOrigin(normalized) : null;
-  apiOriginSecondary.set(canonical);
-  secureStore.setApiOriginSecondary(canonical);
-  return canonical;
-}
-
-/** Sync {@link apiOriginSecondary} from an authoritative value WITHOUT re-persisting to Rust (the value is
- *  already in the Rust config — the self-heal path). */
-function syncApiOriginSecondarySignal(origin: string | null): void {
-  const canonical = origin ? canonicalOrigin(origin) : null;
-  apiOriginSecondary.set(canonical);
-  secureStore.setApiOriginSecondary(canonical);
 }
 
 /** Which origin is currently ACTIVE — `'primary'` (normal) or `'secondary'` (a switch moved to the LAN
@@ -754,15 +721,7 @@ export function pickLoginOrigin(force = false): Promise<string> {
   if (!isTauri()) return Promise.resolve(apiOrigin());
   if (force) loginPickPromise = null;
   if (!loginPickPromise) {
-    const pick =
-      isAndroidNative() && window.SomsFcm?.pickActiveOrigin
-        ? Promise.resolve(
-            window.SomsFcm.pickActiveOrigin() ?? apiOrigin(),
-          ).then(async (origin) => {
-            await tauriInvoke('set_active_origin', { url: origin });
-            return origin;
-          })
-        : tauriInvoke<string>('init_pick_origin');
+    const pick = tauriInvoke<string>('init_pick_origin');
     loginPickPromise = pick
       .then((origin) => {
         return origin;

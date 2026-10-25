@@ -8,7 +8,7 @@
 // (the `configGuard` forces it until `is_origin_configured`).
 //
 // The `init_*` commands fetch client bootstrap configuration and validate TLS. The webview
-// always loads the SPA embedded in the installation package; `set_api_origin` persists the server.
+// always loads the SPA embedded in the installation package; server setup persists the server.
 //
 // Also registers the `media://localhost` custom URI scheme that proxies `/uploads/*` to the backend
 // with the current access token in an `Authorization: Bearer` header (a bare `<img src>` can't set
@@ -35,6 +35,8 @@ mod proxy;
 mod realtime;
 #[cfg(desktop)]
 mod secure_storage;
+mod server_setup;
+mod auth_lifecycle;
 mod sse;
 mod upload;
 
@@ -102,13 +104,8 @@ const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// the config form (persisted to the `api_origin` file); desktop dev can still override via SOMS_API_ORIGIN.
 const DEFAULT_API_ORIGIN: &str = "https://example.com:7667";
 
-/// Persisted-origin file in the app-data dir. Holds a single validated http(s) URL. Read at boot to
-/// override the env/default; written by `persist_origin`.
-const CONFIG_FILENAME: &str = "api_origin";
-
-/// Sibling of `api_origin`: the optional LAN (secondary) origin, validated the same way. Absent/empty →
-/// no fallback configured (the shell behaves exactly as before). Written by `persist_origin_secondary`.
-const CONFIG_SECONDARY_FILENAME: &str = "api_origin_secondary";
+/// One configuration file stores the primary and optional backup origins atomically.
+const CONFIG_FILENAME: &str = "server_origins.json";
 
 /// Which origin `api_origin` currently holds, for the native fallback state machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -129,9 +126,8 @@ pub(crate) struct ServerSessionState {
     /// read sites never change. Cold-start select_origin may flip it from the persisted primary to the
     /// secondary before the first request flies.
     api_origin: Arc<Mutex<String>>,
-    /// The user-configured PRIMARY origin (field-1). Only `persist_origin` writes it (set_api_origin /
-    /// set_api_origin). `is_origin_configured` reads THIS, so a fallback swap to the secondary doesn't
-    /// trip the /config first-run guard.
+    /// The configured primary origin. Setup installs it together with the backup; failover changes
+    /// only the active address. `is_origin_configured` therefore stays stable across network switches.
     api_origin_primary: Arc<Mutex<String>>,
     /// The optional LAN (secondary) origin (field-2). None = no fallback configured → select_origin is a
     /// complete no-op and the shell behaves exactly as before.
@@ -144,10 +140,11 @@ pub(crate) struct ServerSessionState {
     /// origin. Race-free (Notify holds one permit). Mobile follows via the shared EncryptedSharedPreferences
     /// instead (Kotlin owns /events); the Notify is harmless there (nothing awaits it).
     origin_notify: Arc<Notify>,
-    /// Serializes `select_origin`'s RACE (single-flight): one race at a time. The cheap-check before the
-    /// lock coalesces the common case; this prevents a storm of concurrent full races. `tokio::sync::Mutex`
-    /// (held across `.await` probes) — distinct from the `std::sync::Mutex` used elsewhere for sync state.
+    /// Serializes global address selection and configuration commits. Candidates are captured after
+    /// acquiring this lock so a queued probe cannot reactivate a replaced configuration.
     select_lock: Arc<tokio::sync::Mutex<()>>,
+    server_setup: Arc<server_setup::ServerSetup>,
+    auth_lifecycle: Arc<auth_lifecycle::AuthLifecycle>,
     token: Arc<Mutex<Option<String>>>,
     config_path: Arc<Mutex<PathBuf>>,
     /// Woken by `set_session_token` after writing a non-empty token. The desktop SSE supervisor awaits
@@ -216,6 +213,8 @@ impl ServerSessionState {
         let id = crate::login_session_store::LoginSessionId::try_from(session_uuid.to_string())?;
         match token {
             Some(token) => {
+                // Publishing a credential is the activation boundary: it must belong to a
+                // preparation made for the CURRENT server configuration.
                 let active = self
                     .login_session
                     .lock()
@@ -223,6 +222,10 @@ impl ServerSessionState {
                 if *active != Some(id.clone()) {
                     return Err("native login superseded".into());
                 }
+                let guard = self
+                    .auth_lifecycle
+                    .enter(crate::auth_lifecycle::Phase::Login)?;
+                guard.validate_login(session_uuid)?;
                 let owner = crate::native_db::login_connection(&id)?;
                 if owner.credential().map_err(|e| e.to_string())? != token {
                     return Err("credential mismatch".into());
@@ -273,6 +276,8 @@ impl ServerSessionState {
             origin_mode: Arc::new(Mutex::new(OriginMode::Primary)),
             origin_notify: Arc::new(Notify::new()),
             select_lock: Arc::new(tokio::sync::Mutex::new(())),
+            server_setup: Arc::new(server_setup::ServerSetup::default()),
+            auth_lifecycle: Arc::new(auth_lifecycle::AuthLifecycle::default()),
             token: Arc::new(Mutex::new(None)),
             config_path: Arc::new(Mutex::new(PathBuf::new())),
             token_notify: Arc::new(Notify::new()),
@@ -292,7 +297,7 @@ impl ServerSessionState {
 
     /// Return a reqwest client for API calls to `origin`, rebuilding + caching only when the origin
     /// changes. `reqwest::Client` is `Clone`-cheap (Arc internals), so the cached pool is shared across
-    /// concurrent requests and kept warm between them (keepalive). On an origin swap (`set_api_origin`)
+    /// concurrent requests and kept warm between them (keepalive). On an origin swap
     /// the next request sees a mismatched tag and rebuilds — in-flight requests keep working (they hold
     /// their own clone of the old client).
     fn api_client(&self, origin: &str) -> reqwest::Client {
@@ -373,59 +378,6 @@ fn http_client_for(origin: &str) -> reqwest::Client {
         b = b.danger_accept_invalid_certs(true);
     }
     b.build().unwrap_or_else(|_| reqwest::Client::new())
-}
-
-/// Persist + activate a backend origin: validate, write the app-data config file (survives restarts,
-/// feeds the media proxy Arc), and update the live Arc (so `/uploads/*` immediately uses the new host).
-/// Shared writer for configuration and origin fallback logic —
-/// the two persistence surfaces (this file + the web's `SomsSecureStore`) stay consistent.
-fn persist_origin(state: &ServerSessionState, url: &str) -> Result<String, String> {
-    let normalized =
-        validate_origin(url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
-    let path = state.config_path.lock().expect("config_path lock").clone();
-    fs::write(&path, &normalized).map_err(|e| format!("failed to write config: {e}"))?;
-    // This is the "user explicitly chose the primary" path (set_api_origin): record it
-    // as the primary, make it active, and reset the mode. The secondary is managed separately by
-    // persist_origin_secondary. select_origin may later flip `api_origin` to the secondary on failure.
-    *state.api_origin_primary.lock().expect("primary lock") = normalized.clone();
-    *state.api_origin.lock().expect("origin lock") = normalized.clone();
-    *state.origin_mode.lock().expect("mode lock") = OriginMode::Primary;
-    Ok(normalized)
-}
-
-/// Persist + set the LAN (secondary) origin (field-2). `None`/empty clears it (deletes the file + sets the
-/// Arc to None → no fallback). Validates via the same `validate_origin` so a malformed URL is never stored.
-/// Does NOT touch the active origin or mode — `select_origin` decides which is active.
-fn persist_origin_secondary(
-    state: &ServerSessionState,
-    url: Option<&str>,
-) -> Result<Option<String>, String> {
-    let dir = state
-        .config_path
-        .lock()
-        .expect("config_path lock")
-        .parent()
-        .map(|p| p.to_path_buf());
-    let normalized = match url.map(str::trim).filter(|s| !s.is_empty()) {
-        None => {
-            if let Some(dir) = &dir {
-                let _ = fs::remove_file(dir.join(CONFIG_SECONDARY_FILENAME));
-            }
-            *state.api_origin_secondary.lock().expect("secondary lock") = None;
-            None
-        }
-        Some(raw) => {
-            let n =
-                validate_origin(raw).ok_or_else(|| format!("not a valid http(s) URL: {raw}"))?;
-            if let Some(dir) = &dir {
-                fs::write(dir.join(CONFIG_SECONDARY_FILENAME), &n)
-                    .map_err(|e| format!("failed to write secondary config: {e}"))?;
-            }
-            *state.api_origin_secondary.lock().expect("secondary lock") = Some(n.clone());
-            Some(n)
-        }
-    };
-    Ok(normalized)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -543,12 +495,9 @@ pub fn run() {
                     origin_commands::get_api_origin,
                     origin_commands::get_active_api_origin,
                     origin_commands::is_origin_configured,
-                    origin_commands::set_api_origin,
                     origin_commands::get_api_origin_secondary,
-                    origin_commands::set_api_origin_secondary,
                     origin_commands::get_origin_mode,
                     origin_commands::init_pick_origin,
-                    origin_commands::set_active_origin,
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
                     origin_commands::login_session_for_token,
@@ -559,6 +508,10 @@ pub fn run() {
                     secure_storage::secure_set_token,
                     secure_storage::secure_clear_token,
                     secure_storage::secure_clear_residual_token,
+                    server_setup::begin_server_setup,
+                    server_setup::cancel_server_setup,
+                    server_setup::check_server_setup,
+                    server_setup::commit_server_setup,
                     client_compat::init_check_compat,
                     client_compat::init_validate_cert,
                     client_compat::init_compat_status,
@@ -634,18 +587,19 @@ pub fn run() {
                     origin_commands::get_api_origin,
                     origin_commands::get_active_api_origin,
                     origin_commands::is_origin_configured,
-                    origin_commands::set_api_origin,
                     origin_commands::get_api_origin_secondary,
-                    origin_commands::set_api_origin_secondary,
                     origin_commands::get_origin_mode,
                     origin_commands::init_pick_origin,
-                    origin_commands::set_active_origin,
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
                     origin_commands::login_session_for_token,
                     native_db::native_db_begin_login,
                     origin_commands::begin_logout,
                     origin_commands::wait_for_logout,
+                    server_setup::begin_server_setup,
+                    server_setup::cancel_server_setup,
+                    server_setup::check_server_setup,
+                    server_setup::commit_server_setup,
                     client_compat::init_check_compat,
                     client_compat::init_validate_cert,
                     client_compat::init_compat_status,
@@ -752,28 +706,8 @@ pub fn run() {
             #[cfg(not(target_os = "android"))]
             {
                 let config_path = data_dir.join(CONFIG_FILENAME);
-                if let Some(persisted) = fs::read_to_string(&config_path)
-                    .ok()
-                    .and_then(|s| validate_origin(&s))
-                {
-                    // The persisted file is the user-configured PRIMARY. Seed primary + active from it; a
-                    // cold-start select_origin (spawned later in setup) may flip `api_origin` to the secondary
-                    // if the primary is unreachable on this network.
-                    *proxy_state.api_origin_primary.lock().expect("primary lock") =
-                        persisted.clone();
-                    *proxy_state.api_origin.lock().expect("origin lock") = persisted;
-                }
-                // Secondary (LAN) origin — optional. Absent file → None → no fallback (exact legacy behavior).
-                if let Some(sec) = fs::read_to_string(data_dir.join(CONFIG_SECONDARY_FILENAME))
-                    .ok()
-                    .and_then(|s| validate_origin(&s))
-                {
-                    *proxy_state
-                        .api_origin_secondary
-                        .lock()
-                        .expect("secondary lock") = Some(sec);
-                }
                 *proxy_state.config_path.lock().expect("config_path lock") = config_path;
+                server_setup::restore(&proxy_state).map_err(std::io::Error::other)?;
             }
 
             // The single window loads only the embedded SPA.

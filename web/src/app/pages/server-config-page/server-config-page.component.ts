@@ -1,4 +1,16 @@
 import {
+  EMPTY,
+  Observable,
+  Subject,
+  catchError,
+  exhaustMap,
+  finalize,
+  of,
+  switchMap,
+  take,
+  takeUntil,
+} from 'rxjs';
+import {
   ChangeDetectionStrategy,
   Component,
   computed,
@@ -23,14 +35,18 @@ import { TranslocoModule } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
 import { MaterialDialogComponent } from '../../components/material-dialog/material-dialog.component';
 import { ConfigService } from '../../services/config.service';
-import { PushService, type FirebaseClientConfigPayload } from '../../services/push.service';
+import {
+  PushService,
+  type FirebaseClientConfigPayload,
+} from '../../services/push.service';
+import {
+  prepareServerSetup,
+  commitServerSetup,
+} from '../../services/server-setup';
 import {
   apiOrigin,
   canonicalOrigin,
   originIsInsecure,
-  pickLoginOrigin,
-  setApiOrigin,
-  setApiOriginSecondary,
   tauriInvoke,
 } from '../../services/runtime';
 import { RouteService, RoutePage } from '../../services/route.service';
@@ -38,23 +54,9 @@ import { AuthViewportDirective } from '../../directives/auth-viewport.directive'
 import { AppBackDispatcherService } from '../../services/app-back-dispatcher.service';
 
 /** Server setup phases. The frontend always comes from the installed app package. */
-type Phase = 'form' | 'compat' | 'cert' | 'done';
+type Phase = 'form' | 'compat' | 'done';
 
-/**
- * Decide whether the server-advertised origins describe the address the user actually entered.
- *
- * `/client/compat` advertises the deployment's canonical public origin. A user may reach the same server
- * through an unadvertised LAN IP (for example while SOMS_LAN_DOMAIN is unset). In that case the advertised
- * public origin and the just-probed address form the two endpoints: the existing login-time health race
- * can then select whichever one is reachable.
- *
- * When the server already advertises a complete pair, use it if the entered address is one of the pair.
- * Otherwise retain the known-reachable entered address as the fallback instead of discarding it.
- */
-export function singleOriginAfterDecliningPair(reachable: string): string {
-  return canonicalOrigin(reachable);
-}
-
+/** Alternate endpoints are accepted only from the server's bootstrap configuration. */
 export function resolveOriginSelection(
   reachable: string,
   advertisedPrimary?: string | null,
@@ -63,15 +65,13 @@ export function resolveOriginSelection(
   const entered = canonicalOrigin(reachable);
   const primary = advertisedPrimary ? canonicalOrigin(advertisedPrimary) : null;
   const lan = advertisedLan ? canonicalOrigin(advertisedLan) : null;
-  const enteredIsAdvertised = entered === primary || entered === lan;
-
-  if (enteredIsAdvertised && primary && lan && primary !== lan) {
-    return { primary, lan, confirmPair: true };
-  }
-  if (primary && primary !== entered) {
-    return { primary, lan: entered, confirmPair: true };
-  }
-  return { primary: entered, lan: null, confirmPair: false };
+  const selectedPrimary = primary ?? entered;
+  const selectedLan = lan && lan !== selectedPrimary ? lan : null;
+  return {
+    primary: selectedPrimary,
+    lan: selectedLan,
+    confirmPair: selectedLan !== null,
+  };
 }
 
 /**
@@ -81,6 +81,10 @@ export function resolveOriginSelection(
  * validates HTTPS certificates, persists the origin, and redirects to login. The SPA is embedded
  * in the installed app package and never downloaded from the server.
  * No `handoff_to_spa` / window swap (one window, one origin).
+ *
+ * One serialized RxJS flow per component instance: submit → verify (cancellable) →
+ * optional pair confirmation → commit (never cancelled). Rust rejects overlapping
+ * login/configuration operations with an error; nothing is queued here.
  *
  * Owns Android Back while active: reconfigure closes the surface; required first-run setup exits the
  * Activity at its root instead of exposing an unusable background.
@@ -115,9 +119,16 @@ export class ServerConfigPageComponent implements OnInit {
   private readonly push = inject(PushService);
   private readonly appBack = inject(AppBackDispatcherService);
   /** The most recent /client/compat firebaseConfig probed for the origin being connected — applied to native
-   *  in finalize() (Android: re-inits FirebaseApp). Stashed so the auto-fill confirm-modal path applies it too. */
+   *  in commit (Android: re-inits FirebaseApp). */
   private firebaseConfig: FirebaseClientConfigPayload | null = null;
   private unregisterBack?: () => void;
+  private readonly submits = new Subject<string>();
+  /** Ends the cancellable verification part of the active flow (dismissal / back). */
+  private readonly dismissVerify = new Subject<void>();
+  /** Resolves the advertised-pair confirmation with the user's decision. */
+  private readonly pairDecision = new Subject<boolean>();
+  private readonly destroyed = new Subject<void>();
+  readonly saving = signal(false);
   @ViewChild('serverInput') private serverInput?: ElementRef<HTMLInputElement>;
 
   readonly url = new FormControl(canonicalOrigin(apiOrigin()), {
@@ -128,7 +139,11 @@ export class ServerConfigPageComponent implements OnInit {
   });
   /** Pending second-server confirmation. The second endpoint is server-advertised configuration, never a
    *  user-authored field: showing the exact address and asking for consent avoids both jargon and typos. */
-  readonly autoFill = signal<{ primary: string; lan: string | null; reachable: string } | null>(null);
+  readonly autoFill = signal<{
+    primary: string;
+    lan: string | null;
+    reachable: string;
+  } | null>(null);
   readonly phase = signal<Phase>('form');
   /** The live origin value the insecure-warning reacts to (separate from the control so the warning can
    *  show before the control is considered touched). */
@@ -140,7 +155,7 @@ export class ServerConfigPageComponent implements OnInit {
    *  the back button on a true first-run. */
   readonly isReconfigure = signal(false);
   readonly canGoBack = computed(() => this.dialog() || this.isReconfigure());
-  readonly busy = computed(() => this.phase() !== 'form');
+  readonly busy = computed(() => this.phase() !== 'form' || this.saving());
   readonly titleKey = computed(() =>
     this.dialog() || this.isReconfigure()
       ? 'serverConfig.reconfigureTitle'
@@ -166,7 +181,6 @@ export class ServerConfigPageComponent implements OnInit {
   private readonly progressByPhase: Record<Phase, number> = {
     form: 0,
     compat: 40,
-    cert: 80,
     done: 100,
   };
   readonly progress = computed(() => this.progressByPhase[this.phase()]);
@@ -176,8 +190,6 @@ export class ServerConfigPageComponent implements OnInit {
     switch (this.phase()) {
       case 'compat':
         return 'serverConfig.stepCompat';
-      case 'cert':
-        return 'serverConfig.stepCert';
       case 'done':
         return 'serverConfig.stepDone';
       default:
@@ -191,7 +203,25 @@ export class ServerConfigPageComponent implements OnInit {
       this.errorKey.set(null);
       this.errorDetail.set('');
     });
-    this.destroyRef.onDestroy(() => this.unregisterBack?.());
+    // Serialized: a new submit never queues behind an active flow.
+    this.submits
+      .pipe(
+        exhaustMap((origin) =>
+          this.flow(origin).pipe(
+            catchError((e) => {
+              this.fail(e);
+              return EMPTY;
+            }),
+          ),
+        ),
+        takeUntil(this.destroyed),
+      )
+      .subscribe();
+    this.destroyRef.onDestroy(() => {
+      this.destroyed.next();
+      this.unregisterBack?.();
+      this.cancelPendingVerification();
+    });
   }
 
   ngOnInit(): void {
@@ -210,9 +240,9 @@ export class ServerConfigPageComponent implements OnInit {
   /** Run the connect steps. Bound to the form's NATIVE `submit` event (this component imports only
    *  ReactiveFormsModule, so no `NgForm` attaches and `(ngSubmit)` would be a dead binding; a
    *  `type="submit"` button would otherwise trigger a native GET reload, swallowing every error).
-   *  `preventDefault()` stops that so `save()` runs; any failure is surfaced as a transient toast and
+   *  `preventDefault()` stops that so the submit runs; any failure is surfaced as a transient toast and
    *  the form stays mounted for an edit-and-retry (no reflow). */
-  async save(event?: Event): Promise<void> {
+  save(event?: Event): void {
     event?.preventDefault();
     // A connect flow is in flight OR the modal is up — ignore re-submits (Enter) that would race it.
     if (this.busy() || this.autoFill()) return;
@@ -221,121 +251,106 @@ export class ServerConfigPageComponent implements OnInit {
       queueMicrotask(() => this.serverInput?.nativeElement.focus());
       return;
     }
-    const primaryRaw = this.url.value.trim() ? canonicalOrigin(this.url.value) : null;
+    const primaryRaw = this.url.value.trim()
+      ? canonicalOrigin(this.url.value)
+      : null;
     if (!primaryRaw || this.url.invalid) {
       this.url.markAsTouched();
       queueMicrotask(() => this.serverInput?.nativeElement.focus());
       return;
     }
-    try {
-      this.phase.set('compat');
-      const probe = await this.probe(primaryRaw);
-      if (!probe.ok) {
-        this.fail(probe.error);
-        return;
-      }
-      // Stash the probed Firebase client config (same for primary + lan — one backend) so finalize() applies
-      // it to native regardless of which path reaches finalize (direct save or the auto-fill confirm modal).
+    this.errorKey.set(null);
+    this.errorDetail.set('');
+    this.submits.next(primaryRaw);
+  }
+
+  /** verify → (pair confirmation) → commit. Verification is cancellable; commit is not. */
+  private flow(origin: string): Observable<unknown> {
+    this.phase.set('compat');
+    return prepareServerSetup(origin, (probe) => {
+      // The new server may publish a different Firebase project; apply it after commit.
       this.firebaseConfig = probe.firebaseConfig ?? null;
-      const selection = resolveOriginSelection(primaryRaw, probe.primary, probe.lan);
+      const selection = resolveOriginSelection(
+        origin,
+        probe.primaryOrigin,
+        probe.lanOrigin,
+      );
       if (selection.confirmPair && selection.lan) {
         this.phase.set('form');
         this.autoFill.set({
           primary: selection.primary,
           lan: selection.lan,
-          reachable: primaryRaw,
+          reachable: origin,
         });
-        return;
+        return this.pairDecision.pipe(take(1));
       }
-      await this.finalize(selection.primary, null);
-    } catch (e) {
-      this.fail(e);
-    }
+      return of(true);
+    }).pipe(
+      takeUntil(this.dismissVerify),
+      // ── commit point: from here the save runs to completion and cannot be dismissed ──
+      switchMap(({ id, useAdvertised }) => {
+        this.saving.set(true);
+        return commitServerSetup(id, useAdvertised);
+      }),
+      finalize(() => this.saving.set(false)),
+      switchMap((result) => {
+        const { primary, secondary: lan } = result.origins;
+        if (isDevMode()) {
+          console.info('server-config origins selected', {
+            primary,
+            secondary: lan,
+            active: result.active,
+          });
+        }
+        try {
+          this.push.applyFirebaseConfig(this.firebaseConfig);
+        } catch (e) {
+          console.error('server-config firebase apply failed', e);
+        }
+        void this.config.reload();
+        this.phase.set('done');
+        if (isDevMode()) {
+          console.info('server-config SPA navigation', {
+            route: RoutePage.AUTH_LOGIN,
+          });
+        }
+        if (this.dialog()) {
+          this.closed.emit();
+          return EMPTY;
+        }
+        this.route.redirect(RoutePage.AUTH_LOGIN);
+        return EMPTY;
+      }),
+    );
   }
 
-  /** Run compat + cert at `origin`. Returns the compat body (primaryOrigin/lanOrigin for auto-fill) on
-   *  success, or the captured error on failure (the caller tries the other origin / surfaces it). */
-  private async probe(
-    origin: string,
-  ): Promise<
-    | { ok: true; primary?: string | null; lan?: string | null; firebaseConfig?: FirebaseClientConfigPayload | null }
-    | { ok: false; error: unknown }
-  > {
-    try {
-      const compat = await tauriInvoke<{
-        primaryOrigin?: string | null;
-        lanOrigin?: string | null;
-        firebaseConfig?: FirebaseClientConfigPayload | null;
-      }>('init_check_compat', { origin });
-      this.phase.set('cert');
-      await tauriInvoke('init_validate_cert', { origin });
-      return { ok: true, primary: compat.primaryOrigin, lan: compat.lanOrigin, firebaseConfig: compat.firebaseConfig ?? null };
-    } catch (e) {
-      return { ok: false, error: e };
-    }
-  }
-
-  /** Persist the configured pair and race every address before entering login. */
-  private async finalize(primary: string, lan: string | null): Promise<void> {
-    try {
-      await setApiOrigin(primary);
-      await setApiOriginSecondary(lan);
-      const active = await pickLoginOrigin(true);
-      if (isDevMode()) {
-        console.info('server-config origins selected', {
-          primary,
-          secondary: lan,
-          active,
-        });
-      }
-      // The new server may publish a different Firebase project — apply its /client/compat firebaseConfig to
-      // native so the Android shell re-inits FirebaseApp. The backend changed → invalidate the cached /config
-      // so login re-fetches loginMode/registrationOpen.
-      try {
-        this.push.applyFirebaseConfig(this.firebaseConfig);
-      } catch (e) {
-        console.error('server-config firebase apply failed', e);
-      }
-      void this.config.reload();
-      this.phase.set('done');
-      if (isDevMode()) {
-        console.info('server-config SPA navigation', { route: RoutePage.AUTH_LOGIN });
-      }
-      if (this.dialog()) {
-        this.closed.emit();
-        return;
-      }
-      this.route.redirect(RoutePage.AUTH_LOGIN);
-    } catch (e) {
-      this.fail(e);
-    }
-  }
-
-  /** Modal confirm → finalize with the auto-filled pair. */
-  async confirmAutoFill(): Promise<void> {
-    const af = this.autoFill();
-    if (!af) return;
+  /** Modal confirm → commit the auto-filled pair. */
+  confirmAutoFill(): void {
+    if (!this.autoFill()) return;
     this.autoFill.set(null);
-    await this.finalize(af.primary, af.lan);
+    this.pairDecision.next(true);
   }
 
   /** Keep only the endpoint that was just probed when the user declines the advertised pair. */
-  async cancelAutoFill(): Promise<void> {
-    const af = this.autoFill();
-    if (!af) return;
+  declineAutoFill(): void {
+    if (!this.autoFill()) return;
     this.autoFill.set(null);
-    await this.finalize(singleOriginAfterDecliningPair(af.reachable), null);
+    this.pairDecision.next(false);
+  }
+
+  private cancelPendingVerification(): void {
+    if (!this.saving()) this.dismissVerify.next();
   }
 
   /** Match the shared modal dismissal contract on browser/desktop; Android Back is handled through the
-   * lifecycle-scoped AppBackDispatcher registration below. */
+   *  lifecycle-scoped AppBackDispatcher registration below. */
   @HostListener('document:keydown.escape', ['$event'])
   onEscape(event: Event): void {
-    if (!this.autoFill() && !this.dialog()) return;
+    if (this.saving() || (!this.autoFill() && !this.dialog())) return;
     event.preventDefault();
     event.stopPropagation();
-    if (this.autoFill()) void this.cancelAutoFill();
-    else this.closed.emit();
+    if (this.autoFill()) this.declineAutoFill();
+    else this.goBack();
   }
 
   /** Surface a connection failure as a categorized toast and reset to the form. */
@@ -354,10 +369,18 @@ export class ServerConfigPageComponent implements OnInit {
     // Can't reach the server, or the URL isn't a SOMS backend. The Rust compat probe tags these `address:`
     // so a dead port reports "invalid address", NOT a version mismatch.
     if (msg.includes('address:')) return 'serverConfig.addrErr';
-    if (msg.includes('compat') || msg.includes('too old') || msg.includes('not compatible')) {
+    if (
+      msg.includes('compat') ||
+      msg.includes('too old') ||
+      msg.includes('not compatible')
+    ) {
       return 'serverConfig.compatErr';
     }
-    if (msg.includes('cert') || msg.includes('self-signed') || msg.includes('expired')) {
+    if (
+      msg.includes('cert') ||
+      msg.includes('self-signed') ||
+      msg.includes('expired')
+    ) {
       return 'serverConfig.certErr';
     }
     return 'serverConfig.connectErr';
@@ -366,26 +389,26 @@ export class ServerConfigPageComponent implements OnInit {
   /** Visible top-left back affordance (reconfigure only — hidden on first run). Same effect as the
    *  hardware-back reconfigure branch: return to login. */
   goBack(): void {
-    if (this.dialog()) {
-      this.closed.emit();
-      return;
-    }
-    this.route.redirect(RoutePage.AUTH_LOGIN);
+    if (this.saving()) return;
+    this.cancelPendingVerification();
+    if (this.dialog()) this.closed.emit();
+    else this.route.redirect(RoutePage.AUTH_LOGIN);
   }
 
   /** Confirmation closes first; reconfigure returns to login; the required first-run root exits. */
   private installBackHandler(): void {
     this.unregisterBack = this.appBack.register(() => {
+      if (this.saving()) return;
       if (this.autoFill()) {
-        void this.cancelAutoFill();
+        this.declineAutoFill();
         return;
       }
       if (this.canGoBack()) {
         this.goBack();
         return;
       }
+      this.cancelPendingVerification();
       window.SomsBack?.exit();
     });
   }
-
 }

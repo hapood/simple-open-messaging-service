@@ -468,9 +468,25 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
 /// While the journal still holds an unactivated preparation, the command is idempotent:
 /// authentication retries and QR polling reuse that UUID, its file and its connection.
 #[tauri::command]
-pub(crate) async fn native_db_begin_login() -> Result<String, String> {
+pub(crate) async fn native_db_begin_login(
+    state: tauri::State<'_, crate::ServerSessionState>,
+) -> Result<String, String> {
+    let guard = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Login)?;
     let preferences = preferences_connection()?;
-    let id = tauri::async_runtime::spawn_blocking(move || prepare_fresh_login(preferences))
+    let id = tauri::async_runtime::spawn_blocking(move || {
+        // Never reuse an old server's UUID: a late authentication response may still carry it.
+        preferences.with_database(|conn| {
+            let preparing = crate::login_session_store::SessionStore::read(conn)?
+                .and_then(|journal| journal.preparing_session().cloned());
+            if preparing.as_ref().is_some_and(|id| guard.is_superseded(&id.to_string())) {
+                crate::login_session_store::SessionStore::end_current(conn)?;
+            }
+            Ok(())
+        })?;
+        let id = prepare_fresh_login(preferences)?;
+        guard.register_login(&id)?;
+        Ok::<_, String>(id)
+    })
         .await
         .map_err(|e| format!("join native fresh-login preparation: {e}"))??;
     crate::realtime::runtime().refresh_login_work();

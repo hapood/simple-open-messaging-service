@@ -13,19 +13,21 @@ describe('QrLoginPageComponent polling', () => {
     TestBed.resetTestingModule();
   });
 
-  it('keeps at most one poll request in flight while the backend is unresponsive', async () => {
+  it('serializes polling, cancels it for server setup and creates a fresh QR afterward', async () => {
     vi.useFakeTimers();
     const pendingPoll = new Subject<never>();
     const qrPoll = vi.fn(() => pendingPoll);
     const expiresAt = Date.now() + 180_000;
+    const qrCreate = vi.fn(() =>
+      of({ code: 0, data: { qrToken: 'qr-token', expiresAt } }),
+    );
 
     TestBed.configureTestingModule({
       providers: [
         {
           provide: AuthService,
           useValue: {
-            qrCreate: () =>
-              of({ code: 0, data: { qrToken: 'qr-token', expiresAt } }),
+            qrCreate,
             qrPoll,
           },
         },
@@ -37,7 +39,7 @@ describe('QrLoginPageComponent polling', () => {
           },
         },
         { provide: RouteService, useValue: { redirect: vi.fn() } },
-        { provide: ServerConfigDialogService, useValue: { open: vi.fn() } },
+        ServerConfigDialogService,
       ],
     });
 
@@ -51,6 +53,16 @@ describe('QrLoginPageComponent polling', () => {
     await vi.advanceTimersByTimeAsync(6_000);
     expect(qrPoll).toHaveBeenCalledTimes(1);
 
+    const dialog = TestBed.inject(ServerConfigDialogService);
+    dialog.open();
+    expect(pendingPoll.observed).toBe(false);
+    expect(component.qrToken()).toBeNull();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(qrPoll).toHaveBeenCalledTimes(1);
+    dialog.close();
+    expect(qrCreate).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(qrPoll).toHaveBeenCalledTimes(2);
     component.ngOnDestroy();
   });
 });

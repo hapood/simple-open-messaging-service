@@ -8,7 +8,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { timeout } from 'rxjs';
+import { takeUntil, timeout } from 'rxjs';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -131,6 +131,17 @@ export class QrLoginPageComponent implements OnDestroy {
 
   constructor() {
     void this.config.ensureLoaded();
+    this.serverConfigDialog.opened$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        this.stopPoll();
+        this.stopCountdown();
+        this.stopRefresh();
+        this.qrToken.set(null);
+      });
+    this.serverConfigDialog.closed$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => this.retry());
     this.start();
   }
 
@@ -151,6 +162,7 @@ export class QrLoginPageComponent implements OnDestroy {
       .pipe(
         timeout(QrLoginPageComponent.REQUEST_TIMEOUT_MS),
         takeUntilDestroyed(this.destroyRef),
+        takeUntil(this.serverConfigDialog.opened$),
       )
       .subscribe({
         next: (res) => {
@@ -233,6 +245,7 @@ export class QrLoginPageComponent implements OnDestroy {
         .pipe(
           timeout(QrLoginPageComponent.REQUEST_TIMEOUT_MS),
           takeUntilDestroyed(this.destroyRef),
+          takeUntil(this.serverConfigDialog.opened$),
         )
         .subscribe({
           next: (res) => {

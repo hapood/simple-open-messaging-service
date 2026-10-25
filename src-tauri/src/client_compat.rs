@@ -1,4 +1,9 @@
 use crate::{http_client_for, tls_posture_for, TlsPosture};
+use std::time::Duration;
+
+// Bootstrap responses are small JSON documents. Bound the entire request, including body reads,
+// so a connected server that stops responding cannot leave setup waiting indefinitely.
+const COMPAT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(serde::Deserialize)]
 struct ApiEnvelope<T> {
@@ -26,9 +31,18 @@ fn is_compatible(_api_version: u32) -> bool {
 }
 
 async fn fetch_compat(client: &reqwest::Client, origin: &str) -> Result<CompatData, String> {
+    fetch_compat_with_timeout(client, origin, COMPAT_REQUEST_TIMEOUT).await
+}
+
+async fn fetch_compat_with_timeout(
+    client: &reqwest::Client,
+    origin: &str,
+    timeout: Duration,
+) -> Result<CompatData, String> {
     let base = origin.trim_end_matches('/');
     let resp = client
         .get(format!("{base}/api/v1/client/compat"))
+        .timeout(timeout)
         .send()
         .await
         .map_err(|e| format!("address: could not reach server: {e}"))?;
@@ -68,7 +82,12 @@ pub(crate) async fn init_validate_cert(origin: String) -> Result<serde_json::Val
     }
     let client = http_client_for(&origin);
     let url = format!("{}/api/v1/client/compat", origin.trim_end_matches('/'));
-    match client.get(&url).send().await {
+    match client
+        .get(&url)
+        .timeout(COMPAT_REQUEST_TIMEOUT)
+        .send()
+        .await
+    {
         Ok(r) if r.status().is_success() => {
             Ok(serde_json::json!({ "valid": true, "summary": "https" }))
         }
@@ -97,7 +116,56 @@ pub(crate) async fn init_compat_status(origin: String) -> Result<serde_json::Val
 
 #[cfg(test)]
 mod tests {
-    use super::is_compatible;
+    use super::{fetch_compat_with_timeout, is_compatible};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn assert_stalled_response_times_out(headers: Option<&'static [u8]>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).await.unwrap();
+            if let Some(headers) = headers {
+                stream.write_all(headers).await.unwrap();
+            }
+            std::future::pending::<()>().await;
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            fetch_compat_with_timeout(
+                &crate::http_client_for(&origin),
+                &origin,
+                Duration::from_millis(100),
+            ),
+        )
+        .await;
+        server.abort();
+        let error = result
+            .expect("the request deadline must bound the whole bootstrap response")
+            .err()
+            .expect("a stalled response must fail");
+        let expected = if headers.is_some() {
+            "address: invalid server response"
+        } else {
+            "address: could not reach server"
+        };
+        assert!(error.starts_with(expected), "{error}");
+    }
+
+    #[tokio::test]
+    async fn compat_times_out_while_waiting_for_headers() {
+        assert_stalled_response_times_out(None).await;
+    }
+
+    #[tokio::test]
+    async fn compat_times_out_while_waiting_for_body() {
+        assert_stalled_response_times_out(Some(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{",
+        ))
+        .await;
+    }
 
     #[test]
     fn compatibility_is_deferred() {

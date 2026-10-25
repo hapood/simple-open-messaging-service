@@ -8,6 +8,7 @@
       class="cfg-back"
       type="button"
       (click)="goBack()"
+      [disabled]="saving()"
       [attr.aria-label]="'serverConfig.backToApp' | transloco"
     >
       <span class="cfg-back__arrow" aria-hidden="true">‹</span>
@@ -54,6 +55,7 @@
           spellcheck="false"
           enterkeyhint="go"
           [formControl]="url"
+          [readOnly]="busy() || !!autoFill()"
           [placeholder]="'serverConfig.placeholder' | transloco"
         />
         @if (url.invalid && url.touched) {
@@ -143,7 +145,7 @@
               mat-button
               class="app-secondary-action"
               type="button"
-              (click)="cancelAutoFill()"
+              (click)="declineAutoFill()"
             >
               {{ 'serverConfig.secondIgnore' | transloco }}
             </button>
