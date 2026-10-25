@@ -5,10 +5,8 @@ import type {
   RequestDecisionResult,
   RequestRecord,
 } from '../../../shared/relationship-request';
-import {
-  GroupService,
-  type GroupInviteCandidate,
-} from '../app/services/group.service';
+import { GroupService } from '../app/services/group.service';
+import { BusinessCode } from '../app/services/biz-code';
 import {
   createGroupConversation,
   type StandardResponse,
@@ -93,68 +91,16 @@ export class PlaygroundGroupService
         thread.group.namespaceId,
       );
       if (user) {
-        Object.assign(user, {
+        this.state.publishProfile(user, {
           name: thread.group.name,
-          bio: thread.group.description,
-          avatar: thread.group.avatar,
+          bio: thread.group.description ?? '',
+          avatar: params.avatar ?? user.avatar,
         });
-        user.profileRev++;
         this.state.conversations.applyThreadMeta(groupId, {
           profileRev: user.profileRev,
         });
       }
       return of(ok(undefined));
-    });
-  }
-
-  queryInviteCandidates(
-    ...[params]: Args<'queryInviteCandidates'>
-  ): Result<'queryInviteCandidates'> {
-    return defer(() => {
-      this.requireManager(params.groupId);
-      const search = params.search?.trim().toLowerCase() ?? '';
-      const rows: GroupInviteCandidate[] = this.state.conversations
-        .items()
-        .flatMap((thread) => {
-          if (
-            thread.type !== 'P2P' ||
-            thread.friendshipActive === false ||
-            thread.blocked ||
-            thread.threadId <= (params.afterThreadId ?? 0)
-          )
-            return [];
-          const user = this.state.user(
-            thread.peerUser.account,
-            thread.peerUser.namespaceId,
-          )!;
-          if (
-            search &&
-            !`${user.account} ${user.name}`.toLowerCase().includes(search)
-          )
-            return [];
-          return [
-            {
-              threadId: thread.threadId,
-              namespaceId: user.namespaceId,
-              profileRev: user.profileRev,
-              account: user.account,
-              name: user.name,
-              avatar: user.avatar,
-              bio: user.bio,
-              state: this.candidateState(params.groupId, user),
-            },
-          ];
-        })
-        .sort((a, b) => a.threadId! - b.threadId!);
-      const data = rows.slice(0, Math.max(1, Math.min(50, params.take ?? 20)));
-      const hasMore = rows.length > data.length;
-      return of(
-        ok({
-          data,
-          hasMore,
-          afterThreadId: hasMore ? data.at(-1)!.threadId! : null,
-        }),
-      );
     });
   }
 
@@ -167,7 +113,7 @@ export class PlaygroundGroupService
         account: string;
         namespaceId: number;
         reason: string;
-        code: string;
+        code: number;
         message: string;
       }> = [];
       for (const target of params.users) {
@@ -187,8 +133,16 @@ export class PlaygroundGroupService
           skipped.push({
             account: target.account,
             namespaceId: target.namespaceId,
-            reason,
-            code: reason,
+            reason:
+              reason === 'MEMBER'
+                ? 'ALREADY_MEMBER'
+                : reason === 'INVITED'
+                  ? 'ALREADY_INVITED'
+                  : reason,
+            code:
+              reason === 'FRIEND_REQUIRED'
+                ? BusinessCode.GROUP_FORBIDDEN
+                : BusinessCode.ALREADY_EXISTS,
             message: reason,
           });
           continue;
@@ -413,7 +367,7 @@ export class PlaygroundGroupService
   private candidateState(
     groupId: number,
     target: { account: string; namespaceId: number },
-  ): GroupInviteCandidate['state'] {
+  ): 'AVAILABLE' | 'INVITED' | 'MEMBER' {
     if (
       this.state.rosters
         .get(groupId)

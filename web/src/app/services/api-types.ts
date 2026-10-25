@@ -715,23 +715,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/group/invite-candidates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** List friends with authoritative group invitation state */
-        post: operations["GroupController_queryInviteCandidates"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/group/join-requests": {
         parameters: {
             query?: never;
@@ -4597,28 +4580,6 @@ export interface components {
              */
             groupId: number;
         };
-        QueryGroupInviteCandidatesDto: {
-            /**
-             * @description Group id
-             * @example 12
-             */
-            groupId: number;
-            /**
-             * @description Exclusive P2P thread-id cursor. Omit for the first page.
-             * @example 42
-             */
-            afterThreadId?: number;
-            /**
-             * @description Optional case-insensitive account or display-name search.
-             * @example alice
-             */
-            search?: string;
-            /**
-             * @description Page size (1-50)
-             * @default 20
-             */
-            take: number;
-        };
         QueryGroupJoinRequestsDto: {
             /**
              * @description Group id
@@ -6442,27 +6403,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["InviteGroupDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    GroupController_queryInviteCandidates: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["QueryGroupInviteCandidatesDto"];
             };
         };
         responses: {

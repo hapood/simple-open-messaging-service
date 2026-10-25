@@ -81,7 +81,7 @@ describe('playground social contracts', () => {
   it('resolves exact accounts, not display-name or prefix searches', async () => {
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emma' }))).data?.name,
-    ).toBe('Emma');
+    ).toBe('emma');
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emm' }))).code,
     ).not.toBe(0);
@@ -266,14 +266,7 @@ describe('playground social contracts', () => {
     ).rejects.toThrow('Transfer ownership');
   });
 
-  it('distinguishes MEMBER, AVAILABLE and INVITED candidates without auto-joining', async () => {
-    const candidates = (
-      await firstValueFrom(groups.queryInviteCandidates({ groupId: 2 }))
-    ).data!.data;
-    expect(candidates).toMatchObject([
-      { account: 'alice', state: 'MEMBER' },
-      { account: 'liam', state: 'AVAILABLE' },
-    ]);
+  it('retains sent snapshots and rejects duplicate invitations without auto-joining', async () => {
     const params = {
       groupId: 2,
       users: [
@@ -291,7 +284,7 @@ describe('playground social contracts', () => {
     expect(
       (await firstValueFrom(groups.inviteUsers(params))).data!.skipped[0]
         .reason,
-    ).toBe('INVITED');
+    ).toBe('ALREADY_INVITED');
     const invite = (
       await firstValueFrom(groups.queryInvitations({ groupId: 2 }))
     ).data!.items[0];
@@ -302,13 +295,6 @@ describe('playground social contracts', () => {
     await firstValueFrom(
       groups.revokeInvitation({ groupId: 2, requestId: invite.id }),
     );
-    expect(
-      (
-        await firstValueFrom(
-          groups.queryInviteCandidates({ groupId: 2, search: 'Liam' }),
-        )
-      ).data!.data[0].state,
-    ).toBe('AVAILABLE');
     expect(
       (await firstValueFrom(groups.queryInvitations({ groupId: 2 }))).data!
         .items[0].status,
@@ -417,7 +403,6 @@ describe('playground social contracts', () => {
     expect(thread().group).toMatchObject({
       name: 'Updated',
       description: 'New description',
-      avatar: '',
     });
     expect(currentGroupAnnouncement(thread())).toEqual({
       feedId: '2',

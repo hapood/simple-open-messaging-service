@@ -1,5 +1,8 @@
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { signal } from '@angular/core';
+import { of, Subject } from 'rxjs';
+import { HttpClient } from '@angular/common/http';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { describe, expect, it, vi } from 'vitest';
 import { TranslocoService } from '@jsverse/transloco';
 import type {
@@ -12,7 +15,23 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { ToastService } from '../../services/toast.service';
 import { UserService } from '../../services/user.service';
-import type { StandardResponse } from '../../services/model';
+import {
+  createP2PConversation,
+  type User,
+  type StandardResponse,
+} from '../../services/model';
+
+const lookupUser: User = {
+  id: 12,
+  account: 'friend',
+  namespaceId: 7,
+  profileRev: 1,
+  name: 'Friend',
+  avatar: '',
+  bio: '',
+  isGroup: false,
+  isDeleted: false,
+};
 
 function decisionResponse(
   data: RequestDecisionResult,
@@ -92,15 +111,19 @@ describe('GroupJoinRequestsComponent', () => {
       joinRequestReadFeedId: unreadApplications ? 0 : 2,
     };
     const markJoinRequestsReadLocally = vi.fn();
+    const openThreadId = signal<number | undefined>(7);
+    const http = {
+      get: vi.fn(() => of(new Blob(['x'], { type: 'image/webp' }))),
+    };
+    const users = {
+      searchUsers: vi.fn(() =>
+        of({ code: 0, message: 'ok', data: { list: [lookupUser], total: 1 } }),
+      ),
+      resolveFederatedUser: vi.fn(() => of({ user: lookupUser })),
+    };
     const groups = {
       queryJoinRequests,
       queryInvitations: vi.fn(() => of(response())),
-      queryInviteCandidates: vi.fn(() =>
-        of({
-          code: 0,
-          data: { data: [], hasMore: false, afterThreadId: null },
-        }),
-      ),
       markJoinRequestsRead: vi.fn(() => of({ code: 0 })),
       acceptJoinRequest: vi.fn(() => of(decision)),
       rejectJoinRequest: vi.fn(() => of(decision)),
@@ -119,15 +142,23 @@ describe('GroupJoinRequestsComponent', () => {
     TestBed.configureTestingModule({
       providers: [
         { provide: GroupService, useValue: groups },
+        { provide: HttpClient, useValue: http },
         {
           provide: ConversationListService,
           useValue: {
-            openThreadId: () => 7,
-            items: () => [thread],
+            openThreadId,
+            items: () => [
+              thread,
+              createP2PConversation(
+                12,
+                { account: 'friend', namespaceId: 7, profileRev: 1 },
+                { conversationState: 'ACTIVE', friendshipActive: true },
+              ),
+            ],
             markJoinRequestsReadLocally,
           },
         },
-        { provide: UserService, useValue: {} },
+        { provide: UserService, useValue: users },
         { provide: NavStateMachineService, useValue: { back: vi.fn() } },
         { provide: ToastService, useValue: { warn: vi.fn() } },
         {
@@ -141,9 +172,140 @@ describe('GroupJoinRequestsComponent', () => {
         () => new GroupJoinRequestsComponent(),
       ),
       groups,
+      users,
+      http,
+      openThreadId,
       markJoinRequestsReadLocally,
     };
   }
+
+  it.each(['friend@remote.test', 'friend@local.test'])(
+    'routes %s to exact lookup, without fuzzy search',
+    (address) => {
+      const { component, users } = create(vi.fn(() => of(response())));
+      component.searchText.set(address);
+      component.search();
+      expect(users.searchUsers).not.toHaveBeenCalled();
+      expect(component.candidatesHasMore()).toBe(false);
+      component.resolveFederated();
+      expect(users.resolveFederatedUser).toHaveBeenCalledWith(
+        { account: 'friend', domain: address.split('@')[1] },
+        expect.any(Function),
+      );
+      expect(component.candidates()[0]).toBe(lookupUser);
+    },
+  );
+
+  it.each(['friend', 'friend@', '@remote.test', 'friend@@remote.test'])(
+    'routes %s to fuzzy search, not exact lookup',
+    (query) => {
+      const { component, users } = create(vi.fn(() => of(response())));
+      component.searchText.set(query);
+      component.search();
+      expect(users.searchUsers).toHaveBeenCalledWith({
+        q: query,
+        skip: 0,
+        take: 20,
+      });
+      expect(users.resolveFederatedUser).not.toHaveBeenCalled();
+      expect(component.candidates()[0]).toBe(lookupUser);
+    },
+  );
+
+  it('derives friendship from both returned coordinates without altering the lookup snapshot', () => {
+    const { component } = create(vi.fn(() => of(response())));
+    expect(component.invitationState(lookupUser)).toBe('AVAILABLE');
+    expect(component.invitationState({ ...lookupUser, namespaceId: 8 })).toBe(
+      'NOT_FRIEND',
+    );
+    expect(component.invitationState({ ...lookupUser, account: 'other' })).toBe(
+      'NOT_FRIEND',
+    );
+    expect(lookupUser).not.toHaveProperty('state');
+  });
+
+  it('paginates only fuzzy results and resets pagination for a new query', () => {
+    const { component, users } = create(vi.fn(() => of(response())));
+    users.searchUsers.mockReturnValue(
+      of({ code: 0, message: 'ok', data: { list: [lookupUser], total: 2 } }),
+    );
+    component.searchText.set('friend');
+    component.search();
+    component.loadMoreCandidates();
+    expect(users.searchUsers).toHaveBeenLastCalledWith({
+      q: 'friend',
+      skip: 1,
+      take: 20,
+    });
+    component.searchText.set('other');
+    component.search();
+    expect(users.searchUsers).toHaveBeenLastCalledWith({
+      q: 'other',
+      skip: 0,
+      take: 20,
+    });
+  });
+
+  it('derives pending invitation hints from both receiver coordinates and ignores expired rounds', () => {
+    const { component } = create(vi.fn(() => of(response())));
+    const invitation = {
+      ...invitationRow('12', 'REQUESTED', lookupUser),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    component.invitations.set([invitation]);
+    expect(component.invitationState(lookupUser)).toBe('INVITED');
+    expect(component.invitationState({ ...lookupUser, namespaceId: 8 })).toBe(
+      'NOT_FRIEND',
+    );
+    component.invitations.set([
+      { ...invitation, expiresAt: new Date(Date.now() - 1).toISOString() },
+    ]);
+    expect(component.invitationState(lookupUser)).toBe('AVAILABLE');
+  });
+
+  it.each(['ALREADY_MEMBER', 'ALREADY_INVITED'])(
+    'shows the server business rejection %s without marking the request sent',
+    (reason) => {
+      const { component, groups } = create(vi.fn(() => of(response())));
+      groups.inviteUsers.mockReturnValue(
+        of({
+          code: 0,
+          message: 'ok',
+          data: {
+            invited: [],
+            skipped: [
+              { ...lookupUser, reason, code: 10002, message: 'already exists' },
+            ],
+          },
+        }) as never,
+      );
+      component.invite(lookupUser);
+      expect(TestBed.inject(ToastService).warn).toHaveBeenCalledWith(
+        reason === 'ALREADY_MEMBER'
+          ? 'group.alreadyMember'
+          : 'group.invitedStatus',
+      );
+      expect(component.invitationState(lookupUser)).toBe('AVAILABLE');
+    },
+  );
+
+  it('cancels fuzzy search when a new exact address is submitted', () => {
+    const { component, users } = create(vi.fn(() => of(response())));
+    const pending = new Subject<{
+      code: number;
+      message: string;
+      data: { list: User[]; total: number };
+    }>();
+    users.searchUsers.mockReturnValue(pending);
+    component.searchText.set('friend');
+    component.search();
+    expect(pending.observed).toBe(true);
+    component.searchText.set('friend@remote.test');
+    component.search();
+    expect(pending.observed).toBe(false);
+    expect(component.loadingCandidates()).toBe(false);
+    expect(component.candidates()).toEqual([]);
+  });
 
   it('loads applications when the application tab opens', async () => {
     const queryJoinRequests = vi.fn(() => of(response(applicationRow('2'))));
@@ -185,14 +347,13 @@ describe('GroupJoinRequestsComponent', () => {
   it('invites a foreign friend by its address', async () => {
     const { component, groups } = create(vi.fn(() => of(response())));
     const candidate = {
-      threadId: 12,
+      ...lookupUser,
       namespaceId: 7,
       profileRev: 1,
       account: 'friend',
       name: 'Friend',
       avatar: '',
       bio: '',
-      state: 'AVAILABLE' as const,
     };
     component.candidates.set([candidate]);
     groups.inviteUsers.mockReturnValue(
@@ -205,28 +366,105 @@ describe('GroupJoinRequestsComponent', () => {
         },
       }),
     );
-    await component.invite(candidate);
+    component.invite(candidate);
     expect(groups.inviteUsers).toHaveBeenCalledWith({
       groupId: 7,
-      users: [{ account: 'friend', namespaceId: 7, snapshot: { displayName: 'Friend', avatar: null } }],
+      users: [
+        {
+          account: 'friend',
+          namespaceId: 7,
+          snapshot: { displayName: 'Friend', avatar: null },
+        },
+      ],
     });
-    expect(component.candidates()[0].state).toBe('INVITED');
+    expect(component.invitationState(component.candidates()[0])).toBe(
+      'INVITED',
+    );
+  });
+
+  it('freezes lookup-supplied display data at the invitation boundary', async () => {
+    const { component, groups } = create(vi.fn(() => of(response())));
+    component.invite({
+      ...lookupUser,
+      profileRev: 3,
+      name: 'Published Friend',
+      avatar: '/uploads/avatars/friend.webp',
+    });
+    await vi.waitFor(() =>
+      expect(groups.inviteUsers).toHaveBeenCalledWith({
+        groupId: 7,
+        users: [
+          {
+            account: 'friend',
+            namespaceId: 7,
+            snapshot: {
+              displayName: 'Published Friend',
+              avatar: 'data:image/webp;base64,eA==',
+            },
+          },
+        ],
+      }),
+    );
+  });
+
+  it('invites an unpublished candidate with the account-name fallback', async () => {
+    const { component, groups } = create(vi.fn(() => of(response())));
+    component.invite({ ...lookupUser, profileRev: 0, name: 'friend' });
+    await vi.waitFor(() =>
+      expect(groups.inviteUsers).toHaveBeenCalledWith({
+        groupId: 7,
+        users: [
+          {
+            account: 'friend',
+            namespaceId: 7,
+            snapshot: { displayName: 'friend', avatar: null },
+          },
+        ],
+      }),
+    );
+  });
+
+  it('cancels a pending avatar fetch on session invalidation, without sending an invitation', () => {
+    const { component, groups, http } = create(vi.fn(() => of(response())));
+    const pending = new Subject<Blob>();
+    http.get.mockReturnValue(pending);
+    const candidate = {
+      ...lookupUser,
+      profileRev: 3,
+      name: 'Published Friend',
+      avatar: '/uploads/avatars/friend.webp',
+    };
+    component.invite(candidate);
+    component.invite(candidate);
+    expect(http.get).toHaveBeenCalledTimes(1);
+    expect(pending.observed).toBe(true);
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    expect(pending.observed).toBe(false);
+    expect(groups.inviteUsers).not.toHaveBeenCalled();
+    expect(component.inviting().size).toBe(0);
+  });
+
+  it('cancels a pending avatar fetch when the open group changes', () => {
+    const { component, groups, http, openThreadId } = create(
+      vi.fn(() => of(response())),
+    );
+    const pending = new Subject<Blob>();
+    http.get.mockReturnValue(pending);
+    TestBed.tick();
+    component.invite({ ...lookupUser, avatar: '/uploads/avatars/friend.webp' });
+    openThreadId.set(8);
+    TestBed.tick();
+    expect(pending.observed).toBe(false);
+    expect(groups.inviteUsers).not.toHaveBeenCalled();
+    expect(component.inviting().size).toBe(0);
   });
 
   it('re-enables a foreign candidate by address after revoking its invitation', async () => {
-    const { component, groups } = create(vi.fn(() => of(response())), true);
-    component.candidates.set([
-      {
-        threadId: 12,
-        namespaceId: 7,
-        profileRev: 1,
-        account: 'friend',
-        name: 'Friend',
-        avatar: '',
-        bio: '',
-        state: 'INVITED',
-      },
-    ]);
+    const { component, groups } = create(
+      vi.fn(() => of(response())),
+      true,
+    );
+    component.candidates.set([lookupUser]);
     component.invitations.set([
       invitationRow('12', 'REQUESTED', {
         account: 'friend',
@@ -238,7 +476,9 @@ describe('GroupJoinRequestsComponent', () => {
       groupId: 7,
       requestId: '12',
     });
-    expect(component.candidates()[0].state).toBe('AVAILABLE');
+    expect(component.invitationState(component.candidates()[0])).toBe(
+      'AVAILABLE',
+    );
     expect(component.invitations()[0].status).toBe('WITHDRAWN');
   });
 

@@ -1,7 +1,4 @@
-import {
-  parseRequestSnapshot,
-  type RequestSnapshot,
-} from '../../shared/request-snapshot.js';
+import { parseRequestSnapshot } from '../../shared/request-snapshot.js';
 import { assertGroupNameLength } from './group-profile-validation.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import {
@@ -9,9 +6,7 @@ import {
   groupStateFields,
   readGroupState,
 } from './shared/group-state.js';
-import { p2pPeerRelation } from '../relationship/shared/relationship-address.js';
 import type { NamespacedAddress } from '../common/client-identity.js';
-import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
@@ -50,7 +45,6 @@ import {
   readCurrentGroupMemberByAddressInTx,
   readCurrentGroupMemberInTx,
   readCurrentGroupOwnersInTx,
-  readCurrentLocalGroupManagersInTx,
 } from './meta/current-group-roster.js';
 
 /**
@@ -148,72 +142,6 @@ export class GroupService {
         namespaceId: member.namespaceId,
       };
     });
-  }
-
-  /**
-   * Build the invitation picker from server state. The client cannot infer this page from its cached
-   * conversations because friendship, membership, and manager-facing invitation projections converge
-   * independently across federation.
-   */
-  async queryInviteCandidates(
-    threadId: number,
-    managerUserId: number,
-    afterThreadId?: number,
-    search?: string,
-    take = 20,
-  ) {
-    const normalizedSearch = search?.trim() ?? '';
-    const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
-    const rows = await this.database.db.execute<{
-      threadId: number;
-      namespaceId: number;
-      profileRev: number;
-      account: string;
-      domain: string;
-      name: string;
-      avatar: string;
-      bio: string;
-      state: 'AVAILABLE' | 'INVITED' | 'MEMBER';
-    }>(sql`
-      SELECT friendship."threadId", friend.account, friend.domain, friend."namespaceId",
-        COALESCE(peer_intent."profileRev", 0) AS "profileRev",
-        friend.account AS name,
-        '' AS avatar, '' AS bio,
-        CASE WHEN member.operation = 'MEMBER_UPSERT' THEN 'MEMBER'
-          WHEN invitation.status = 'REQUESTED' AND invitation."expiresAt" > CURRENT_TIMESTAMP THEN 'INVITED'
-          ELSE 'AVAILABLE' END AS state
-      FROM "RelationshipPair" friendship
-      JOIN "Account" actor ON actor.id = ${managerUserId}
-      JOIN ${p2pPeerRelation(sql`friendship`, sql`actor`)} friend ON true
-      JOIN "MessageThread" thread_scope ON thread_scope.id = ${threadId} AND thread_scope.type = 'GROUP'
-      LEFT JOIN "RelationshipIntent" peer_intent
-        ON peer_intent."authorAccount" = friend.account
-       AND peer_intent."authorNamespaceId" = friend."namespaceId"
-       AND peer_intent."receiverAccount" = actor.account
-       AND peer_intent."receiverNamespaceId" = 0
-      LEFT JOIN LATERAL (
-        SELECT member_fact.operation FROM "GroupMetaMemberFeed" member_fact
-        WHERE member_fact."threadId" = thread_scope.id
-          AND member_fact.body ->> 'account' = friend.account
-          AND member_fact.body -> 'namespaceId' = to_jsonb(friend."namespaceId")
-        ORDER BY member_fact."feedId" DESC LIMIT 1
-      ) member ON true
-      LEFT JOIN "RelationshipIntent" invitation ON
-        invitation."authorAccount" = thread_scope."groupAccount"
-        AND invitation."authorNamespaceId" = 0
-        AND invitation."receiverAccount" = friend.account
-        AND invitation."receiverNamespaceId" = friend."namespaceId"
-      WHERE friendship.kind = 'P2P' AND friendship.active = true AND friendship."threadId" IS NOT NULL
-        ${afterThreadId === undefined ? sql.empty() : sql`AND friendship."threadId" > ${afterThreadId}`}
-        ${normalizedSearch === '' ? sql.empty() : sql`AND (friend.account ILIKE ${pattern} ESCAPE '\\' OR (friend.account || '@' || friend.domain) ILIKE ${pattern} ESCAPE '\\')`}
-      ORDER BY friendship."threadId" ASC LIMIT ${take + 1}
-    `);
-    const page = rows.rows.slice(0, take);
-    return {
-      data: page,
-      hasMore: rows.rows.length > take,
-      afterThreadId: page.at(-1)?.threadId ?? null,
-    };
   }
 
   async markJoinRequestsRead(

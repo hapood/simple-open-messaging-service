@@ -1,6 +1,8 @@
 import { HttpClient } from '@angular/common/http';
 import { avatarBlobDataUrl } from '../../services/profile-avatar-bytes';
 import { assetUrl } from '../../services/runtime';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
+import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { parseRequestSnapshot } from '../../../../../shared/request-snapshot';
 import type { RequestRecord } from '../../../../../shared/relationship-request';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
@@ -8,21 +10,34 @@ import { RequestProjectionStatus } from '../../../../../shared/request-projectio
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   inject,
   OnDestroy,
   signal,
 } from '@angular/core';
 import { AsyncPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { firstValueFrom, Subscription } from 'rxjs';
+import {
+  defer,
+  filter,
+  finalize,
+  firstValueFrom,
+  from,
+  fromEvent,
+  map,
+  Observable,
+  of,
+  Subscription,
+  switchMap,
+  take,
+  takeUntil,
+} from 'rxjs';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
-import {
-  GroupService,
-  type GroupInviteCandidate,
-} from '../../services/group.service';
+import { GroupService } from '../../services/group.service';
+import type { User } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
@@ -69,16 +84,22 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   readonly UserAvatarType = UserAvatarType;
   private readonly groups = inject(GroupService);
   private readonly http = inject(HttpClient);
+  private readonly sessionLifecycle = inject(SessionLifecycleService);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly conversations = inject(ConversationListService);
   private readonly users = inject(UserService);
   private readonly nav = inject(NavStateMachineService);
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
+  private readonly groupChanges$ = toObservable(
+    this.conversations.openThreadId,
+  );
 
   readonly activeTab = signal(0);
   readonly invitations = signal<RequestRecord[]>([]);
   readonly applications = signal<RequestRecord[]>([]);
-  readonly candidates = signal<GroupInviteCandidate[]>([]);
+  readonly candidates = signal<User[]>([]);
+  private readonly sentInvitations = signal<ReadonlySet<string>>(new Set());
   readonly loadingInvitations = signal(false);
   readonly loadingApplications = signal(false);
   readonly loadingCandidates = signal(false);
@@ -99,7 +120,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
 
   private invitationBefore?: string;
   private applicationBefore?: string;
-  private candidateAfterThreadId?: number;
+  private searchOffset = 0;
   private resolveSub?: Subscription;
 
   constructor() {
@@ -148,15 +169,23 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     if (index === 1 && this.applications().length === 0) {
       void this.loadRequests('APPLICATION', false);
     }
-    if (index === 2 && this.candidates().length === 0)
-      void this.loadCandidates(false);
   }
 
   search(): void {
+    this.resolveSub?.unsubscribe();
     const query = this.searchText().trim();
     this.appliedSearch.set(query);
     this.invalidGroupAddress.set(/^!\S+@\S+$/.test(query));
     this.federatedAddress.set(null);
+    this.candidates.set([]);
+    this.candidatesHasMore.set(false);
+    const address = /^([^@\s]+)@([^@\s]+)$/.exec(query);
+    if (address) {
+      if (!this.invalidGroupAddress()) {
+        this.federatedAddress.set({ account: address[1], domain: address[2] });
+      }
+      return;
+    }
     void this.loadCandidates(false);
   }
 
@@ -244,13 +273,11 @@ export class GroupJoinRequestsComponent implements OnDestroy {
             : row,
         ),
       );
-      this.candidates.update((rows) =>
-        rows.map((row) =>
-          this.candidateKey(row) === this.candidateKey(invitation.receiver)
-            ? { ...row, state: 'AVAILABLE' }
-            : row,
-        ),
-      );
+      this.sentInvitations.update((keys) => {
+        const next = new Set(keys);
+        next.delete(this.candidateKey(invitation.receiver));
+        return next;
+      });
     } catch {
       this.showNetworkError();
     } finally {
@@ -258,100 +285,152 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     }
   }
 
-  candidateKey(candidate: {
-    account: string;
-    namespaceId: number;
-  }): string {
+  invitationState(user: User): 'AVAILABLE' | 'INVITED' | 'NOT_FRIEND' {
+    const key = this.candidateKey(user);
+    const pending = this.invitations().some(
+      (request) =>
+        request.status === 'REQUESTED' &&
+        new Date(request.expiresAt ?? 0).getTime() > Date.now() &&
+        this.candidateKey(request.receiver) === key,
+    );
+    if (pending || this.sentInvitations().has(key)) return 'INVITED';
+    const friend = this.conversations
+      .items()
+      .some(
+        (thread) =>
+          thread.type === 'P2P' &&
+          thread.friendshipActive !== false &&
+          thread.conversationState === 'ACTIVE' &&
+          this.candidateKey(thread.peerUser) === key,
+      );
+    return friend ? 'AVAILABLE' : 'NOT_FRIEND';
+  }
+
+  candidateKey(candidate: { account: string; namespaceId: number }): string {
     return JSON.stringify([candidate.namespaceId, candidate.account]);
   }
 
-  async invite(candidate: GroupInviteCandidate): Promise<void> {
+  invite(candidate: User): void {
     const groupId = this.conversations.openThreadId();
     const key = this.candidateKey(candidate);
-    if (
-      groupId === undefined ||
-      candidate.state !== 'AVAILABLE' ||
-      this.inviting().has(key)
-    )
-      return;
+    if (groupId === undefined || this.inviting().has(key)) return;
+    const session = this.sessionLifecycle.capture();
     this.inviting.update((ids) => new Set(ids).add(key));
-    try {
-      const avatar = candidate.avatar
-        ? candidate.avatar.startsWith('data:')
-          ? candidate.avatar
-          : await avatarBlobDataUrl(await firstValueFrom(
-              this.http.get(assetUrl(candidate.avatar), { responseType: 'blob' }),
-            ))
-        : null;
-      const snapshot = parseRequestSnapshot({ displayName: candidate.name, avatar });
-      const res = await firstValueFrom(
-        this.groups.inviteUsers({
-          groupId,
-          users: [
-            { account: candidate.account, namespaceId: candidate.namespaceId, snapshot },
-          ],
-        }),
-      );
-      if (res.code !== 0) return this.showBusinessError(res);
-      if (!res.data?.invited.length || res.data.skipped.length) {
-        this.toast.warn(this.transloco.translate('group.inviteUnavailable'));
-        return;
-      }
-      this.candidates.update((rows) =>
-        rows.map((row) =>
-          this.candidateKey(row) === key ? { ...row, state: 'INVITED' } : row,
+    // Lookup endpoints supply display data directly; the send boundary is the
+    // only place it freezes into bytes. An unpublished candidate carries the
+    // account-name fallback from the server.
+    defer(() => {
+      const avatar: Observable<string | null> = !candidate.avatar
+        ? of(null)
+        : candidate.avatar.startsWith('data:')
+          ? of(candidate.avatar)
+          : this.http
+              .get(assetUrl(candidate.avatar), { responseType: 'blob' })
+              .pipe(switchMap((blob) => from(avatarBlobDataUrl(blob))));
+      return avatar.pipe(
+        map((value) =>
+          parseRequestSnapshot({ displayName: candidate.name, avatar: value }),
         ),
       );
-      void this.loadRequests('INVITATION', false);
-    } catch {
-      this.showNetworkError();
-    } finally {
-      this.inviting.update((ids) => {
-        const next = new Set(ids);
-        next.delete(key);
-        return next;
+    })
+      .pipe(
+        take(1),
+        switchMap((snapshot) =>
+          this.groups.inviteUsers({
+            groupId,
+            users: [
+              {
+                account: candidate.account,
+                namespaceId: candidate.namespaceId,
+                snapshot,
+              },
+            ],
+          }),
+        ),
+        takeUntil(fromEvent(session.signal, 'abort')),
+        takeUntil(
+          this.groupChanges$.pipe(
+            filter(() => this.conversations.openThreadId() !== groupId),
+          ),
+        ),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() =>
+          this.inviting.update((ids) => {
+            const next = new Set(ids);
+            next.delete(key);
+            return next;
+          }),
+        ),
+      )
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0) return this.showBusinessError(res);
+          const rejection = res.data?.skipped[0];
+          if (rejection) {
+            if (
+              rejection.reason === 'ALREADY_MEMBER' ||
+              rejection.reason === 'ALREADY_INVITED'
+            ) {
+              this.toast.warn(
+                this.transloco.translate(
+                  rejection.reason === 'ALREADY_MEMBER'
+                    ? 'group.alreadyMember'
+                    : 'group.invitedStatus',
+                ),
+              );
+            } else {
+              this.showBusinessError(rejection);
+            }
+            return;
+          }
+          if (!res.data?.invited.length) {
+            this.toast.warn(
+              this.transloco.translate('group.inviteUnavailable'),
+            );
+            return;
+          }
+          this.sentInvitations.update((keys) => new Set(keys).add(key));
+          void this.loadRequests('INVITATION', false);
+        },
+        error: () => this.showNetworkError(),
       });
-    }
   }
 
   resolveFederated(): void {
     const address = this.federatedAddress();
     if (!address || this.resolvingFederated()) return;
+    const session = this.sessionLifecycle.capture();
+    const groupId = this.conversations.openThreadId();
     this.resolvingFederated.set(true);
     this.federationStage.set('DISCOVERING');
     this.resolveSub = this.users
       .resolveFederatedUser(address, (stage) => this.federationStage.set(stage))
+      .pipe(
+        takeUntil(fromEvent(session.signal, 'abort')),
+        takeUntil(
+          this.groupChanges$.pipe(
+            filter(() => this.conversations.openThreadId() !== groupId),
+          ),
+        ),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.resolvingFederated.set(false)),
+      )
       .subscribe({
-        next: async ({ user }) => {
-          try {
-            if (user.isGroup) {
-              this.invalidGroupAddress.set(true);
-              return;
-            }
-            if ((await this.users.localRelationship(user)) !== 'FRIEND') {
-              this.toast.warn(this.transloco.translate('group.friendRequired'));
-              return;
-            }
-            this.candidates.set([
-              {
-                namespaceId: user.namespaceId,
-                profileRev: user.profileRev,
-                account: user.account,
-                name: user.name,
-                avatar: user.avatar,
-                bio: user.bio ?? '',
-                state: 'AVAILABLE',
-              },
-            ]);
-            this.federatedAddress.set(null);
-          } catch {
-            this.toast.warn(this.transloco.translate('errors.networkError'));
-          } finally {
-            this.resolvingFederated.set(false);
+        next: ({ user }) => {
+          if (user.isGroup) {
+            this.invalidGroupAddress.set(true);
+            return;
           }
+
+          if (
+            !this.sessionLifecycle.isCurrent(session) ||
+            this.conversations.openThreadId() !== groupId
+          )
+            return;
+          this.candidates.set([user]);
+          this.federatedAddress.set(null);
         },
         error: (error: unknown) => {
-          this.resolvingFederated.set(false);
           const key =
             error instanceof FederatedResolveError &&
             error.reason === 'NOT_FOUND'
@@ -381,11 +460,12 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     return this.applicationStatusKey(status);
   }
 
-  candidateActionKey(candidate: GroupInviteCandidate): string {
+  candidateActionKey(candidate: User): string {
     if (this.inviting().has(this.candidateKey(candidate)))
       return 'group.inviting';
-    if (candidate.state === 'MEMBER') return 'group.alreadyMember';
-    if (candidate.state === 'INVITED') return 'group.invitedStatus';
+    const state = this.invitationState(candidate);
+    if (state === 'INVITED') return 'group.invitedStatus';
+    if (state === 'NOT_FRIEND') return 'group.friendRequired';
     return 'group.inviteAction';
   }
 
@@ -443,38 +523,38 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     }
   }
 
-  private async loadCandidates(append: boolean): Promise<void> {
+  private loadCandidates(append: boolean): void {
     const groupId = this.conversations.openThreadId();
-    if (groupId === undefined || this.loadingCandidates()) return;
+    const query = this.appliedSearch();
+    if (groupId === undefined || this.loadingCandidates() || query.length < 2)
+      return;
+    const session = this.sessionLifecycle.capture();
+    const offset = append ? this.searchOffset : 0;
     this.loadingCandidates.set(true);
-    try {
-      const res = await firstValueFrom(
-        this.groups.queryInviteCandidates({
-          groupId,
-          afterThreadId: append ? this.candidateAfterThreadId : undefined,
-          search: this.appliedSearch() || undefined,
-          take: 20,
-        }),
-      );
-      if (res.code !== 0 || !res.data) return this.showBusinessError(res);
-      this.candidates.update((rows) =>
-        append ? [...rows, ...res.data!.data] : res.data!.data,
-      );
-      this.candidateAfterThreadId = res.data.afterThreadId ?? undefined;
-      this.candidatesHasMore.set(res.data.hasMore);
-      if (!append && res.data.data.length === 0) this.prepareExactFallback();
-    } catch {
-      this.showNetworkError();
-    } finally {
-      this.loadingCandidates.set(false);
-    }
-  }
-
-  private prepareExactFallback(): void {
-    if (this.invalidGroupAddress()) return;
-    const match = /^([^@\s]+)@([^@\s]+)$/.exec(this.appliedSearch());
-    if (match)
-      this.federatedAddress.set({ account: match[1], domain: match[2] });
+    this.resolveSub = this.users
+      .searchUsers({ q: query, skip: offset, take: 20 })
+      .pipe(
+        takeUntil(fromEvent(session.signal, 'abort')),
+        takeUntil(
+          this.groupChanges$.pipe(
+            filter(() => this.conversations.openThreadId() !== groupId),
+          ),
+        ),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.loadingCandidates.set(false)),
+      )
+      .subscribe({
+        next: (res) => {
+          if (res.code !== 0 || !res.data) return this.showBusinessError(res);
+          const snapshots = res.data.list.filter((user) => !user.isGroup);
+          this.candidates.update((rows) =>
+            append ? [...rows, ...snapshots] : snapshots,
+          );
+          this.searchOffset = offset + res.data.list.length;
+          this.candidatesHasMore.set(this.searchOffset < res.data.total);
+        },
+        error: () => this.showNetworkError(),
+      });
   }
 
   private markApplicationsRead(joinRequestReadFeedId: number): void {

@@ -824,7 +824,28 @@ export class GroupAuthoredMembershipIntentService {
         ),
       );
     if (row.pairActive)
-      return Promise.resolve({ status: 'NO_OP', reason: 'ALREADY_MEMBER' });
+      return Promise.resolve(
+        this.reject(
+          'ALREADY_MEMBER',
+          BusinessCode.ALREADY_EXISTS,
+          'target is already a group member',
+        ),
+      );
+    // An unacknowledged outstanding invitation is a duplicate request, not
+    // a successful write. Crossed applications and acknowledged invitations
+    // retain their existing acceptance semantics.
+    if (
+      row.invitationOutstanding &&
+      row.memberIntentStatus !== 'ACCEPTED' &&
+      !row.applicationPending
+    )
+      return Promise.resolve(
+        this.reject(
+          'ALREADY_INVITED',
+          BusinessCode.ALREADY_EXISTS,
+          'target already has a pending group invitation',
+        ),
+      );
     if (
       (row.memberIntentStatus === 'REQUESTED' && row.applicationPending) ||
       row.invitationOutstanding

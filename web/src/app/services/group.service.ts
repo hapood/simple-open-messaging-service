@@ -14,17 +14,6 @@ export interface GrpCreateInfo {
   groupId: number;
 }
 
-export interface GroupInviteCandidate {
-  threadId?: number;
-  namespaceId: number;
-  profileRev: number;
-  account: string;
-  name: string;
-  avatar: string;
-  bio: string;
-  state: 'AVAILABLE' | 'INVITED' | 'MEMBER';
-}
-
 type MembershipIntentResult =
   | { status: 'APPLIED' }
   | {
@@ -67,7 +56,11 @@ export class GroupService {
 
   /** Invite each target through the manager-authored membership transaction. */
   inviteUsers(params: {
-    users: { account: string; namespaceId: number; snapshot: RequestSnapshot }[];
+    users: {
+      account: string;
+      namespaceId: number;
+      snapshot: RequestSnapshot;
+    }[];
     groupId: number;
   }) {
     return this.http.post<
@@ -77,26 +70,11 @@ export class GroupService {
           account: string;
           namespaceId: number;
           reason: string;
-          code: string;
+          code: number;
           message: string;
         }>;
       }>
     >(`${apiPrefix()}/group/invite`, params);
-  }
-
-  queryInviteCandidates(params: {
-    groupId: number;
-    afterThreadId?: number;
-    search?: string;
-    take?: number;
-  }) {
-    return this.http.post<
-      StandardResponse<{
-        data: GroupInviteCandidate[];
-        hasMore: boolean;
-        afterThreadId: number | null;
-      }>
-    >(`${apiPrefix()}/group/invite-candidates`, params);
   }
 
   leaveGroup(params: { groupId: number }) {

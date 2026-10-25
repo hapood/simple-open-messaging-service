@@ -208,7 +208,7 @@
                   class="candidate-action"
                   type="button"
                   [disabled]="
-                    candidate.state !== 'AVAILABLE' ||
+                    invitationState(candidate) !== 'AVAILABLE' ||
                     inviting().has(candidateKey(candidate))
                   "
                   (click)="invite(candidate)"

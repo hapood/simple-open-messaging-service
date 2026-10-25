@@ -17,7 +17,9 @@ export interface BusinessRejection {
     | 'GROUP_NOT_FOUND'
     | 'GROUP_DISSOLVED'
     | 'FORBIDDEN'
-    | 'GROUP_FULL';
+    | 'GROUP_FULL'
+    | 'ALREADY_MEMBER'
+    | 'ALREADY_INVITED';
   code: BusinessCode;
   message: string;
 }
