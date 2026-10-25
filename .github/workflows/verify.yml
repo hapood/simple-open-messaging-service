@@ -23,12 +23,14 @@ jobs:
             package-lock.json
             web/package-lock.json
             admin-web/package-lock.json
+            tools/cycle-check/package-lock.json
 
       - name: Install dependencies
         run: |
           npm ci
           npm ci --prefix web
           npm ci --prefix admin-web
+          npm ci --prefix tools/cycle-check
 
       - name: Install media tools
         timeout-minutes: 5
@@ -42,7 +44,9 @@ jobs:
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
 
       - name: Check circular dependencies
-        run: npm run check:cycles
+        run: |
+          npm test --prefix tools/cycle-check
+          npm run check:cycles
 
       - name: Build and test server
         run: |

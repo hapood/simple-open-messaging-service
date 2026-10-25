@@ -16,7 +16,6 @@
     "removeComments": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "baseUrl": "./",
     "incremental": true,
     "skipLibCheck": true,
     // Full strict mode. `strict` enables the whole family (strictNullChecks, noImplicitAny,

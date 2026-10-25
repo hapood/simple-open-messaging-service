@@ -1,0 +1,12 @@
+{
+  "name": "soms-cycle-check",
+  "private": true,
+  "scripts": {
+    "check": "node check.mjs",
+    "test": "node --test check.test.mjs"
+  },
+  "devDependencies": {
+    "madge": "8.0.0",
+    "typescript": "~5.9.3"
+  }
+}
