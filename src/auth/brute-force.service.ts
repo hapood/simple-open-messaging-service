@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 
 /** Sliding window: only failures within this span count; older ones auto-age-out so a legitimate user's
@@ -73,6 +73,9 @@ export class BruteForceService {
   private readonly _failLog = new Map<string, number[]>();
   // `${dimension}:${value}` → ban deadline (ms epoch)
   private readonly _banned = new Map<string, number>();
+  private readonly logger = new Logger(BruteForceService.name);
+  // Highest threshold observed during each effective restriction, for warning deduplication only.
+  private readonly _banThresholds = new Map<string, number>();
 
   /** Record one failure for (dimension, value) under the given ascending steps; return the ban deadline iff a
    *  tier is newly crossed this call (else undefined). Only failures within {@link WINDOW_MS} are counted. */
@@ -90,10 +93,38 @@ export class BruteForceService {
     this._failLog.set(key, fresh);
     // Highest matched tier wins (steps are ascending; a later tier overwrites an earlier ban deadline).
     let ban: number | undefined;
+    let matched: BanStep | undefined;
     for (const s of steps) {
-      if (fresh.length > s.count) ban = now + s.banMs;
+      if (fresh.length > s.count) {
+        matched = s;
+        ban = now + s.banMs;
+      }
     }
-    if (ban !== undefined) this._banned.set(key, ban);
+    if (ban !== undefined && matched) {
+      const previousUntil = this._banned.get(key);
+      const active = previousUntil !== undefined && previousUntil > now;
+      const previousThreshold = this._banThresholds.get(key);
+      this._banned.set(key, ban);
+      if (
+        !active ||
+        previousThreshold === undefined ||
+        matched.count > previousThreshold
+      ) {
+        this._banThresholds.set(key, matched.count);
+        this.logger.warn({
+          event: active
+            ? 'auth.login_restriction_upgraded'
+            : 'auth.login_restriction_triggered',
+          dimension,
+          ...(dimension === BAN_DIM_IP ? { ip: value } : { account: value }),
+          failureCount: fresh.length,
+          threshold: matched.count,
+          windowMs: WINDOW_MS,
+          restrictionMs: matched.banMs,
+          until: ban,
+        });
+      }
+    }
     return ban;
   }
 
@@ -111,6 +142,7 @@ export class BruteForceService {
         max = max === undefined ? until : Math.max(max, until);
       } else {
         this._banned.delete(key);
+        this._banThresholds.delete(key);
       }
     }
     return max;
@@ -142,7 +174,7 @@ export class BruteForceService {
   }
 
   /** Admin unban. An IP unban clears only the IP dimension; an account unban clears EVERY account-keyed
-   *  dimension (password + OTP) so unbanning a person restores all their login methods at once. Also drops
+   *  dimension (user password, login code, console password and second factor). Account disable state is unchanged. Also drops
    *  the cleared keys' failure logs so the within-window count restarts. */
   unban(opts: { ip?: string; account?: string }): void {
     const keys: BanKey[] = [];
@@ -154,6 +186,7 @@ export class BruteForceService {
     for (const { dimension, value } of keys) {
       const key = keyOf(dimension, value);
       this._banned.delete(key);
+      this._banThresholds.delete(key);
       this._failLog.delete(key);
     }
   }
@@ -170,7 +203,10 @@ export class BruteForceService {
       else this._failLog.set(key, fresh);
     }
     for (const [key, until] of this._banned) {
-      if (until <= now) this._banned.delete(key);
+      if (until <= now) {
+        this._banned.delete(key);
+        this._banThresholds.delete(key);
+      }
     }
   }
 }

@@ -47,14 +47,14 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('process-local log output level', () => {
-  it('starts at error regardless of environment and resets for a fresh logger', () => {
+  it('starts at warn regardless of environment and resets for a fresh logger', () => {
     vi.stubEnv('LOG_LEVEL', 'trace');
     for (const mode of ['production', 'development']) {
       vi.stubEnv('NODE_ENV', mode);
       const logger = buildPino(new LogStreamStore(10));
-      expect(logger.level).toBe('error');
+      expect(logger.level).toBe('warn');
       logger.level = 'debug';
-      expect(buildPino(new LogStreamStore(10)).level).toBe('error');
+      expect(buildPino(new LogStreamStore(10)).level).toBe('warn');
     }
   });
 
@@ -118,7 +118,7 @@ describe('process-local log output level', () => {
     }).compile();
     try {
       const service = module.get(LogLevelService);
-      expect(service.getLevel()).toEqual({ level: 'error' });
+      expect(service.getLevel()).toEqual({ level: 'warn' });
       expect(service.setLevel('debug')).toEqual({ level: 'debug' });
       expect(service.setLevel('error')).toEqual({ level: 'error' });
     } finally {
@@ -152,7 +152,7 @@ describe('process-local log output level', () => {
       adapter.getInstance().inject({ method: 'POST', url, payload });
     try {
       expect((await request('/admin/logs/output-level')).json()).toEqual({
-        level: 'error',
+        level: 'warn',
       });
       expect(
         (
