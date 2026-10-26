@@ -627,9 +627,8 @@ export interface AdminSettings {
   federationTransport: {
     keyCacheTtlSec: number;
     connectTimeoutSec: number;
-    callTimeoutSec: number;
+    requestIdleTimeoutSec: number;
     mediaChunkBytes: number;
-    mediaChunkTimeoutSec: number;
     mediaMaxChunkRetries: number;
   };
   userQuotaDefaults: {

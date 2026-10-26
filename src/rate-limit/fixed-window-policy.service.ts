@@ -9,7 +9,7 @@ export interface FixedWindowPolicy {
   windowSeconds: number;
 }
 
-const SETTING_KEY = 'rateLimit:fixedWindowPolicies';
+const FIXED_WINDOW_PREFIX = 'rateLimit:fixedWindow:';
 
 export const FIXED_WINDOW_DEFAULTS = {
   'client.compat': [30, 60],
@@ -69,16 +69,52 @@ export class FixedWindowPolicyService implements OnModuleInit {
   constructor(private readonly database: DatabaseService) {}
 
   async onModuleInit(): Promise<void> {
-    const row = await this.database.db.query.systemSetting.findFirst({
-      where: eq(systemSetting.key, SETTING_KEY),
+    const expected = Object.keys(
+      FIXED_WINDOW_DEFAULTS,
+    ) as FixedWindowPolicyName[];
+    const keys = expected.flatMap((p) => [
+      `${FIXED_WINDOW_PREFIX}${p}:limit`,
+      `${FIXED_WINDOW_PREFIX}${p}:windowSeconds`,
+    ]);
+    const rows = await this.database.db.query.systemSetting.findMany({
+      where: (setting, { inArray }) => inArray(setting.key, keys),
     });
-    if (!row) return;
-    try {
-      this.policies = this.validate(JSON.parse(row.value) as unknown);
-      this.revision = row.updatedAt.getTime();
-    } catch {
-      this.policies = this.defaults();
+    const parsed: Partial<
+      Record<FixedWindowPolicyName, Partial<FixedWindowPolicy>>
+    > = {};
+    let latestUpdatedAt = 0;
+    for (const row of rows) {
+      if (row.updatedAt.getTime() > latestUpdatedAt) {
+        latestUpdatedAt = row.updatedAt.getTime();
+      }
+      const raw = row.key.slice(FIXED_WINDOW_PREFIX.length);
+      const lastColon = raw.lastIndexOf(':');
+      if (lastColon <= 0) continue;
+      const policy = raw.slice(0, lastColon) as FixedWindowPolicyName;
+      const field = raw.slice(lastColon + 1);
+      if (!expected.includes(policy)) continue;
+      const val = Number(row.value);
+      if (!Number.isSafeInteger(val) || val < 1) continue;
+      parsed[policy] = parsed[policy] ?? {};
+      if (field === 'limit' && val <= 100_000) {
+        parsed[policy]!.limit = val;
+      } else if (field === 'windowSeconds' && val <= 86_400) {
+        parsed[policy]!.windowSeconds = val;
+      }
     }
+    const defaults = this.defaults();
+    for (const policy of expected) {
+      const p = parsed[policy];
+      if (p?.limit !== undefined && p?.windowSeconds !== undefined) {
+        defaults[policy] = {
+          policy,
+          limit: p.limit,
+          windowSeconds: p.windowSeconds,
+        };
+      }
+    }
+    this.policies = defaults;
+    if (latestUpdatedAt > 0) this.revision = latestUpdatedAt;
   }
 
   get(policy: FixedWindowPolicyName): FixedWindowPolicy {
@@ -96,17 +132,32 @@ export class FixedWindowPolicyService implements OnModuleInit {
   async set(input: unknown): Promise<FixedWindowPolicy[]> {
     const policies = this.validate(input);
     const updatedAt = new Date();
-    await this.database.db
-      .insert(systemSetting)
-      .values({
-        key: SETTING_KEY,
-        value: JSON.stringify(Object.values(policies)),
-        updatedAt,
-      })
-      .onConflictDoUpdate({
-        target: systemSetting.key,
-        set: { value: JSON.stringify(Object.values(policies)), updatedAt },
-      });
+    await this.database.db.transaction(async (tx) => {
+      for (const p of Object.values(policies)) {
+        await tx
+          .insert(systemSetting)
+          .values({
+            key: `${FIXED_WINDOW_PREFIX}${p.policy}:limit`,
+            value: String(p.limit),
+            updatedAt,
+          })
+          .onConflictDoUpdate({
+            target: systemSetting.key,
+            set: { value: String(p.limit), updatedAt },
+          });
+        await tx
+          .insert(systemSetting)
+          .values({
+            key: `${FIXED_WINDOW_PREFIX}${p.policy}:windowSeconds`,
+            value: String(p.windowSeconds),
+            updatedAt,
+          })
+          .onConflictDoUpdate({
+            target: systemSetting.key,
+            set: { value: String(p.windowSeconds), updatedAt },
+          });
+      }
+    });
     this.policies = policies;
     this.revision = updatedAt.getTime();
     return this.list();

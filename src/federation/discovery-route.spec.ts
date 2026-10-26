@@ -64,7 +64,7 @@ function service() {
     {} as never,
     {} as never,
     {
-      get: () => ({ connectTimeoutSec: 2, callTimeoutSec: 2 }),
+      get: () => ({ connectTimeoutSec: 2, requestIdleTimeoutSec: 2 }),
     } as never,
   );
   services.push(target);

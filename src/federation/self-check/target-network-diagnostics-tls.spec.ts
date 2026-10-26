@@ -66,7 +66,7 @@ vi.mock('undici', async (original) => {
 });
 const service = () =>
   new TargetNetworkDiagnosticsService({
-    get: () => ({ connectTimeoutSec: 2, callTimeoutSec: 2 }),
+    get: () => ({ connectTimeoutSec: 2, requestIdleTimeoutSec: 2 }),
   } as never);
 
 let directory: string;
@@ -158,7 +158,9 @@ describe('diagnostic SRV routing with real TLS', () => {
       {} as never,
       {} as never,
       {} as never,
-      { get: () => ({ connectTimeoutSec: 2, callTimeoutSec: 2 }) } as never,
+      {
+        get: () => ({ connectTimeoutSec: 2, requestIdleTimeoutSec: 2 }),
+      } as never,
     );
     try {
       const base = await discovery.resolveBase('peer.example');

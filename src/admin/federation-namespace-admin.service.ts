@@ -183,9 +183,6 @@ export class FederationNamespaceAdminService {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
         body,
-        signal: AbortSignal.timeout(
-          this.transportConfig.get().callTimeoutSec * 1000,
-        ),
       });
       const payload = (await response.json().catch(() => undefined)) as
         | { code?: number; data?: { value?: unknown } }

@@ -5143,12 +5143,13 @@ export interface components {
             keyCacheTtlSec: number;
             /** @example 12 */
             connectTimeoutSec: number;
-            /** @example 12 */
-            callTimeoutSec: number;
+            /**
+             * @description Response-header wait and response-body inactivity timeout after connection establishment, shared by ordinary and media requests.
+             * @example 30
+             */
+            requestIdleTimeoutSec: number;
             /** @example 8388608 */
             mediaChunkBytes: number;
-            /** @example 120 */
-            mediaChunkTimeoutSec: number;
             /** @example 5 */
             mediaMaxChunkRetries: number;
         };

@@ -6,19 +6,17 @@ import { systemSetting } from '../database/schema.js';
 export interface FederationTransportConfig {
   keyCacheTtlSec: number;
   connectTimeoutSec: number;
-  callTimeoutSec: number;
+  requestIdleTimeoutSec: number;
   mediaChunkBytes: number;
-  mediaChunkTimeoutSec: number;
   mediaMaxChunkRetries: number;
 }
 
-const SETTING_KEY = 'federation:transport';
+const SETTING_PREFIX = 'federation:transport:';
 const DEFAULTS: FederationTransportConfig = {
   keyCacheTtlSec: 6 * 60 * 60,
   connectTimeoutSec: 12,
-  callTimeoutSec: 12,
+  requestIdleTimeoutSec: 30,
   mediaChunkBytes: 8 * 1024 * 1024,
-  mediaChunkTimeoutSec: 120,
   mediaMaxChunkRetries: 5,
 };
 
@@ -28,11 +26,20 @@ const BOUNDS: Record<
 > = {
   keyCacheTtlSec: [60, 7 * 24 * 60 * 60],
   connectTimeoutSec: [1, 120],
-  callTimeoutSec: [1, 600],
+  requestIdleTimeoutSec: [1, 600],
   mediaChunkBytes: [256 * 1024, 64 * 1024 * 1024],
-  mediaChunkTimeoutSec: [5, 3600],
   mediaMaxChunkRetries: [0, 20],
 };
+
+const CONFIG_KEYS = Object.keys(
+  DEFAULTS,
+) as (keyof FederationTransportConfig)[];
+
+export function transportSettingKey(
+  key: keyof FederationTransportConfig,
+): string {
+  return `${SETTING_PREFIX}${key}`;
+}
 
 /** Hot-reloadable federation transport policy. Static identity and network topology remain deploy config. */
 @Injectable()
@@ -42,15 +49,24 @@ export class FederationTransportConfigService implements OnModuleInit {
   constructor(private readonly database: DatabaseService) {}
 
   async onModuleInit(): Promise<void> {
-    const row = await this.database.db.query.systemSetting.findFirst({
-      where: eq(systemSetting.key, SETTING_KEY),
+    const keys = CONFIG_KEYS.map((key) => transportSettingKey(key));
+    const rows = await this.database.db.query.systemSetting.findMany({
+      where: (setting, { inArray }) => inArray(setting.key, keys),
     });
-    if (!row) return;
-    try {
-      this.value = this.validate(JSON.parse(row.value) as unknown);
-    } catch {
-      this.value = { ...DEFAULTS };
+    const parsed: Partial<FederationTransportConfig> = {};
+    for (const row of rows) {
+      const field = row.key.slice(
+        SETTING_PREFIX.length,
+      ) as keyof FederationTransportConfig;
+      if (!CONFIG_KEYS.includes(field)) continue;
+      const num = Number(row.value);
+      const [min, max] = BOUNDS[field];
+      if (Number.isSafeInteger(num) && num >= min && num <= max) {
+        parsed[field] = num;
+      }
     }
+    // Any absent, unparseable, or out-of-range key cleanly falls back to its default.
+    this.value = { ...DEFAULTS, ...parsed };
   }
 
   get(): Readonly<FederationTransportConfig> {
@@ -60,13 +76,19 @@ export class FederationTransportConfigService implements OnModuleInit {
   async set(input: unknown): Promise<FederationTransportConfig> {
     const value = this.validate(input);
     const updatedAt = new Date();
-    await this.database.db
-      .insert(systemSetting)
-      .values({ key: SETTING_KEY, value: JSON.stringify(value), updatedAt })
-      .onConflictDoUpdate({
-        target: systemSetting.key,
-        set: { value: JSON.stringify(value), updatedAt },
-      });
+    await this.database.db.transaction(async (tx) => {
+      for (const key of CONFIG_KEYS) {
+        const settingKey = transportSettingKey(key);
+        const strVal = String(value[key]);
+        await tx
+          .insert(systemSetting)
+          .values({ key: settingKey, value: strVal, updatedAt })
+          .onConflictDoUpdate({
+            target: systemSetting.key,
+            set: { value: strVal, updatedAt },
+          });
+      }
+    });
     this.value = value;
     return value;
   }
@@ -76,17 +98,16 @@ export class FederationTransportConfigService implements OnModuleInit {
       throw new Error('federation transport settings must be an object');
     }
     const record = input as Record<string, unknown>;
-    const keys = Object.keys(DEFAULTS) as (keyof FederationTransportConfig)[];
     if (
-      Object.keys(record).length !== keys.length ||
-      Object.keys(record).some((key) => !keys.includes(key as never))
+      Object.keys(record).length !== CONFIG_KEYS.length ||
+      Object.keys(record).some((key) => !CONFIG_KEYS.includes(key as never))
     ) {
       throw new Error(
         'federation transport settings must contain exactly the supported fields',
       );
     }
     const value = {} as FederationTransportConfig;
-    for (const key of keys) {
+    for (const key of CONFIG_KEYS) {
       const candidate = record[key];
       const [min, max] = BOUNDS[key];
       if (

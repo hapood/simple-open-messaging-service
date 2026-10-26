@@ -31,10 +31,25 @@ export class QuotaService implements OnModuleInit {
 
   /** Rebuild today's breaker cache for every identity namespace on startup. */
   async onModuleInit(): Promise<void> {
-    const row = await this.database.db.query.systemSetting.findFirst({
-      where: eq(systemSetting.key, FEDERATION_QUOTA_DEFAULTS_KEY),
+    const keys = FEDERATION_QUOTA_FIELDS.map(
+      (f) => `${FEDERATION_QUOTA_PREFIX}${f}`,
+    );
+    const rows = await this.database.db.query.systemSetting.findMany({
+      where: (setting, { inArray }) => inArray(setting.key, keys),
     });
-    if (row) this.cfg = parseFederationQuotaLimits(row.value);
+    const parsed: Partial<QuotaConfig> = {};
+    for (const row of rows) {
+      const field = row.key.slice(
+        FEDERATION_QUOTA_PREFIX.length,
+      ) as keyof QuotaConfig;
+      if (FEDERATION_QUOTA_FIELDS.includes(field)) {
+        const num = Number(row.value);
+        if (Number.isSafeInteger(num) && num >= 0) {
+          parsed[field] = num;
+        }
+      }
+    }
+    this.cfg = { ...defaultFederationQuotaLimits(), ...parsed };
     await this.refreshAll();
   }
 
@@ -44,18 +59,22 @@ export class QuotaService implements OnModuleInit {
 
   async setDefaultLimits(input: Record<string, unknown>): Promise<QuotaConfig> {
     const cfg = validateFederationQuotaLimits(input);
-    const value = JSON.stringify(cfg);
-    await this.database.db
-      .insert(systemSetting)
-      .values({
-        key: FEDERATION_QUOTA_DEFAULTS_KEY,
-        value,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: systemSetting.key,
-        set: { value, updatedAt: new Date() },
-      });
+    const updatedAt = new Date();
+    await this.database.db.transaction(async (tx) => {
+      for (const field of FEDERATION_QUOTA_FIELDS) {
+        await tx
+          .insert(systemSetting)
+          .values({
+            key: `${FEDERATION_QUOTA_PREFIX}${field}`,
+            value: String(cfg[field]),
+            updatedAt,
+          })
+          .onConflictDoUpdate({
+            target: systemSetting.key,
+            set: { value: String(cfg[field]), updatedAt },
+          });
+      }
+    });
     this.cfg = cfg;
     await this.refreshAll();
     return this.getDefaultLimits();
@@ -690,7 +709,14 @@ export class QuotaService implements OnModuleInit {
   }
 }
 
-const FEDERATION_QUOTA_DEFAULTS_KEY = 'quota:federationDefaults';
+const FEDERATION_QUOTA_PREFIX = 'quota:federation:';
+const FEDERATION_QUOTA_FIELDS: (keyof QuotaConfig)[] = [
+  'dailyRequestLimit',
+  'dailyMsgLimit',
+  'dailySignalLimit',
+  'dailyFileLimit',
+  'dailyFileBytesLimit',
+];
 
 function defaultFederationQuotaLimits(): QuotaConfig {
   return {
@@ -700,12 +726,6 @@ function defaultFederationQuotaLimits(): QuotaConfig {
     dailyFileLimit: 500,
     dailyFileBytesLimit: 5 * 1024 * 1024 * 1024,
   };
-}
-
-function parseFederationQuotaLimits(raw: string): QuotaConfig {
-  return validateFederationQuotaLimits(
-    JSON.parse(raw) as Record<string, unknown>,
-  );
 }
 
 function validateFederationQuotaLimits(

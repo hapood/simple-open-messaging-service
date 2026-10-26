@@ -40,11 +40,8 @@ import type { AdminPrincipal } from './admin-session.js';
  */
 type AdminSessionOpts = { ip?: string; userAgent?: string };
 
-const ADMIN_SESSION_POLICY_KEY = 'admin:sessionPolicy';
-
-function parseAdminSessionPolicy(raw: string) {
-  return validateAdminSessionPolicy(JSON.parse(raw) as Record<string, unknown>);
-}
+const ADMIN_SESSION_PREFIX = 'admin:session:';
+const DEFAULT_SESSION_POLICY = { ttlHours: 12, idleMinutes: 60 };
 
 function validateAdminSessionPolicy(input: Record<string, unknown>) {
   const ttlHours = input.ttlHours;
@@ -106,10 +103,30 @@ export class AdminAuthService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    const row = await this.database.db.query.systemSetting.findFirst({
-      where: eq(systemSetting.key, ADMIN_SESSION_POLICY_KEY),
+    const keys = [
+      `${ADMIN_SESSION_PREFIX}ttlHours`,
+      `${ADMIN_SESSION_PREFIX}idleMinutes`,
+    ];
+    const rows = await this.database.db.query.systemSetting.findMany({
+      where: (setting, { inArray }) => inArray(setting.key, keys),
     });
-    if (row) this.sessionPolicy = parseAdminSessionPolicy(row.value);
+    const parsed: Partial<typeof DEFAULT_SESSION_POLICY> = {};
+    for (const row of rows) {
+      if (row.key === `${ADMIN_SESSION_PREFIX}ttlHours`) {
+        const val = Number(row.value);
+        if (Number.isInteger(val) && val >= 1 && val <= 24)
+          parsed.ttlHours = val;
+      } else if (row.key === `${ADMIN_SESSION_PREFIX}idleMinutes`) {
+        const val = Number(row.value);
+        if (
+          Number.isInteger(val) &&
+          (val === 0 || (val >= 15 && val <= 8 * 60))
+        ) {
+          parsed.idleMinutes = val;
+        }
+      }
+    }
+    this.sessionPolicy = { ...DEFAULT_SESSION_POLICY, ...parsed };
   }
 
   getSessionPolicy() {
@@ -128,14 +145,31 @@ export class AdminAuthService implements OnModuleInit {
 
   async setSessionPolicy(input: Record<string, unknown>) {
     const policy = validateAdminSessionPolicy(input);
-    const value = JSON.stringify(policy);
-    await this.database.db
-      .insert(systemSetting)
-      .values({ key: ADMIN_SESSION_POLICY_KEY, value, updatedAt: new Date() })
-      .onConflictDoUpdate({
-        target: systemSetting.key,
-        set: { value, updatedAt: new Date() },
-      });
+    const updatedAt = new Date();
+    await this.database.db.transaction(async (tx) => {
+      await tx
+        .insert(systemSetting)
+        .values({
+          key: `${ADMIN_SESSION_PREFIX}ttlHours`,
+          value: String(policy.ttlHours),
+          updatedAt,
+        })
+        .onConflictDoUpdate({
+          target: systemSetting.key,
+          set: { value: String(policy.ttlHours), updatedAt },
+        });
+      await tx
+        .insert(systemSetting)
+        .values({
+          key: `${ADMIN_SESSION_PREFIX}idleMinutes`,
+          value: String(policy.idleMinutes),
+          updatedAt,
+        })
+        .onConflictDoUpdate({
+          target: systemSetting.key,
+          set: { value: String(policy.idleMinutes), updatedAt },
+        });
+    });
     this.sessionPolicy = policy;
     return this.getSessionPolicy();
   }

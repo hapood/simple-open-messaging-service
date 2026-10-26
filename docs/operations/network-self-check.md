@@ -53,8 +53,10 @@ public/private DNS answers reject the selected endpoint before connection. This 
 second DNS lookup: the checked addresses are delivered directly to the same connector. The report
 and page disclose this policy and the fresh-connection policy. Diagnostics use an isolated,
 always-destroyed pool and fresh SRV lookup, whereas ordinary traffic retains its route and
-keep-alive caches. They use the same runtime connect/request timeout settings; the SRV lookup is
-bounded by the connect timeout. Diagnostics require HTTPS even when insecure HTTP is explicitly
+keep-alive caches. They use the same runtime connection and response-inactivity timeout settings;
+the SRV lookup is bounded by the connection timeout. The response deadline starts after connection
+establishment, with 30 seconds by default to receive headers and between body data segments.
+See [Federation transport timeouts](federation-transport-timeouts.md) for configuration requirements. Diagnostics require HTTPS even when insecure HTTP is explicitly
 enabled for a development federation host.
 
 There is one active diagnostic per process and a three-second completion cooldown. Business HTTP

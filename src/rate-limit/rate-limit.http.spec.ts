@@ -132,22 +132,12 @@ async function createApp(
     controllers: [ProbeController],
     providers: [
       ClientIdentityService,
-      RateLimitModeService,
       {
-        // Cover the production configuration path (defaults -> DB override):
-        // the stub answers the systemSetting row the service loads in
-        // onModuleInit, replacing the former SOMS_TEST_* token seam.
-        provide: DatabaseService,
-        useValue: {
-          db: {
-            query: {
-              systemSetting: {
-                findFirst: async () => ({
-                  value: JSON.stringify(configuration),
-                }),
-              },
-            },
-          },
+        provide: RateLimitModeService,
+        useFactory: () => {
+          const service = new RateLimitModeService();
+          service.setConfiguration(configuration);
+          return service;
         },
       },
       RateLimitService,

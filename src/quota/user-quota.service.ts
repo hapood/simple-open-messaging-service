@@ -39,10 +39,32 @@ export class UserQuotaService implements OnModuleInit {
   constructor(private readonly database: DatabaseService) {}
 
   async onModuleInit(): Promise<void> {
-    const row = await this.database.db.query.systemSetting.findFirst({
-      where: eq(systemSetting.key, USER_QUOTA_DEFAULTS_KEY),
+    const keys = USER_QUOTA_FIELDS.map((f) => `${USER_QUOTA_PREFIX}${f}`);
+    const rows = await this.database.db.query.systemSetting.findMany({
+      where: (setting, { inArray }) => inArray(setting.key, keys),
     });
-    if (row) this.defaults = parseUserQuotaDefaults(row.value);
+    const parsed: Partial<UserQuotaDefaults> = {};
+    for (const row of rows) {
+      const field = row.key.slice(USER_QUOTA_PREFIX.length);
+      if (
+        field === 'dailyMsgLimit' ||
+        field === 'dailyRequestLimit' ||
+        field === 'dailyFileLimit'
+      ) {
+        const num = Number(row.value);
+        if (Number.isSafeInteger(num) && num >= 0) {
+          parsed[field] = num;
+        }
+      } else if (field === 'dailyFileBytesLimit') {
+        if (/^\d+$/.test(row.value)) {
+          const bytes = BigInt(row.value);
+          if (bytes <= BigInt(Number.MAX_SAFE_INTEGER)) {
+            parsed.dailyFileBytesLimit = bytes;
+          }
+        }
+      }
+    }
+    this.defaults = { ...defaultUserQuotaLimits(), ...parsed };
   }
 
   getDefaultLimits() {
@@ -59,17 +81,28 @@ export class UserQuotaService implements OnModuleInit {
     dailyFileBytesLimit: string;
   }) {
     const defaults = validateUserQuotaDefaults(input);
-    const value = JSON.stringify({
-      ...defaults,
-      dailyFileBytesLimit: defaults.dailyFileBytesLimit.toString(),
+    const updatedAt = new Date();
+    await this.database.db.transaction(async (tx) => {
+      const entries: Array<[string, string]> = [
+        ['dailyMsgLimit', String(defaults.dailyMsgLimit)],
+        ['dailyRequestLimit', String(defaults.dailyRequestLimit)],
+        ['dailyFileLimit', String(defaults.dailyFileLimit)],
+        ['dailyFileBytesLimit', defaults.dailyFileBytesLimit.toString()],
+      ];
+      for (const [field, strVal] of entries) {
+        await tx
+          .insert(systemSetting)
+          .values({
+            key: `${USER_QUOTA_PREFIX}${field}`,
+            value: strVal,
+            updatedAt,
+          })
+          .onConflictDoUpdate({
+            target: systemSetting.key,
+            set: { value: strVal, updatedAt },
+          });
+      }
     });
-    await this.database.db
-      .insert(systemSetting)
-      .values({ key: USER_QUOTA_DEFAULTS_KEY, value, updatedAt: new Date() })
-      .onConflictDoUpdate({
-        target: systemSetting.key,
-        set: { value, updatedAt: new Date() },
-      });
     this.defaults = defaults;
     return this.getDefaultLimits();
   }
@@ -640,7 +673,13 @@ function retryAfterSeconds(): number {
   return Math.max(1, Math.ceil((next - now.getTime()) / 1000));
 }
 
-const USER_QUOTA_DEFAULTS_KEY = 'quota:localUserDefaults';
+const USER_QUOTA_PREFIX = 'quota:localUser:';
+const USER_QUOTA_FIELDS = [
+  'dailyMsgLimit',
+  'dailyRequestLimit',
+  'dailyFileLimit',
+  'dailyFileBytesLimit',
+] as const;
 
 function defaultUserQuotaLimits(): UserQuotaDefaults {
   return {
@@ -649,10 +688,6 @@ function defaultUserQuotaLimits(): UserQuotaDefaults {
     dailyFileLimit: 100,
     dailyFileBytesLimit: 500n * 1024n * 1024n,
   };
-}
-
-function parseUserQuotaDefaults(raw: string): UserQuotaDefaults {
-  return validateUserQuotaDefaults(JSON.parse(raw) as Record<string, unknown>);
 }
 
 function validateUserQuotaDefaults(

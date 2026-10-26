@@ -655,9 +655,8 @@ function makeStubs() {
     get: () => ({
       keyCacheTtlSec: 21_600,
       connectTimeoutSec: 12,
-      callTimeoutSec: 12,
+      requestIdleTimeoutSec: 30,
       mediaChunkBytes: 8 * 1024 * 1024,
-      mediaChunkTimeoutSec: 120,
       mediaMaxChunkRetries: 5,
     }),
   };

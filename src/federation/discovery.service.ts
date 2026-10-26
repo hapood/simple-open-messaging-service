@@ -192,7 +192,7 @@ export class DiscoveryService implements OnApplicationShutdown {
     const draining = (async () => {
       const timeoutMs = Math.max(
         1_000,
-        (this.transportConfig.get().callTimeoutSec ?? 30) * 1000,
+        (this.transportConfig.get().requestIdleTimeoutSec ?? 30) * 1000,
       );
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -268,10 +268,16 @@ export class DiscoveryService implements OnApplicationShutdown {
     const poolSignal = route.dispatcher
       ? this.poolCancellation.get(route.dispatcher)?.signal
       : undefined;
-    return requestFederation(parsed, route.dispatcher, init, poolSignal);
+    return requestFederation(
+      parsed,
+      route.dispatcher,
+      init,
+      poolSignal,
+      (this.transportConfig.get().requestIdleTimeoutSec ?? 30) * 1000,
+    );
   }
 
-  /** Acquire an ordinary S2S HTTP slot. Callers acquire before signing/creating a timeout and release
+  /** Acquire an ordinary S2S HTTP slot. Callers acquire before signing and release
    * after consuming the response. Media range downloads deliberately use their own scheduler. */
   acquireRequestSlot(peerDomain: string): Promise<() => void> {
     return this.httpScheduler.acquire(this.normalizeDomain(peerDomain));
@@ -283,9 +289,6 @@ export class DiscoveryService implements OnApplicationShutdown {
     const release = await this.acquireRequestSlot(domain);
     try {
       const response = await this.request(`${base}/.well-known/somfp`, {
-        signal: AbortSignal.timeout(
-          this.transportConfig.get().callTimeoutSec * 1000,
-        ),
         headers: { accept: 'application/json' },
       });
       return await readFederationDiscovery(domain, response);

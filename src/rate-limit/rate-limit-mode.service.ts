@@ -1,7 +1,4 @@
-import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
-import { systemSetting } from '../database/schema.js';
+import { Injectable, Logger } from '@nestjs/common';
 import type { RateLimitMode } from './rate-limit.types.js';
 
 export interface TokenBucketConfig {
@@ -35,8 +32,6 @@ export interface AuthRateLimitPolicyConfigView {
     enforce: boolean;
   }>;
 }
-
-const AUTH_RATE_LIMIT_SETTING_KEY = 'rateLimit:authPolicies';
 
 const POLICY_DEFINITIONS: Record<string, PolicyDefinition> = {
   'auth.password.login': {
@@ -74,21 +69,12 @@ const POLICY_DEFINITIONS: Record<string, PolicyDefinition> = {
 };
 
 @Injectable()
-export class RateLimitModeService implements OnModuleInit {
+export class RateLimitModeService {
   private readonly logger = new Logger(RateLimitModeService.name);
   private configs: Record<string, AuthRateLimitConfig>;
 
-  constructor(@Optional() private readonly database?: DatabaseService) {
+  constructor() {
     this.configs = defaultConfigs();
-  }
-
-  async onModuleInit(): Promise<void> {
-    if (this.database) {
-      const row = await this.database.db.query.systemSetting.findFirst({
-        where: eq(systemSetting.key, AUTH_RATE_LIMIT_SETTING_KEY),
-      });
-      if (row) this.configs = parseConfigs(row.value);
-    }
     this.logger.log({
       event: 'rate_limit_auth_config',
       policies: this.configs,
@@ -123,23 +109,8 @@ export class RateLimitModeService implements OnModuleInit {
     });
   }
 
-  async setConfiguration(
-    input: unknown,
-  ): Promise<AuthRateLimitPolicyConfigView[]> {
-    if (!this.database) throw new Error('database is unavailable');
+  setConfiguration(input: unknown): AuthRateLimitPolicyConfigView[] {
     const configs = parseConfigurationInput(input);
-    const value = JSON.stringify(configurationView(configs));
-    await this.database.db
-      .insert(systemSetting)
-      .values({
-        key: AUTH_RATE_LIMIT_SETTING_KEY,
-        value,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: systemSetting.key,
-        set: { value, updatedAt: new Date() },
-      });
     this.configs = configs;
     return this.monitoringConfig();
   }

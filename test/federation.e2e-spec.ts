@@ -358,14 +358,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Persist a small, valid range size so the fixture crosses multiple requests. Inserting before
     // boot means the subprocesses load runtime policy from their own database rather than process
     // env; no restart is needed. SystemSetting survives the harness truncation.
-    const transport = JSON.stringify({
-      keyCacheTtlSec: 21_600,
-      connectTimeoutSec: 12,
-      callTimeoutSec: 12,
-      mediaChunkBytes: 262_144,
-      mediaChunkTimeoutSec: 120,
-      mediaMaxChunkRetries: 5,
-    });
     const { urlA, urlB } = await ensureFederationDbs();
     await Promise.all(
       [urlA, urlB].map(async (url) => {
@@ -373,10 +365,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         try {
           await pool.query(
             `INSERT INTO "SystemSetting" ("key", "value", "updatedAt")
-             VALUES ('federation:transport', $1, NOW())
+             VALUES
+               ('federation:transport:keyCacheTtlSec', '21600', NOW()),
+               ('federation:transport:connectTimeoutSec', '12', NOW()),
+               ('federation:transport:requestIdleTimeoutSec', '30', NOW()),
+               ('federation:transport:mediaChunkBytes', '262144', NOW()),
+               ('federation:transport:mediaMaxChunkRetries', '5', NOW())
              ON CONFLICT ("key") DO UPDATE
              SET "value" = EXCLUDED."value", "updatedAt" = EXCLUDED."updatedAt"`,
-            [transport],
           );
         } finally {
           await pool.end();

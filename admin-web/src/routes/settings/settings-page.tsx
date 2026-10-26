@@ -57,9 +57,8 @@ export function SettingsPage() {
   const [transport, setTransport] = useState({
     keyCacheTtlSec: '',
     connectTimeoutSec: '',
-    callTimeoutSec: '',
+    requestIdleTimeoutSec: '',
     mediaChunkBytes: '',
-    mediaChunkTimeoutSec: '',
     mediaMaxChunkRetries: '',
   });
   // Sync the TTL input from the server value (initial load + after a save invalidates + refetches).
@@ -275,9 +274,8 @@ export function SettingsPage() {
             [
               ['keyCacheTtlSec', 'keyCacheTtl', 60, 604800],
               ['connectTimeoutSec', 'connectTimeout', 1, 120],
-              ['callTimeoutSec', 'callTimeout', 1, 600],
+              ['requestIdleTimeoutSec', 'requestIdleTimeout', 1, 600],
               ['mediaChunkBytes', 'mediaChunkBytes', 262144, 67108864],
-              ['mediaChunkTimeoutSec', 'mediaChunkTimeout', 5, 3600],
               ['mediaMaxChunkRetries', 'mediaChunkRetries', 0, 20],
             ] as const
           ).map(([key, label, min, max]) => (

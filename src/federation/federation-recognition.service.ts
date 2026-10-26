@@ -438,9 +438,6 @@ export class FederationRecognitionService {
         response = await this.discovery.request(url, {
           method: 'GET',
           headers,
-          signal: AbortSignal.timeout(
-            this.transportConfig.get().callTimeoutSec * 1000,
-          ),
         });
       } catch (error) {
         await this.markTransportDegraded(
@@ -1461,9 +1458,6 @@ export class FederationRecognitionService {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...headers },
           body,
-          signal: AbortSignal.timeout(
-            this.transportConfig.get().callTimeoutSec * 1000,
-          ),
         });
       } catch (error) {
         await this.markTransportDegraded(

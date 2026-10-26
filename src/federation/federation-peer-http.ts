@@ -61,9 +61,6 @@ export class FederationPeerHttp {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...headers },
           body,
-          signal: AbortSignal.timeout(
-            this.transportConfig.get().callTimeoutSec * 1000,
-          ),
         });
       } catch (error) {
         await this.recognition.markTransportDegraded(
@@ -130,9 +127,6 @@ export class FederationPeerHttp {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...headers },
           body,
-          signal: AbortSignal.timeout(
-            this.transportConfig.get().callTimeoutSec * 1000,
-          ),
         });
       } catch (error) {
         await this.recognition.markTransportDegraded(
@@ -199,9 +193,6 @@ export class FederationPeerHttp {
         response = await this.discovery.request(url, {
           method: 'GET',
           headers: { ...headers },
-          signal: AbortSignal.timeout(
-            this.transportConfig.get().callTimeoutSec * 1000,
-          ),
         });
       } catch (error) {
         await this.recognition.markTransportDegraded(
