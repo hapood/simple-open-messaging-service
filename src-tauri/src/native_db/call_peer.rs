@@ -37,14 +37,13 @@ pub(crate) fn read_call_peer_from_connection(
     let Some(thread) = super::thread_store::read(conn, user_id, thread_id)? else {
         return Ok(None);
     };
-    let peer = &thread["peerUser"];
     if thread["type"] != "P2P" {
         return Ok(None);
     }
-    let local_account = peer["account"]
+    let local_account = thread["account"]
         .as_str()
         .ok_or("call peer account missing")?;
-    let local_namespace_id = peer["namespaceId"]
+    let local_namespace_id = thread["publisherNamespaceId"]
         .as_i64()
         .ok_or("call peer namespace missing")?;
     // Supplied coordinates are consistency checks against the owner-scoped thread record, never an
@@ -61,7 +60,7 @@ pub(crate) fn read_call_peer_from_connection(
         .query_row(
             "SELECT thread_profile_rev FROM threads
          WHERE user_id=?1 AND thread_id=?2 AND kind='P2P'
-           AND subject_account=?3 AND subject_namespace_id=?4",
+           AND subject_account=?3 AND authority_namespace_id=?4",
             params![user_id, thread_id, account, namespace_id],
             |row| row.get(0),
         )
@@ -69,14 +68,7 @@ pub(crate) fn read_call_peer_from_connection(
         .map_err(|e| format!("read call peer revision: {e}"))?
         .ok_or("call peer thread state missing")?;
     let profile = if profile_rev > 0 {
-        contacts::read_profile(
-            &conn,
-            user_id,
-            namespace_id,
-            0,
-            account,
-            profile_rev,
-        )?
+        contacts::read_profile(&conn, user_id, namespace_id, 0, account, profile_rev)?
     } else {
         None
     };
@@ -130,16 +122,18 @@ mod tests {
         .unwrap();
         conn.execute_batch(super::super::thread_store::SCHEMA)
             .unwrap();
-        super::super::thread_store::write(
+        conn.execute_batch(super::super::group_meta_store::SCHEMA)
+            .unwrap();
+        super::super::thread_store::insert(
             &conn,
             41,
             7,
             &json!({
-                "threadId":7,"type":"P2P","authorityNamespaceId":1,
+                "threadId":7,"type":"P2P","publisherNamespaceId":1,"account":"bob",
                 "selfMentionNamespaceId":null,
-                "peerUser":{"account":"bob","namespaceId":1,"name":"Bob"},
+                "profile":{"name":"Bob","bio":"","avatarDigest":null},
                 "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
-                "threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
+                "profileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
                 "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
                 "groupInviteEndFeedId":0,"serverLastReadSeq":0,"announcementReadFeedId":0,
                 "serverUnreadCount":0,"lastMentionSeq":null,"localReadSeq":0
@@ -183,17 +177,19 @@ mod tests {
         .unwrap();
         conn.execute_batch(super::super::thread_store::SCHEMA)
             .unwrap();
+        conn.execute_batch(super::super::group_meta_store::SCHEMA)
+            .unwrap();
         let thread = json!({
-            "threadId":7,"type":"P2P","authorityNamespaceId":1,
+            "threadId":7,"type":"P2P","publisherNamespaceId":1,"account":"bob",
             "selfMentionNamespaceId":null,
-            "peerUser":{"account":"bob","namespaceId":1,"name":"Cached Bob"},
+            "profile":{"name":"Cached Bob","bio":"","avatarDigest":null},
             "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
-            "threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
+            "profileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
             "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
             "groupInviteEndFeedId":0,"serverLastReadSeq":0,"announcementReadFeedId":0,
             "serverUnreadCount":0,"lastMentionSeq":null,"localReadSeq":0
         });
-        super::super::thread_store::write(&conn, 41, 7, &thread).unwrap();
+        super::super::thread_store::insert(&conn, 41, 7, &thread).unwrap();
         // No selected profile and no alias: renderer-supplied names are not a source of truth.
         assert_eq!(
             read_call_peer_from_connection(&conn, 41, 7, "", -1)
@@ -201,10 +197,7 @@ mod tests {
                 .unwrap()["name"],
             "bob"
         );
-        let mut aliased = thread.clone();
-        aliased["alias"] = json!("Best Friend");
-        // `write` upserts server facts; alias is client-owned state written by the attention layer.
-        super::super::thread_store::write(&conn, 41, 7, &aliased).unwrap();
+        // Alias is an account preference committed by the thread-feed owner.
         conn.execute(
             "UPDATE threads SET alias='Best Friend' WHERE user_id=41 AND thread_id=7",
             [],
@@ -224,18 +217,30 @@ mod tests {
              INSERT INTO profiles VALUES(41,1,1,'bob',2,'Wrong namespace',NULL,'');
              INSERT INTO profiles VALUES(41,1,0,'bob',3,'Newer revision',NULL,'');
              UPDATE threads SET thread_profile_rev=2,alias=NULL WHERE user_id=41 AND thread_id=7;",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
-            read_call_peer_from_connection(&conn, 41, 7, "bob", 1).unwrap().unwrap()["name"],
+            read_call_peer_from_connection(&conn, 41, 7, "bob", 1)
+                .unwrap()
+                .unwrap()["name"],
             "Selected Bob"
         );
-        let mut presentation = super::super::thread_store::read(&conn, 41, 7).unwrap().unwrap();
-        super::super::thread_store::apply_selected_profile(&conn, 41, 7, &mut presentation).unwrap();
-        assert_eq!(presentation["peerUser"]["name"], "Selected Bob");
-        assert_eq!(presentation["peerUser"]["bio"], "Selected bio");
-        conn.execute("UPDATE threads SET thread_profile_rev=4 WHERE user_id=41 AND thread_id=7", []).unwrap();
+        let mut presentation = super::super::thread_store::read(&conn, 41, 7)
+            .unwrap()
+            .unwrap();
+        super::super::thread_store::apply_selected_profile(&conn, 41, 7, &mut presentation)
+            .unwrap();
+        assert_eq!(presentation["profile"]["name"], "Selected Bob");
+        assert_eq!(presentation["profile"]["bio"], "Selected bio");
+        conn.execute(
+            "UPDATE threads SET thread_profile_rev=4 WHERE user_id=41 AND thread_id=7",
+            [],
+        )
+        .unwrap();
         assert_eq!(
-            read_call_peer_from_connection(&conn, 41, 7, "bob", 1).unwrap().unwrap()["name"],
+            read_call_peer_from_connection(&conn, 41, 7, "bob", 1)
+                .unwrap()
+                .unwrap()["name"],
             "bob"
         );
     }

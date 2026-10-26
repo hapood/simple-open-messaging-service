@@ -25,7 +25,10 @@ import { UserService } from '../../services/user.service';
 import { WebdbService, WebdbStorage } from '../../services/webdb.service';
 import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import type { ConversationItem, P2PConversationItem } from '../../services/model';
+import type {
+  ConversationItem,
+  P2PConversationItem,
+} from '../../services/model';
 import { createP2PConversation } from '../../services/model';
 
 describe('CallScreenComponent', () => {
@@ -118,19 +121,14 @@ describe('CallScreenComponent', () => {
   });
 
   it('uses common Web conversation presentation, not native snapshot strings', () => {
-    const thread = {
-      type: 'P2P',
+    const thread = createP2PConversation({
       threadId: 4,
-      alias: 'Local alias',
+      account: 'bob',
+      publisherNamespaceId: 2,
       profileRev: 7,
-      conversationState: 'ACTIVE',
-      peerUser: {
-        account: 'bob',
-        namespaceId: 2,
-        name: 'Bob',
-        avatar: 'local-avatar',
-      },
-    } as unknown as ConversationItem;
+      alias: 'Local alias',
+      profile: { name: 'Bob', bio: '', avatarDigest: null },
+    });
     conversations.set([thread]);
     callState.update((state) => ({
       ...state,
@@ -167,20 +165,25 @@ describe('CallScreenComponent', () => {
           resolve: vi.fn(() => of({ domain: 'remote.test', status: 'ACTIVE' })),
         },
       });
-      const createImage = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:call-profile');
-      const revokeImage = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
-      const seed = createP2PConversation(4, {
+      const createImage = vi
+        .spyOn(URL, 'createObjectURL')
+        .mockReturnValue('blob:call-profile');
+      const revokeImage = vi
+        .spyOn(URL, 'revokeObjectURL')
+        .mockImplementation(() => {});
+      const seed = createP2PConversation({
+        threadId: 4,
         account: 'bob',
-        namespaceId: 2,
+        publisherNamespaceId: 2,
         profileRev: 7,
       });
       const thread: P2PConversationItem = {
         ...seed,
-        peerUser: { ...seed.peerUser, name: 'bob' },
+        profile: { ...seed.profile, name: 'bob' },
       };
       const refreshed: P2PConversationItem = {
         ...thread,
-        peerUser: { ...thread.peerUser, name: 'Selected Bob' },
+        profile: { ...thread.profile, name: 'Selected Bob' },
       };
       const aliased: P2PConversationItem = { ...thread, alias: 'Local alias' };
       const selectedProfile: ResolvedProfile = {
@@ -202,12 +205,15 @@ describe('CallScreenComponent', () => {
         peerName: 'Transport name',
         peerAvatar: 'data:image/png;base64,dHJhbnNwb3J0',
       }));
-      const fixture = TestBed.createComponent<CallScreenComponent | CallBannerComponent>(componentType);
+      const fixture = TestBed.createComponent<
+        CallScreenComponent | CallBannerComponent
+      >(componentType);
       try {
         fixture.detectChanges();
         await fixture.whenStable();
-        const avatar = fixture.debugElement.query(By.directive(DemandAvatarComponent))
-          .componentInstance as DemandAvatarComponent;
+        const avatar = fixture.debugElement.query(
+          By.directive(DemandAvatarComponent),
+        ).componentInstance as DemandAvatarComponent;
         expect(resolve).toHaveBeenCalledWith({
           publisherNamespaceId: 2,
           lookup: 'ACCOUNT_PROFILE',
@@ -227,8 +233,12 @@ describe('CallScreenComponent', () => {
         fixture.detectChanges();
         await fixture.whenStable();
         expect(fixture.componentInstance.peerName()).toBe('Selected Bob');
-        expect((fixture.nativeElement as HTMLElement).textContent).toContain('Selected Bob');
-        expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('Transport name');
+        expect((fixture.nativeElement as HTMLElement).textContent).toContain(
+          'Selected Bob',
+        );
+        expect(
+          (fixture.nativeElement as HTMLElement).textContent,
+        ).not.toContain('Transport name');
         // A new presentation source re-resolves; the same shared demand delivers it.
         updates.next(selectedProfile);
         fixture.detectChanges();
@@ -526,19 +536,13 @@ describe('CallScreenComponent', () => {
 
   it('keeps video mode while the local and remote cameras are off', () => {
     conversations.set([
-      {
-        type: 'P2P',
+      createP2PConversation({
         threadId: 4,
-        alias: null,
+        account: 'alice',
+        publisherNamespaceId: 0,
         profileRev: 0,
-        conversationState: 'ACTIVE',
-        peerUser: {
-          account: 'alice',
-          namespaceId: 0,
-          name: 'Alice',
-          avatar: null,
-        },
-      } as unknown as ConversationItem,
+        profile: { name: 'Alice', bio: '', avatarDigest: null },
+      }),
     ]);
     callState.update((state) => ({
       ...state,

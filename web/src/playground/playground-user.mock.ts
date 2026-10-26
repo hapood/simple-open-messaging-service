@@ -1,5 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { defer, of, map } from 'rxjs';
+import { playgroundAvatarUpload } from './playground-avatar-upload';
+import { unicodeCodePointLength } from '../app/lib/unicode-text';
 import type {
   IncomingRequestHead,
   RequestDecisionResult,
@@ -35,6 +37,8 @@ export class PlaygroundUserService
       UserService,
       | 'sessionUserId'
       | 'sessionProfile'
+      | 'updateProfile'
+      | 'updateSessionProfile'
       | 'relationshipRequestHead'
       | 'friendReqBadge'
       | 'resolveUser'
@@ -60,6 +64,38 @@ export class PlaygroundUserService
     const head = this.relationshipRequestHead();
     return BigInt(head.requestEndId) > BigInt(head.requestReadId);
   });
+
+  updateSessionProfile(): void {
+    this.sessionProfile.set({ ...this.state.self });
+  }
+
+  updateProfile(...[params]: Args<'updateProfile'>): Result<'updateProfile'> {
+    return defer(async () => {
+      const name = params.name.trim();
+      if (
+        !name ||
+        unicodeCodePointLength(name) > 31 ||
+        unicodeCodePointLength(params.bio) > 120
+      )
+        return { code: 400, message: 'Invalid profile' };
+      let avatar: string | undefined;
+      if (params.avatarBase64 === null) avatar = '';
+      else if (params.avatarBase64 !== undefined) {
+        try {
+          avatar = await playgroundAvatarUpload(params.avatarBase64);
+        } catch {
+          return { code: 400, message: 'invalid avatar' };
+        }
+      }
+      this.state.publishSelfProfile({
+        name,
+        bio: params.bio,
+        avatar: avatar ?? this.state.self.avatar,
+      });
+      this.updateSessionProfile();
+      return { code: 0, message: 'ok', data: { ...this.state.self } };
+    });
+  }
 
   resolveUser(...[params]: Args<'resolveUser'>): Result<'resolveUser'> {
     return defer(() => {
@@ -272,7 +308,6 @@ export class PlaygroundUserService
       if (thread?.type !== 'P2P')
         return of({ code: 400, message: 'Not a friendship thread' });
       this.state.conversations.applyThreadMeta(thread.threadId, {
-        friendshipActive: false,
         conversationState: 'READ_ONLY',
       });
       return of({ code: 0, message: 'ok', data: { status: 'OK' as const } });
@@ -282,12 +317,16 @@ export class PlaygroundUserService
   private activeThread(user: { account: string; namespaceId: number }) {
     return this.state.conversations
       .items()
-      .find((item) =>
-        item.type === 'P2P'
-          ? item.friendshipActive !== false && sameIdentity(item.peerUser, user)
-          : item.conversationState !== 'READ_ONLY' &&
-            !item.group.dissolvedAt &&
-            sameIdentity(item.group, user),
+      .find(
+        (item) =>
+          item.conversationState === 'ACTIVE' &&
+          sameIdentity(
+            {
+              account: item.account,
+              namespaceId: item.publisherNamespaceId,
+            },
+            user,
+          ),
       );
   }
 
@@ -326,23 +365,35 @@ export class PlaygroundUserService
                 .items()
                 .find(
                   (item) =>
-                    item.type === 'GROUP' && sameIdentity(item.group, user),
+                    item.type === 'GROUP' &&
+                      sameIdentity(
+                        {
+                          account: item.account,
+                          namespaceId: item.publisherNamespaceId,
+                        },
+                        user,
+                      ),
                 )?.threadId ?? this.state.allocateThreadId();
             this.state.conversations.setRelatedConversations([
-              createGroupConversation(
+              createGroupConversation({
                 threadId,
-                {
-                  id: threadId,
-                  account: user.account,
+                account: user.account,
+                publisherNamespaceId: user.namespaceId,
+                profileRev: user.profileRev,
+                profile: {
                   name: user.name,
-                  namespaceId: user.namespaceId,
-                  profileRev: 1,
+                  bio: user.bio ?? '',
+                  avatarDigest: null,
+                },
+                meta: {
                   memberCount: 1,
                   groupMetaFeedId: '1',
-                  announcement: { feedId: '1', text: null },
+                  announcementFeedId: '1',
+                  announcementText: null,
                 },
-                { role: 'MEMBER', groupMetaTargetFeedId: '1' },
-              ),
+                role: 'MEMBER',
+                groupMetaFeedEndId: '1',
+              }),
             ]);
             this.state.rosters.set(threadId, [
               this.state.member(this.state.self),

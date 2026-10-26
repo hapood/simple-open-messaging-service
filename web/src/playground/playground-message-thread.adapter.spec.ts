@@ -24,9 +24,14 @@ describe('PlaygroundMessageThreadAdapter', () => {
       data: {
         type: 'msg',
         msgId: -1,
-        creator: JSON.stringify([0, 'user-1']),
+        creator: JSON.stringify([0, 'me']),
         isSelf: true,
-        name: 'Me',
+        name: 'Updated profile name',
+        sender: {
+          kind: 'snapshot',
+          name: 'Updated profile name',
+          imageUrl: 'data:image/webp;base64,test',
+        },
         text: JSON.stringify({ displayName: 'Maya', account: 'maya' }),
         time: '12:00',
         contentType: 'CONTACT_CARD',
@@ -56,6 +61,15 @@ describe('PlaygroundMessageThreadAdapter', () => {
       const items = await source.getNewer(10, 10);
       expect(items.length).toBe(2);
       expect(items[0].data.type).toBe('msg');
+      expect(items[0].data).toMatchObject({
+        creator: JSON.stringify([0, 'me']),
+        name: 'Updated profile name',
+        sender: {
+          kind: 'snapshot',
+          name: 'Updated profile name',
+          imageUrl: 'data:image/webp;base64,test',
+        },
+      });
       expect(items[0].data.type === 'msg' && items[0].data.contentType).toBe(
         'CONTACT_CARD',
       );

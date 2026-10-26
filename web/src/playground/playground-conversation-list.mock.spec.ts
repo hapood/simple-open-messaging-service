@@ -5,22 +5,21 @@ describe('PlaygroundConversationList', () => {
   it('applies group settings without replacing the rest of the group', () => {
     const conversations = new PlaygroundConversationList();
     conversations.setConversation(
-      createGroupConversation(2, {
-        id: 2,
+      createGroupConversation({
+        threadId: 2,
         account: '!playground',
-        name: 'Playground Team',
-        description: 'Before',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileRev: 0,
+        profile: { name: 'Playground Team', bio: '', avatarDigest: null },
       }),
     );
 
-    conversations.applyGroupUpdate(2, { description: 'After' });
+    conversations.applyGroupUpdate(2, { profile: { bio: 'After' } });
 
-    expect(conversations.current()?.group).toEqual(
+    expect(conversations.current()?.profile).toEqual(
       expect.objectContaining({
-        id: 2,
         name: 'Playground Team',
-        description: 'After',
+        bio: 'After',
       }),
     );
   });

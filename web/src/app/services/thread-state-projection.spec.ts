@@ -25,6 +25,7 @@ describe('complete thread-feed structure projection', () => {
   it('creates a thread and retains content across block changes and stale replays', () => {
     const firstSnapshot = threadFeedSnapshot(9, {
       threadFeedId: 2,
+      messageEndSeq: 5,
       profileAccount: 'bob',
       publisherNamespaceId: 0,
       profileRev: 1,
@@ -37,7 +38,7 @@ describe('complete thread-feed structure projection', () => {
     });
     const withContent = {
       ...first,
-      lastMessageSeq: 5,
+      messageEndSeq: 5,
       lastMessageAt: 100,
       unreadCount: 4,
       lastMessagePreview: 'hello',
@@ -49,7 +50,7 @@ describe('complete thread-feed structure projection', () => {
     );
     expect(blocked).toMatchObject({
       blocked: true,
-      lastMessageSeq: 5,
+      messageEndSeq: 5,
       unreadCount: 4,
       lastMessagePreview: 'hello',
     });
@@ -68,10 +69,13 @@ describe('complete thread-feed structure projection', () => {
     if (first.type !== 'GROUP') throw new Error('group expected');
     const latest = {
       ...first,
-      group: {
-        ...first.group,
-        profileRev: 3,
+      profileRev: 3,
+      profile: {
+        ...first.profile,
         name: 'Current group',
+      },
+      meta: {
+        ...first.meta,
         memberCount: 4,
         groupMetaFeedId: '20',
       },

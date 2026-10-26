@@ -87,7 +87,7 @@ export class MessageHeaderComponent {
     return (
       this.callAdapter.supported &&
       trd?.type === 'P2P' &&
-      trd.friendshipActive !== false
+      trd.conversationState === 'ACTIVE'
     );
   });
 
@@ -95,7 +95,7 @@ export class MessageHeaderComponent {
     const trd = this.userMsgTrd();
     return (
       trd?.type === 'GROUP' &&
-      (trd.group.dissolvedAt != null || trd.conversationState === 'READ_ONLY')
+      trd.conversationState === 'READ_ONLY'
     );
   });
 
@@ -107,14 +107,14 @@ export class MessageHeaderComponent {
   placeCall(): void {
     if (this.callActive()) return;
     const thread = this.userMsgTrd();
-    const peer = thread?.peerUser;
+    const peer = thread?.type === 'P2P' ? thread : undefined;
     if (!thread || !peer) return;
     this.callAdapter.initiate(
       thread.threadId,
       uuid(),
       'AUDIO',
-      peer.account,
-      peer.namespaceId,
+      thread.account,
+      thread.publisherNamespaceId,
     );
   }
 
@@ -159,14 +159,14 @@ export class MessageHeaderComponent {
     if (!trd) return '';
     // A per-user alias (remark) overrides the real name in the caller's header.
     if (trd.alias) return trd.alias;
-    return trd.type === 'P2P' ? displayUserName(trd.peerUser) : trd.group.name;
+    return displayUserName(trd.profile);
   });
 
   /** Group size shown as quiet context beside the title. P2P threads omit it. */
   readonly groupMemberCount = computed(() => {
     const trd = this.userMsgTrd();
     if (trd?.type !== 'GROUP') return undefined;
-    return this.groupInactive() ? 1 : trd.group.memberCount;
+    return this.groupInactive() ? 1 : trd.meta.memberCount;
   });
 
   /** Optional subtitle line under the title: the peer's bio (P2P) or the group description (GROUP).
@@ -174,9 +174,7 @@ export class MessageHeaderComponent {
   readonly subtitle = computed(() => {
     const trd = this.userMsgTrd();
     if (!trd) return '';
-    return trd.type === 'P2P'
-      ? (trd.peerUser.bio ?? '')
-      : (trd.group.description ?? '');
+    return trd.profile.bio ?? '';
   });
 
   readonly moreExpanded = computed(() => {

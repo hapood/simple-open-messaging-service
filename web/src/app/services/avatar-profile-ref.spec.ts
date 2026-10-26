@@ -5,9 +5,15 @@ import {
   groupMemberAvatarProfile,
 } from './avatar-profile-ref';
 
-const group = (account: string) => createGroupConversation(7, {
-  id: 7, account, name: 'Team', namespaceId: 4,
-}, { conversationState: 'ACTIVE' });
+const group = (account: string) =>
+  createGroupConversation({
+    threadId: 7,
+    account,
+    publisherNamespaceId: 4,
+    profileRev: 0,
+    profile: { name: 'Team', bio: '', avatarDigest: null },
+    conversationState: 'ACTIVE',
+  });
 const member = { account: 'alice', namespaceId: 0, profileRev: 3 };
 
 describe('group member profile references', () => {
@@ -24,9 +30,14 @@ describe('group member profile references', () => {
   });
 
   it('does not reuse a home profile ref for a group member at the same coordinates', () => {
-    const home = conversationAvatarProfile(createP2PConversation(8, {
-      account: 'alice', namespaceId: 4, profileRev: 3,
-    }));
+    const home = conversationAvatarProfile(
+      createP2PConversation({
+        threadId: 8,
+        account: 'alice',
+        publisherNamespaceId: 4,
+        profileRev: 3,
+      }),
+    );
     const roster = groupMemberAvatarProfile(group('!team'), member);
     expect(roster).not.toBe(home);
     expect(roster?.groupAccount).toBe('!team');
@@ -40,11 +51,16 @@ describe('group member profile references', () => {
   });
 
   it('retains the reference but disables network authority after departure', () => {
-    const ref = groupMemberAvatarProfile({
-      ...group('!team'), conversationState: 'READ_ONLY',
-    }, member);
+    const ref = groupMemberAvatarProfile(
+      {
+        ...group('!team'),
+        conversationState: 'READ_ONLY',
+      },
+      member,
+    );
     expect(ref?.linked).toBe(false);
-    expect(groupMemberAvatarProfile(group('!team'), { ...member, profileRev: 0 }))
-      .toBeUndefined();
+    expect(
+      groupMemberAvatarProfile(group('!team'), { ...member, profileRev: 0 }),
+    ).toBeUndefined();
   });
 });

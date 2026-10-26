@@ -3,10 +3,34 @@ import { TestBed } from '@angular/core/testing';
 import { MessageThreadComponent } from './friend-message.component';
 import { createP2PConversation } from '../../services/model';
 import { ThreadScrollController } from './thread-scroll.controller';
+import { BusinessCode } from '../../services/biz-code';
+
+describe('MessageThreadComponent relationship business failures', () => {
+  it.each([BusinessCode.FRIEND_NOT_FOUND, BusinessCode.GROUP_DISSOLVED])(
+    'only reports business failure %s without refreshing or patching relationship state',
+    (code) => {
+      const component = Object.create(MessageThreadComponent.prototype);
+      const applyThreadMeta = vi.fn();
+      const applyGroupUpdate = vi.fn();
+      const warn = vi.fn();
+      Object.assign(component, {
+        convList: { applyThreadMeta, applyGroupUpdate },
+        toast: { warn },
+        transloco: { translate: (key: string) => key },
+      });
+      component['surfaceSendFailure']({ code, message: 'business refusal' });
+      expect(warn).toHaveBeenCalledOnce();
+      expect(applyThreadMeta).not.toHaveBeenCalled();
+      expect(applyGroupUpdate).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe('MessageThreadComponent native draft persistence', () => {
   it('does not replay a native draft event when saving changes the draft signal', async () => {
-    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection()] });
+    TestBed.configureTestingModule({
+      providers: [provideZonelessChangeDetection()],
+    });
     try {
       const component = Object.create(MessageThreadComponent.prototype);
       const event = signal<{ kind: 'draft'; text: string } | null>(null);
@@ -47,9 +71,16 @@ describe('MessageThreadComponent native draft persistence', () => {
       nativeComposer: { acknowledge: vi.fn() },
       onSendIntent: vi.fn(),
     });
-    component['handleNativeComposerEvent']({ kind: 'draft', text: 'hello' } as never);
+    component['handleNativeComposerEvent']({
+      kind: 'draft',
+      text: 'hello',
+    } as never);
     expect(save).toHaveReturnedWith('hello');
-    component['handleNativeComposerEvent']({ kind: 'sendText', text: 'hello', actionId: 1 } as never);
+    component['handleNativeComposerEvent']({
+      kind: 'sendText',
+      text: 'hello',
+      actionId: 1,
+    } as never);
     expect(save).toHaveReturnedWith('');
     expect(save).toHaveBeenCalledTimes(2);
   });
@@ -104,9 +135,10 @@ describe('MessageThreadComponent initial failure presentation', () => {
   it('reveals a reusable retry surface when initialization fails', async () => {
     const error = new Error('history unavailable');
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const thread = createP2PConversation(42, {
+    const thread = createP2PConversation({
+      threadId: 42,
       account: 'peer',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
       profileRev: 1,
     });
     // Exercise the real kernel initialization with a failing source. Rendering,

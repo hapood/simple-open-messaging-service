@@ -2,7 +2,6 @@ import { firstValueFrom, timeout } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
-import { ConversationListService } from '../../services/conversation-list.service';
 import { PopupType, RouteService } from '../../services/route.service';
 import { ToastService } from '../../services/toast.service';
 import type { ChatMsgData } from '../message-cards/chat-item';
@@ -16,7 +15,6 @@ import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
 export class MessageForwardController {
   constructor(
     private readonly adapter: MessageThreadAdapter,
-    private readonly conversations: ConversationListService,
     private readonly route: RouteService,
     private readonly toast: ToastService,
     private readonly transloco: TranslocoService,
@@ -101,15 +99,6 @@ export class MessageForwardController {
                 .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
             );
             responses.push(response);
-            if (response.code === BusinessCode.GROUP_DISSOLVED) {
-              this.conversations.applyGroupUpdate(threadId, {
-                dissolvedAt: Date.now(),
-              });
-            } else if (response.code === BusinessCode.FRIEND_NOT_FOUND) {
-              this.conversations.applyThreadMeta(threadId, {
-                friendshipActive: false,
-              });
-            }
           } catch {
             transportFailed = true;
           }

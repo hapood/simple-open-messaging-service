@@ -146,15 +146,12 @@ pub(super) async fn verify_owned_local_commands() {
         .await
         .unwrap()
         .is_empty());
-    client_state::native_db_replace_threads(42, vec![])
-        .await
-        .unwrap();
     client_state::native_db_delete_thread(42, 7).await.unwrap();
     assert_eq!(
-        client_state::native_db_put_thread(42, 7, json!({}))
+        client_state::native_db_patch_thread(42, 7, json!({"muted":true}))
             .await
             .unwrap_err(),
-        "thread presentation has no matching feed state"
+        "cannot patch thread before feed state exists"
     );
     owner
         .with_database(|conn| {

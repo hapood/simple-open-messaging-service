@@ -81,7 +81,7 @@ describe('playground social contracts', () => {
   it('resolves exact accounts, not display-name or prefix searches', async () => {
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emma' }))).data?.name,
-    ).toBe('Emma');
+    ).toBe('emma');
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emm' }))).code,
     ).not.toBe(0);
@@ -177,7 +177,6 @@ describe('playground social contracts', () => {
         .items()
         .find((item) => item.threadId === result.threadId),
     ).toMatchObject({
-      friendshipActive: false,
       conversationState: 'READ_ONLY',
     });
     expect(await users.localRelationship(state.user('maya')!)).toBe('NONE');
@@ -228,10 +227,9 @@ describe('playground social contracts', () => {
     );
     const group = state.conversations
       .items()
-      .find(
-        (item) => item.type === 'GROUP' && item.group.account === '!bookclub',
-      )!;
+      .find((item) => item.type === 'GROUP' && item.account === '!bookclub')!;
     await firstValueFrom(groups.leaveGroup({ groupId: group.threadId }));
+
     await firstValueFrom(
       users.requestRelationship({
         account: '!bookclub',
@@ -258,8 +256,9 @@ describe('playground social contracts', () => {
       .find((item) => item.threadId === result.threadId)!;
     expect(thread).toMatchObject({
       role: 'OWNER',
-      group: { name: 'New team', memberCount: 1 },
-      groupMetaTargetFeedId: '1',
+      profile: { name: 'New team' },
+      meta: { memberCount: 1 },
+      groupMetaFeedEndId: '1',
     });
     await expect(
       firstValueFrom(groups.leaveGroup({ groupId: result.groupId })),
@@ -323,10 +322,11 @@ describe('playground social contracts', () => {
     expect(
       await members.queryPage(2, { take: 50, search: 'Ivy' }),
     ).toMatchObject([{ account: 'ivy', role: 'MEMBER' }]);
-    expect(
-      state.conversations.items().find((item) => item.threadId === 2)?.group
-        ?.memberCount,
-    ).toBe(6);
+    const updatedGroup = state.conversations
+      .items()
+      .find((item) => item.threadId === 2);
+    if (updatedGroup?.type !== 'GROUP') throw new Error('group expected');
+    expect(updatedGroup.meta.memberCount).toBe(6);
     const jack = page.items.find((record) => record.author.account === 'jack')!;
     await firstValueFrom(
       groups.rejectJoinRequest({ groupId: 2, requestId: jack.id }),
@@ -400,9 +400,9 @@ describe('playground social contracts', () => {
     await firstValueFrom(groups.setAnnouncement(2, 'Announcement'));
     const thread = () =>
       state.conversations.items().find((item) => item.threadId === 2)!;
-    expect(thread().group).toMatchObject({
+    expect(thread().profile).toMatchObject({
       name: 'Updated',
-      description: 'New description',
+      bio: 'New description',
     });
     expect(currentGroupAnnouncement(thread())).toEqual({
       feedId: '2',
@@ -418,7 +418,6 @@ describe('playground social contracts', () => {
     ).toBe('PENDING');
     expect(thread()).toMatchObject({
       conversationState: 'READ_ONLY',
-      group: { dissolvedAt: expect.any(Number) },
     });
   });
 });

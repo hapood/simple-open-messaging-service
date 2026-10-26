@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { UserService } from './user.service';
 import { ThreadRepository } from './thread-store.service';
-import { ThreadPeerUser, User } from './model';
+import type { GroupThreadPatch } from './model';
 
 export { ConversationLoadStatus } from './thread-store.service';
 
@@ -102,7 +102,7 @@ export class ConversationListService {
     threadId: number,
   ): UnreadEntryBoundary | undefined {
     const item = this.repo.items().find((t) => t.threadId === threadId);
-    const latestSeq = item?.lastMessageSeq;
+    const latestSeq = item?.messageEndSeq;
     const unreadCount = item?.unreadCount ?? 0;
     if (unreadCount > 0 && typeof latestSeq === 'number') {
       const cursor = this.repo.readCursorState(threadId);
@@ -170,7 +170,6 @@ export class ConversationListService {
       pinned?: boolean;
       pinnedAt?: number | null;
       blocked?: boolean;
-      friendshipActive?: boolean;
       conversationState?: 'ACTIVE' | 'READ_ONLY';
     },
   ): void {
@@ -183,22 +182,10 @@ export class ConversationListService {
     this.repo.confirmThreadAlias(result);
   }
 
-  /** Replace a P2P item's peerUser (avatar/name/bio) after a profile sync. */
-  updatePeerUser(
-    threadId: number,
-    user: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>,
-  ): void {
-    this.repo.updatePeerUser(threadId, user);
-  }
-
   /** Apply an optimistic local group metadata patch. Durable replacement arrives via state delta. */
   applyGroupUpdate(
     threadId: number,
-    patch: {
-      name?: string;
-      description?: string;
-      dissolvedAt?: number | null;
-    },
+    patch: GroupThreadPatch,
   ): void {
     this.repo.applyGroupUpdate(threadId, patch);
   }

@@ -142,18 +142,12 @@ export class TauriWebdbStorage extends WebdbStorage {
   }
 
   /** Per-thread Group Meta + tombstone drains run in the Rust executor. */
-  override async drainThreadMisc(
-    threadId: number | null,
-    groupMetaEndId: string | null,
-    tombstoneEndSeq: number | null,
-  ): Promise<void> {
+  override async drainThreadMisc(threadId: number | null): Promise<void> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
     await tauriInvoke('native_db_drain_thread_misc', {
       userId: Number(this.currentUserId),
       threadId: threadId ?? 0,
-      groupMetaEndId,
-      tombstoneEndSeq,
     });
   }
 }

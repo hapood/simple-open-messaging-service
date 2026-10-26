@@ -4,25 +4,13 @@ import { SessionLifecycleService } from './session-lifecycle.service';
 import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { threadFeedSnapshot } from './thread-feed.test-helper';
-import { createGroupConversation } from './model';
 import {
   STATE_FEED_WORKER_FACTORY,
   WebdbService,
   provideWebdbService,
 } from './webdb.service';
 
-/**
- * Reproduction of a stale renderer write overwriting committed Group Meta progress:
- * the renderer's fire-and-forget `putThread` write-through (projectThread /
- * applyThreadFeedOrder / applyGroupProjectionHeads) carries the in-memory
- * ConversationItem, whose GROUP presentation columns (groupMetaFeedId,
- * memberCount) are never refreshed after a Group Meta drain
- * commits in the database worker. If any such persist lands after the drain's
- * atomic page commit, the drained cursor and roster count regress to their
- * pre-drain defaults while the `members` store keeps the applied roster —
- * exactly the IDB dump recorded in the bug report.
- */
-describe('group-meta drain vs renderer write-through (bug repro)', () => {
+describe('group-meta drain vs renderer local patches', () => {
   let webdb: WebdbService;
 
   beforeEach(async () => {
@@ -47,7 +35,7 @@ describe('group-meta drain vs renderer write-through (bug repro)', () => {
     }
   });
 
-  it('a stale putThread after applyGroupMetaPage regresses cursor, member count and subject', async () => {
+  it('preserves committed Meta progress when a stale renderer changes mute', async () => {
     await webdb.openForUser('1');
 
     // 1) Server truth arrives: creator's thread-feed snapshot with a meta target.
@@ -63,20 +51,8 @@ describe('group-meta drain vs renderer write-through (bug repro)', () => {
       }),
     ]);
 
-    // 2) Renderer materializes the thread list item and persists it. The group
-    //    profile has not resolved yet, so presentation starts at defaults.
-    const inMemory = createGroupConversation(
-      15,
-      {
-        id: 15,
-        account: '!four-one-alpha',
-        name: '',
-        namespaceId: 0,
-        profileRev: 1,
-      },
-      { threadFeedId: 2 },
-    );
-    await webdb.putThread(inMemory);
+    // Capture renderer state before the worker commits its Meta page.
+    const inMemory = (await webdb.getThreads())[0];
 
     // 3) The database worker drains the Group Meta page (creator OWNER upsert).
     await webdb.applyGroupMetaPage({
@@ -117,23 +93,22 @@ describe('group-meta drain vs renderer write-through (bug repro)', () => {
     );
     expect(drained).toMatchObject({
       type: 'GROUP',
-      group: { memberCount: 1, groupMetaFeedId: '3' },
+      meta: { memberCount: 1, groupMetaFeedId: '3' },
     });
     expect(
       await webdb.queryGroupMembers({ threadId: 15, take: 20 }),
     ).toHaveLength(1);
 
-    // 4) Any later renderer persist writes the still-stale in-memory item
-    //    (unread projection, feed order, roster head, mute/pin, ...).
-    await webdb.putThread({ ...inMemory });
+    // The local operation writes only its owned field, not the stale read model.
+    await webdb.patchThread(inMemory.threadId, { muted: !inMemory.muted });
 
     const after = (await webdb.getThreads()).find(
       (item) => item.threadId === 15,
     );
-    // The regression the browser lab observed: cursor and member count are
-    // back at their pre-drain defaults while the roster row survives.
     expect(after).toMatchObject({
-      group: { memberCount: 0, groupMetaFeedId: '0', name: '!four-one-alpha' },
+      muted: true,
+      profile: { name: '!four-one-alpha' },
+      meta: { memberCount: 1, groupMetaFeedId: '3' },
     });
     expect(
       await webdb.queryGroupMembers({ threadId: 15, take: 20 }),

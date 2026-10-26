@@ -77,9 +77,10 @@ class StubThreadComponent {
 class StubEmptyComponent {}
 
 const item = (threadId: number, name: string) => {
-  const thread = createP2PConversation(threadId, {
+  const thread = createP2PConversation({
+    threadId,
     account: name,
-    namespaceId: 0,
+    publisherNamespaceId: 0,
     profileRev: 1,
   });
   return thread;

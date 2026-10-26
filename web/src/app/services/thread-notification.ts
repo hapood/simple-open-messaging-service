@@ -9,10 +9,13 @@ export async function threadNotificationIcon(
   storage: Pick<WebdbStorage, 'getProfile' | 'getProfileAvatarBlob'>,
   item: ConversationItem,
 ): Promise<string> {
-  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
   if (item.profileRev < 1) return '/icons/icon-192.png';
   const profile = await storage.getProfile(
-    homeProfileDemand(subject.account, subject.namespaceId, item.profileRev),
+    homeProfileDemand(
+      item.account,
+      item.publisherNamespaceId,
+      item.profileRev,
+    ),
   );
   const blob = profile?.avatarDigest
     ? await storage.getProfileAvatarBlob(profile.avatarDigest)
@@ -49,12 +52,10 @@ export function threadNotificationDescriptor(
   const fallback = preview?.sender.account ?? 'Unknown';
   const title =
     state.alias ||
-    (item.type === 'GROUP'
-      ? item.group.name || fallback
-      : item.peerUser.name ||
-        (displayDomain
-          ? `${item.peerUser.account}@${displayDomain}`
-          : item.peerUser.account));
+    (item.profile.name ||
+      (displayDomain
+        ? `${item.account}@${displayDomain}`
+        : item.account));
   const textFor = (
     preview: NonNullable<ThreadFeedSnapshot['previews']>[number],
   ) =>

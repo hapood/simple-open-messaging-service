@@ -536,10 +536,13 @@ export class MockItemSource implements CbSource<ChatItemData> {
     const p = this.profiles.get(creator);
     const data: ChatMsgData = {
       ...it.data,
-      name: p?.name ?? 'Unknown',
-      isSelf: p?.isSelf ?? creatorId === this.userId,
+      name: it.data.sender ? it.data.name : (p?.name ?? 'Unknown'),
+      isSelf: it.data.sender
+        ? it.data.isSelf
+        : (p?.isSelf ?? creatorId === this.userId),
       avatarIdentityId: creator,
-      sender: {
+      // Authored echoes retain the revision/snapshot selected when sending.
+      sender: it.data.sender ?? {
         kind: 'snapshot',
         name: p?.name ?? 'Unknown',
         imageUrl: null,

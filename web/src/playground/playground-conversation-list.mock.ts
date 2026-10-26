@@ -3,9 +3,8 @@ import { Subject } from 'rxjs';
 import type {
   ConversationItem,
   GroupConversationItem,
+  GroupThreadPatch,
   P2PConversationItem,
-  ThreadPeerUser,
-  User,
 } from '../app/services/model';
 import type { ConversationListService } from '../app/services/conversation-list.service';
 import type { ThreadNotificationUpdate } from '../app/services/thread-notification';
@@ -78,36 +77,26 @@ export class PlaygroundConversationList
     this.patch(threadId, patch);
   }
 
-  updatePeerUser(
+  applyGroupUpdate(
     threadId: number,
-    peerUser: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>,
+    patch: GroupThreadPatch,
   ): void {
     this.conversations.update((items) =>
       items.map((item) => {
-        if (item.threadId !== threadId || item.type !== 'P2P') return item;
-        const { id: _id, profileRev: _profileRev, ...rest } = peerUser;
-        return { ...item, peerUser: rest };
+        if (item.threadId !== threadId || item.type !== 'GROUP') return item;
+        const next = { ...item };
+        if (patch.role !== undefined) next.role = patch.role;
+        if (patch.profile) next.profile = { ...item.profile, ...patch.profile };
+        if (patch.meta) next.meta = { ...item.meta, ...patch.meta };
+        return next;
       }),
-    );
-  }
-
-  applyGroupUpdate(
-    threadId: number,
-    patch: Partial<NonNullable<ConversationItem['group']>>,
-  ): void {
-    this.conversations.update((items) =>
-      items.map((item) =>
-        item.threadId === threadId && item.type === 'GROUP'
-          ? { ...item, group: { ...item.group, ...patch } }
-          : item,
-      ),
     );
   }
 
   latestSeq(threadId: number): number | undefined {
     return (
       this.conversations().find((item) => item.threadId === threadId)
-        ?.lastMessageSeq ?? undefined
+        ?.messageEndSeq ?? undefined
     );
   }
 
@@ -142,7 +131,7 @@ export class PlaygroundConversationList
     this.patch(threadId, {
       announcementReadFeedId: Math.max(
         thread.announcementReadFeedId ?? 0,
-        Math.min(feedId, Number(thread.group.announcement?.feedId ?? 0)),
+        Math.min(feedId, Number(thread.meta.announcementFeedId ?? 0)),
       ),
     });
   }

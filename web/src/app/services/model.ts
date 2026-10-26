@@ -88,15 +88,29 @@ export function localSubjectIdentity<T extends { namespaceId: number }>(
   return identity;
 }
 
-/** Thread peer identity and locally materialized profile display fields.
- * Domain bindings are resolved separately; profileRev belongs to the conversation projection. */
-export interface ThreadPeerUser {
-  account: string;
+/** Display mirror of the selected immutable profile revision: name, bio and
+ * avatarDigest are one snapshot group per rev. Avatar bytes live in the shared
+ * digest store and are committed together with the snapshot, so the digest is
+ * equivalent to the bytes being present. Not part of thread rows. */
+export interface ThreadProfileSlot {
   name: string;
   bio: string;
-  namespaceId: number;
-  isGroup: false;
-  isDeleted: boolean;
+  avatarDigest: string | null;
+}
+
+/** Group-owned state persisted in its own group_meta row. */
+export interface GroupMetaSlot {
+  memberCount: number;
+  /** Applied Group Meta position. */
+  groupMetaFeedId: string;
+  /** Tri-state announcement: a null feedId means unknown; a set feedId with null
+   * text is a known clear; both set carry the current announcement. */
+  announcementFeedId: string | null;
+  announcementText: string | null;
+  /** Fixed full-recovery boundary; null outside a resumable Group Meta rebuild. */
+  recoveryThrough: string | null;
+  recoveryAnnouncementFeedId: string | null;
+  recoveryAnnouncementText: string | null;
 }
 
 /** Cross-dialog user reference: display fields plus the identity namespace coordinate. Unlike
@@ -149,21 +163,6 @@ export function parseUserIdentityKey(key: string): {
     return null;
   }
 }
-interface Group {
-  id: number;
-  account: string;
-  name: string;
-  profileRev: number;
-  description: string;
-  namespaceId: number;
-  threadId: number;
-  dissolvedAt?: number | null;
-  memberCount: number;
-  groupMetaFeedId: string;
-  /** Absent or null means the current announcement is unknown; text:null is a known clear. */
-  announcement?: { feedId: string; text: string | null } | null;
-}
-
 type ConversationItemBase = {
   /** Avatar profile revision for the peer in P2P or the group itself. */
   profileRev: number;
@@ -173,19 +172,23 @@ type ConversationItemBase = {
   threadId: number;
   /** Immutable namespace owning this thread's publisher coordinate space. */
   publisherNamespaceId: number;
+  /** Subject account: the peer in P2P, the group address in GROUP. */
+  account: string;
+  /** Display mirror of the selected profile revision; not persisted in thread rows. */
+  profile: ThreadProfileSlot;
   /** Viewer home namespace in the group origin's space, never a receiver-local namespace. */
   selfMentionNamespaceId: number | null;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   lastMessageAt: number | null;
   /** Durable server message ceiling; independent from the evictable local message cache. */
-  lastMessageSeq: number | null;
+  messageEndSeq: number;
+  /** Latest server-advertised Group Meta target; null for P2P. */
+  groupMetaFeedEndId: string | null;
   muted: boolean;
   blocked?: boolean;
   pinned: boolean;
   pinnedAt: number | null;
   alias?: string | null;
-  /** P2P only: false after unfriend; history remains readable but sending/calling is disabled. */
-  friendshipActive?: boolean;
   conversationState?: 'ACTIVE' | 'READ_ONLY';
   lastReadSeq?: number | null;
   announcementReadFeedId?: number;
@@ -207,22 +210,11 @@ export type ConversationItem = ConversationItemBase &
   (
     | {
         type: 'P2P';
-        peerUser: ThreadPeerUser;
-        group?: never;
       }
     | {
         type: 'GROUP';
-        peerUser?: never;
-        group: Omit<Group, 'profileRev'>;
-        /** Fixed full-recovery boundary. Null outside a resumable Group Meta rebuild. */
-        groupMetaRecoveryThrough: string | null;
-        /** Last advertised server head; the current announcement is not trusted before catching up. */
-        groupMetaTargetFeedId?: string | null;
-        /** Candidate accumulated during a bounded full drain; not displayable until completion. */
-        groupMetaRecoveryAnnouncement?: {
-          feedId: string;
-          text: string | null;
-        } | null;
+        /** Group-owned state; mirrors the dedicated group_meta row. */
+        meta: GroupMetaSlot;
       }
   );
 
@@ -232,41 +224,58 @@ export type GroupConversationItem = Extract<
   { type: 'GROUP' }
 >;
 
-type P2PPeerInput = {
-  account: string;
-  namespaceId: number;
-  profileRev: number;
+/** Only fields explicitly supplied by a local operation may be persisted.
+ * Server feed coordinates and group/profile content are not writable here. */
+export interface LocalThreadPatch {
+  muted?: boolean;
+  pinned?: boolean;
+  pinnedAt?: number | null;
+  blocked?: boolean;
+  conversationState?: 'ACTIVE' | 'READ_ONLY';
+  announcementReadFeedId?: number;
+  joinRequestReadFeedId?: number;
+}
+
+/** Display and group-state patches keep their ownership boundaries explicit. */
+export interface GroupThreadPatch {
+  profile?: Partial<ThreadProfileSlot>;
+  meta?: Partial<GroupMetaSlot>;
+  role?: GroupConversationItem['role'];
+}
+
+type ThreadInput<T extends ConversationItem> = Pick<
+  T,
+  'threadId' | 'account' | 'publisherNamespaceId' | 'profileRev'
+> &
+  Partial<Omit<T, 'type' | 'profile' | 'meta'>> & {
+    profile?: ThreadProfileSlot;
+  };
+
+type GroupThreadInput = ThreadInput<GroupConversationItem> & {
+  meta?: Partial<GroupMetaSlot>;
 };
 
 /** Construct the canonical local projection for a newly activated, empty P2P thread. */
 export function createP2PConversation(
-  threadId: number,
-  peer: P2PPeerInput,
-  overrides: Partial<P2PConversationItem> = {},
+  input: ThreadInput<P2PConversationItem>,
 ): P2PConversationItem {
-  const peerUser: ThreadPeerUser = {
+  const profile: ThreadProfileSlot = {
     name: '',
     bio: '',
-    isDeleted: false,
-    ...overrides.peerUser,
-    account: peer.account,
-    namespaceId: peer.namespaceId,
-    isGroup: false,
+    avatarDigest: null,
+    ...input.profile,
   };
   return {
-    threadId,
-    publisherNamespaceId: peer.namespaceId,
     selfMentionNamespaceId: null,
     type: 'P2P',
-    profileRev: peer.profileRev,
+    groupMetaFeedEndId: null,
     role: null,
     lastMessageAt: null,
-    lastMessageSeq: null,
+    messageEndSeq: 0,
     muted: false,
     blocked: false,
     pinned: false,
     pinnedAt: null,
-    friendshipActive: true,
     conversationState: 'ACTIVE',
     lastReadSeq: null,
     unreadCount: 0,
@@ -274,40 +283,42 @@ export function createP2PConversation(
     lastMessagePreview: null,
     lastMessageSenderAccount: null,
     lastMessageSenderNamespaceId: null,
-    ...overrides,
-    peerUser,
+    ...input,
+    profile,
   };
 }
 
-type GroupInput = Pick<Group, 'id' | 'account' | 'name' | 'namespaceId'> &
-  Partial<Omit<Group, 'id' | 'account' | 'name' | 'namespaceId'>>;
+/** Initial Meta state before any group feed page has been applied. */
+export function createGroupMeta(): GroupMetaSlot {
+  return {
+    memberCount: 0,
+    groupMetaFeedId: '0',
+    announcementFeedId: null,
+    announcementText: null,
+    recoveryThrough: null,
+    recoveryAnnouncementFeedId: null,
+    recoveryAnnouncementText: null,
+  };
+}
 
 /** Construct the canonical local projection for an empty group thread. */
 export function createGroupConversation(
-  threadId: number,
-  group: GroupInput,
-  overrides: Partial<GroupConversationItem> = {},
+  input: GroupThreadInput,
 ): GroupConversationItem {
-  const groupInput = localSubjectIdentity({
-    description: '',
-    threadId,
-    profileRev: 0,
-    dissolvedAt: null,
-    memberCount: 0,
-    groupMetaFeedId: '0',
-    ...group,
-    ...overrides.group,
-  });
-  const { profileRev, ...groupProfile } = groupInput;
+  const meta = { ...createGroupMeta(), ...input.meta };
+  const profile: ThreadProfileSlot = {
+    name: '',
+    bio: '',
+    avatarDigest: null,
+    ...input.profile,
+  };
   return {
-    threadId,
-    publisherNamespaceId: groupProfile.namespaceId,
-    selfMentionNamespaceId: groupProfile.namespaceId === 0 ? 0 : null,
+    selfMentionNamespaceId: input.publisherNamespaceId === 0 ? 0 : null,
     type: 'GROUP',
-    profileRev,
+    groupMetaFeedEndId: '0',
     role: null,
     lastMessageAt: null,
-    lastMessageSeq: null,
+    messageEndSeq: 0,
     muted: false,
     blocked: false,
     pinned: false,
@@ -319,9 +330,9 @@ export function createGroupConversation(
     lastMessagePreview: null,
     lastMessageSenderAccount: null,
     lastMessageSenderNamespaceId: null,
-    groupMetaRecoveryThrough: null,
-    ...overrides,
-    group: groupProfile,
+    ...input,
+    profile,
+    meta,
   };
 }
 
@@ -329,8 +340,7 @@ export function createGroupConversation(
  * miss still has an identity: display the account rather than a blank label. */
 export function displayThreadName(t: ConversationItem): string {
   if (t.alias) return t.alias;
-  const subject = t.type === 'P2P' ? t.peerUser : t.group;
-  return subject.name?.trim() || subject.account;
+  return t.profile.name?.trim() || t.account;
 }
 
 export function displayUserName(u: { name?: string | null }): string {

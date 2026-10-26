@@ -74,16 +74,14 @@ describe.each(['new', 'existing'] as const)(
             useValue: {
               openThreadId: signal(7),
               items: signal([
-                createGroupConversation(
-                  7,
-                  {
-                    id: 7,
-                    account: '!team',
-                    name: 'Team',
-                    namespaceId: 0,
-                  },
-                  { role: 'ADMIN', profileRev: 4 },
-                ),
+                createGroupConversation({
+                  threadId: 7,
+                  account: '!team',
+                  publisherNamespaceId: 0,
+                  role: 'ADMIN',
+                  profileRev: 4,
+                  profile: { name: 'Team', bio: '', avatarDigest: null },
+                }),
               ]),
               load: vi.fn(),
               refreshAfterMutation: vi.fn(),

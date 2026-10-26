@@ -105,9 +105,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       data: {
         ...request.optimistic.data,
         msgId: sentId,
-        creator: JSON.stringify([0, 'user-1']),
         isSelf: true,
-        name: 'Me',
         // The real production source carries `sent` when the push echo wins the HTTP-response race.
         // Keeping it here lets the kernel-tagged real play the same spinner-to-check choreography.
         status: 'sent',
@@ -134,7 +132,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     const optimistic = source?.pendingByClientMessageId(
       request.clientMessageId,
     );
-    if (source && optimistic) {
+    if (source && optimistic?.data.type === 'msg') {
       const sentId = source.allocateMsgId();
       const now = new Date();
       source.pushLive([
@@ -142,12 +140,10 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
           id: sentId,
           clientMessageId: request.clientMessageId,
           data: {
-            ...(optimistic.data as ChatMsgData),
+            ...optimistic.data,
             type: 'msg' as const,
             msgId: sentId,
-            creator: JSON.stringify([0, 'user-1']),
             isSelf: true,
-            name: 'Me',
             text: optimistic.data.text,
             time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
             contentType: 'LINK',
@@ -212,7 +208,11 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   }
 
   override cancelUploadBatch(clientMessageId: string) {
-    return of({ code: 0, message: 'ok', data: { clientMessageId, cancelled: 1 } });
+    return of({
+      code: 0,
+      message: 'ok',
+      data: { clientMessageId, cancelled: 1 },
+    });
   }
 
   override sendCompletedUploadBatch(clientMessageId: string) {
@@ -325,13 +325,12 @@ function mockConversation(
   alias: string,
   peerName: string,
 ): ConversationItem {
-  return createP2PConversation(
+  return createP2PConversation({
     threadId,
-    {
-      account: peerName.toLocaleLowerCase(),
-      namespaceId: 0,
-      profileRev: 1,
-    },
-    { alias },
-  );
+    account: peerName.toLocaleLowerCase(),
+    publisherNamespaceId: 0,
+    profileRev: 1,
+    profile: { name: peerName, bio: '', avatarDigest: null },
+    alias,
+  });
 }

@@ -717,7 +717,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * Leave the DB-only phase after the scroller has initialized, then reconcile the durable conversation
    * metadata and the live-session HWM against the newest message actually loaded from the local DB.
    *
-   * `persistedLatestSeq` is the server-authored `ConversationItem.lastMessageSeq` stored with the thread
+   * `persistedLatestSeq` is the server-authored `ConversationItem.messageEndSeq` stored with the thread
    * row. It is deliberately independent from the messages cache: after a fresh install, storage migration,
    * or cache eviction the thread can truthfully say "latest = 258" while the local messages table is empty.
    * `liveLatestSeq` covers a newer content head observed after that thread snapshot. Whichever is greater is
@@ -725,11 +725,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    */
   finishLocalInit(
     liveLatestSeq: number | undefined,
-    persistedLatestSeq: number | null = null,
+    persistedLatestSeq: number = 0,
   ): void {
     this.initializingDb = false;
-    const targetSeq = Math.max(liveLatestSeq ?? -1, persistedLatestSeq ?? -1);
-    if (targetSeq > this.loadedSeq) {
+    const targetSeq = Math.max(liveLatestSeq ?? 0, persistedLatestSeq);
+    if (targetSeq > 0 && targetSeq > this.loadedSeq) {
       this.repo.retainNewestSeq(this.conv.threadId, targetSeq);
       this.onNewerAvailable(targetSeq);
     }

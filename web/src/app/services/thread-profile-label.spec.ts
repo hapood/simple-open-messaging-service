@@ -4,7 +4,8 @@ const thread = (name: string, namespaceId = 0): ConversationItem =>
   ({
     type: 'P2P',
     alias: null,
-    peerUser: { name, account: 'bob', namespaceId },
+    publisherNamespaceId: namespaceId,
+    peerUser: { name, account: 'bob' },
   }) as unknown as ConversationItem;
 
 describe('thread profile label fallback', () => {
@@ -25,14 +26,12 @@ describe('thread profile label fallback', () => {
   });
 
   it('renders a group account on a cache miss without a duplicated domain', () => {
-    const group = {
+    const thread = {
       type: 'GROUP',
-      group: {
-        name: '',
-        account: '!team',
-        namespaceId: 12,
-      },
+      publisherNamespaceId: 12,
+      account: '!team',
+      profile: { name: '', bio: '', avatarDigest: null },
     } as ConversationItem;
-    expect(displayThreadName(group)).toBe('!team');
+    expect(displayThreadName(thread)).toBe('!team');
   });
 });

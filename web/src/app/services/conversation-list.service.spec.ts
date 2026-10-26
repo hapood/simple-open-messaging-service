@@ -73,7 +73,7 @@ describe('ConversationListService stable markRead flush', () => {
     Object.assign(repo, {
       openThreadId: signal<number | undefined>(undefined).asReadonly(),
       items: signal([
-        { threadId: 7, unreadCount: 2, lastMessageSeq: 25, lastReadSeq: 23 },
+        { threadId: 7, unreadCount: 2, messageEndSeq: 25, lastReadSeq: 23 },
       ]).asReadonly(),
     });
     vi.mocked(repo.readCursorState).mockReturnValue({
@@ -87,20 +87,20 @@ describe('ConversationListService stable markRead flush', () => {
     });
     Object.assign(repo, {
       items: signal([
-        { threadId: 7, unreadCount: 0, lastMessageSeq: 25, lastReadSeq: 25 },
+        { threadId: 7, unreadCount: 0, messageEndSeq: 25, lastReadSeq: 25 },
       ]).asReadonly(),
     });
     expect(convList.captureUnreadEntryBoundary(7)).toBeUndefined();
     Object.assign(repo, {
       items: signal([
-        { threadId: 7, unreadCount: 2, lastMessageSeq: 25, lastReadSeq: 23 },
+        { threadId: 7, unreadCount: 2, messageEndSeq: 25, lastReadSeq: 23 },
       ]).asReadonly(),
     });
     const boundary = convList.captureUnreadEntryBoundary(7);
     expect(boundary).toMatchObject({ firstUnreadSeq: 24, unreadCount: 2 });
     Object.assign(repo, {
       items: signal([
-        { threadId: 7, unreadCount: 0, lastMessageSeq: 25, lastReadSeq: 25 },
+        { threadId: 7, unreadCount: 0, messageEndSeq: 25, lastReadSeq: 25 },
       ]).asReadonly(),
     });
     convList.open(7);

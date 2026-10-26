@@ -96,7 +96,14 @@ describe('ThreadListComponent', () => {
             sessionUserId: signal(null),
           },
         },
-        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
+        {
+          provide: WebdbService,
+          useFactory: () =>
+            new WebdbStorage(
+              () => null,
+              new SessionLifecycleService(),
+            ) as WebdbService,
+        },
         { provide: RouteService, useValue: { popupDlg: popupSpy } },
       ],
     });
@@ -105,13 +112,11 @@ describe('ThreadListComponent', () => {
   });
 
   /** Empty profile projection; identity coordinates are available before profile hydration. */
-  function p2p(
-    threadId: number,
-    peerId: number,
-  ): P2PConversationItem {
-    const item = createP2PConversation(threadId, {
+  function p2p(threadId: number, peerId: number): P2PConversationItem {
+    const item = createP2PConversation({
+      threadId,
       account: `u${peerId}`,
-      namespaceId: 0,
+      publisherNamespaceId: 0,
       profileRev: 1,
     });
     return item;
@@ -121,12 +126,12 @@ describe('ThreadListComponent', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     const thread = p2p(1, 2);
-    thread.lastMessageSeq = 5;
+    thread.messageEndSeq = 5;
     expect(comp.previewText(thread)).toBe('');
-    thread.lastMessageSeq = 0;
+    thread.messageEndSeq = 0;
     expect(comp.previewText(thread)).toBe('');
     thread.lastMessagePreview = 'previous preview';
-    thread.lastMessageSeq = 6;
+    thread.messageEndSeq = 6;
     expect(comp.previewText(thread)).toBe('previous preview');
   });
 
@@ -176,10 +181,12 @@ describe('ThreadListComponent', () => {
 
   it('isSearchEmpty is false when a search term matches a hydrated profile name', () => {
     const thread = p2p(1, 11);
-    items.set([{
-      ...thread,
-      peerUser: { ...thread.peerUser, name: 'User 11' },
-    }]);
+    items.set([
+      {
+        ...thread,
+        profile: { ...thread.profile, name: 'User 11' },
+      },
+    ]);
     fixture.componentRef.setInput('searchText', 'user 11');
     expect(comp.isSearchEmpty()).toBe(false);
   });
@@ -220,8 +227,8 @@ describe('ThreadListComponent', () => {
       pinned: true,
       blocked: true,
       lastMessagePreview: 'Latest message',
-      peerUser: {
-        ...p2p(1, 11).peerUser,
+      profile: {
+        ...p2p(1, 11).profile,
         name: 'A very long conversation name',
       },
     };
@@ -274,11 +281,12 @@ describe('ThreadListComponent', () => {
 
   it('marks group avatars with a groups icon but leaves P2P avatars unbadged', async () => {
     items.set([
-      createGroupConversation(1, {
-        id: 21,
+      createGroupConversation({
+        threadId: 1,
         account: 'team',
-        name: 'Team',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileRev: 0,
+        profile: { name: 'Team', bio: '', avatarDigest: null },
       }),
       p2p(2, 12),
     ]);
@@ -319,11 +327,12 @@ describe('ThreadListComponent', () => {
 
   it('shows unread group join requests as a secondary member-add badge', async () => {
     const group = {
-      ...createGroupConversation(1, {
-        id: 21,
+      ...createGroupConversation({
+        threadId: 1,
         account: 'team',
-        name: 'Team',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileRev: 0,
+        profile: { name: 'Team', bio: '', avatarDigest: null },
       }),
       role: 'OWNER' as const,
     };

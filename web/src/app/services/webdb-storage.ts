@@ -1,9 +1,10 @@
 import { BusinessCode } from './biz-code';
-import { applyThreadStateSnapshot } from './thread-state-projection';
+import { createGroupMeta } from './model';
 import {
   restoreThread,
-  restoreThreadForStorageMutation,
-  storeThreadPresentation,
+  createStoredThread,
+  applyLocalThreadPatch,
+  type StoredGroupMeta,
   type StoredThread,
   type StoredThreadAttention,
 } from './thread-record';
@@ -27,6 +28,7 @@ import { openDB, deleteDB, type DBSchema, type IDBPDatabase } from 'idb';
 import {
   parseUserIdentityKey,
   type ConversationItem,
+  type LocalThreadPatch,
   type DeletedMessageItem,
   type Message,
   type MessageCreator,
@@ -38,7 +40,11 @@ import {
   type MessageDeletionMarker,
   type MessageTomb,
 } from '../../../../shared/message-tomb';
-import type { AccountState, AccountSelfProfile, AccountComposerDraft } from '../../../../shared/account-state';
+import type {
+  AccountState,
+  AccountSelfProfile,
+  AccountComposerDraft,
+} from '../../../../shared/account-state';
 import type { AccountStateStorage } from '../../../../shared/account-state-ipc';
 import { invokeAccountState } from './account-state-ipc';
 import { parseIncomingRequestHead } from '../../../../shared/relationship-request';
@@ -397,21 +403,6 @@ function attentionFactsUnchanged(
   );
 }
 
-function requireThreadIdentity(
-  item: ConversationItem,
-  state: StoredThreadAttention | undefined,
-): asserts state is StoredThreadAttention {
-  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
-  if (
-    !state ||
-    state.threadId !== item.threadId ||
-    state.type !== item.type ||
-    state.publisherNamespaceId !== item.publisherNamespaceId ||
-    state.profileAccount !== subject.account
-  )
-    throw new Error('thread presentation has no matching feed state');
-}
-
 export interface WebdbSchema extends DBSchema {
   profiles: {
     key: [number, number, string, number];
@@ -440,6 +431,7 @@ export interface WebdbSchema extends DBSchema {
   };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: StoredThread };
+  groupMeta: { key: number; value: StoredGroupMeta };
   threadPreviews: { key: number; value: StoredThreadPreview };
   /** One fixed record for account metadata and synchronization coordinates. */
   accountState: { key: 'account'; value: AccountState };
@@ -991,7 +983,8 @@ export class WebdbStorage implements AccountStateStorage {
     }
     try {
       if (
-        (await db.get('accountState', 'account'))?.schemaVersion !== CACHE_SCHEMA_VERSION
+        (await db.get('accountState', 'account'))?.schemaVersion !==
+        CACHE_SCHEMA_VERSION
       ) {
         db.close();
         throw new LocalCacheVersionMismatchError(name);
@@ -1074,6 +1067,7 @@ export class WebdbStorage implements AccountStateStorage {
       'profileAvatarBlobs',
       'members',
       'threads',
+      'groupMeta',
       'threadPreviews',
       'accountState',
     ] as const;
@@ -1125,20 +1119,24 @@ export class WebdbStorage implements AccountStateStorage {
         members.createIndex('address', ['threadId', 'account', 'namespaceId']);
         db.createObjectStore('threads', { keyPath: 'threadId' });
         db.createObjectStore('threadPreviews', { keyPath: 'threadId' });
+        db.createObjectStore('groupMeta', { keyPath: 'threadId' });
         db.createObjectStore('accountState');
-        transaction.objectStore('accountState').put({
-          schemaVersion: CACHE_SCHEMA_VERSION,
-          selfProfile: null,
-          selfIdentity: null,
-          composerDrafts: [],
-          threadFeedCursor: null,
-          stateFeedId: null,
-          stateFeedFullThrough: null,
-          profileNamespaceChangeEndId: null,
-          intentRequestEndId: null,
-          intentRequestReadId: null,
-          intentRequestOptimisticReadId: null,
-        }, 'account');
+        transaction.objectStore('accountState').put(
+          {
+            schemaVersion: CACHE_SCHEMA_VERSION,
+            selfProfile: null,
+            selfIdentity: null,
+            composerDrafts: [],
+            threadFeedCursor: null,
+            stateFeedId: null,
+            stateFeedFullThrough: null,
+            profileNamespaceChangeEndId: null,
+            intentRequestEndId: null,
+            intentRequestReadId: null,
+            intentRequestOptimisticReadId: null,
+          },
+          'account',
+        );
       },
     });
   }
@@ -1619,7 +1617,7 @@ export class WebdbStorage implements AccountStateStorage {
           'native thread feed synchronization belongs to the Rust SSE executor',
         );
       const tx = (await this.db()).transaction(
-        ['threadPreviews', 'threads', 'accountState'],
+        ['threadPreviews', 'threads', 'groupMeta', 'accountState'],
         'readwrite',
       );
       const store = tx.objectStore('threads');
@@ -1643,15 +1641,18 @@ export class WebdbStorage implements AccountStateStorage {
             : undefined;
           const next = mergeThreadAttention(current, snapshot);
           if (next !== current) {
-            const structure = applyThreadStateSnapshot(
-              stored ? restoreThreadForStorageMutation(stored) : undefined,
-              snapshot,
-              snapshot.threadFeedId,
+            const attention = storeThreadAttention(next);
+            await store.put(
+              stored
+                ? { ...stored, ...attention }
+                : createStoredThread(attention),
             );
-            await store.put({
-              ...storeThreadPresentation(structure),
-              ...storeThreadAttention(next),
-            });
+            if (!stored && snapshot.type === 'GROUP') {
+              await tx.objectStore('groupMeta').add({
+                threadId: snapshot.threadId,
+                ...createGroupMeta(),
+              });
+            }
             if (latest) await previewStore.put(latest);
             else await previewStore.delete(next.threadId);
           }
@@ -1661,10 +1662,16 @@ export class WebdbStorage implements AccountStateStorage {
           const syncState = tx.objectStore('accountState');
           const state = await syncState.get('account');
           if (!state) throw new Error('missing account sync state');
-          await syncState.put({
-            ...state,
-            threadFeedCursor: Math.max(state.threadFeedCursor ?? 0, scannedThrough),
-          }, 'account');
+          await syncState.put(
+            {
+              ...state,
+              threadFeedCursor: Math.max(
+                state.threadFeedCursor ?? 0,
+                scannedThrough,
+              ),
+            },
+            'account',
+          );
         }
         await tx.done;
         return [...merged.values()];
@@ -1764,13 +1771,17 @@ export class WebdbStorage implements AccountStateStorage {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId !== null)
         return invokeAccountState('native_db_advance_intent_request_read', {
-          userId: Number(this.currentUserId), observedEndId,
+          userId: Number(this.currentUserId),
+          observedEndId,
         });
       const tx = (await this.db()).transaction('accountState', 'readwrite');
       const state = await tx.store.get('account');
       if (!state) throw new Error('missing account state');
-      if (BigInt(observedEndId) > BigInt(state.intentRequestReadId ?? '0') &&
-          BigInt(observedEndId) > BigInt(state.intentRequestOptimisticReadId ?? '0'))
+      if (
+        BigInt(observedEndId) > BigInt(state.intentRequestReadId ?? '0') &&
+        BigInt(observedEndId) >
+          BigInt(state.intentRequestOptimisticReadId ?? '0')
+      )
         state.intentRequestOptimisticReadId = observedEndId;
       await tx.store.put(state, 'account');
       await tx.done;
@@ -1783,15 +1794,22 @@ export class WebdbStorage implements AccountStateStorage {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId !== null) {
         await invokeAccountState('native_db_write_self_profile', {
-          userId: Number(this.currentUserId), profile,
+          userId: Number(this.currentUserId),
+          profile,
         });
         return;
       }
       const tx = (await this.db()).transaction('accountState', 'readwrite');
       const state = await tx.store.get('account');
       if (!state) throw new Error('missing account state');
-      await tx.store.put({ ...state, selfProfile: profile,
-        selfIdentity: { account: profile.account } }, 'account');
+      await tx.store.put(
+        {
+          ...state,
+          selfProfile: profile,
+          selfIdentity: { account: profile.account },
+        },
+        'account',
+      );
       await tx.done;
     });
   }
@@ -1801,7 +1819,8 @@ export class WebdbStorage implements AccountStateStorage {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId !== null) {
         await invokeAccountState('native_db_write_composer_drafts', {
-          userId: Number(this.currentUserId), drafts,
+          userId: Number(this.currentUserId),
+          drafts,
         });
         return;
       }
@@ -1827,66 +1846,35 @@ export class WebdbStorage implements AccountStateStorage {
       );
       return threads;
     }
-    const tx = (await this.db()).transaction(['threads', 'profiles'], 'readonly');
+    const tx = (await this.db()).transaction(
+      ['threads', 'groupMeta', 'profiles'],
+      'readonly',
+    );
     const threads = await tx.objectStore('threads').getAll();
-    const restored = await Promise.all(threads.map(async (thread) => {
-      const profile = thread.profileRev > 0
-        ? await tx.objectStore('profiles').get([
-            thread.publisherNamespaceId,
-            0,
-            thread.profileAccount,
-            thread.profileRev,
-          ])
-        : undefined;
-      return restoreThread(thread, {
-        namespaceId: thread.publisherNamespaceId,
-        profile,
-      });
-    }));
+    const restored = await Promise.all(
+      threads.map(async (thread) => {
+        const profile =
+          thread.profileRev > 0
+            ? await tx
+                .objectStore('profiles')
+                .get([
+                  thread.publisherNamespaceId,
+                  0,
+                  thread.profileAccount,
+                  thread.profileRev,
+                ])
+            : undefined;
+        return restoreThread(
+          thread,
+          { profile },
+          thread.type === 'GROUP'
+            ? await tx.objectStore('groupMeta').get(thread.threadId)
+            : undefined,
+        );
+      }),
+    );
     await tx.done;
     return restored;
-  }
-
-  async replaceThreads(items: ConversationItem[]): Promise<void> {
-    return this.runAccountOperation(() => this.replaceThreadsInternal(items));
-  }
-
-  private async replaceThreadsInternal(
-    items: ConversationItem[],
-  ): Promise<void> {
-    if (isTauri() && this.currentUserId != null) {
-      await tauriInvoke('native_db_replace_threads', {
-        userId: Number(this.currentUserId),
-        items,
-      });
-      return;
-    }
-    const tx = (await this.db()).transaction(['threads'], 'readwrite');
-    // Presentation-only batch: omitted entries retain their authoritative
-    // feed state; clearing the table here would silently lose valid threads.
-    const previous = new Map(
-      (await tx.objectStore('threads').getAll()).map((item) => [
-        item.threadId,
-        item,
-      ]),
-    );
-    for (const item of items) {
-      const state = previous.get(item.threadId);
-      try {
-        requireThreadIdentity(item, state);
-      } catch (error) {
-        tx.abort();
-        await tx.done.catch(() => undefined);
-        throw error;
-      }
-    }
-    for (const item of items) {
-      await tx.objectStore('threads').put({
-        ...previous.get(item.threadId)!,
-        ...storeThreadPresentation(item),
-      });
-    }
-    await tx.done;
   }
 
   async projectThreadAttention(
@@ -2004,36 +1992,23 @@ export class WebdbStorage implements AccountStateStorage {
     return result;
   }
 
-  async putThread(item: ConversationItem): Promise<void> {
-    return this.runAccountOperation(() => this.putThreadInternal(item));
-  }
-
-  private async putThreadInternal(item: ConversationItem): Promise<void> {
-    if (isTauri() && this.currentUserId != null) {
-      await tauriInvoke('native_db_put_thread', {
-        userId: Number(this.currentUserId),
-        threadId: item.threadId,
-        item,
-      });
-      return;
-    }
-    const tx = (await this.db()).transaction('threads', 'readwrite');
-    const state = await tx.objectStore('threads').get(item.threadId);
-    try {
-      requireThreadIdentity(item, state);
-    } catch (error) {
+  /** Persist only the fields named by this local operation, against the latest row. */
+  async patchThread(threadId: number, patch: LocalThreadPatch): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_patch_thread', {
+          userId: Number(this.currentUserId),
+          threadId,
+          patch,
+        });
+        return;
+      }
+      const tx = (await this.db()).transaction('threads', 'readwrite');
+      const row = await tx.store.get(threadId);
+      if (!row) throw new Error('cannot patch thread before feed state exists');
+      await tx.store.put(applyLocalThreadPatch(row, patch));
       await tx.done;
-      throw error;
-    }
-    if (state.threadFeedId <= (item.threadFeedId ?? 0)) {
-      // Persist list presentation only. Selected profile coordinates remain feed-owned;
-      // immutable display content is materialized separately when reading the thread.
-      await tx.objectStore('threads').put({
-        ...state,
-        ...storeThreadPresentation(item),
-      });
-    }
-    await tx.done;
+    });
   }
 
   async deleteThread(threadId: number): Promise<void> {
@@ -2049,10 +2024,11 @@ export class WebdbStorage implements AccountStateStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'threadPreviews', 'members'],
+      ['threads', 'groupMeta', 'threadPreviews', 'members'],
       'readwrite',
     );
     await tx.objectStore('threads').delete(threadId);
+    await tx.objectStore('groupMeta').delete(threadId);
     await tx.objectStore('threadPreviews').delete(threadId);
     let member = await tx
       .objectStore('members')
@@ -2128,19 +2104,14 @@ export class WebdbStorage implements AccountStateStorage {
     return result;
   }
 
-  /** Drive per-thread Group Meta + tombstone drains in the database worker.
-   *
-   *  `threadId === null` is the stop signal: the worker finishes the current
-   *  page and commits it, then stops (the next page's guard fails). A non-null
-   *  `threadId` sets it as the open thread and fires the requested drains
-   *  concurrently; each checks `openThreadId === threadId` between pages. A
-   *  `null` target skips that drain (e.g. a tombstone-only advance from a
-   *  thread-feed commit must not re-drain Group Meta). */
-  async drainThreadMisc(
-    threadId: number | null,
-    groupMetaEndId: string | null,
-    tombstoneEndSeq: number | null,
-  ): Promise<void> {
+  /** Wake the per-thread Group Meta + tombstone drains in the database worker.
+   *  Every round reads its current target from durable storage, so the wake
+   *  carries no coordinates. `threadId === null` is the stop signal: the
+   *  worker finishes the current page and commits it, then stops (the next
+   *  page's guard fails). A non-null `threadId` sets it as the open thread and
+   *  wakes both drains concurrently; each checks `openThreadId === threadId`
+   *  between pages. */
+  async drainThreadMisc(threadId: number | null): Promise<void> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
     const userId = this.currentUserId;
@@ -2148,8 +2119,6 @@ export class WebdbStorage implements AccountStateStorage {
       type: 'drain-thread-misc',
       userId,
       threadId,
-      groupMetaEndId,
-      tombstoneEndSeq,
     });
     if (!pending) throw new Error('database worker unavailable');
     await pending;
@@ -2302,7 +2271,14 @@ export class WebdbStorage implements AccountStateStorage {
       );
     const db = await this.db();
     const tx = db.transaction(
-      ['threads', 'profileNamespaces', 'profiles', 'members', 'accountState'],
+      [
+        'threads',
+        'groupMeta',
+        'profileNamespaces',
+        'profiles',
+        'members',
+        'accountState',
+      ],
       'readwrite',
     );
     const patches: GroupMetaCommitPatch[] = [];
@@ -2312,36 +2288,19 @@ export class WebdbStorage implements AccountStateStorage {
         const currentThread = await tx
           .objectStore('threads')
           .get(update.threadId);
-        if (
-          currentThread?.type !== 'GROUP' ||
-          currentThread.conversationState === 'READ_ONLY'
-        )
-          continue;
+        if (currentThread?.type !== 'GROUP') continue;
+        const groupMetaStore = tx.objectStore('groupMeta');
+        const meta = await groupMetaStore.get(update.threadId);
+        if (!meta)
+          throw new Error('stored group thread is missing its meta row');
         for (const item of update.page.items) {
           if (item.operation === 'GROUP_ANNOUNCEMENT') {
-            const thread = await tx.objectStore('threads').get(update.threadId);
-            if (thread?.type === 'GROUP') {
-              const announcement = {
-                feedId: item.feedId,
-                text: item.body.text,
-              };
-              const presentation = restoreThreadForStorageMutation(thread);
-              if (presentation.type !== 'GROUP')
-                throw new Error('invalid group structure');
-              const next =
-                update.page.mode === 'full'
-                  ? {
-                      ...presentation,
-                      groupMetaRecoveryAnnouncement: announcement,
-                    }
-                  : {
-                      ...presentation,
-                      group: { ...presentation.group, announcement },
-                    };
-              await tx.objectStore('threads').put({
-                ...thread,
-                ...storeThreadPresentation(next),
-              });
+            if (update.page.mode === 'full') {
+              meta.recoveryAnnouncementFeedId = item.feedId;
+              meta.recoveryAnnouncementText = item.body.text;
+            } else {
+              meta.announcementFeedId = item.feedId;
+              meta.announcementText = item.body.text;
             }
             continue;
           }
@@ -2371,44 +2330,30 @@ export class WebdbStorage implements AccountStateStorage {
           .index('thread')
           .getAll(update.threadId);
         const activeMembers = currentMembers.filter((member) => !member.left);
-        const thread = await tx.objectStore('threads').get(update.threadId);
-        if (thread?.type === 'GROUP') {
-          const presentation = restoreThreadForStorageMutation(thread);
-          if (presentation.type !== 'GROUP')
-            throw new Error('invalid group structure');
-          const next = {
-            ...presentation,
-            groupMetaRecoveryThrough: update.page.hasMore
-              ? presentation.groupMetaRecoveryThrough
-              : null,
-            groupMetaRecoveryAnnouncement:
-              update.page.mode === 'full' && update.page.hasMore
-                ? (presentation.groupMetaRecoveryAnnouncement ?? null)
-                : null,
-            group: {
-              ...presentation.group,
-              memberCount: activeMembers.length,
-              groupMetaFeedId: update.page.scannedThrough,
-              ...(update.page.mode === 'full' && !update.page.hasMore
-                ? {
-                    announcement:
-                      presentation.groupMetaRecoveryAnnouncement ?? null,
-                  }
-                : {}),
-            },
-          };
-          await tx.objectStore('threads').put({
-            ...thread,
-            ...storeThreadPresentation(next),
-          });
-          patches.push({
-            threadId: update.threadId,
-            groupMetaFeedId: next.group.groupMetaFeedId,
-            memberCount: next.group.memberCount,
-            announcement: next.group.announcement ?? null,
-            groupMetaRecoveryThrough: next.groupMetaRecoveryThrough ?? null,
-          });
+        const finished = !update.page.hasMore;
+        const next: StoredGroupMeta = {
+          ...meta,
+          memberCount: activeMembers.length,
+          groupMetaFeedId: update.page.scannedThrough,
+        };
+        if (finished) {
+          if (update.page.mode === 'full') {
+            next.announcementFeedId = meta.recoveryAnnouncementFeedId;
+            next.announcementText = meta.recoveryAnnouncementText;
+          }
+          next.recoveryThrough = null;
+          next.recoveryAnnouncementFeedId = null;
+          next.recoveryAnnouncementText = null;
         }
+        await groupMetaStore.put(next);
+        patches.push({
+          threadId: update.threadId,
+          groupMetaFeedId: next.groupMetaFeedId,
+          memberCount: next.memberCount,
+          announcementFeedId: next.announcementFeedId,
+          announcementText: next.announcementText,
+          groupMetaRecoveryThrough: next.recoveryThrough,
+        });
       }
       const syncState = tx.objectStore('accountState');
       const state = await syncState.get('account');
@@ -2417,8 +2362,11 @@ export class WebdbStorage implements AccountStateStorage {
         const head = parseIncomingRequestHead(op.body);
         state.intentRequestEndId = head.requestEndId;
         state.intentRequestReadId = head.requestReadId;
-        if (state.intentRequestOptimisticReadId !== null &&
-            BigInt(head.requestReadId) >= BigInt(state.intentRequestOptimisticReadId))
+        if (
+          state.intentRequestOptimisticReadId !== null &&
+          BigInt(head.requestReadId) >=
+            BigInt(state.intentRequestOptimisticReadId)
+        )
           state.intentRequestOptimisticReadId = null;
       }
       if (fullThrough !== undefined) {
@@ -2624,7 +2572,10 @@ export class WebdbStorage implements AccountStateStorage {
         const syncState = tx.objectStore('accountState');
         const state = await syncState.get('account');
         if (!state) throw new Error('missing account sync state');
-        await syncState.put({ ...state, profileNamespaceChangeEndId: checkpoint }, 'account');
+        await syncState.put(
+          { ...state, profileNamespaceChangeEndId: checkpoint },
+          'account',
+        );
       }
       await tx.done;
       return touched;
@@ -2874,14 +2825,11 @@ export class WebdbStorage implements AccountStateStorage {
         throw new Error('Group Meta recovery is owned by the native executor');
       }
       const tx = (await this.db()).transaction(
-        ['threads', 'members'],
+        ['threads', 'groupMeta', 'members'],
         'readwrite',
       );
       const thread = await tx.objectStore('threads').get(threadId);
-      if (
-        thread?.type !== 'GROUP' ||
-        thread.conversationState === 'READ_ONLY'
-      ) {
+      if (thread?.type !== 'GROUP') {
         await tx.done;
         return;
       }
@@ -2893,13 +2841,16 @@ export class WebdbStorage implements AccountStateStorage {
         await member.delete();
         member = await member.continue();
       }
-      await tx.objectStore('threads').put({
-        ...thread,
-        groupMetaRecoveryThrough: through,
+      const previousMeta = await tx.objectStore('groupMeta').get(threadId);
+      if (!previousMeta)
+        throw new Error('stored group thread is missing its meta row');
+      await tx.objectStore('groupMeta').put({
+        ...previousMeta,
+        memberCount: 0,
+        groupMetaFeedId: '0',
+        recoveryThrough: through,
         recoveryAnnouncementFeedId: null,
         recoveryAnnouncementText: null,
-        groupMemberCount: 0,
-        groupMetaFeedId: '0',
       });
       await tx.done;
     });

@@ -8,11 +8,11 @@ export function isGroupMetaCurrent(
   if (
     thread?.type !== 'GROUP' ||
     thread.conversationState === 'READ_ONLY' ||
-    thread.groupMetaRecoveryThrough != null
+    thread.meta.recoveryThrough != null
   )
     return false;
-  const target = thread.groupMetaTargetFeedId;
-  const cursor = thread.group.groupMetaFeedId;
+  const target = thread.groupMetaFeedEndId;
+  const cursor = thread.meta.groupMetaFeedId;
   if (
     target == null ||
     !/^(0|[1-9]\d*)$/.test(target) ||
@@ -27,8 +27,8 @@ export function currentGroupAnnouncement(
   thread: ConversationItem | undefined,
 ): { feedId: string; text: string } | null {
   if (!isGroupMetaCurrent(thread) || thread?.type !== 'GROUP') return null;
-  const announcement = thread.group.announcement;
-  return announcement?.text
-    ? { feedId: announcement.feedId, text: announcement.text }
+  const { announcementFeedId, announcementText } = thread.meta;
+  return announcementFeedId != null && announcementText != null
+    ? { feedId: announcementFeedId, text: announcementText }
     : null;
 }

@@ -49,10 +49,9 @@ const profile = (
 
 describe('UserService.localRelationship', () => {
   it.each([
-    { namespaceId: 7, state: 'ACTIVE', dissolvedAt: null, expected: 'FRIEND' },
-    { namespaceId: 8, state: 'ACTIVE', dissolvedAt: null, expected: 'NONE' },
-    { namespaceId: 7, state: 'READ_ONLY', dissolvedAt: null, expected: 'NONE' },
-    { namespaceId: 7, state: 'ACTIVE', dissolvedAt: 1, expected: 'NONE' },
+    { namespaceId: 7, state: 'ACTIVE', expected: 'FRIEND' },
+    { namespaceId: 8, state: 'ACTIVE', expected: 'NONE' },
+    { namespaceId: 7, state: 'READ_ONLY', expected: 'NONE' },
   ])('checks group membership by namespace and account: %j', async (value) => {
     const service = Object.create(UserService.prototype) as UserService;
     Object.assign(service, {
@@ -61,11 +60,8 @@ describe('UserService.localRelationship', () => {
           {
             type: 'GROUP',
             conversationState: value.state,
-            group: {
-              account: '!team',
-              namespaceId: value.namespaceId,
-              dissolvedAt: value.dissolvedAt,
-            },
+            account: '!team',
+            publisherNamespaceId: value.namespaceId,
           },
         ],
       },
@@ -116,7 +112,7 @@ describe('UserService.localRelationship', () => {
         getThreads: async () => [
           {
             type: 'P2P',
-            friendshipActive: true,
+            conversationState: 'ACTIVE',
             peerUser: {
               id: 0,
               account: 'someone-else',
@@ -220,7 +216,11 @@ describe('UserService profile refresh', () => {
     expect(request.request.context.get(REQUEST_SCOPE)).toBe(
       RequestScope.Authentication,
     );
-    const response = { code: 0, message: 'ok', data: { id: 1, account: 'alice' } };
+    const response = {
+      code: 0,
+      message: 'ok',
+      data: { id: 1, account: 'alice' },
+    };
     request.flush(response);
     expect(next).toHaveBeenCalledWith(response);
   });
@@ -402,18 +402,26 @@ describe('UserService profile refresh', () => {
 
   it('keeps the revoke route but sends only the P2P thread id', async () => {
     const result = firstValueFrom(svc.revokeRelationship({ threadId: 12 }));
-    const request = httpMock.expectOne((req) =>
-      req.method === 'POST' && req.url.endsWith('/relationship/revoke'),
+    const request = httpMock.expectOne(
+      (req) =>
+        req.method === 'POST' && req.url.endsWith('/relationship/revoke'),
     );
     expect(request.request.body).toEqual({ threadId: 12 });
     request.flush({ code: 0, message: 'ok', data: { status: 'OK' } });
-    expect(await result).toEqual({ code: 0, message: 'ok', data: { status: 'OK' } });
+    expect(await result).toEqual({
+      code: 0,
+      message: 'ok',
+      data: { status: 'OK' },
+    });
   });
 
   it('derives the friend-request badge from the synchronized read watermark', async () => {
     expect(svc.friendReqBadge()).toBe(false);
 
-    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '20',
+      requestReadId: '0',
+    });
     expect(svc.friendReqBadge()).toBe(true);
 
     svc.sessionId.set(11);
@@ -429,12 +437,18 @@ describe('UserService profile refresh', () => {
     await marked;
     expect(svc.friendReqBadge()).toBe(false);
 
-    svc.applyRelationshipRequestHead({ requestEndId: '21', requestReadId: '20' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '21',
+      requestReadId: '20',
+    });
     expect(svc.friendReqBadge()).toBe(true);
   });
 
   it('publishes the optimistic read only after it is durable and submits afterwards', async () => {
-    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '20',
+      requestReadId: '0',
+    });
     svc.sessionId.set(11);
     const webdbStub = TestBed.inject(WebdbService) as unknown as {
       advanceIntentRequestRead: ReturnType<typeof vi.fn>;
@@ -466,7 +480,10 @@ describe('UserService profile refresh', () => {
   });
 
   it('retires the optimistic target once a confirmed read covers it', async () => {
-    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '20',
+      requestReadId: '0',
+    });
     const webdbStub = TestBed.inject(WebdbService) as unknown as {
       advanceIntentRequestRead: ReturnType<typeof vi.fn>;
     };
@@ -486,7 +503,10 @@ describe('UserService profile refresh', () => {
     await observed;
     expect(svc.friendReqBadge()).toBe(false);
     // A confirmed read covering the target retires it: newer end shows again.
-    svc.applyRelationshipRequestHead({ requestEndId: '21', requestReadId: '20' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '21',
+      requestReadId: '20',
+    });
     expect(svc.friendReqBadge()).toBe(true);
   });
 });
@@ -729,11 +749,16 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
     await svc.establishSession(1, 0, 11);
 
-    const request = httpMock.expectOne(
-      (req) => req.url.endsWith('/relationship/requests/read'),
+    const request = httpMock.expectOne((req) =>
+      req.url.endsWith('/relationship/requests/read'),
     );
-    expect((request.request.body as { requestReadId: string }).requestReadId).toBe('12');
-    request.flush({ code: 0, data: { requestEndId: '12', requestReadId: '12' } });
+    expect(
+      (request.request.body as { requestReadId: string }).requestReadId,
+    ).toBe('12');
+    request.flush({
+      code: 0,
+      data: { requestEndId: '12', requestReadId: '12' },
+    });
     await vi.waitFor(() => expect(svc.friendReqBadge()).toBe(false));
   });
 

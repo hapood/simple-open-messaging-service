@@ -1,12 +1,17 @@
 import type { LocalThreadAttention } from '../../../../shared/thread-attention';
-import type { ConversationItem } from './model';
+import type {
+  ConversationItem,
+  GroupMetaSlot,
+  LocalThreadPatch,
+} from './model';
 
 export type StoredThreadAttention = Omit<LocalThreadAttention, 'previews'>;
 
-/** One typed row per conversation. Profile content is stored only in the revision-keyed profile store. */
+/** Flat thread row: coordinates, feed state, and read positions. Group-owned
+ * state lives in StoredGroupMeta; profile content only in the revision-keyed
+ * profile store. */
 export type StoredThread = StoredThreadAttention & {
   lastMessageAt: number | null;
-  lastMessageSeq: number | null;
   muted: boolean;
   pinned: boolean;
   pinnedAt: number | null;
@@ -16,68 +21,66 @@ export type StoredThread = StoredThreadAttention & {
   projectedUnreadCount: number;
   mentionMe: boolean;
   mentionAll: boolean;
-  subjectId?: number;
-  subjectDeleted?: boolean;
-  groupDissolvedAt?: number | null;
-  groupMemberCount?: number;
-  groupMetaFeedId?: string;
-  groupMetaRecoveryThrough?: string | null;
-  groupMetaTargetFeedId?: string | null;
-  groupAnnouncementFeedId?: string | null;
-  groupAnnouncementText?: string | null;
-  recoveryAnnouncementFeedId?: string | null;
-  recoveryAnnouncementText?: string | null;
 };
 
-/** Updates only presentation columns; combine with the latest feed state inside one transaction. */
-export function storeThreadPresentation(
-  item: ConversationItem,
-): Omit<StoredThread, keyof StoredThreadAttention> {
-  const common = {
-    lastMessageAt: item.lastMessageAt,
-    lastMessageSeq: item.lastMessageSeq,
-    muted: item.muted,
-    pinned: item.pinned,
-    pinnedAt: item.pinnedAt,
-    lastMessagePreview: item.lastMessagePreview ?? null,
-    lastMessageSenderAccount: item.lastMessageSenderAccount ?? null,
-    lastMessageSenderNamespaceId: item.lastMessageSenderNamespaceId ?? null,
-    projectedUnreadCount: item.unreadCount,
-    mentionMe: item.mentionUnread.includes('me'),
-    mentionAll: item.mentionUnread.includes('all'),
-  };
-  if (item.type === 'P2P')
-    return {
-      ...common,
-      subjectDeleted: item.peerUser.isDeleted,
-    };
-  if (!Number.isSafeInteger(item.group.id) || item.group.id < 1)
-    throw new Error('group thread has no positive local group id');
+/** Apply only operation-supplied fields to the latest row in the write transaction. */
+export function applyLocalThreadPatch(
+  row: StoredThread,
+  patch: LocalThreadPatch,
+): StoredThread {
+  const next = { ...row };
+  if (patch.muted !== undefined) next.muted = patch.muted;
+  if (patch.pinned !== undefined) next.pinned = patch.pinned;
+  if (patch.pinnedAt !== undefined) next.pinnedAt = patch.pinnedAt;
+  if (patch.blocked !== undefined) next.blocked = patch.blocked;
+  if (patch.conversationState !== undefined)
+    next.conversationState = patch.conversationState;
+  if (patch.announcementReadFeedId !== undefined)
+    next.announcementReadFeedId = Math.max(
+      row.announcementReadFeedId,
+      patch.announcementReadFeedId,
+    );
+  if (
+    patch.joinRequestReadFeedId !== undefined &&
+    row.joinRequestReadFeedId >= 0
+  )
+    next.joinRequestReadFeedId = Math.min(
+      row.joinRequestEndFeedId,
+      Math.max(row.joinRequestReadFeedId, patch.joinRequestReadFeedId),
+    );
+  return next;
+}
+
+/** Dedicated group_meta row mirrored by GroupMetaSlot. */
+export type StoredGroupMeta = GroupMetaSlot & { threadId: number };
+
+/** Initialize local columns once. Feed updates must preserve the latest stored values. */
+export function createStoredThread(state: StoredThreadAttention): StoredThread {
   return {
-    ...common,
-    subjectId: item.group.id,
-    groupDissolvedAt: item.group.dissolvedAt,
-    groupMemberCount: item.group.memberCount,
-    groupMetaFeedId: item.group.groupMetaFeedId,
-    groupMetaRecoveryThrough: item.groupMetaRecoveryThrough,
-    groupMetaTargetFeedId: item.groupMetaTargetFeedId,
-    groupAnnouncementFeedId: item.group.announcement?.feedId ?? null,
-    groupAnnouncementText: item.group.announcement?.text ?? null,
-    recoveryAnnouncementFeedId:
-      item.groupMetaRecoveryAnnouncement?.feedId ?? null,
-    recoveryAnnouncementText: item.groupMetaRecoveryAnnouncement?.text ?? null,
+    ...state,
+    lastMessageAt: null,
+    muted: false,
+    pinned: false,
+    pinnedAt: null,
+    lastMessagePreview: null,
+    lastMessageSenderAccount: null,
+    lastMessageSenderNamespaceId: null,
+    projectedUnreadCount: 0,
+    mentionMe: false,
+    mentionAll: false,
   };
 }
 
 export interface RestoredThreadSubject {
-  namespaceId: number;
-  profile?: { name: string; bio: string };
+  profile?: { name: string; bio: string; avatarDigest?: string | null };
 }
 
-/** Restore a stored row into a presentation object without mutable display domains. */
+/** Restore a thread row (plus its group meta row for groups) into a
+ * presentation object without mutable display domains. */
 export function restoreThread(
   row: StoredThread,
   subject: RestoredThreadSubject,
+  meta?: StoredGroupMeta,
 ): ConversationItem {
   const common = {
     threadId: row.threadId,
@@ -87,14 +90,13 @@ export function restoreThread(
     threadFeedId: row.threadFeedId,
     role: row.role,
     lastMessageAt: row.lastMessageAt,
-    lastMessageSeq: row.lastMessageSeq,
+    messageEndSeq: row.messageEndSeq,
+    groupMetaFeedEndId: row.groupMetaFeedEndId,
     muted: row.muted,
     blocked: row.blocked,
     pinned: row.pinned,
     pinnedAt: row.pinnedAt,
     alias: row.alias,
-    friendshipActive:
-      row.type === 'P2P' ? row.conversationState === 'ACTIVE' : undefined,
     conversationState: row.conversationState,
     lastReadSeq: row.localReadSeq,
     announcementReadFeedId: row.announcementReadFeedId,
@@ -110,69 +112,31 @@ export function restoreThread(
     joinRequestReadFeedId: row.joinRequestReadFeedId,
     groupInviteEndFeedId: row.groupInviteEndFeedId,
     profileRev: row.profileRev,
+    account: row.profileAccount,
+    profile: {
+      name: subject.profile?.name ?? row.profileAccount,
+      bio: subject.profile?.bio ?? '',
+      avatarDigest: subject.profile?.avatarDigest ?? null,
+    },
   };
   if (row.type === 'P2P')
     return {
       ...common,
       type: 'P2P',
-      peerUser: {
-        account: row.profileAccount,
-        namespaceId: subject.namespaceId,
-        name: subject.profile?.name ?? row.profileAccount,
-        bio: subject.profile?.bio ?? '',
-        isGroup: false,
-        isDeleted: row.subjectDeleted ?? false,
-      },
     };
-  if (
-    row.subjectId == null ||
-    row.groupMemberCount == null ||
-    row.groupMetaFeedId == null
-  )
-    throw new Error('stored group thread is incomplete');
-  if (
-    (row.groupAnnouncementFeedId != null &&
-      row.groupAnnouncementText === undefined) ||
-    (row.recoveryAnnouncementFeedId != null &&
-      row.recoveryAnnouncementText === undefined)
-  )
-    throw new Error('stored group announcement is incomplete');
+  if (!meta || meta.threadId !== row.threadId)
+    throw new Error('stored group thread is missing its meta row');
   return {
     ...common,
     type: 'GROUP',
-    group: {
-      id: row.subjectId,
-      account: row.profileAccount,
-      namespaceId: subject.namespaceId,
-      name: subject.profile?.name ?? row.profileAccount,
-      description: subject.profile?.bio ?? '',
-      dissolvedAt: row.groupDissolvedAt,
-      memberCount: row.groupMemberCount,
-      groupMetaFeedId: row.groupMetaFeedId,
-      announcement:
-        row.groupAnnouncementFeedId == null
-          ? null
-          : {
-              feedId: row.groupAnnouncementFeedId,
-              text: row.groupAnnouncementText!,
-            },
-      threadId: row.threadId,
+    meta: {
+      memberCount: meta.memberCount,
+      groupMetaFeedId: meta.groupMetaFeedId,
+      announcementFeedId: meta.announcementFeedId,
+      announcementText: meta.announcementText,
+      recoveryThrough: meta.recoveryThrough,
+      recoveryAnnouncementFeedId: meta.recoveryAnnouncementFeedId,
+      recoveryAnnouncementText: meta.recoveryAnnouncementText,
     },
-    groupMetaRecoveryThrough: row.groupMetaRecoveryThrough ?? null,
-    groupMetaTargetFeedId: row.groupMetaTargetFeedId,
-    groupMetaRecoveryAnnouncement:
-      row.recoveryAnnouncementFeedId == null
-        ? null
-        : {
-            feedId: row.recoveryAnnouncementFeedId,
-            text: row.recoveryAnnouncementText!,
-          },
   };
-}
-
-/** Restore known subject coordinates without resolving display content inside a write transaction. */
-export function restoreThreadForStorageMutation(
-  row: StoredThread,
-): ConversationItem {
-  return restoreThread(row, { namespaceId: row.publisherNamespaceId });
 }

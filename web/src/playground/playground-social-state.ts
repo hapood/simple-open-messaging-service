@@ -15,10 +15,20 @@ import {
 } from '../app/services/model';
 import type { ResolvedMemberProfile } from '../app/services/member-profile-store.service';
 import { PlaygroundConversationList } from './playground-conversation-list.mock';
+import { playgroundAvatars } from './playground-avatars';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const sameIdentity = (a: RequestEndpoint, b: RequestEndpoint) =>
   a.account === b.account && a.namespaceId === b.namespaceId;
+
+const seededBios: Record<string, string> = {
+  alice: 'Curious mind, coffee lover, and weekend explorer.',
+  maya: 'Designing little things that make everyday life better.',
+  noah: 'Music, good conversations, and a new trail to explore.',
+  liam: 'Building things and sharing what I learn along the way.',
+  ivy: 'Here to learn, collaborate, and meet the community.',
+  '!playground': 'A place to try things out together.',
+};
 
 /** Shared in-memory server/projection state. Reloading the standalone entry resets all fixtures. */
 @Injectable({ providedIn: 'root' })
@@ -44,13 +54,13 @@ export class PlaygroundSocialState {
     name:
       account === '!playground'
         ? 'Playground Team'
-        : account === '!bookclub'
-          ? 'Book Club'
-          : account[0].toUpperCase() + account.slice(1),
-    avatar: '',
-    bio: '',
+        : playgroundAvatars[account]
+          ? account[0].toUpperCase() + account.slice(1)
+          : account,
+    avatar: playgroundAvatars[account] ?? '',
+    bio: seededBios[account] ?? '',
     namespaceId: 0,
-    profileRev: 1,
+    profileRev: playgroundAvatars[account] ? 1 : 0,
     isDeleted: false,
     isGroup: account.startsWith('!'),
   }));
@@ -59,7 +69,6 @@ export class PlaygroundSocialState {
       .filter((user) => user.profileRev > 0)
       .map((user) => [this.profileKey(user), { ...user }]),
   );
-
   readonly self = this.users[0];
   readonly requests: Array<{ record: RequestRecord; groupId?: number }> = [];
   readonly incomingHead = signal({ requestEndId: '0', requestReadId: '0' });
@@ -74,34 +83,35 @@ export class PlaygroundSocialState {
     this.activateFriend(this.user('alice')!, 1);
     this.activateFriend(this.user('liam')!, 6);
     this.conversations.setRelatedConversations([
-      createGroupConversation(
-        2,
-        {
-          id: 2,
-          account: '!playground',
+      createGroupConversation({
+        threadId: 2,
+        account: '!playground',
+        publisherNamespaceId: 0,
+        profileRev: 1,
+        profile: {
           name: 'Playground Team',
-          namespaceId: 0,
-          description: 'Alice · Maya · Noah · Olivia · You',
+          bio: 'Alice · Maya · Noah · Olivia · You',
+          avatarDigest: null,
+        },
+        meta: {
           memberCount: 5,
-          profileRev: 1,
           groupMetaFeedId: '1',
-          announcement: { feedId: '1', text: null },
+          announcementFeedId: '1',
+          announcementText: null,
         },
-        {
-          role: 'OWNER',
-          groupMetaTargetFeedId: '1',
-          lastMessageAt: Date.now() - 120_000,
-          lastMessagePreview: 'Welcome to the team',
-          lastMessageSeq: 100,
-          joinRequestEndFeedId: 2,
-          joinRequestReadFeedId: 0,
-        },
-      ),
+        role: 'OWNER',
+        groupMetaFeedEndId: '1',
+        lastMessageAt: Date.now() - 120_000,
+        lastMessagePreview: 'Welcome to the team',
+        messageEndSeq: 100,
+        joinRequestEndFeedId: 2,
+        joinRequestReadFeedId: 0,
+      }),
     ]);
     this.conversations.applyThreadMeta(1, {
       lastMessageAt: Date.now() - 60_000,
       lastMessagePreview: 'See you in the playground!',
-      lastMessageSeq: 100,
+      messageEndSeq: 100,
       unreadCount: 2,
     });
     this.rosters.set(
@@ -183,6 +193,24 @@ export class PlaygroundSocialState {
     this.profiles.set(this.profileKey(user), { ...user });
   }
 
+  publishSelfProfile(patch: Pick<User, 'name' | 'bio' | 'avatar'>): void {
+    this.publishProfile(this.self, patch);
+    const changed: number[] = [];
+    for (const [threadId, roster] of this.rosters) {
+      if (!roster.some((member) => sameIdentity(member, this.self))) continue;
+      this.rosters.set(
+        threadId,
+        roster.map((member) =>
+          sameIdentity(member, this.self)
+            ? this.member(this.self, member.role)
+            : member,
+        ),
+      );
+      changed.push(threadId);
+    }
+    if (changed.length) this.membersChanged$.next(changed);
+  }
+
   allocateThreadId(): number {
     return this.nextThreadId++;
   }
@@ -190,14 +218,24 @@ export class PlaygroundSocialState {
   activateFriend(user: User, threadId?: number): number {
     const previous = this.conversations
       .items()
-      .find((item) => item.type === 'P2P' && sameIdentity(item.peerUser, user));
+      .find(
+        (item) =>
+          item.type === 'P2P' &&
+          sameIdentity(
+            { account: item.account, namespaceId: item.publisherNamespaceId },
+            user,
+          ),
+      );
     const id = previous?.threadId ?? threadId ?? this.allocateThreadId();
     this.conversations.setRelatedConversations([
-      createP2PConversation(id, user, {
-        ...(previous?.type === 'P2P' ? previous : {}),
-        friendshipActive: true,
+      createP2PConversation({
+        ...previous,
+        threadId: id,
+        account: user.account,
+        publisherNamespaceId: user.namespaceId,
+        profileRev: user.profileRev,
         conversationState: 'ACTIVE',
-        peerUser: { ...user, isGroup: false },
+        profile: { name: user.name, bio: user.bio ?? '', avatarDigest: null },
       }),
     ]);
     return id;
@@ -223,7 +261,7 @@ export class PlaygroundSocialState {
 
   publishRoster(groupId: number): void {
     this.conversations.applyGroupUpdate(groupId, {
-      memberCount: this.rosters.get(groupId)?.length ?? 0,
+      meta: { memberCount: this.rosters.get(groupId)?.length ?? 0 },
     });
     this.membersChanged$.next([groupId]);
   }
@@ -270,7 +308,7 @@ export class PlaygroundSocialState {
               ...base.author,
               profileNamespaceId: 0,
               profileRev:
-                this.user(author.account, author.namespaceId)?.profileRev ?? 1,
+                this.user(author.account, author.namespaceId)?.profileRev ?? 0,
             },
           }
         : {

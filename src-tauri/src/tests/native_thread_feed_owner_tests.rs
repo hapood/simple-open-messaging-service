@@ -1,7 +1,7 @@
 use super::*;
 use crate::login_connection::LoginConnection;
 use crate::login_session_store::LoginSessionId;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -96,43 +96,35 @@ async fn cancellation_releases_a_waiter_without_waiting_for_the_lane() {
 #[tokio::test]
 async fn dropping_a_commit_awaiter_does_not_hide_its_durable_page() {
     let intent = fixture(&ServerSessionState::new());
-    let login = intent.work.owner().id().clone();
-    let (published, observed) = mpsc::channel();
-    let _subscription =
-        super::super::thread_feed_commits::THREAD_FEED_COMMITS.subscribe(move |commit| {
-            if commit.login == &login {
-                assert_eq!(commit.user_id, 42);
-                published.send(()).unwrap();
-            }
-        });
+    // The owned commit task outlives its dropped awaiter; the durable cursor
+    // is the completion signal.
     let gate = super::super::lifetime::CACHE_LIFETIME.invalidate().unwrap();
     let mut pending = Box::pin(intent.commit_thread_page(intent.events(None), vec![], 1));
     assert!(futures_util::poll!(&mut pending).is_pending());
     drop(pending);
     drop(gate);
-    observed.recv_timeout(Duration::from_secs(2)).unwrap();
-    let cursor = intent
-        .work
-        .with_database(|conn| read_cursor(conn, 42))
-        .unwrap();
-    assert_eq!(cursor, 1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let cursor = intent
+            .work
+            .with_database(|conn| read_cursor(conn, 42))
+            .unwrap();
+        if cursor == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "committed page never landed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     close(&intent);
 }
 
 #[tokio::test]
-async fn queued_page_rejects_repair_or_end_without_commit_or_publication() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+async fn queued_page_rejects_repair_or_end_without_committing() {
     for repair in [false, true] {
         let intent = fixture(&ServerSessionState::new());
-        let login = intent.work.owner().id().clone();
-        let publications = Arc::new(AtomicUsize::new(0));
-        let count = publications.clone();
-        let _subscription =
-            super::super::thread_feed_commits::THREAD_FEED_COMMITS.subscribe(move |commit| {
-                if commit.login == &login {
-                    count.fetch_add(1, Ordering::SeqCst);
-                }
-            });
         let gate = super::super::lifetime::CACHE_LIFETIME.invalidate().unwrap();
         let mut pending = Box::pin(intent.commit_thread_page(intent.events(None), vec![], 1));
         assert!(futures_util::poll!(&mut pending).is_pending());
@@ -152,7 +144,6 @@ async fn queued_page_rejects_repair_or_end_without_commit_or_publication() {
                 "native login superseded"
             }
         );
-        assert_eq!(publications.load(Ordering::SeqCst), 0);
         assert_eq!(
             successor
                 .work

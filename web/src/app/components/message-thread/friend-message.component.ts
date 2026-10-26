@@ -456,8 +456,7 @@ export class MessageThreadComponent implements OnDestroy {
       source: () => this.source,
       fail: (item) => this.failPending(item),
       accept: (item) => this.markAccepted(item),
-      surfaceFailure: (response, threadId) =>
-        this.surfaceSendFailure(response, threadId),
+      surfaceFailure: (response) => this.surfaceSendFailure(response),
     },
   );
   private readonly composer = new ThreadComposerController({
@@ -481,7 +480,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly theme = inject(ThemeService);
   private readonly forwarding = new MessageForwardController(
     this.threadAdapter,
-    this.convList,
     this.route,
     this.toast,
     this.transloco,
@@ -635,18 +633,12 @@ export class MessageThreadComponent implements OnDestroy {
   readonly friendshipEnded = computed(
     () =>
       this.userMsgTrd()?.type === 'P2P' &&
-      this.userMsgTrd()?.friendshipActive === false,
-  );
-  readonly leftGroup = computed(
-    () =>
-      this.userMsgTrd()?.type === 'GROUP' &&
-      this.userMsgTrd()?.group?.dissolvedAt == null &&
       this.userMsgTrd()?.conversationState === 'READ_ONLY',
   );
-  readonly dissolvedGroup = computed(
+  readonly readOnlyGroup = computed(
     () =>
       this.userMsgTrd()?.type === 'GROUP' &&
-      this.userMsgTrd()?.group?.dissolvedAt != null,
+      this.userMsgTrd()?.conversationState === 'READ_ONLY',
   );
   /** Per-user quota breaker tripped for the local user → sending/uploading is paused server-side. Set when a
    *  send returns QUOTA_EXCEEDED; cleared on the next successful send (which implies the breaker was lifted,
@@ -836,7 +828,7 @@ export class MessageThreadComponent implements OnDestroy {
           this.applyUnreadDivider(trd.threadId);
           const latestSeq = Math.max(
             this.convList.latestSeq(trd.threadId) ?? -1,
-            trd.lastMessageSeq ?? -1,
+            trd.messageEndSeq,
           );
           this.source?.resumeLiveUpdates?.(latestSeq);
           this.unreadDividerReady.set(true);
@@ -884,8 +876,7 @@ export class MessageThreadComponent implements OnDestroy {
         !this.initialLoading() &&
         !this.blockedPeer() &&
         !this.friendshipEnded() &&
-        !this.leftGroup() &&
-        !this.dissolvedGroup() &&
+        !this.readOnlyGroup() &&
         !this.nativeComposerOccluded() &&
         !this.chatboxDialogOpen() &&
         !this.selectionMode();
@@ -1323,10 +1314,10 @@ export class MessageThreadComponent implements OnDestroy {
         // Only after the DB/scroller phase is complete may the source compare the locally-loaded tail with
         // BOTH remote ceilings and fall through to HTTP: the live-session HWM plus the durable thread
         // metadata. The latter is load-bearing after an IndexedDB→SQLite migration / fresh install, where
-        // the thread row can say lastMessageSeq=258 while the local messages table is legitimately empty.
+        // the thread row can say messageEndSeq=258 while the local messages table is legitimately empty.
         source.finishLocalInit?.(
           this.convList.latestSeq(trd.threadId),
-          trd.lastMessageSeq,
+          trd.messageEndSeq,
         );
         // A missed-message sync commonly leaves exactly one preview body in IDB after login. Backfill one
         // older page only after the pane is ready; the kernel preserves the bottom/current-item anchor.
@@ -1645,7 +1636,7 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const conversation = this.userMsgTrd();
     if (conversation?.type === 'P2P') {
-      if (!profileRef || conversation.peerUser.account !== profileRef.account)
+      if (!profileRef || conversation.account !== profileRef.account)
         return;
       this.dismissContextMenu();
       this.nav.openAside('profile');
@@ -1684,8 +1675,8 @@ export class MessageThreadComponent implements OnDestroy {
       .find(
         (item) =>
           item.type === 'P2P' &&
-          item.peerUser.account === profile.account &&
-          item.friendshipActive !== false,
+          item.account === profile.account &&
+          item.conversationState === 'ACTIVE',
       )?.threadId;
     this.route.popupDlg(
       PopupType.CONTACT_IDENTITY,
@@ -1726,10 +1717,9 @@ export class MessageThreadComponent implements OnDestroy {
   private canWithdraw(message: ChatMsgData): boolean {
     if (!message.isSelf) return false;
     const thread = this.userMsgTrd();
-    if (thread?.type === 'P2P' && thread.friendshipActive === false)
+    if (thread?.type === 'P2P' && thread.conversationState === 'READ_ONLY')
       return false;
-    if (thread?.type === 'GROUP' && this.leftGroup()) return false;
-    if (thread?.type === 'GROUP' && this.dissolvedGroup()) return false;
+    if (thread?.type === 'GROUP' && this.readOnlyGroup()) return false;
     return true;
   }
 
@@ -2584,17 +2574,13 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** Daily quota failures are business responses (HTTP 200), so the HTTP error interceptor never sees
    * them. Keep the failed bubble/retry affordance and also explain why retrying today cannot succeed. */
-  private surfaceSendFailure(
-    res: StandardResponse<unknown>,
-    threadId: number,
-  ): void {
-    if (res.code === BusinessCode.FRIEND_NOT_FOUND) {
-      this.convList.applyThreadMeta(threadId, { friendshipActive: false });
-      this.toast.warn(translateBizResult(res, this.transloco));
-      return;
-    }
-    if (res.code === BusinessCode.GROUP_DISSOLVED) {
-      this.convList.applyGroupUpdate(threadId, { dissolvedAt: Date.now() });
+  private surfaceSendFailure(res: StandardResponse<unknown>): void {
+    if (
+      res.code === BusinessCode.FRIEND_NOT_FOUND ||
+      res.code === BusinessCode.GROUP_DISSOLVED
+    ) {
+      // Business refusals only explain the failed send. Relationship state
+      // continues to arrive through the normal server feed.
       this.toast.warn(translateBizResult(res, this.transloco));
       return;
     }
@@ -2616,7 +2602,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private surfaceSendQuota(res: StandardResponse<unknown>): void {
-    this.surfaceSendFailure(res, this.threadId() ?? 0);
+    this.surfaceSendFailure(res);
   }
 
   /** Append one non-audio upload to the component-wide FIFO. The returned promise represents this

@@ -8,6 +8,7 @@ import {
   vi,
 } from 'vitest';
 import { createGroupConversation } from './model';
+import { threadStructure } from './thread-feed.test-helper';
 import { WebdbStorage } from './webdb-storage';
 
 function page(scannedThrough: string, hasMore: boolean) {
@@ -49,17 +50,39 @@ describe('database worker Group Meta completion', () => {
     vi.spyOn(WebdbStorage.prototype, 'close').mockResolvedValue(undefined);
     vi.spyOn(WebdbStorage.prototype, 'getThreads').mockImplementation(
       async () => [
-        createGroupConversation(12, {
-          id: 21,
+        createGroupConversation({
+          threadId: 12,
           account: 'room',
-          namespaceId: 7,
-          name: '',
-          description: '',
+          publisherNamespaceId: 7,
           profileRev: 1,
         }),
       ],
     );
-    vi.spyOn(WebdbStorage.prototype, 'getThreadStates').mockResolvedValue([]);
+    vi.spyOn(WebdbStorage.prototype, 'getThreadStates').mockResolvedValue([
+      {
+        ...threadStructure(12, {
+          type: 'GROUP',
+          publisherNamespaceId: 7,
+          profileAccount: 'room',
+          profileRev: 1,
+        }),
+        threadId: 12,
+        localReadSeq: 0,
+        threadFeedId: 1,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+        alias: null,
+        profileRev: 1,
+        groupMetaFeedEndId: '3',
+        joinRequestEndFeedId: 0,
+        joinRequestReadFeedId: -1,
+        groupInviteEndFeedId: 0,
+        announcementReadFeedId: 0,
+        lastReadSeq: 0,
+        unreadCount: 0,
+        lastMentionSeq: null,
+      },
+    ]);
     vi.spyOn(
       WebdbStorage.prototype,
       'beginGroupMetaRecovery',
@@ -70,9 +93,9 @@ describe('database worker Group Meta completion', () => {
         threadId: 12,
         memberCount: 0,
         groupMetaFeedId: page.scannedThrough,
-        announcement: null,
+        announcementFeedId: null,
+        announcementText: null,
         groupMetaRecoveryThrough: page.hasMore ? '3' : null,
-        groupMetaRecoveryAnnouncement: null,
       }));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
@@ -89,8 +112,6 @@ describe('database worker Group Meta completion', () => {
         type: 'drain-thread-misc',
         userId: '42',
         threadId: 12,
-        groupMetaEndId: '3',
-        tombstoneEndSeq: null,
       },
     } as MessageEvent);
   }

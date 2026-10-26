@@ -149,11 +149,13 @@ describe('GroupJoinRequestsComponent', () => {
             openThreadId,
             items: () => [
               thread,
-              createP2PConversation(
-                12,
-                { account: 'friend', namespaceId: 7, profileRev: 1 },
-                { conversationState: 'ACTIVE', friendshipActive: true },
-              ),
+              createP2PConversation({
+                threadId: 12,
+                account: 'friend',
+                publisherNamespaceId: 7,
+                profileRev: 1,
+                conversationState: 'ACTIVE',
+              }),
             ],
             markJoinRequestsReadLocally,
           },

@@ -226,25 +226,13 @@ mod tests {
             let server = state.server.as_ref().unwrap();
             let mut base = serde_json::to_value(server).unwrap();
             base["type"] = server.kind.clone().into();
-            base["authorityNamespaceId"] = server.authority_namespace_id.into();
-            base["threadProfileRev"] = server.thread_profile_rev.into();
+            base["publisherNamespaceId"] = server.authority_namespace_id.into();
+            base["account"] = server.subject_account.clone().into();
+            base["profileRev"] = server.thread_profile_rev.into();
             base["serverLastReadSeq"] = server.last_read_seq.into();
             base["serverUnreadCount"] = server.unread_count.into();
             base["localReadSeq"] = state.local_read_seq.unwrap_or(server.last_read_seq).into();
-            // The presentation object is the publisher-space profile coordinate.
-            let profile = serde_json::json!({
-                "account": server.subject_account,
-                "namespaceId": server.authority_namespace_id,
-                "profileRev": server.thread_profile_rev,
-            });
-            if server.kind == "GROUP" {
-                let mut group = profile;
-                group["id"] = (server.thread_id as i64).into();
-                base["group"] = group;
-            } else {
-                base["peerUser"] = profile;
-            }
-            super::super::thread_store::write(conn, 1, state.thread_id as i64, &base).unwrap();
+            super::super::thread_store::insert(conn, 1, state.thread_id as i64, &base).unwrap();
         }
         super::super::attention::write_state(conn, 1, state).unwrap();
     }
@@ -395,11 +383,6 @@ mod tests {
         server.subject_account = "!group".into();
         delivered.server.as_mut().unwrap().alias = Some("Private name".into());
         save(&conn, &delivered);
-        let mut presentation = super::super::thread_store::read(&conn, 1, 7)
-            .unwrap()
-            .unwrap();
-        presentation["group"]["name"] = "Profile name".into();
-        super::super::thread_store::write(&conn, 1, 7, &presentation).unwrap();
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"][0]["title"], "Private name");
@@ -420,7 +403,7 @@ mod tests {
         assert_eq!(
             super::super::thread_store::read(&conn, 1, 7)
                 .unwrap()
-                .unwrap()["group"]["name"],
+                .unwrap()["profile"]["name"],
             "!group"
         );
         delivered.notification_changed = false;
@@ -615,8 +598,7 @@ fn assemble(
             .alias
             .as_deref()
             .filter(|alias| !alias.is_empty())
-            .or_else(|| thread["group"]["name"].as_str())
-            .or_else(|| thread["peerUser"]["name"].as_str())
+            .or_else(|| thread["profile"]["name"].as_str())
             .filter(|name| !name.is_empty())
             .map(str::to_owned)
             .or_else(|| {

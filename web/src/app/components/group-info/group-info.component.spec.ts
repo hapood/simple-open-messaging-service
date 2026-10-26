@@ -1,6 +1,34 @@
 import { signal } from '@angular/core';
+import { of } from 'rxjs';
 import { GroupInfoComponent } from './group-info.component';
 import type { ResolvedMemberProfile } from '../../services/member-profile-store.service';
+
+describe('GroupInfoComponent dissolution acknowledgement', () => {
+  it('closes the panel and synchronizes server state without inventing a local lifecycle result', async () => {
+    const component = Object.create(GroupInfoComponent.prototype);
+    const applyThreadMeta = vi.fn();
+    const applyGroupUpdate = vi.fn();
+    const refreshAfterMutation = vi.fn().mockResolvedValue(undefined);
+    const closeAside = vi.fn();
+    Object.assign(component, {
+      groupId: () => 42,
+      isOwner: () => true,
+      readOnly: () => false,
+      busy: signal(false),
+      groupService: {
+        dissolveGroup: vi.fn(() => of({ code: 0, data: { status: 'PENDING' } })),
+      },
+      convList: { applyThreadMeta, applyGroupUpdate, refreshAfterMutation, load: vi.fn() },
+      nav: { closeAside },
+    });
+    await component['dissolve']();
+    expect(closeAside).toHaveBeenCalledOnce();
+    expect(refreshAfterMutation).toHaveBeenCalledOnce();
+    expect(applyThreadMeta).not.toHaveBeenCalled();
+    expect(applyGroupUpdate).not.toHaveBeenCalled();
+    expect(component.busy()).toBe(false);
+  });
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

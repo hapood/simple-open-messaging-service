@@ -13,26 +13,15 @@ describe('thread notification presentation', () => {
   };
   function update(): ThreadNotificationUpdate {
     return {
-      item: createP2PConversation(
-        7,
-        {
-          account: 'peer',
-          namespaceId: 0,
-          profileRev: 1,
-        },
-        {
-          unreadCount: 101,
-          lastReadSeq: 3,
-          peerUser: {
-            account: 'peer',
-            namespaceId: 0,
-            name: 'Peer',
-            bio: '',
-            isGroup: false,
-            isDeleted: false,
-          },
-        },
-      ),
+      item: createP2PConversation({
+        threadId: 7,
+        account: 'peer',
+        publisherNamespaceId: 0,
+        profileRev: 1,
+        unreadCount: 101,
+        lastReadSeq: 3,
+        profile: { name: 'Peer', bio: '', avatarDigest: null },
+      }),
       state: {
         threadId: 7,
         threadFeedId: 9,
@@ -75,16 +64,14 @@ describe('thread notification presentation', () => {
     expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
       'Peer',
     );
-    value.item = createGroupConversation(
-      7,
-      {
-        id: 7,
-        account: '!group',
-        name: 'Group profile',
-        namespaceId: 0,
-      },
-      { alias: 'Stale group label' },
-    );
+    value.item = createGroupConversation({
+      threadId: 7,
+      account: '!group',
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Group profile', bio: '', avatarDigest: null },
+      alias: 'Stale group label',
+    });
     value.state.alias = 'My group';
     expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
       'My group',
@@ -98,10 +85,13 @@ describe('thread notification presentation', () => {
   it('uses the resolved domain in the address fallback without storing it on the peer', () => {
     const value = update();
     if (value.item.type !== 'P2P') throw new Error('expected P2P fixture');
-    value.item.peerUser.name = '';
-    expect(threadNotificationDescriptor(value, 'message', copy, 'alpha.test').title)
-      .toBe('peer@alpha.test');
-    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe('peer');
+    value.item.profile.name = '';
+    expect(
+      threadNotificationDescriptor(value, 'message', copy, 'alpha.test').title,
+    ).toBe('peer@alpha.test');
+    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
+      'peer',
+    );
   });
 
   it('uses projected count, latest sequence and the moderation reason', () => {

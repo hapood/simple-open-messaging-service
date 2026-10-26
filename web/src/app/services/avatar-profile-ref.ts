@@ -86,10 +86,9 @@ export function conversationAvatarProfile(
   t: ConversationItem,
 ): AvatarProfileRef | undefined {
   if (t.profileRev < 1) return undefined;
-  const subject = t.type === 'P2P' ? t.peerUser : t.group;
   return memoizeRef({
-    account: subject.account,
-    publisherNamespaceId: subject.namespaceId,
+    account: t.account,
+    publisherNamespaceId: t.publisherNamespaceId,
     profileNamespaceId: 0,
     rev: t.profileRev,
     linked: t.conversationState === 'ACTIVE',
@@ -126,6 +125,6 @@ export function groupMemberAvatarProfile(
     profileNamespaceId: member.namespaceId,
     rev: member.profileRev,
     linked: thread.conversationState === 'ACTIVE',
-    groupAccount: thread.group.account,
+    groupAccount: thread.account,
   });
 }

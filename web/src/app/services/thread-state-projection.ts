@@ -21,31 +21,26 @@ export function applyThreadStateSnapshot(
   if (current && current.type !== snapshot.type)
     throw new Error('thread type changed');
   const identity = {
+    threadId: snapshot.threadId,
     account: snapshot.profileAccount,
-    namespaceId: snapshot.publisherNamespaceId,
+    publisherNamespaceId: snapshot.publisherNamespaceId,
     profileRev: snapshot.profileRev,
-    name: '',
   };
   const base =
     current ??
     (snapshot.type === 'P2P'
-      ? createP2PConversation(snapshot.threadId, identity)
-      : createGroupConversation(snapshot.threadId, {
-          ...identity,
-          id: snapshot.threadId,
-        }));
+      ? createP2PConversation(identity)
+      : createGroupConversation(identity));
   return {
     ...base,
     threadFeedId: feedId,
+    messageEndSeq: snapshot.messageEndSeq,
+    groupMetaFeedEndId: snapshot.groupMetaFeedEndId,
     visible: true,
     publisherNamespaceId: snapshot.publisherNamespaceId,
     selfMentionNamespaceId: snapshot.selfMentionNamespaceId,
     conversationState: snapshot.conversationState,
     blocked: snapshot.blocked,
     role: snapshot.role,
-    friendshipActive:
-      snapshot.type === 'P2P'
-        ? snapshot.conversationState === 'ACTIVE'
-        : undefined,
   };
 }

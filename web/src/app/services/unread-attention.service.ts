@@ -288,14 +288,10 @@ export class UnreadAttentionService {
           this.nav.chatThreadId() === activeChat
         )
           continue;
-        const subject =
-          update.item.type === 'GROUP'
-            ? update.item.group
-            : update.item.peerUser;
         const binding = await firstValueFrom(
           this.namespaces.resolve({
             publisherNamespaceId: 0,
-            profileNamespaceId: subject.namespaceId,
+            profileNamespaceId: update.item.publisherNamespaceId,
           }),
         );
         if (generation !== this.generation || !this.lifecycle.isCurrent(scope))

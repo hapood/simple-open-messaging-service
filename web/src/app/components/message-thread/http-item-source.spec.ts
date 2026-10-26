@@ -873,6 +873,21 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     subscription.unsubscribe();
   });
 
+  it('does not signal a newest-page fill for a confirmed empty thread', async () => {
+    const { src, repo, newerAvailable } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+      hasMore: false,
+    });
+    await src.init(-1, 50, 0);
+    const before = vi.mocked(repo.queryMessages as Mock).mock.calls.length;
+    src.finishLocalInit(undefined, 0);
+    await Promise.resolve();
+    expect(newerAvailable).not.toHaveBeenCalled();
+    expect(vi.mocked(repo.queryMessages as Mock).mock.calls.length).toBe(before);
+  });
+
   it('signals a backend fill when durable thread metadata leads an empty local messages cache', async () => {
     const { src, repo, newerAvailable } = setup({
       code: 0,

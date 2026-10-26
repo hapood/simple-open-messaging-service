@@ -536,15 +536,11 @@
       </div>
     }
 
-    @if (dissolvedGroup()) {
-      <div class="msg-blocked-banner">
-        {{ 'chat.groupDissolvedBanner' | transloco }}
-      </div>
-    } @else if (friendshipEnded()) {
+    @if (friendshipEnded()) {
       <!-- Retained P2P history is read-only: intentionally render no composer or replacement action. -->
-    } @else if (leftGroup()) {
+    } @else if (readOnlyGroup()) {
       <div class="msg-blocked-banner">
-        {{ 'chat.leftGroupBanner' | transloco }}
+        {{ 'chat.readOnlyGroupBanner' | transloco }}
       </div>
     } @else if (blockedPeer()) {
       <div class="msg-blocked-banner">

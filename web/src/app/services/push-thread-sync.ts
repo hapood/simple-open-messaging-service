@@ -84,10 +84,9 @@ export async function syncPushThreads(
     // A concurrently deleted local conversation must not produce a fabricated notification.
     const item = rows.find((row) => row.threadId === state.threadId);
     if (!item) continue;
-    const subject = item.type === 'GROUP' ? item.group : item.peerUser;
     const [binding] = await storage.getProfileNamespaceBindings([{
       publisherNamespaceId: 0,
-      profileNamespaceId: subject.namespaceId,
+      profileNamespaceId: item.publisherNamespaceId,
     }]);
     const descriptor = threadNotificationDescriptor(
       {

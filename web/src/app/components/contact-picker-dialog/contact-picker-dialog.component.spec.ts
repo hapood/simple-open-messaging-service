@@ -3,16 +3,25 @@ import { signal } from '@angular/core';
 import { ContactPickerDialogComponent } from './contact-picker-dialog.component';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { RouteService } from '../../services/route.service';
-import { createGroupConversation, createP2PConversation, displayThreadName } from '../../services/model';
+import {
+  createGroupConversation,
+  createP2PConversation,
+  displayThreadName,
+} from '../../services/model';
 
 const threads = [
-  createP2PConversation(7, { account: 'bob', namespaceId: 4, profileRev: 5 }),
-  createGroupConversation(8, {
-    id: 8,
+  createP2PConversation({
+    threadId: 7,
+    account: 'bob',
+    publisherNamespaceId: 4,
+    profileRev: 5,
+  }),
+  createGroupConversation({
+    threadId: 8,
     account: '!group12',
-    name: 'Group',
-    namespaceId: 4,
+    publisherNamespaceId: 4,
     profileRev: 6,
+    profile: { name: 'Group', bio: '', avatarDigest: null },
   }),
 ];
 
@@ -23,7 +32,10 @@ describe('ContactPickerDialogComponent', () => {
     vi.clearAllMocks();
     TestBed.configureTestingModule({
       providers: [
-        { provide: ConversationListService, useValue: { items: signal(threads) } },
+        {
+          provide: ConversationListService,
+          useValue: { items: signal(threads) },
+        },
         { provide: RouteService, useValue: { closeDlg } },
       ],
     }).overrideComponent(ContactPickerDialogComponent, {
@@ -34,22 +46,19 @@ describe('ContactPickerDialogComponent', () => {
   it.each(threads)(
     'selects $type synchronously from materialized thread fields',
     (thread) => {
-      const subject = thread.type === 'GROUP' ? thread.group : thread.peerUser;
-      const component = TestBed.createComponent(ContactPickerDialogComponent)
-        .componentInstance;
+      const component = TestBed.createComponent(
+        ContactPickerDialogComponent,
+      ).componentInstance;
       component.choose(thread);
       expect(closeDlg).toHaveBeenCalledExactlyOnceWith({
         target: {
-          account: subject.account,
-          namespaceId: subject.namespaceId,
+          account: thread.account,
+          namespaceId: thread.publisherNamespaceId,
           profileRev: thread.profileRev,
         },
-        account: subject.account,
+        account: thread.account,
         name: displayThreadName(thread),
-        bio:
-          (thread.type === 'GROUP'
-            ? thread.group.description
-            : thread.peerUser.bio) ?? '',
+        bio: thread.profile.bio ?? '',
       });
     },
   );

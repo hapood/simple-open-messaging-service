@@ -161,7 +161,7 @@ export class SystemRowComponent {
           account: identity.account,
           rev: revision,
         },
-        groupAccount: item.group.account,
+        groupAccount: item.account,
       };
     }
     return {
@@ -321,8 +321,8 @@ export class SystemRowComponent {
               .find(
                 (item) =>
                   item.type === 'P2P' &&
-                  item.peerUser.account === identity.account &&
-                  item.peerUser.namespaceId === identity.profileNamespaceId,
+                  item.account === identity.account &&
+                  item.publisherNamespaceId === identity.profileNamespaceId,
               )
               ?.alias?.trim() ?? '')
           : '';

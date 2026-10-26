@@ -15,7 +15,6 @@ import { threadFeedSnapshot, threadStructure } from './thread-feed.test-helper';
 import type { AccountState } from '../../../../shared/account-state';
 import {
   createGroupConversation,
-  createP2PConversation,
   type ConversationItem,
   type Message,
 } from './model';
@@ -29,7 +28,10 @@ import {
   provideWebdbService,
 } from './webdb.service';
 import { WebdbStorage } from './webdb-storage';
-import { createSessionCacheDescriptor, type SessionCacheDescriptor } from './session/session-identity';
+import {
+  createSessionCacheDescriptor,
+  type SessionCacheDescriptor,
+} from './session/session-identity';
 
 const peerProfile = {
   account: 'peer',
@@ -57,7 +59,6 @@ async function seedThread(
   webdb: WebdbService,
   item: ConversationItem,
 ): Promise<void> {
-  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
   const feedId = item.threadFeedId ?? 1;
   await webdb.mergeThreadStates([
     threadFeedSnapshot(item.threadId, {
@@ -65,17 +66,22 @@ async function seedThread(
       type: item.type,
       role: item.role,
       publisherNamespaceId: item.publisherNamespaceId,
-      profileAccount: subject.account,
+      profileAccount: item.account,
       profileRev: item.profileRev,
     }),
   ]);
-  await webdb.putThread({ ...item, threadFeedId: feedId });
 }
 
 describe('WebdbService', () => {
   describe('IDB-backed storage (fake-indexeddb)', () => {
     let webdb: WebdbService;
     let session: SessionCacheDescriptor;
+
+    async function groupMeta() {
+      const restored = (await webdb.getThreads())[0];
+      if (restored?.type !== 'GROUP') throw new Error('group expected');
+      return restored.meta;
+    }
 
     beforeEach(() => {
       TestBed.configureTestingModule({
@@ -100,7 +106,9 @@ describe('WebdbService', () => {
 
     it('rejects cache opens without a login-session binding', async () => {
       const unbound = new WebdbStorage();
-      await expect(unbound.openForUser('1')).rejects.toThrow('no login-session cache is bound');
+      await expect(unbound.openForUser('1')).rejects.toThrow(
+        'no login-session cache is bound',
+      );
       await unbound.close();
     });
 
@@ -180,11 +188,6 @@ describe('WebdbService', () => {
 
     it('projects a counterpart-only thread revision and preserves it across stale list writes', async () => {
       await webdb.openForUser('1');
-      const item = createP2PConversation(7, {
-        account: 'peer',
-        namespaceId: peerProfile.namespaceId,
-        profileRev: 1,
-      });
       await webdb.mergeThreadStates([
         {
           ...threadStructure(7, {
@@ -210,11 +213,11 @@ describe('WebdbService', () => {
         },
       ]);
       expect((await webdb.getThreads())[0]?.profileRev).toBe(2);
-      await webdb.putThread({ ...item, threadFeedId: 10, profileRev: 99 });
+      await webdb.patchThread(7, { muted: true });
       const stored = (await webdb.getThreads())[0];
       expect(stored?.profileRev).toBe(2);
       if (stored?.type !== 'P2P') throw new Error('expected P2P thread');
-      expect('profileRev' in stored.peerUser).toBe(false);
+      expect('profileRev' in stored.profile).toBe(false);
     });
 
     it('preserves optimistic progress across snapshots and accepts remote rollback by feed ID', async () => {
@@ -361,11 +364,12 @@ describe('WebdbService', () => {
       const db = await webdb.openForUser('1');
       await seedThread(
         webdb,
-        createGroupConversation(90, {
-          id: 90,
-          name: 'Mirror',
+        createGroupConversation({
+          threadId: 90,
           account: '!mirror',
-          namespaceId: 7,
+          publisherNamespaceId: 7,
+          profileRev: 0,
+          profile: { name: 'Mirror', bio: '', avatarDigest: null },
         }),
       );
       await webdb.applyGroupMetaPage({
@@ -536,11 +540,12 @@ describe('WebdbService', () => {
       const db = await webdb.openForUser('1');
       await seedThread(
         webdb,
-        createGroupConversation(90, {
-          id: 90,
-          name: 'Team',
+        createGroupConversation({
+          threadId: 90,
           account: '!team',
-          namespaceId: 0,
+          publisherNamespaceId: 0,
+          profileRev: 0,
+          profile: { name: 'Team', bio: '', avatarDigest: null },
         }),
       );
       await webdb.commitResolvedProfile({
@@ -971,9 +976,12 @@ describe('WebdbService', () => {
     it('opens separate per-user core and message DBs and signals ready', async () => {
       const db = await webdb.openForUser('1');
       expect(db, 'opened handle').toBeTruthy();
-      expect(db!.name, 'login-session partition key').toBe(session.indexedDbName);
+      expect(db!.name, 'login-session partition key').toBe(
+        session.indexedDbName,
+      );
       expect([...db!.objectStoreNames].sort()).toEqual([
         'accountState',
+        'groupMeta',
         'members',
         'profileAvatarBlobs',
         'profileNamespaceTombs',
@@ -1044,8 +1052,12 @@ describe('WebdbService', () => {
       await webdb.openExistingForUser('1');
 
       expect((await webdb.readAccountState()).selfProfile).toEqual({
-        id: 1, account: 'me', isGroup: false, namespaceId: 0,
-        profileRev: 1, isDeleted: false,
+        id: 1,
+        account: 'me',
+        isGroup: false,
+        namespaceId: 0,
+        profileRev: 1,
+        isDeleted: false,
       });
     });
 
@@ -1307,13 +1319,9 @@ describe('WebdbService', () => {
         .recreateForUser('1')
         .then(() => (recreated = true));
 
-      await expect(
-        webdb.putThread({
-          threadId: 8,
-          publisherNamespaceId: 0,
-          type: 'P2P',
-        } as never),
-      ).rejects.toThrowError('account cache lifetime expired');
+      await expect(webdb.patchThread(8, { muted: true })).rejects.toThrowError(
+        'account cache lifetime expired',
+      );
       expect(recreated).toBe(false);
 
       release();
@@ -1467,11 +1475,12 @@ describe('WebdbService', () => {
       const db = await webdb.db();
       await seedThread(
         webdb,
-        createGroupConversation(9, {
-          id: 9,
+        createGroupConversation({
+          threadId: 9,
           account: '!team',
-          namespaceId: 0,
-          name: 'Old group name',
+          publisherNamespaceId: 0,
+          profileRev: 0,
+          profile: { name: 'Old group name', bio: '', avatarDigest: null },
         }),
       );
       await webdb.applyGroupMetaPage({
@@ -1526,8 +1535,8 @@ describe('WebdbService', () => {
       expect((await webdb.getThreads())[0].profileRev).toBe(4);
       expect(await db.get('threads', 9)).toMatchObject({ profileRev: 4 });
       expect(await db.get('threads', 9)).not.toHaveProperty('group');
-      expect(await db.get('threads', 9)).toMatchObject({
-        groupMemberCount: 2,
+      expect(await db.get('groupMeta', 9)).toMatchObject({
+        memberCount: 2,
         groupMetaFeedId: '3',
       });
       expect((await webdb.readAccountState()).stateFeedId).toBeNull();
@@ -1546,14 +1555,6 @@ describe('WebdbService', () => {
     it('commits announcement publish, clear and clipped full recovery as distinct states', async () => {
       await webdb.openForUser('1');
       await seedGroupFeed(webdb);
-      await webdb.putThread(
-        createGroupConversation(9, {
-          id: 9,
-          account: '!team',
-          namespaceId: 0,
-          name: 'Team',
-        }),
-      );
       const page = (
         mode: 'full' | 'delta',
         scannedThrough: string,
@@ -1583,9 +1584,9 @@ describe('WebdbService', () => {
           },
         ]),
       );
-      expect((await webdb.getThreads())[0].group?.announcement).toEqual({
-        feedId: '2',
-        text: 'Hello',
+      expect(await groupMeta()).toMatchObject({
+        announcementFeedId: '2',
+        announcementText: 'Hello',
       });
       await webdb.applyGroupMetaPage(
         page('delta', '4', [
@@ -1596,25 +1597,19 @@ describe('WebdbService', () => {
           },
         ]),
       );
-      expect((await webdb.getThreads())[0].group?.announcement).toEqual({
-        feedId: '4',
-        text: null,
+      expect(await groupMeta()).toMatchObject({
+        announcementFeedId: '4',
+        announcementText: null,
       });
       await webdb.applyGroupMetaPage(page('full', '5', []));
-      expect((await webdb.getThreads())[0].group?.announcement).toBeNull();
+      expect(await groupMeta()).toMatchObject({
+        announcementFeedId: null,
+      });
     });
 
     it('stages an announcement across full pages until the fixed recovery boundary', async () => {
       await webdb.openForUser('1');
       await seedGroupFeed(webdb);
-      await webdb.putThread(
-        createGroupConversation(9, {
-          id: 9,
-          account: '!team',
-          namespaceId: 0,
-          name: 'Team',
-        }),
-      );
       await webdb.beginGroupMetaRecovery(9, '3');
       await webdb.applyGroupMetaPage({
         threadId: 9,
@@ -1634,7 +1629,9 @@ describe('WebdbService', () => {
           ],
         },
       });
-      expect((await webdb.getThreads())[0].group?.announcement).toBeNull();
+      expect(await groupMeta()).toMatchObject({
+        announcementFeedId: null,
+      });
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
@@ -1647,26 +1644,15 @@ describe('WebdbService', () => {
           items: [],
         },
       });
-      expect((await webdb.getThreads())[0].group?.announcement).toEqual({
-        feedId: '1',
-        text: 'Notice',
+      expect(await groupMeta()).toMatchObject({
+        announcementFeedId: '1',
+        announcementText: 'Notice',
       });
     });
 
     it('reads and commits member profiles in the group publisher space, never a diagonal', async () => {
       await webdb.openForUser('1');
       await seedGroupFeed(webdb, 7);
-      await webdb.putThread({
-        threadId: 9,
-        publisherNamespaceId: 7,
-        type: 'GROUP',
-        group: {
-          account: '!team',
-          namespaceId: 7,
-          memberCount: 0,
-          groupMetaFeedId: '0',
-        },
-      } as never);
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 7,
@@ -1747,17 +1733,6 @@ describe('WebdbService', () => {
     it('materializes full group metadata and pages/searches the local roster', async () => {
       const db = await webdb.openForUser('1');
       await seedGroupFeed(webdb);
-      await webdb.putThread({
-        threadId: 9,
-        publisherNamespaceId: 0,
-        type: 'GROUP',
-        group: {
-          account: '!team',
-          namespaceId: 0,
-          memberCount: 0,
-          groupMetaFeedId: '0',
-        },
-      } as never);
       await webdb.commitResolvedProfile({
         name: 'Alice in team',
         account: 'alice',
@@ -1837,7 +1812,7 @@ describe('WebdbService', () => {
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({
         role: 'OWNER',
-        group: { memberCount: 2, groupMetaFeedId: '2' },
+        meta: { memberCount: 2, groupMetaFeedId: '2' },
       });
 
       expect(await webdb.getGroupMember(9, 'alice', 12)).toMatchObject({
@@ -2091,9 +2066,9 @@ describe('WebdbService', () => {
         expect.objectContaining({
           threadId: 12,
           type: 'GROUP',
-          group: expect.objectContaining({
-            account: '!dev',
-            name: '!dev',
+          account: '!dev',
+          profile: expect.objectContaining({ name: '!dev' }),
+          meta: expect.objectContaining({
             memberCount: 2,
             groupMetaFeedId: '2',
           }),
@@ -2129,7 +2104,7 @@ describe('WebdbService', () => {
         left: false,
       });
       expect((await webdb.getThreads())[0]).toMatchObject({
-        group: { memberCount: 2, groupMetaFeedId: '2' },
+        meta: { memberCount: 2, groupMetaFeedId: '2' },
       });
       expect(
         await webdb.getProfile({
@@ -2145,11 +2120,17 @@ describe('WebdbService', () => {
           target: { profileNamespaceId: 0, account: '!dev', rev: 1 },
         }),
       ).toBeDefined();
-      const retainedThreads = await webdb.getThreads();
-      const retainedMember = await webdb.getGroupMember(12, 'bob', 12);
+      // Departure no longer vetoes local meta writes; recovery resets normally
+      // and the server's empty full page commits the advanced cursor.
       await webdb.beginGroupMetaRecovery(12, '3');
-      expect(await webdb.getGroupMember(12, 'bob', 12)).toEqual(retainedMember);
-      expect(await webdb.getThreads()).toEqual(retainedThreads);
+      expect(await webdb.getGroupMember(12, 'bob', 12)).toBeUndefined();
+      expect((await webdb.getThreads())[0]).toMatchObject({
+        meta: {
+          memberCount: 0,
+          groupMetaFeedId: '0',
+          recoveryThrough: '3',
+        },
+      });
       await expect(
         webdb.applyGroupMetaPage({
           threadId: 12,
@@ -2163,9 +2144,11 @@ describe('WebdbService', () => {
             groupMetaFeedEndId: '3',
           },
         }),
-      ).resolves.toBeNull();
-      expect(await webdb.getGroupMember(12, 'bob', 12)).toEqual(retainedMember);
-      expect(await webdb.getThreads()).toEqual(retainedThreads);
+      ).resolves.toMatchObject({ threadId: 12, groupMetaFeedId: '3' });
+      expect(await webdb.getGroupMember(12, 'bob', 12)).toBeUndefined();
+      expect((await webdb.getThreads())[0]).toMatchObject({
+        meta: { memberCount: 0, groupMetaFeedId: '3', recoveryThrough: null },
+      });
     });
 
     it('keeps a newly created local group visible across the relationship and thread feeds', async () => {
@@ -2199,10 +2182,8 @@ describe('WebdbService', () => {
           type: 'GROUP',
           visible: true,
           role: 'OWNER',
-          group: expect.objectContaining({
-            account: group.account,
-            name: group.account,
-          }),
+          account: group.account,
+          profile: expect.objectContaining({ name: group.account }),
         }),
       ]);
 
@@ -2220,9 +2201,9 @@ describe('WebdbService', () => {
         expect.objectContaining({
           threadId: 95,
           visible: true,
-          group: expect.objectContaining({
+          profile: expect.objectContaining({
             name: group.name,
-            description: group.description,
+            bio: group.description,
           }),
         }),
       ]);

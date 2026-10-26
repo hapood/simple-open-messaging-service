@@ -18,6 +18,7 @@
 mod android_realtime;
 #[cfg(target_os = "android")]
 mod android_runtime;
+mod auth_lifecycle;
 #[cfg(any(target_os = "android", test))]
 mod call;
 mod client_compat;
@@ -36,7 +37,6 @@ mod realtime;
 #[cfg(desktop)]
 mod secure_storage;
 mod server_setup;
-mod auth_lifecycle;
 mod sse;
 mod upload;
 
@@ -537,14 +537,13 @@ pub fn run() {
                     media_cache::save_media_desktop,
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
+                    native_db::client_state::native_db_patch_thread,
                     native_db::account_state::native_db_advance_intent_request_read,
                     native_db::account_state::native_db_initialize_account_state,
                     native_db::account_state::native_db_read_account_state,
                     native_db::account_state::native_db_write_self_profile,
                     native_db::account_state::native_db_write_composer_drafts,
                     native_db::client_state::native_db_threads,
-                    native_db::client_state::native_db_put_thread,
-                    native_db::client_state::native_db_replace_threads,
                     native_db::client_state::native_db_delete_thread,
                     native_db::contacts::native_db_get_profile,
                     native_db::contacts::native_db_get_group_member,
@@ -620,6 +619,7 @@ pub fn run() {
                     media_cache::get_media_cache_info,
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
+                    native_db::client_state::native_db_patch_thread,
                     native_db::profile_namespaces::native_db_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_commit_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_apply_profile_namespace_changes,
@@ -631,8 +631,6 @@ pub fn run() {
                     native_db::account_state::native_db_write_self_profile,
                     native_db::account_state::native_db_write_composer_drafts,
                     native_db::client_state::native_db_threads,
-                    native_db::client_state::native_db_put_thread,
-                    native_db::client_state::native_db_replace_threads,
                     native_db::client_state::native_db_delete_thread,
                     native_db::contacts::native_db_get_profile,
                     native_db::contacts::native_db_get_group_member,

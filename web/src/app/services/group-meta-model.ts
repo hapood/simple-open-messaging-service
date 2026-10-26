@@ -64,7 +64,9 @@ export interface GroupMetaCommitPatch {
   threadId: number;
   groupMetaFeedId: string;
   memberCount: number;
-  announcement: GroupMetaAnnouncementFact | null;
+  /** Tri-state announcement fields: a null feedId carries no announcement. */
+  announcementFeedId: string | null;
+  announcementText: string | null;
   groupMetaRecoveryThrough: string | null;
 }
 

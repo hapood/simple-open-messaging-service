@@ -44,15 +44,13 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
 
   /** Minimal ConversationItem — only threadId + unreadCount are exercised by the badge sum. */
   function item(threadId: number, unreadCount: number): ConversationItem {
-    const thread = createP2PConversation(
+    const thread = createP2PConversation({
       threadId,
-      {
-        account: `u${threadId}`,
-        namespaceId: 0,
-        profileRev: 1,
-      },
-      { unreadCount },
-    );
+      account: `u${threadId}`,
+      publisherNamespaceId: 0,
+      profileRev: 1,
+      unreadCount,
+    });
     return thread;
   }
 
@@ -70,7 +68,9 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
         provideZonelessChangeDetection(),
         {
           provide: ProfileNamespaceRepository,
-          useValue: { resolve: () => of({ domain: 'alpha.test', status: 'ACTIVE' }) },
+          useValue: {
+            resolve: () => of({ domain: 'alpha.test', status: 'ACTIVE' }),
+          },
         },
         provideHttpClient(withXhr()),
         provideTransloco({
@@ -168,11 +168,12 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   });
 
   it('opens group info directly from More for a group conversation', () => {
-    const chat = createGroupConversation(8, {
-      id: 80,
+    const chat = createGroupConversation({
+      threadId: 8,
       account: 'group-80',
-      name: 'Group 80',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Group 80', bio: '', avatarDigest: null },
     });
     fixture.componentRef.setInput('userMsgTrd', chat);
 
@@ -182,16 +183,14 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   });
 
   it('reports group More as expanded while the group panel is open', () => {
-    const chat = createGroupConversation(
-      8,
-      {
-        id: 80,
-        account: 'group-80',
-        name: 'Group 80',
-        namespaceId: 0,
-      },
-      { role: 'ADMIN' },
-    );
+    const chat = createGroupConversation({
+      threadId: 8,
+      account: 'group-80',
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Group 80', bio: '', avatarDigest: null },
+      role: 'ADMIN',
+    });
     fixture.componentRef.setInput('userMsgTrd', chat);
     asideTop.set({ panel: 'group-info' });
 
@@ -199,16 +198,17 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   });
 
   it('uses one as the member count and keeps More available after leaving a group', () => {
-    const active = createGroupConversation(8, {
-      id: 80,
+    const active = createGroupConversation({
+      threadId: 8,
       account: 'group-80',
-      name: 'Group 80',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Group 80', bio: '', avatarDigest: null },
     });
     const chat = {
       ...active,
       conversationState: 'READ_ONLY' as const,
-      group: { ...active.group, memberCount: 8 },
+      meta: { ...active.meta, memberCount: 8 },
     };
     fixture.componentRef.setInput('userMsgTrd', chat);
     expect(comp.groupInactive()).toBe(true);
@@ -217,23 +217,5 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
     expect(openAside).toHaveBeenCalledWith('group-info');
     asideTop.set({ panel: 'group-info' });
     expect(comp.moreExpanded()).toBe(true);
-  });
-
-  it('also keeps More available for a dissolved group', () => {
-    const active = createGroupConversation(8, {
-      id: 80,
-      account: 'group-80',
-      name: 'Group 80',
-      namespaceId: 0,
-    });
-    const chat = {
-      ...active,
-      group: { ...active.group, dissolvedAt: Date.now() },
-    };
-    fixture.componentRef.setInput('userMsgTrd', chat);
-
-    expect(comp.groupMemberCount()).toBe(1);
-    comp.toggleMenu();
-    expect(openAside).toHaveBeenCalledWith('group-info');
   });
 });

@@ -13,9 +13,7 @@ import type { ForwardDialogResult } from '../components/forward-dialog/forward-d
 import type { ProfileNamespaceBinding } from './webdb-storage';
 
 describe('ContactCardShareService', () => {
-  let complete:
-    | ((result: ForwardDialogResult) => void)
-    | undefined;
+  let complete: ((result: ForwardDialogResult) => void) | undefined;
   let popupDlg: ReturnType<typeof vi.fn>;
   let sendContactCard: ReturnType<typeof vi.fn>;
   let info: ReturnType<typeof vi.fn>;
@@ -42,9 +40,10 @@ describe('ContactCardShareService', () => {
         {
           provide: ProfileNamespaceRepository,
           useValue: {
-            resolve: 'error' in binding
-              ? vi.fn(() => binding$.asObservable())
-              : vi.fn(() => of(binding)),
+            resolve:
+              'error' in binding
+                ? vi.fn(() => binding$.asObservable())
+                : vi.fn(() => of(binding)),
           },
         },
         {
@@ -77,13 +76,14 @@ describe('ContactCardShareService', () => {
   it('builds the card from thread fields plus the namespace binding, then sends to each conversation', async () => {
     boot(binding());
     const service = TestBed.inject(ContactCardShareService);
-    const chat = createP2PConversation(5, {
+    const chat = createP2PConversation({
+      threadId: 5,
       account: 'alice',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
       profileRev: 1,
     });
-    chat.peerUser.name = 'Alice Local';
-    chat.peerUser.bio = 'Alice bio';
+    chat.profile.name = 'Alice Local';
+    chat.profile.bio = 'Alice bio';
 
     service.open(chat);
     await vi.waitFor(() =>
@@ -114,12 +114,12 @@ describe('ContactCardShareService', () => {
     );
     await vi.waitFor(() => expect(info).toHaveBeenCalled());
 
-    const group = createGroupConversation(11, {
-      id: 11,
+    const group = createGroupConversation({
+      threadId: 11,
       account: '!group12',
-      namespaceId: 4,
+      publisherNamespaceId: 4,
       profileRev: 6,
-      name: 'Group',
+      profile: { name: 'Group', bio: '', avatarDigest: null },
     });
     service.open(group);
     await vi.waitFor(() => expect(popupDlg).toHaveBeenCalledTimes(2));
@@ -136,17 +136,23 @@ describe('ContactCardShareService', () => {
   it.each([
     ['no domain', binding({ domain: null })],
     ['no root key', binding({ rootPublicKey: null })],
-  ])('refuses to build a card when the binding has %s', async (_name, value) => {
-    boot(value as ProfileNamespaceBinding);
-    const service = TestBed.inject(ContactCardShareService);
-    service.open(
-      createP2PConversation(5, {
-        account: 'alice',
-        namespaceId: 0,
-        profileRev: 1,
-      }),
-    );
-    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith('forward.sendFailed'));
-    expect(popupDlg).not.toHaveBeenCalled();
-  });
+  ])(
+    'refuses to build a card when the binding has %s',
+    async (_name, value) => {
+      boot(value as ProfileNamespaceBinding);
+      const service = TestBed.inject(ContactCardShareService);
+      service.open(
+        createP2PConversation({
+          threadId: 5,
+          account: 'alice',
+          publisherNamespaceId: 0,
+          profileRev: 1,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith('forward.sendFailed'),
+      );
+      expect(popupDlg).not.toHaveBeenCalled();
+    },
+  );
 });

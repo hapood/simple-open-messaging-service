@@ -210,7 +210,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly remainingMemberCount = computed(() =>
     Math.max(
       0,
-      (this.group()?.memberCount ?? 0) - this.overviewMembers().length,
+      (this.groupMeta()?.memberCount ?? 0) - this.overviewMembers().length,
     ),
   );
   readonly filteredRoster = this.roster.asReadonly();
@@ -228,7 +228,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     () =>
       this.isAdmin() &&
       isGroupMetaCurrent(this.userMsgTrd()) &&
-      this.group()?.namespaceId === 0,
+      this.userMsgTrd()?.publisherNamespaceId === 0,
   );
 
   openAnnouncement(): void {
@@ -249,7 +249,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   beginAnnouncementEdit(): void {
     if (!this.canEditAnnouncement()) return;
-    this.announcementDraft.set(this.group()?.announcement?.text ?? '');
+    this.announcementDraft.set(
+      currentGroupAnnouncement(this.userMsgTrd())?.text ?? '',
+    );
     this.announcementEditing.set(true);
   }
 
@@ -296,16 +298,19 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     }
   }
 
-  readonly group = computed(() => this.userMsgTrd()?.group);
+  readonly groupMeta = computed(() => {
+    const thread = this.userMsgTrd();
+    return thread?.type === 'GROUP' ? thread.meta : undefined;
+  });
   private readonly namespaces = inject(ProfileNamespaceRepository);
   readonly displayDomain = toSignal(
-    toObservable(this.group).pipe(
-      switchMap((group) =>
-        group
+    toObservable(this.userMsgTrd).pipe(
+      switchMap((thread) =>
+        thread
           ? this.namespaces
               .resolve({
                 publisherNamespaceId: 0,
-                profileNamespaceId: group.namespaceId,
+                profileNamespaceId: thread.publisherNamespaceId,
               })
               .pipe(
                 map((binding) => namespaceDisplayDomain(binding) ?? ''),
@@ -317,17 +322,17 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     ),
     { initialValue: '' },
   );
-  readonly dissolved = computed(() => this.group()?.dissolvedAt != null);
   readonly readOnly = computed(
-    () =>
-      this.dissolved() || this.userMsgTrd()?.conversationState === 'READ_ONLY',
+    () => this.userMsgTrd()?.conversationState === 'READ_ONLY',
   );
-  readonly groupId = computed(() => this.group()?.id);
+  readonly groupId = computed(() =>
+    this.userMsgTrd()?.type === 'GROUP' ? this.threadId() : undefined,
+  );
 
   constructor() {
     effect(() => {
       const threadId = this.threadId();
-      const groupMetaFeedId = this.group()?.groupMetaFeedId;
+      const groupMetaFeedId = this.groupMeta()?.groupMetaFeedId;
       const search = this.memberQuery();
       if (
         threadId !== undefined &&
@@ -634,9 +639,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         this.groupService.dissolveGroup({ groupId: id }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
-      this.convList.applyGroupUpdate(id, { dissolvedAt: Date.now() });
-      this.convList.applyThreadMeta(id, { conversationState: 'READ_ONLY' });
       this.nav.closeAside();
+      void this.convList.refreshAfterMutation().catch((error) =>
+        console.warn('[group] post-dissolution state refresh failed', error),
+      );
     } catch {
       this.showNetworkError();
     } finally {
@@ -735,10 +741,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   // ── identity editing (admin+) ──
 
   beginEdit() {
-    if (!this.isAdmin() || this.readOnly() || this.group() === undefined)
+    if (!this.isAdmin() || this.readOnly() || this.groupMeta() === undefined)
       return;
-    this.nameEdit.set(this.group()!.name);
-    this.descEdit.set(this.group()!.description ?? '');
+    this.nameEdit.set(this.userMsgTrd()!.profile.name);
+    this.descEdit.set(this.userMsgTrd()!.profile.bio ?? '');
     this.clearStagedAvatar();
     this.editing.set(true);
   }

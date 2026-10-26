@@ -19,20 +19,20 @@ import type { ConversationItem } from '../../services/model';
 describe('conversation-avatar util', () => {
   const p2p = {
     type: 'P2P',
+    publisherNamespaceId: 0,
     peerUser: {
       account: 'alice',
-      namespaceId: 0,
       avatar: '/uploads/u7.png',
     },
     group: { id: 0, account: '!zero', avatar: '' },
   } as unknown as ConversationItem;
   const group = {
     type: 'GROUP',
+    publisherNamespaceId: 7,
     peerUser: { avatar: '' },
     group: {
       id: 12,
       account: '!group-12',
-      namespaceId: 7,
       avatar: '/uploads/g12.png',
     },
   } as unknown as ConversationItem;
@@ -69,13 +69,12 @@ describe('conversation-avatar util', () => {
   it('uses the publisher home namespace but subject namespace zero for foreign peers', () => {
     const ref = conversationAvatarProfile({
       ...p2p,
-      peerUser: {
-        account: 'alice',
-        namespaceId: 7,
+      publisherNamespaceId: 7,
+      account: 'alice',
+      profile: {
         name: 'Alice',
         bio: '',
-        isGroup: false,
-        isDeleted: false,
+        avatarDigest: null,
       },
       profileRev: 3,
       conversationState: 'READ_ONLY',

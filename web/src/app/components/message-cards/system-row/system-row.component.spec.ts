@@ -348,15 +348,13 @@ describe('SystemRowComponent', () => {
       profileNamespaceId: 12,
       profileRev: 3,
     };
-    const thread = createP2PConversation(
-      7,
-      {
-        account: participant.account,
-        namespaceId: participant.profileNamespaceId,
-        profileRev: participant.profileRev,
-      },
-      { alias: 'My remark' },
-    );
+    const thread = createP2PConversation({
+      threadId: 7,
+      account: participant.account,
+      publisherNamespaceId: participant.profileNamespaceId,
+      profileRev: participant.profileRev,
+      alias: 'My remark',
+    });
     conversations.set([thread]);
     const fixture = render(
       { type: 'GROUP_LEFT', member: participant },
@@ -372,11 +370,13 @@ describe('SystemRowComponent', () => {
   });
 
   it('resolves group system participants in the group publisher profile namespace', async () => {
-    const group = createGroupConversation(
-      42,
-      { id: 42, account: '!group', name: 'Group', namespaceId: 7 },
-      { publisherNamespaceId: 7 },
-    );
+    const group = createGroupConversation({
+      threadId: 42,
+      account: '!group',
+      publisherNamespaceId: 7,
+      profileRev: 0,
+      profile: { name: 'Group', bio: '', avatarDigest: null },
+    });
     conversations.set([group]);
     resolveProfile.mockReturnValue(
       of({
@@ -413,7 +413,9 @@ describe('SystemRowComponent', () => {
         groupAccount: '!group',
       },
     });
-    expect(TestBed.inject(ProfileNamespaceRepository).resolve).toHaveBeenCalledWith({
+    expect(
+      TestBed.inject(ProfileNamespaceRepository).resolve,
+    ).toHaveBeenCalledWith({
       publisherNamespaceId: 7,
       profileNamespaceId: 0,
     });
@@ -506,7 +508,12 @@ describe('SystemRowComponent', () => {
       type: 'CALL_ENDED',
       callId: '550e8400-e29b-41d4-a716-446655440000',
       caller: { ...me, profileRev: 0 },
-      callee: { ...alice, publisherNamespaceId: 7, profileNamespaceId: 0, profileRev: 0 },
+      callee: {
+        ...alice,
+        publisherNamespaceId: 7,
+        profileNamespaceId: 0,
+        profileRev: 0,
+      },
       mediaType: 'VIDEO',
       outcome: 'completed',
       initiatedAt: 1000,

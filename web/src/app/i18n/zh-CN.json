@@ -710,7 +710,7 @@
     "quotaPausedBanner": "今日额度已用尽 — 发送已暂停，将于 00:00 (UTC) 重置或由管理员追加额度后恢复。",
     "groupDissolvedBanner": "群聊已解散。",
     "notFriendsBanner": "对方不是你的好友。",
-    "leftGroupBanner": "你已退出群聊。",
+    "readOnlyGroupBanner": "此群会话为只读状态。",
     "searchInChatPlaceholder": "在此聊天中搜索",
     "searchNoResult": "无结果",
     "searchCount": "{{i}} / {{n}}",

@@ -34,18 +34,15 @@ export class ContactPickerDialogComponent {
    *  avatar) from the pinned target when the message is sent. Identity
    *  verification belongs to the add-friend flow, not this picker. */
   choose(item: ConversationItem): void {
-    const target = item.type === 'GROUP' ? item.group : item.peerUser;
     this.route.closeDlg({
       target: {
-        account: target.account,
-        namespaceId: target.namespaceId,
+        account: item.account,
+        namespaceId: item.publisherNamespaceId,
         profileRev: item.profileRev,
       },
-      account: target.account,
+      account: item.account,
       name: this.displayName(item),
-      bio:
-        (item.type === 'GROUP' ? item.group.description : item.peerUser.bio) ??
-        '',
+      bio: item.profile.bio ?? '',
     });
   }
 }

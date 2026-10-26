@@ -13,6 +13,7 @@ pub(crate) mod contacts;
 #[cfg(desktop)]
 pub(crate) mod desktop_notifications;
 mod device_connection;
+mod group_meta_store;
 mod lifetime;
 pub(crate) mod location;
 mod login_connections;
@@ -23,7 +24,7 @@ pub(crate) mod preferences;
 pub(crate) mod profile_avatars;
 pub(crate) mod profile_namespaces;
 pub(crate) mod state_feed_sync;
-mod thread_feed_commits;
+mod thread_patch;
 mod thread_store;
 pub(crate) use client_state::chrono_millis;
 #[cfg(test)]
@@ -230,6 +231,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "profile_namespace_tombs",
         "profile_tombs",
         "threads",
+        "group_meta",
         "thread_previews",
         "profiles",
         "members",
@@ -420,6 +422,8 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("initialize native cache: {e}"))?;
     conn.execute_batch(thread_store::SCHEMA)
         .map_err(|e| format!("initialize typed thread cache: {e}"))?;
+    conn.execute_batch(group_meta_store::SCHEMA)
+        .map_err(|e| format!("initialize group meta cache: {e}"))?;
     conn.execute_batch(thread_store::PREVIEW_SCHEMA)
         .map_err(|e| format!("initialize typed thread previews: {e}"))?;
     conn.execute_batch(
@@ -445,6 +449,7 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS thread_previews;
          DROP TABLE IF EXISTS thread_states;
+         DROP TABLE IF EXISTS group_meta;
          DROP TABLE IF EXISTS threads;
          DROP TABLE IF EXISTS profiles;
          DROP TABLE IF EXISTS profile_tombs;
@@ -471,14 +476,19 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
 pub(crate) async fn native_db_begin_login(
     state: tauri::State<'_, crate::ServerSessionState>,
 ) -> Result<String, String> {
-    let guard = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Login)?;
+    let guard = state
+        .auth_lifecycle
+        .enter(crate::auth_lifecycle::Phase::Login)?;
     let preferences = preferences_connection()?;
     let id = tauri::async_runtime::spawn_blocking(move || {
         // Never reuse an old server's UUID: a late authentication response may still carry it.
         preferences.with_database(|conn| {
             let preparing = crate::login_session_store::SessionStore::read(conn)?
                 .and_then(|journal| journal.preparing_session().cloned());
-            if preparing.as_ref().is_some_and(|id| guard.is_superseded(&id.to_string())) {
+            if preparing
+                .as_ref()
+                .is_some_and(|id| guard.is_superseded(&id.to_string()))
+            {
                 crate::login_session_store::SessionStore::end_current(conn)?;
             }
             Ok(())
@@ -487,8 +497,8 @@ pub(crate) async fn native_db_begin_login(
         guard.register_login(&id)?;
         Ok::<_, String>(id)
     })
-        .await
-        .map_err(|e| format!("join native fresh-login preparation: {e}"))??;
+    .await
+    .map_err(|e| format!("join native fresh-login preparation: {e}"))??;
     crate::realtime::runtime().refresh_login_work();
     Ok(id)
 }

@@ -76,13 +76,81 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     });
   });
 
+  it('orders pins by last-set time and incrementally repositions only changed rows', () => {
+    const repo = TestBed.inject(ThreadRepository);
+    const internal = repo as unknown as {
+      applyItems(items: P2PConversationItem[]): void;
+      applyThreadFeedOrders(
+        snapshots: {
+          threadId: number;
+          threadFeedId: number;
+          profileRev: number;
+        }[],
+      ): void;
+    };
+    Object.assign(TestBed.inject(WebdbService), {
+      patchThread: vi.fn().mockResolvedValue(undefined),
+    });
+    const row = (id: number, feed: number, pinnedAt: number | null) => ({
+      ...createP2PConversation({
+        threadId: id,
+        account: `peer-${id}`,
+        publisherNamespaceId: 0,
+        profileRev: 0,
+        threadFeedId: feed,
+      }),
+      pinned: pinnedAt !== null,
+      pinnedAt,
+    });
+    internal.applyItems([
+      row(1, 100, 10),
+      row(2, 50, 20),
+      row(3, 30, null),
+      row(4, 40, null),
+    ]);
+    const ids = () => repo.items().map((item) => item.threadId);
+    expect(ids()).toEqual([2, 1, 4, 3]);
+    const sort = vi.spyOn(Array.prototype, 'sort');
+    try {
+      internal.applyThreadFeedOrders([
+        { threadId: 1, threadFeedId: 101, profileRev: 0 },
+      ]);
+      expect(ids()).toEqual([2, 1, 4, 3]);
+      internal.applyThreadFeedOrders([
+        { threadId: 3, threadFeedId: 102, profileRev: 0 },
+      ]);
+      expect(ids()).toEqual([2, 1, 3, 4]);
+      repo.applyThreadMeta(1, { pinnedAt: 30 });
+      expect(ids()).toEqual([1, 2, 3, 4]);
+      repo.applyThreadMeta(1, { pinned: false, pinnedAt: null });
+      expect(ids()).toEqual([2, 1, 3, 4]);
+      internal.applyItems([
+        row(1, 101, null),
+        row(2, 50, 20),
+        row(3, 102, null),
+        row(4, 103, null),
+      ]);
+      expect(ids()).toEqual([2, 4, 1, 3]);
+      expect(sort).not.toHaveBeenCalled();
+      internal.applyThreadFeedOrders([
+        { threadId: 3, threadFeedId: 104, profileRev: 0 },
+        { threadId: 1, threadFeedId: 105, profileRev: 0 },
+      ]);
+      expect(ids()).toEqual([2, 1, 3, 4]);
+      expect(sort).toHaveBeenCalledTimes(1);
+      expect(sort.mock.contexts[0]).toHaveLength(2);
+    } finally {
+      sort.mockRestore();
+    }
+  });
+
   it('resolves when clearing the open thread during account cache teardown', async () => {
     drainThreadMisc.mockRejectedValue(
       new Error('account cache lifetime expired'),
     );
     const repo = TestBed.inject(ThreadRepository);
     await expect(repo.setOpenThread(undefined)).resolves.toBeUndefined();
-    expect(drainThreadMisc).toHaveBeenCalledWith(null, null, null);
+    expect(drainThreadMisc).toHaveBeenCalledWith(null);
   });
 
   it('resolves when opening a thread during account cache teardown', async () => {
@@ -91,7 +159,7 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     );
     const repo = TestBed.inject(ThreadRepository);
     await expect(repo.setOpenThread(7)).resolves.toBeUndefined();
-    expect(drainThreadMisc).toHaveBeenCalledWith(7, '0', 0);
+    expect(drainThreadMisc).toHaveBeenCalledWith(7);
   });
 
   it('does not read successor state or publish cached rows after the captured login ends', async () => {
@@ -101,11 +169,15 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     );
     const user = TestBed.inject(UserService);
     user.sessionUserId.set(1);
-    const group = createGroupConversation(
-      9,
-      { id: 9, account: 'room', name: 'Room', namespaceId: 0 },
-      { role: 'MEMBER', threadFeedId: 1 },
-    );
+    const group = createGroupConversation({
+      threadId: 9,
+      account: 'room',
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Room', bio: '', avatarDigest: null },
+      role: 'MEMBER',
+      threadFeedId: 1,
+    });
     let finish!: (rows: (typeof group)[]) => void;
     const pending = new Promise<(typeof group)[]>((resolve) => {
       finish = resolve;
@@ -207,16 +279,15 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     const user = TestBed.inject(UserService);
     user.sessionUserId.set(1);
     Object.assign(user, { sessionProfile: signal(null) });
-    const group = createGroupConversation(
-      9,
-      {
-        id: 9,
-        account: 'room',
-        name: 'Room',
-        namespaceId: 0,
-      },
-      { role: 'MEMBER', threadFeedId: 1 },
-    );
+    const group = createGroupConversation({
+      threadId: 9,
+      account: 'room',
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Room', bio: '', avatarDigest: null },
+      role: 'MEMBER',
+      threadFeedId: 1,
+    });
     let finish!: (states: []) => void;
     const hydration = new Promise<[]>((resolve) => {
       finish = resolve;
@@ -246,19 +317,19 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     const user = TestBed.inject(UserService);
     user.sessionUserId.set(1);
     Object.assign(user, { sessionProfile: signal(null) });
-    const seed = createP2PConversation(9, {
+    const seed = createP2PConversation({
+      threadId: 9,
       account: 'bob',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
       profileRev: 5,
     });
     const peer: P2PConversationItem = {
       ...seed,
       threadFeedId: 1,
-      peerUser: { ...seed.peerUser, name: 'Bob rev five', bio: 'five bio' },
+      profile: { ...seed.profile, name: 'Bob rev five', bio: 'five bio' },
     };
     Object.assign(webdb, {
       getThreads: vi.fn().mockResolvedValue([peer]),
-      putThread: vi.fn().mockResolvedValue(undefined),
       projectThreadAttention: vi.fn().mockResolvedValue(null),
     });
     Object.assign(TestBed.inject(MessageRepository), {
@@ -294,8 +365,8 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
       expect(item?.type).toBe('P2P');
       if (item?.type !== 'P2P') throw new Error('P2P expected');
       expect(item.profileRev).toBe(3);
-      expect(item.peerUser.name).toBe('');
-      expect(item.peerUser.bio).toBe('');
+      expect(item.profile.name).toBe('');
+      expect(item.profile.bio).toBe('');
     });
     TestBed.inject(SessionLifecycleService).endSession();
   });
@@ -305,19 +376,17 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     const user = TestBed.inject(UserService);
     user.sessionUserId.set(1);
     Object.assign(user, { sessionProfile: signal(null) });
-    const group = createGroupConversation(
-      9,
-      {
-        id: 9,
-        account: 'room',
-        name: 'Room',
-        namespaceId: 0,
-      },
-      { role: 'MEMBER', threadFeedId: 1 },
-    );
+    const group = createGroupConversation({
+      threadId: 9,
+      account: 'room',
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Room', bio: '', avatarDigest: null },
+      role: 'MEMBER',
+      threadFeedId: 1,
+    });
     Object.assign(webdb, {
       getThreads: vi.fn().mockResolvedValue([group]),
-      putThread: vi.fn().mockResolvedValue(undefined),
       projectThreadAttention: vi.fn().mockResolvedValue(null),
     });
     Object.assign(TestBed.inject(MessageRepository), {
@@ -364,11 +433,15 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     const user = TestBed.inject(UserService);
     user.sessionUserId.set(1);
     Object.assign(user, { sessionProfile: signal(null) });
-    const group = createGroupConversation(
-      9,
-      { id: 9, account: 'room', name: 'Room', namespaceId: 0 },
-      { role: 'MEMBER', threadFeedId: 1 },
-    );
+    const group = createGroupConversation({
+      threadId: 9,
+      account: 'room',
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Room', bio: '', avatarDigest: null },
+      role: 'MEMBER',
+      threadFeedId: 1,
+    });
     const reference = {
       type: 'GROUP_MEMBER',
       threadId: 9,
@@ -393,7 +466,6 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     let discovered: unknown[] = [reference];
     Object.assign(webdb, {
       getThreads: vi.fn().mockResolvedValue([group]),
-      putThread: vi.fn().mockResolvedValue(undefined),
       projectThreadAttention: vi.fn().mockResolvedValue(null),
       resolveProfileDemand,
       commitResolvedGroupMetaProfile,
@@ -438,7 +510,8 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
         threadId: number;
         groupMetaFeedId: string;
         memberCount: number;
-        announcement: null;
+        announcementFeedId: null;
+        announcementText: null;
         groupMetaRecoveryThrough: null;
       }>;
     }>;
@@ -450,7 +523,8 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
           threadId: 9,
           groupMetaFeedId: '24',
           memberCount: 3,
-          announcement: null,
+          announcementFeedId: null,
+          announcementText: null,
           groupMetaRecoveryThrough: null,
         },
       ],

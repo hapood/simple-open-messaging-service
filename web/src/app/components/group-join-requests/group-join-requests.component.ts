@@ -299,9 +299,11 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       .some(
         (thread) =>
           thread.type === 'P2P' &&
-          thread.friendshipActive !== false &&
           thread.conversationState === 'ACTIVE' &&
-          this.candidateKey(thread.peerUser) === key,
+          this.candidateKey({
+            account: thread.account,
+            namespaceId: thread.publisherNamespaceId,
+          }) === key,
       );
     return friend ? 'AVAILABLE' : 'NOT_FRIEND';
   }

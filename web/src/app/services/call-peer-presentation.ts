@@ -1,8 +1,10 @@
 import { computed, type Signal } from '@angular/core';
 import { ConversationListService } from './conversation-list.service';
-import { conversationAvatarProfile, type AvatarProfileRef } from './avatar-profile-ref';
+import {
+  conversationAvatarProfile,
+  type AvatarProfileRef,
+} from './avatar-profile-ref';
 import { displayThreadName } from './model';
-
 
 /** The peer presentation inputs every call surface shares. */
 export interface CallPeerPresentationState {
@@ -30,7 +32,11 @@ export function callPeerPresentation(
   });
   const peer = computed(() => {
     const thread = peerThread();
-    return thread?.type === 'P2P' ? thread.peerUser : undefined;
+    if (thread?.type !== 'P2P') return undefined;
+    return {
+      account: thread.account,
+      namespaceId: thread.publisherNamespaceId,
+    };
   });
   const name = computed(() => {
     const thread = peerThread();

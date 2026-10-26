@@ -794,17 +794,12 @@ export class UserService {
   ) {
     const threads = await this.webdb.getThreads();
     const isGroup = user.account.startsWith('!');
-    const friendship = threads.some((item) =>
-      isGroup
-        ? item.type === 'GROUP' &&
-          item.conversationState !== 'READ_ONLY' &&
-          item.group.dissolvedAt == null &&
-          item.group.account === user.account &&
-          item.group.namespaceId === user.namespaceId
-        : item.type === 'P2P' &&
-          item.friendshipActive !== false &&
-          item.peerUser.account === user.account &&
-          item.peerUser.namespaceId === user.namespaceId,
+    const friendship = threads.some(
+      (item) =>
+        item.type === (isGroup ? 'GROUP' : 'P2P') &&
+        item.conversationState === 'ACTIVE' &&
+        item.account === user.account &&
+        item.publisherNamespaceId === user.namespaceId,
     );
     if (friendship) return 'FRIEND' as const;
     if (isGroup) return 'NONE' as const;

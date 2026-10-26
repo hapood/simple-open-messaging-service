@@ -44,7 +44,7 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
   selector: 'app-peer-profile',
   imports: [
     DemandAvatarComponent,
-        TranslocoPipe,
+    TranslocoPipe,
     ThreadAliasEditorComponent,
     MatCardModule,
     MatButtonModule,
@@ -80,10 +80,13 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
             <span class="profile-avatar">
               <app-demand-avatar
                 [type]="UserAvatarType.OTHER"
-                [name]="identity.name"
+                [name]="identity.profile.name"
                 [account]="identity.account"
                 [profile]="peerProfileRef()"
-                [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                [domainSource]="{
+                  type: 'namespace',
+                  namespaceId: identity.publisherNamespaceId,
+                }"
               />
             </span>
           </div>
@@ -95,7 +98,7 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
             <span class="profile-copy">
               <strong>{{ peerDisplayName() }}</strong>
               <span class="description">{{
-                peer()?.bio || ('friend.noBio' | transloco)
+                peer()?.profile?.bio || ('friend.noBio' | transloco)
               }}</span>
             </span>
           </div>
@@ -458,20 +461,23 @@ export class PeerProfileComponent {
     const thread = this.userMsgTrd();
     return thread ? conversationAvatarProfile(thread) : undefined;
   });
-  readonly peer = computed(() => this.userMsgTrd()?.peerUser);
+  readonly peer = computed(() => this.userMsgTrd());
   readonly friendshipEnded = computed(
-    () =>
-      this.userMsgTrd()?.friendshipActive === false ||
-      this.userMsgTrd()?.conversationState === 'READ_ONLY',
+    () => this.userMsgTrd()?.conversationState === 'READ_ONLY',
   );
   /** Display label for the peer — the nickname, with federation indicated on the avatar. */
   readonly peerDisplayName = computed(() => {
     const p = this.peer();
-    return p ? displayUserName(p) : '';
+    return p ? displayUserName(p.profile) : '';
   });
   readonly peerAccount = computed(() => {
     const p = this.peer();
-    return p ? displayUserAccount(p) : '';
+    return p
+      ? displayUserAccount({
+          account: p.account,
+          namespaceId: p.publisherNamespaceId,
+        })
+      : '';
   });
 
   constructor() {
@@ -579,7 +585,7 @@ export class PeerProfileComponent {
 
   removeFriend(): void {
     const trd = this.userMsgTrd();
-    const peer = trd?.peerUser;
+    const peer = trd?.type === 'P2P' ? trd : undefined;
     if (
       !trd ||
       !peer ||
@@ -613,7 +619,6 @@ export class PeerProfileComponent {
       if (res.code !== 0)
         return this.toast.warn(translateBizResult(res, this.transloco));
       this.convList.applyThreadMeta(trd.threadId, {
-        friendshipActive: false,
         conversationState: 'READ_ONLY',
       });
       this.nav.closeAside();

@@ -10,7 +10,11 @@ import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { PeerProfileComponent } from './peer-profile.component';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import { ConversationItem, User } from '../../services/model';
+import {
+  createP2PConversation,
+  ConversationItem,
+  User,
+} from '../../services/model';
 import { UserService } from '../../services/user.service';
 import { MsgService } from '../../services/message.service';
 import { RouteService } from '../../services/route.service';
@@ -40,10 +44,13 @@ function makeItem(
     updatedAt: 1,
     profileRev: 7,
   } as unknown as User;
-  const item = {
+  const item = createP2PConversation({
     threadId: over.threadId ?? 5,
-    peerUser: peer,
-  } as unknown as ConversationItem;
+    account: peer.account,
+    publisherNamespaceId: peer.namespaceId,
+    profileRev: peer.profileRev,
+    profile: { name: peer.name, bio: '', avatarDigest: null },
+  });
   return { item, peer };
 }
 
@@ -178,9 +185,7 @@ describe('PeerProfileComponent', () => {
   });
 
   it('keeps only conversation preferences after the friendship ends', () => {
-    items.update(([item]) => [
-      { ...item, friendshipActive: false, conversationState: 'READ_ONLY' },
-    ]);
+    items.update(([item]) => [{ ...item, conversationState: 'READ_ONLY' }]);
 
     expect(comp.friendshipEnded()).toBe(true);
     comp.shareContact();
