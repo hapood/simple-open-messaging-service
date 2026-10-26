@@ -105,11 +105,11 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
               replaySafe?: boolean;
             },
           };
-          // A successful 200 JSON response — the body shape `api_request` returns to JS.
+          // A successful 200 JSON response — the body shape `http_request` returns to JS.
           return {
             status: 200,
             headers: {},
-            body: '{"code":0,"message":"success","data":{}}',
+            text: '{"code":0,"message":"success","data":{}}',
           };
         },
       },
@@ -135,7 +135,7 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
         new HttpRequest('POST', '/api/v1/auth/qr/create', { client: 'app' }),
       ),
     );
-    expect(invokeArgs!.cmd).toBe('api_request');
+    expect(invokeArgs!.cmd).toBe('http_request');
     // The body crossed the IPC as raw JSON bytes...
     expect(ArrayBuffer.isView(invokeArgs!.args.body)).toBe(true);
     expect(
@@ -245,7 +245,7 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
         invoke: async () => ({
           status: 504,
           headers: {},
-          body: 'Gateway Timeout',
+          text: 'Gateway Timeout',
         }),
       },
     };
@@ -289,8 +289,8 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
           calls.push({ cmd, args });
           return {
             status: 200,
-            contentType: 'image/webp',
-            body: [1, 2, 3],
+            headers: { 'content-type': 'image/webp' },
+            bytes: [1, 2, 3],
           };
         },
       },
@@ -335,7 +335,7 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
     'media://localhost/uploads/avatars/a-512.webp?rev=1',
     'http://media.localhost/uploads/avatars/a-512.webp?rev=1',
   ]) {
-    it(`routes ${url} through media_request`, async () => {
+    it(`routes ${url} through http_request`, async () => {
       const backend = TestBed.inject(HttpBackend);
       const response = await firstValueFrom(
         backend.handle(
@@ -343,12 +343,17 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
         ),
       );
 
-      expect(calls).toEqual([
-        {
-          cmd: 'media_request',
-          args: { path: '/uploads/avatars/a-512.webp?rev=1' },
-        },
-      ]);
+      expect(calls.length).toBe(1);
+      expect(calls[0].cmd).toBe('http_request');
+      expect(calls[0].args).toMatchObject({
+        method: 'GET',
+        path: '/uploads/avatars/a-512.webp?rev=1',
+        headers: {},
+        body: undefined,
+        binary: true,
+        replaySafe: true,
+      });
+      expect(typeof (calls[0].args as any).reqId).toBe('string');
       expect(
         (
           response as {
@@ -358,4 +363,37 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
       ).toBe('image/webp');
     });
   }
+
+  it('triggers cancel_http_request when unsubscribed before completion', async () => {
+    const backend = TestBed.inject(HttpBackend);
+    let capturedReqId: string | undefined;
+    tauriWindow().__TAURI__ = {
+      core: {
+        invoke: async (cmd: string, args?: Record<string, unknown>) => {
+          calls.push({ cmd, args });
+          if (cmd === 'http_request') {
+            capturedReqId = args?.['reqId'] as string;
+            // Never resolves until test finishes
+            return new Promise(() => {});
+          }
+          return true;
+        },
+      },
+    };
+
+    const sub = backend.handle(new HttpRequest('GET', '/api/v1/threads')).subscribe();
+    // Allow the microtask (serializeBody etc.) to complete and dispatch invoke
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls.length).toBe(1);
+    expect(calls[0].cmd).toBe('http_request');
+    expect(capturedReqId).toBeDefined();
+
+    sub.unsubscribe();
+    expect(calls.length).toBe(2);
+    expect(calls[1]).toEqual({
+      cmd: 'cancel_http_request',
+      args: { reqId: capturedReqId },
+    });
+  });
 });

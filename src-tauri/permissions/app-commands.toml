@@ -173,14 +173,9 @@ description = "Controls diagnostic logging and mirrors bounded WebView console l
 commands.allow = ["set_debug_logging", "log_js"]
 
 [[permission]]
-identifier = "allow-api-request"
-description = "Enables api_request — the webview→backend HTTP transport under Tauri. An IPC fetch that performs the reqwest call on the Rust side and injects the Bearer from ProxyState.token (JS never touches the token); replaces the api:// custom-scheme proxy that Android WebView could not fetch."
-commands.allow = ["api_request"]
-
-[[permission]]
-identifier = "allow-media-request"
-description = "Enables media_request — the webview→backend MEDIA transport under Tauri. The avatar blob cache does http.get(media://...) which Android WebView cannot fetch (custom-scheme fetch rejected); this command performs the reqwest GET to /uploads/* on the Rust side with the Bearer from ProxyState.token and returns the raw bytes."
-commands.allow = ["media_request"]
+identifier = "allow-http-request"
+description = "Enables http_request and cancel_http_request — the unified webview→backend HTTP transport under Tauri for API and media. Performs reqwest calls on the Rust side, injects Bearer from ProxyState.token, enforces timeouts (inactivity/headers), cancellation, and supports text and binary modes."
+commands.allow = ["http_request", "cancel_http_request"]
 
 [[permission]]
 identifier = "allow-media-download"
@@ -298,8 +293,7 @@ permissions = [
   "allow-report-diagnostics",
   "allow-read-native-log",
   "allow-debug-logging",
-  "allow-api-request",
-  "allow-media-request",
+  "allow-http-request",
   "allow-media-download",
   "allow-create-native-video-stream",
   "allow-open-external-url",

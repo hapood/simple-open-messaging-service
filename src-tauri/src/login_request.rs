@@ -1,6 +1,8 @@
 use crate::login_connection::LoginConnection;
-use crate::proxy::{is_network_failure, race_origin_candidates, ApiRequestResult};
-use crate::{ServerSessionState, API_HEADERS_TIMEOUT};
+use crate::proxy::{
+    is_network_failure, race_origin_candidates, read_body_with_inactivity_timeout,
+};
+use crate::{ServerSessionState, API_BODY_INACTIVITY_TIMEOUT, API_HEADERS_TIMEOUT};
 use std::sync::Arc;
 
 /// A network intent carries its login, credential, clients and endpoint candidates through every
@@ -20,6 +22,12 @@ pub(crate) struct LoginEndpoint {
     pub origin: String,
     pub credential: String,
     pub client: reqwest::Client,
+}
+
+pub(crate) struct LoginRequestResult {
+    pub(crate) status: u16,
+    pub(crate) headers: std::collections::HashMap<String, String>,
+    pub(crate) body: String,
 }
 
 impl LoginRequest {
@@ -114,7 +122,7 @@ impl LoginRequest {
         self.owner.assert_active().map_err(|e| e.to_string())
     }
 
-    pub(crate) async fn get(&mut self, path: String) -> Result<ApiRequestResult, String> {
+    pub(crate) async fn get(&mut self, path: String) -> Result<LoginRequestResult, String> {
         self.send(reqwest::Method::GET, path, None).await
     }
 
@@ -124,7 +132,7 @@ impl LoginRequest {
         &mut self,
         path: String,
         body: Vec<u8>,
-    ) -> Result<ApiRequestResult, String> {
+    ) -> Result<LoginRequestResult, String> {
         self.send(reqwest::Method::POST, path, Some(body)).await
     }
 
@@ -134,7 +142,7 @@ impl LoginRequest {
         method: reqwest::Method,
         path: String,
         body: Option<Vec<u8>>,
-    ) -> Result<ApiRequestResult, String> {
+    ) -> Result<LoginRequestResult, String> {
         self.owner.assert_active().map_err(|e| e.to_string())?;
         let cancellation = self.owner.cancellation();
         let result = tokio::select! {
@@ -151,7 +159,7 @@ impl LoginRequest {
         method: reqwest::Method,
         path: String,
         body: Option<Vec<u8>>,
-    ) -> Result<ApiRequestResult, String> {
+    ) -> Result<LoginRequestResult, String> {
         for attempt in 0..=1 {
             let mut request = self
                 .active
@@ -188,7 +196,7 @@ impl LoginRequest {
                         }
                     }
                     return match failure {
-                        Err(_) => Ok(ApiRequestResult {
+                        Err(_) => Ok(LoginRequestResult {
                             status: 504,
                             headers: Default::default(),
                             body: "Gateway Timeout".into(),
@@ -219,11 +227,13 @@ impl LoginRequest {
                         .map(|value| (name.to_string(), value.to_string()))
                 })
                 .collect();
-            let bytes = tokio::time::timeout(API_HEADERS_TIMEOUT, upstream.bytes())
-                .await
-                .map_err(|_| "api_request body timed out".to_string())?
-                .map_err(|error| format!("api_request read: {error}"))?;
-            return Ok(ApiRequestResult {
+            let bytes = read_body_with_inactivity_timeout(
+                upstream.bytes_stream(),
+                API_BODY_INACTIVITY_TIMEOUT,
+                None,
+            )
+            .await?;
+            return Ok(LoginRequestResult {
                 status,
                 headers,
                 body: String::from_utf8_lossy(&bytes).into_owned(),

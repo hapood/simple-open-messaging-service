@@ -75,6 +75,10 @@ const MEDIA_SCHEME: &str = "media";
 #[cfg(target_os = "android")]
 static ANDROID_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
+/// Max wait for reading the next chunk of response body stream. If the server goes silent
+/// for longer than this duration during body transfer, the request is aborted to prevent leaks.
+pub(crate) const API_BODY_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// TCP-connect timeout for EVERY backend reqwest client (`proxy_api`, `upload_stream_file`, the SSE
 /// supervisor, the client configuration probe) — set on the client builder in `http_client_for`. Bounds the "backend
 /// unreachable" wait so a dead host fails fast instead of hanging the webview request. This is a
@@ -82,11 +86,15 @@ static ANDROID_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 /// as long as they take; a total-duration timeout would wrongly kill a legitimate large upload).
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Max wait for a proxied API request's HEADERS (connect + send + server processing), and
-/// independently for reading its JSON response body. Streaming media has its own transport;
-/// resumable uploads have per-operation deadlines rather than a total-duration limit.
+/// Max wait for a proxied API request's HEADERS (connect + send + server processing).
 /// A backend that never sends headers produces 504 Gateway Timeout.
-const API_HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
+const API_HEADERS_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// Pool idle timeout for cached clients. Reclaims idle TCP sockets after 30 seconds of inactivity.
+const HTTP_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum idle connections kept open per host. Limits idle socket resource consumption.
+const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 16;
 
 /// Timeout for the unauthenticated client-compatibility probe used in origin selection.
 /// Bounds the full request (including its response body) during cold start and failover.
@@ -162,6 +170,8 @@ pub(crate) struct ServerSessionState {
     /// Shell streaming uploads keyed by clientMessageId. A cancel action resolves the token, which drops
     /// the in-flight reqwest future and closes the request body stream/file descriptor.
     upload_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    /// In-flight HTTP requests dispatched from the WebView keyed by reqId.
+    pub(crate) http_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     #[cfg(not(desktop))]
     native_voice_pending: Arc<Mutex<std::collections::HashMap<String, upload::NativeVoicePending>>>,
     /// App-scoped media downloads keyed by the renderer-generated task id. The shared image-download
@@ -287,6 +297,7 @@ impl ServerSessionState {
                 http_client_for(&initial_origin),
             ))),
             upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            http_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             #[cfg(not(desktop))]
             native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -373,7 +384,9 @@ fn tls_posture_for(origin: &str) -> TlsPosture {
 fn http_client_for(origin: &str) -> reqwest::Client {
     let mut b = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(BACKEND_CONNECT_TIMEOUT);
+        .connect_timeout(BACKEND_CONNECT_TIMEOUT)
+        .pool_idle_timeout(Some(HTTP_POOL_IDLE_TIMEOUT))
+        .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE_PER_HOST);
     if tls_posture_for(origin) == TlsPosture::Permissive {
         b = b.danger_accept_invalid_certs(true);
     }
@@ -527,8 +540,8 @@ pub fn run() {
                     diagnostics::set_debug_logging,
                     diagnostics::log_js,
                     diagnostics::read_native_log,
-                    proxy::api_request,
-                    proxy::media_request,
+                    proxy::http_request,
+                    proxy::cancel_http_request,
                     media_cache::cache_media,
                     media_cache::download_media,
                     media_cache::cancel_media_download,
@@ -610,8 +623,8 @@ pub fn run() {
                     diagnostics::set_debug_logging,
                     diagnostics::log_js,
                     diagnostics::read_native_log,
-                    proxy::api_request,
-                    proxy::media_request,
+                    proxy::http_request,
+                    proxy::cancel_http_request,
                     media_cache::cache_media,
                     media_cache::download_media,
                     media_cache::cancel_media_download,

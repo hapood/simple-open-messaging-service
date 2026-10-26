@@ -1,5 +1,8 @@
 use super::*;
-use crate::proxy::{send_with_headers_deadline, HeadersError};
+use crate::proxy::{
+    is_allowed_http_path, read_body_with_inactivity_timeout, send_with_headers_deadline,
+    HeadersError,
+};
 
 /// A peer that completes the TCP handshake then never sends a byte — reqwest is "connected" but
 /// waits for headers that never arrive, so the deadline fires.
@@ -56,4 +59,55 @@ async fn deadline_yields_send_failed_for_an_unreachable_host() {
         matches!(outcome, Err(HeadersError::SendFailed(_))),
         "an unreachable host must be SendFailed (→network), not Timeout, got {outcome:?}"
     );
+}
+
+#[tokio::test]
+async fn http_path_validation_allows_api_and_uploads_only() {
+    assert!(is_allowed_http_path("/api/v1/threads"));
+    assert!(is_allowed_http_path("/api/v1/user/search?q=abc"));
+    assert!(is_allowed_http_path("/uploads/avatars/test.jpg"));
+    assert!(is_allowed_http_path("/uploads/cas/deadbeef"));
+
+    assert!(!is_allowed_http_path("/"));
+    assert!(!is_allowed_http_path("/internal/secret"));
+    assert!(!is_allowed_http_path("/api/v2/foo"));
+    assert!(!is_allowed_http_path("https://example.com/api/v1"));
+}
+
+#[tokio::test]
+async fn read_body_with_inactivity_timeout_succeeds_when_stream_progresses() {
+    use futures_util::stream;
+    let chunks: Vec<Result<Vec<u8>, reqwest::Error>> = vec![
+        Ok(b"hello ".to_vec()),
+        Ok(b"world".to_vec()),
+    ];
+    let stream = stream::iter(chunks);
+    let result = read_body_with_inactivity_timeout(stream, Duration::from_millis(500), None).await;
+    assert_eq!(result.unwrap(), b"hello world");
+}
+
+#[tokio::test]
+async fn read_body_with_inactivity_timeout_aborts_on_cancellation() {
+    use futures_util::stream::poll_fn;
+    use std::task::Poll;
+    let cancel = CancellationToken::new();
+    let cancel_trigger = cancel.clone();
+    let mut step = 0;
+    let stream = poll_fn(move |_cx| {
+        step += 1;
+        if step == 1 {
+            cancel_trigger.cancel();
+            Poll::Ready(Some(Ok(b"part1".to_vec())))
+        } else {
+            Poll::Pending
+        }
+    });
+    let result = read_body_with_inactivity_timeout(
+        stream,
+        Duration::from_secs(10),
+        Some(&cancel),
+    )
+    .await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("cancelled"));
 }
