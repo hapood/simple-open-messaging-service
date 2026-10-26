@@ -211,36 +211,11 @@ fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::V
 
 /// Translate a wire thread-feed snapshot into the nested structural shape
 /// `client_state::ensure_thread_identity` consumes (the shape `merge_states` builds).
-fn nested_state_body(wire: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "type": wire["type"], "threadId": wire["threadId"],
-        "authorityNamespaceId": wire["publisherNamespaceId"],
-        "selfMentionNamespaceId": wire["selfMentionNamespaceId"],
-        "conversationState": wire["conversationState"], "blocked": wire["blocked"],
-        "role": wire["role"],
-        "profile": {"account": wire["profileAccount"], "namespaceId": wire["publisherNamespaceId"],
-                    "profileRev": wire["profileRev"]},
-        "alias": wire["alias"], "threadProfileRev": wire["profileRev"],
-        "messageEndSeq": wire["messageEndSeq"], "tombstoneEndSeq": wire["tombstoneEndSeq"],
-        "groupMetaFeedEndId": wire["groupMetaFeedEndId"],
-        "joinRequestEndFeedId": wire["joinRequestEndFeedId"],
-        "joinRequestReadFeedId": wire["joinRequestReadFeedId"],
-        "groupInviteEndFeedId": wire["groupInviteEndFeedId"],
-        "lastReadSeq": wire["lastReadSeq"], "announcementReadFeedId": wire["announcementReadFeedId"],
-        "unreadCount": wire["unreadCount"], "lastMentionSeq": wire["lastMentionSeq"],
-    })
-}
-
 fn commit_test_thread_state(conn: &mut Connection, body: &serde_json::Value) {
+    let snapshot: super::attention::ThreadFeedSnapshot =
+        serde_json::from_value(body.clone()).unwrap();
     let tx = conn.transaction().unwrap();
-    let nested = nested_state_body(body);
-    super::client_state::ensure_thread_identity(
-        &tx,
-        1,
-        &nested,
-        body["threadFeedId"].as_i64().unwrap(),
-    )
-    .unwrap();
+    super::client_state::ensure_thread_identity(&tx, 1, &snapshot).unwrap();
     tx.commit().unwrap();
     let local: super::attention::LocalThreadAttention =
         serde_json::from_value(serde_json::json!({"threadId":52,"server":body,"localReadSeq":0}))
@@ -260,8 +235,10 @@ fn native_thread_state_restores_history_and_ignores_old_snapshots() {
     commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 6, "READ_ONLY"));
     let mut stale = test_thread_snapshot("P2P", 5, "ACTIVE");
     stale["profileRev"] = 99.into();
+    let stale_snapshot: super::attention::ThreadFeedSnapshot =
+        serde_json::from_value(stale).unwrap();
     let tx = conn.transaction().unwrap();
-    super::client_state::ensure_thread_identity(&tx, 1, &nested_state_body(&stale), 5).unwrap();
+    super::client_state::ensure_thread_identity(&tx, 1, &stale_snapshot).unwrap();
     tx.commit().unwrap();
     let thread = super::client_state::read_threads(&conn, 1)
         .unwrap()
@@ -721,7 +698,9 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         "unreadCount":0,"lastMentionSeq":null,"previews":[],
     });
     let tx = conn.transaction().unwrap();
-    super::client_state::ensure_thread_identity(&tx, 1, &nested_state_body(&body), 1).unwrap();
+    let mirror: super::attention::ThreadFeedSnapshot =
+        serde_json::from_value(body.clone()).unwrap();
+    super::client_state::ensure_thread_identity(&tx, 1, &mirror).unwrap();
     tx.commit().unwrap();
     let local: super::attention::LocalThreadAttention =
         serde_json::from_value(serde_json::json!({"threadId":90,"server":body,"localReadSeq":0}))

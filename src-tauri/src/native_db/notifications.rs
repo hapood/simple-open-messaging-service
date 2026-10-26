@@ -224,15 +224,13 @@ mod tests {
             .is_none()
         {
             let server = state.server.as_ref().unwrap();
-            let mut base = serde_json::to_value(server).unwrap();
-            base["type"] = server.kind.clone().into();
-            base["publisherNamespaceId"] = server.authority_namespace_id.into();
-            base["account"] = server.subject_account.clone().into();
-            base["profileRev"] = server.thread_profile_rev.into();
-            base["serverLastReadSeq"] = server.last_read_seq.into();
-            base["serverUnreadCount"] = server.unread_count.into();
-            base["localReadSeq"] = state.local_read_seq.unwrap_or(server.last_read_seq).into();
-            super::super::thread_store::insert(conn, 1, state.thread_id as i64, &base).unwrap();
+            super::super::thread_store::insert(
+                conn,
+                1,
+                server,
+                state.local_read_seq.unwrap_or(server.last_read_seq),
+            )
+            .unwrap();
         }
         super::super::attention::write_state(conn, 1, state).unwrap();
     }

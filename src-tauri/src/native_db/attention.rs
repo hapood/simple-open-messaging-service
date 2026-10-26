@@ -1892,41 +1892,9 @@ fn merge_states(
                     || old.unread_count != snapshot.unread_count
                     || old.last_mention_seq != snapshot.last_mention_seq
             });
-            // The structural write helper consumes its own nested shape (distinct from the
-            // thread-feed wire shape): profile {account, namespaceId, profileRev} plus
-            // authorityNamespaceId. Translate the validated wire snapshot explicitly.
-            let body = serde_json::json!({
-                "type": snapshot.kind.as_str(),
-                "threadId": snapshot.thread_id,
-                "authorityNamespaceId": snapshot.authority_namespace_id,
-                "selfMentionNamespaceId": snapshot.self_mention_namespace_id,
-                "conversationState": snapshot.conversation_state.as_str(),
-                "blocked": snapshot.blocked,
-                "role": snapshot.role,
-                "profile": {
-                    "account": snapshot.subject_account.as_str(),
-                    "namespaceId": snapshot.authority_namespace_id,
-                    "profileRev": snapshot.thread_profile_rev,
-                },
-                "alias": snapshot.alias,
-                "threadProfileRev": snapshot.thread_profile_rev,
-                "messageEndSeq": snapshot.message_end_seq,
-                "tombstoneEndSeq": snapshot.tombstone_end_seq,
-                "groupMetaFeedEndId": snapshot.group_meta_feed_end_id,
-                "joinRequestEndFeedId": snapshot.join_request_end_feed_id,
-                "joinRequestReadFeedId": snapshot.join_request_read_feed_id,
-                "groupInviteEndFeedId": snapshot.group_invite_end_feed_id,
-                "lastReadSeq": snapshot.last_read_seq,
-                "announcementReadFeedId": snapshot.announcement_read_feed_id,
-                "unreadCount": snapshot.unread_count,
-                "lastMentionSeq": snapshot.last_mention_seq,
-            });
-            super::client_state::ensure_thread_identity(
-                &tx,
-                user_id,
-                &body,
-                i64::from(snapshot.thread_feed_id),
-            )?;
+            // The validated snapshot flows to the identity writer directly;
+            // no intermediate JSON shape is constructed or reparsed.
+            super::client_state::ensure_thread_identity(&tx, user_id, &snapshot)?;
             state.server = Some(snapshot);
             state.notification_changed = notification_changed;
             write_state(&tx, user_id, &state)?;

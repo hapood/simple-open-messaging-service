@@ -27,22 +27,18 @@ fn origins(proxy: &ServerSessionState, origin: &str) {
 
 fn seed_group_thread(conn: &mut Connection, user_id: i64, meta_end: &str) {
     let tx = conn.transaction().unwrap();
-    super::super::client_state::ensure_thread_identity(
-        &tx,
-        user_id,
-        &json!({
-            "type": "GROUP", "threadId": THREAD_ID, "authorityNamespaceId": 0,
-            "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
-            "role": "MEMBER",
-            "profile": {"account": "!dev", "namespaceId": 0, "profileRev": 3},
-            "alias": null, "threadProfileRev": 3, "messageEndSeq": 0, "tombstoneEndSeq": 0,
-            "groupMetaFeedEndId": meta_end, "joinRequestEndFeedId": 0,
-            "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
-            "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
-        }),
-        5,
-    )
+    let snapshot = serde_json::from_value::<super::super::attention::ThreadFeedSnapshot>(json!({
+        "type": "GROUP", "threadId": THREAD_ID, "publisherNamespaceId": 0,
+        "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
+        "role": "MEMBER", "profileAccount": "!dev", "profileRev": 3,
+        "threadFeedId": 5, "alias": null, "messageEndSeq": 0, "tombstoneEndSeq": 0,
+        "groupMetaFeedEndId": meta_end, "joinRequestEndFeedId": 0,
+        "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
+        "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
+        "previews": [],
+    }))
     .unwrap();
+    super::super::client_state::ensure_thread_identity(&tx, user_id, &snapshot).unwrap();
     tx.commit().unwrap();
 }
 
@@ -155,23 +151,19 @@ fn group_meta_page(scanned: &str, has_more: bool, items: Value) -> Value {
 /// its cache view was invalidated; it cannot read plans, commit pages or adopt a successor.
 fn seed_p2p_thread(conn: &mut Connection, user_id: i64, tombstone_end: i64) {
     let tx = conn.transaction().unwrap();
-    super::super::client_state::ensure_thread_identity(
-        &tx,
-        user_id,
-        &json!({
-            "type": "P2P", "threadId": THREAD_ID, "authorityNamespaceId": 0,
-            "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
-            "role": null,
-            "profile": {"account": "bob", "namespaceId": 0, "profileRev": 1},
-            "alias": null, "threadProfileRev": 1, "messageEndSeq": 0,
-            "tombstoneEndSeq": tombstone_end, "groupMetaFeedEndId": null,
-            "joinRequestEndFeedId": 0,
-            "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
-            "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
-        }),
-        5,
-    )
+    let snapshot = serde_json::from_value::<super::super::attention::ThreadFeedSnapshot>(json!({
+        "type": "P2P", "threadId": THREAD_ID, "publisherNamespaceId": 0,
+        "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
+        "role": null, "profileAccount": "bob", "profileRev": 1,
+        "threadFeedId": 5, "alias": null, "messageEndSeq": 0,
+        "tombstoneEndSeq": tombstone_end, "groupMetaFeedEndId": null,
+        "joinRequestEndFeedId": 0,
+        "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
+        "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
+        "previews": [],
+    }))
     .unwrap();
+    super::super::client_state::ensure_thread_identity(&tx, user_id, &snapshot).unwrap();
     tx.commit().unwrap();
 }
 

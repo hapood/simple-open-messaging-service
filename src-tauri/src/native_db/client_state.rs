@@ -399,122 +399,37 @@ pub(super) fn apply_group_meta_page(
 /// The current account's server snapshot is the sole authority for conversation visibility.
 /// Validate established identity or initialize a new thread. Existing rows are
 /// updated only by the field-scoped attention/feed commit in the same transaction.
+/// Initialize a thread's identity row once from its validated feed snapshot,
+/// or verify that a newer feed page kept the conversation identity stable.
+/// Older or equal feed positions are no-ops; all other mutations of existing
+/// threads go through operation-scoped commits.
 pub(super) fn ensure_thread_identity(
     tx: &rusqlite::Transaction<'_>,
     user_id: i64,
-    body: &Value,
-    feed_id: i64,
+    snapshot: &super::attention::ThreadFeedSnapshot,
 ) -> Result<(), String> {
-    let thread_id = body
-        .get("threadId")
-        .and_then(Value::as_i64)
-        .filter(|v| *v > 0)
-        .ok_or("invalid thread state id")?;
-    let kind = body
-        .get("type")
-        .and_then(Value::as_str)
-        .filter(|v| matches!(*v, "P2P" | "GROUP"))
-        .ok_or("invalid thread state type")?;
-    body.get("conversationState")
-        .and_then(Value::as_str)
-        .filter(|v| matches!(*v, "ACTIVE" | "READ_ONLY"))
-        .ok_or("invalid thread state lifecycle")?;
-    body.get("selfMentionNamespaceId")
-        .ok_or("thread state self mention namespace missing")?;
-    let profile = body.get("profile").ok_or("thread state profile missing")?;
-    let account = profile
-        .get("account")
-        .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
-        .ok_or("invalid profile account")?;
-    let namespace = profile
-        .get("namespaceId")
-        .and_then(Value::as_i64)
-        .filter(|v| *v >= 0)
-        .ok_or("invalid profile namespace")?;
-    profile
-        .get("profileRev")
-        .and_then(Value::as_i64)
-        .filter(|v| *v >= 0)
-        .ok_or("invalid profile revision")?;
-    if body.get("authorityNamespaceId").and_then(Value::as_i64) != Some(namespace) {
-        return Err("invalid thread authority namespace".into());
-    }
-    if body.get("role") != Some(&Value::Null)
-        && !(kind == "GROUP"
-            && matches!(
-                body.get("role").and_then(Value::as_str),
-                Some("OWNER" | "ADMIN" | "MEMBER")
-            ))
-    {
-        return Err("invalid thread role".into());
-    }
-    if feed_id < 1 {
-        return Err("invalid thread state feed id".into());
-    }
-    body.get("blocked")
-        .and_then(Value::as_bool)
-        .ok_or("invalid thread blocked flag")?;
     let previous: Option<(i64, String, String, i64)> = tx
         .query_row(
             "SELECT thread_feed_id,kind,subject_account,authority_namespace_id
          FROM threads WHERE user_id=?1 AND thread_id=?2",
-            params![user_id, thread_id],
+            params![user_id, snapshot.thread_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
         .map_err(|e| format!("read thread identity: {e}"))?;
     if let Some((old_feed, old_kind, old_account, old_namespace)) = previous {
-        if old_feed >= feed_id {
+        if old_feed >= i64::from(snapshot.thread_feed_id) {
             return Ok(());
         }
-        if old_kind != kind {
+        if old_kind != snapshot.kind {
             return Err("thread type changed".into());
         }
-        if old_account != account || old_namespace != namespace {
+        if old_account != snapshot.subject_account
+            || old_namespace != i64::from(snapshot.authority_namespace_id)
+        {
             return Err("thread feed changed a conversation identity".into());
         }
         return Ok(());
     }
-    let mut thread = serde_json::json!({
-        "threadId": thread_id, "type": kind, "role": null, "lastMessageAt": null,
-        "muted": false, "pinned": false, "pinnedAt": null,
-        "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [], "lastMessagePreview": null,
-        "lastMessageSenderAccount": null, "lastMessageSenderNamespaceId": null
-    });
-    // Feed position alone selects the revision, for both P2P and groups. Profile
-    // content is read from that immutable selection, never from a stale renderer.
-    thread["account"] = profile["account"].clone();
-    thread["publisherNamespaceId"] = profile["namespaceId"].clone();
-    thread["profileRev"] = profile["profileRev"].clone();
-    for key in [
-        "selfMentionNamespaceId",
-        "blocked",
-        "role",
-        "conversationState",
-    ] {
-        thread[key] = body[key].clone();
-    }
-    thread["threadFeedId"] = Value::from(feed_id);
-    for (stored, wire) in [
-        ("alias", "alias"),
-        ("messageEndSeq", "messageEndSeq"),
-        ("tombstoneEndSeq", "tombstoneEndSeq"),
-        ("groupMetaFeedEndId", "groupMetaFeedEndId"),
-        ("joinRequestEndFeedId", "joinRequestEndFeedId"),
-        ("joinRequestReadFeedId", "joinRequestReadFeedId"),
-        ("groupInviteEndFeedId", "groupInviteEndFeedId"),
-        ("serverLastReadSeq", "lastReadSeq"),
-        ("announcementReadFeedId", "announcementReadFeedId"),
-        ("serverUnreadCount", "unreadCount"),
-        ("lastMentionSeq", "lastMentionSeq"),
-    ] {
-        thread[stored] = body
-            .get(wire)
-            .ok_or_else(|| format!("thread snapshot has no {wire}"))?
-            .clone();
-    }
-    thread["localReadSeq"] = thread["serverLastReadSeq"].clone();
-    super::thread_store::insert(tx, user_id, thread_id, &thread)?;
-    Ok(())
+    super::thread_store::insert(tx, user_id, snapshot, snapshot.last_read_seq)
 }

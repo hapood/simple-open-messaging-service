@@ -67,72 +67,36 @@ CREATE TABLE thread_previews (
 );
 "#;
 
-/// Initialize a thread once. Existing threads are changed through operation-scoped
-/// commits; an INSERT conflict is an invariant error, never an implicit upsert.
+/// Initialize a thread row once, from its validated feed snapshot. Existing
+/// threads are changed through operation-scoped commits; an INSERT conflict
+/// is an invariant error, never an implicit upsert. Last-message, mention, and
+/// preference columns start at their defaults; later page commits own them.
 pub(super) fn insert(
     conn: &Connection,
     user_id: i64,
-    thread_id: i64,
-    item: &Value,
+    snapshot: &super::attention::ThreadFeedSnapshot,
+    local_read_seq: i32,
 ) -> Result<(), String> {
-    let kind = item
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or("thread type missing")?;
-    if !matches!(kind, "P2P" | "GROUP") {
-        return Err("invalid thread type".into());
-    }
-    let account = item
-        .get("account")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or("thread subject account missing")?;
-    // The subject's profile namespace is structurally the thread's authority
-    // namespace; no separate subject coordinate exists.
-    let authority = item
-        .get("publisherNamespaceId")
-        .and_then(Value::as_i64)
-        .filter(|n| *n >= 0)
-        .ok_or("thread authority namespace missing")?;
-    if item.get("threadId").and_then(Value::as_i64) != Some(thread_id) || thread_id <= 0 {
-        return Err("thread id mismatch".into());
-    }
-    for field in [
-        "threadFeedId",
-        "conversationState",
-        "selfMentionNamespaceId",
-        "blocked",
-        "alias",
-        "profileRev",
-        "messageEndSeq",
-        "tombstoneEndSeq",
-        "groupMetaFeedEndId",
-        "joinRequestEndFeedId",
-        "joinRequestReadFeedId",
-        "groupInviteEndFeedId",
-        "serverLastReadSeq",
-        "announcementReadFeedId",
-        "serverUnreadCount",
-        "lastMentionSeq",
-        "localReadSeq",
-    ] {
-        if item.get(field).is_none() {
-            return Err(format!("thread state has no {field}"));
-        }
-    }
-    if item.get("selfMentionNamespaceId").is_some_and(|value| {
-        !value.is_null() && value.as_i64().is_none_or(|namespace| namespace < 0)
-    }) {
-        return Err("invalid self mention namespace".into());
-    }
-    if item["threadFeedId"].as_i64().is_none_or(|id| id <= 0)
-        || item["profileRev"].as_i64().is_none_or(|rev| rev < 0)
+    // Structural wire validation lives in `validate_snapshot`; the insert
+    // re-checks the identity-defining fields so direct callers cannot poison
+    // the durable row.
+    if snapshot.thread_id <= 0
+        || snapshot.thread_feed_id <= 0
+        || snapshot.thread_profile_rev < 0
+        || !matches!(snapshot.kind.as_str(), "P2P" | "GROUP")
+        || !matches!(snapshot.conversation_state.as_str(), "ACTIVE" | "READ_ONLY")
+        || snapshot.subject_account.is_empty()
+        || snapshot.authority_namespace_id < 0
+        || (snapshot.kind == "P2P" && snapshot.role.is_some())
+        || snapshot
+            .role
+            .as_deref()
+            .is_some_and(|role| !matches!(role, "OWNER" | "ADMIN" | "MEMBER"))
     {
-        return Err("thread state has invalid feed or profile revision".into());
+        return Err("invalid thread identity".into());
     }
-    let json = serde_json::to_string(item).map_err(|e| format!("encode thread input: {e}"))?;
-    // json_extract acts only on the transient IPC input. Every persisted value has its
-    // own typed SQLite column; the sender's profileRev is deliberately not stored.
+    // Every persisted value has its own typed SQLite column; the sender's
+    // profile content is deliberately not stored here.
     conn.execute(
         "INSERT INTO threads(user_id,thread_id,kind,authority_namespace_id,
           subject_account,
@@ -141,38 +105,40 @@ pub(super) fn insert(
           join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
           server_last_read_seq,announcement_read_feed_id,server_unread_count,
           last_mention_seq,local_read_seq,
-          last_message_at,muted,pinned,pinned_at,
-          last_message_preview,last_message_sender_account,last_message_sender_namespace_id,mention_me,mention_all,
-          unread_count,last_read_seq,role,self_mention_namespace_id)
-         VALUES(?1,?2,?3,?4,?5,
-           json_extract(?6,'$.threadFeedId'),
-           json_extract(?6,'$.conversationState'),json_extract(?6,'$.blocked'),
-           json_extract(?6,'$.alias'),json_extract(?6,'$.profileRev'),
-           json_extract(?6,'$.messageEndSeq'),json_extract(?6,'$.tombstoneEndSeq'),
-           json_extract(?6,'$.groupMetaFeedEndId'),
-           json_extract(?6,'$.joinRequestEndFeedId'),
-           json_extract(?6,'$.joinRequestReadFeedId'),
-           json_extract(?6,'$.groupInviteEndFeedId'),
-           json_extract(?6,'$.serverLastReadSeq'),
-           json_extract(?6,'$.announcementReadFeedId'),
-           json_extract(?6,'$.serverUnreadCount'),
-           json_extract(?6,'$.lastMentionSeq'),
-           json_extract(?6,'$.localReadSeq'),
-           json_extract(?6,'$.lastMessageAt'),
-           COALESCE(json_extract(?6,'$.muted'),0),COALESCE(json_extract(?6,'$.pinned'),0),
-           json_extract(?6,'$.pinnedAt'),json_extract(?6,'$.lastMessagePreview'),
-           json_extract(?6,'$.lastMessageSenderAccount'),
-           json_extract(?6,'$.lastMessageSenderNamespaceId'),
-           EXISTS(SELECT 1 FROM json_each(?6,'$.mentionUnread') WHERE value='me'),
-           EXISTS(SELECT 1 FROM json_each(?6,'$.mentionUnread') WHERE value='all'),
-           COALESCE(json_extract(?6,'$.unreadCount'),0),json_extract(?6,'$.lastReadSeq'),
-           json_extract(?6,'$.role'),json_extract(?6,'$.selfMentionNamespaceId'))",
-        params![user_id, thread_id, kind, authority, account, json],
-    ).map_err(|e| format!("write typed thread: {e}"))?;
-    if kind == "GROUP" {
+          role,self_mention_namespace_id)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
+           ?17,?18,?19,?20,?21,?22,?23)",
+        params![
+            user_id,
+            snapshot.thread_id,
+            snapshot.kind,
+            snapshot.authority_namespace_id,
+            snapshot.subject_account,
+            snapshot.thread_feed_id,
+            snapshot.conversation_state,
+            snapshot.blocked,
+            snapshot.alias,
+            snapshot.thread_profile_rev,
+            snapshot.message_end_seq,
+            snapshot.tombstone_end_seq,
+            snapshot.group_meta_feed_end_id,
+            snapshot.join_request_end_feed_id,
+            snapshot.join_request_read_feed_id,
+            snapshot.group_invite_end_feed_id,
+            snapshot.last_read_seq,
+            snapshot.announcement_read_feed_id,
+            snapshot.unread_count,
+            snapshot.last_mention_seq,
+            local_read_seq,
+            snapshot.role,
+            snapshot.self_mention_namespace_id,
+        ],
+    )
+    .map_err(|e| format!("write typed thread: {e}"))?;
+    if snapshot.kind == "GROUP" {
         conn.execute(
             "INSERT INTO group_meta(user_id,thread_id) VALUES(?1,?2)",
-            params![user_id, thread_id],
+            params![user_id, snapshot.thread_id],
         )
         .map_err(|e| format!("initialize group meta: {e}"))?;
     }
@@ -312,20 +278,18 @@ mod tests {
             .unwrap();
         let input = serde_json::json!({
             "threadId": 7, "type": "GROUP", "publisherNamespaceId": 0,
-            "account": "!room", "profileRev": 3,
+            "profileAccount": "!room", "profileRev": 3, "role": null,
             "selfMentionNamespaceId": 12,
             "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
             "messageEndSeq":4,"tombstoneEndSeq":0,
             "groupMetaFeedEndId":"3","joinRequestEndFeedId":0,
             "joinRequestReadFeedId":0,"groupInviteEndFeedId":0,
-            "serverLastReadSeq":0,"announcementReadFeedId":0,
-            "serverUnreadCount":2,"lastMentionSeq":null,"localReadSeq":0,
-            "profile": { "name": "Team", "bio": "About", "avatarDigest": null },
-            "meta": { "memberCount": 2, "groupMetaFeedId": "3" },
-            "unreadCount": 2,
-            "mentionUnread": ["me"],
+            "lastReadSeq":0,"announcementReadFeedId":0,
+            "unreadCount":2,"lastMentionSeq":null,"previews":[]
         });
-        insert(&conn, 1, 7, &input).unwrap();
+        let snapshot: super::super::attention::ThreadFeedSnapshot =
+            serde_json::from_value(input.clone()).unwrap();
+        insert(&conn, 1, &snapshot, 0).unwrap();
         assert_eq!(
             read(&conn, 1, 7).unwrap().unwrap()["meta"]["memberCount"],
             0
@@ -353,11 +317,19 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("selfMentionNamespaceId");
-        assert!(insert(&conn, 1, 7, &missing).is_err());
+        assert!(
+            serde_json::from_value::<super::super::attention::ThreadFeedSnapshot>(missing).is_err()
+        );
         assert_eq!(restored["meta"]["memberCount"], 2);
         assert_eq!(restored["messageEndSeq"], 4);
+        // Feed facts initialize independently from the derived list counters.
+        // The subsequent attention commit owns their projection.
+        assert_eq!(restored["serverUnreadCount"], 2);
+        assert_eq!(restored["unreadCount"], 0);
+        assert!(restored["lastReadSeq"].is_null());
+        assert_eq!(restored["localReadSeq"], 0);
         assert!(restored.get("lastMessageSeq").is_none());
-        assert_eq!(restored["mentionUnread"], serde_json::json!(["me"]));
+        assert_eq!(restored["mentionUnread"], serde_json::json!([]));
         assert_eq!(restored["meta"]["announcementFeedId"], Value::Null);
         assert_eq!(restored["meta"]["recoveryAnnouncementFeedId"], Value::Null);
         assert_eq!(restored["profileRev"], 3);
@@ -398,22 +370,18 @@ mod tests {
         for obsolete in ["createdAt", "updatedAt", "isDeleted"] {
             assert!(restored["profile"].get(obsolete).is_none());
         }
-        let mut peer = input.clone();
-        peer["threadId"] = 8.into();
-        peer["type"] = "P2P".into();
-        peer["account"] = "peer".into();
-        peer.as_object_mut().unwrap().remove("meta");
-        insert(&conn, 1, 8, &peer).unwrap();
+        let mut peer = snapshot.clone();
+        peer.thread_id = 8;
+        peer.kind = "P2P".into();
+        peer.subject_account = "peer".into();
+        insert(&conn, 1, &peer, 0).unwrap();
         let peer = read(&conn, 1, 8).unwrap().unwrap();
         assert!(peer.get("meta").is_none());
         for obsolete in ["createdAt", "updatedAt", "isDeleted"] {
             assert!(peer["profile"].get(obsolete).is_none());
         }
 
-        let mut changed = input.clone();
-        changed["meta"]["announcementFeedId"] = Value::Null;
-        changed["meta"]["recoveryAnnouncementFeedId"] = Value::Null;
-        assert!(insert(&conn, 1, 7, &changed).is_err());
+        assert!(insert(&conn, 1, &snapshot, 0).is_err());
         let cleared = read(&conn, 1, 7).unwrap().unwrap();
         assert!(cleared["meta"]["announcementFeedId"].is_null());
         assert!(cleared["meta"]["recoveryAnnouncementFeedId"].is_null());
@@ -422,7 +390,7 @@ mod tests {
         meta.recovery_announcement_text = Some("Notice".into());
         super::super::group_meta_store::commit(&conn, 1, 7, &meta).unwrap();
         // Reinitialization is rejected rather than overwriting committed facts.
-        assert!(insert(&conn, 1, 7, &changed).is_err());
+        assert!(insert(&conn, 1, &snapshot, 0).is_err());
         let restored = read(&conn, 1, 7).unwrap().unwrap();
         assert_eq!(restored["meta"]["memberCount"], 2);
         assert_eq!(restored["meta"]["groupMetaFeedId"], "3");

@@ -127,17 +127,17 @@ mod tests {
         super::super::thread_store::insert(
             &conn,
             41,
-            7,
-            &json!({
-                "threadId":7,"type":"P2P","publisherNamespaceId":1,"account":"bob",
-                "selfMentionNamespaceId":null,
-                "profile":{"name":"Bob","bio":"","avatarDigest":null},
+            &serde_json::from_value::<super::super::attention::ThreadFeedSnapshot>(json!({
+                "type":"P2P","threadId":7,"publisherNamespaceId":1,"profileAccount":"bob",
+                "selfMentionNamespaceId":null,"role":null,
                 "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
                 "profileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
                 "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
-                "groupInviteEndFeedId":0,"serverLastReadSeq":0,"announcementReadFeedId":0,
-                "serverUnreadCount":0,"lastMentionSeq":null,"localReadSeq":0
-            }),
+                "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
+                "unreadCount":0,"lastMentionSeq":null,"previews":[]
+            }))
+            .unwrap(),
+            0,
         )
         .unwrap();
         assert_eq!(
@@ -179,17 +179,17 @@ mod tests {
             .unwrap();
         conn.execute_batch(super::super::group_meta_store::SCHEMA)
             .unwrap();
-        let thread = json!({
-            "threadId":7,"type":"P2P","publisherNamespaceId":1,"account":"bob",
-            "selfMentionNamespaceId":null,
-            "profile":{"name":"Cached Bob","bio":"","avatarDigest":null},
+        let thread = serde_json::from_value::<super::super::attention::ThreadFeedSnapshot>(json!({
+            "type":"P2P","threadId":7,"publisherNamespaceId":1,"profileAccount":"bob",
+            "selfMentionNamespaceId":null,"role":null,
             "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
             "profileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
             "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
-            "groupInviteEndFeedId":0,"serverLastReadSeq":0,"announcementReadFeedId":0,
-            "serverUnreadCount":0,"lastMentionSeq":null,"localReadSeq":0
-        });
-        super::super::thread_store::insert(&conn, 41, 7, &thread).unwrap();
+            "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
+            "unreadCount":0,"lastMentionSeq":null,"previews":[]
+        }))
+        .unwrap();
+        super::super::thread_store::insert(&conn, 41, &thread, 0).unwrap();
         // No selected profile and no alias: renderer-supplied names are not a source of truth.
         assert_eq!(
             read_call_peer_from_connection(&conn, 41, 7, "", -1)
