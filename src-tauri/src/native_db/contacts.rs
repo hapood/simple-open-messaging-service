@@ -261,13 +261,56 @@ pub(crate) async fn native_db_query_group_members(
     after_identity: String,
     take: i64,
     search: String,
+    exclude_account: Option<String>,
+    exclude_namespace_id: Option<i64>,
 ) -> Result<Vec<Value>, String> {
     super::spawn_login_database(move |conn| {
-        let cursor: Value = serde_json::from_str(&after_identity)
-            .unwrap_or_else(|_| serde_json::json!([0, ""]));
-        let after_namespace = cursor.get(0).and_then(Value::as_i64).unwrap_or(0);
-        let after_account = cursor.get(1).and_then(Value::as_str).unwrap_or("");
-        let mut statement = conn
+        query_group_members(
+            conn,
+            user_id,
+            thread_id,
+            &after_identity,
+            take,
+            &search,
+            exclude_account.as_deref(),
+            exclude_namespace_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("join group member page: {e}"))?
+}
+
+/// Local roster lookup shared by the PC command and native presentation hosts.
+/// No profile resolution or network request is scheduled by a search.
+pub(super) fn query_group_members(
+    conn: &rusqlite::Connection,
+    user_id: i64,
+    thread_id: i64,
+    after_identity: &str,
+    take: i64,
+    search: &str,
+    exclude_account: Option<&str>,
+    exclude_namespace_id: Option<i64>,
+) -> Result<Vec<Value>, String> {
+    // SQLite's built-in lower() only folds ASCII. Match the browser's Unicode
+    // lowercase substring search without depending on the device's locale.
+    conn.create_scalar_function(
+        "member_search_key",
+        1,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            Ok(context
+                .get::<Option<String>>(0)?
+                .map(|value| value.to_lowercase()))
+        },
+    )
+    .map_err(|e| format!("register member search key: {e}"))?;
+    let cursor: Value =
+        serde_json::from_str(after_identity).unwrap_or_else(|_| serde_json::json!([0, ""]));
+    let after_namespace = cursor.get(0).and_then(Value::as_i64).unwrap_or(0);
+    let after_account = cursor.get(1).and_then(Value::as_str).unwrap_or("");
+    let mut statement = conn
             .prepare(
                 "SELECT json_object(
                    'threadId', member.thread_id,
@@ -301,26 +344,87 @@ pub(crate) async fn native_db_query_group_members(
                   AND binding.profile_namespace_id=member.namespace_id
                  WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
                    AND (member.namespace_id,member.member_account)>(?3,?4)
-                   AND (?5='' OR instr(lower(identity.name),lower(?5))>0
-                                OR instr(lower(member.member_account),lower(?5))>0)
+                   AND (?7 IS NULL OR ?8 IS NULL OR NOT
+                        (member.member_account=?7 AND member.namespace_id=?8))
+                   AND (?5='' OR instr(member_search_key(identity.name),member_search_key(?5))>0
+                                OR instr(member_search_key(member.member_account),member_search_key(?5))>0)
                  ORDER BY member.namespace_id,member.member_account LIMIT ?6",
             )
             .map_err(|e| format!("prepare group member page: {e}"))?;
-        let rows = statement
-            .query_map(
-                params![user_id, thread_id, after_namespace, after_account, search, take],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|e| format!("query group member page: {e}"))?;
-        let mut values = Vec::new();
-        for row in rows {
-            values.push(
-                row.map_err(|e| format!("read group member row: {e}"))
-                    .and_then(parse_json)?,
-            );
-        }
-        Ok(values)
-    })
-    .await
-    .map_err(|e| format!("join group member page: {e}"))?
+    let rows = statement
+        .query_map(
+            params![
+                user_id,
+                thread_id,
+                after_namespace,
+                after_account,
+                search,
+                take,
+                exclude_account,
+                exclude_namespace_id
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|e| format!("query group member page: {e}"))?;
+    let mut values = Vec::new();
+    for row in rows {
+        values.push(
+            row.map_err(|e| format!("read group member row: {e}"))
+                .and_then(parse_json)?,
+        );
+    }
+    Ok(values)
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn local_member_search_filters_before_limit_and_joins_only_the_selected_profile() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::super::create_cache_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO threads(
+          user_id,thread_id,kind,authority_namespace_id,subject_account,thread_feed_id,
+          conversation_state,blocked,thread_profile_rev,message_end_seq,tombstone_end_seq,
+          join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
+          server_last_read_seq,announcement_read_feed_id,server_unread_count,local_read_seq)
+          VALUES(1,9,'GROUP',7,'!team',1,'ACTIVE',0,0,0,0,0,0,0,0,0,0,0);
+          INSERT INTO members(user_id,thread_id,member_account,namespace_id,role,profile_rev)
+          VALUES(1,9,'self',0,'OWNER',1),(1,9,'alice',12,'MEMBER',3),
+                (1,9,'bob',12,'MEMBER',1);
+          INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,
+            account,profile_rev,name,bio)
+          VALUES(1,7,12,'alice',3,'Alice in team',''),
+                (1,7,12,'alice',4,'Wrong revision',''),
+                (1,8,12,'alice',3,'Wrong publisher','');",
+        )
+        .unwrap();
+        let query = |search: &str, take: i64| {
+            query_group_members(&conn, 1, 9, "", take, search, Some("self"), Some(0)).unwrap()
+        };
+        assert_eq!(query("", 1)[0]["account"], "alice");
+        assert_eq!(query("IN TEAM", 5)[0]["user"]["name"], "Alice in team");
+        assert_eq!(query("BO", 5)[0]["account"], "bob");
+        assert!(query("Wrong", 5).is_empty());
+        conn.execute("UPDATE profiles SET name='Älice in team' WHERE publisher_namespace_id=7 AND profile_rev=3", []).unwrap();
+        assert_eq!(query("äl", 5)[0]["account"], "alice");
+        conn.execute(
+            "UPDATE members SET left_state=1 WHERE member_account='alice'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(query("", 1)[0]["account"], "bob");
+        conn.execute_batch(
+            "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role)
+            VALUES(1,9,'a-z',12,'MEMBER'),(1,9,'a_z',12,'MEMBER');",
+        )
+        .unwrap();
+        let accounts: Vec<String> = query("", 5)
+            .iter()
+            .map(|member| member["account"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(accounts, vec!["a-z", "a_z", "bob"]);
+    }
 }

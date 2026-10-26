@@ -14,6 +14,8 @@ export interface NativeComposerContext {
   canRecord: boolean;
   canUpload: boolean;
   mentionsEnabled: boolean;
+  userId: number;
+  mentionAllLabel: string;
   quote?: { seq: number; preview: string };
   theme: 'light' | 'dark' | 'system';
 }
@@ -83,22 +85,6 @@ export type NativeComposerEvent =
       contextId: number;
       sequence: number;
       kind: 'cancelQuote';
-    }
-  | {
-      version: 1;
-      contextId: number;
-      sequence: number;
-      kind: 'queryMentions';
-      requestId: number;
-      query: string;
-    }
-  | {
-      version: 1;
-      contextId: number;
-      sequence: number;
-      kind: 'resolveMedia';
-      requestId: number;
-      url: string;
     }
   | {
       version: 1;

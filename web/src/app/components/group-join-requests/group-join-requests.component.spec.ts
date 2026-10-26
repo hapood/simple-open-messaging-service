@@ -446,7 +446,18 @@ describe('GroupJoinRequestsComponent', () => {
     expect(component.inviting().size).toBe(0);
   });
 
-  it('cancels a pending avatar fetch when the open group changes', () => {
+  it('cancels a pending avatar fetch when the invite panel is destroyed', () => {
+    const { component, groups, http } = create(vi.fn(() => of(response())));
+    const pending = new Subject<Blob>();
+    http.get.mockReturnValue(pending);
+    component.invite({ ...lookupUser, avatar: '/uploads/avatars/friend.webp' });
+    expect(pending.observed).toBe(true);
+    TestBed.resetTestingModule();
+    expect(pending.observed).toBe(false);
+    expect(groups.inviteUsers).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pending avatar fetch when the visible chat switches groups', async () => {
     const { component, groups, http, openThreadId } = create(
       vi.fn(() => of(response())),
     );
@@ -456,9 +467,17 @@ describe('GroupJoinRequestsComponent', () => {
     component.invite({ ...lookupUser, avatar: '/uploads/avatars/friend.webp' });
     openThreadId.set(8);
     TestBed.tick();
-    expect(pending.observed).toBe(false);
-    expect(groups.inviteUsers).not.toHaveBeenCalled();
-    expect(component.inviting().size).toBe(0);
+    // The invitation stays with its captured group; only destruction or
+    // session end cancels the serialization or submission.
+    expect(pending.observed).toBe(true);
+    expect(component.inviting().size).toBe(1);
+    pending.next(new Blob(['e'], { type: 'image/webp' }));
+    pending.complete();
+    await vi.waitFor(() =>
+      expect(groups.inviteUsers).toHaveBeenCalledWith(
+        expect.objectContaining({ groupId: 7 }),
+      ),
+    );
   });
 
   it('re-enables a foreign candidate by address after revoking its invitation', async () => {

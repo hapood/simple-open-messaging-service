@@ -1808,11 +1808,72 @@ describe('WebdbService', () => {
           user: expect.objectContaining({ name: 'Alice in team' }),
         }),
       ]);
+      // Exclusion applies before the result limit, not after taking a page.
+      expect(
+        await webdb.queryGroupMembers({
+          threadId: 9,
+          take: 1,
+          exclude: { account: 'self', namespaceId: 0 },
+        }),
+      ).toEqual([
+        expect.objectContaining({ account: 'alice', namespaceId: 12 }),
+      ]);
+      expect(
+        await webdb.queryGroupMembers({
+          threadId: 9,
+          take: 5,
+          search: 'in team',
+        }),
+      ).toEqual([
+        expect.objectContaining({ account: 'alice', namespaceId: 12 }),
+      ]);
+      await webdb.applyGroupMetaPage({
+        threadId: 9,
+        namespaceId: 0,
+        page: {
+          account: '!team',
+          mode: 'delta',
+          items: [
+            {
+              feedId: '3',
+              operation: 'MEMBER_UPSERT',
+              body: {
+                account: 'a-z',
+                namespaceId: 12,
+                role: 'MEMBER',
+                profileRev: 0,
+              },
+            },
+            {
+              feedId: '4',
+              operation: 'MEMBER_UPSERT',
+              body: {
+                account: 'a_z',
+                namespaceId: 12,
+                role: 'MEMBER',
+                profileRev: 0,
+              },
+            },
+          ],
+          hasMore: false,
+          scannedThrough: '4',
+          groupMetaFeedEndId: '4',
+        },
+      });
+      expect(
+        (
+          await webdb.queryGroupMembers({
+            threadId: 9,
+            take: 5,
+            exclude: { account: 'self', namespaceId: 0 },
+          })
+        ).map((member) => member.account),
+      ).toEqual(['a-z', 'a_z', 'alice']);
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({
         role: 'OWNER',
-        meta: { memberCount: 2, groupMetaFeedId: '2' },
+        meta: { memberCount: 4, groupMetaFeedId: '4' },
       });
 
       expect(await webdb.getGroupMember(9, 'alice', 12)).toMatchObject({

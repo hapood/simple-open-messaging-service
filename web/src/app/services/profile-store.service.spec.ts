@@ -81,6 +81,68 @@ describe('ProfileRepository resolution scheduler', () => {
     repository = TestBed.inject(ProfileRepository);
   });
 
+  it('starts only on subscription and aborts only after the last consumer leaves', () => {
+    resolveProfileEvidence.mockReturnValue(new Promise(() => {}));
+    const demand: ProfileDemand = {
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 1, account: 'alice', rev: 7 },
+    };
+    const observable = repository.resolve(demand);
+    expect(resolveProfileEvidence).not.toHaveBeenCalled();
+    const first = observable.subscribe();
+    const second = observable.subscribe();
+    expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
+    const signal = resolveProfileEvidence.mock.calls[0][1]
+      .signal as AbortSignal;
+    first.unsubscribe();
+    expect(signal.aborted).toBe(false);
+    second.unsubscribe();
+    expect(signal.aborted).toBe(true);
+    expect(repository['resolutions'].size).toBe(0);
+  });
+
+  it('aborts live requests on session end', () => {
+    resolveProfileEvidence.mockReturnValue(new Promise(() => {}));
+    const subscription = repository
+      .resolve({
+        publisherNamespaceId: 0,
+        lookup: 'ACCOUNT_PROFILE',
+        target: { profileNamespaceId: 1, account: 'alice', rev: 7 },
+      })
+      .subscribe();
+    const signal = resolveProfileEvidence.mock.calls[0][1]
+      .signal as AbortSignal;
+    sessionEnded.next();
+    expect(signal.aborted).toBe(true);
+    expect(subscription.closed).toBe(true);
+  });
+
+  it('an aborted request cannot delete its replacement when its rejection arrives late', async () => {
+    let rejectOld!: (error: Error) => void;
+    resolveProfileEvidence.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectOld = reject;
+      }),
+    );
+    resolveProfileEvidence.mockReturnValueOnce(new Promise(() => {}));
+    const demand: ProfileDemand = {
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 1, account: 'alice', rev: 7 },
+    };
+    const first = repository.resolve(demand).subscribe();
+    const old = [...repository['resolutions'].values()][0];
+    first.unsubscribe();
+    const second = repository.resolve(demand).subscribe();
+    const replacement = [...repository['resolutions'].values()][0];
+    rejectOld(new Error('cancelled'));
+    await vi.waitFor(() => expect(old.running).toBe(false));
+    expect([...repository['resolutions'].values()]).toEqual([replacement]);
+    expect(replacement.cancellation.signal.aborted).toBe(false);
+    second.unsubscribe();
+  });
+
   it('prefetch returns immediately and shares the pending demand with rendering', async () => {
     let ready!: (value: unknown) => void;
     resolveProfileEvidence.mockReturnValue(
@@ -192,7 +254,10 @@ describe('ProfileRepository resolution scheduler', () => {
     ).resolves.toMatchObject({ name: 'Alice' });
     expect(resolveProfileEvidence).toHaveBeenCalledWith(
       { ...demand, target: { ...demand.target, account: 'alice' } },
-      { evidence: null },
+      expect.objectContaining({
+        evidence: null,
+        signal: expect.any(AbortSignal),
+      }),
     );
     expect(repository['resolutions'].size).toBe(0);
     // The committed READY result is cached like an authorized one: a second
@@ -283,10 +348,10 @@ describe('ProfileRepository resolution scheduler', () => {
     expect(repository['resolutions'].size).toBe(0);
     const subscription = repository.resolve(demand).subscribe();
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(2);
-    expect(resolveProfileEvidence).toHaveBeenLastCalledWith({
-      ...demand,
-      target: { ...demand.target, account: 'alice' },
-    });
+    expect(resolveProfileEvidence).toHaveBeenLastCalledWith(
+      { ...demand, target: { ...demand.target, account: 'alice' } },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     subscription.unsubscribe();
   });
 

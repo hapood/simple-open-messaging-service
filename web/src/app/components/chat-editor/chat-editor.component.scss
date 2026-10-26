@@ -92,12 +92,35 @@ app-chat-editor {
   color: var(--im-text, #222);
 }
 .cb-mention-item {
+  line-height: 20px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 6px 10px;
   border-radius: 6px;
   cursor: pointer;
+}
+.cb-mention-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  line-height: 20px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--im-surface, #eee);
+  color: #fff;
+}
+.cb-mention-item img {
+  display: block;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  object-fit: cover;
+  border-radius: 50%;
 }
 .cb-mention-all-icon {
   width: 32px;

@@ -8,6 +8,9 @@ export default defineConfig({
     environment: 'node',
     clearMocks: true,
     restoreMocks: true,
-    include: ['src/playground/deployment/compose-generator.spec.ts'],
+    include: [
+      'src/playground/deployment/compose-generator.spec.ts',
+      'src/app/services/thread-list-order.spec.ts',
+    ],
   },
 });

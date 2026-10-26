@@ -71,7 +71,12 @@ export class MemberProfileRepository {
 
   async queryPage(
     threadId: number,
-    params: { afterIdentity?: string; take: number; search?: string },
+    params: {
+      afterIdentity?: string;
+      take: number;
+      search?: string;
+      exclude?: { account: string; namespaceId: number };
+    },
   ): Promise<ResolvedMemberProfile[]> {
     this.queriedThreads.add(threadId);
     const members = await this.webdb.queryGroupMembers({ threadId, ...params });

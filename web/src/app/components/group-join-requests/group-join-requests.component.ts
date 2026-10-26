@@ -2,7 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { avatarBlobDataUrl } from '../../services/profile-avatar-bytes';
 import { assetUrl } from '../../services/runtime';
 import { SessionLifecycleService } from '../../services/session-lifecycle.service';
-import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { parseRequestSnapshot } from '../../../../../shared/request-snapshot';
 import type { RequestRecord } from '../../../../../shared/relationship-request';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
@@ -19,7 +19,6 @@ import { AsyncPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
   defer,
-  filter,
   finalize,
   firstValueFrom,
   from,
@@ -91,9 +90,6 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   private readonly nav = inject(NavStateMachineService);
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
-  private readonly groupChanges$ = toObservable(
-    this.conversations.openThreadId,
-  );
 
   readonly activeTab = signal(0);
   readonly invitations = signal<RequestRecord[]>([]);
@@ -294,17 +290,15 @@ export class GroupJoinRequestsComponent implements OnDestroy {
         this.candidateKey(request.receiver) === key,
     );
     if (pending || this.sentInvitations().has(key)) return 'INVITED';
-    const friend = this.conversations
-      .items()
-      .some(
-        (thread) =>
-          thread.type === 'P2P' &&
-          thread.conversationState === 'ACTIVE' &&
-          this.candidateKey({
-            account: thread.account,
-            namespaceId: thread.publisherNamespaceId,
-          }) === key,
-      );
+    const friend = this.conversations.items().some(
+      (thread) =>
+        thread.type === 'P2P' &&
+        thread.conversationState === 'ACTIVE' &&
+        this.candidateKey({
+          account: thread.account,
+          namespaceId: thread.publisherNamespaceId,
+        }) === key,
+    );
     return friend ? 'AVAILABLE' : 'NOT_FRIEND';
   }
 
@@ -350,11 +344,6 @@ export class GroupJoinRequestsComponent implements OnDestroy {
           }),
         ),
         takeUntil(fromEvent(session.signal, 'abort')),
-        takeUntil(
-          this.groupChanges$.pipe(
-            filter(() => this.conversations.openThreadId() !== groupId),
-          ),
-        ),
         takeUntilDestroyed(this.destroyRef),
         finalize(() =>
           this.inviting.update((ids) => {
@@ -402,33 +391,25 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     const address = this.federatedAddress();
     if (!address || this.resolvingFederated()) return;
     const session = this.sessionLifecycle.capture();
-    const groupId = this.conversations.openThreadId();
     this.resolvingFederated.set(true);
     this.federationStage.set('DISCOVERING');
     this.resolveSub = this.users
       .resolveFederatedUser(address, (stage) => this.federationStage.set(stage))
       .pipe(
         takeUntil(fromEvent(session.signal, 'abort')),
-        takeUntil(
-          this.groupChanges$.pipe(
-            filter(() => this.conversations.openThreadId() !== groupId),
-          ),
-        ),
         takeUntilDestroyed(this.destroyRef),
         finalize(() => this.resolvingFederated.set(false)),
       )
       .subscribe({
         next: ({ user }) => {
+          // The panel stays with its captured group; switching the visible
+          // chat neither retargets nor cancels an in-flight address resolve.
           if (user.isGroup) {
             this.invalidGroupAddress.set(true);
             return;
           }
 
-          if (
-            !this.sessionLifecycle.isCurrent(session) ||
-            this.conversations.openThreadId() !== groupId
-          )
-            return;
+          if (!this.sessionLifecycle.isCurrent(session)) return;
           this.candidates.set([user]);
           this.federatedAddress.set(null);
         },
@@ -537,11 +518,6 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       .searchUsers({ q: query, skip: offset, take: 20 })
       .pipe(
         takeUntil(fromEvent(session.signal, 'abort')),
-        takeUntil(
-          this.groupChanges$.pipe(
-            filter(() => this.conversations.openThreadId() !== groupId),
-          ),
-        ),
         takeUntilDestroyed(this.destroyRef),
         finalize(() => this.loadingCandidates.set(false)),
       )

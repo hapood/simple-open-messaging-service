@@ -21,6 +21,12 @@ import { baseKeymap } from '@tiptap/pm/commands';
 import { serializeEditorBlocks } from './editor-message-serializer';
 import { ALL_MENTION_ID } from '../../lib/message-entity';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
+import { Subscription } from 'rxjs';
+import {
+  AvatarPresentationService,
+  initialAvatarView,
+} from '../user-avatar/avatar-presentation.service';
+import { avatarBackground, avatarInitial } from '../user-avatar/avatar-view';
 
 /** A mention candidate — id is stored on the chip (data-id, a full SOMFP user address), label is
  *  shown. Produced by the host's memberSearch lookup. */
@@ -72,6 +78,7 @@ export class ChatEditorComponent {
   readonly placeholder = input('');
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
+  private readonly presentations = inject(AvatarPresentationService);
   /** INPUT axis (physical vs soft keyboard) — drives the Enter convention
    *  ({@link InputDeviceService.enterToSend}). Injected rather than threaded through every host. */
   private readonly inputDevice = inject(InputDeviceService);
@@ -137,7 +144,7 @@ export class ChatEditorComponent {
             // all there: showing an empty popup makes a literal @ look like a supported P2P mention.
             allow: () => this.mentionsEnabled(),
             items: ({ query }) => this.memberSearch()?.(query) ?? [],
-            render: () => suggestionPopup(),
+            render: () => suggestionPopup(this.presentations),
           },
         }),
       ],
@@ -341,7 +348,8 @@ function SendKeymapExtension(opts: {
  * to document.body so it escapes any overflow/transform on the host; keyboard-nav + click both call the
  * mention command with { id, label } (the atom node attrs). Returns the render() handlers Tiptap expects.
  */
-function suggestionPopup() {
+export function suggestionPopup(presentations: AvatarPresentationService) {
+  let subscriptions = new Subscription();
   let popup: HTMLDivElement | null = null;
   let items: ChatMember[] = [];
   let selected = 0;
@@ -349,6 +357,8 @@ function suggestionPopup() {
 
   const renderList = (): void => {
     if (!popup) return;
+    subscriptions.unsubscribe();
+    subscriptions = new Subscription();
     popup.innerHTML = '';
     if (items.length === 0) {
       popup.classList.add('cb-mention-popup--empty');
@@ -369,7 +379,56 @@ function suggestionPopup() {
         label.textContent = `@${m.label}`;
         row.append(icon, label);
       } else {
-        row.textContent = m.label;
+        const label = document.createElement('span');
+        label.className = 'cb-mention-label';
+        label.textContent = m.label;
+        const avatar = document.createElement('span');
+        avatar.className = 'cb-mention-avatar';
+        avatar.setAttribute('aria-hidden', 'true');
+        avatar.textContent = avatarInitial(m.label);
+        avatar.style.background = avatarBackground(
+          initialAvatarView({
+            kind: 'snapshot',
+            name: m.label,
+            imageUrl: null,
+            account: m.id,
+          }),
+        );
+        row.append(avatar, label);
+        if (m.profile) {
+          subscriptions.add(
+            presentations
+              .resolve({
+                kind: 'demand',
+                profile: m.profile,
+                account: m.profile.account,
+                fallbackName: m.label,
+              })
+              .subscribe((view) => {
+                // The selected reference is fixed for this result page. Presentation
+                // arrival updates only its row, never reruns the search.
+                m.label = view.name;
+                label.textContent = view.name;
+                avatar.style.background = avatarBackground(view);
+                let image = avatar.querySelector('img');
+                if (view.imageUrl) {
+                  if (!image) {
+                    image = document.createElement('img');
+                    image.alt = '';
+                    image.width = 32;
+                    image.height = 32;
+                    image.onerror = () => {
+                      avatar.textContent = avatarInitial(m.label);
+                    };
+                    avatar.replaceChildren(image);
+                  }
+                  image.src = view.imageUrl;
+                } else {
+                  avatar.textContent = avatarInitial(view.name);
+                }
+              }),
+          );
+        }
       }
       // mousedown (not click) so the editor does not blur before the command runs.
       row.addEventListener('mousedown', (e) => {
@@ -403,7 +462,14 @@ function suggestionPopup() {
     popup.style.top = `${Math.round(top)}px`;
   };
 
+  const paintSelection = (): void => {
+    popup?.querySelectorAll('.cb-mention-item').forEach((row, index) => {
+      row.classList.toggle('cb-mention-item--active', index === selected);
+    });
+  };
+
   const close = (): void => {
+    subscriptions.unsubscribe();
     popup?.remove();
     popup = null;
     command = null;
@@ -438,12 +504,12 @@ function suggestionPopup() {
       const n = items.length;
       if (props.event.key === 'ArrowDown') {
         selected = (selected + 1) % n;
-        renderList();
+        paintSelection();
         return true;
       }
       if (props.event.key === 'ArrowUp') {
         selected = (selected - 1 + n) % n;
-        renderList();
+        paintSelection();
         return true;
       }
       if (props.event.key === 'Enter') {

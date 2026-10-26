@@ -1,7 +1,6 @@
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 use super::attention::{read_state, LocalThreadAttention};
 use super::messages::{count_unread_message_slots, MessageCountOwner};
@@ -492,8 +491,7 @@ fn assemble(
             namespace_id: 0,
         });
     let mut notifications = Vec::new();
-    let mut avatars = Vec::new();
-    let mut avatar_indices = BTreeMap::new();
+    let mut avatars = super::profile_avatars::AvatarBatch::default();
     for delivered in states {
         if !delivered.notification_changed {
             continue;
@@ -574,18 +572,7 @@ fn assemble(
                 .as_ref()
                 .and_then(|value| value["avatarDigest"].as_str())
             {
-                let index = match avatar_indices.get(digest) {
-                    Some(index) => Some(*index),
-                    None => match super::profile_avatars::read(user_id, digest)? {
-                        Some(bytes) => {
-                            let index = avatars.len();
-                            avatars.push(bytes);
-                            avatar_indices.insert(digest.to_owned(), index);
-                            Some(index)
-                        }
-                        None => None,
-                    },
-                };
+                let index = avatars.index(user_id, digest)?;
                 if let Some(index) = index {
                     value["avatarIndex"] = serde_json::json!(index);
                 }
@@ -623,7 +610,7 @@ fn assemble(
     tx.commit().map_err(|e| e.to_string())?;
     Ok(NotificationBatch {
         metadata,
-        avatars,
+        avatars: avatars.bytes,
         login_session_id: String::new(),
     })
 }

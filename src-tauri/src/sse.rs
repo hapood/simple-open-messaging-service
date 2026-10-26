@@ -850,6 +850,7 @@ async fn open_one_stream(
                                             if !profile_app.authenticated() || profile_cancel.is_cancelled() { return; }
                                             match result {
                                                 Ok(()) => {
+                                                    crate::native_db::profile_subscriptions::wake(user_id, "PROFILE_AVAILABLE", &profile_data);
                                                     let _ = profile_app.emit(
                                                         "soms-sse-event",
                                                         SseEventPayload {
@@ -864,6 +865,11 @@ async fn open_one_stream(
                                             }
                                         });
                                         continue;
+                                    }
+                                }
+                                if parsed.event == "PROFILE_UNAVAILABLE" {
+                                    if let Some(user_id) = feed_head.user_id {
+                                        crate::native_db::profile_subscriptions::wake(user_id, &parsed.event, &parsed.data);
                                     }
                                 }
                                 let _ = app.emit(

@@ -56,6 +56,9 @@ declare global {
      *  Tauri surface is unreachable outside the shell. */
     __TAURI__?: {
       core?: {
+        Channel?: new <T>(onmessage?: (message: T) => void) => {
+          onmessage: (message: T) => void;
+        };
         invoke: (
           cmd: string,
           args?: Record<string, unknown>,

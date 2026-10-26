@@ -67,6 +67,47 @@ scheduler, cache transactions, shared work ownership, and commit/wake semantics
 remain separate concerns; unsubscribing one presentation is not permission to
 roll back a committed cache write or cancel another consumer's shared demand.
 
+## Mention candidates
+
+Mention search and presentation are separate stages. Search reads the local
+roster joined to the exact selected profile snapshot and matches account or
+cached profile name, without authorizing a profile request. The browser uses
+IndexedDB; PC WebViews use `native_db_query_group_members`; Android reaches the
+same Rust query through JNI. Matching uses locale-independent Unicode lowercase
+substring comparison. Departed members and the namespace-qualified self identity
+are excluded before limiting the page. Pages sort by namespace and then the
+account's Unicode scalar order, matching SQLite BINARY ordering rather than
+host-dependent locale collation.
+
+A page contains at most five rows. If the viewer may mention everyone and the
+localized audience label matches the query, that row comes first and leaves four
+member slots. Otherwise there are five member slots. Empty queries match the
+label. Conversation aliases never enter search or group-member presentation.
+
+Each result pins its complete profile reference for the lifetime of that page.
+The page does not follow later Group Meta revision selections. Cached names and
+avatars, or fallback presentation, appear first; each item's demand can then
+update its name and avatar independently. A pending or unavailable member cannot
+hold back the other rows. Only another search chooses another set of references.
+
+Web and PC use the common avatar presentation service and paint helpers. Android
+uses a Rust-owned page and shared demand subscriptions; Kotlin reports query and
+lifecycle facts, decodes image bytes, and paints the delivered results. Rust's
+foreground demands and Group Meta prefetch share transport and protocol
+validation while retaining their respective commit policies. Native notifications
+and mention pages share digest-deduplicated binary avatar assembly. Native avatar
+bytes do not travel through WebView object URLs or base64 media messages.
+
+Replacing or closing a page releases its consumers. Shared native demands survive
+another consumer's release and stop when their last consumer leaves. Captured
+login/cache lifetime fences remain authoritative, and native UI callbacks also
+reject stale composer contexts and request IDs. PC profile IPC consumers use the
+existing UUID-based HTTP cancellation registry: a registration acknowledgement
+prevents cancel-before-registration races, and the last RxJS consumer's
+AbortSignal releases only its own Rust subscription. Rust owns PENDING waits for
+these native consumers. No separate profile cancellation registry, legacy
+whole-page resolution barrier, or WebView-mediated Android mention lookup remains.
+
 ## Message sender data and policy
 
 [MessageSenderService](../../web/src/app/components/message-cards/message-sender.service.ts)

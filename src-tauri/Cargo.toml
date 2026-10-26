@@ -39,7 +39,7 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 # rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
 # "stream" feeds the desktop SSE supervisor's `resp.bytes_stream()` + the shell-wide
 # `upload_stream_file` file stream;
@@ -88,7 +88,7 @@ tauri-plugin-barcode-scanner = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Kotlin hands ContentResolver/recorder file descriptors to the shared Rust uploader directly.
-# `jni` is only the thin command boundary (file bytes never cross JNI).
+# Upload file bytes stay in Rust; notification and presentation avatars use binary JNI delivery.
 jni = "0.21"
 
 [target.'cfg(target_os = "linux")'.dependencies]

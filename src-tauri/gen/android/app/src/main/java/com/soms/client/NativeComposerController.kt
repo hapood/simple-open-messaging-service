@@ -40,8 +40,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.ImageView
-import android.util.Base64
-import android.util.LruCache
 import androidx.appcompat.widget.ListPopupWindow
 import org.json.JSONArray
 import org.json.JSONObject
@@ -190,7 +188,7 @@ class NativeComposerController(
         val kind: String,
         val id: String,
         val label: String,
-        val avatarUrl: String,
+        val avatar: Bitmap?,
         val fallbackText: String,
         val colorSeed: String,
     )
@@ -199,11 +197,23 @@ class NativeComposerController(
     private var mentionRequestId = 0L
     private var latestMentionRequestId = 0L
     private var mentionsEnabled = false
-    private val requestedMedia = mutableSetOf<String>()
-    private val mediaRequestUrls = mutableMapOf<Long, String>()
-    private val avatarCache = object : LruCache<String, Bitmap>(2 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
-    }
+    private var mentionUserId = 0L
+    private var mentionAllLabel = ""
+    @Volatile private var mentionDestroyed = false
+    private val mentionLease = RustMentionBridge.open(object : RustMentionBridge.Callbacks {
+        override fun onResults(contextId: Long, requestId: Long, metadata: String, avatars: Array<ByteArray>) {
+            if (mentionDestroyed) return
+            val result = runCatching { JSONObject(metadata) }.getOrNull() ?: return
+            // Decode platform images off the UI thread. Rust delivers binary bytes,
+            // not WebView object URLs or base64 renderer messages.
+            val images = avatars.map { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            activity.runOnUiThread {
+                if (mentionDestroyed || this@NativeComposerController.contextId != contextId ||
+                    !RustRuntimeBridge.isLoginSessionCurrent(result.optString("loginSessionId"))) return@runOnUiThread
+                applyMentionResults(requestId, result, images)
+            }
+        }
+    })
     private val mentionAdapter = object : BaseAdapter() {
         override fun getCount() = mentionCandidates.size
         override fun getItem(position: Int) = mentionCandidates[position]
@@ -251,7 +261,7 @@ class NativeComposerController(
             }
             avatar.clearColorFilter()
             avatar.setPadding(0, 0, 0, 0)
-            val bitmap = avatarCache.get(candidate.avatarUrl)
+            val bitmap = candidate.avatar
             if (bitmap != null) {
                 avatar.setImageBitmap(bitmap)
             } else {
@@ -262,7 +272,6 @@ class NativeComposerController(
                         darkTheme,
                     ),
                 )
-                requestMentionAvatar(candidate.avatarUrl)
             }
             return item
         }
@@ -271,6 +280,7 @@ class NativeComposerController(
         anchorView = input
         setAdapter(mentionAdapter)
         isModal = true
+        setOnDismissListener { cancelMentions() }
         setOnItemClickListener { _, _, position, _ ->
             insertMentionCandidate(mentionCandidates[position])
         }
@@ -724,6 +734,9 @@ class NativeComposerController(
     fun show(json: String) {
         val context = runCatching { JSONObject(json) }.getOrNull() ?: return
         if (context.optInt("version") != 1) return
+        cancelMentions()
+        mentionUserId = context.optLong("userId")
+        mentionAllLabel = context.optString("mentionAllLabel")
         contextId = context.optLong("contextId")
         threadId = context.optString("threadId").toLongOrNull() ?: 0L
         sequence = 0
@@ -794,6 +807,7 @@ class NativeComposerController(
         val patch = runCatching { JSONObject(json) }.getOrNull() ?: return
         if (patch.optLong("contextId") != contextId) return
         if (patch.has("placeholder")) input.hint = patch.optString("placeholder")
+        if (patch.has("mentionAllLabel")) mentionAllLabel = patch.optString("mentionAllLabel")
         if (patch.has("sending")) setSending(patch.optBoolean("sending"))
         if (patch.has("quote")) setQuote(patch.optJSONObject("quote"))
         if (patch.has("theme")) {
@@ -805,8 +819,6 @@ class NativeComposerController(
                 },
             )
         }
-        patch.optJSONObject("mentionResults")?.let(::applyMentionResults)
-        patch.optJSONObject("mediaResolved")?.let(::applyResolvedMedia)
     }
 
     fun acknowledge(actionId: Long, accepted: Boolean) {
@@ -894,6 +906,7 @@ class NativeComposerController(
     fun hide(requestContextId: Long) {
         if (requestContextId != contextId) return
         input.removeCallbacks(emitLinkMarkers)
+        cancelMentions()
         mentionPopup.dismiss()
         closeAttachmentDrawer(immediate = true)
         dismissKeyboard()
@@ -920,6 +933,9 @@ class NativeComposerController(
     /** Final lifecycle notification. Unlike [hide], this is called only when the Activity-owned composer
      * is genuinely being destroyed, so transient overlays never publish a draft to the thread list. */
     fun destroy() {
+        mentionDestroyed = true
+        RustMentionBridge.close(mentionLease)
+        mentionCandidates.clear()
         if (!visible) return
         emit(JSONObject().apply {
             put("kind", "destroy")
@@ -1241,6 +1257,7 @@ class NativeComposerController(
 
     private fun queryMentionsAtCursor() {
         if (!mentionsEnabled || !visible || input.selectionStart != input.selectionEnd) {
+            cancelMentions()
             mentionQueryStart = -1
             mentionPopup.dismiss()
             return
@@ -1248,6 +1265,7 @@ class NativeComposerController(
         val editable = input.text ?: return
         val query = NativeMentionLogic.query(editable, input.selectionStart)
         if (query == null) {
+            cancelMentions()
             mentionQueryStart = -1
             mentionPopup.dismiss()
             return
@@ -1255,16 +1273,18 @@ class NativeComposerController(
         mentionQueryStart = query.start
         val requestId = ++mentionRequestId
         latestMentionRequestId = requestId
-        emit(JSONObject().apply {
-            put("kind", "queryMentions")
-            put("requestId", requestId)
-            put("query", query.query)
-        })
+        runCatching {
+            RustMentionBridge.query(mentionLease, mentionUserId, threadId, contextId, requestId, query.query, mentionAllLabel)
+        }.onFailure {
+            android.util.Log.w("NativeComposer", "Mention query unavailable", it)
+            cancelMentions()
+            mentionPopup.dismiss()
+        }
     }
 
-    private fun applyMentionResults(result: JSONObject) {
+    private fun applyMentionResults(requestId: Long, result: JSONObject, images: List<Bitmap?>) {
         if (
-            result.optLong("requestId") != latestMentionRequestId ||
+            requestId != latestMentionRequestId ||
             mentionQueryStart < 0 ||
             !visible
         ) return
@@ -1276,18 +1296,10 @@ class NativeComposerController(
             val id = item.optString("id")
             val label = item.optString("label")
             if ((kind != "user" && kind != "all") || id.isBlank() || label.isBlank()) continue
-            val avatar = item.optJSONObject("avatar")
             mentionCandidates += MentionCandidate(
-                kind,
-                id,
-                label,
-                if (avatar?.optString("kind") == "user") avatar.optString("url") else "",
-                if (avatar?.optString("kind") == "user") {
-                    avatar.optString("fallbackText", label.take(1))
-                } else {
-                    ""
-                },
-                if (avatar?.optString("kind") == "user") avatar.optString("colorSeed", id) else id,
+                kind, id, label,
+                images.getOrNull(item.optInt("avatarIndex", -1)),
+                label.take(1), item.optString("colorSeed", id),
             )
         }
         mentionAdapter.notifyDataSetChanged()
@@ -1323,25 +1335,10 @@ class NativeComposerController(
         )
     }
 
-    private fun requestMentionAvatar(url: String) {
-        if (url.isBlank() || avatarCache.get(url) != null || !requestedMedia.add(url)) return
-        val requestId = ++mentionRequestId
-        mediaRequestUrls[requestId] = url
-        emit(JSONObject().apply {
-            put("kind", "resolveMedia")
-            put("requestId", requestId)
-            put("url", url)
-        })
-    }
-
-    private fun applyResolvedMedia(result: JSONObject) {
-        val requestId = result.optLong("requestId")
-        val url = mediaRequestUrls.remove(requestId) ?: return
-        val encoded = result.optString("base64")
-        if (encoded.isBlank()) return
-        val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: return
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
-        avatarCache.put(url, bitmap)
+    private fun cancelMentions() {
+        latestMentionRequestId = ++mentionRequestId
+        RustMentionBridge.cancel(mentionLease)
+        mentionCandidates.clear()
         mentionAdapter.notifyDataSetChanged()
     }
 

@@ -1,6 +1,6 @@
-import { Injectable, inject } from '@angular/core';
+import { DestroyRef, Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Observable, ReplaySubject, take, timeout } from 'rxjs';
+import { defer, Observable, ReplaySubject, take, timeout } from 'rxjs';
 import type {
   ProfileDemand,
   UnevidencedProfileDemand,
@@ -54,6 +54,7 @@ interface ResolutionEntry {
    *  next resolve() retries. */
   pending: { key: string; deadline: number } | undefined;
   subscribers: number;
+  cancellation: AbortController;
 }
 
 /** Resolves immutable profiles through the platform runtime and shares pending subscriptions. */
@@ -72,14 +73,21 @@ export class ProfileRepository {
       .subscribe((wake) => this.onWake(wake));
     inject(SessionLifecycleService)
       .ended$.pipe(takeUntilDestroyed())
-      .subscribe(() => {
-        for (const entry of this.resolutions.values()) entry.subject.complete();
-        this.resolutions.clear();
-        this.lru.clear();
-        this.demandKeys.clear();
-        this.wakes.clear();
-        this.demandWakes.clear();
-      });
+      .subscribe(() => this.clear());
+    inject(DestroyRef).onDestroy(() => this.clear());
+  }
+
+  private clear(): void {
+    const entries = [...this.resolutions.values()];
+    this.resolutions.clear();
+    this.lru.clear();
+    this.demandKeys.clear();
+    this.wakes.clear();
+    this.demandWakes.clear();
+    for (const entry of entries) {
+      entry.cancellation.abort();
+      entry.subject.complete();
+    }
   }
 
   /** Resolve one demand through the platform database executor. The main
@@ -91,9 +99,11 @@ export class ProfileRepository {
   resolve(
     demand: ProfileDemand | UnevidencedProfileDemand,
   ): Observable<ResolvedProfile> {
-    return 'demand' in demand
-      ? this.startResolution(demand.demand, true)
-      : this.startResolution(demand, false);
+    return defer(() =>
+      'demand' in demand
+        ? this.startResolution(demand.demand, true)
+        : this.startResolution(demand, false),
+    );
   }
 
   /** Optional warming uses the same demand deduplication and READY cache as
@@ -150,22 +160,25 @@ export class ProfileRepository {
       rerun: false,
       pending: undefined,
       subscribers: 0,
+      cancellation: new AbortController(),
     };
     entry.observable = new Observable((subscriber) => {
       entry.subscribers++;
       const subscription = subject.subscribe(subscriber);
+      if (!entry.running && !entry.pending) this.run(entry);
       return () => {
         subscription.unsubscribe();
         entry.subscribers--;
         if (
           entry.subscribers === 0 &&
           this.resolutions.get(entry.demandKey) === entry
-        )
+        ) {
           this.resolutions.delete(entry.demandKey);
+          entry.cancellation.abort();
+        }
       };
     });
     this.resolutions.set(demandKey, entry);
-    this.run(entry);
     return entry.observable;
   }
 
@@ -181,7 +194,10 @@ export class ProfileRepository {
     // never return PENDING, so the wake machinery below stays evidenced-only.
     const attempt = entry.cacheOnly
       ? this.webdb
-          .resolveProfileDemand(entry.demand, { evidence: null })
+          .resolveProfileDemand(entry.demand, {
+            evidence: null,
+            signal: entry.cancellation.signal,
+          })
           .then((result) => {
             if (result.status !== 'READY')
               throw new Error(
@@ -189,9 +205,16 @@ export class ProfileRepository {
               );
             return result;
           })
-      : this.webdb.resolveProfileDemand(entry.demand);
+      : this.webdb.resolveProfileDemand(entry.demand, {
+          signal: entry.cancellation.signal,
+        });
     void attempt
       .then(async (result) => {
+        if (
+          this.resolutions.get(entry.demandKey) !== entry ||
+          entry.cancellation.signal.aborted
+        )
+          return;
         if (result.status === 'PENDING') {
           entry.pending = {
             key: profileKey(result.key),
@@ -206,8 +229,14 @@ export class ProfileRepository {
         await this.commitReady(entry, result.profile);
       })
       .catch((error) => {
-        entry.subject.error(error);
+        if (
+          this.resolutions.get(entry.demandKey) !== entry ||
+          entry.cancellation.signal.aborted
+        )
+          return;
+        // Remove before notifying consumers, which can synchronously retry.
         this.resolutions.delete(entry.demandKey);
+        entry.subject.error(error);
       })
       .finally(() => {
         entry.running = false;
@@ -263,9 +292,9 @@ export class ProfileRepository {
     while (this.demandKeys.size > 1000)
       this.demandKeys.delete(this.demandKeys.keys().next().value!);
     if (this.resolutions.get(entry.demandKey) !== entry) return;
+    this.resolutions.delete(entry.demandKey);
     entry.subject.next(profile);
     entry.subject.complete();
-    this.resolutions.delete(entry.demandKey);
   }
 
   private onWake(wake: ProfileWake): void {
@@ -296,8 +325,9 @@ export class ProfileRepository {
     this.wakes.delete(key);
     this.demandWakes.delete(entry.demandKey);
     if (wake.event === 'PROFILE_UNAVAILABLE') {
-      entry.subject.error(new Error(wake.reason));
       this.resolutions.delete(entry.demandKey);
+      entry.cancellation.abort();
+      entry.subject.error(new Error(wake.reason));
       return;
     }
     if (entry.pending && entry.pending.key !== key) return;

@@ -50,6 +50,7 @@ import { invokeAccountState } from './account-state-ipc';
 import { parseIncomingRequestHead } from '../../../../shared/relationship-request';
 import type { ClientStateFeedItem } from './user.service';
 import { isTauri, tauriInvoke } from './runtime';
+import { nativeProfileRequest } from './native-profile-request';
 import { decodeProfileAvatar } from './profile-avatar-bytes';
 import {
   reduceMessageRanges,
@@ -2077,19 +2078,18 @@ export class WebdbStorage implements AccountStateStorage {
    * READY results are committed there before this promise resolves. */
   async resolveProfileDemand(
     demand: ProfileDemand,
-    options: { evidence?: null } = {},
+    options: { evidence?: null; signal?: AbortSignal } = {},
   ): Promise<ProfileResolutionAttempt> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
     const userId = this.currentUserId;
     const epoch = this.cacheEpoch;
     const result = isTauri()
-      ? await tauriInvoke<ProfileResolutionAttempt>('native_profile_resolve', {
-          userId: Number(userId),
-          request: Object.hasOwn(options, 'evidence')
-            ? { demand, evidence: options.evidence }
-            : demand,
-        })
+      ? await nativeProfileRequest<ProfileResolutionAttempt>(
+          Number(userId),
+          Object.hasOwn(options, 'evidence') ? { demand, evidence: null } : demand,
+          options.signal,
+        )
       : await this.requestDbWorker<ProfileResolutionAttempt>({
           type: 'resolve-profile',
           userId,
@@ -2861,6 +2861,7 @@ export class WebdbStorage implements AccountStateStorage {
     afterIdentity?: string;
     take: number;
     search?: string;
+    exclude?: { account: string; namespaceId: number };
   }): Promise<ResolvedMemberRecord[]> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
@@ -2872,6 +2873,8 @@ export class WebdbStorage implements AccountStateStorage {
             afterIdentity: params.afterIdentity ?? '',
             take: params.take,
             search: params.search?.trim() ?? '',
+            excludeAccount: params.exclude?.account ?? null,
+            excludeNamespaceId: params.exclude?.namespaceId ?? null,
           },
         );
       const db = await this.db();
@@ -2879,7 +2882,7 @@ export class WebdbStorage implements AccountStateStorage {
       if (thread?.type !== 'GROUP') return [];
       const publisherNamespaceId = thread.publisherNamespaceId;
       const result: ResolvedMemberRecord[] = [];
-      const search = params.search?.trim().toLocaleLowerCase() ?? '';
+      const search = params.search?.trim().toLowerCase() ?? '';
       const cursor = params.afterIdentity
         ? parseUserIdentityKey(params.afterIdentity)
         : null;
@@ -2892,6 +2895,11 @@ export class WebdbStorage implements AccountStateStorage {
         .filter((member) => {
           return (
             !member.left &&
+            !(
+              params.exclude &&
+              member.account === params.exclude.account &&
+              member.namespaceId === params.exclude.namespaceId
+            ) &&
             (!cursor || compareMemberIdentity(member, cursor) > 0)
           );
         })
@@ -2907,8 +2915,8 @@ export class WebdbStorage implements AccountStateStorage {
         const user = this.memberUser(member, publisherNamespaceId, snapshot);
         if (
           !search ||
-          user.name.toLocaleLowerCase().includes(search) ||
-          user.account.toLocaleLowerCase().includes(search)
+          user.name.toLowerCase().includes(search) ||
+          user.account.toLowerCase().includes(search)
         )
           result.push(
             this.resolveMember(member, publisherNamespaceId, snapshot),
@@ -3792,8 +3800,18 @@ function compareMemberIdentity(
   left: Pick<MemberRecord, 'namespaceId' | 'account'>,
   right: Pick<MemberRecord, 'namespaceId' | 'account'>,
 ): number {
-  return (
-    left.namespaceId - right.namespaceId ||
-    left.account.localeCompare(right.account)
-  );
+  const namespaceOrder = left.namespaceId - right.namespaceId;
+  if (namespaceOrder) return namespaceOrder;
+  // SQLite's BINARY account ordering is Unicode scalar order for valid UTF-8.
+  // Locale collation would select different pages on browser and native hosts.
+  let a = 0;
+  let b = 0;
+  while (a < left.account.length && b < right.account.length) {
+    const leftPoint = left.account.codePointAt(a)!;
+    const rightPoint = right.account.codePointAt(b)!;
+    if (leftPoint !== rightPoint) return leftPoint - rightPoint;
+    a += leftPoint > 0xffff ? 2 : 1;
+    b += rightPoint > 0xffff ? 2 : 1;
+  }
+  return left.account.length - a - (right.account.length - b);
 }

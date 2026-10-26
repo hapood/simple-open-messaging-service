@@ -136,12 +136,18 @@ pub(super) async fn verify_owned_local_commands() {
             .unwrap()
             .is_none()
     );
-    assert!(
-        contacts::native_db_query_group_members(42, 7, "[0,\"\"]".into(), 20, "".into())
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(contacts::native_db_query_group_members(
+        42,
+        7,
+        "[0,\"\"]".into(),
+        20,
+        "".into(),
+        None,
+        None
+    )
+    .await
+    .unwrap()
+    .is_empty());
     assert!(client_state::native_db_threads(42)
         .await
         .unwrap()

@@ -16,13 +16,7 @@ import {
   viewChild,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import {
-  catchError, defer, filter, firstValueFrom, from, fromEvent, map, of,
-  Subscription, switchMap, takeUntil,
-} from 'rxjs';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { nativeMentionPresentation } from './native-mention-presentation';
-import { HttpClient } from '@angular/common/http';
+import { catchError, firstValueFrom, map, of, Subscription } from 'rxjs';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
   ChatBoxScroller,
@@ -104,8 +98,8 @@ import {
   type ConversationItem,
   type StandardResponse,
 } from '../../services/model';
+import { mentionSearchPlan } from '../chat-editor/mention-candidates';
 import { serializeNativeComposerText } from '../chat-editor/editor-message-serializer';
-import { isSelfMentionMember } from '../chat-editor/mention-candidates';
 import {
   MediaTransferService,
   type MediaTransferKind,
@@ -489,7 +483,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly profileSession = inject(SessionLifecycleService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly chatAppearance = inject(ChatAppearanceService);
-  private readonly http = inject(HttpClient);
   readonly nativeComposer = inject(NativeComposerService);
   private readonly composerDrafts = inject(ComposerDraftService);
   private readonly linkGenerations = inject(LinkCardGenerationService);
@@ -504,20 +497,20 @@ export class MessageThreadComponent implements OnDestroy {
     const threadId = this.threadId();
     const trd = this.userMsgTrd();
     if (threadId === undefined || trd?.type !== 'GROUP') return [];
-    const roster = await this.memberProfiles.queryPage(threadId, {
-      take: 20,
-      search: query,
-    });
-    const eligible = roster.filter(
-      (member) =>
-        !isSelfMentionMember(
-          selfMentionIdentity(
-            trd,
-            this.userService.sessionProfile()?.account,
-          ),
-          member,
-        ),
+    const allLabel = this.transloco.translate('chat.mentionAll');
+    const { includeAll, memberLimit } = mentionSearchPlan(
+      query,
+      allLabel,
+      this.canAdministerGroup(),
     );
+    const eligible = await this.memberProfiles.queryPage(threadId, {
+      take: memberLimit,
+      search: query,
+      exclude: selfMentionIdentity(
+        trd,
+        this.userService.sessionProfile()?.account,
+      ),
+    });
     if (!this.profileSession.isCurrent(session) || this.threadId() !== threadId)
       return [];
     const members: ChatMember[] = eligible.map((member) => ({
@@ -528,16 +521,10 @@ export class MessageThreadComponent implements OnDestroy {
       label: member.name,
       profile: groupMemberAvatarProfile(trd, member),
     }));
-    if (
-      this.canAdministerGroup() &&
-      this.transloco
-        .translate('chat.mentionAll')
-        .toLocaleLowerCase()
-        .includes(query.toLocaleLowerCase())
-    )
+    if (includeAll)
       members.unshift({
         id: ALL_MENTION_ID,
-        label: this.transloco.translate('chat.mentionAll'),
+        label: allLabel,
       });
     return members;
   };
@@ -897,6 +884,7 @@ export class MessageThreadComponent implements OnDestroy {
         if (this.nativeComposerContextId !== null)
           this.nativeComposer.update(this.nativeComposerContextId, {
             theme,
+            mentionAllLabel: this.transloco.translate('chat.mentionAll'),
             quote: quote ?? null,
           });
         return;
@@ -917,6 +905,8 @@ export class MessageThreadComponent implements OnDestroy {
         canRecord: true,
         canUpload: true,
         mentionsEnabled: this.userMsgTrd()?.type === 'GROUP',
+        userId: this.userService.sessionProfile()?.id ?? 0,
+        mentionAllLabel: this.transloco.translate('chat.mentionAll'),
         quote,
         theme,
       });
@@ -1061,15 +1051,8 @@ export class MessageThreadComponent implements OnDestroy {
         }
         return;
       }
-      case 'queryMentions': {
-        void this.answerNativeMentionQuery(event);
-        return;
-      }
       case 'cancelQuote':
         this.cancelQuote();
-        return;
-      case 'resolveMedia':
-        void this.resolveNativeMentionMedia(event);
         return;
       case 'pickAttachment':
         void this.pickNativeComposerAttachment(event);
@@ -1093,51 +1076,6 @@ export class MessageThreadComponent implements OnDestroy {
       case 'geometry':
       case 'recording':
         return;
-    }
-  }
-
-  /** The native composer owns no roster of its own: every mention popup, native or web, resolves
-   *  through searchMentionMembers so both surfaces present the same candidates (self excluded).
-   *  A failed lookup answers with an empty page — the native popup renders it as "no matches". */
-  private answerNativeMentionQuery(
-    event: Extract<NativeComposerEvent, { kind: 'queryMentions' }>,
-  ): void {
-    const session = this.profileSession.capture();
-    defer(() => from(this.searchMentionMembers(event.query)))
-      .pipe(
-        switchMap((members) => nativeMentionPresentation(members, this.profileRepo)),
-        catchError(() => of([])),
-        takeUntil(fromEvent(session.signal, 'abort')),
-        takeUntilDestroyed(this.destroyRef),
-        filter(() => this.nativeComposerContextId === event.contextId),
-      )
-      .subscribe((items) => this.nativeComposer.update(event.contextId, {
-        mentionResults: { requestId: event.requestId, items },
-      }));
-  }
-
-  private async resolveNativeMentionMedia(
-    event: Extract<NativeComposerEvent, { kind: 'resolveMedia' }>,
-  ): Promise<void> {
-    try {
-      // HttpClient is intentional: TauriHttpBackend routes media:// and http://media.localhost through
-      // Rust's authenticated media_request command. Android WebView fetch() rejects custom schemes.
-      const blob = await firstValueFrom(
-        this.http.get(event.url, { responseType: 'blob' }),
-      );
-      if (blob.size > 512 * 1024) throw new Error('avatar is too large');
-      const base64 = await blobToBase64(blob);
-      this.nativeComposer.update(event.contextId, {
-        mediaResolved: {
-          requestId: event.requestId,
-          mimeType: blob.type || 'application/octet-stream',
-          base64,
-        },
-      });
-    } catch {
-      this.nativeComposer.update(event.contextId, {
-        mediaResolved: { requestId: event.requestId, error: 'unavailable' },
-      });
     }
   }
 
@@ -1636,8 +1574,7 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const conversation = this.userMsgTrd();
     if (conversation?.type === 'P2P') {
-      if (!profileRef || conversation.account !== profileRef.account)
-        return;
+      if (!profileRef || conversation.account !== profileRef.account) return;
       this.dismissContextMenu();
       this.nav.openAside('profile');
       return;
@@ -3154,21 +3091,6 @@ function readFileAsDataURL(f: File): Promise<string> {
     r.onload = () => resolve(typeof r.result === 'string' ? r.result : '');
     r.onerror = () => resolve('');
     r.readAsDataURL(f);
-  });
-}
-
-/** Bridge-safe avatar payload. Return only the base64 body; MIME travels in a separate field. */
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const comma = result.indexOf(',');
-      if (comma < 0) reject(new Error('invalid data URL'));
-      else resolve(result.slice(comma + 1));
-    };
-    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
-    reader.readAsDataURL(blob);
   });
 }
 

@@ -16,14 +16,18 @@ use crate::ServerSessionState;
 /// request context and completion port. Constructed at the entry point before any
 /// scheduling or lane wait; later awaits never resolve the current login again.
 #[derive(Clone)]
-struct FeedIntent {
-    work: DatabaseWork,
+pub(super) struct FeedIntent {
+    pub(super) work: DatabaseWork,
     request: LoginRequest,
-    user_id: i64,
+    pub(super) user_id: i64,
 }
 
 impl FeedIntent {
-    fn from_parts(user_id: i64, work: DatabaseWork, request: LoginRequest) -> Result<Self, String> {
+    pub(super) fn from_parts(
+        user_id: i64,
+        work: DatabaseWork,
+        request: LoginRequest,
+    ) -> Result<Self, String> {
         if user_id <= 0 {
             return Err("invalid user id".into());
         }
@@ -36,7 +40,7 @@ impl FeedIntent {
         })
     }
 
-    fn capture(proxy: &ServerSessionState, user_id: i64) -> Result<Self, String> {
+    pub(super) fn capture(proxy: &ServerSessionState, user_id: i64) -> Result<Self, String> {
         let work = super::capture_database_work()?;
         let request = LoginRequest::capture(proxy, work.owner().clone())?;
         Self::from_parts(user_id, work, request)
@@ -61,12 +65,14 @@ impl FeedIntent {
         post: bool,
         path: String,
         body: Option<Vec<u8>>,
-    ) -> Result<crate::proxy::ApiRequestResult, String> {
+    ) -> Result<crate::login_request::LoginRequestResult, String> {
         self.work.assert_current().map_err(|e| e.to_string())?;
         let cancellation = self.work.cancellation();
         let superseded = |work: &DatabaseWork| {
             work.assert_current().map_err(|e| e.to_string())?;
-            Err::<crate::proxy::ApiRequestResult, String>("native cache work superseded".into())
+            Err::<crate::login_request::LoginRequestResult, String>(
+                "native cache work superseded".into(),
+            )
         };
         let response = if let Some(body) = body.filter(|_| post) {
             tokio::select! {
@@ -87,7 +93,10 @@ impl FeedIntent {
         Ok(response)
     }
 
-    async fn get(&mut self, path: String) -> Result<crate::proxy::ApiRequestResult, String> {
+    async fn get(
+        &mut self,
+        path: String,
+    ) -> Result<crate::login_request::LoginRequestResult, String> {
         self.query(false, path, None).await
     }
 
@@ -95,7 +104,7 @@ impl FeedIntent {
         &mut self,
         path: String,
         body: Vec<u8>,
-    ) -> Result<crate::proxy::ApiRequestResult, String> {
+    ) -> Result<crate::login_request::LoginRequestResult, String> {
         self.query(true, path, Some(body)).await
     }
 
@@ -144,7 +153,7 @@ impl FeedIntent {
         .map_err(|e| format!("join thread page commit: {e}"))?
     }
 
-    async fn db<T, F>(&self, operation: F) -> Result<T, String>
+    pub(super) async fn db<T, F>(&self, operation: F) -> Result<T, String>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
@@ -627,9 +636,43 @@ async fn handle_profile_error(
 pub(crate) async fn native_profile_resolve(
     proxy: tauri::State<'_, ServerSessionState>,
     user_id: i64,
+    request_id: String,
     request: Value,
+    registered: tauri::ipc::Channel<()>,
 ) -> Result<Value, String> {
-    resolve_profile(&proxy, user_id, request).await
+    uuid::Uuid::parse_str(&request_id).map_err(|_| "invalid profile request UUID")?;
+    let intent = FeedIntent::capture(&proxy, user_id)?;
+    resolve_profile_request(&proxy, intent, request_id, request, || {
+        registered.send(()).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[cfg(test)]
+#[path = "../tests/native_profile_request_tests.rs"]
+mod profile_request_tests;
+
+async fn resolve_profile_request(
+    proxy: &ServerSessionState,
+    intent: FeedIntent,
+    request_id: String,
+    request: Value,
+    registered: impl FnOnce() -> Result<(), String>,
+) -> Result<Value, String> {
+    let cancellation = crate::proxy::RequestCancellation::register(proxy, Some(request_id))?;
+    // The renderer waits for this acknowledgement before forwarding an abort.
+    // Unknown and completed UUIDs therefore need no cancellation tombstones.
+    registered()?;
+    if cancellation.token().is_cancelled() {
+        return Ok(serde_json::json!({"status":"CANCELLED"}));
+    }
+    let subscription = super::profile_subscriptions::subscribe(intent, request)?;
+    tokio::select! { biased;
+        _ = cancellation.token().cancelled() => Ok(serde_json::json!({"status":"CANCELLED"})),
+        result = subscription.ready() => result.map(|profile| serde_json::json!({
+            "status":"READY", "profile":profile,
+        })),
+    }
 }
 
 async fn resolve_profile(
@@ -637,8 +680,16 @@ async fn resolve_profile(
     user_id: i64,
     request: Value,
 ) -> Result<Value, String> {
-    let mut intent = FeedIntent::capture_for_run(proxy, user_id)?;
-    let (key, no_evidence) = parse_profile_request(&request)?;
+    let intent = FeedIntent::capture_for_run(proxy, user_id)?;
+    resolve_profile_intent(intent, request).await
+}
+
+pub(super) async fn resolve_profile_intent(
+    mut intent: FeedIntent,
+    request: Value,
+) -> Result<Value, String> {
+    let user_id = intent.user_id;
+    let (key, _) = parse_profile_request(&request)?;
     let cached_key = key.clone();
     if let Some(profile) = intent
         .db(move |conn| find_profile_for_key(conn, user_id, &cached_key))
@@ -646,27 +697,9 @@ async fn resolve_profile(
     {
         return Ok(serde_json::json!({ "status": "READY", "profile": profile }));
     }
-    let response = intent
-        .post_query(
-            "/api/v1/user/profile-resolution".into(),
-            serde_json::to_vec(&request).map_err(|e| e.to_string())?,
-        )
-        .await?;
-    if !(200..300).contains(&response.status) {
-        return Err(format!("profile-resolution HTTP {}", response.status));
-    }
-    let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
-        .map_err(|e| format!("decode profile-resolution response: {e}"))?;
-    handle_profile_error(&intent, &key, envelope.code).await?;
-    let data = envelope.data.ok_or("missing profile-resolution result")?;
+    let data = fetch_profile(&mut intent, &request).await?;
     if data.get("status").and_then(Value::as_str) == Some("PENDING") {
-        if no_evidence {
-            return Err("unevidenced profile lookup must not return PENDING".into());
-        }
         return Ok(data);
-    }
-    if data.get("status").and_then(Value::as_str) != Some("READY") {
-        return Err("invalid profile-resolution result".into());
     }
     let profile = data
         .get("profile")
@@ -676,7 +709,69 @@ async fn resolve_profile(
     let committed = intent
         .db(move |conn| commit_resolved_profile(conn, user_id, &profile))
         .await?;
+    super::profile_subscriptions::wake(
+        user_id,
+        "PROFILE_AVAILABLE",
+        &serde_json::json!({
+            "publisherNamespaceId": committed["publisherNamespaceId"],
+            "profileNamespaceId": committed["profileNamespaceId"],
+            "account": committed["account"], "rev": committed["profileRev"],
+        }),
+    );
     Ok(serde_json::json!({ "status": "READY", "profile": committed }))
+}
+
+/// Shared transport and protocol validation for foreground demands and Group Meta
+/// prefetch. Callers retain their own commit policy; neither path adopts another
+/// login or silently substitutes a different revision.
+async fn fetch_profile(intent: &mut FeedIntent, request: &Value) -> Result<Value, String> {
+    let (key, no_evidence) = parse_profile_request(request)?;
+    let response = intent
+        .post_query(
+            "/api/v1/user/profile-resolution".into(),
+            serde_json::to_vec(request).map_err(|e| e.to_string())?,
+        )
+        .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!("profile-resolution HTTP {}", response.status));
+    }
+    let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
+        .map_err(|e| format!("decode profile-resolution response: {e}"))?;
+    handle_profile_error(intent, &key, envelope.code).await?;
+    let data = envelope.data.ok_or("missing profile-resolution result")?;
+    validate_profile_result(&key, no_evidence, &data)?;
+    Ok(data)
+}
+
+fn validate_profile_result(
+    key: &ProfileCacheKey,
+    no_evidence: bool,
+    data: &Value,
+) -> Result<(), String> {
+    if data.get("status").and_then(Value::as_str) == Some("PENDING") {
+        if no_evidence {
+            return Err("unevidenced profile lookup must not return PENDING".into());
+        }
+        return Ok(());
+    }
+    if data.get("status").and_then(Value::as_str) != Some("READY") {
+        return Err("invalid profile-resolution result".into());
+    }
+    let profile = data.get("profile").ok_or("missing resolved profile")?;
+    validate_resolved_profile(key, profile)
+}
+
+fn validate_resolved_profile(key: &ProfileCacheKey, profile: &Value) -> Result<(), String> {
+    if profile.get("publisherNamespaceId").and_then(Value::as_i64)
+        != Some(key.publisher_namespace_id)
+        || profile.get("profileNamespaceId").and_then(Value::as_i64)
+            != Some(key.target.profile_namespace_id)
+        || profile.get("account").and_then(Value::as_str) != Some(key.target.account.as_str())
+        || profile.get("rev").and_then(Value::as_i64) != Some(key.target.rev)
+    {
+        return Err("resolved profile does not match demand coordinates".into());
+    }
+    Ok(())
 }
 
 pub(crate) async fn materialize_profile_event(
@@ -760,7 +855,7 @@ fn commit_group_meta_profile(
     user_id: i64,
     reference: &GroupMetaProfileReference,
     profile: &Value,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     if profile.get("account").and_then(Value::as_str) != Some(reference.account.as_str())
         || profile.get("profileNamespaceId").and_then(Value::as_i64)
             != Some(if reference.is_group {
@@ -812,11 +907,11 @@ fn commit_group_meta_profile(
     }
     .map_err(|e| format!("validate Group Meta profile reference: {e}"))?;
     if !current {
-        return Ok(());
+        return Ok(false);
     }
     // Preserve the group's publisher and the member namespace in that publisher's space.
     commit_resolved_profile(conn, user_id, profile)?;
-    Ok(())
+    Ok(true)
 }
 
 async fn resolve_group_meta_profile(
@@ -855,30 +950,25 @@ async fn resolve_group_meta_profile(
             "groupAccount": group_account,
         })
     };
-    let response = intent
-        .post_query(
-            "/api/v1/user/profile-resolution".into(),
-            serde_json::to_vec(&demand).map_err(|e| e.to_string())?,
-        )
-        .await?;
-    if !(200..300).contains(&response.status) {
-        return Err(format!("profile-resolution HTTP {}", response.status));
-    }
-    let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
-        .map_err(|e| format!("decode profile-resolution response: {e}"))?;
-    let (key, _) = parse_profile_request(&demand)?;
-    handle_profile_error(intent, &key, envelope.code).await?;
-    let data = envelope.data.ok_or("missing profile-resolution result")?;
+    let data = fetch_profile(intent, &demand).await?;
     match data.get("status").and_then(Value::as_str) {
         Some("READY") => {
             let profile = data
                 .get("profile")
                 .cloned()
                 .ok_or("missing resolved profile")?;
-            intent
+            let wake = serde_json::json!({
+                "publisherNamespaceId": profile["publisherNamespaceId"],
+                "profileNamespaceId": profile["profileNamespaceId"],
+                "account": profile["account"], "rev": profile["rev"],
+            });
+            let committed = intent
                 .db(move |conn| commit_group_meta_profile(conn, user_id, &reference, &profile))
                 .await?;
-            return Ok(true);
+            if committed {
+                super::profile_subscriptions::wake(user_id, "PROFILE_AVAILABLE", &wake);
+            }
+            return Ok(committed);
         }
         Some("PENDING") => {
             return Ok(false);
@@ -2413,6 +2503,42 @@ mod tests {
                 "target": { "profileNamespaceId": 0, "account": "peer", "rev": 2, "domain": "local" } }),
         ] {
             assert!(parse_profile_request(&selector).is_err());
+        }
+    }
+
+    #[test]
+    fn shared_profile_result_validation_preserves_evidence_and_exact_coordinates() {
+        let (key, _) = parse_profile_request(&serde_json::json!({
+            "publisherNamespaceId":7,"lookup":"GROUP_MEMBER_PROFILE","groupAccount":"!team",
+            "target":{"profileNamespaceId":12,"account":"alice","rev":3}
+        }))
+        .unwrap();
+        let pending = serde_json::json!({"status":"PENDING"});
+        assert!(validate_profile_result(&key, false, &pending).is_ok());
+        assert!(validate_profile_result(&key, true, &pending)
+            .unwrap_err()
+            .contains("must not return PENDING"));
+        let profile = serde_json::json!({"publisherNamespaceId":7,"profileNamespaceId":12,"account":"alice","rev":3});
+        assert!(validate_profile_result(
+            &key,
+            true,
+            &serde_json::json!({"status":"READY","profile":profile})
+        )
+        .is_ok());
+        for (field, wrong) in [
+            ("publisherNamespaceId", serde_json::json!(8)),
+            ("profileNamespaceId", serde_json::json!(0)),
+            ("account", serde_json::json!("bob")),
+            ("rev", serde_json::json!(4)),
+        ] {
+            let mut mismatched = profile.clone();
+            mismatched[field] = wrong;
+            assert!(validate_profile_result(
+                &key,
+                false,
+                &serde_json::json!({"status":"READY","profile":mismatched})
+            )
+            .is_err());
         }
     }
 

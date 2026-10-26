@@ -223,6 +223,7 @@ describe('WebdbService native SQLite routing', () => {
         afterIdentity: JSON.stringify([12, 'aaron']),
         take: 20,
         search: 'ali',
+        exclude: { namespaceId: 0, account: 'self' },
       }),
     ).toEqual([member]);
     expect(calls).toContainEqual(
@@ -234,6 +235,8 @@ describe('WebdbService native SQLite routing', () => {
           afterIdentity: JSON.stringify([12, 'aaron']),
           take: 20,
           search: 'ali',
+          excludeAccount: 'self',
+          excludeNamespaceId: 0,
         },
       }),
     );

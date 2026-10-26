@@ -430,6 +430,64 @@ pub(crate) struct HttpResponseResult {
     pub(crate) bytes: Option<Vec<u8>>,
 }
 
+/// One caller's cancellation registration. The guard removes its entry even
+/// when its future is dropped. Cancelling keeps the entry reserved until this
+/// guard exits, so a late cleanup cannot remove a replacement with the same ID.
+pub(crate) struct RequestCancellation {
+    token: CancellationToken,
+    request_id: Option<String>,
+    registry:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, CancellationToken>>>,
+}
+impl RequestCancellation {
+    pub(crate) fn register(
+        proxy: &ServerSessionState,
+        request_id: Option<String>,
+    ) -> Result<Self, String> {
+        let token = CancellationToken::new();
+        if let Some(id) = &request_id {
+            let mut registry = proxy
+                .http_cancels
+                .lock()
+                .map_err(|_| "http cancellation registry poisoned")?;
+            if registry.contains_key(id) {
+                return Err("duplicate request cancellation ID".into());
+            }
+            registry.insert(id.clone(), token.clone());
+        }
+        Ok(Self {
+            token,
+            request_id,
+            registry: proxy.http_cancels.clone(),
+        })
+    }
+    pub(crate) fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+}
+impl Drop for RequestCancellation {
+    fn drop(&mut self) {
+        if let Some(id) = &self.request_id {
+            if let Ok(mut registry) = self.registry.lock() {
+                registry.remove(id);
+            }
+        }
+    }
+}
+
+pub(crate) fn cancel_registered_request(proxy: &ServerSessionState, request_id: &str) -> bool {
+    let Ok(registry) = proxy.http_cancels.lock() else {
+        return false;
+    };
+    if let Some(token) = registry.get(request_id) {
+        if !token.is_cancelled() {
+            token.cancel();
+            return true;
+        }
+    }
+    false
+}
+
 #[tauri::command]
 pub(crate) async fn http_request(
     app: tauri::AppHandle,
@@ -447,12 +505,8 @@ pub(crate) async fn http_request(
             "http_request: only /api/v1/* and /uploads/* allowed (got {path})"
         ));
     }
-    let cancel = CancellationToken::new();
-    if let Some(id) = &req_id {
-        let mut map = proxy.http_cancels.lock().expect("http_cancels lock");
-        map.insert(id.clone(), cancel.clone());
-    }
-    let result = perform_http_request_with_events(
+    let cancellation = RequestCancellation::register(&proxy, req_id)?;
+    perform_http_request_with_events(
         Some(&app),
         &proxy,
         method,
@@ -461,14 +515,9 @@ pub(crate) async fn http_request(
         body,
         binary,
         replay_safe,
-        Some(&cancel),
+        Some(cancellation.token()),
     )
-    .await;
-    if let Some(id) = &req_id {
-        let mut map = proxy.http_cancels.lock().expect("http_cancels lock");
-        map.remove(id);
-    }
-    result
+    .await
 }
 
 #[tauri::command]
@@ -476,13 +525,7 @@ pub(crate) fn cancel_http_request(
     proxy: tauri::State<'_, ServerSessionState>,
     req_id: String,
 ) -> bool {
-    let mut map = proxy.http_cancels.lock().expect("http_cancels lock");
-    if let Some(token) = map.remove(&req_id) {
-        token.cancel();
-        true
-    } else {
-        false
-    }
+    cancel_registered_request(&proxy, &req_id)
 }
 
 pub(crate) async fn perform_http_request_with_events(

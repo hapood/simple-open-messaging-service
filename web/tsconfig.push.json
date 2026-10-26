@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true, "types": [], "rootDir": ".." },
+  "compilerOptions": { "noEmit": true, "types": [] },
   "files": ["src/push/push-worker.ts"]
 }

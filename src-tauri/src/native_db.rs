@@ -18,11 +18,13 @@ mod lifetime;
 pub(crate) mod location;
 mod login_connections;
 pub(crate) mod messages;
+pub(crate) mod mentions;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod notifications;
 pub(crate) mod preferences;
 pub(crate) mod profile_avatars;
 pub(crate) mod profile_namespaces;
+pub(crate) mod profile_subscriptions;
 pub(crate) mod state_feed_sync;
 mod thread_patch;
 mod thread_store;
