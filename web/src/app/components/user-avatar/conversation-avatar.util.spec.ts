@@ -8,34 +8,25 @@ import {
   avatarProfileDemand,
 } from '../../services/avatar-profile-ref';
 import { UserAvatarType } from './model';
-import type { ConversationItem } from '../../services/model';
+import {
+  createGroupConversation,
+  createP2PConversation,
+} from '../../services/model';
 
-/**
- * Covers the shared conversation→avatar derivation. The util reads only `type` + the active party's
- * (`peerUser` | `group`) identity/avatar fields, so minimal partial shapes (cast through `unknown`) suffice — no
- * need to construct a full ConversationItem. This is the high-value, low-pain test for the DRY'd logic; the
- * consumers (thread-list, the empty-thread hero) are thin pass-throughs over it.
- */
+/** Covers conversation identity projection and authorized/cache-only avatar demands. */
 describe('conversation-avatar util', () => {
-  const p2p = {
-    type: 'P2P',
+  const p2p = createP2PConversation({
+    threadId: 7,
     publisherNamespaceId: 0,
-    peerUser: {
-      account: 'alice',
-      avatar: '/uploads/u7.png',
-    },
-    group: { id: 0, account: '!zero', avatar: '' },
-  } as unknown as ConversationItem;
-  const group = {
-    type: 'GROUP',
+    account: 'alice',
+    profileRev: 1,
+  });
+  const group = createGroupConversation({
+    threadId: 12,
     publisherNamespaceId: 7,
-    peerUser: { avatar: '' },
-    group: {
-      id: 12,
-      account: '!group-12',
-      avatar: '/uploads/g12.png',
-    },
-  } as unknown as ConversationItem;
+    account: '!group-12',
+    profileRev: 1,
+  });
 
   it('sends an authorized demand while the conversation is active', () => {
     const ref = conversationAvatarProfile({
@@ -78,7 +69,7 @@ describe('conversation-avatar util', () => {
       },
       profileRev: 3,
       conversationState: 'READ_ONLY',
-    } as ConversationItem);
+    });
     const demand = avatarProfileDemand(ref);
     expect(demand && 'demand' in demand ? demand.demand : demand).toEqual({
       publisherNamespaceId: 7,

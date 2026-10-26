@@ -57,7 +57,7 @@ describe('complete thread-feed structure projection', () => {
     expect(applyThreadStateSnapshot(blocked, firstSnapshot, 2)).toBe(blocked);
   });
 
-  it('retains a newer group-meta profile, roster and cursor across lifecycle changes', () => {
+  it('leaves profile selection and meta facts untouched by structural projection', () => {
     const initial = threadFeedSnapshot(9, {
       threadFeedId: 2,
       type: 'GROUP',
@@ -86,13 +86,13 @@ describe('complete thread-feed structure projection', () => {
         { ...initial, threadFeedId: 3, blocked: true },
         3,
       ),
-    ).toMatchObject({ group: { profileRev: 3, name: 'Current group' } });
+    ).toMatchObject({ profileRev: 3, profile: { name: 'Current group' } });
     expect(
       applyThreadStateSnapshot(
         latest,
         { ...initial, threadFeedId: 6, conversationState: 'READ_ONLY' },
         6,
       ),
-    ).toMatchObject({ group: { memberCount: 4, groupMetaFeedId: '20' } });
+    ).toMatchObject({ meta: { memberCount: 4, groupMetaFeedId: '20' } });
   });
 });
