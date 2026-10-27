@@ -23,7 +23,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     quota = mod.get(QuotaService);
     database = mod.get(DatabaseService);
     const created = await database.pool.query<{ id: number }>(
-      'INSERT INTO "IdentityNamespace" (domain, "rootPublicKey", "identityPinnedAt", active, "trustLevel") VALUES ($1, $2, NOW(), true, $3) RETURNING id',
+      'INSERT INTO "IdentityNamespace" (domain, "signingKeyCreatedAt", "rootPublicKey", "identityPinnedAt", active, "trustLevel") VALUES ($1, 1700000000000, $2, NOW(), true, $3) RETURNING id',
       [PEER, Buffer.alloc(32, 1).toString('base64'), 'available'],
     );
     namespaceId = created.rows[0].id;
@@ -39,6 +39,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
   });
 
   afterAll(async () => {
+    await database.pool.query('DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1', [namespaceId]);
     await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id = $1', [
       namespaceId,
     ]);

@@ -94,7 +94,7 @@ describe('group authority media authorization for a different member peer', () =
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
       profileRev: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
     });
     await database.db.insert(tables.threadAudience).values({
       threadId: thread.id,
@@ -279,7 +279,7 @@ describe('group authority media authorization for a different member peer', () =
       status: 'ACCEPTED',
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
     });
     await database.db
       .update(tables.message)
@@ -325,7 +325,7 @@ describe('group authority media authorization for a different member peer', () =
       status: 'ACCEPTED',
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
     });
     await database.db.insert(tables.peerStateFeed).values({
       namespaceId: authorNs,

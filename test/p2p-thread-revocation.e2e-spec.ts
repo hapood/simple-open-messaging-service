@@ -40,7 +40,7 @@ describe('P2P thread-keyed relationship revocation', () => {
     const keys = new KeypairService(database, changes, sse);
     namespaces = new FederationNamespaceService(
       database,
-      new ProfileNamespaceFeedService(database, keys, changes),
+      new ProfileNamespaceFeedService(database, changes),
       new ProfileNamespaceService(database, keys),
     );
     const requestCapability = new RequestTransactionCapabilityImpl(feed);

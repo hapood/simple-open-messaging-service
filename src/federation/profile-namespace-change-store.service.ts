@@ -5,15 +5,13 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import {
-  identityNamespace,
+  profileNamespaceFeedHead,
   profileNamespaceChangeFeed,
   profileNamespaceChangeFeedHead,
   profileNamespaceFeed,
 } from '../database/schema.js';
 
-/** Reserved local namespace id: the sentinel row that carries the per-server
- *  Profile Namespace Feed allocator, and the namespace that names the server
- *  itself in every feed item. */
+/** Singleton key of the independent publisher feed allocator. */
 const LOCAL_NAMESPACE_ID = 0;
 
 /** Leaf persistence store for Profile Namespace feed change recording. This
@@ -41,12 +39,12 @@ export class ProfileNamespaceChangeStore {
       throw new Error('namespace id must be a non-negative safe integer');
     }
     const [allocated] = await tx
-      .update(identityNamespace)
+      .update(profileNamespaceFeedHead)
       .set({
-        profileNamespaceFeedEndId: sql`${identityNamespace.profileNamespaceFeedEndId} + 1`,
+        endId: sql`${profileNamespaceFeedHead.endId} + 1`,
       })
-      .where(eq(identityNamespace.id, LOCAL_NAMESPACE_ID))
-      .returning({ feedId: identityNamespace.profileNamespaceFeedEndId });
+      .where(eq(profileNamespaceFeedHead.id, LOCAL_NAMESPACE_ID))
+      .returning({ feedId: profileNamespaceFeedHead.endId });
     if (!allocated) {
       throw new Error('local namespace sentinel row is missing');
     }
@@ -55,19 +53,17 @@ export class ProfileNamespaceChangeStore {
       .values({ namespaceId, feedId: allocated.feedId })
       .onConflictDoUpdate({
         target: profileNamespaceFeed.namespaceId,
-        set: { feedId: allocated.feedId, updatedAt: new Date() },
+        set: { feedId: allocated.feedId, updatedAt: sql`CURRENT_TIMESTAMP` },
       });
     return allocated.feedId;
   }
 
-  /** The publisher-wide feed end (row-0 allocator value). The sentinel row
-   *  is created by the base migration and never deleted; a missing row is a
-   *  corrupted invariant and fails loudly instead of answering 0. */
+  /** A missing publisher allocator is an invariant failure, not an empty feed. */
   async readFeedEndId(): Promise<bigint> {
     const [row] = await this.database.db
-      .select({ feedEndId: identityNamespace.profileNamespaceFeedEndId })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, LOCAL_NAMESPACE_ID))
+      .select({ feedEndId: profileNamespaceFeedHead.endId })
+      .from(profileNamespaceFeedHead)
+      .where(eq(profileNamespaceFeedHead.id, LOCAL_NAMESPACE_ID))
       .limit(1);
     if (!row) throw new Error('local namespace sentinel row is missing');
     return row.feedEndId;

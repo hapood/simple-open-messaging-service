@@ -120,18 +120,18 @@ describe('P2P request and established-relationship HTTP contract', () => {
     return { row, threadId };
   }
   async function expire(row: RequestRecord) {
-    const requestedAt = new Date(Date.now() - 8_000);
+    const statusChangedAt = new Date(Date.now() - 8_000);
     const expiresAt = new Date(Date.now() - 1_000);
     await database.db.transaction(async (tx) => {
       // Age both the protocol intent and its explicit request record. Keep
       // createdAt in the online window so expiry is not confused with hiding.
       await tx
         .update(tables.relationshipIntent)
-        .set({ requestedAt, expiresAt })
+        .set({ statusChangedAt, expiresAt })
         .where(eq(tables.relationshipIntent.requestId, BigInt(row.id)));
       await tx
         .update(tables.relationshipRequest)
-        .set({ requestedAt, expiresAt })
+        .set({ requestedAt: statusChangedAt, expiresAt })
         .where(eq(tables.relationshipRequest.id, BigInt(row.id)));
     });
   }
@@ -278,10 +278,10 @@ describe('P2P request and established-relationship HTTP contract', () => {
       status: 'REQUESTED',
       requestId: BigInt(next.id),
     });
-    if (!intent?.requestedAt || !intent.expiresAt)
+    if (!intent?.statusChangedAt || !intent.expiresAt)
       throw new Error('missing request validity');
     expect(intent.expiresAt.getTime()).toBeGreaterThan(Date.now());
-    expect(intent.expiresAt.getTime() - intent.requestedAt.getTime()).toBe(
+    expect(intent.expiresAt.getTime() - intent.statusChangedAt.getTime()).toBe(
       7 * 86_400_000,
     );
     const beforeStale = await stored(next.id);

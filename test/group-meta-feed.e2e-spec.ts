@@ -77,6 +77,7 @@ describe('canonical Group Meta feed', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Owner',
     });
     const [control] = await database.db
@@ -167,7 +168,7 @@ describe('canonical Group Meta feed', () => {
       status: 'ACCEPTED',
       profileRev: 1,
       note: '',
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
     await database.db.insert(threadAudience).values({
@@ -191,6 +192,7 @@ describe('canonical Group Meta feed', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev,
+        generatedAt: 1_700_000_000_000,
         displayName: `Group revision ${profileRev}`,
         avatar: '',
         bio: '',

@@ -32,8 +32,8 @@ export interface GroupMembershipAcceptanceInput {
  * member's own ACK (`memberAuthoredSql` substitutes a received peer intent's
  * validated wire snapshot), and — with P2P reverse-upgrade parity — for a
  * manager's ACK of a **local** application: the applicant direction is
- * promoted in place (status/expiresAt only; its note, requestedAt and profile
- * reference survive). A remote applicant is never written here; its home
+ * promoted in place with its own acknowledgement time; its note and profile
+ * reference survive. A remote applicant is never written here; its home
  * folds the direction from the wire ACK (mirror activation promote). Each
  * write runs as its own statement; the domain statement then reads the
  * committed rows back. */
@@ -49,7 +49,7 @@ export function groupMembershipAcceptanceIntentWrites(
     threadId: input.threadId,
     status: 'ACCEPTED',
     note: input.note,
-    requestedAt: input.acceptedAt,
+    statusChangedAt: input.acceptedAt,
     expiresAt: null,
   });
   if (input.memberAck) {
@@ -64,7 +64,7 @@ export function groupMembershipAcceptanceIntentWrites(
         threadId: input.threadId,
         status: 'ACCEPTED',
         note: input.note,
-        requestedAt: input.acceptedAt,
+        statusChangedAt: input.acceptedAt,
         expiresAt: null,
       });
     return [sideA, sideB];
@@ -92,7 +92,7 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
   return sql`
     join_source AS MATERIALIZED (
       SELECT p.active AS "wasActive", t."curSeq", t."authorizationEpoch",
-        b.note AS "requestNote", b."requestedAt", b."expiresAt",
+        b.note AS "requestNote", b."statusChangedAt", b."expiresAt",
         b."profileRev" AS "memberProfileRev", b."messageEndSeq" AS "sourceMessageEndSeq",
         b."tombstoneEndSeq" AS "sourceDeletionEndSeq"
       FROM "RelationshipPair" p JOIN "MessageThread" t ON t.id = p."threadId"
@@ -101,7 +101,7 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
           AND b."receiverAccount" = ${input.groupAccount} AND b."receiverNamespaceId" = 0
       WHERE p.id = ${input.pairId} AND t.id = ${input.threadId}
     ), accepted_intent AS MATERIALIZED (
-      SELECT status, "profileRev", note, "requestedAt", "expiresAt"
+      SELECT status, "profileRev", note, "statusChangedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
         AND "receiverAccount" = ${input.memberAccount} AND "receiverNamespaceId" = ${input.profileNamespaceId}
@@ -307,7 +307,7 @@ function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
       UNION ALL
       SELECT 'RELATIONSHIP_INTENT'::"PeerStateEventType", ${input.memberAccount}, ${input.profileNamespaceId}, 2,
         jsonb_build_object('status', i.status, 'namespaceId', 0, 'profileRev', i."profileRev", 'note', i.note,
-          'requestedAt', floor(extract(epoch FROM i."requestedAt") * 1000)::bigint, 'expiresAt', NULL,
+          'statusChangedAt', floor(extract(epoch FROM i."statusChangedAt") * 1000)::bigint, 'expiresAt', NULL,
           'messageEndSeq', h."relationshipMessageEndSeq", 'tombstoneEndSeq', h."tombstoneEndSeq")
       FROM peer_heads h CROSS JOIN accepted_intent i
     ), peer_changes AS MATERIALIZED (
@@ -320,9 +320,11 @@ function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
         AND old."subjectAccount" = w."subjectAccount" AND old."subjectNamespaceId" = w."subjectNamespaceId"
       WHERE w."eventType" = 'RELATIONSHIP_INTENT' OR old.body IS DISTINCT FROM w.body
     ), peer_allocation AS (
-      UPDATE "IdentityNamespace" SET "stateFeedEndId" = "stateFeedEndId" + (SELECT count(*) FROM peer_changes)
-      WHERE id = ${input.profileNamespaceId} AND "retiredAt" IS NULL
-      RETURNING "stateFeedEndId" AS "allocatedThrough"
+      UPDATE "FederationFeedState" SET "updatedAt" = CURRENT_TIMESTAMP,
+        "outboundStateFeedEndId" = "outboundStateFeedEndId" + (SELECT count(*) FROM peer_changes)
+      WHERE "namespaceId" = ${input.profileNamespaceId}
+        AND EXISTS (SELECT 1 FROM "IdentityNamespace" WHERE id = ${input.profileNamespaceId} AND "retiredAt" IS NULL)
+      RETURNING "outboundStateFeedEndId" AS "allocatedThrough"
     ), peer_feeds AS (
       INSERT INTO "PeerStateFeed" ("namespaceId", account, "eventType", "subjectAccount", "subjectNamespaceId", "feedId", body)
       SELECT ${input.profileNamespaceId}, ${input.groupAccount}, w."eventType", w."subjectAccount", w."subjectNamespaceId",
@@ -355,7 +357,7 @@ export function groupMembershipAcceptanceSql(
       prefix: 'federation_fanout',
       federation: true,
     })}
-    SELECT i.status, i."profileRev", i.note, i."requestedAt", i."expiresAt",
+    SELECT i.status, i."profileRev", i.note, i."statusChangedAt", i."expiresAt",
       ${
         input.profileNamespaceId !== 0
           ? sql`

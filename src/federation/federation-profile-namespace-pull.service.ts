@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { identityNamespace } from '../database/schema.js';
+import { federationFeedState } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
@@ -113,30 +113,8 @@ export class FederationProfileNamespacePullService {
    *  drain only when actually behind. */
   async wakeIfBehind(domain: string, observedEnd: bigint): Promise<void> {
     const context = await this.threadAccess.capturePeerResponseToken(domain);
-    const cursor = await this.recordObservedEndAndReadCursor(
-      domain,
-      context.namespaceId,
-      observedEnd,
-    );
+    const cursor = await this.readPulledThrough(domain, context.namespaceId);
     if (cursor < observedEnd) this.wake(domain, observedEnd);
-  }
-
-  private async recordObservedEndAndReadCursor(
-    domain: string,
-    namespaceId: number,
-    observedEnd: bigint,
-  ): Promise<bigint> {
-    const [row] = await this.database.db
-      .update(identityNamespace)
-      .set({
-        profileNamespaceFeedEndId: sql`GREATEST(${identityNamespace.profileNamespaceFeedEndId}, ${observedEnd})`,
-      })
-      .where(eq(identityNamespace.id, namespaceId))
-      .returning({
-        pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
-      });
-    if (!row) throw new Error(`peer ${domain} has no namespace row`);
-    return row.pulledThrough;
   }
 
   private async readPulledThrough(
@@ -145,10 +123,11 @@ export class FederationProfileNamespacePullService {
   ): Promise<bigint> {
     const [row] = await this.database.db
       .select({
-        pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
+        pulledThrough:
+          federationFeedState.inboundProfileNamespaceFeedPulledThrough,
       })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, namespaceId))
+      .from(federationFeedState)
+      .where(eq(federationFeedState.namespaceId, namespaceId))
       .limit(1);
     if (!row) throw new Error(`peer ${domain} has no namespace row`);
     return row.pulledThrough;

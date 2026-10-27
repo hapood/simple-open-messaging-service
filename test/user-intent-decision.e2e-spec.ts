@@ -168,6 +168,7 @@ describe('user intent decision', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev,
+      generatedAt: 1_700_000_000_000,
       displayName: user.account,
     });
     await database.db
@@ -240,7 +241,7 @@ describe('user intent decision', () => {
         profileNamespaceId: 0,
         profileRev: 7,
         note: '',
-        requestedAt: now,
+        statusChangedAt: now,
         expiresAt: now + 60_000,
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
@@ -306,7 +307,7 @@ describe('user intent decision', () => {
         profileNamespaceId: 0,
         profileRev: 3,
         note: '',
-        requestedAt: now,
+        statusChangedAt: now,
         expiresAt: null,
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
@@ -585,7 +586,7 @@ describe('user intent decision', () => {
       note: 'let us chat',
     });
     expect(
-      authored!.expiresAt!.getTime() - authored!.requestedAt!.getTime(),
+      authored!.expiresAt!.getTime() - authored!.statusChangedAt!.getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
     expect(after.messages).toHaveLength(0);
     // Participant shells exist; nothing is read-advanced yet.
@@ -1310,7 +1311,7 @@ describe('user intent decision', () => {
       profileNamespaceId: 0,
       profileRev: 1,
       note: '',
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: new Date(Date.now() + 86_400_000),
       messageEndSeq: 0,
       tombstoneEndSeq: 0,

@@ -307,14 +307,21 @@ function FeedProgressSummary({ peer }: { peer: FederationPeerState }) {
     peer.feedProgress.inboundStateFeedPulledThrough,
     peer.feedProgress.outboundStateFeedEndId,
   );
-  const profileLag = nonNegativeDiff(
-    peer.feedProgress.remoteProfileNamespaceFeedEndId,
-    peer.feedProgress.inboundProfileNamespaceFeedPulledThrough,
-  );
+  const observedProfileEnd =
+    peer.latestFeedHeadReceipt?.profileNamespaceFeedEndId;
+  const profileLag =
+    observedProfileEnd === undefined
+      ? null
+      : nonNegativeDiff(
+          observedProfileEnd,
+          peer.feedProgress.inboundProfileNamespaceFeedPulledThrough,
+        );
   const profile =
-    profileLag === 0n
-      ? t('federation.feed.caughtUp')
-      : t('federation.feed.behind', { count: profileLag.toString() });
+    profileLag === null
+      ? '-'
+      : profileLag === 0n
+        ? t('federation.feed.caughtUp')
+        : t('federation.feed.behind', { count: profileLag.toString() });
   return (
     <div className="flex flex-col gap-1 font-mono text-xs text-muted-foreground">
       <span title={t('federation.feed.state')}>S {state}</span>

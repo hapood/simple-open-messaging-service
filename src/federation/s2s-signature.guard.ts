@@ -60,6 +60,7 @@ export class S2sSignatureGuard implements CanActivate {
     const {
       keyId,
       domain: signerDomain,
+      created,
       expires,
     } = this.verify.parseSigner(headers);
     const claimedRoot = parseRootKeyHeader(headers['s2s-root-key']);
@@ -178,6 +179,7 @@ export class S2sSignatureGuard implements CanActivate {
       domain: signerDomain,
       namespaceId: peer.id,
       keyId,
+      signatureCreatedAtSec: created,
       signatureExpiresAtSec: expires,
     };
     return true;

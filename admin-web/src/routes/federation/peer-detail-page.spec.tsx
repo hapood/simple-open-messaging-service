@@ -1,15 +1,26 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type {
+  FederationFeedHeadReceipt,
+  FederationHealthObservation,
+} from '@/types/api';
 import { PeerDetailPage } from './peer-detail-page';
 
 const state = vi.hoisted(() => ({
+  health: null as FederationHealthObservation | null,
+  isAdmin: false,
+  namespaceError: null as Error | null,
+  receipt: null as FederationFeedHeadReceipt | null,
   isSuper: false,
   trustLevel: 'available',
   haltCode: null as number | null,
   reviewEpochMatched: true,
   reviewKind: 'root-rotation',
 }));
+const probe = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
+const refetch = vi.hoisted(() => vi.fn());
+const refetchNamespaces = vi.hoisted(() => vi.fn());
 const block = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 const unblock = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 const recognize = vi.hoisted(() => ({
@@ -33,13 +44,25 @@ vi.mock('react-i18next', async (importOriginal) => ({
 }));
 vi.stubGlobal('confirm', confirmMock);
 vi.mock('sonner', () => ({ toast }));
-vi.mock('@/hooks/use-me', () => ({ useIsSuperAdmin: () => state.isSuper }));
+vi.mock('@/hooks/use-me', () => ({
+  useIsSuperAdmin: () => state.isSuper,
+  useIsAdminPlus: () => state.isAdmin || state.isSuper,
+}));
 vi.mock('@/hooks/use-quotas', () => ({
   useQuotaNodes: () => ({ data: [], isLoading: false }),
 }));
 vi.mock('@/hooks/use-federation', () => ({
   useFederationPeer: () => ({
     data: {
+      id: 12,
+      active: true,
+      rootPublicKey: 'root-a',
+      signingKeyCreatedAt: 1700000000000,
+      identityPinnedAt: 1700000001000,
+      peerAssignedLocalNamespaceId: 44,
+      localServiceAvailable: true,
+      peerAcceptanceConfirmed: true,
+      remoteServiceReachable: true,
       domain: 'peer.test',
       trustLevel: state.trustLevel,
       haltCode: state.haltCode,
@@ -50,16 +73,22 @@ vi.mock('@/hooks/use-federation', () => ({
       degradationCount: 0,
       addedBy: null,
       degradationReason: null,
+      latestFeedHeadReceipt: state.receipt,
       feedProgress: {
+        lastHandshakeAt: 1700000002000,
+        latestHealthCheck: state.health,
         namespaceId: 12,
         outboundStateFeedEndId: '40',
         inboundStateFeedPulledThrough: '40',
-        remoteProfileNamespaceFeedEndId: '9',
+        stateFeedSourceGeneratedAt: 1700000003000,
+        profileNamespaceFeedSourceGeneratedAt: 1700000004000,
         inboundProfileNamespaceFeedPulledThrough: '9',
       },
     },
     isLoading: false,
     error: null,
+    refetch,
+    isFetching: false,
   }),
   useFederationPeerNamespaces: () => ({
     data: {
@@ -96,7 +125,10 @@ vi.mock('@/hooks/use-federation', () => ({
       ],
     },
     isLoading: false,
+    error: state.namespaceError,
+    refetch: refetchNamespaces,
   }),
+  useProbeFederationHealth: () => probe,
   useApproveFederationIdentityReview: () => approveReview,
   useRejectFederationIdentityReview: () => rejectReview,
   useBlockFederationPeer: () => block,
@@ -104,11 +136,15 @@ vi.mock('@/hooks/use-federation', () => ({
   useRecognizeFederationPeer: () => recognize,
 }));
 
-function renderPage(options?: { epochMatched?: boolean }) {
+function renderPage(options?: { epochMatched?: boolean; tab?: string }) {
   if (options?.epochMatched !== undefined)
     state.reviewEpochMatched = options.epochMatched;
   return render(
-    <MemoryRouter initialEntries={['/federation/peer.test']}>
+    <MemoryRouter
+      initialEntries={[
+        `/federation/peer.test${options?.tab ? `?tab=${options.tab}` : ''}`,
+      ]}
+    >
       <Routes>
         <Route path="/federation/:domain" element={<PeerDetailPage />} />
       </Routes>
@@ -118,6 +154,19 @@ function renderPage(options?: { epochMatched?: boolean }) {
 
 describe('PeerDetailPage authorization', () => {
   beforeEach(() => {
+    state.health = null;
+    state.isAdmin = false;
+    state.namespaceError = null;
+    probe.mutateAsync
+      .mockReset()
+      .mockResolvedValue({
+        namespaceId: 12,
+        domain: 'peer.test',
+        status: 'degraded',
+      });
+    refetch.mockClear();
+    refetchNamespaces.mockClear();
+    state.receipt = null;
     state.isSuper = false;
     state.trustLevel = 'available';
     state.haltCode = null;
@@ -134,6 +183,133 @@ describe('PeerDetailPage authorization', () => {
     approveReview.mutateAsync.mockReset().mockResolvedValue(undefined);
     rejectReview.mutateAsync.mockReset().mockResolvedValue(undefined);
     confirmMock.mockReset().mockReturnValue(true);
+  });
+
+  it('shows an empty receipt separately from synchronization progress', () => {
+    renderPage({ tab: 'feed' });
+    expect(screen.getByText('federation.receipt.empty')).toBeInTheDocument();
+  });
+
+  it('shows the received snapshot with all three timestamp labels', () => {
+    state.receipt = {
+      namespaceId: 12,
+      stateFeedEndId: '123456789',
+      profileNamespaceFeedEndId: '987654321',
+      generatedAt: 1700000000000,
+      sentAt: 1700000001000,
+      receivedAt: 1700000002000,
+      createdAt: 1700000002000,
+      updatedAt: 1700000002000,
+    };
+    renderPage({ tab: 'feed' });
+    for (const key of ['generatedAt', 'sentAt', 'receivedAt'])
+      expect(screen.getByText(`federation.receipt.${key}`)).toBeInTheDocument();
+    expect(screen.getByText('123456789')).toBeInTheDocument();
+    expect(screen.getAllByText('987654321')).toHaveLength(1);
+    expect(
+      screen.queryByText('federation.receipt.empty'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows committed source times independently from push times', () => {
+    renderPage({ tab: 'feed' });
+    expect(screen.getByTitle('1700000003000')).toHaveAttribute(
+      'datetime',
+      '2023-11-14T22:13:23.000Z',
+    );
+    expect(screen.getByTitle('1700000004000')).toBeInTheDocument();
+    expect(screen.getAllByRole('table')).toHaveLength(1);
+    expect(screen.getByText('federation.inspect.scanHint')).toBeInTheDocument();
+  });
+
+  it('shows signing-key and pin timestamps on the identity tab', () => {
+    renderPage({ tab: 'namespaces' });
+    expect(
+      screen.getByText('federation.inspect.signingKeyCreatedAt'),
+    ).toBeInTheDocument();
+    expect(screen.getByTitle('1700000000000')).toBeInTheDocument();
+    expect(
+      screen.getByText('federation.inspect.identityHint'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows namespace errors instead of an empty result', () => {
+    state.namespaceError = new Error('namespace read failed');
+    renderPage({ tab: 'namespaces' });
+    expect(screen.getByRole('alert')).toHaveTextContent('Operation failed');
+    expect(
+      screen.queryByText('federation.namespaces.empty'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('refreshes current peer and namespaces without starting a probe', () => {
+    renderPage();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'federation.inspect.refresh' }),
+    );
+    expect(refetch).toHaveBeenCalledOnce();
+    expect(refetchNamespaces).toHaveBeenCalledOnce();
+    expect(probe.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('does not probe on tab entry and hides probing from viewers', () => {
+    renderPage({ tab: 'health' });
+    expect(
+      screen.getByText('federation.inspect.notProbed'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'federation.inspect.probe' }),
+    ).not.toBeInTheDocument();
+    expect(probe.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('lets an administrator probe the displayed namespace', async () => {
+    state.isAdmin = true;
+    state.health = {
+      namespaceId: 12,
+      domain: 'peer.test',
+      status: 'degraded',
+      error: null,
+      source: 'manual',
+      startedAt: 1700000000000,
+      completedAt: 1700000001000,
+      durationMs: 1000,
+    };
+    renderPage({ tab: 'health' });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'federation.inspect.probe' }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText('federation.inspect.healthResult.degraded'),
+      ).toBeInTheDocument(),
+    );
+    expect(probe.mutateAsync).toHaveBeenCalledWith(12);
+    expect(
+      screen.getByText('federation.inspect.probeCompletedAt'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a probe failure separately from a remote unavailable response', async () => {
+    state.isAdmin = true;
+    probe.mutateAsync.mockRejectedValueOnce(new Error('network timeout'));
+    renderPage({ tab: 'health' });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'federation.inspect.probe' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Operation failed'),
+    );
+    expect(
+      screen.queryByText('federation.inspect.healthResult.unavailable'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('falls back to overview for an unknown tab', () => {
+    renderPage({ tab: 'invalid' });
+    expect(
+      screen.getByRole('tab', { name: 'federation.detail.tabOverview' }),
+    ).toHaveAttribute('aria-selected', 'true');
   });
 
   it('does not expose peer lifecycle mutations to a non-super administrator', () => {

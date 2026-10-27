@@ -2,7 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { DatabaseService } from '../database/database.service.js';
-import { identityNamespace, profileNamespace } from '../database/schema.js';
+import {
+  identityNamespace,
+  federationFeedState,
+  profileNamespace,
+} from '../database/schema.js';
 import { S2sResponseError } from './federation-errors.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
@@ -12,6 +16,7 @@ import {
   ProfileNamespaceFeedService,
   type ProfileNamespaceBindings,
 } from './profile-namespace-feed.service.js';
+import { assertProfileNamespaceBindings } from './profile-namespace-wire.js';
 import { TrailingSingleFlight } from '../../shared/trailing-single-flight.js';
 import type {
   NamespaceStatus,
@@ -55,10 +60,11 @@ export class ProfileNamespaceRefreshService {
     if (this.refreshFlights.get(key)?.running) return;
     const [publisher] = await this.database.db
       .select({
-        pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
+        pulledThrough:
+          federationFeedState.inboundProfileNamespaceFeedPulledThrough,
       })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, pair.publisherNamespaceId))
+      .from(federationFeedState)
+      .where(eq(federationFeedState.namespaceId, pair.publisherNamespaceId))
       .limit(1);
     if (!publisher)
       throw new Error(
@@ -128,6 +134,7 @@ export class ProfileNamespaceRefreshService {
             profileNamespaceId: pair.profileNamespaceId,
             domain: answer.domain,
             rootPublicKey: answer.rootPublicKey,
+            sourceGeneratedAt: answer.generatedAt,
             updateFeedId: end,
             expired: false,
             // Lifecycle is local state: new rows use the database default,
@@ -141,6 +148,7 @@ export class ProfileNamespaceRefreshService {
             set: {
               domain: answer.domain,
               rootPublicKey: answer.rootPublicKey,
+              sourceGeneratedAt: answer.generatedAt,
               updateFeedId: end,
               expired: false,
             },
@@ -162,9 +170,14 @@ export class ProfileNamespaceRefreshService {
         rootPublicKey: identityNamespace.rootPublicKey,
         retiredAt: identityNamespace.retiredAt,
         active: identityNamespace.active,
-        pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
+        pulledThrough:
+          federationFeedState.inboundProfileNamespaceFeedPulledThrough,
       })
       .from(identityNamespace)
+      .innerJoin(
+        federationFeedState,
+        eq(federationFeedState.namespaceId, identityNamespace.id),
+      )
       .where(eq(identityNamespace.id, publisherNamespaceId))
       .limit(1);
     if (!row || row.rootPublicKey === null)
@@ -201,6 +214,8 @@ export class ProfileNamespaceRefreshService {
           set: {
             domain: row.domain,
             rootPublicKey: row.rootPublicKey,
+            // Local verified bindings have no publisher version timestamp.
+            sourceGeneratedAt: 0,
             updateFeedId: row.pulledThrough,
             expired: false,
             status,
@@ -229,13 +244,15 @@ export class ProfileNamespaceRefreshService {
       publisher.domain,
     );
     try {
-      return await this.trustedPeers.run(context.domain, () =>
+      const answer = await this.trustedPeers.run(context.domain, () =>
         this.peerHttp.get<ProfileNamespaceBindings>(
           `/s2s/v1/profile-namespaces/${nsid}`,
           context.domain,
           64 * 1024,
         ),
       );
+      assertProfileNamespaceBindings(answer);
+      return answer;
     } catch (error) {
       if (
         error instanceof S2sResponseError &&

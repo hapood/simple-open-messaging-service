@@ -53,7 +53,7 @@ third-party profile verification and friend-add identity continuity.
 
 ### 3.1 Coordinate and storage
 
-- `IdentityNamespace.profileNamespaceFeedEndId` (bigint, default 0) on row `0`
+- `ProfileNamespaceFeedHead.endId` (bigint, default 0) on singleton row `0`
   is the single per-server allocator. Every committed identity modification
   increments it once.
 - `ProfileNamespaceFeed` is **one shared serving table** — every peer pulls
@@ -72,12 +72,16 @@ third-party profile verification and friend-add identity continuity.
     which is the only fact a consumer needs.
 - One modification is one counter bump plus one row upsert, committed in the
   same transaction as the `IdentityNamespace` change.
-- Pull progress for each peer lives on that peer's own row as
-  `IdentityNamespace.profileNamespaceFeedPulledThrough` (bigint, default 0),
-  mirroring how `stateFeedEndId` lives on the epoch row. The existing State
-  Feed pull cursor table folds onto the same row as `stateFeedPulledThrough`
-  (NULL = never bootstrapped) as part of this work, so all three feed
-  coordinates share the epoch row.
+- Pull progress for each peer lives in
+  `FederationFeedState.inboundProfileNamespaceFeedPulledThrough` (bigint,
+  default 0). The same peer-scoped row owns `outboundStateFeedEndId`,
+  `inboundStateFeedPulledThrough` (NULL = never bootstrapped),
+  `stateFeedSourceGeneratedAt`, and `profileNamespaceFeedSourceGeneratedAt`.
+  Source times are non-null Unix milliseconds, default 0, updated atomically
+  with each processed item, never from page ends or receipt hints. Empty scans
+  preserve the last item's time. Remote heads are not duplicated here;
+  `FederationFeedHeadReceipt` retains the last lightweight push snapshot.
+  Identity rows carry no feed coordinates.
 
 ### 3.2 Write points
 
@@ -140,7 +144,7 @@ signed):
   from the response — there is no cursor-unavailable envelope and no
   receiver-side bootstrap for this feed. An `after` greater than
   `feedEndId` is malformed;
-- response page: `{ items: [{ namespaceId, feedId }], scannedThrough,
+- response page: `{ items: [{ namespaceId, feedId, generatedAt }], scannedThrough,
 feedEndId, hasMore }` with decimal-string feed ids.
 
 ### 4.4 Namespace bindings pull
@@ -152,7 +156,11 @@ feedEndId, hasMore }` with decimal-string feed ids.
   `account-profiles/:namespaceId/...` — query parameters are reserved for
   cursors and pagination;
 - `nsid = 0` returns the responder's own current bindings
-  `{ domain, rootPublicKey, profileNamespaceFeedEndId }`;
+  `{ domain, rootPublicKey, profileNamespaceFeedEndId, generatedAt }`;
+- `generatedAt` is the corresponding feed item's persisted `updatedAt` in Unix
+  milliseconds. Bindings, claimable local root, feed item and feed end are read
+  in one read-only repeatable-read snapshot. Initial local identity generation
+  publishes namespace 0 in the same transaction. Pages have no top-level time;
 - a positive nsid returns the identity currently bound there; a
   reset-retired id keeps answering with its last retained bindings so
   historical references stay renderable, and only an id that never completed
@@ -168,14 +176,15 @@ feedEndId, hasMore }` with decimal-string feed ids.
 
 `ProfileNamespace`:
 
-| Column                    | Meaning                                                                                               |
-| ------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `publisherNamespaceId`    | our local id for the publisher whose space the row lives in                                           |
-| `profileNamespaceId`      | the identity's nsid in that publisher's space (`0` = the publisher itself)                            |
-| `domain`, `rootPublicKey` | the _subject identity's_ current bindings — for `profileNamespaceId = 0` these describe the publisher |
-| `updateFeedId`            | the publisher's feed counter at fetch time; expiry compares against it                                |
-| `expired`                 | `true` after a matched feed entry until re-resolution commits                                         |
-| `status`                  | lifecycle: `ACTIVE` (in use) or `ARCHIVED` (reset-retired, last bindings retained for rendering)      |
+| Column                    | Meaning                                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `publisherNamespaceId`    | our local id for the publisher whose space the row lives in                                                         |
+| `profileNamespaceId`      | the identity's nsid in that publisher's space (`0` = the publisher itself)                                          |
+| `domain`, `rootPublicKey` | the _subject identity's_ current bindings — for `profileNamespaceId = 0` these describe the publisher               |
+| `sourceGeneratedAt`       | cached binding's publisher generation time; non-null Unix milliseconds, 0 for unresolved or locally seeded bindings |
+| `updateFeedId`            | the publisher's feed counter at fetch time; expiry compares against it                                              |
+| `expired`                 | `true` after a matched feed entry until re-resolution commits                                                       |
+| `status`                  | lifecycle: `ACTIVE` (in use) or `ARCHIVED` (reset-retired, last bindings retained for rendering)                    |
 
 `status` is orthogonal to `expired`: `expired` is a transient freshness
 flag while a refresh converges, `status` is the permanent lifecycle of the
@@ -200,9 +209,9 @@ A row always describes the identity referenced by `profileNamespaceId` in
 1. **Handshake seed.** The recognition commit that activates a peer epoch also
    inserts `(newId, 0)` with the domain we hostname-verified during discovery,
    the verified root, `updateFeedId = 0`, `expired = false`, and
-   `status = ACTIVE`; the first feed pull refreshes the counter. Timestamps
-   reuse `createdAt` / `updatedAt` — no additional clock columns exist in any
-   new table.
+   `status = ACTIVE`; the first feed pull refreshes the counter. Local row
+   timestamps remain `createdAt` / `updatedAt`; `sourceGeneratedAt = 0`
+   explicitly marks a seed without a publisher binding-version timestamp.
 2. **Demand fill.** A client resolution request routes on the publisher:
    `publisherNamespaceId = 0` is this server's own namespace space and
    always answers synchronously — `(0, 0)` from the keypair snapshot (the
@@ -223,8 +232,8 @@ coalescing, in-flight deduplication, retry classification, no business locks.
 
 ### 5.3 Feed pull scheduling
 
-- Pull progress is the `profileNamespaceFeedPulledThrough` column on the
-  peer's `IdentityNamespace` row — no separate cursor table exists.
+- Pull progress is `FederationFeedState.inboundProfileNamespaceFeedPulledThrough`,
+  independent of identity lifecycle and last-received hint metadata.
 - `ProfileNamespaceFeedPullService` mirrors `peer-state-feed-pull.service.ts`:
   fixed-through drain loops, per-item transactions advancing the column,
   advisory-lock single-flight; first-time pulls simply omit `after` (the
@@ -324,16 +333,16 @@ never a silently weaker fetch.
 - IDB store `profileNamespaces`, key `[publisherNamespaceId,
 profileNamespaceId]`, value `{ domain, rootPublicKey, updateFeedId,
 changeSeq, expired, status, refreshedAt }`. `updateFeedId` is the publisher's feed
-position from a resolve answer; `changeSeq` is the local change-feed
-coordinate last applied to the row. `status` mirrors the server's
-locally maintained `ACTIVE` / `ARCHIVED` lifecycle, not a lifecycle disclosed
-by the remote publisher. A null `domain` is a tomb: the feed was
-pulled but the cache for that pair was not.
+  position from a resolve answer; `changeSeq` is the local change-feed
+  coordinate last applied to the row. `status` mirrors the server's
+  locally maintained `ACTIVE` / `ARCHIVED` lifecycle, not a lifecycle disclosed
+  by the remote publisher. A null `domain` is a tomb: the feed was
+  pulled but the cache for that pair was not.
 - IDB stores `profileNamespaceTombs` (key `[publisherNamespaceId,
 profileNamespaceId]`) and `profileTombs` (key `[publisherNamespaceId,
 profileNamespaceId, account]`) record federation-reported permanent loss
-(the `FEDERATION_*_UNRECOVERABLE` codes). A row's presence is the tomb;
-the binding content is empty. Sparse by design.
+  (the `FEDERATION_*_UNRECOVERABLE` codes). A row's presence is the tomb;
+  the binding content is empty. Sparse by design.
 - Settings key `profileNamespaceChangeEndId` is the durable change-feed
   cursor.
 

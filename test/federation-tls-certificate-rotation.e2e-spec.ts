@@ -319,9 +319,9 @@ describe('federation survives a TLS certificate replacement', () => {
     );
     expect(probe.status).toBe(200);
     const relayed = JSON.parse(probe.text) as {
-      data: { status: string };
+      data: { feedProgress: { latestHealthCheck: { status: string } } };
     };
-    expect(relayed.data.status).toBe('available');
+    expect(relayed.data.feedProgress.latestHealthCheck.status).toBe('available');
 
     // The S2S identity is untouched by the transport change.
     expect(await peerRowOnA()).toMatchObject({
@@ -389,7 +389,7 @@ describe('federation survives a TLS certificate replacement', () => {
     );
     expect(probe.status, probe.text).toBe(200);
     expect(
-      (JSON.parse(probe.text) as { data: { status: string } }).data.status,
+      (JSON.parse(probe.text) as { data: { feedProgress: { latestHealthCheck: { status: string } } } }).data.feedProgress.latestHealthCheck.status,
     ).toBe('degraded');
   }, 120_000);
 });

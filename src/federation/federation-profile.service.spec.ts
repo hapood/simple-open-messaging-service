@@ -16,6 +16,7 @@ const profile = (profileRev: number): S2SProfile => ({
   avatar: null,
   bio: 'hello',
   profileRev,
+  generatedAt: 1_700_000_000_000,
 });
 
 function makeSubject() {
@@ -37,6 +38,8 @@ function makeSubject() {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
+        createdAt: new Date(1_800_000_000_000),
+        generatedAt: 1_700_000_000_000,
         displayName: 'Alice',
         avatar: '',
         bio: 'hello',
@@ -93,6 +96,7 @@ describe('FederationProfileService localization', () => {
       avatar: null,
       bio: 'hello',
       profileRev: 1,
+      generatedAt: 1_700_000_000_000,
     });
 
     await subject.getLocalAccountProfile({
@@ -107,6 +111,7 @@ describe('FederationProfileService localization', () => {
       avatar: '',
       bio: 'hello',
       profileRev: 1,
+      generatedAt: 1_700_000_000_000,
     });
   });
 
@@ -124,11 +129,28 @@ describe('FederationProfileService localization', () => {
       account: 'alice',
       namespaceId: 0,
       profileRev: 0,
+      generatedAt: 0,
       displayName: 'alice',
       bio: '',
       avatar: null,
     });
     expect(database.db.query.profileTable.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('keeps the stored version time across repeated reads instead of using the current clock', async () => {
+    const { subject } = makeSubject();
+    for (const now of [1_800_000_000_000, 1_900_000_000_000]) {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        await expect(
+          subject.getStoredProfile(0, 'alice', 0, 1),
+        ).resolves.toMatchObject({
+          generatedAt: 1_700_000_000_000,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    }
   });
 
   it('does not expose a missing or system account as a no-profile user', async () => {
@@ -204,6 +226,7 @@ describe('FederationProfileService localization', () => {
       account: 'alice',
       profileNamespaceId: 0,
       profileRev: 8,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Alice',
       avatar: '',
       bio: 'hello',
@@ -237,6 +260,7 @@ describe('FederationProfileService localization', () => {
       account: 'alice',
       profileNamespaceId: 0,
       profileRev: 2,
+      generatedAt: 1_700_000_000_000,
       displayName: '😀'.repeat(31),
       bio: '界'.repeat(120),
       avatar: '',
@@ -268,6 +292,20 @@ describe('FederationProfileService localization', () => {
       h: 1,
     });
   });
+
+  it.each([undefined, null, -1, 0.5, '1', Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid generation time %s before storing a foreign snapshot',
+    async (generatedAt) => {
+      const { subject, database } = makeSubject();
+      await expect(
+        subject.materializeExactForeignProfile(
+          { ...profile(1), generatedAt } as S2SProfile,
+          12,
+        ),
+      ).rejects.toMatchObject({ bizCode: BusinessCode.FEDERATION_MALFORMED });
+      expect(database.db.transaction).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects revision zero before opening a transaction', async () => {
     const { subject, database } = makeSubject();

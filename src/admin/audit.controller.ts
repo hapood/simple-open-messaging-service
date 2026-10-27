@@ -60,11 +60,11 @@ export class AuditController {
           route: adminActionLog.route,
           status: adminActionLog.status,
           errorMessage: adminActionLog.errorMessage,
-          at: adminActionLog.at,
+          createdAt: adminActionLog.createdAt,
         })
         .from(adminActionLog)
         .where(where)
-        .orderBy(desc(adminActionLog.at))
+        .orderBy(desc(adminActionLog.createdAt))
         .offset(dto.skip ?? 0)
         .limit(dto.take ?? 50),
       this.database.db

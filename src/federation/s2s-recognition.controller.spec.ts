@@ -355,12 +355,15 @@ describe('FederationRecognitionService health transitions', () => {
     expect(degrade).toHaveBeenCalledExactlyOnceWith(
       'peer.example',
       'Health unavailable',
+      undefined,
+      undefined,
     );
   });
 
   it('marks reachability lost when Health discovery fails', async () => {
+    const { database } = txDatabase({ id: 12, active: true, rootPublicKey: 'root-a' });
     const recognition = new FederationRecognitionService(
-      {} as never,
+      database as never,
       {
         resolveBase: vi.fn().mockRejectedValue(new Error('DNS timeout')),
       } as never,
@@ -379,6 +382,8 @@ describe('FederationRecognitionService health transitions', () => {
     expect(degrade).toHaveBeenCalledExactlyOnceWith(
       'peer.example',
       'Health discovery: DNS timeout',
+      undefined,
+      expect.objectContaining({ id: 12 }),
     );
   });
 
@@ -410,6 +415,7 @@ describe('FederationRecognitionService health transitions', () => {
     };
     const database = {
       db: {
+        query: { identityNamespace: { findFirst: async () => peer } },
         transaction: vi.fn(
           async (operation: (value: typeof tx) => Promise<void>) =>
             operation(tx),
@@ -521,7 +527,7 @@ describe('FederationRecognitionService health transitions', () => {
         }),
       })),
     };
-    const { database } = txDatabase();
+    const { database } = txDatabase({ id: 12, active: true, rootPublicKey: 'root-a', identityPinnedAt: new Date(), localServiceAvailable: true });
     const namespaces = {
       captureVerifiedInTx: vi.fn().mockResolvedValue({ namespaceId: 12 }),
       recordPeerAssignedLocalNamespaceInTx: vi
@@ -540,9 +546,7 @@ describe('FederationRecognitionService health transitions', () => {
     const first = recognition.checkHealth('peer.example');
     const second = recognition.checkHealth('peer.example');
 
-    expect(discovery.resolveBase).toHaveBeenCalledExactlyOnceWith(
-      'peer.example',
-    );
+    await vi.waitFor(() => expect(discovery.resolveBase).toHaveBeenCalledExactlyOnceWith('peer.example'));
     releaseBase('http://127.0.0.1:1');
     await expect(Promise.all([first, second])).resolves.toEqual([
       'available',
@@ -887,6 +891,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     Object.assign(database.db, { transaction });
     const doc = {
       protocolVersions: [1],
+      signingKeyCreatedAt: 1700000000000,
       roots: [
         {
           ed25519: TEST_ROOT_KEY,
@@ -1003,6 +1008,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     expect(target.acceptInbound).toHaveBeenCalledWith(
       'peer.example',
       TEST_ROOT_KEY,
+      1700000000000,
       44,
     );
     expect(target.reviewInsert).not.toHaveBeenCalled();
@@ -1040,6 +1046,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     expect(target.acceptInbound).toHaveBeenCalledWith(
       'peer.example',
       TEST_ROOT_KEY,
+      1700000000000,
       44,
     );
     expect(target.reviewInsert).not.toHaveBeenCalled();
@@ -1136,6 +1143,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     expect(target.verify).toBeDefined();
     const discoveryDoc = {
       protocolVersions: [1],
+      signingKeyCreatedAt: 1700000000000,
       roots: [
         {
           ed25519: OTHER_ROOT_KEY,

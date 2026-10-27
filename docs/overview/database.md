@@ -10,6 +10,27 @@ coordinates and authorization are defined separately in [spec/](../../spec/READM
 The descriptions below use current physical table names; domain facades may
 present a joined view without introducing another table.
 
+## Common row timestamps
+
+Every business table has non-null `createdAt` and `updatedAt` columns with
+millisecond precision. Both default to PostgreSQL `CURRENT_TIMESTAMP` on insert;
+explicit nulls are rejected. `createdAt` is not refreshed by ordinary updates.
+For current-fact slots such as Group Meta, replacing the fact coordinate creates
+a new fact and therefore sets its copy creation time explicitly.
+
+Drizzle updates and conflict updates supply `updatedAt` through the schema's
+`$onUpdate` callback unless the domain write provides a timestamp explicitly.
+Raw SQL writes, including writes performed by existing business triggers, set
+`updatedAt` in their assignments. There is no generic timestamp trigger: direct
+SQL outside these application paths must maintain the field itself. Lock-only
+self-assignments preserve timestamps because they do not change business state.
+
+`AdminActionLog`, `LoginCode`, and `S2SKeyCache` use `createdAt` for the audit
+record, code issuance, and cache-entry creation times respectively, rather than
+storing duplicate `at`, `issuedAt`, or `fetchedAt` columns. Independent event times
+such as `expiresAt`, `revokedAt`, `requestedAt`, and source-copy timestamps remain
+separate.
+
 ## Identity and profiles
 
 ### Account
@@ -37,7 +58,12 @@ and profiles. There is no physical `Group` table.
 ### Profile
 
 `Profile` stores immutable display snapshots: `displayName`, inline avatar,
-`bio`, and creation time. The primary key is:
+`bio`, and the original revision's `generatedAt`. This required `bigint` is a
+non-negative Unix-millisecond safe integer with no default. Local revision
+creation supplies it once; foreign ingestion and group-member forwarding
+preserve it unchanged. It participates in immutable-revision conflict checks.
+Local `createdAt` and `updatedAt` remain independent row timestamps, not source
+generation times. The primary key is:
 
 ```text
 (publisherNamespaceId, account, profileNamespaceId, profileRev)
@@ -51,7 +77,10 @@ Names and avatars are not mutable columns on `Account` or `GroupAccount`.
 
 `ProfileNamespace`, `ProfileNamespaceFeed`, `ProfileNamespaceChangeFeed`, and
 `ProfileNamespaceChangeFeedHead` support binding resolution, expiry, and client
-invalidation. `ProfileNamespaceTombstone` and `ProfileTombstone` record permanent
+invalidation. `ProfileNamespace.sourceGeneratedAt` preserves the cached binding's
+publisher generation time independently of local row timestamps. It is non-null,
+defaults to 0 for unresolved/local seeds, and is replaced with fetched bindings,
+not by invalidation notices. `ProfileNamespaceTombstone` and `ProfileTombstone` record permanent
 loss separately from transient expiry. See [Profile Namespace Feed](../design/profile-namespace-feed.md)
 and [account/profile separation](../design/account-profile-separation.md).
 
@@ -100,8 +129,13 @@ HELLO and session-targeted SSE let clients recover it.
 
 `RelationshipIntent` is a directed fact keyed by author and receiver account
 and namespace coordinates. Each direction has its own status, note,
-`requestedAt`, `expiresAt`, and exact profile reference. `REQUESTED` is effective
-only before its absolute expiry, at most seven days after the request time.
+`statusChangedAt`, `expiresAt`, and exact profile reference. `statusChangedAt`
+is the author's time for the current request, acknowledgement, or revocation,
+not the local row's creation or update time. It is required without a database
+default, and received values are preserved. `REQUESTED` is effective only before
+its absolute expiry, at most seven days after its transition time. The separate
+`RelationshipRequest.requestedAt` retains the original request-round time after
+acceptance or withdrawal.
 `ACCEPTED` and `REVOKED` have no expiry.
 
 `RelationshipPair` folds the two directions under the canonical pair lock. It
@@ -240,6 +274,43 @@ state. Namespace `0` is the local identity. `S2SKeyCache` caches certified signi
 keys. `LocalFederationRoot`, `LocalFederationSigningKey`, and
 `LocalFederationSigningState` own local key lifecycle;
 `FederationIdentityReview` retains administrator review state.
+
+`FederationFeedState` owns each remote namespace's outbound State Feed allocator,
+inbound State Feed bootstrap/progress, and inbound Profile Namespace Feed
+progress. It also owns nullable `lastHandshakeAt` (the last completed recognition
+exchange) and `latestHealthCheck` (the latest automatic or administrator-triggered
+outbound Health observation). The observation includes namespace/domain, start and
+completion times, monotonic duration, source, remote status or request error.
+These fields do not modify consumption coordinates or source generation times.
+Identity changes invalidate in-flight observations; in-place root replacement
+clears previous handshake/Health observations without resetting Feed progress.
+`stateFeedSourceGeneratedAt` and `profileNamespaceFeedSourceGeneratedAt`
+retain the last processed item's source time atomically with each item commit;
+empty scans preserve these values. They are non-null Unix millisecond integers,
+initially 0, and never scheduling targets or monotonic clocks. Remote heads are
+not duplicated in this table. Namespace creation initializes
+this independent row in the same transaction; rebinding an existing namespace
+preserves it. `ProfileNamespaceFeedHead` is the single local Profile Namespace
+Feed publisher allocator, not a column on the local identity sentinel.
+Outbound allocator locks use `FOR NO KEY UPDATE` after domain locks and follow
+namespace order. Publication and allocator changes commit together.
+
+`IdentityNamespace.signingKeyCreatedAt` stores the peer's advertised active
+signing-key creation time as a required positive epoch-millisecond integer, with
+no default or missing-value fallback. The local namespace sentinel (`id = 0`) has
+no remote certificate and explicitly stores zero; remote rows cannot store zero.
+Discovery replaces it in the same transaction
+as the peer certificate cache, after checking the namespace's domain and pinned
+root. It is diagnostic metadata, not a certificate validity or trust boundary.
+
+`FederationFeedHeadReceipt` stores one complete last-received hint per publisher:
+the two original decimal head strings, source `generatedAt`, send time `sentAt`
+derived from the verified HTTP signature's `created * 1000` (whole-second
+precision), and local `receivedAt`. Its common `createdAt` records the first observation and
+`updatedAt` follows each replacement. Observations are serialized locally and
+may contain smaller heads after reordering; they never replace monotonic sync
+progress. Admin compares these received observations with committed progress in
+one table, using separate column groups and shared notification timestamps.
 
 `PeerStateFeed` stores compacted per-peer directional facts and content heads.
 `FederationThreadSyncState` retains independent forward targets/progress;

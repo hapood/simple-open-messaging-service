@@ -21,6 +21,7 @@ interface RootKeyEntry {
 
 interface DiscoveryDocumentV1View {
   software?: string;
+  signingKeyCreatedAt: EpochMilliseconds;
   protocolVersions: number[];
   roots: RootKeyEntry[];
   keys: SigningKeyCertificate[];
@@ -33,11 +34,20 @@ The interface above is the view that MUST be validated after selecting v1; it do
 
 `protocolVersions` MUST follow [Core Protocol, Section 2](./protocol.md). `roots` is the server-identity anchor set: the root public keys that currently authorize this server's signing keys, together with each key's half-open validity interval. Within one document, `roots[].ed25519` values MUST NOT repeat, and at least one root MUST be currently valid when the response is generated. A root public key is not self-certifying; it is trusted only through the pinning rules in Section 1.2. Root keys and HTTP signing keys have distinct roles; equality of their public-key values MUST NOT be a protocol requirement.
 
+`signingKeyCreatedAt` is required diagnostic metadata: the creation time of the
+signing key corresponding to the certificate currently selected for outbound HTTP
+signatures, in positive safe-integer Unix epoch milliseconds. It is not the
+response generation time or necessarily the certificate's `notBefore`. The publisher
+MUST update it when its active signing key changes. It is not
+part of the root-signed certificate statement; consumers MUST NOT use it for
+certificate selection, validity, authorization, or rotation ordering.
+
 `keys` MUST be a non-empty array and may contain old, current, and not-yet-active signing-key certificates simultaneously. `keyId` values MUST NOT repeat within one document, and at least one certificate MUST be valid when the response is generated. Each certificate names its authorizing root in `keys[].root`; that root MUST appear in `roots` with a validity interval enclosing the certificate's own interval.
 
 | JSON key                         | Required | Role and example                                                                                                                                                                                                                      |
 | -------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `software`                       | No       | Untrusted diagnostic text such as `example-server/1.4.2`; never used for protocol decisions.                                                                                                                                          |
+| `signingKeyCreatedAt`             | Yes      | Creation time of the active HTTP signing key in Unix epoch milliseconds; diagnostic only. |
 | `protocolVersions`               | Yes      | The complete set of fully supported majors, such as `[1, 2]`.                                                                                                                                                                         |
 | `roots`                          | Yes      | The root identity anchor set: every root public key currently authorized to sign this server's signing-key certificates, with validity intervals; may overlap during a root rotation.                                                 |
 | `roots[].ed25519`                | Yes      | An Ed25519 root public key, such as `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`; a root does not directly sign ordinary HTTP requests.                                                                                             |
@@ -331,11 +341,11 @@ Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
-Content-Digest: sha-256=:S8Ej706iBje3HBAal9+2/jBmLwJdAzMgCxGP7f/jdUo=:
+Content-Digest: sha-256=:XL48VD/bI9d6cDubOsmCwa99/1OORGn+OkEKWe2tbPk=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:JH/NAUDHFdVtcmBlEVups5pEbphOT4w16AAnMh4s+BX0MSOMPMwpEVckwoIX23stovuU8ZBIwqRTgGygW9p+Bg==:
+Signature: sig1=:sslssGOXu1AjV90CmPWE3KFq+7g6geYRwDisCna8fBK+vVZ199020DY+JKplo5Bf+CsLgRp7WOmOCqDtJ+mxAw==:
 
-{"stateFeedEndId":"12","profileNamespaceFeedEndId":"7"}
+{"stateFeedEndId":"12","profileNamespaceFeedEndId":"7","generatedAt":1699999999000}
 ```
 
 The exact UTF-8 bytes of the final body line are used for both `Content-Digest` and the signature; the trailing newline shown by formatting is not part of the body. `Host` produces signature component `"@authority": b.example`. The request has no query, so its signature component is `"@query": ?`. The complete signature base and non-secret private test key are in [`schema/vectors/http-message-signature.json`](./schema/vectors/http-message-signature.json). [Federation v1 Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) contains complete certificates, requests, responses, and signature bases for Recognize and Health.

@@ -64,6 +64,7 @@ declare module 'fastify' {
       domain: string;
       namespaceId: number;
       keyId: string;
+      signatureCreatedAtSec: number;
       signatureExpiresAtSec: number;
     };
   }

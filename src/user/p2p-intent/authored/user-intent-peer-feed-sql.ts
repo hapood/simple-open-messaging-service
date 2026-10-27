@@ -32,13 +32,13 @@ export function userIntentPeerWriteSql(
           WHERE d."threadId" = ${input.threadId} AND d."publisherNamespaceId" = 0), 0))`;
   return sql`
     intent_source AS MATERIALIZED (
-      SELECT v.status, v.note, v."profileNamespaceId", v."profileRev", v."requestedAt", v."expiresAt"
+      SELECT v.status, v.note, v."profileNamespaceId", v."profileRev", v."statusChangedAt", v."expiresAt"
       FROM ${sql.raw(input.ownState)} v
     ), peer_write AS MATERIALIZED (
       SELECT jsonb_build_object('status', v.status,
           'namespaceId', v."profileNamespaceId",
           'profileRev', v."profileRev", 'note', v.note,
-          'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
+          'statusChangedAt', floor(extract(epoch FROM v."statusChangedAt") * 1000)::bigint,
           'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) || ${heads} AS body
       FROM intent_source v

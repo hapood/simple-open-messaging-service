@@ -14,9 +14,9 @@ beforeAll(async () => {
   );
   node.domain = home.rows[0].domain;
   await client.query(`
-    INSERT INTO "IdentityNamespace" (id, domain, "rootPublicKey", "identityPinnedAt")
-      VALUES (91, 'bravo.test', 'test-key-bravo', now()),
-             (92, 'charlie.test', 'test-key-charlie', now());
+    INSERT INTO "IdentityNamespace" (id, domain, "rootPublicKey", "identityPinnedAt", "signingKeyCreatedAt")
+      VALUES (91, 'bravo.test', 'test-key-bravo', now(), 1700000000000),
+             (92, 'charlie.test', 'test-key-charlie', now(), 1700000000000);
     INSERT INTO "ProfileNamespace" ("publisherNamespaceId", "profileNamespaceId", domain, "rootPublicKey", expired)
       VALUES (92, 7, 'bravo.test', 'test-key-bravo', false);
     INSERT INTO "Account" (id, account) VALUES (101, 'owner');
@@ -25,11 +25,11 @@ beforeAll(async () => {
       VALUES (301, 'GROUP', now(), '!native', 201, 0),
              (302, 'GROUP', now(), '!mirror', NULL, 91),
              (303, 'P2P', now(), NULL, NULL, 0);
-    INSERT INTO "Profile" ("publisherNamespaceId", account, "profileNamespaceId", "profileRev", "displayName", bio)
-      VALUES (0, '!native', 0, 1, 'Native group', 'Native bio'),
-             (91, '!mirror', 0, 2, 'Mirror group', 'Mirror bio'),
-             (91, 'remote', 0, 1, 'Remote profile', ''),
-             (92, 'remote', 7, 1, 'Remote profile', '');
+    INSERT INTO "Profile" ("publisherNamespaceId", account, "profileNamespaceId", "profileRev", "displayName", bio, "generatedAt")
+      VALUES (0, '!native', 0, 1, 'Native group', 'Native bio', 1700000000000),
+             (91, '!mirror', 0, 2, 'Mirror group', 'Mirror bio', 1700000000000),
+             (91, 'remote', 0, 1, 'Remote profile', '', 1700000000000),
+             (92, 'remote', 7, 1, 'Remote profile', '', 1700000000000);
     INSERT INTO "GroupMeta" ("threadId", "metaEndId", "profileRev") VALUES (301, 1, 1), (302, 1, 2);
     INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", operation, body)
       VALUES (301, 1, 'MEMBER_UPSERT', '{"account":"owner","namespaceId":0,"role":"OWNER","profileRev":1}'),
@@ -38,7 +38,7 @@ beforeAll(async () => {
       "endpointBType", "endpointBAccount", "endpointBNamespaceId", "threadId", active)
       VALUES (401, 'P2P', 'USER', 'owner', 0, 'USER', 'remote', 91, 303, true);
     INSERT INTO "RelationshipIntent" ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
-      status, "profileNamespaceId", "profileRev", "requestedAt", "messageEndSeq", "tombstoneEndSeq")
+      status, "profileNamespaceId", "profileRev", "statusChangedAt", "messageEndSeq", "tombstoneEndSeq")
       VALUES ('remote', 91, 'owner', 0, 'ACCEPTED', 0, 1, now(), 0, 0);
     INSERT INTO "RelationshipRequest" (id, kind, "authorAccount", "authorNamespaceId",
       "receiverAccount", "receiverNamespaceId", "authorProfileNamespaceId", "authorProfileRev",

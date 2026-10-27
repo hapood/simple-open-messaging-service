@@ -595,6 +595,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
           domain,
           rootPublicKey: null,
           identityPinnedAt: null,
+          signingKeyCreatedAt: 0,
         });
       } else {
         await this.rebindLocalDomainInTx(tx, domain);
@@ -778,6 +779,9 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
 
     const snapshot = await this.reloadSnapshot(tx);
     if (!snapshot) throw new Error('local identity rows disappeared');
+    // Publish the initial local binding atomically with its root. Every
+    // servable namespace, including 0, must have a persisted generation time.
+    await this.changes.recordNamespaceChangeInTx(tx, 0);
     return snapshot;
   }
 

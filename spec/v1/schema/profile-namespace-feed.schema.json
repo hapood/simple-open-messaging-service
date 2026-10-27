@@ -5,8 +5,11 @@
   "$defs": {
     "item": {
       "type": "object",
-      "required": ["namespaceId", "feedId"],
+      "required": ["namespaceId", "feedId", "generatedAt"],
       "properties": {
+        "generatedAt": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        },
         "namespaceId": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         },

@@ -2935,6 +2935,11 @@ export class MessageThreadComponent implements OnDestroy {
     const ct = this.contentRef()?.nativeElement;
     const trd = this.userMsgTrd();
     if (!vp || !ct || !trd) return;
+    if (trd.blocked) {
+      this.presentBlockedThread(trd.threadId);
+      return;
+    }
+    this.blockedReadyTrdId = null;
     this.teardown();
     this.currentTrdId = null;
     this.initScroller(vp, ct, trd);
@@ -2948,15 +2953,16 @@ export class MessageThreadComponent implements OnDestroy {
     this.reinit();
   }
 
-  /** Whether this pane has a reusable message or retry surface for the currently-bound thread. The A/B
+  /** Whether this pane has a reusable message, retry, or blocked surface for the currently-bound thread. The A/B
    *  host's fg-resident branch reads this so it only re-inits a genuinely COLD pane (re-open after a close)
    *  and skips a spurious reset on an already-warm one — which matters because every `promote()` flips
    *  `fgSlot` and re-triggers the coordinator, so without this guard a warm pane would be reset on every
    *  switch. A plain method (not a signal): a synchronous snapshot read, intentionally untracked. */
   isWarm(): boolean {
     const trd = this.userMsgTrd();
+    if (!trd) return false;
+    if (trd.blocked) return this.blockedReadyTrdId === trd.threadId;
     return (
-      !!trd &&
       (this.kernelReady || this.initialLoadFailed()) &&
       this.currentTrdId === trd.threadId
     );
@@ -2972,6 +2978,20 @@ export class MessageThreadComponent implements OnDestroy {
   reset(): void {
     const trd = this.userMsgTrd();
     if (!trd) return;
+    if (trd.blocked) {
+      // Resident blocked panes still owe the host a ready handshake on re-selection.
+      // Defer it outside the coordinator effect, without ever starting a message kernel.
+      queueMicrotask(() => {
+        const current = this.userMsgTrd();
+        if (current?.threadId !== trd.threadId || !current.blocked) return;
+        if (this.blockedReadyTrdId === trd.threadId) {
+          this.ready.emit(trd.threadId);
+        } else {
+          this.presentBlockedThread(trd.threadId);
+        }
+      });
+      return;
+    }
     if (this.kernelReady && this.currentTrdId === trd.threadId) {
       queueMicrotask(() => this.ready.emit(trd.threadId));
       return;

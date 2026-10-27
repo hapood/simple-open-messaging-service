@@ -68,6 +68,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
         await database.db
           .insert(identityNamespace)
           .values({
+            signingKeyCreatedAt: 1700000000000,
             domain: peerDomain,
             rootPublicKey: Buffer.alloc(32, 1).toString('base64'),
             identityPinnedAt: now,

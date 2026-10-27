@@ -90,6 +90,7 @@ describe('exact group-member profile disclosure', () => {
         publisherNamespaceId: memberNs,
         profileNamespaceId: 0,
         profileRev: 4,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Old snapshot',
       },
       {
@@ -97,6 +98,7 @@ describe('exact group-member profile disclosure', () => {
         publisherNamespaceId: memberNs,
         profileNamespaceId: 0,
         profileRev: 7,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Message snapshot',
       },
     ]);
@@ -141,7 +143,7 @@ describe('exact group-member profile disclosure', () => {
       note: '',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
     });
     await database.db.insert(peerStateFeed).values({
       namespaceId: signerNs,
@@ -193,11 +195,80 @@ describe('exact group-member profile disclosure', () => {
       account: memberAccount,
       namespaceId: memberNs,
       profileRev: 4,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Old snapshot',
     });
     expect(await lookup(7)).toBeNull();
     expect(await lookup(0)).toBeNull();
     expect(await lookup(4, memberNs)).toBeNull();
+  });
+
+  it('preserves the source generation time through ingestion, authorized forwarding, and another cache', async () => {
+    const source = {
+      account: memberAccount,
+      namespaceId: 0,
+      profileRev: 4,
+      displayName: 'Old snapshot',
+      avatar: null,
+      bio: '',
+      generatedAt: 1_700_000_000_000,
+    };
+    await database.db
+      .delete(profileTable)
+      .where(
+        and(
+          eq(profileTable.account, memberAccount),
+          eq(profileTable.profileRev, 4),
+        ),
+      );
+    await service.materializeExactForeignProfile(source, memberNs);
+    const downstream = new FederationProfileService(
+      database,
+      {} as never,
+      {
+        get: async () => {
+          const profile = (await lookup(4))!;
+          return {
+            account: profile.account,
+            displayName: profile.displayName,
+            bio: profile.bio,
+            avatar: profile.avatar,
+            generatedAt: profile.generatedAt,
+          };
+        },
+      } as never,
+      {} as never,
+      {} as never,
+    );
+    const forwarded = await downstream.fetchExactGroupMemberProfile(
+      groupName,
+      memberAccount,
+      4,
+      localDomain,
+      memberNs,
+    );
+    expect(forwarded!.generatedAt).toBe(source.generatedAt);
+    await downstream.materializeExactForeignProfile(forwarded!, signerNs);
+    const cached = await downstream.getStoredProfile(
+      signerNs,
+      memberAccount,
+      memberNs,
+      4,
+    );
+    expect(cached).toEqual({ ...source, namespaceId: memberNs });
+    await downstream.materializeExactForeignProfile(forwarded!, signerNs);
+    await expect(
+      downstream.materializeExactForeignProfile(
+        {
+          ...forwarded!,
+          generatedAt: source.generatedAt + 1,
+        },
+        signerNs,
+      ),
+    ).rejects.toThrow('conflicting immutable profile revision');
+    expect(
+      await downstream.getStoredProfile(signerNs, memberAccount, memberNs, 4),
+    ).toEqual(cached);
   });
 
   it('serves a distinct message revision only inside the published interval', async () => {
@@ -291,6 +362,7 @@ describe('exact group-member profile disclosure', () => {
       publisherNamespaceId: memberNs,
       profileNamespaceId: 0,
       profileRev: revision,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Exact source snapshot',
     };
     await database.db.insert(profileTable).values([

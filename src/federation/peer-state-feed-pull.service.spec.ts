@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
@@ -24,9 +26,14 @@ function harness(pulledThrough: bigint | null = 0n) {
   });
   const whereUpdate = vi.fn(async () => undefined);
   const setUpdate = vi.fn(
-    (values: { stateFeedPulledThrough: bigint | null }) => ({
+    (values: { inboundStateFeedPulledThrough: bigint | SQL }) => ({
       where: async () => {
-        Object.assign(epoch, values);
+        const value = values.inboundStateFeedPulledThrough;
+        epoch.stateFeedPulledThrough =
+          typeof value === 'bigint'
+            ? value
+            : (epoch.stateFeedPulledThrough ??
+              (new PgDialect().sqlToQuery(value).params[0] as bigint));
         order.push('cursor');
         return whereUpdate();
       },
@@ -65,6 +72,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
             account: '!group',
             eventType: 'THREAD_CONTENT_HEAD',
             feedId: '1',
+            generatedAt: 0,
             body: {
               messageEndSeq: 0,
               tombstoneEndSeq: 0,
@@ -90,6 +98,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
               account: '!group',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
+              generatedAt: 0,
               body: {},
             },
           ],
@@ -117,6 +126,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
             account: '!group',
             eventType: 'THREAD_CONTENT_HEAD',
             feedId: '1',
+            generatedAt: 0,
             body: {
               messageEndSeq: 0,
               tombstoneEndSeq: 0,
@@ -151,12 +161,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
               account: '!group-a',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
+              generatedAt: 0,
               body: {},
             },
             {
               account: '!group-b',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
+              generatedAt: 0,
               body: {},
             },
           ],
@@ -190,12 +202,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
               account: '!group-a',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
+              generatedAt: 0,
               body: {},
             },
             {
               account: '!group-b',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
+              generatedAt: 0,
               body: {},
             },
           ],
@@ -217,12 +231,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
           account: '!group-b',
           eventType: 'THREAD_CONTENT_HEAD' as const,
           feedId: '2',
+          generatedAt: 0,
           body: {},
         },
         {
           account: '!group-c',
           eventType: 'THREAD_CONTENT_HEAD' as const,
           feedId: '3',
+          generatedAt: 0,
           body: {},
         },
       ],
@@ -265,6 +281,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
               account: 'a',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
+              generatedAt: 0,
               body: {},
             },
           ],

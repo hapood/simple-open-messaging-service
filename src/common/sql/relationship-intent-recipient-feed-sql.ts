@@ -12,9 +12,11 @@ export function peerIntentFeedWriteSql(params: {
   const resultName = params.resultName ?? 'recipient_result';
   return sql`
     peer_alloc AS (
-      UPDATE "IdentityNamespace" SET "stateFeedEndId" = "stateFeedEndId" + (SELECT count(*) FROM peer_changes)
-      WHERE id = ${params.namespaceId} AND "retiredAt" IS NULL
-      RETURNING "stateFeedEndId" AS "allocatedThrough"
+      UPDATE "FederationFeedState" SET "updatedAt" = CURRENT_TIMESTAMP,
+        "outboundStateFeedEndId" = "outboundStateFeedEndId" + (SELECT count(*) FROM peer_changes)
+      WHERE "namespaceId" = ${params.namespaceId}
+        AND EXISTS (SELECT 1 FROM "IdentityNamespace" WHERE id = ${params.namespaceId} AND "retiredAt" IS NULL)
+      RETURNING "outboundStateFeedEndId" AS "allocatedThrough"
     ), peer_feed AS (
       INSERT INTO "PeerStateFeed"
         ("namespaceId", account, "eventType", "subjectAccount", "subjectNamespaceId", "feedId", body)

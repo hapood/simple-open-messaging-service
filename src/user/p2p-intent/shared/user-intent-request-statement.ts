@@ -6,7 +6,7 @@ import {
 
 export interface UserIntentRequestStateInput extends UserIntentFeedInput {
   note: string;
-  requestedAt: Date;
+  statusChangedAt: Date;
   expiresAt: Date;
 }
 
@@ -23,9 +23,9 @@ export function userIntentRequestStatement(
     WITH authored AS (
       ${intentWrite}
     ), request_state AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}

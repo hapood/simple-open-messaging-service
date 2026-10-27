@@ -164,6 +164,82 @@ describe('exact group request decisions through membership transactions', () => 
     };
   }
 
+  it('invites a local non-friend without admitting membership until acceptance and rejects non-manager invitations', async () => {
+    const f = await fixture();
+    const friendship = await database.db.query.relationshipPair.findFirst({
+      where: and(
+        eq(relationshipPair.kind, 'P2P'),
+        or(
+          and(
+            eq(relationshipPair.endpointAAccount, f.owner.account),
+            eq(relationshipPair.endpointBAccount, f.member.account),
+          ),
+          and(
+            eq(relationshipPair.endpointAAccount, f.member.account),
+            eq(relationshipPair.endpointBAccount, f.owner.account),
+          ),
+        ),
+      ),
+    });
+    expect(friendship).toBeUndefined();
+    const invitation = await open(f, true);
+    const pending = await state(f);
+    expect(pending.pair?.active).toBe(false);
+    expect(pending.participant).toBeUndefined();
+
+    const inviteBody = {
+      groupId: f.threadId,
+      users: [
+        {
+          account: f.member.account,
+          namespaceId: 0,
+          snapshot: { displayName: 'Invitee', avatar: null },
+        },
+      ],
+    };
+    const duplicate = await post(f.owner, 'group/invite', inviteBody);
+    ok(duplicate);
+    expect(duplicate.body.data).toMatchObject({
+      invited: [],
+      skipped: [{ reason: 'ALREADY_INVITED' }],
+    });
+
+    const accepted = await post(f.member, 'group/join-request', {
+      requestId: invitation.id.toString(),
+    });
+    ok(accepted);
+    expect(accepted.body.data.status).toBe('OK');
+    const joined = await state(f);
+    expect(joined.pair?.active).toBe(true);
+    expect(joined.participant).toBeDefined();
+
+    const alreadyMember = await post(f.owner, 'group/invite', inviteBody);
+    ok(alreadyMember);
+    expect(alreadyMember.body.data).toMatchObject({
+      invited: [],
+      skipped: [{ reason: 'ALREADY_MEMBER' }],
+    });
+    const outsider = await seedUserWithSession(
+      app,
+      `round-${sequence}-outsider`,
+    );
+    const forbidden = await post(f.member, 'group/invite', {
+      groupId: f.threadId,
+      users: [
+        {
+          account: outsider.account,
+          namespaceId: 0,
+          snapshot: { displayName: 'Outsider', avatar: null },
+        },
+      ],
+    });
+    ok(forbidden);
+    expect(forbidden.body.data).toMatchObject({
+      invited: [],
+      skipped: [{ reason: 'FORBIDDEN', code: BusinessCode.GROUP_FORBIDDEN }],
+    });
+  });
+
   it('declines an invitation and withdraws a renewed application without departure effects', async () => {
     const f = await fixture();
     const invitation = await open(f, true);
@@ -333,15 +409,15 @@ describe('exact group request decisions through membership transactions', () => 
   it('returns EXPIRED without altering the round or incoming heads', async () => {
     const f = await fixture();
     const invitation = await open(f, true);
-    const requestedAt = new Date(Date.now() - 2000);
+    const statusChangedAt = new Date(Date.now() - 2000);
     const expiresAt = new Date(Date.now() - 1000);
     await database.db
       .update(relationshipRequest)
-      .set({ requestedAt, expiresAt })
+      .set({ requestedAt: statusChangedAt, expiresAt })
       .where(eq(relationshipRequest.id, invitation.id));
     await database.db
       .update(relationshipIntent)
-      .set({ requestedAt, expiresAt })
+      .set({ statusChangedAt, expiresAt })
       .where(eq(relationshipIntent.requestId, invitation.id));
     const before = await state(f);
     const stored = await round(invitation.id);

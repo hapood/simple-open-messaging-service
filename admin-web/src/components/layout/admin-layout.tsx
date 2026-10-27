@@ -82,7 +82,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
               src={`${import.meta.env.BASE_URL}favicon.svg`}
               alt=""
               aria-hidden="true"
-              className="size-7 rounded-lg ring-1 ring-border/20 shadow-2xs shrink-0"
+              className="size-7 shrink-0"
             />
             <button
               type="button"
@@ -107,7 +107,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
             src={`${import.meta.env.BASE_URL}favicon.svg`}
             alt=""
             aria-hidden="true"
-            className="size-7 rounded-lg ring-1 ring-border/20 shadow-2xs shrink-0"
+            className="size-7 shrink-0"
           />
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold tracking-tight text-sidebar-foreground">

@@ -77,7 +77,7 @@ export class FederationStateFeedConsumerService {
     namespaceId?: unknown;
     profileRev?: unknown;
     note?: unknown;
-    requestedAt?: unknown;
+    statusChangedAt?: unknown;
     expiresAt?: unknown;
   }): ReceivedIntentBodyShape {
     // The envelope checks above pinned every field's wire type; these casts
@@ -89,7 +89,7 @@ export class FederationStateFeedConsumerService {
       profileNamespaceId: Number(body.namespaceId),
       profileRev: Number(body.profileRev),
       note: body.note as string,
-      requestedAt: body.requestedAt as number | null,
+      statusChangedAt: body.statusChangedAt as number,
       expiresAt: body.expiresAt as number | null,
       ...(body.messageEndSeq === undefined
         ? {}
@@ -140,6 +140,7 @@ export class FederationStateFeedConsumerService {
           'account',
           'eventType',
           'feedId',
+          'generatedAt',
           'body',
           ...(item.eventType === 'RELATIONSHIP_INTENT' ||
           (item.eventType === 'THREAD_CONTENT_HEAD' &&
@@ -153,6 +154,10 @@ export class FederationStateFeedConsumerService {
         )
           throw new PermanentFederationItemError(
             'state feed item contains invalid fields',
+          );
+        if (!Number.isSafeInteger(item.generatedAt) || item.generatedAt < 0)
+          throw new PermanentFederationItemError(
+            'invalid state feed generation time',
           );
         if (!item.body || typeof item.body !== 'object')
           throw new PermanentFederationItemError('invalid state feed body');
@@ -168,7 +173,7 @@ export class FederationStateFeedConsumerService {
             namespaceId?: unknown;
             profileRev?: unknown;
             note?: unknown;
-            requestedAt?: unknown;
+            statusChangedAt?: unknown;
             expiresAt?: unknown;
           };
           if (
@@ -191,9 +196,8 @@ export class FederationStateFeedConsumerService {
             Number(body.profileRev) > 2_147_483_647 ||
             typeof body.note !== 'string' ||
             body.note.length > 255 ||
-            (body.requestedAt !== null &&
-              (!Number.isSafeInteger(body.requestedAt) ||
-                Number(body.requestedAt) < 0)) ||
+            !Number.isSafeInteger(body.statusChangedAt) ||
+            Number(body.statusChangedAt) < 0 ||
             (body.expiresAt !== null &&
               (!Number.isSafeInteger(body.expiresAt) ||
                 Number(body.expiresAt) < 0)) ||
@@ -206,7 +210,7 @@ export class FederationStateFeedConsumerService {
                   'messageEndSeq',
                   'tombstoneEndSeq',
                   'note',
-                  'requestedAt',
+                  'statusChangedAt',
                   'expiresAt',
                 ].includes(key),
             )
@@ -296,7 +300,7 @@ export class FederationStateFeedConsumerService {
             namespaceId?: unknown;
             profileRev?: unknown;
             note?: unknown;
-            requestedAt?: unknown;
+            statusChangedAt?: unknown;
             expiresAt?: unknown;
           };
           if (
@@ -318,9 +322,8 @@ export class FederationStateFeedConsumerService {
             Number(body.profileRev) > 2_147_483_647 ||
             typeof body.note !== 'string' ||
             body.note.length > 255 ||
-            (body.requestedAt !== null &&
-              (!Number.isSafeInteger(body.requestedAt) ||
-                Number(body.requestedAt) < 0)) ||
+            !Number.isSafeInteger(body.statusChangedAt) ||
+            Number(body.statusChangedAt) < 0 ||
             (body.expiresAt !== null &&
               (!Number.isSafeInteger(body.expiresAt) ||
                 Number(body.expiresAt) < 0)) ||
@@ -333,7 +336,7 @@ export class FederationStateFeedConsumerService {
                   'messageEndSeq',
                   'tombstoneEndSeq',
                   'note',
-                  'requestedAt',
+                  'statusChangedAt',
                   'expiresAt',
                 ].includes(key),
             )

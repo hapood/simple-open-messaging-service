@@ -54,16 +54,16 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       threadId: input.threadId,
       status: 'REVOKED',
       note: '',
-      requestedAt: null,
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
   return sql`
     WITH authored AS (
       ${authoredSql}
     ), revocation AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
@@ -97,7 +97,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
           OR (p.id = ${input.pairId} AND p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0))
       RETURNING s."accountId"
     ), thread_fanout_merge AS (
-      UPDATE "DurableTask" d SET payload = jsonb_build_object(
+      UPDATE "DurableTask" d SET "updatedAt" = CURRENT_TIMESTAMP, payload = jsonb_build_object(
         'threadId', ${input.threadId}::integer,
         'messageEndSeq', GREATEST((d.payload->>'messageEndSeq')::bigint, (SELECT seq FROM system_message)),
         'tombstoneEndSeq', GREATEST((d.payload->>'tombstoneEndSeq')::bigint,

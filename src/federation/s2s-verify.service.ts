@@ -64,6 +64,7 @@ export class S2sVerifyService {
   parseSigner(headers: OutboundSignatureHeaders): {
     keyId: string;
     domain: string;
+    created: number;
     expires: number;
   } {
     if (
@@ -83,7 +84,7 @@ export class S2sVerifyService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const { keyId, expires } = metadata;
+    const { keyId, created, expires } = metadata;
     const parsed = parseKeyId(keyId);
     if (!parsed) {
       throw new BusinessException(
@@ -92,7 +93,7 @@ export class S2sVerifyService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    return { keyId, domain: parsed.domain, expires };
+    return { keyId, domain: parsed.domain, created, expires };
   }
 
   /**

@@ -1,11 +1,17 @@
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import {
+  NO_ERRORS_SCHEMA,
   provideZonelessChangeDetection,
   signal,
   WritableSignal,
 } from '@angular/core';
-import { provideTransloco } from '@jsverse/transloco';
+import { provideTransloco, TranslocoPipe } from '@jsverse/transloco';
+import { AsyncPipe } from '@angular/common';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
+import type { ProfileNamespaceBinding } from '../../services/webdb-storage';
+import type { ComponentFixture } from '@angular/core/testing';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { PeerProfileComponent } from './peer-profile.component';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -19,7 +25,7 @@ import { UserService } from '../../services/user.service';
 import { MsgService } from '../../services/message.service';
 import { RouteService } from '../../services/route.service';
 import { ToastService } from '../../services/toast.service';
-import { of } from 'rxjs';
+import { BehaviorSubject, of } from 'rxjs';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 
@@ -56,6 +62,9 @@ function makeItem(
 
 describe('PeerProfileComponent', () => {
   let comp: PeerProfileComponent;
+  let fixture: ComponentFixture<PeerProfileComponent>;
+  let binding: BehaviorSubject<ProfileNamespaceBinding>;
+  let resolve: Mock;
   let items: WritableSignal<ConversationItem[]>;
   let openThreadId: WritableSignal<number | undefined>;
   let closeAside: Mock;
@@ -80,6 +89,19 @@ describe('PeerProfileComponent', () => {
     setPinned = vi.fn(() => of({ code: 0 })).mockName('setPinned');
     setBlocked = vi.fn(() => of({ code: 0 })).mockName('setBlocked');
 
+    binding = new BehaviorSubject<ProfileNamespaceBinding>({
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      domain: 'chat.example.test',
+      rootPublicKey: null,
+      updateFeedId: 1,
+      changeSeq: 1,
+      expired: false,
+      status: 'ACTIVE',
+      refreshedAt: Date.now(),
+    });
+    resolve = vi.fn(() => binding.asObservable());
+
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -95,6 +117,7 @@ describe('PeerProfileComponent', () => {
           loader: InlineTranslocoLoader,
         }),
         PeerProfileComponent,
+        { provide: ProfileNamespaceRepository, useValue: { resolve } },
         { provide: UserService, useValue: {} },
         { provide: MsgService, useValue: {} },
         { provide: RouteService, useValue: {} },
@@ -125,11 +148,15 @@ describe('PeerProfileComponent', () => {
         },
       ],
     })
-      // These tests assert the component's class logic, not the DOM. Blank the
-      // template so the view's transitive profile dependencies
-      // are never instantiated — the unit under test stays isolated from its view's rendering concerns.
-      .overrideComponent(PeerProfileComponent, { set: { template: '' } });
-    const fixture = TestBed.createComponent(PeerProfileComponent);
+      // Render the real template while keeping child components and Material
+      // controls outside this component's test boundary.
+      .overrideComponent(PeerProfileComponent, {
+        set: {
+          imports: [AsyncPipe, NamespaceDomainPipe, TranslocoPipe],
+          schemas: [NO_ERRORS_SCHEMA],
+        },
+      });
+    fixture = TestBed.createComponent(PeerProfileComponent);
     comp = fixture.componentInstance;
     fixture.detectChanges();
   });
@@ -138,6 +165,54 @@ describe('PeerProfileComponent', () => {
   it('resolves the peer from the open thread', () => {
     expect(comp.peer()?.account).toBe('alice');
     expect(comp.peerDisplayName()).toBe('Alice');
+  });
+
+  it('renders the local address with the playground domain without whitespace', () => {
+    const address = fixture.nativeElement.querySelector('.profile-meta');
+    expect(address.textContent.trim()).toBe('alice@chat.example.test');
+    expect(resolve).toHaveBeenCalledWith({
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+    });
+  });
+
+  it('reacts to domain rebinds and archived bindings', () => {
+    binding.next({ ...binding.value, domain: 'rebound.test' });
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('.profile-meta').textContent.trim(),
+    ).toBe('alice@rebound.test');
+
+    binding.next({ ...binding.value, status: 'ARCHIVED' });
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('.profile-meta').textContent.trim(),
+    ).toBe('alice@0.archive.rebound.test');
+  });
+
+  it('resolves the new namespace when switching to a remote peer', () => {
+    items.update(([item]) => [{ ...item, publisherNamespaceId: 7 }]);
+    binding.next({
+      ...binding.value,
+      profileNamespaceId: 7,
+      domain: 'remote.test',
+    });
+    fixture.detectChanges();
+    expect(resolve).toHaveBeenLastCalledWith({
+      publisherNamespaceId: 0,
+      profileNamespaceId: 7,
+    });
+    expect(
+      fixture.nativeElement.querySelector('.profile-meta').textContent.trim(),
+    ).toBe('alice@remote.test');
+  });
+
+  it('omits the separator when the binding has no domain', () => {
+    binding.next({ ...binding.value, domain: null });
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('.profile-meta').textContent.trim(),
+    ).toBe('alice');
   });
 
   it('closes the profile panel when navigating back', () => {

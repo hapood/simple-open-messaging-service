@@ -77,7 +77,7 @@ export class GroupInviteAddressDto {
 export class InviteGroupDto {
   @ApiProperty({
     type: [GroupInviteAddressDto],
-    description: 'Existing friends to invite by public address.',
+    description: 'Users to invite by public address; friendship is not required.',
   })
   @IsArray()
   @ArrayMinSize(1)

@@ -6,6 +6,8 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
   identityNamespace,
+  federationFeedState,
+  profileNamespaceFeedHead,
   peerStateFeed,
   peerStateEventType,
 } from '../database/schema.js';
@@ -56,6 +58,7 @@ export interface PeerStateFeedPage {
     eventType: PeerStateEventType;
     peerAccount?: string;
     feedId: string;
+    generatedAt: number;
     body: unknown;
   }>;
   scannedThrough: string;
@@ -125,9 +128,12 @@ export class PeerStateFeedService {
         targets.map((target) => [String(target.namespaceId), target]),
       ).values(),
     ].sort((left, right) => left.namespaceId - right.namespaceId);
+    // Pin lifecycle eligibility before taking the independent allocators.
+    // Acquire every identity lock first so a multi-peer batch cannot invert
+    // identity -> feed-state ordering against recognition or retirement.
     for (const target of ordered) {
-      const locked = await tx
-        .select({ namespaceId: identityNamespace.id })
+      const [identity] = await tx
+        .select({ id: identityNamespace.id })
         .from(identityNamespace)
         .where(
           and(
@@ -136,6 +142,27 @@ export class PeerStateFeedService {
           ),
         )
         .for('no key update')
+        .limit(1);
+      if (!identity)
+        throw new Error(
+          `missing active federation namespace ${target.namespaceId}`,
+        );
+    }
+    for (const target of ordered) {
+      const locked = await tx
+        .select({ namespaceId: federationFeedState.namespaceId })
+        .from(federationFeedState)
+        .innerJoin(
+          identityNamespace,
+          eq(identityNamespace.id, federationFeedState.namespaceId),
+        )
+        .where(
+          and(
+            eq(federationFeedState.namespaceId, target.namespaceId),
+            isNull(identityNamespace.retiredAt),
+          ),
+        )
+        .for('no key update', { of: federationFeedState })
         .limit(1);
       if (!locked[0])
         throw new Error(
@@ -255,17 +282,12 @@ export class PeerStateFeedService {
       }
       if (current && isDeepStrictEqual(current.body, body)) continue;
       const [allocated] = await tx
-        .update(identityNamespace)
+        .update(federationFeedState)
         .set({
-          stateFeedEndId: sql`${identityNamespace.stateFeedEndId} + 1`,
+          outboundStateFeedEndId: sql`${federationFeedState.outboundStateFeedEndId} + 1`,
         })
-        .where(
-          and(
-            eq(identityNamespace.id, write.namespaceId),
-            isNull(identityNamespace.retiredAt),
-          ),
-        )
-        .returning({ feedId: identityNamespace.stateFeedEndId });
+        .where(eq(federationFeedState.namespaceId, write.namespaceId))
+        .returning({ feedId: federationFeedState.outboundStateFeedEndId });
       if (!allocated)
         throw new Error(
           `missing active federation namespace ${write.namespaceId}`,
@@ -321,14 +343,14 @@ export class PeerStateFeedService {
     const before = new Map<number, bigint>();
     for (const write of writes) {
       if (before.has(write.namespaceId)) continue;
-      const target = await tx.query.identityNamespace.findFirst({
-        where: eq(identityNamespace.id, write.namespaceId),
+      const target = await tx.query.federationFeedState.findFirst({
+        where: eq(federationFeedState.namespaceId, write.namespaceId),
       });
-      if (!target || target.retiredAt)
+      if (!target)
         throw new Error(
           `missing active federation namespace ${write.namespaceId}`,
         );
-      before.set(write.namespaceId, target.stateFeedEndId);
+      before.set(write.namespaceId, target.outboundStateFeedEndId);
     }
     const result = await this.writeManyInTx(tx, writes);
     for (const write of writes) {
@@ -342,17 +364,12 @@ export class PeerStateFeedService {
       const row = await tx.query.peerStateFeed.findFirst({ where: key });
       if (!row || row.feedId > before.get(write.namespaceId)!) continue;
       const [allocated] = await tx
-        .update(identityNamespace)
+        .update(federationFeedState)
         .set({
-          stateFeedEndId: sql`${identityNamespace.stateFeedEndId} + 1`,
+          outboundStateFeedEndId: sql`${federationFeedState.outboundStateFeedEndId} + 1`,
         })
-        .where(
-          and(
-            eq(identityNamespace.id, write.namespaceId),
-            isNull(identityNamespace.retiredAt),
-          ),
-        )
-        .returning({ feedId: identityNamespace.stateFeedEndId });
+        .where(eq(federationFeedState.namespaceId, write.namespaceId))
+        .returning({ feedId: federationFeedState.outboundStateFeedEndId });
       if (!allocated)
         throw new Error(
           `missing active federation namespace ${write.namespaceId}`,
@@ -368,9 +385,9 @@ export class PeerStateFeedService {
 
   async readFeedEndId(namespaceId: number): Promise<bigint> {
     const [target] = await this.database.db
-      .select({ feedId: identityNamespace.stateFeedEndId })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, namespaceId))
+      .select({ feedId: federationFeedState.outboundStateFeedEndId })
+      .from(federationFeedState)
+      .where(eq(federationFeedState.namespaceId, namespaceId))
       .limit(1);
     return target?.feedId ?? 0n;
   }
@@ -402,96 +419,107 @@ export class PeerStateFeedService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    return this.database.db.transaction(async (tx) => {
-      const [target] = await tx
-        .select()
-        .from(identityNamespace)
-        .where(eq(identityNamespace.id, namespaceId))
-        .limit(1);
-      if (!target) {
-        throw new Error(`namespace ${namespaceId} has no federation namespace`);
-      }
-      const stateFeedEndId = target.stateFeedEndId;
-      if (through !== undefined && through < after) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'through must be greater than or equal to after',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      if (after < 0n || after > stateFeedEndId) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-          'state feed cursor is outside the available coordinate space',
-          HttpStatus.OK,
-          { resumeAfter: '0', resumeBefore: (stateFeedEndId + 1n).toString() },
-        );
-      }
-      const requestedScanEnd =
-        through === undefined || through > stateFeedEndId
-          ? stateFeedEndId
-          : through;
-      const scanEnd = requestedScanEnd;
-      const rawRows = await tx
-        .select()
-        .from(peerStateFeed)
-        .where(
-          and(
-            eq(peerStateFeed.namespaceId, namespaceId),
-            gt(peerStateFeed.feedId, after),
-            lte(peerStateFeed.feedId, scanEnd),
-          ),
-        )
-        .orderBy(asc(peerStateFeed.feedId))
-        .limit(take + 1);
-      const rows = rawRows.slice(0, take);
-      const items: PeerStateFeedPage['items'] = [];
-      let bytes = 0;
-      for (const row of rows) {
-        const item: PeerStateFeedPage['items'][number] = {
-          account: row.account,
-          eventType: row.eventType,
-          feedId: row.feedId.toString(),
-          body: row.body,
-          ...(row.eventType === 'RELATIONSHIP_INTENT' ||
-          (row.eventType === 'THREAD_CONTENT_HEAD' && row.subjectAccount !== '')
-            ? {
-                peerAccount: row.subjectAccount,
-              }
-            : {}),
+    return this.database.db.transaction(
+      async (tx) => {
+        const [target] = await tx
+          .select({
+            outboundStateFeedEndId: federationFeedState.outboundStateFeedEndId,
+          })
+          .from(federationFeedState)
+          .where(eq(federationFeedState.namespaceId, namespaceId))
+          .limit(1);
+        if (!target) {
+          throw new Error(
+            `namespace ${namespaceId} has no federation namespace`,
+          );
+        }
+        const stateFeedEndId = target.outboundStateFeedEndId;
+        if (through !== undefined && through < after) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'through must be greater than or equal to after',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        if (after < 0n || after > stateFeedEndId) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+            'state feed cursor is outside the available coordinate space',
+            HttpStatus.OK,
+            {
+              resumeAfter: '0',
+              resumeBefore: (stateFeedEndId + 1n).toString(),
+            },
+          );
+        }
+        const requestedScanEnd =
+          through === undefined || through > stateFeedEndId
+            ? stateFeedEndId
+            : through;
+        const scanEnd = requestedScanEnd;
+        const rawRows = await tx
+          .select()
+          .from(peerStateFeed)
+          .where(
+            and(
+              eq(peerStateFeed.namespaceId, namespaceId),
+              gt(peerStateFeed.feedId, after),
+              lte(peerStateFeed.feedId, scanEnd),
+            ),
+          )
+          .orderBy(asc(peerStateFeed.feedId))
+          .limit(take + 1);
+        const rows = rawRows.slice(0, take);
+        const items: PeerStateFeedPage['items'] = [];
+        let bytes = 0;
+        for (const row of rows) {
+          const item: PeerStateFeedPage['items'][number] = {
+            account: row.account,
+            eventType: row.eventType,
+            feedId: row.feedId.toString(),
+            generatedAt: row.updatedAt.getTime(),
+            body: row.body,
+            ...(row.eventType === 'RELATIONSHIP_INTENT' ||
+            (row.eventType === 'THREAD_CONTENT_HEAD' &&
+              row.subjectAccount !== '')
+              ? {
+                  peerAccount: row.subjectAccount,
+                }
+              : {}),
+          };
+          const itemBytes = Buffer.byteLength(JSON.stringify(item));
+          if (items.length > 0 && bytes + itemBytes > STATE_FEED_PAGE_MAX_BYTES)
+            break;
+          items.push(item);
+          bytes += itemBytes;
+        }
+        const last = items.at(-1);
+        let scannedThrough: bigint;
+        if (items.length < rows.length && last) {
+          scannedThrough = BigInt(last.feedId);
+        } else if (rawRows.length > take) {
+          scannedThrough = rows.at(-1)?.feedId ?? after;
+        } else {
+          scannedThrough = scanEnd;
+        }
+        const hasMore = scannedThrough < scanEnd;
+        const [local] = await tx
+          .select({
+            profileNamespaceFeedEndId: profileNamespaceFeedHead.endId,
+          })
+          .from(profileNamespaceFeedHead)
+          .where(eq(profileNamespaceFeedHead.id, 0))
+          .limit(1);
+        if (!local) throw new Error('local namespace sentinel row is missing');
+        return {
+          items,
+          scannedThrough: scannedThrough.toString(),
+          stateFeedEndId: stateFeedEndId.toString(),
+          profileNamespaceFeedEndId: local.profileNamespaceFeedEndId.toString(),
+          hasMore,
         };
-        const itemBytes = Buffer.byteLength(JSON.stringify(item));
-        if (items.length > 0 && bytes + itemBytes > STATE_FEED_PAGE_MAX_BYTES)
-          break;
-        items.push(item);
-        bytes += itemBytes;
-      }
-      const last = items.at(-1);
-      let scannedThrough: bigint;
-      if (items.length < rows.length && last) {
-        scannedThrough = BigInt(last.feedId);
-      } else if (rawRows.length > take) {
-        scannedThrough = rows.at(-1)?.feedId ?? after;
-      } else {
-        scannedThrough = scanEnd;
-      }
-      const hasMore = scannedThrough < scanEnd;
-      const [local] = await tx
-        .select({
-          profileNamespaceFeedEndId:
-            identityNamespace.profileNamespaceFeedEndId,
-        })
-        .from(identityNamespace)
-        .where(eq(identityNamespace.id, 0))
-        .limit(1);
-      if (!local) throw new Error('local namespace sentinel row is missing');
-      return {
-        items,
-        scannedThrough: scannedThrough.toString(),
-        stateFeedEndId: stateFeedEndId.toString(),
-        profileNamespaceFeedEndId: local.profileNamespaceFeedEndId.toString(),
-        hasMore,
-      };
-    });
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 }

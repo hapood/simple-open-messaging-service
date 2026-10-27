@@ -41,7 +41,7 @@ describe('remote member membership intents on the authoritative group', () => {
       profileNamespaceId: namespaceId,
       profileRev: 3,
       note: 'op-apply',
-      requestedAt: Date.now() - 10_000,
+      statusChangedAt: Date.now() - 10_000,
       expiresAt: null,
       messageEndSeq: 5,
       tombstoneEndSeq: 1,
@@ -127,7 +127,7 @@ describe('remote member membership intents on the authoritative group', () => {
           note: '',
           messageEndSeq: 0,
           tombstoneEndSeq: 0,
-          requestedAt: new Date(Date.now() - 5_000),
+          statusChangedAt: new Date(Date.now() - 5_000),
           expiresAt: null,
         },
         {
@@ -141,7 +141,7 @@ describe('remote member membership intents on the authoritative group', () => {
           note: 'op-apply',
           messageEndSeq: 5,
           tombstoneEndSeq: 1,
-          requestedAt: new Date(Date.now() - 10_000),
+          statusChangedAt: new Date(Date.now() - 10_000),
           expiresAt: null,
         },
       ]);
@@ -253,7 +253,7 @@ describe('remote member membership intents on the authoritative group', () => {
 
   async function seedPendingApplication(): Promise<Fixture> {
     const fixture = await seedMembershipFixture(false);
-    const requestedAt = Date.now();
+    const statusChangedAt = Date.now();
     expect(
       (
         await applier.execute({
@@ -261,8 +261,8 @@ describe('remote member membership intents on the authoritative group', () => {
           member: fixture.member,
           body: ackBody({
             status: 'REQUESTED',
-            requestedAt,
-            expiresAt: requestedAt + 60_000,
+            statusChangedAt,
+            expiresAt: statusChangedAt + 60_000,
           }),
         })
       ).routed,
@@ -292,13 +292,19 @@ describe('remote member membership intents on the authoritative group', () => {
       (await intentsOf(fixture)).map((intent) => intent.authorAccount),
     ).toEqual([fixture.member.account]);
     const [before] = await database.db
-      .select({ endId: tables.identityNamespace.stateFeedEndId })
-      .from(tables.identityNamespace)
-      .where(eq(tables.identityNamespace.id, fixture.member.namespaceId));
+      .select({ endId: tables.federationFeedState.outboundStateFeedEndId })
+      .from(tables.federationFeedState)
+      .where(
+        eq(tables.federationFeedState.namespaceId, fixture.member.namespaceId),
+      );
     const result = await applier.execute({
       threadId: fixture.threadId,
       member: fixture.member,
-      body: ackBody({ status: 'REVOKED', requestedAt: null, expiresAt: null }),
+      body: ackBody({
+        status: 'REVOKED',
+        statusChangedAt: Date.now(),
+        expiresAt: null,
+      }),
     });
     expect(result.routed).toBe('rejection');
     expect(
@@ -309,9 +315,11 @@ describe('remote member membership intents on the authoritative group', () => {
     ).toEqual([[fixture.member.account, 'REVOKED']]);
     expect(await groupPeerIntentRows(fixture)).toEqual([]);
     const [after] = await database.db
-      .select({ endId: tables.identityNamespace.stateFeedEndId })
-      .from(tables.identityNamespace)
-      .where(eq(tables.identityNamespace.id, fixture.member.namespaceId));
+      .select({ endId: tables.federationFeedState.outboundStateFeedEndId })
+      .from(tables.federationFeedState)
+      .where(
+        eq(tables.federationFeedState.namespaceId, fixture.member.namespaceId),
+      );
     expect(after!.endId).toBe(before!.endId);
     expect(await pairOf(fixture)).toMatchObject({
       active: false,
@@ -330,7 +338,7 @@ describe('remote member membership intents on the authoritative group', () => {
           eq(tables.relationshipPair.endpointBAccount, fixture.member.account),
         ),
       );
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: fixture.groupAccount,
       authorNamespaceId: 0,
@@ -342,13 +350,17 @@ describe('remote member membership intents on the authoritative group', () => {
       note: 'invitation',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt,
-      expiresAt: new Date(requestedAt.getTime() + 60_000),
+      statusChangedAt,
+      expiresAt: new Date(statusChangedAt.getTime() + 60_000),
     });
     const result = await applier.execute({
       threadId: fixture.threadId,
       member: fixture.member,
-      body: ackBody({ status: 'REVOKED', requestedAt: null, expiresAt: null }),
+      body: ackBody({
+        status: 'REVOKED',
+        statusChangedAt: Date.now(),
+        expiresAt: null,
+      }),
     });
     expect(result.routed).toBe('rejection');
     expect(
@@ -369,7 +381,11 @@ describe('remote member membership intents on the authoritative group', () => {
     await applier.execute({
       threadId: fixture.threadId,
       member: fixture.member,
-      body: ackBody({ status: 'REVOKED', requestedAt: null, expiresAt: null }),
+      body: ackBody({
+        status: 'REVOKED',
+        statusChangedAt: Date.now(),
+        expiresAt: null,
+      }),
     });
     expect((await groupPeerIntentRows(fixture))[0]!.feedId).toBe(feedId);
     expect(await pairOf(fixture)).toMatchObject({
@@ -424,7 +440,7 @@ describe('remote member membership intents on the authoritative group', () => {
           eq(tables.relationshipPair.endpointBAccount, fixture.member.account),
         ),
       );
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     await database.db
       .update(tables.relationshipPair)
       .set({ active: false })
@@ -433,8 +449,8 @@ describe('remote member membership intents on the authoritative group', () => {
       .update(tables.relationshipIntent)
       .set({
         status: 'REQUESTED',
-        requestedAt,
-        expiresAt: new Date(requestedAt.getTime() + 60_000),
+        statusChangedAt,
+        expiresAt: new Date(statusChangedAt.getTime() + 60_000),
       })
       .where(
         or(
@@ -477,7 +493,7 @@ describe('remote member membership intents on the authoritative group', () => {
       body: {
         ...ackBody(),
         status: 'REVOKED',
-        requestedAt: null,
+        statusChangedAt: Date.now(),
       },
     });
     expect(result.routed).toBe('rejection');
@@ -526,9 +542,11 @@ describe('remote member membership intents on the authoritative group', () => {
       .set({ active: false })
       .where(eq(tables.relationshipPair.id, pair!.id));
     const [before] = await database.db
-      .select({ endId: tables.identityNamespace.stateFeedEndId })
-      .from(tables.identityNamespace)
-      .where(eq(tables.identityNamespace.id, fixture.member.namespaceId));
+      .select({ endId: tables.federationFeedState.outboundStateFeedEndId })
+      .from(tables.federationFeedState)
+      .where(
+        eq(tables.federationFeedState.namespaceId, fixture.member.namespaceId),
+      );
     const result = await applier.execute({
       threadId: fixture.threadId,
       member: fixture.member,
@@ -546,9 +564,11 @@ describe('remote member membership intents on the authoritative group', () => {
     expect((await pairOf(fixture)).active).toBe(false);
     expect(await groupPeerIntentRows(fixture)).toEqual([]);
     const [after] = await database.db
-      .select({ endId: tables.identityNamespace.stateFeedEndId })
-      .from(tables.identityNamespace)
-      .where(eq(tables.identityNamespace.id, fixture.member.namespaceId));
+      .select({ endId: tables.federationFeedState.outboundStateFeedEndId })
+      .from(tables.federationFeedState)
+      .where(
+        eq(tables.federationFeedState.namespaceId, fixture.member.namespaceId),
+      );
     expect(after!.endId).toBe(before!.endId);
   });
 });

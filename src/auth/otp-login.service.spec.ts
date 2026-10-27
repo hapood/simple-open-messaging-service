@@ -162,7 +162,7 @@ describe('OtpLoginService', () => {
   }> {
     store.loginCode.create.mockResolvedValue({
       id: 5,
-      issuedAt: new Date(1000),
+      createdAt: new Date(1000),
       expiresAt: new Date(2000),
       issuedBy: 7,
     });
@@ -187,10 +187,10 @@ describe('OtpLoginService', () => {
       // expiresAt = now + the mocked 10-minute TTL.
       const data = (
         store.loginCode.create.mock.calls[0][0] as {
-          data: { issuedAt: Date; expiresAt: Date };
+          data: { createdAt: Date; expiresAt: Date };
         }
       ).data;
-      expect(data.expiresAt.getTime() - data.issuedAt.getTime()).toBe(
+      expect(data.expiresAt.getTime() - data.createdAt.getTime()).toBe(
         10 * 60_000,
       );
       expect(data.expiresAt.getTime() - Date.now()).toBeGreaterThan(9 * 60_000);

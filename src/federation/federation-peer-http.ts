@@ -12,6 +12,9 @@ import { FederationTransportConfigService } from './federation-transport-config.
 import { SignatureService } from './signature.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 
+/** Evaluated after discovery and request-slot admission, immediately before signing. */
+export type FederationPostBody = string | ((startedAt: Date) => string);
+
 export interface FederationPostOptions {
   signatureExpiresAtSec?: number;
 }
@@ -31,7 +34,7 @@ export class FederationPeerHttp {
 
   async post(
     path: string,
-    body: string,
+    body: FederationPostBody,
     peerDomain: string,
     options: FederationPostOptions = {},
   ): Promise<void> {
@@ -105,13 +108,17 @@ export class FederationPeerHttp {
   }
   async postUrl(
     url: URL,
-    body: string,
+    bodyInput: FederationPostBody,
     peerDomain: string,
     options: FederationPostOptions = {},
   ): Promise<void> {
     const release = await this.discovery.acquireRequestSlot(peerDomain);
     try {
       const operationStartedAt = new Date();
+      const body =
+        typeof bodyInput === 'function'
+          ? bodyInput(operationStartedAt)
+          : bodyInput;
       const headers = await this.signature.signOutbound(
         {
           method: 'POST',

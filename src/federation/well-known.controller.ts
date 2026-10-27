@@ -28,6 +28,7 @@ export class WellKnownController {
     return {
       software: `soms/${SERVER_VERSION}`,
       protocolVersions: [...FEDERATION_PROTOCOL_VERSIONS],
+      signingKeyCreatedAt: this.keypair.getCreatedAt(),
       roots: this.keypair.getRootGroup(),
       keys: this.keypair.getSigningKeyCertificates(),
     };

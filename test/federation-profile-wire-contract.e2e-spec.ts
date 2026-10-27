@@ -27,6 +27,9 @@ describe('profile wire contracts across isolated federation servers', () => {
   let proxy: S2sProxy;
   let consumer: FederationProfileService;
   let publisherNamespaceId: number;
+  let memberNamespaceId: number;
+  let ownerGeneratedAt: number;
+  let memberGeneratedAt: number;
   const owner = 'wirealice';
   const member = 'wirebob';
   const group = '!wireprofiles';
@@ -71,6 +74,14 @@ describe('profile wire contracts across isolated federation servers', () => {
     ({ appA, appB, proxy } = await bootFederationPair());
     const alice = await registerAndLogin(appA, owner, 'Wire Alice');
     const bob = await registerAndLogin(appB, member, 'Wire Bob');
+    const originalOwner = await appA.database.query.profileTable.findFirst({
+      where: eq(tables.profileTable.account, owner),
+    });
+    const originalMember = await appB.database.query.profileTable.findFirst({
+      where: eq(tables.profileTable.account, member),
+    });
+    ownerGeneratedAt = originalOwner!.generatedAt;
+    memberGeneratedAt = originalMember!.generatedAt;
     const card = await resolveFederatedCard(
       appB,
       bob.token,
@@ -103,6 +114,26 @@ describe('profile wire contracts across isolated federation servers', () => {
         isNull(tables.identityNamespace.retiredAt),
       ),
     });
+    memberNamespaceId = peer!.id;
+    const relay = new FederationProfileService(
+      { db: appA.database } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    await relay.materializeExactForeignProfile(
+      {
+        account: member,
+        namespaceId: 0,
+        profileRev: 1,
+        generatedAt: memberGeneratedAt,
+        displayName: 'Wire Bob',
+        bio: '',
+        avatar: null,
+      },
+      memberNamespaceId,
+    );
     const [control] = await appA.database
       .insert(tables.groupAccount)
       .values({ account: group, defaultProfileRev: 1 })
@@ -140,7 +171,7 @@ describe('profile wire contracts across isolated federation servers', () => {
       tombstoneEndSeq: 0,
       profileRev: 1,
       note: '',
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
     await appA.database.insert(tables.groupMetaMemberFeed).values({
@@ -148,6 +179,17 @@ describe('profile wire contracts across isolated federation servers', () => {
       feedId: 1,
       operation: 'MEMBER_UPSERT',
       body: { account: owner, namespaceId: 0, role: 'OWNER', profileRev: 1 },
+    });
+    await appA.database.insert(tables.groupMetaMemberFeed).values({
+      threadId: thread.id,
+      feedId: 2,
+      operation: 'MEMBER_UPSERT',
+      body: {
+        account: member,
+        namespaceId: memberNamespaceId,
+        role: 'MEMBER',
+        profileRev: 1,
+      },
     });
     consumer = new FederationProfileService(
       { db: appB.database } as never,
@@ -181,6 +223,7 @@ describe('profile wire contracts across isolated federation servers', () => {
       expect(envelope.data).toMatchObject({
         account: owner,
         profileRev: 1,
+        generatedAt: ownerGeneratedAt,
         profile: { displayName: 'Wire Alice', avatar: null, bio: '' },
       });
     }
@@ -193,23 +236,39 @@ describe('profile wire contracts across isolated federation servers', () => {
       ),
     });
     expect(cached?.displayName).toBe('Wire Alice');
+    expect(cached?.generatedAt).toBe(ownerGeneratedAt);
   });
 
   it('resolves an existing account with no profile across signed HTTP', async () => {
     const account = 'wireempty';
     await appA.database.insert(tables.account).values({ account });
     const caller = await registerAndLogin(appB, 'wirelookup', 'Wire Lookup');
-    const result = await resolveFederatedCard(appB, caller.token, account, FED_DOMAIN_A);
-    expect(result.event).toBe('resolved');
-    const responses = proxy.requestLog().filter((entry) =>
-      entry.status === 200 && new URL(entry.path, appA.baseUrl).pathname === `/s2s/v1/accounts/${account}`,
+    const result = await resolveFederatedCard(
+      appB,
+      caller.token,
+      account,
+      FED_DOMAIN_A,
     );
+    expect(result.event).toBe('resolved');
+    const responses = proxy
+      .requestLog()
+      .filter(
+        (entry) =>
+          entry.status === 200 &&
+          new URL(entry.path, appA.baseUrl).pathname ===
+            `/s2s/v1/accounts/${account}`,
+      );
     expect(responses.length).toBeGreaterThan(0);
     for (const response of responses) {
       const envelope = JSON.parse(response.responseBody!);
       expect(envelope.code).toBe(BusinessCode.OK);
       assertFederationWireSchema('urn:somfp:v1:profile', envelope.data);
-      expect(envelope.data).toMatchObject({ account, profileRev: 0, profile: null });
+      expect(envelope.data).toMatchObject({
+        account,
+        profileRev: 0,
+        generatedAt: 0,
+        profile: null,
+      });
       expect(typeof envelope.data.proof).toBe('string');
     }
     const snapshots = await appB.database.query.profileTable.findMany({
@@ -235,6 +294,7 @@ describe('profile wire contracts across isolated federation servers', () => {
         account: owner,
         namespaceId: 0,
         profileRev: 1,
+        generatedAt: ownerGeneratedAt,
         displayName: 'Wire Alice',
         avatar: null,
         bio: '',
@@ -254,6 +314,7 @@ describe('profile wire contracts across isolated federation servers', () => {
       expect(cached).toMatchObject({
         account: owner,
         displayName: 'Wire Alice',
+        generatedAt: ownerGeneratedAt,
         profileRev: 1,
         profileNamespaceId: 0,
       });
@@ -263,7 +324,43 @@ describe('profile wire contracts across isolated federation servers', () => {
     },
   );
 
+  it('preserves a member-home generation time through group-origin forwarding and repeated materialization', async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const forwarded = await consumer.fetchExactGroupMemberProfile(
+        group,
+        member,
+        1,
+        FED_DOMAIN_A,
+        memberNamespaceId,
+      );
+      expect(forwarded).toMatchObject({
+        generatedAt: memberGeneratedAt,
+        namespaceId: memberNamespaceId,
+      });
+      await consumer.materializeExactForeignProfile(
+        forwarded!,
+        publisherNamespaceId,
+      );
+    }
+    const cached = await appB.database.query.profileTable.findFirst({
+      where: and(
+        eq(tables.profileTable.publisherNamespaceId, publisherNamespaceId),
+        eq(tables.profileTable.profileNamespaceId, memberNamespaceId),
+        eq(tables.profileTable.account, member),
+        eq(tables.profileTable.profileRev, 1),
+      ),
+    });
+    expect(cached?.generatedAt).toBe(memberGeneratedAt);
+    expect(cached!.createdAt.getTime()).toBeGreaterThan(memberGeneratedAt);
+  });
+
   it.each([
+    ['missing generation time', { generatedAt: undefined }],
+    ['null generation time', { generatedAt: null }],
+    ['negative generation time', { generatedAt: -1 }],
+    ['fractional generation time', { generatedAt: 0.5 }],
+    ['string generation time', { generatedAt: '1' }],
+    ['unsafe generation time', { generatedAt: Number.MAX_SAFE_INTEGER + 1 }],
     ['legacy domain', { domain: FED_DOMAIN_A }],
     ['wrong subject', { account: 'someoneelse' }],
     ['empty name', { displayName: '' }],

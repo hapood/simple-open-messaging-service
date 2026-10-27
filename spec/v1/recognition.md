@@ -853,6 +853,7 @@ The following vectors use the public test signing private key `ICEiIyQlJicoKSorL
 
 ```json
 {
+  "signingKeyCreatedAt": 1699990000000,
   "protocolVersions": [1],
   "roots": [
     {
@@ -942,6 +943,7 @@ A rotation arrival is an ordinary-shape Recognize under the successor root; its 
 
 ```json
 {
+  "signingKeyCreatedAt": 1700000000000,
   "protocolVersions": [1],
   "roots": [
     {

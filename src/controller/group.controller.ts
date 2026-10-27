@@ -163,7 +163,7 @@ export class GroupController {
   @ResourceId<InviteGroupDto>('groupId')
   @Post('group/invite')
   @ApiOperation({
-    summary: 'Invite friends to an existing group',
+    summary: 'Invite users to an existing group',
   })
   async inviteUsers(
     @Request() req: FastifyRequest,

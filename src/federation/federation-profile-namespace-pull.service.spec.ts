@@ -12,7 +12,7 @@ function page(
   opts: { scannedThrough?: string; hasMore?: boolean } = {},
 ): ProfileNamespaceFeedPage {
   return {
-    items: [{ namespaceId, feedId }],
+    items: [{ namespaceId, feedId, generatedAt: 1000 }],
     scannedThrough: opts.scannedThrough ?? feedId,
     feedEndId,
     hasMore: opts.hasMore ?? false,

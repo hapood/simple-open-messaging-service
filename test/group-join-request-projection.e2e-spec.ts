@@ -150,6 +150,7 @@ describe('permanent group request history and online visibility', () => {
     member: Actor,
     group: GroupFixture,
     displayName: string,
+    duplicate = false,
   ) {
     const response = await post(owner, 'group/invite', {
       groupId: group.threadId,
@@ -164,9 +165,13 @@ describe('permanent group request history and online visibility', () => {
     expect(response.body.code, JSON.stringify(response.body)).toBe(
       BusinessCode.OK,
     );
-    expect(response.body.data.invited).toEqual([
-      { account: member.account, namespaceId: 0 },
-    ]);
+    if (duplicate) {
+      expect(response.body.data.invited).toEqual([]);
+      expect(response.body.data.skipped).toEqual([expect.objectContaining({ account: member.account, namespaceId: 0, reason: 'ALREADY_INVITED', code: BusinessCode.ALREADY_EXISTS })]);
+    } else {
+      expect(response.body.data.invited).toEqual([{ account: member.account, namespaceId: 0 }]);
+      expect(response.body.data.skipped).toEqual([]);
+    }
   }
   function stored(group: GroupFixture, member: Actor) {
     return database.db.query.relationshipRequest.findMany({
@@ -313,7 +318,7 @@ describe('permanent group request history and online visibility', () => {
       snapshot: { displayName: 'Member at invitation time', avatar: null },
     });
     const firstStored = await stored(group, member);
-    await invite(owner, member, group, 'Changed during the same request');
+    await invite(owner, member, group, 'Changed during the same request', true);
     expect(await groupPage(owner, group, true)).toEqual(pending);
     expect(await stored(group, member)).toEqual(firstStored);
 

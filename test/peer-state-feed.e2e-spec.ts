@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq } from 'drizzle-orm';
@@ -11,6 +11,7 @@ import {
   message,
   threadAudience,
   identityNamespace,
+  federationFeedState,
   messageThread,
   peerStateFeed,
 } from '../src/database/schema.js';
@@ -31,6 +32,7 @@ describe('per-peer state feed', () => {
     const [namespace] = await database.db
       .insert(identityNamespace)
       .values({
+        signingKeyCreatedAt: 1700000000000,
         domain,
         rootPublicKey: fakeRootPublicKey(domain),
         identityPinnedAt: new Date(),
@@ -181,6 +183,14 @@ describe('per-peer state feed', () => {
       ),
     });
     expect(unchanged?.feedId).toBe(head.feedId);
+    const page = await feed.serve(peerNamespaceId, 0n);
+    expect(
+      page.items.find((item) => item.eventType === 'THREAD_CONTENT_HEAD'),
+    ).toMatchObject({
+      feedId: head.feedId.toString(),
+      generatedAt: head.updatedAt.getTime(),
+    });
+    expect((await feed.serve(peerNamespaceId, 0n)).items).toEqual(page.items);
     await deactivatePeer(peerDomain);
   });
 
@@ -254,7 +264,7 @@ describe('per-peer state feed', () => {
         namespaceId: testNamespaceId,
         profileRev: 3,
         note: '',
-        requestedAt: wireTime,
+        statusChangedAt: wireTime,
         expiresAt: null,
       };
       await database.db.transaction(async (tx) => {
@@ -288,6 +298,7 @@ describe('per-peer state feed', () => {
           eventType: 'RELATIONSHIP_INTENT',
           peerAccount: 'bob',
           feedId: '2',
+          generatedAt: expect.any(Number),
           body: {
             status: 'ACCEPTED',
             namespaceId: testNamespaceId,
@@ -295,12 +306,75 @@ describe('per-peer state feed', () => {
             tombstoneEndSeq: 0,
             profileRev: 3,
             note: '',
-            requestedAt: wireTime.getTime(),
+            statusChangedAt: wireTime.getTime(),
             expiresAt: null,
           },
         },
       ]);
     } finally {
+      await deactivatePeer(domain);
+    }
+  });
+
+  it('keeps generation time with the version across reads, deduplication, and republication', async () => {
+    const domain = 'state-feed-generation.test';
+    const testNamespaceId = await seedPeer(domain);
+    const write = {
+      namespaceId: testNamespaceId,
+      account: 'alice',
+      subjectAccount: 'bob',
+      subjectNamespaceId: testNamespaceId,
+      eventType: 'RELATIONSHIP_INTENT' as const,
+      body: {
+        status: 'ACCEPTED',
+        namespaceId: testNamespaceId,
+        profileRev: 3,
+        note: '',
+        statusChangedAt: wireTime,
+        expiresAt: null,
+      },
+    };
+    const readVersion = async () => {
+      const row = await database.db.query.peerStateFeed.findFirst({
+        where: eq(peerStateFeed.namespaceId, testNamespaceId),
+      });
+      const page = await feed.serve(testNamespaceId, 0n);
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0].generatedAt).toBe(row!.updatedAt.getTime());
+      expect(page.items[0].feedId).toBe(row!.feedId.toString());
+      return page.items[0];
+    };
+    try {
+      await database.db.transaction((tx) => feed.writeManyInTx(tx, [write]));
+      const initial = await readVersion();
+      expect(Number.isSafeInteger(initial.generatedAt)).toBe(true);
+      expect(initial.generatedAt).toBeGreaterThanOrEqual(0);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(initial.generatedAt + 60_000);
+      expect(await readVersion()).toEqual(initial);
+      await database.db.transaction((tx) => feed.writeManyInTx(tx, [write]));
+      expect(await readVersion()).toEqual(initial);
+
+      const changed = { ...write, body: { ...write.body, profileRev: 4 } };
+      await database.db.transaction((tx) => feed.writeManyInTx(tx, [changed]));
+      const updated = await readVersion();
+      expect(updated.feedId).toBe('2');
+      expect(updated.generatedAt).toBe(initial.generatedAt + 60_000);
+
+      // A new version may have an earlier generation time after clock correction.
+      vi.setSystemTime(initial.generatedAt + 30_000);
+      await database.db.transaction((tx) =>
+        feed.writeAcceptanceConfirmationsInTx(tx, [changed]),
+      );
+      const confirmed = await readVersion();
+      expect(confirmed.feedId).toBe('3');
+      expect(confirmed.body).toEqual(updated.body);
+      expect(confirmed.generatedAt).toBe(initial.generatedAt + 30_000);
+      expect(await feed.serve(testNamespaceId, 2n)).toMatchObject({
+        items: [confirmed],
+      });
+    } finally {
+      vi.useRealTimers();
       await deactivatePeer(domain);
     }
   });
@@ -321,7 +395,7 @@ describe('per-peer state feed', () => {
             tombstoneEndSeq: 0,
             profileRev: 3,
             note: '',
-            requestedAt: wireTime,
+            statusChangedAt: wireTime,
             expiresAt: null,
           },
         },
@@ -336,7 +410,7 @@ describe('per-peer state feed', () => {
             namespaceId: namespaceId(DOMAINS[0]),
             profileRev: 5,
             note: '',
-            requestedAt: null,
+            statusChangedAt: Date.now(),
             expiresAt: null,
           },
         },
@@ -392,13 +466,13 @@ describe('per-peer state feed', () => {
     ).rejects.toThrow('rollback');
     const [target] = await database.db
       .select()
-      .from(identityNamespace)
-      .where(eq(identityNamespace.domain, DOMAINS[1]));
+      .from(federationFeedState)
+      .where(eq(federationFeedState.namespaceId, namespaceId(DOMAINS[1])));
     const rows = await database.db
       .select()
       .from(peerStateFeed)
       .where(eq(peerStateFeed.account, '!rollback'));
-    expect(target.stateFeedEndId).toBe(1n);
+    expect(target.outboundStateFeedEndId).toBe(1n);
     expect(rows).toHaveLength(0);
   });
 

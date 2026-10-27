@@ -15,11 +15,13 @@ function target() {
       namespaceId: 0,
       account: 'alice',
       profileRev: 5,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Alice',
       bio: '',
       avatar: null,
     }),
     getAuthorizedAccountProfile: vi.fn().mockResolvedValue({
+      generatedAt: 1_700_000_000_000,
       account: 'alice',
       profileRev: 4,
       displayName: 'Alice',
@@ -27,6 +29,7 @@ function target() {
       avatar: null,
     }),
     getAuthorizedGroupMemberProfile: vi.fn().mockResolvedValue({
+      generatedAt: 1_700_000_000_000,
       account: 'alice',
       profileRev: 4,
       displayName: 'Alice',
@@ -94,6 +97,7 @@ function target() {
   const messageProvenance = {
     query: vi.fn(),
   };
+  const feedHeadReceipts = { record: vi.fn().mockResolvedValue(undefined) };
   const controller = new S2sController(
     {} as never, // callBridge — no inbound call-frame coverage here
     profiles as never,
@@ -108,9 +112,12 @@ function target() {
     roundScheduler as never,
     groupMeta as never,
     keypair as never,
+    feedHeadReceipts as never,
   );
   return {
     controller,
+    feedHeadReceipts,
+    profileNamespacePull,
     profiles,
     peerResources,
     messageFeed,
@@ -182,6 +189,7 @@ describe('S2sController public account profiles', () => {
     await expect(controller.getAccountProfile(req)).resolves.toEqual({
       account: 'alice',
       profileRev: 5,
+      generatedAt: 1_700_000_000_000,
       profile: { displayName: 'Alice', bio: '', avatar: null },
       proof: Buffer.from(
         '{"account":"alice","domain":"local.example"}',
@@ -199,6 +207,7 @@ describe('S2sController public account profiles', () => {
       namespaceId: 0,
       account: 'alice',
       profileRev: 0,
+      generatedAt: 0,
       displayName: 'alice',
       bio: '',
       avatar: null,
@@ -211,6 +220,7 @@ describe('S2sController public account profiles', () => {
     await expect(controller.getAccountProfile(req)).resolves.toEqual({
       account: 'alice',
       profileRev: 0,
+      generatedAt: 0,
       profile: null,
       proof: Buffer.from(
         '{"account":"alice","domain":"local.example"}',
@@ -235,6 +245,7 @@ describe('S2sController account profiles', () => {
     const req = mediaRequest('');
     setRequestUrl(req, '/s2s/v1/account-profiles/0/alice/4');
     expect(await controller.getExactAccountProfile(req)).toMatchObject({
+      generatedAt: 1_700_000_000_000,
       account: 'alice',
       displayName: 'Alice',
     });
@@ -272,6 +283,7 @@ describe('S2sController group member profiles', () => {
     const req = mediaRequest('');
     setRequestUrl(req, '/s2s/v1/group-member-profiles/%21team/0/alice/4');
     expect(await controller.getGroupMemberProfile(req)).toEqual({
+      generatedAt: 1_700_000_000_000,
       account: 'alice',
       displayName: 'Alice',
       bio: '',
@@ -655,36 +667,86 @@ describe('S2sController group-meta modes', () => {
 });
 
 describe('S2sController feed-head recovery', () => {
-  it('rejects unknown fields without scheduling work', async () => {
-    const { controller, roundScheduler } = target();
-    const req = {
-      body: {
-        origin: 'a.example',
-        stateFeedEndId: '7',
-        profileNamespaceFeedEndId: '1',
-      },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
-    } as unknown as FastifyRequest;
+  it.each(['generatedAt'])(
+    'rejects malformed %s without waking feeds',
+    async (field) => {
+      for (const value of [
+        undefined,
+        null,
+        '1000',
+        -1,
+        0.5,
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        const { controller, roundScheduler } = target();
+        await expect(
+          controller.postDiscoveryHwm({
+            peer: { domain: 'a.example', namespaceId: 7 },
+            body: {
+              stateFeedEndId: '11',
+              profileNamespaceFeedEndId: '4',
+              generatedAt: 0,
+              [field]: value,
+            },
+          } as unknown as FastifyRequest),
+        ).rejects.toMatchObject({ bizCode: BusinessCode.FEDERATION_MALFORMED });
+        expect(roundScheduler.wakeStateFeed).not.toHaveBeenCalled();
+      }
+    },
+  );
+  it.each(['origin', 'sentAt'])(
+    'rejects the extra %s field without scheduling work',
+    async (field) => {
+      const { controller, roundScheduler } = target();
+      const req = {
+        body: {
+          [field]: 2000,
+          stateFeedEndId: '7',
+          profileNamespaceFeedEndId: '1',
+          generatedAt: 1000,
+        },
+        peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      } as unknown as FastifyRequest;
 
-    await expect(controller.postDiscoveryHwm(req)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_MALFORMED,
-      status: 400,
-    });
-    expect(roundScheduler.wakeStateFeed).not.toHaveBeenCalled();
-  });
+      await expect(controller.postDiscoveryHwm(req)).rejects.toMatchObject({
+        bizCode: BusinessCode.FEDERATION_MALFORMED,
+        status: 400,
+      });
+      expect(roundScheduler.wakeStateFeed).not.toHaveBeenCalled();
+    },
+  );
 
   it('validates and forwards the publisher target to the global scheduler', async () => {
-    const { controller, roundScheduler } = target();
+    const {
+      controller,
+      roundScheduler,
+      feedHeadReceipts,
+      profileNamespacePull,
+    } = target();
     const req = {
       body: {
         stateFeedEndId: '11',
         profileNamespaceFeedEndId: '4',
+        generatedAt: 2000,
       },
-      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+      peer: {
+        domain: 'a.example',
+        keyId: 'a.example/key-1',
+        namespaceId: 7,
+        signatureCreatedAtSec: 1,
+      },
     } as unknown as FastifyRequest;
 
     await controller.postDiscoveryHwm(req);
 
+    expect(feedHeadReceipts.record).toHaveBeenCalledExactlyOnceWith(7, {
+      ...(req.body as object),
+      sentAt: 1000,
+    });
+    expect(profileNamespacePull.wake).toHaveBeenCalledExactlyOnceWith(
+      'a.example',
+      4n,
+    );
     expect(roundScheduler.wakeStateFeed).toHaveBeenCalledExactlyOnceWith(
       'a.example',
       11n,

@@ -67,14 +67,9 @@ function harness(selectResults: Array<Record<string, unknown>[]>): Harness {
       ),
     },
   };
-  const keypair = { getRootPublicKeyB64: () => ROOT };
   const changes = new ProfileNamespaceChangeStore(database as never);
   return {
-    service: new ProfileNamespaceFeedService(
-      database as never,
-      keypair as never,
-      changes,
-    ),
+    service: new ProfileNamespaceFeedService(database as never, changes),
     reads,
     setReturning,
     upsertValues,
@@ -136,14 +131,14 @@ describe('ProfileNamespaceFeedService', () => {
     const { service } = harness([
       [{ feedEndId: 3n }],
       [
-        { namespaceId: 1, feedId: 1n },
-        { namespaceId: 2, feedId: 3n },
+        { namespaceId: 1, feedId: 1n, updatedAt: new Date(2000) },
+        { namespaceId: 2, feedId: 3n, updatedAt: new Date(1000) },
       ],
     ]);
     await expect(service.serve()).resolves.toEqual({
       items: [
-        { namespaceId: 1, feedId: '1' },
-        { namespaceId: 2, feedId: '3' },
+        { namespaceId: 1, feedId: '1', generatedAt: 2000 },
+        { namespaceId: 2, feedId: '3', generatedAt: 1000 },
       ],
       scannedThrough: '3',
       feedEndId: '3',
@@ -155,15 +150,15 @@ describe('ProfileNamespaceFeedService', () => {
     const { service } = harness([
       [{ feedEndId: 9n }],
       [
-        { namespaceId: 1, feedId: 2n },
-        { namespaceId: 2, feedId: 4n },
-        { namespaceId: 3, feedId: 6n },
+        { namespaceId: 1, feedId: 2n, updatedAt: new Date(2000) },
+        { namespaceId: 2, feedId: 4n, updatedAt: new Date(1000) },
+        { namespaceId: 3, feedId: 6n, updatedAt: new Date(3000) },
       ],
     ]);
     await expect(service.serve(1n, 2)).resolves.toEqual({
       items: [
-        { namespaceId: 1, feedId: '2' },
-        { namespaceId: 2, feedId: '4' },
+        { namespaceId: 1, feedId: '2', generatedAt: 2000 },
+        { namespaceId: 2, feedId: '4', generatedAt: 1000 },
       ],
       scannedThrough: '4',
       feedEndId: '9',
@@ -210,6 +205,8 @@ describe('ProfileNamespaceFeedService', () => {
     const { service } = harness([
       [{ feedEndId: 7n }],
       [{ ...row, domain: 'peer.test', rootPublicKey: ROOT }],
+      ...(row.nsid === 0 ? [[{ rootPublicKey: ROOT }]] : []),
+      [{ updatedAt: new Date(1234) }],
     ]);
     const bindings = await service.resolveBindings(row.nsid);
     expect(validate(bindings), JSON.stringify(validate.errors)).toBe(true);
@@ -218,11 +215,17 @@ describe('ProfileNamespaceFeedService', () => {
   });
 
   it('answers nsid 0 from local authority', async () => {
-    const { service } = harness([[{ feedEndId: 7n }]]);
+    const { service } = harness([
+      [{ feedEndId: 7n }],
+      [{ domain: 'soms.test' }],
+      [{ rootPublicKey: ROOT }],
+      [{ updatedAt: new Date(1234) }],
+    ]);
     await expect(service.resolveBindings(0)).resolves.toEqual({
       domain: 'soms.test',
       rootPublicKey: ROOT,
       profileNamespaceFeedEndId: '7',
+      generatedAt: 1234,
     });
   });
 
@@ -237,11 +240,13 @@ describe('ProfileNamespaceFeedService', () => {
           active: true,
         },
       ],
+      [{ updatedAt: new Date(1234) }],
     ]);
     await expect(service.resolveBindings(12)).resolves.toEqual({
       domain: 'peer.test',
       rootPublicKey: ROOT,
       profileNamespaceFeedEndId: '7',
+      generatedAt: 1234,
     });
 
     // A reset-retired id keeps answering with its last retained bindings so
@@ -256,11 +261,13 @@ describe('ProfileNamespaceFeedService', () => {
           active: false,
         },
       ],
+      [{ updatedAt: new Date(1234) }],
     ]);
     await expect(retired.service.resolveBindings(12)).resolves.toEqual({
       domain: 'peer.test',
       rootPublicKey: ROOT,
       profileNamespaceFeedEndId: '7',
+      generatedAt: 1234,
     });
 
     const missing = harness([[{ feedEndId: 7n }], []]);

@@ -99,7 +99,13 @@ async function main(): Promise<void> {
     const database = moduleRef.get(DatabaseService, { strict: false });
     await database.db
       .insert(identityNamespace)
-      .values({ id: 0, domain, rootPublicKey: null, identityPinnedAt: null })
+      .values({
+        id: 0,
+        domain,
+        rootPublicKey: null,
+        identityPinnedAt: null,
+        signingKeyCreatedAt: 0,
+      })
       .onConflictDoNothing();
   }
   // Optional TLS listener material (FED_E2E_TLS_CERT / FED_E2E_TLS_KEY, file paths set by the

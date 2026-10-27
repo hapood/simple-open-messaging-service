@@ -18,17 +18,19 @@ describe('remote-only federation listing', () => {
     database = mod.get(DatabaseService);
     lifecycle = new FederationPeerLifecycle(database, {} as never, {} as never);
     const inserted = await database.pool.query<{ id: number }>(
-      'INSERT INTO "IdentityNamespace" (domain, "rootPublicKey", "identityPinnedAt") VALUES ($1, $2, NOW()) RETURNING id',
+      'INSERT INTO "IdentityNamespace" (domain, "signingKeyCreatedAt", "rootPublicKey", "identityPinnedAt") VALUES ($1, 1700000000000, $2, NOW()) RETURNING id',
       [domain, Buffer.alloc(32, 23).toString('base64')],
     );
     peerId = inserted.rows[0].id;
   });
   afterAll(async () => {
-    if (peerId)
+    if (peerId) {
+      await database.pool.query('DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1', [peerId]);
       await database.pool.query(
         'DELETE FROM "IdentityNamespace" WHERE id = $1',
         [peerId],
       );
+    }
     await mod?.close();
   });
   it('excludes namespace zero even when explicitly filtered', async () => {

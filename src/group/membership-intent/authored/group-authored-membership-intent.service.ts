@@ -835,7 +835,9 @@ export class GroupAuthoredMembershipIntentService {
     // a successful write. Crossed applications and acknowledged invitations
     // retain their existing acceptance semantics.
     if (
-      row.invitationOutstanding &&
+      row.groupIntentStatus === 'REQUESTED' &&
+      row.groupIntentExpiresAt !== null &&
+      new Date(row.groupIntentExpiresAt) > new Date() &&
       row.memberIntentStatus !== 'ACCEPTED' &&
       !row.applicationPending
     )
@@ -859,9 +861,9 @@ export class GroupAuthoredMembershipIntentService {
           'invitation target is missing',
         ),
       );
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     const expiresAt = new Date(
-      requestedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
+      statusChangedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
     );
     const member: Applicant = {
       account: row.memberAccount!,
@@ -887,7 +889,7 @@ export class GroupAuthoredMembershipIntentService {
         targetNamespaceId: member.namespaceId,
         localTargetId: row.localMemberId,
         note: (params.note ?? '').slice(0, 255),
-        requestedAt,
+        statusChangedAt,
         expiresAt,
       },
     });
@@ -1038,7 +1040,7 @@ export class GroupAuthoredMembershipIntentService {
           threadId: context.params.threadId,
           status: 'REVOKED',
           note: '',
-          requestedAt: null,
+          statusChangedAt: new Date(),
           expiresAt: null,
         }),
       );

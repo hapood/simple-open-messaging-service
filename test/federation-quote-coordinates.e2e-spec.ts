@@ -66,6 +66,7 @@ describe('federation quote coordinates across three persisted node views', () =>
       const [namespace] = await database.db
         .insert(tables.identityNamespace)
         .values({
+          signingKeyCreatedAt: 1700000000000,
           domain,
           // The IdentityNamespace_one_epoch_per_root_key unique index forbids
           // two non-retired namespaces from sharing a root key, so derive a

@@ -16,7 +16,7 @@ export interface MirrorMembershipActivationInput {
     profileNamespaceId: number;
     profileRev: number;
     note: string;
-    requestedAt: Date | null;
+    statusChangedAt: Date;
     expiresAt: Date | null;
     messageEndSeq: number;
     tombstoneEndSeq: number;
@@ -44,7 +44,7 @@ export function mirrorMembershipActivationIntentWrite(
     receiver,
     status: input.persistStatus,
     note: input.intent.note,
-    requestedAt: input.intent.requestedAt,
+    statusChangedAt: input.intent.statusChangedAt,
     expiresAt: input.intent.expiresAt,
     profileNamespaceId: input.intent.profileNamespaceId,
     profileRev: input.intent.profileRev,
@@ -80,7 +80,7 @@ export function mirrorMembershipActivationSql(
           AND b."receiverNamespaceId" = ${input.presentation.groupNamespaceId}
       WHERE p.id = ${input.pairId} AND t.id = ${input.threadId}
     ), persisted_intent AS MATERIALIZED (
-      SELECT status, "profileRev", note, "requestedAt", "expiresAt"
+      SELECT status, "profileRev", note, "statusChangedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${author.account} AND "authorNamespaceId" = ${author.namespaceId}
         AND "receiverAccount" = ${receiver.account} AND "receiverNamespaceId" = ${receiver.namespaceId}

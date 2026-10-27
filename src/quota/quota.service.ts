@@ -199,7 +199,8 @@ export class QuotaService implements OnModuleInit {
         INSERT INTO "QuotaDailyUsage" ("namespaceId", "date", "category", "count")
         VALUES (${namespaceId}, ${today}, ${category}, ${amount})
         ON CONFLICT ("namespaceId", "date", "category")
-        DO UPDATE SET "count" = "QuotaDailyUsage"."count" + ${amount}
+        DO UPDATE SET "count" = "QuotaDailyUsage"."count" + ${amount},
+          "updatedAt" = CURRENT_TIMESTAMP
         RETURNING "count"
       `);
       const count = rows[0]?.count ?? amount;

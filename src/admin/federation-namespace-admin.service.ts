@@ -408,7 +408,7 @@ export class FederationNamespaceAdminService {
       const newPeer = decision === 'approved' && resolution === 'new-peer';
       if (newPeer) {
         await tx.execute(sql`UPDATE "IdentityNamespace"
-          SET active = false, "retiredAt" = now() WHERE id = ${namespace.id}`);
+          SET active = false, "retiredAt" = now(), "updatedAt" = CURRENT_TIMESTAMP WHERE id = ${namespace.id}`);
         activeNamespaceId = null;
         await this.profileNamespaceFeed.recordNamespaceChangeInTx(
           tx,
@@ -468,6 +468,7 @@ export class FederationNamespaceAdminService {
           );
         }
         await tx.execute(sql`UPDATE "IdentityNamespace" SET
+          "updatedAt" = CURRENT_TIMESTAMP,
           "haltCode" = NULL, "haltReason" = NULL, "haltedAt" = NULL,
           "peerAssignedLocalNamespaceId" = ${coordinate ?? null},
           "trustLevel" = CASE WHEN "localServiceAvailable" AND "peerAcceptanceConfirmed"
@@ -500,7 +501,7 @@ export class FederationNamespaceAdminService {
         // an independently halted peer or invent missing acceptance evidence.
         await tx.execute(sql`
           UPDATE "IdentityNamespace"
-          SET "trustLevel" = CASE
+          SET "updatedAt" = CURRENT_TIMESTAMP, "trustLevel" = CASE
                 WHEN "localServiceAvailable" AND "peerAcceptanceConfirmed"
                 THEN 'available' ELSE "trustLevel" END,
               "remoteServiceReachable" = true,
@@ -574,7 +575,7 @@ export class FederationNamespaceAdminService {
     // acceptance or lifecycle. New-domain certificates are resolved afresh.
     await tx.execute(sql`
       UPDATE "IdentityNamespace"
-      SET domain = ${review.nextDomain}
+      SET domain = ${review.nextDomain}, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${namespace.id}
     `);
     await tx.execute(sql`
@@ -620,8 +621,13 @@ export class FederationNamespaceAdminService {
     await tx.execute(sql`
       UPDATE "IdentityNamespace"
       SET "rootPublicKey" = ${review.claimedRoot},
-          "identityPinnedAt" = now()
+          "identityPinnedAt" = now(), "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${namespace.id}
+    `);
+    await tx.execute(sql`
+      UPDATE "FederationFeedState"
+      SET "lastHandshakeAt" = NULL, "latestHealthCheck" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "namespaceId" = ${namespace.id}
     `);
     await tx.execute(sql`
       DELETE FROM "S2SKeyCache" WHERE "namespaceId" = ${namespace.id}

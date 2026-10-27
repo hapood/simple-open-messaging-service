@@ -173,10 +173,10 @@ requests, `publisherNamespaceId` selects the locally recognized peer and is not
 sent as a profile field; `target.profileNamespaceId` becomes the S2S path's
 `:namespaceId`. Account Profile and Group Member Profile map directly to their corresponding S2S operations. Exact relationship-intent profile disclosures are authorized through Account Profile with the requested exact revision.
 
-### POST `/user/resolve` · `/user/search`
+### POST `/user/resolve`
 
-- `resolve` / `search`: local exact/fuzzy lookup. A foreign domain is rejected by `resolve`; federated
-  exact lookup must use the temporary stream below. (`10001` not found.)
+- Local exact account lookup. A foreign domain is rejected; federated exact lookup must use the
+  temporary stream below. (`10001` not found.)
 
 ### GET `/user/resolve-federated-stream` — Temporary federated exact lookup
 
@@ -430,7 +430,8 @@ task coalescing, and optimistic client correction semantics.
 
 ### POST `/group/invite`
 
-- **Body**: `{ groupId, users: [{ account, namespaceId }] }` — author one GROUP invitation per valid namespace-bound user. Friendship is not an invitation prerequisite. The server resolves each target to its authoritative identity without selecting an identity copied from another peer's group. Namespace `0` selects local users. Duplicate normalized targets are coalesced; the synchronous response reports `invited` and `skipped` targets with rejection details.
+- **Body**: `{ groupId, users: [{ account, namespaceId, snapshot: { displayName, avatar } }] }` — author one GROUP invitation per valid namespace-bound user. The caller must be an active OWNER or ADMIN; friendship with the invitee is not required. The server resolves each target to its authoritative identity without selecting an identity copied from another peer's group. Namespace `0` selects local users. Duplicate normalized targets are coalesced; the synchronous response reports `invited` and `skipped` targets with rejection details.
+- An unanswered invitation does not activate membership. The invitee must accept, unless they already have a live join application that the invitation accepts. Active members and duplicate unanswered invitations are rejected.
 
 ### Group request rounds
 
@@ -690,7 +691,23 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
   Supported levels: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. The value stays in memory
   and resets to `warn` on every restart. The live stream returns all captured records;
   historical log search retains its independent minimum-level filter.
-- Federation / quota admin: `AdminFederationController` (peer trust timeline), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
+- Federation / quota admin: `AdminFederationController` (peer state and observations), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
+
+Federation peer detail (`POST /api/v1/admin/federation/peers/:domain`) includes
+`feedProgress.lastHandshakeAt` and `feedProgress.latestHealthCheck` from the
+namespace's runtime state. The nullable Health observation includes
+`namespaceId`, `domain`, `startedAt`, `completedAt`, `durationMs`, `source`
+(`automatic` or `manual`), `status` (`available`, `degraded`, `unavailable`, or
+null on request failure), and `error` (null on a valid response). Feed source
+timestamps remain the last processed item times, not observation timestamps.
+
+`POST /api/v1/admin/federation/health/probe` accepts `{ namespaceId }` for an
+active, non-halted peer and requires ADMIN or SUPER_ADMIN. It shares the normal
+Health execution path and returns the upgraded peer detail on success. Failed
+checks retain their observation and return the normal API error; clients refresh
+peer detail after either outcome. Opening detail never initiates a probe.
+The web console and backend ship this contract together; the former standalone
+probe-result shape is not supported.
 
 ## Client Diagnostics
 

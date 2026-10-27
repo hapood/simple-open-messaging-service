@@ -263,10 +263,17 @@ describe('Federation v1 protocol documentation', () => {
       ['GROUP_PROFILE', { account: '!team', namespaceId: 0, profileRev: 3 }],
       ['GROUP_ANNOUNCEMENT', { text: null }],
     ] as const) {
-      const item = { feedId: 1, createdAt: 0, originCreatedAt: null, operation, body };
+      const item = {
+        feedId: 1,
+        createdAt: 0,
+        originCreatedAt: null,
+        operation,
+        body,
+      };
       expect(validate(item)).toBe(true);
       const { createdAt: _createdAt, ...withoutCreatedAt } = item;
-      const { originCreatedAt: _originCreatedAt, ...withoutOriginCreatedAt } = item;
+      const { originCreatedAt: _originCreatedAt, ...withoutOriginCreatedAt } =
+        item;
       expect(validate(withoutCreatedAt)).toBe(false);
       expect(validate(withoutOriginCreatedAt)).toBe(false);
       for (const createdAt of [null, -1, 0.5, '0', Number.MAX_SAFE_INTEGER + 1])
@@ -296,11 +303,27 @@ describe('Federation v1 protocol documentation', () => {
           ? {
               account: 'alice',
               profileRev: 1,
+              generatedAt: 1_700_000_000_000,
               profile: content,
               proof: 'Y2hhbGxlbmdl',
             }
-          : { account: 'alice', ...content };
+          : { account: 'alice', generatedAt: 1_700_000_000_000, ...content };
       expect(validate(profile)).toBe(true);
+      for (const generatedAt of [
+        undefined,
+        null,
+        -1,
+        0.5,
+        '1',
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        const invalid: Record<string, unknown> = { ...profile, generatedAt };
+        if (generatedAt === undefined) delete invalid.generatedAt;
+        expect(validate(invalid)).toBe(false);
+      }
+      for (const generatedAt of [0, 1, Number.MAX_SAFE_INTEGER]) {
+        expect(validate({ ...profile, generatedAt })).toBe(true);
+      }
       expect(validate({ ...profile, domain: 'a.example' })).toBe(false);
     }
   });
@@ -312,11 +335,13 @@ describe('Federation v1 protocol documentation', () => {
     const empty = {
       account: 'alice',
       profileRev: 0,
+      generatedAt: 0,
       profile: null,
       proof: 'Y2hhbGxlbmdl',
     };
     const content = { displayName: 'Alice', bio: '', avatar: null };
     expect(validate(empty)).toBe(true);
+    expect(validate({ ...empty, generatedAt: 1 })).toBe(false);
     expect(validate({ ...empty, profileRev: 1 })).toBe(false);
     expect(validate({ ...empty, profile: content })).toBe(false);
     expect(validate({ ...empty, profileRev: 1, profile: content })).toBe(true);

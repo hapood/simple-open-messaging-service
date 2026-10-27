@@ -48,6 +48,7 @@ function fakeDatabase(peer: Record<string, unknown> | undefined) {
   return {
     database: {
       db: {
+        query: { identityNamespace: { findFirst: async () => peer } },
         transaction: (run: (tx: unknown) => Promise<void>) =>
           run(tx) as Promise<void>,
       },
@@ -60,6 +61,7 @@ function fakeDatabase(peer: Record<string, unknown> | undefined) {
 /** An 'available' peer: recognition, acceptance, and reachability all proven. */
 function availablePeer() {
   return {
+    rootPublicKey: 'root-a',
     domain: 'peer.example',
     trustLevel: 'available',
     localServiceAvailable: true,
@@ -109,7 +111,7 @@ describe('FederationRecognitionService outbound Health failure mapping', () => {
     );
 
     expect(request).toHaveBeenCalledOnce();
-    expect(patches).toHaveLength(1);
+    expect(patches).toHaveLength(2);
     expect(patches[0]).toMatchObject({
       trustLevel: 'degraded',
       remoteServiceReachable: false,

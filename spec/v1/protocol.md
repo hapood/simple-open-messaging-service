@@ -262,7 +262,7 @@ Health's fixed `unavailable` value is a successfully parsed status result, not a
 
 ### 7.4 Retry and commit boundaries
 
-A successful `feed-heads` request returns HTTP `200`. This means the feed-head hint was accepted, not that the peer completely drained its durable feeds. `call` returns `200` after synchronous validation and transient-state processing of the frame; it does not mean an endpoint received the event or media connected. A network error, unparseable proxy response, or retryable `5xx` MAY be retried with the identical business request, but `Date`, `created`, `expires`, and the HTTP signature MUST be regenerated. A malformed, binding, authorization, or identity conflict MUST NOT be retried unchanged without bound. If present, `Retry-After` MUST be non-negative decimal delta-seconds. A consumer SHOULD honor it and otherwise use bounded exponential backoff with jitter.
+A successful `feed-heads` request returns HTTP `200`. This means the feed-head hint was accepted, not that the peer completely drained its durable feeds. `call` returns `200` after synchronous validation and transient-state processing of the frame; it does not mean an endpoint received the event or media connected. A network error, unparseable proxy response, or retryable `5xx` MAY be retried with the identical business request, but `Date`, `created`, `expires`, and the HTTP signature MUST be regenerated. A `feed-heads` retry derives its send time from the regenerated signature's `created` parameter as defined in Section 9.2. A malformed, binding, authorization, or identity conflict MUST NOT be retried unchanged without bound. If present, `Retry-After` MUST be non-negative decimal delta-seconds. A consumer SHOULD honor it and otherwise use bounded exponential backoff with jitter.
 
 An accepted cursor position represents every accepted item through that position. Malformed or otherwise invalid data has no protocol effect. An operation document MUST define the idempotency key and observable result for a repeated request. The same business command MUST NOT become a new command merely because the HTTP request has a new signature.
 
@@ -466,14 +466,45 @@ rules in [Profiles, Section 7](./profiles.md#7-retention-and-degradation) apply.
 Tombstone facts remain permanent even when loss of authorization removes their
 current thread-content projection.
 
-The closed `feed-heads` body contains exactly `stateFeedEndId` and
-`profileNamespaceFeedEndId`; both are required. The authenticated signer
-domain identifies the feed source and is not repeated in the body.
-`stateFeedEndId` is an inclusive State Feed scan bound;
+The closed `feed-heads` body contains exactly these three required fields:
+
+```ts
+interface FeedHeads {
+  stateFeedEndId: DecimalString;
+  profileNamespaceFeedEndId: DecimalString;
+  generatedAt: EpochMilliseconds;
+}
+```
+
+The authenticated signer domain identifies the feed source and is not repeated
+in the body. `stateFeedEndId` is an inclusive State Feed scan bound;
 `profileNamespaceFeedEndId` is the signer's Profile Namespace Feed end. Each
-field wakes and bounds the draining of its own feed only, and neither is an
-ACK, business revision, or query sequence. A hint may be lost, duplicated, or
-reordered and MUST NOT be the sole recovery mechanism.
+head wakes and bounds the draining of its own feed only, and neither is an
+ACK, business revision, or query sequence.
+
+`generatedAt` is the publisher's generation time for the advertised pair of
+heads: the greatest last-update time of the current published items represented
+by either head. An empty feed contributes `0`; if both feeds are empty,
+`generatedAt` is `0`. The publisher MUST capture both heads and their generation
+time from one consistent source snapshot. Merely sending or retransmitting that
+snapshot MUST NOT refresh `generatedAt`. It is not the time of an individual
+relationship transition or message.
+
+Request send time MUST be read from the authenticated HTTP Message Signature's
+`created` parameter (Unix epoch seconds), not duplicated in the JSON body. A
+consumer storing milliseconds MUST multiply `created` by `1000`; this retains
+whole-second precision. The publisher MUST regenerate signature metadata for
+each send attempt, including retries of the same snapshot. `generatedAt` remains
+a non-negative Unix epoch millisecond safe JSON integer. These times describe
+source generation and request initiation, not receipt or consumer progress.
+
+Neither time is a feed cursor or a consumer-progress boundary. Publisher clock
+corrections and inter-server clock skew are permitted: consumers MUST NOT require
+timestamp monotonicity or `generatedAt <= created * 1000`, and MUST NOT discard a
+greater advertised head because of either timestamp's age or ordering once the
+request passes transport authentication. Signature freshness and replay-protection
+rules still apply independently. A hint may be lost, duplicated, or reordered and
+MUST NOT be the sole recovery mechanism.
 
 For each authenticated publisher, a consumer MUST retain the greatest
 `stateFeedEndId` it has observed but not yet durably covered. A duplicate or

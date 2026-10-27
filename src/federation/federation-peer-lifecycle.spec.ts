@@ -30,6 +30,46 @@ function subject(peer: Record<string, unknown> | undefined) {
 }
 
 describe('FederationPeerLifecycle recognition and reachability gates', () => {
+  it('joins feed progress and received observations without exposing old identity coordinates', async () => {
+    const peer = { id: 7, domain: 'peer.example' };
+    const progress = {
+      namespaceId: 7,
+      lastHandshakeAt: new Date(100),
+      latestHealthCheck: null,
+      outboundStateFeedEndId: 40n,
+      inboundStateFeedPulledThrough: 30n,
+      stateFeedSourceGeneratedAt: 1000,
+      profileNamespaceFeedSourceGeneratedAt: 2000,
+      inboundProfileNamespaceFeedPulledThrough: 19n,
+    };
+    const receipt = {
+      namespaceId: 7,
+      stateFeedEndId: '12',
+      profileNamespaceFeedEndId: '10',
+      generatedAt: 1,
+      sentAt: 2,
+      receivedAt: new Date(3),
+    };
+    const lifecycle = new FederationPeerLifecycle(
+      {
+        db: {
+          query: {
+            identityNamespace: { findFirst: async () => peer },
+            federationFeedState: { findMany: async () => [progress] },
+            federationFeedHeadReceipt: { findMany: async () => [receipt] },
+          },
+        },
+      } as never,
+      {} as never,
+      {} as never,
+    );
+    const detail = await lifecycle.detail(peer.domain);
+    expect(detail.feedProgress).toEqual(progress);
+    expect(detail.latestFeedHeadReceipt).toEqual(receipt);
+    expect(detail).not.toHaveProperty('stateFeedEndId');
+    expect(detail).not.toHaveProperty('stateFeedPulledThrough');
+  });
+
   it('uses the same remote-only predicate for page data and total', async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const where = vi.fn().mockResolvedValue([{ value: 0 }]);

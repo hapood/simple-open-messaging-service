@@ -31,7 +31,6 @@ import { FederationNamespaceAdminService } from './federation-namespace-admin.se
 import { KeypairService } from '../federation/keypair.service.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
 import { FederationAdminMessageProvenanceService } from '../federation/federation-admin-message-provenance.service.js';
-import { FederationAdminHealthProbeService } from '../federation/federation-admin-health-probe.service.js';
 
 /**
  * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state,
@@ -56,7 +55,6 @@ export class AdminFederationController {
     private readonly keypair: KeypairService,
     private readonly recognition: FederationRecognitionService,
     private readonly messageProvenance: FederationAdminMessageProvenanceService,
-    private readonly healthProbe: FederationAdminHealthProbeService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -274,7 +272,7 @@ export class AdminFederationController {
       'Probe one federated namespace through the signed S2S health endpoint',
   })
   async probeFederationHealth(@Body() dto: AdminFederationHealthProbeDto) {
-    return this.healthProbe.probe(dto.namespaceId);
+    return this.peerLifecycle.probeHealth(dto.namespaceId);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

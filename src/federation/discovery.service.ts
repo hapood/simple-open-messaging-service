@@ -444,6 +444,12 @@ export class DiscoveryService implements OnApplicationShutdown {
     namespaceId: number,
     doc: WellKnownDoc,
   ): Promise<void> {
+    if (
+      !Number.isSafeInteger(doc.signingKeyCreatedAt) ||
+      doc.signingKeyCreatedAt <= 0
+    ) {
+      throw new Error('well-known requires a positive signingKeyCreatedAt');
+    }
     const normalized = this.normalizeDomain(domain);
     const mismatch = await this.database.db.transaction(async (tx) => {
       const [namespace] = await tx
@@ -478,6 +484,11 @@ export class DiscoveryService implements OnApplicationShutdown {
         }
         return reason;
       }
+      // Replace diagnostic metadata with the same snapshot as the certificates.
+      await tx
+        .update(tables.identityNamespace)
+        .set({ signingKeyCreatedAt: doc.signingKeyCreatedAt })
+        .where(eq(tables.identityNamespace.id, namespaceId));
       await tx
         .delete(tables.s2SKeyCache)
         .where(eq(tables.s2SKeyCache.namespaceId, namespaceId));
@@ -491,7 +502,6 @@ export class DiscoveryService implements OnApplicationShutdown {
           notBefore: new Date(key.notBefore),
           notAfter: new Date(key.notAfter),
           authorizationSignature: key.authorizationSignature,
-          fetchedAt: new Date(),
         })),
       );
       return undefined;

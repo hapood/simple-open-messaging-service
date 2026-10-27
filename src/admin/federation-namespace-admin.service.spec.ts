@@ -89,6 +89,7 @@ function subject(
     {
       fetchWellKnown: vi.fn().mockResolvedValue({
         protocolVersions: [1],
+        signingKeyCreatedAt: 1700000000000,
         roots: [
           { ed25519: claimedRoot, notBefore: 0, notAfter: 253402300799999 },
         ],

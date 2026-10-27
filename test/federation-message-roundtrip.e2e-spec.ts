@@ -101,6 +101,7 @@ describe('federation message round-trip digest fidelity', () => {
     const [namespace] = await database.db
       .insert(identityNamespace)
       .values({
+        signingKeyCreatedAt: 1700000000000,
         domain: peerDomain,
         rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
         identityPinnedAt: now,

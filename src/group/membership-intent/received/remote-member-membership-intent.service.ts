@@ -54,7 +54,7 @@ interface RemoteMemberMembershipIntentBody {
   profileNamespaceId: number;
   profileRev: number;
   note: string;
-  requestedAt: number | null;
+  statusChangedAt: number;
   expiresAt: number | null;
   messageEndSeq?: number;
   tombstoneEndSeq?: number;
@@ -266,7 +266,7 @@ export class RemoteMemberMembershipIntentService {
       tombstoneEndSeq: command.body.tombstoneEndSeq ?? 0,
     };
     if (intent.status === 'REQUESTED') {
-      if (intent.requestedAt === null || intent.expiresAt === null)
+      if (intent.expiresAt === null)
         throw new InvalidReceivedIntentError(
           'invalid relationship request timestamps',
         );
@@ -274,7 +274,7 @@ export class RemoteMemberMembershipIntentService {
         command,
         intent: {
           status: 'REQUESTED',
-          requestedAt: intent.requestedAt,
+          statusChangedAt: intent.statusChangedAt,
           expiresAt: intent.expiresAt,
         },
         wireIntent,
@@ -302,6 +302,7 @@ export class RemoteMemberMembershipIntentService {
         peers,
       });
     return this.applyRevocationInTx(tx, {
+      statusChangedAt: intent.statusChangedAt,
       wireIntent,
       pairId,
       threadId: command.threadId,
@@ -343,7 +344,7 @@ export class RemoteMemberMembershipIntentService {
     tx: DatabaseTransaction,
     context: {
       command: RemoteMemberMembershipIntentCommand;
-      intent: { status: 'REQUESTED'; requestedAt: Date; expiresAt: Date };
+      intent: { status: 'REQUESTED'; statusChangedAt: Date; expiresAt: Date };
       wireIntent: {
         profileNamespaceId: number;
         profileRev: number;
@@ -385,12 +386,12 @@ export class RemoteMemberMembershipIntentService {
         profileNamespaceId: context.member.namespaceId,
         localMemberId: null,
         note: context.wireIntent.note,
-        requestedAt: context.intent.requestedAt,
+        statusChangedAt: context.intent.statusChangedAt,
         expiresAt: context.intent.expiresAt,
         authoredSql: this.memberWireWriteSql(
           'REQUESTED',
           context.wireIntent,
-          context.intent.requestedAt,
+          context.intent.statusChangedAt,
           context.intent.expiresAt,
           {
             member: context.member,
@@ -497,7 +498,7 @@ export class RemoteMemberMembershipIntentService {
     tx: DatabaseTransaction,
     context: {
       command: RemoteMemberMembershipIntentCommand;
-      intent?: { status: 'REQUESTED'; requestedAt: Date; expiresAt: Date };
+      intent?: { status: 'REQUESTED'; statusChangedAt: Date; expiresAt: Date };
       wireIntent: {
         profileNamespaceId: number;
         profileRev: number;
@@ -529,12 +530,12 @@ export class RemoteMemberMembershipIntentService {
       acceptedAt: new Date(),
       memberAck: true,
       memberAuthoredSql: this.memberWireWriteSql(
-        'ACCEPTED',
+        command.body.status,
         wireIntent,
-        command.body.requestedAt === null
+        new Date(command.body.statusChangedAt),
+        command.body.expiresAt === null
           ? null
-          : new Date(command.body.requestedAt),
-        null,
+          : new Date(command.body.expiresAt),
         {
           member,
           group: { account: context.group.groupAccount, namespaceId: 0 },
@@ -573,6 +574,7 @@ export class RemoteMemberMembershipIntentService {
   private async applyRevocationInTx(
     tx: DatabaseTransaction,
     context: {
+      statusChangedAt: Date;
       wireIntent: {
         profileNamespaceId: number;
         profileRev: number;
@@ -603,10 +605,16 @@ export class RemoteMemberMembershipIntentService {
         namespaceId: member.namespaceId,
       },
       receiver: { account: context.group.groupAccount, namespaceId: 0 },
-      authoredSql: this.memberWireWriteSql('REVOKED', wireIntent, null, null, {
-        member,
-        group: { account: context.group.groupAccount, namespaceId: 0 },
-      }),
+      authoredSql: this.memberWireWriteSql(
+        'REVOKED',
+        wireIntent,
+        context.statusChangedAt,
+        null,
+        {
+          member,
+          group: { account: context.group.groupAccount, namespaceId: 0 },
+        },
+      ),
     };
     // The wire writer's guarded RETURNING reports whether this delivery
     // actually moved the member direction; a replayed item leaves it untouched.
@@ -702,9 +710,7 @@ export class RemoteMemberMembershipIntentService {
       this.memberWireWriteSql(
         'ACCEPTED',
         context.wireIntent,
-        context.command.body.requestedAt === null
-          ? null
-          : new Date(context.command.body.requestedAt),
+        new Date(context.command.body.statusChangedAt),
         null,
         {
           member: context.member,
@@ -727,7 +733,7 @@ export class RemoteMemberMembershipIntentService {
       messageEndSeq: number;
       tombstoneEndSeq: number;
     },
-    requestedAt: Date | null,
+    statusChangedAt: Date,
     expiresAt: Date | null,
     endpoints: {
       member: { account: string; namespaceId: number };
@@ -739,7 +745,7 @@ export class RemoteMemberMembershipIntentService {
       receiver: endpoints.group,
       status,
       note: wireIntent.note,
-      requestedAt,
+      statusChangedAt,
       expiresAt,
       profileNamespaceId: wireIntent.profileNamespaceId,
       profileRev: wireIntent.profileRev,

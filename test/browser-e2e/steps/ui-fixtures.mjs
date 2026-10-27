@@ -4,12 +4,9 @@ import { expect } from '@playwright/test';
  * Create a local account through the visible Admin user-management form.
  * This helper intentionally avoids direct API and database setup.
  */
-export async function createLocalUser(page, { account, displayName }) {
+export async function createLocalUser(page, { account }) {
   if (!/^[a-z][a-z0-9.]{2,30}$/.test(account)) {
     throw new Error(`Invalid local test account: ${account}`);
-  }
-  if (typeof displayName !== 'string' || displayName.length === 0) {
-    throw new Error('A display name is required');
   }
 
   if (!page.url().includes('/admin/users')) {
@@ -29,7 +26,7 @@ export async function createLocalUser(page, { account, displayName }) {
 
   await search.fill(account);
   if ((await matchingRow().count()) === 1) {
-    return { account, displayName, created: false };
+    return { account, created: false };
   }
 
   let dialog = page.locator('[role="dialog"]:visible');
@@ -40,14 +37,13 @@ export async function createLocalUser(page, { account, displayName }) {
   }
   await expect(dialog).toHaveCount(1);
   await dialog.locator('#cu-account').fill(account);
-  await dialog.locator('#cu-name').fill(displayName);
   await dialog.locator('form button[type="submit"]').click();
   await expect(dialog).toBeHidden();
   await expect(overlay).toBeHidden();
 
   await search.fill(account);
   await expect(matchingRow()).toHaveCount(1);
-  return { account, displayName, created: true };
+  return { account, created: true };
 }
 
 /** Send a local friend request using the signed-in user's visible Web controls. */

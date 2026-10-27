@@ -20,6 +20,8 @@ describe('group invitation duplicate validation', () => {
       invitationOutstanding: false,
       applicationPending: false,
       memberIntentStatus: null,
+      groupIntentStatus: 'REQUESTED',
+      groupIntentExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
     const validate = (patch: Partial<typeof row>) =>
       service['validateRequestInTx'](
@@ -44,12 +46,21 @@ describe('group invitation duplicate validation', () => {
   it('rejects an outstanding unacknowledged invitation', async () => {
     const { validate } = setup();
     await expect(
-      validate({ invitationOutstanding: true }),
+      validate({ invitationOutstanding: false }),
     ).resolves.toMatchObject({
       status: 'REJECTED',
       reason: 'ALREADY_INVITED',
       code: BusinessCode.ALREADY_EXISTS,
     });
+  });
+
+  it('allows a fresh request after the previous invitation expires', async () => {
+    const { service, validate } = setup();
+    const finalize = vi
+      .spyOn(service as never, 'finalizeValidationInTx')
+      .mockResolvedValue({ status: 'OK' } as never);
+    await validate({ groupIntentExpiresAt: new Date(Date.now() - 60_000).toISOString() });
+    expect(finalize).toHaveBeenCalledOnce();
   });
 
   it('keeps crossed applications on the acceptance path', async () => {

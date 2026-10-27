@@ -23,7 +23,7 @@ describe('protocol statements without client intent replication', () => {
         userIntentRequestSql({
           ...input,
           note: 'hello',
-          requestedAt: new Date(1000),
+          statusChangedAt: new Date(1000),
           expiresAt: new Date(2000),
           snapshot: { displayName: 'Bob', avatar: null },
         }),

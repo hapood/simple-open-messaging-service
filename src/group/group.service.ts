@@ -740,6 +740,7 @@ export class GroupService {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: nextRev,
+      generatedAt: Date.now(),
       displayName: name,
       avatar,
       bio: description,

@@ -5,7 +5,7 @@ import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
-  identityNamespace,
+  federationFeedState,
   message,
   peerStateFeed,
   profileTable,
@@ -54,6 +54,7 @@ describe('received P2P intent convergence', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Local author',
     });
     const peer = { account: 'remote', domain: `${suffix}.test`, namespaceId };
@@ -99,9 +100,9 @@ describe('received P2P intent convergence', () => {
         orderBy: relationshipIntent.authorAccount,
       });
     const readHead = () =>
-      database.db.query.identityNamespace.findFirst({
-        where: eq(identityNamespace.id, namespaceId),
-        columns: { stateFeedEndId: true },
+      database.db.query.federationFeedState.findFirst({
+        where: eq(federationFeedState.namespaceId, namespaceId),
+        columns: { outboundStateFeedEndId: true },
       });
     const command: ReceivedUserIntentCommand = {
       localUserId: local.id,
@@ -111,7 +112,7 @@ describe('received P2P intent convergence', () => {
         profileNamespaceId: 0,
         profileRev: 0,
         note: '',
-        requestedAt: null,
+        statusChangedAt: Date.now(),
         expiresAt: null,
       },
     };
@@ -224,7 +225,7 @@ describe('received P2P intent convergence', () => {
           body: {
             ...command.body,
             status: 'ACCEPTED',
-            requestedAt: Date.now() - 1000,
+            statusChangedAt: Date.now() - 1000,
             messageEndSeq: 0,
             tombstoneEndSeq: 0,
           },

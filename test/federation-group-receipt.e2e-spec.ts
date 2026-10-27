@@ -262,7 +262,7 @@ describe('group origin rejects mirror copies as processing receipts', () => {
         profileRev: 0,
         messageEndSeq: 5,
         tombstoneEndSeq: 0,
-        requestedAt: createdAt,
+        statusChangedAt: createdAt,
       });
       await database.db.insert(tables.peerStateFeed).values({
         namespaceId: authorNamespace,

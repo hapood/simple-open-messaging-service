@@ -79,6 +79,7 @@ import {
   threadAudience,
   profileTable,
   identityNamespace,
+  federationFeedState,
   systemSetting,
 } from '../src/database/schema.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -526,10 +527,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
     });
     const incomingTimings = await appB.database.execute<{
-      requestedAt: Date;
+      statusChangedAt: Date;
       expiresAt: Date;
     }>(sql`
-      SELECT intent."requestedAt", intent."expiresAt"
+      SELECT intent."statusChangedAt", intent."expiresAt"
       FROM "RelationshipIntent" intent
       WHERE intent."profileRev" = ${incoming.profileRev}
         AND intent."authorAccount" = 'alice'
@@ -540,7 +541,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(incomingTiming).toBeDefined();
     expect(
       new Date(incomingTiming!.expiresAt).getTime() -
-        new Date(incomingTiming!.requestedAt).getTime(),
+        new Date(incomingTiming!.statusChangedAt).getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
     expect(incoming.profileRev).toBeGreaterThan(0);
     expect(profileEvidence.name).toBe('Alice');
@@ -2191,12 +2192,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     await vi.waitFor(
       async () => {
-        const epoch = await appA.database.query.identityNamespace.findFirst({
-          where: eq(identityNamespace.domain, DOM_B),
+        const epoch = await appA.database.query.federationFeedState.findFirst({
+          where: sql`${federationFeedState.namespaceId} = (SELECT id FROM "IdentityNamespace" WHERE domain = ${DOM_B} AND active)`,
         });
-        expect(epoch?.stateFeedPulledThrough ?? 0n).toBeGreaterThanOrEqual(
-          outboundJoin!.feedId,
-        );
+        expect(
+          epoch?.inboundStateFeedPulledThrough ?? 0n,
+        ).toBeGreaterThanOrEqual(outboundJoin!.feedId);
       },
       { timeout: 5000, interval: 100 },
     );
@@ -2555,17 +2556,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(peer.body.code).toBe(BusinessCode.OK);
         expect(peer.body.data.list).toHaveLength(1);
         const progress = peer.body.data.list[0].feedProgress as {
-          remoteProfileNamespaceFeedEndId: string;
+          profileNamespaceFeedSourceGeneratedAt: number;
           inboundProfileNamespaceFeedPulledThrough: string;
         };
-        expect(
-          BigInt(progress.remoteProfileNamespaceFeedEndId),
-        ).toBeGreaterThan(0n);
+        expect(progress.profileNamespaceFeedSourceGeneratedAt).toBeGreaterThan(0);
         expect(
           BigInt(progress.inboundProfileNamespaceFeedPulledThrough),
-        ).toBeGreaterThanOrEqual(
-          BigInt(progress.remoteProfileNamespaceFeedEndId),
-        );
+        ).toBeGreaterThan(0n);
       },
       { timeout: 5000, interval: 100 },
     );
@@ -2905,6 +2902,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       publisherNamespaceId: namespaceAOnB,
       profileNamespaceId: namespaceAOnB,
       profileRev: 1,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Stale roster member',
     });
     await appB.database.insert(groupMetaMemberFeed).values({
@@ -3216,11 +3214,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
                 eq(message.content, textContent('hi both')),
               ),
             }),
-            appA.database.query.identityNamespace.findFirst({
-              where: eq(identityNamespace.domain, DOM_B),
+            appA.database.query.federationFeedState.findFirst({
+              where: sql`${federationFeedState.namespaceId} = (SELECT id FROM "IdentityNamespace" WHERE domain = ${DOM_B} AND active)`,
             }),
-            appB.database.query.identityNamespace.findFirst({
-              where: eq(identityNamespace.domain, DOM_A),
+            appB.database.query.federationFeedState.findFirst({
+              where: sql`${federationFeedState.namespaceId} = (SELECT id FROM "IdentityNamespace" WHERE domain = ${DOM_A} AND active)`,
             }),
             appB.database.query.federationThreadSyncState.findFirst({
               where: eq(federationThreadSyncState.threadId, firstMirrorBId),
@@ -3231,9 +3229,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               `shared-mirror receiver cursor snapshot: ${JSON.stringify(
                 {
                   sourceStateAllocatedThrough:
-                    sourceStateCursor?.stateFeedEndId?.toString(),
+                    sourceStateCursor?.outboundStateFeedEndId?.toString(),
                   receiverStateCommittedThrough:
-                    receiverStateCursor?.stateFeedPulledThrough?.toString(),
+                    receiverStateCursor?.inboundStateFeedPulledThrough?.toString(),
                   receiverMessageTarget: receiverThreadState?.messageTargetSeq,
                   receiverMessageProcessedThrough:
                     receiverThreadState?.messageProcessedThroughSeq,
@@ -3992,7 +3990,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       threadId: originThreadId,
       active: false,
     });
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     const [dishonestPair] = await appB.database
       .insert(relationshipPair)
       .values({
@@ -4005,7 +4003,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         endpointBNamespaceId: mirror.group.namespaceId,
         threadId: mirror.id,
         active: false,
-        updatedAt: requestedAt,
+        updatedAt: statusChangedAt,
       })
       .onConflictDoUpdate({
         target: [
@@ -4015,7 +4013,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           relationshipPair.endpointBAccount,
           relationshipPair.endpointBNamespaceId,
         ],
-        set: { threadId: mirror.id, updatedAt: requestedAt },
+        set: { threadId: mirror.id, updatedAt: statusChangedAt },
       })
       .returning({ id: relationshipPair.id });
     const [dishonestRequest] = await appB.database
@@ -4031,8 +4029,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         authorProfileRev: mirror.group.profileRev,
         snapshot: null,
         note: '',
-        requestedAt,
-        expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+        requestedAt: statusChangedAt,
+        expiresAt: new Date(
+          statusChangedAt.getTime() + 7 * 24 * 60 * 60 * 1000,
+        ),
       })
       .returning();
     await appB.database.insert(relationshipIntent).values({
@@ -4047,9 +4047,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       tombstoneEndSeq: 0,
       status: 'REQUESTED',
       note: '',
-      requestedAt,
-      expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
-      updatedAt: requestedAt,
+      statusChangedAt,
+      expiresAt: new Date(statusChangedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+      updatedAt: statusChangedAt,
     });
 
     const accepted = await request(appB.baseUrl)
@@ -4071,12 +4071,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(outboundAcceptance?.body).toMatchObject({ status: 'ACCEPTED' });
     await vi.waitFor(
       async () => {
-        const epoch = await appA.database.query.identityNamespace.findFirst({
-          where: eq(identityNamespace.domain, DOM_B),
+        const epoch = await appA.database.query.federationFeedState.findFirst({
+          where: sql`${federationFeedState.namespaceId} = (SELECT id FROM "IdentityNamespace" WHERE domain = ${DOM_B} AND active)`,
         });
-        expect(epoch?.stateFeedPulledThrough ?? 0n).toBeGreaterThanOrEqual(
-          outboundAcceptance!.feedId,
-        );
+        expect(
+          epoch?.inboundStateFeedPulledThrough ?? 0n,
+        ).toBeGreaterThanOrEqual(outboundAcceptance!.feedId);
       },
       { timeout: 10_000, interval: 100 },
     );
@@ -4433,8 +4433,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const authority = `127.0.0.1:${appA.port}`;
     const body = JSON.stringify({
       stateFeedEndId: '1',
-      messageFeedEndId: '1',
-      tombstoneFeedEndId: '1',
+      profileNamespaceFeedEndId: '1',
+      generatedAt: 0,
     });
     const headers = await evilSig.signOutbound({
       method: 'POST',

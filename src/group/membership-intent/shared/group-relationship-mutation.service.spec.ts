@@ -90,7 +90,7 @@ describe('GroupRelationshipMutationService', () => {
   });
 
   it('locks the remote-group peer allocator before publishing the protocol intent', async () => {
-    const requestedAt = new Date('2026-09-04T00:00:00.000Z');
+    const statusChangedAt = new Date('2026-09-04T00:00:00.000Z');
     const order: string[] = [];
     const tx = {
       select: vi
@@ -145,7 +145,7 @@ describe('GroupRelationshipMutationService', () => {
           status: 'REVOKED',
           profileRev: 7,
           note: '',
-          requestedAt,
+          statusChangedAt,
           expiresAt: null,
         },
         changed: true,
@@ -188,7 +188,7 @@ describe('GroupRelationshipMutationService', () => {
   });
 
   it('reopens a dissolved mirror after a successfully authored positive intent', async () => {
-    const requestedAt = new Date('2026-09-14T00:00:00.000Z');
+    const statusChangedAt = new Date('2026-09-14T00:00:00.000Z');
     const where = vi.fn().mockResolvedValue(undefined);
     const set = vi.fn(() => ({ where }));
     const tx = {
@@ -231,7 +231,7 @@ describe('GroupRelationshipMutationService', () => {
           status: 'REQUESTED',
           profileRev: 8,
           note: 'join',
-          requestedAt,
+          statusChangedAt,
           expiresAt: new Date('2026-09-21T00:00:00.000Z'),
         },
         changed: true,

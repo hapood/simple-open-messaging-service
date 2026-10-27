@@ -8,6 +8,7 @@ const evidence = {
   displayName: 'Alice',
   bio: '',
   avatar: null,
+  generatedAt: 1_700_000_000_000,
 };
 
 function target() {
@@ -51,6 +52,45 @@ describe('exact signed profile operations', () => {
       expect.any(Number),
     );
   });
+
+  it.each(['account', 'group-member'] as const)(
+    'requires a valid generatedAt for %s evidence',
+    async (kind) => {
+      const { get, profiles } = target();
+      const fetch = () =>
+        kind === 'account'
+          ? profiles.fetchExactAccountProfile('alice', 4, 'member.example')
+          : profiles.fetchExactGroupMemberProfile(
+              '!group',
+              'alice',
+              4,
+              'member.example',
+            );
+      for (const generatedAt of [
+        undefined,
+        null,
+        -1,
+        0.5,
+        '1',
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        const body: Record<string, unknown> = { ...evidence, generatedAt };
+        if (generatedAt === undefined) delete body.generatedAt;
+        get.mockResolvedValueOnce(body);
+        await expect(fetch()).rejects.toMatchObject({
+          code: BusinessCode.FEDERATION_MALFORMED,
+        });
+      }
+      for (const generatedAt of [0, 1, Number.MAX_SAFE_INTEGER]) {
+        get.mockResolvedValueOnce({ ...evidence, generatedAt });
+        await expect(fetch()).resolves.toMatchObject({
+          generatedAt,
+          namespaceId: 0,
+          profileRev: 4,
+        });
+      }
+    },
+  );
 
   it('treats only a signed 200 NOT_FOUND as absence', async () => {
     const { get, profiles } = target();

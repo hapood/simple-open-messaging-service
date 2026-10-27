@@ -71,7 +71,7 @@ export interface DirectedIntentRow extends Record<string, unknown> {
   requestId: string | null;
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
   note: string;
-  requestedAt: string | null;
+  statusChangedAt: string | null;
   expiresAt: string | null;
   profileRev: number;
 }
@@ -111,7 +111,7 @@ export function directedIntentSql(params: {
   return sql`
     SELECT "requestId"::text AS "requestId",
       status, note,
-      "requestedAt"::text AS "requestedAt",
+      "statusChangedAt"::text AS "statusChangedAt",
       "expiresAt"::text AS "expiresAt",
       "profileRev"
     FROM "RelationshipIntent"

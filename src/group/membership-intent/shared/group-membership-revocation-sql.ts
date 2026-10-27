@@ -47,7 +47,7 @@ export function groupMembershipRevocationIntentWrite(
       threadId: input.threadId,
       status: 'REVOKED',
       note: '',
-      requestedAt: null,
+      statusChangedAt: new Date(),
       expiresAt: null,
     })
   );
@@ -101,7 +101,7 @@ export function groupMembershipRevocationSql(
     })})`;
   return sql`
     WITH revocation AS MATERIALIZED (
-      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
+      SELECT status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.author.account} AND "authorNamespaceId" = ${input.author.namespaceId}
         AND "receiverAccount" = ${input.receiver.account} AND "receiverNamespaceId" = ${input.receiver.namespaceId}
@@ -205,7 +205,7 @@ function peerRecipient(input: GroupMembershipRevocationInput): SQL {
       SELECT jsonb_build_object('status', v.status,
           'namespaceId', v."profileNamespaceId",
           'profileRev', v."profileRev", 'note', v.note,
-          'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
+          'statusChangedAt', floor(extract(epoch FROM v."statusChangedAt") * 1000)::bigint,
           'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) AS body
       FROM revocation v

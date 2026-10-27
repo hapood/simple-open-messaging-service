@@ -296,7 +296,7 @@ scoped structure; do not locate controls by localized visible text. This helper
 is test setup, not coverage of every authentication workflow.
 
 For local UI fixture setup, import `test/browser-e2e/steps/ui-fixtures.mjs`:
-`createLocalUser(adminPage, { account, displayName })`,
+`createLocalUser(adminPage, { account })`,
 `requestLocalFriend(senderPage, { account, displayName })`, and
 `acceptLocalFriend(recipientPage, { displayName })`. The helpers operate through
 visible Admin/Web controls only. Use separate logged-in browser profiles for

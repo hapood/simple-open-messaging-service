@@ -71,6 +71,7 @@ interface StateFeedItemBase {
   account: Account;
   eventType: StateEventType;
   feedId: PositiveDecimalString;
+  generatedAt: EpochMilliseconds;
 }
 
 interface RelationshipIntentItem extends StateFeedItemBase {
@@ -107,6 +108,20 @@ source domain is the authenticated publisher and is not repeated in an item.
 Only relationship and P2P thread-content items carry `peerAccount`. Unknown
 event types or fields are malformed.
 
+Every item MUST carry `generatedAt`, the publisher's generation time for the
+version identified by its `feedId`, as non-negative Unix epoch milliseconds
+encoded as a safe JSON integer. When a publisher assigns a new `feedId`, including
+an explicit republication of unchanged state, it MUST assign the generation time
+of that new version. Reading or retransmitting the same version MUST NOT refresh
+`generatedAt`.
+
+This time describes the item version, not thread creation, message activity, a
+relationship transition, transmission, or receipt. Ordering and synchronization
+use `feedId`, not `generatedAt`. Clock corrections and inter-server clock skew
+are permitted: consumers MUST NOT require timestamp monotonicity or discard an
+otherwise valid item because its generation time is old or in the future.
+`generatedAt` is not an authorization boundary or replay-protection credential.
+
 ## 4. RELATIONSHIP_INTENT
 
 ```ts
@@ -114,7 +129,7 @@ interface RelationshipIntentFields {
   namespaceId: SafeNonNegativeInteger;
   profileRev: SafeNonNegativeInteger;
   note: string;
-  requestedAt: EpochMilliseconds | null;
+  statusChangedAt: EpochMilliseconds;
   expiresAt: EpochMilliseconds | null;
 }
 
@@ -208,14 +223,35 @@ authored and transitioned by the reverse direction's author. Observing or
 validating the reverse direction does not merge the two intents or transfer
 authority over either one.
 
+`statusChangedAt` is required and non-null in every state. It is the author's
+Unix epoch time in milliseconds when it committed the transition into the
+published state, not the time a receiver observed the item or acknowledged its
+transport. Each direction has its own independently authored transition time.
+
 The timestamp fields have the following state-dependent invariants:
 
-- `REQUESTED` MUST have non-null `requestedAt` and `expiresAt`, with
-  `requestedAt < expiresAt` and a lifetime no greater than seven days.
-- `ACCEPTED` MUST have a non-null `requestedAt` identifying the request flow
-  that was confirmed and MUST have `expiresAt: null`. It does not expire.
-- `REVOKED` MUST have `expiresAt: null`. Its `requestedAt` MAY retain the time of
-  the superseded request flow or be `null`; it has no effect on revocation.
+- `REQUESTED`: `statusChangedAt` is the time the author initiated the current
+  request flow. `expiresAt` MUST be non-null, with
+  `statusChangedAt < expiresAt` and a lifetime no greater than seven days.
+- `ACCEPTED`: `statusChangedAt` is the time the author committed its durable
+  acknowledgement, including promotion of its own `REQUESTED` direction after
+  observing a valid reverse acknowledgement. It MUST NOT retain the original
+  request time merely because the acknowledgement confirms that request flow.
+  `expiresAt` MUST be `null`; the acknowledged direction does not expire.
+- `REVOKED`: `statusChangedAt` is the time the author committed the revocation,
+  not the time of the superseded request or acknowledgement. `expiresAt` MUST
+  be `null`.
+
+A new request flow after revocation or expiry has a new initiation time.
+Retransmission or republication of an unchanged state in the same flow MUST
+retain its `statusChangedAt`; a retry is not another transition. A receiver MUST
+preserve the author's value and MUST NOT replace it with a receiver-local time.
+
+`statusChangedAt` is descriptive, not a cursor, request identifier, or replay
+fence. State Feed ordering and the admission rules below determine which facts
+apply. A receiver MUST NOT order or reject transitions by comparing their
+`statusChangedAt` values; clocks may differ or move backwards. The required
+`REQUESTED` lifetime checks still apply.
 
 ### 4.2 Derived relationship
 

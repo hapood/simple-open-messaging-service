@@ -195,14 +195,13 @@ function semanticValid(schema: string, value: unknown): boolean {
     return (page.items ?? []).every(({ body = {} }) => {
       if (body.status === 'REQUESTED')
         return (
-          typeof body.requestedAt === 'number' &&
+          typeof body.statusChangedAt === 'number' &&
           typeof body.expiresAt === 'number' &&
-          body.expiresAt > body.requestedAt &&
-          body.expiresAt - body.requestedAt <= 7 * 24 * 60 * 60 * 1000
+          body.expiresAt > body.statusChangedAt &&
+          body.expiresAt - body.statusChangedAt <= 7 * 24 * 60 * 60 * 1000
         );
-      if (body.status === 'ACCEPTED')
-        return typeof body.requestedAt === 'number' && body.expiresAt === null;
-      if (body.status === 'REVOKED') return body.expiresAt === null;
+      if (body.status === 'ACCEPTED' || body.status === 'REVOKED')
+        return typeof body.statusChangedAt === 'number' && body.expiresAt === null;
       return true;
     });
   }

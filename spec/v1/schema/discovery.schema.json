@@ -3,9 +3,12 @@
   "$id": "urn:somfp:v1:discovery",
   "title": "GET /.well-known/somfp response for a v1-capable node",
   "type": "object",
-  "required": ["protocolVersions", "roots", "keys"],
+  "required": ["protocolVersions", "roots", "keys", "signingKeyCreatedAt"],
   "properties": {
     "software": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "signingKeyCreatedAt": {
+      "type": "integer", "minimum": 1, "maximum": 9007199254740991
+    },
     "protocolVersions": {
       "type": "array",
       "minItems": 1,

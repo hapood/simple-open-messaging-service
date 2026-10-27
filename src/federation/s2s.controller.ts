@@ -1,3 +1,4 @@
+import { FederationFeedHeadReceiptService } from './federation-feed-head-receipt.service.js';
 import { Public } from '../common/public.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
 import {
@@ -81,6 +82,7 @@ export class S2sController {
     private readonly roundScheduler: FederationThreadRoundSchedulerService,
     private readonly groupMeta: FederationGroupMetaFeedService,
     private readonly keypair: KeypairService,
+    private readonly feedHeadReceipts: FederationFeedHeadReceiptService,
   ) {}
 
   @Get('group-meta')
@@ -145,23 +147,34 @@ export class S2sController {
     const body = req.body as {
       stateFeedEndId?: unknown;
       profileNamespaceFeedEndId?: unknown;
+      generatedAt?: unknown;
     } | null;
+    const timestamp = (value: unknown): value is number =>
+      typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
     const decimal = (value: unknown): value is string =>
       typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
     if (
       !body ||
       typeof body !== 'object' ||
       Array.isArray(body) ||
-      Object.keys(body).length !== 2 ||
+      Object.keys(body).length !== 3 ||
       !decimal(body.stateFeedEndId) ||
-      !decimal(body.profileNamespaceFeedEndId)
+      !decimal(body.profileNamespaceFeedEndId) ||
+      !timestamp(body.generatedAt)
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'feed end IDs must be unsigned decimal strings',
+        'feed heads require decimal end IDs and a non-negative safe-integer generation timestamp',
         HttpStatus.BAD_REQUEST,
       );
     }
+    await this.feedHeadReceipts.record(req.peer!.namespaceId, {
+      stateFeedEndId: body.stateFeedEndId,
+      profileNamespaceFeedEndId: body.profileNamespaceFeedEndId,
+      generatedAt: body.generatedAt,
+      // RFC 9421 created is authenticated by the guard and uses whole seconds.
+      sentAt: req.peer!.signatureCreatedAtSec * 1000,
+    });
     const stateFeedEndId = BigInt(body.stateFeedEndId);
     this.roundScheduler.wakeStateFeed(signer, stateFeedEndId);
     // Each field is handled independently: the profile-namespace head wakes
@@ -493,9 +506,10 @@ export class S2sController {
         `account ${account} not found`,
       );
     }
-    const { account: owner, displayName, bio, avatar, profileRev } = profile;
+    const { account: owner, displayName, bio, avatar, profileRev, generatedAt } = profile;
     return {
       account: owner,
+      generatedAt,
       profileRev,
       profile: profileRev === 0 ? null : { displayName, bio, avatar },
       proof,
@@ -531,8 +545,8 @@ export class S2sController {
     );
     if (!profile)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
-    const { account: owner, displayName, bio, avatar } = profile;
-    return { account: owner, displayName, bio, avatar };
+    const { account: owner, displayName, bio, avatar, generatedAt } = profile;
+    return { account: owner, displayName, bio, avatar, generatedAt };
   }
 
   @Get(
@@ -579,8 +593,8 @@ export class S2sController {
     );
     if (!profile)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
-    const { account, displayName, bio, avatar } = profile;
-    return { account, displayName, bio, avatar };
+    const { account, displayName, bio, avatar, generatedAt } = profile;
+    return { account, displayName, bio, avatar, generatedAt };
   }
 
   /** The verified signer domain (set by S2sSignatureGuard as req.peer.domain). */

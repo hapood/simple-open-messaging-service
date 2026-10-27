@@ -485,7 +485,7 @@ export function DashboardPage() {
                       {a.adminRole}
                     </Badge>
                     <span className="shrink-0 text-xs text-muted-foreground">
-                      <Timestamp value={a.at} />
+                      <Timestamp value={a.createdAt} />
                     </span>
                   </li>
                 ))}

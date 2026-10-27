@@ -72,6 +72,7 @@ describe('federation thread synchronization state', () => {
         await database.db
           .insert(identityNamespace)
           .values({
+            signingKeyCreatedAt: 1700000000000,
             domain: peerDomain,
             rootPublicKey: Buffer.alloc(32, 2).toString('base64'),
             identityPinnedAt: new Date(),
@@ -598,6 +599,7 @@ describe('federation thread synchronization state', () => {
     const [other] = await database.db
       .insert(identityNamespace)
       .values({
+        signingKeyCreatedAt: 1700000000000,
         domain: `other-${Date.now()}.test`,
         rootPublicKey: Buffer.alloc(32, 7).toString('base64'),
         identityPinnedAt: new Date(),
@@ -663,6 +665,7 @@ describe('federation thread synchronization state', () => {
       const [other] = await database.db
         .insert(identityNamespace)
         .values({
+          signingKeyCreatedAt: 1700000000000,
           domain: `gap-${Date.now()}-${mode}.test`,
           rootPublicKey: Buffer.alloc(32, mode === 'commit' ? 8 : 9).toString(
             'base64',

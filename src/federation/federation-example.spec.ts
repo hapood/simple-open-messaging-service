@@ -55,6 +55,7 @@ describe('published request and message examples', () => {
         ).toBe(true);
         if (path === '/s2s/v1/feed-heads') {
           expect(Object.keys(JSON.parse(body)).sort()).toEqual([
+            'generatedAt',
             'profileNamespaceFeedEndId',
             'stateFeedEndId',
           ]);

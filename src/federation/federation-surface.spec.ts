@@ -108,6 +108,7 @@ describe('Federation v1 surface', () => {
     const controller = new WellKnownController({
       getRootGroup: () => [{ ed25519: 'root-key', notBefore: 1, notAfter: 2 }],
       getSigningKeyCertificates: () => [],
+      getCreatedAt: () => 1234,
     } as never);
 
     const document = controller.getWellKnown();
@@ -119,8 +120,15 @@ describe('Federation v1 surface', () => {
     expect(document.roots).toEqual([
       { ed25519: 'root-key', notBefore: 1, notAfter: 2 },
     ]);
+    expect(document.signingKeyCreatedAt).toBe(1234);
     expect(Object.keys(document).sort()).toEqual(
-      ['keys', 'protocolVersions', 'roots', 'software'].sort(),
+      [
+        'keys',
+        'protocolVersions',
+        'roots',
+        'signingKeyCreatedAt',
+        'software',
+      ].sort(),
     );
   });
 

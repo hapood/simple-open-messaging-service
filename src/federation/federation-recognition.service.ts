@@ -398,11 +398,14 @@ export class FederationRecognitionService {
     cache.set(key, value);
   }
 
-  async checkHealth(peerDomain: string): Promise<FederationHealthStatus> {
+  async checkHealth(
+    peerDomain: string,
+    source: 'automatic' | 'manual' = 'automatic',
+  ): Promise<FederationHealthStatus> {
     const domain = this.normalizeDomain(peerDomain);
     const existing = this.healthInFlight.get(domain);
     if (existing) return existing;
-    const run = this.runHealthCheck(domain).finally(() => {
+    const run = this.observeHealthCheck(domain, source).finally(() => {
       if (this.healthInFlight.get(domain) === run) {
         this.healthInFlight.delete(domain);
       }
@@ -411,17 +414,75 @@ export class FederationRecognitionService {
     return run;
   }
 
+  private async observeHealthCheck(
+    domain: string,
+    source: 'automatic' | 'manual',
+  ): Promise<FederationHealthStatus> {
+    const epoch = await this.database.db.query.identityNamespace.findFirst({
+      where: and(
+        eq(tables.identityNamespace.domain, domain),
+        eq(tables.identityNamespace.active, true),
+      ),
+    });
+    if (!epoch || epoch.trustLevel === 'halted')
+      throw new Error('peer is not eligible for Health');
+    const startedAt = Date.now();
+    const clock = performance.now();
+    let status: FederationHealthStatus | null = null;
+    let failure: string | null = null;
+    try {
+      status = await this.runHealthCheck(domain, epoch);
+      return status;
+    } catch (error) {
+      failure = (error instanceof Error ? error.message : String(error)).slice(
+        0,
+        1000,
+      );
+      throw error;
+    } finally {
+      const observation = {
+        namespaceId: epoch.id,
+        domain,
+        startedAt,
+        completedAt: Date.now(),
+        durationMs: Math.round(performance.now() - clock),
+        status,
+        error: failure,
+        source,
+      };
+      await this.database.db.transaction(async (tx) => {
+        const current = await this.lockPeer(tx, domain);
+        if (
+          !current ||
+          current.id !== epoch.id ||
+          current.rootPublicKey !== epoch.rootPublicKey ||
+          current.trustLevel === 'halted'
+        )
+          return;
+        await tx
+          .update(tables.federationFeedState)
+          .set({ latestHealthCheck: observation })
+          .where(
+            and(
+              eq(tables.federationFeedState.namespaceId, epoch.id),
+              sql`(${tables.federationFeedState.latestHealthCheck} IS NULL OR (${tables.federationFeedState.latestHealthCheck}->>'startedAt')::bigint <= ${startedAt})`,
+            ),
+          );
+      });
+    }
+  }
+
   private async runHealthCheck(
     domain: string,
+    epoch: typeof tables.identityNamespace.$inferSelect,
   ): Promise<FederationHealthStatus> {
+    const degrade = (reason: string) =>
+      this.markTransportDegraded(domain, reason, undefined, epoch);
     let base: string;
     try {
       base = await this.discovery.resolveBase(domain);
     } catch (error) {
-      await this.markTransportDegraded(
-        domain,
-        `Health discovery: ${(error as Error).message}`,
-      );
+      await degrade(`Health discovery: ${(error as Error).message}`);
       throw error;
     }
     const url = new URL(`${base}/s2s/v1/health`);
@@ -440,10 +501,7 @@ export class FederationRecognitionService {
           headers,
         });
       } catch (error) {
-        await this.markTransportDegraded(
-          domain,
-          `Health network/timeout: ${(error as Error).message}`,
-        );
+        await degrade(`Health network/timeout: ${(error as Error).message}`);
         throw error;
       }
       if (response.status !== 200) {
@@ -451,10 +509,7 @@ export class FederationRecognitionService {
         // current reachability. It never halts, never drops pins or acceptance
         // evidence, and must not trigger a well-known refresh in the hope of
         // repairing the peer's cache of the local key.
-        await this.markTransportDegraded(
-          domain,
-          `Health HTTP ${response.status}`,
-        );
+        await degrade(`Health HTTP ${response.status}`);
         throw new Error(`Health ${domain} returned HTTP ${response.status}`);
       }
       let value: unknown;
@@ -465,16 +520,17 @@ export class FederationRecognitionService {
       }
       const result = this.parseHealthResult(value);
       if (!result) {
-        await this.markTransportDegraded(domain, 'Health malformed response');
+        await degrade('Health malformed response');
         throw new Error(`Health ${domain} returned malformed response`);
       }
-      if (result.status !== 'unavailable') {
-        await this.recordPeerAssignedLocalNamespace(
-          domain,
-          result.peerAssignedLocalNamespaceId,
-        );
-      }
-      await this.applyHealthResult(domain, result.status);
+      await this.applyHealthResult(
+        domain,
+        result.status,
+        epoch,
+        result.status === 'unavailable'
+          ? undefined
+          : result.peerAssignedLocalNamespaceId,
+      );
       return result.status;
     } finally {
       release();
@@ -592,6 +648,7 @@ export class FederationRecognitionService {
       const context = await this.acceptInbound(
         normalized,
         claimedRoot,
+        doc.signingKeyCreatedAt,
         params.senderAssignedLocalNamespaceId,
       );
       await this.discovery.cacheDocument(normalized, context.namespaceId, doc);
@@ -715,6 +772,7 @@ export class FederationRecognitionService {
     const context = await this.acceptInbound(
       normalized,
       claimedRoot,
+      doc.signingKeyCreatedAt,
       params.senderAssignedLocalNamespaceId,
     );
     await this.discovery.cacheDocument(normalized, context.namespaceId, doc);
@@ -1173,6 +1231,7 @@ export class FederationRecognitionService {
   async acceptInbound(
     domain: string,
     rootPublicKey: string,
+    signingKeyCreatedAt: number,
     senderAssignedLocalNamespaceId?: number,
   ): Promise<VerifiedFederationNamespace> {
     const normalized = this.normalizeDomain(domain);
@@ -1206,6 +1265,7 @@ export class FederationRecognitionService {
       const context = await this.namespaces.activateVerifiedInTx(tx, {
         domain: normalized,
         rootPublicKey,
+        signingKeyCreatedAt,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
       });
       // The sender discloses the namespace its local store allocated for this
@@ -1242,6 +1302,10 @@ export class FederationRecognitionService {
             : {}),
         })
         .where(eq(tables.identityNamespace.id, context.namespaceId));
+      await tx
+        .update(tables.federationFeedState)
+        .set({ lastHandshakeAt: now })
+        .where(eq(tables.federationFeedState.namespaceId, context.namespaceId));
       return { mismatch: false as const, context };
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(normalized);
@@ -1285,10 +1349,20 @@ export class FederationRecognitionService {
   async applyHealthResult(
     domain: string,
     result: FederationHealthStatus,
+    epoch?: Pick<
+      typeof tables.identityNamespace.$inferSelect,
+      'id' | 'rootPublicKey'
+    >,
+    peerAssignedLocalNamespaceId?: number,
   ): Promise<void> {
     const normalized = this.normalizeDomain(domain);
     if (result === 'unavailable') {
-      await this.markTransportDegraded(normalized, 'Health unavailable');
+      await this.markTransportDegraded(
+        normalized,
+        'Health unavailable',
+        undefined,
+        epoch,
+      );
       return;
     }
     let recovered = false;
@@ -1299,9 +1373,18 @@ export class FederationRecognitionService {
         !peer ||
         !peer.identityPinnedAt ||
         !peer.localServiceAvailable ||
-        peer.trustLevel === 'halted'
+        peer.trustLevel === 'halted' ||
+        (epoch !== undefined &&
+          (peer.id !== epoch.id || peer.rootPublicKey !== epoch.rootPublicKey))
       )
         return;
+      if (peerAssignedLocalNamespaceId !== undefined) {
+        await this.namespaces.recordPeerAssignedLocalNamespaceInTx(
+          tx,
+          normalized,
+          peerAssignedLocalNamespaceId,
+        );
+      }
       const now = new Date();
       const next = {
         ...peer,
@@ -1385,12 +1468,19 @@ export class FederationRecognitionService {
     domain: string,
     reason: string,
     operationStartedAt?: Date,
+    epoch?: Pick<
+      typeof tables.identityNamespace.$inferSelect,
+      'id' | 'rootPublicKey'
+    >,
   ): Promise<void> {
     const normalized = this.normalizeDomain(domain);
     await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
       if (
         !peer ||
+        (epoch !== undefined &&
+          (peer.id !== epoch.id ||
+            peer.rootPublicKey !== epoch.rootPublicKey)) ||
         peer.trustLevel === 'halted' ||
         (operationStartedAt !== undefined &&
           peer.lastSuccessAt !== null &&
@@ -1492,14 +1582,22 @@ export class FederationRecognitionService {
       if (result.status === 'pending') {
         return { domain, status: 'pending', message: result.message };
       }
-      await this.recordPeerAssignedLocalNamespace(
-        domain,
-        result.peerAssignedLocalNamespaceId,
-      );
       let becameAvailable = false;
       await this.database.db.transaction(async (tx) => {
         const peer = await this.lockPeer(tx, domain);
-        if (!peer) return;
+        if (
+          !peer ||
+          peer.id !== context.namespaceId ||
+          peer.rootPublicKey !== context.rootPublicKey ||
+          !peer.active ||
+          peer.trustLevel === 'halted'
+        )
+          throw new Error('recognition identity changed during exchange');
+        await this.namespaces.recordPeerAssignedLocalNamespaceInTx(
+          tx,
+          domain,
+          result.peerAssignedLocalNamespaceId,
+        );
         const now = new Date();
         const next = {
           ...peer,
@@ -1528,6 +1626,12 @@ export class FederationRecognitionService {
               eq(tables.identityNamespace.domain, domain),
               eq(tables.identityNamespace.active, true),
             ),
+          );
+        await tx
+          .update(tables.federationFeedState)
+          .set({ lastHandshakeAt: now })
+          .where(
+            eq(tables.federationFeedState.namespaceId, context.namespaceId),
           );
       });
       if (becameAvailable) this.emitPeerAvailable(domain);
@@ -1576,6 +1680,7 @@ export class FederationRecognitionService {
       const context = await this.namespaces.activateVerifiedInTx(tx, {
         domain,
         rootPublicKey,
+        signingKeyCreatedAt: doc.signingKeyCreatedAt,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
       });
       await tx
@@ -1593,19 +1698,6 @@ export class FederationRecognitionService {
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(domain);
     return mismatch.context;
-  }
-
-  private async recordPeerAssignedLocalNamespace(
-    domain: string,
-    peerAssignedLocalNamespaceId: number,
-  ): Promise<void> {
-    await this.database.db.transaction((tx) =>
-      this.namespaces.recordPeerAssignedLocalNamespaceInTx(
-        tx,
-        domain,
-        peerAssignedLocalNamespaceId,
-      ),
-    );
   }
 
   private async lockPeer(tx: DatabaseTransaction, domain: string) {

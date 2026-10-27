@@ -104,6 +104,31 @@ export class FederationPeerLifecycle {
     return this.recognition.checkHealth(domain);
   }
 
+  async probeHealth(namespaceId: number) {
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: and(
+        eq(tables.identityNamespace.id, namespaceId),
+        eq(tables.identityNamespace.active, true),
+      ),
+    });
+    if (!peer || namespaceId <= 0 || peer.trustLevel === 'halted')
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'peer is not eligible for Health',
+      );
+    await this.recognition.checkHealth(peer.domain, 'manual');
+    const detail = await this.detail(peer.domain);
+    if (
+      detail.id !== namespaceId ||
+      detail.rootPublicKey !== peer.rootPublicKey
+    )
+      throw new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        'peer identity changed during Health',
+      );
+    return detail;
+  }
+
   async markContactSuccess(domain: string): Promise<void> {
     try {
       await this.recognition.markReachable(domain);
@@ -301,7 +326,7 @@ export class FederationPeerLifecycle {
         .then(([row]) => row.value),
     ]);
     return {
-      list: list.map((peer) => this.withFeedProgress(peer)),
+      list: await this.withFeedProgress(list),
       total,
     };
   }
@@ -312,26 +337,55 @@ export class FederationPeerLifecycle {
         eq(tables.identityNamespace.domain, domain),
         gt(tables.identityNamespace.id, 0),
       ),
+      orderBy: [
+        desc(tables.identityNamespace.active),
+        desc(tables.identityNamespace.id),
+      ],
     });
     if (!peer || peer.id === 0)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'peer not found');
-    return this.withFeedProgress(peer);
+    return (await this.withFeedProgress([peer]))[0];
   }
 
-  private withFeedProgress<
+  private async withFeedProgress<
     T extends typeof tables.identityNamespace.$inferSelect,
-  >(peer: T) {
-    return {
-      ...peer,
-      feedProgress: {
-        namespaceId: peer.id,
-        outboundStateFeedEndId: peer.stateFeedEndId,
-        inboundStateFeedPulledThrough: peer.stateFeedPulledThrough ?? null,
-        remoteProfileNamespaceFeedEndId: peer.profileNamespaceFeedEndId,
-        inboundProfileNamespaceFeedPulledThrough:
-          peer.profileNamespaceFeedPulledThrough ?? 0n,
-      },
-    };
+  >(peers: T[]) {
+    if (peers.length === 0) return [];
+    const ids = peers.map((peer) => peer.id);
+    const [states, receipts] = await Promise.all([
+      this.database.db.query.federationFeedState.findMany({
+        where: inArray(tables.federationFeedState.namespaceId, ids),
+      }),
+      this.database.db.query.federationFeedHeadReceipt.findMany({
+        where: inArray(tables.federationFeedHeadReceipt.namespaceId, ids),
+      }),
+    ]);
+    const stateById = new Map(
+      states.map((state) => [state.namespaceId, state]),
+    );
+    const receiptById = new Map(
+      receipts.map((receipt) => [receipt.namespaceId, receipt]),
+    );
+    return peers.map((peer) => {
+      const progress = stateById.get(peer.id);
+      if (!progress) throw new Error(`peer ${peer.id} has no feed state`);
+      return {
+        ...peer,
+        feedProgress: {
+          namespaceId: peer.id,
+          lastHandshakeAt: progress.lastHandshakeAt,
+          latestHealthCheck: progress.latestHealthCheck,
+          outboundStateFeedEndId: progress.outboundStateFeedEndId,
+          inboundStateFeedPulledThrough: progress.inboundStateFeedPulledThrough,
+          stateFeedSourceGeneratedAt: progress.stateFeedSourceGeneratedAt,
+          profileNamespaceFeedSourceGeneratedAt:
+            progress.profileNamespaceFeedSourceGeneratedAt,
+          inboundProfileNamespaceFeedPulledThrough:
+            progress.inboundProfileNamespaceFeedPulledThrough,
+        },
+        latestFeedHeadReceipt: receiptById.get(peer.id) ?? null,
+      };
+    });
   }
 
   async manuallyRecoverPinnedIdentity(

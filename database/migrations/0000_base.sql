@@ -266,7 +266,7 @@ DECLARE s "AccountThreadState";
 BEGIN
   IF NEW."clearedSeq" IS NOT DISTINCT FROM OLD."clearedSeq" THEN RETURN NULL; END IF;
   FOR s IN SELECT * FROM "AccountThreadState" WHERE "threadId" = NEW.id ORDER BY "accountId" FOR NO KEY UPDATE LOOP
-    UPDATE "AccountThreadState" SET "unreadCount" =
+    UPDATE "AccountThreadState" SET "updatedAt" = CURRENT_TIMESTAMP, "unreadCount" =
       thread_unread_count(s, NEW."clearedSeq", s."lastReadSeq", s."messageEndSeq") WHERE id = s.id;
   END LOOP;
   RETURN NULL;
@@ -364,7 +364,7 @@ CREATE TABLE public."Message" (
     "threadId" integer NOT NULL,
     "creatorAccount" character varying(31),
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL,
     "clientMessageId" character varying(36),
     "originSeq" integer,
@@ -474,7 +474,7 @@ BEGIN
   LOOP
     PERFORM 1 FROM "Account" WHERE id = participant."accountId" FOR NO KEY UPDATE;
     UPDATE "AccountThreadState" s
-    SET "threadFeedId" = 0,
+    SET "updatedAt" = CURRENT_TIMESTAMP, "threadFeedId" = 0,
         "threadProfileRev" = CASE WHEN seed_revision AND participant."profileRev" IS NOT NULL
           THEN participant."profileRev" ELSE s."threadProfileRev" END,
         "profileSourceId" = CASE WHEN seed_revision AND participant."profileRev" IS NOT NULL
@@ -517,7 +517,7 @@ BEGIN
       OR (pair."endpointBType" = 'USER' AND pair."endpointBAccount" = self.account));
   IF initial_rev IS NOT NULL AND (initial_rev IS DISTINCT FROM NEW."threadProfileRev"
     OR NEW."profileSourceId" IS NOT NULL) THEN
-    UPDATE "AccountThreadState" SET "threadProfileRev" = initial_rev,
+    UPDATE "AccountThreadState" SET "updatedAt" = CURRENT_TIMESTAMP, "threadProfileRev" = initial_rev,
       "profileSourceId" = NULL
     WHERE id = NEW.id;
   END IF;
@@ -561,7 +561,7 @@ BEGIN
     OR NEW."threadProfileRev" IS DISTINCT FROM OLD."threadProfileRev"
     OR NEW.blocked IS DISTINCT FROM OLD.blocked
     OR NEW.role IS DISTINCT FROM OLD.role THEN
-    UPDATE "Account" SET "threadFeedEndId" = "threadFeedEndId" + 1
+    UPDATE "Account" SET "updatedAt" = CURRENT_TIMESTAMP, "threadFeedEndId" = "threadFeedEndId" + 1
       WHERE id = NEW."accountId" RETURNING "threadFeedEndId" INTO NEW."threadFeedId";
   END IF;
   RETURN NEW;
@@ -663,7 +663,7 @@ CREATE TABLE public."Admin" (
     "lastLoginIp" character varying(64),
     "lastLoginAt" timestamp(3) with time zone,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     role public."AdminRole" DEFAULT 'SUPER_ADMIN'::public."AdminRole" NOT NULL,
     "twoFactorEnabled" boolean DEFAULT false NOT NULL,
     "twoFactorSecretCipher" character varying(255),
@@ -691,7 +691,6 @@ CREATE TABLE public."AdminActionLog" (
     route character varying(255),
     "errorMessage" character varying(255),
     meta jsonb,
-    at timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     status public."AdminAuditStatus" DEFAULT 'STARTED'::public."AdminAuditStatus" NOT NULL
 );
 
@@ -845,7 +844,7 @@ CREATE TABLE public."DiagnosticsReport" (
     manifest jsonb NOT NULL,
     status character varying(16) DEFAULT 'new'::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL
 );
 
@@ -1312,6 +1311,7 @@ CREATE TABLE public."IdentityNamespace" (
     "rootPublicKey" character varying(44),
     "identityPinnedAt" timestamp(3) with time zone,
     "peerAssignedLocalNamespaceId" integer,
+    "signingKeyCreatedAt" bigint NOT NULL,
     active boolean DEFAULT false NOT NULL,
     "trustLevel" character varying(31) DEFAULT 'unrecognized'::character varying NOT NULL,
     "trustedAt" timestamp(3) with time zone,
@@ -1328,21 +1328,14 @@ CREATE TABLE public."IdentityNamespace" (
     "resetAt" timestamp(3) with time zone,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "retiredAt" timestamp(3) with time zone,
-    "stateFeedEndId" bigint DEFAULT 0 NOT NULL,
     "dailyMsgLimit" integer,
     "dailyRequestLimit" integer,
     "dailyFileLimit" integer,
     "dailyFileBytesLimit" bigint,
-    "stateFeedPulledThrough" bigint,
-    "profileNamespaceFeedEndId" bigint DEFAULT 0 NOT NULL,
-    "profileNamespaceFeedPulledThrough" bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT "IdentityNamespace_signingKeyCreatedAt_check" CHECK ((id = 0 AND "signingKeyCreatedAt" = 0) OR (id > 0 AND "signingKeyCreatedAt" BETWEEN 1 AND 9007199254740991)),
     CONSTRAINT "IdentityNamespace_active_check" CHECK (((active = false) OR ((id > 0) AND ("retiredAt" IS NULL)))),
-    CONSTRAINT "IdentityNamespace_profileNamespaceFeedEndId_check" CHECK (("profileNamespaceFeedEndId" >= 0)),
-    CONSTRAINT "IdentityNamespace_profileNamespaceFeedPulledThrough_check" CHECK (("profileNamespaceFeedPulledThrough" >= 0)),
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
     CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("peerAssignedLocalNamespaceId" IS NULL) AND ("retiredAt" IS NULL) AND (active = false) AND (("trustLevel")::text = 'unrecognized'::text) AND ("trustedAt" IS NULL) AND ("lastSuccessAt" IS NULL) AND ("degradedAt" IS NULL) AND ("degradationReason" IS NULL) AND ("degradationCount" = 0) AND ("haltedAt" IS NULL) AND ("haltCode" IS NULL) AND ("haltReason" IS NULL) AND ("peerAcceptanceConfirmed" = false) AND ("localServiceAvailable" = false) AND ("remoteServiceReachable" = false) AND ("resetAt" IS NULL)) OR ((id > 0) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL) AND (("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))))),
-    CONSTRAINT "IdentityNamespace_stateFeedEndId_check" CHECK ((("stateFeedEndId" >= 0) AND ((id <> 0) OR ("stateFeedEndId" = 0)))),
-    CONSTRAINT "IdentityNamespace_stateFeedPulledThrough_check" CHECK ((("stateFeedPulledThrough" IS NULL) OR ("stateFeedPulledThrough" >= 0))),
     CONSTRAINT "IdentityNamespace_trustLevel_check" CHECK ((("trustLevel")::text = ANY (ARRAY[('unrecognized'::character varying)::text, ('establishing'::character varying)::text, ('pending'::character varying)::text, ('available'::character varying)::text, ('degraded'::character varying)::text, ('halted'::character varying)::text])))
 );
 
@@ -1451,7 +1444,6 @@ CREATE TABLE public."LoginCode" (
     "userId" integer NOT NULL,
     "codeHash" character varying(127) NOT NULL,
     "issuedBy" integer NOT NULL,
-    "issuedAt" timestamp(3) with time zone NOT NULL,
     "expiresAt" timestamp(3) with time zone NOT NULL,
     "consumedAt" timestamp(3) with time zone,
     "consumedIp" character varying(64),
@@ -1528,7 +1520,7 @@ CREATE TABLE public."MessageThread" (
     id integer NOT NULL,
     type public."MessageThreadType" NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "curSeq" integer DEFAULT 0 NOT NULL,
     "tombstoneEndSeq" integer DEFAULT 0 NOT NULL,
     "pullUntil" integer DEFAULT 0 NOT NULL,
@@ -1619,7 +1611,7 @@ CREATE TABLE public."PendingMedia" (
     "clientMessageId" character varying(36),
     status character varying(12) DEFAULT 'pending'::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "failReason" character varying(255),
     direction public."FileSyncDirection" DEFAULT 'OUTBOUND'::public."FileSyncDirection" NOT NULL,
     "batchId" uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1659,6 +1651,7 @@ ALTER SEQUENCE public."PendingMedia_id_seq" OWNED BY public."PendingMedia".id;
 --
 
 CREATE TABLE public."Profile" (
+    "generatedAt" bigint NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     account character varying(31) NOT NULL,
     "profileRev" integer NOT NULL,
@@ -1668,7 +1661,8 @@ CREATE TABLE public."Profile" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "publisherNamespaceId" integer NOT NULL,
     "profileNamespaceId" integer NOT NULL,
-    CONSTRAINT "Profile_profileRev_check" CHECK (("profileRev" > 0))
+    CONSTRAINT "Profile_profileRev_check" CHECK (("profileRev" > 0)),
+    CONSTRAINT "Profile_generatedAt_check" CHECK (("generatedAt" >= 0 AND "generatedAt" <= 9007199254740991))
 );
 
 
@@ -1722,12 +1716,14 @@ CREATE TABLE public."ProfileNamespace" (
     "profileNamespaceId" integer NOT NULL,
     domain character varying(63),
     "rootPublicKey" character varying(44),
+    "sourceGeneratedAt" bigint DEFAULT 0 NOT NULL,
     "updateFeedId" bigint DEFAULT 0 NOT NULL,
     expired boolean DEFAULT true NOT NULL,
     status text DEFAULT 'ACTIVE' NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "ProfileNamespace_bindings_check" CHECK ((((domain IS NULL) AND ("rootPublicKey" IS NULL)) OR ((domain IS NOT NULL) AND ("rootPublicKey" IS NOT NULL)))),
+    CONSTRAINT "ProfileNamespace_source_time_check" CHECK ("sourceGeneratedAt" BETWEEN 0 AND 9007199254740991),
     CONSTRAINT "ProfileNamespace_updateFeedId_check" CHECK (("updateFeedId" >= 0)),
     CONSTRAINT "ProfileNamespace_status_check" CHECK ((status IN ('ACTIVE', 'ARCHIVED')))
 );
@@ -1819,11 +1815,12 @@ CREATE TABLE public."RelationshipIntent" (
     "messageEndSeq" integer NOT NULL,
     "tombstoneEndSeq" integer NOT NULL,
     note character varying(255) DEFAULT ''::character varying NOT NULL,
-    "requestedAt" timestamp(3) with time zone,
+    "statusChangedAt" timestamp(3) with time zone NOT NULL,
     "expiresAt" timestamp(3) with time zone,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "RelationshipIntent_author_namespace_check" CHECK (("authorNamespaceId" >= 0)),
-    CONSTRAINT "RelationshipIntent_expiry_check" CHECK ((((status = 'REQUESTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))) OR ((status = 'ACCEPTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NULL)) OR ((status = 'REVOKED'::public."RelationshipIntentStatus") AND ("expiresAt" IS NULL)))),
+    CONSTRAINT "RelationshipIntent_expiry_check" CHECK (((status = 'REQUESTED'::public."RelationshipIntentStatus") AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "statusChangedAt") AND ("expiresAt" <= ("statusChangedAt" + '7 days'::interval))) OR ((status IN ('ACCEPTED'::public."RelationshipIntentStatus", 'REVOKED'::public."RelationshipIntentStatus")) AND ("expiresAt" IS NULL))),
+    CONSTRAINT "RelationshipIntent_statusChangedAt_check" CHECK ("statusChangedAt" >= '1970-01-01'::timestamptz),
     CONSTRAINT "RelationshipIntent_head_check" CHECK ((("messageEndSeq" >= 0) AND ("tombstoneEndSeq" >= 0))),
     CONSTRAINT "RelationshipIntent_profileNamespaceId_check" CHECK (("profileNamespaceId" >= 0)),
     CONSTRAINT "RelationshipIntent_profileRev_check" CHECK (("profileRev" >= 0)),
@@ -1931,7 +1928,6 @@ CREATE TABLE public."S2SKeyCache" (
     "notBefore" timestamp(3) with time zone NOT NULL,
     "notAfter" timestamp(3) with time zone NOT NULL,
     "authorizationSignature" character varying(127) NOT NULL,
-    "fetchedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     root character varying(44) DEFAULT ''::character varying NOT NULL
 );
 
@@ -1997,7 +1993,7 @@ CREATE TABLE public."SystemSetting" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     key character varying(63) NOT NULL,
     value text NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 
@@ -2953,7 +2949,7 @@ CREATE INDEX "AdminActionLog_adminId_idx" ON public."AdminActionLog" USING btree
 -- Name: AdminActionLog_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "AdminActionLog_at_idx" ON public."AdminActionLog" USING btree (at);
+CREATE INDEX "AdminActionLog_createdAt_idx" ON public."AdminActionLog" USING btree ("createdAt");
 
 
 --
@@ -4183,6 +4179,76 @@ ALTER TABLE ONLY public."WebAuthnCredential"
     ADD CONSTRAINT "WebAuthnCredential_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES public."Admin"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
+-- Independent federation feed state and latest received observations.
+CREATE TABLE public."FederationFeedState" (
+    "namespaceId" integer PRIMARY KEY,
+    "lastHandshakeAt" timestamp(3) with time zone,
+    "latestHealthCheck" jsonb,
+    "outboundStateFeedEndId" bigint DEFAULT 0 NOT NULL,
+    "inboundStateFeedPulledThrough" bigint,
+    "inboundProfileNamespaceFeedPulledThrough" bigint DEFAULT 0 NOT NULL,
+    "stateFeedSourceGeneratedAt" bigint DEFAULT 0 NOT NULL,
+    "profileNamespaceFeedSourceGeneratedAt" bigint DEFAULT 0 NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationFeedState_namespace_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT,
+    CONSTRAINT "FederationFeedState_namespace_check" CHECK ("namespaceId" > 0),
+    CONSTRAINT "FederationFeedState_source_times_check" CHECK (
+        "stateFeedSourceGeneratedAt" BETWEEN 0 AND 9007199254740991
+        AND "profileNamespaceFeedSourceGeneratedAt" BETWEEN 0 AND 9007199254740991
+    ),
+    CONSTRAINT "FederationFeedState_coordinates_check" CHECK (
+        "outboundStateFeedEndId" >= 0
+        AND ("inboundStateFeedPulledThrough" IS NULL OR "inboundStateFeedPulledThrough" >= 0)
+        AND "inboundProfileNamespaceFeedPulledThrough" >= 0
+    )
+);
+
+CREATE TABLE public."ProfileNamespaceFeedHead" (
+    id integer PRIMARY KEY,
+    "endId" bigint DEFAULT 0 NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "ProfileNamespaceFeedHead_shape_check" CHECK (id = 0 AND "endId" >= 0)
+);
+
+CREATE TABLE public."FederationFeedHeadReceipt" (
+    "namespaceId" integer PRIMARY KEY,
+    "stateFeedEndId" text NOT NULL,
+    "profileNamespaceFeedEndId" text NOT NULL,
+    "generatedAt" bigint NOT NULL,
+    "sentAt" bigint NOT NULL,
+    "receivedAt" timestamp(3) with time zone NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationFeedHeadReceipt_namespace_fkey"
+        FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT,
+    CONSTRAINT "FederationFeedHeadReceipt_namespace_check" CHECK ("namespaceId" > 0),
+    CONSTRAINT "FederationFeedHeadReceipt_heads_check" CHECK (
+        "stateFeedEndId" ~ '^(0|[1-9][0-9]*)$'
+        AND "profileNamespaceFeedEndId" ~ '^(0|[1-9][0-9]*)$'
+    ),
+    CONSTRAINT "FederationFeedHeadReceipt_times_check" CHECK (
+        "generatedAt" BETWEEN 0 AND 9007199254740991
+        AND "sentAt" BETWEEN 0 AND 9007199254740991
+    )
+);
+
+-- Every new remote identity starts with independent feed coordinates. Identity
+-- rebinding within an existing namespace preserves its publication and progress.
+CREATE FUNCTION public.initialize_federation_feed_state() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.id > 0 THEN
+        INSERT INTO public."FederationFeedState" ("namespaceId") VALUES (NEW.id);
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER "IdentityNamespace_initialize_feed_state"
+AFTER INSERT ON public."IdentityNamespace"
+FOR EACH ROW EXECUTE FUNCTION public.initialize_federation_feed_state();
+
 --
 -- PostgreSQL database dump complete
 --
@@ -4192,4 +4258,5 @@ ALTER TABLE ONLY public."WebAuthnCredential"
 -- Namespace 0 is initialized with SOMS_DOMAIN by KeypairService on first boot.
 -- The system account is initialized with SOMS_DOMAIN by systemAccountIdInTx.
 
+INSERT INTO public."ProfileNamespaceFeedHead" (id, "endId") VALUES (0, 0);
 INSERT INTO public."ProfileNamespaceChangeFeedHead" ("id", "endId") VALUES (0, 0);

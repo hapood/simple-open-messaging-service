@@ -1,5 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import { and, count, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   account,
@@ -60,10 +70,7 @@ export class DashboardService {
         .where(
           and(
             isNull(sessionToken.revokedAt),
-            or(
-              isNull(sessionToken.expiresAt),
-              gt(sessionToken.expiresAt, now),
-            ),
+            or(isNull(sessionToken.expiresAt), gt(sessionToken.expiresAt, now)),
           ),
         )
         .then(([row]) => row.value),
@@ -113,10 +120,10 @@ export class DashboardService {
           status: adminActionLog.status,
           errorMessage: adminActionLog.errorMessage,
           ip: adminActionLog.ip,
-          at: adminActionLog.at,
+          createdAt: adminActionLog.createdAt,
         })
         .from(adminActionLog)
-        .orderBy(desc(adminActionLog.at))
+        .orderBy(desc(adminActionLog.createdAt))
         .limit(10),
     ]);
 

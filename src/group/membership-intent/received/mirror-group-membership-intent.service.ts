@@ -57,7 +57,7 @@ interface MirrorGroupMembershipIntentBody {
   profileNamespaceId: number;
   profileRev: number;
   note: string;
-  requestedAt: number | null;
+  statusChangedAt: number;
   expiresAt: number | null;
   messageEndSeq?: number;
   tombstoneEndSeq?: number;
@@ -107,7 +107,7 @@ interface ActivationContext {
     profileNamespaceId: number;
     profileRev: number;
     note: string;
-    requestedAt: Date | null;
+    statusChangedAt: Date;
     expiresAt: Date | null;
     messageEndSeq: number;
     tombstoneEndSeq: number;
@@ -275,7 +275,7 @@ export class MirrorGroupMembershipIntentService {
       profileNamespaceId: command.body.profileNamespaceId,
       profileRev: command.body.profileRev,
       note: command.body.note ?? '',
-      requestedAt: intent.requestedAt,
+      statusChangedAt: intent.statusChangedAt,
       expiresAt: intent.expiresAt,
       messageEndSeq: command.body.messageEndSeq ?? 0,
       tombstoneEndSeq: command.body.tombstoneEndSeq ?? 0,
@@ -322,7 +322,7 @@ export class MirrorGroupMembershipIntentService {
             profileNamespaceId: wireIntent.profileNamespaceId,
             profileRev: wireIntent.profileRev,
             note: wireIntent.note,
-            requestedAt: intent.requestedAt!,
+            statusChangedAt: intent.statusChangedAt,
             expiresAt: intent.expiresAt!,
             messageEndSeq: wireIntent.messageEndSeq,
             tombstoneEndSeq: wireIntent.tombstoneEndSeq,
@@ -362,7 +362,7 @@ export class MirrorGroupMembershipIntentService {
             ),
             status: 'ACCEPTED',
             note: wireIntent.note,
-            requestedAt: wireIntent.requestedAt,
+            statusChangedAt: wireIntent.statusChangedAt,
             expiresAt: null,
             profileNamespaceId: wireIntent.profileNamespaceId,
             profileRev: wireIntent.profileRev,
@@ -386,7 +386,7 @@ export class MirrorGroupMembershipIntentService {
             ),
             status: 'ACCEPTED',
             note: wireIntent.note,
-            requestedAt: wireIntent.requestedAt,
+            statusChangedAt: wireIntent.statusChangedAt,
             expiresAt: null,
             profileNamespaceId: wireIntent.profileNamespaceId,
             profileRev: wireIntent.profileRev,
@@ -443,6 +443,7 @@ export class MirrorGroupMembershipIntentService {
       return { routed: 'noop:already-revoked' };
     const wireWrite = await tx.execute<{ status: string }>(
       mirrorMembershipRevocationIntentWrite({
+        statusChangedAt: intent.statusChangedAt,
         threadId,
         pairId: lockedPairId,
         presentation,

@@ -258,7 +258,8 @@ export class UserQuotaService implements OnModuleInit {
       INSERT INTO "UserQuotaDailyUsage" ("userId", "date", "category", "count")
       VALUES (${userId}, ${utcToday()}, ${category}, ${amount})
       ON CONFLICT ("userId", "date", "category")
-      DO UPDATE SET "count" = "UserQuotaDailyUsage"."count" + ${amount}
+      DO UPDATE SET "count" = "UserQuotaDailyUsage"."count" + ${amount},
+        "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "count"
     `);
     const count = result.rows[0]?.count ?? amount;

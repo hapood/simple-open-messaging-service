@@ -5,7 +5,7 @@
   "$defs": {
     "relationshipIntentBody": {
       "type": "object",
-      "required": ["status", "namespaceId", "profileRev", "note", "requestedAt", "expiresAt"],
+      "required": ["status", "namespaceId", "profileRev", "note", "statusChangedAt", "expiresAt"],
       "properties": {
         "status": {
           "enum": ["REQUESTED", "ACCEPTED", "REVOKED"]
@@ -20,15 +20,8 @@
           "type": "string",
           "maxLength": 255
         },
-        "requestedAt": {
-          "oneOf": [
-            {
-              "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "statusChangedAt": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
         "expiresAt": {
           "oneOf": [
@@ -59,9 +52,6 @@
           },
           "then": {
             "properties": {
-              "requestedAt": {
-                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-              },
               "expiresAt": {
                 "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
               }
@@ -79,9 +69,6 @@
           },
           "then": {
             "properties": {
-              "requestedAt": {
-                "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-              },
               "expiresAt": {
                 "type": "null"
               }
@@ -152,7 +139,7 @@
     },
     "itemBase": {
       "type": "object",
-      "required": ["account", "eventType", "feedId", "body"],
+      "required": ["account", "eventType", "feedId", "generatedAt", "body"],
       "properties": {
         "account": {
           "$ref": "urn:somfp:v1:common#/$defs/account"
@@ -162,6 +149,9 @@
         },
         "feedId": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"
+        },
+        "generatedAt": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
         "body": {
           "type": "object"

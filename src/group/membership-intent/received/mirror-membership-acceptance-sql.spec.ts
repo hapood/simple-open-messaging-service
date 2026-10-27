@@ -20,7 +20,7 @@ describe('mirror group membership activation profile selection', () => {
         profileNamespaceId: 0,
         profileRev: 6,
         note: '',
-        requestedAt: null,
+        statusChangedAt: new Date(1000),
         expiresAt: null,
         messageEndSeq: 0,
         tombstoneEndSeq: 0,

@@ -6,7 +6,11 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { identityNamespace, profileNamespace } from '../database/schema.js';
+import {
+  identityNamespace,
+  profileNamespace,
+  profileNamespaceFeedHead,
+} from '../database/schema.js';
 import { KeypairService } from './keypair.service.js';
 
 /** Client-facing coordinates are JSON numbers; the s2s wire keeps
@@ -136,6 +140,7 @@ export class ProfileNamespaceService {
         set: {
           domain,
           rootPublicKey,
+          sourceGeneratedAt: 0,
           updateFeedId: 0n,
           expired: false,
           status: 'ACTIVE',
@@ -205,14 +210,12 @@ export class ProfileNamespaceService {
     };
   }
 
-  /** The publisher-feed coordinate of this server's own space: row 0 carries
-   *  the per-server feed allocator head, which bounds every change id this
-   *  server may have allocated so far. */
+  /** Publisher-wide allocator bounds every locally published binding change. */
   private async readLocalFeedEnd(): Promise<number> {
     const [head] = await this.database.db
-      .select({ feedEndId: identityNamespace.profileNamespaceFeedEndId })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, 0))
+      .select({ feedEndId: profileNamespaceFeedHead.endId })
+      .from(profileNamespaceFeedHead)
+      .where(eq(profileNamespaceFeedHead.id, 0))
       .limit(1);
     if (!head) throw new Error('local namespace sentinel row is missing');
     return toClientFeedNumber(head.feedEndId);

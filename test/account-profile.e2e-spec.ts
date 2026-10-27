@@ -79,6 +79,7 @@ describe('exact account profile by current account evidence', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 4,
+        generatedAt: 1_700_000_000_000,
         displayName: 'P2P revision',
       },
       {
@@ -86,6 +87,7 @@ describe('exact account profile by current account evidence', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 7,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Group message revision',
       },
       {
@@ -93,6 +95,7 @@ describe('exact account profile by current account evidence', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 3,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Group revision',
       },
       {
@@ -100,6 +103,7 @@ describe('exact account profile by current account evidence', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 5,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Unselected group revision',
       },
     ]);
@@ -205,7 +209,7 @@ describe('exact account profile by current account evidence', () => {
         note: '',
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
-        requestedAt: new Date(),
+        statusChangedAt: new Date(),
       },
       {
         authorAccount: remoteGroup,
@@ -218,7 +222,7 @@ describe('exact account profile by current account evidence', () => {
         note: '',
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
-        requestedAt: new Date(),
+        statusChangedAt: new Date(),
       },
       {
         authorAccount: localGroup,
@@ -231,7 +235,7 @@ describe('exact account profile by current account evidence', () => {
         note: '',
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
-        requestedAt: new Date(),
+        statusChangedAt: new Date(),
       },
     ]);
     await database.db.insert(message).values(
@@ -389,6 +393,7 @@ describe('exact account profile by current account evidence', () => {
     expect(await userProfile(4)).toMatchObject({
       account: localUser,
       profileRev: 4,
+      generatedAt: 1_700_000_000_000,
       displayName: 'P2P revision',
     });
     expect(await userProfile(7)).toBeNull();
@@ -405,6 +410,7 @@ describe('exact account profile by current account evidence', () => {
     await setPublishedEnd(remoteGroup, 1);
     expect(await userProfile(7)).toMatchObject({
       profileRev: 7,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Group message revision',
     });
     await database.db
@@ -463,6 +469,7 @@ describe('exact account profile by current account evidence', () => {
     expect(await groupProfile(3)).toMatchObject({
       account: localGroup,
       profileRev: 3,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Group revision',
     });
     expect(await groupProfile(5)).toBeNull();

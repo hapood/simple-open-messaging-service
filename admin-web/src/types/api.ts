@@ -122,7 +122,7 @@ export interface Session {
 // Dates are ms-epoch numbers (global interceptor serializes backend Date → number).
 export interface LoginCodeView {
   id: number;
-  issuedAt: number;
+  createdAt: number;
   expiresAt: number;
   consumedAt: number | null;
   consumedIp: string | null;
@@ -225,14 +225,43 @@ export type FederationTrustLevel =
   | 'halted';
 
 export interface FederationFeedProgress {
+  lastHandshakeAt: number | null;
+  latestHealthCheck: FederationHealthObservation | null;
   namespaceId: number;
   outboundStateFeedEndId: string;
   inboundStateFeedPulledThrough: string | null;
-  remoteProfileNamespaceFeedEndId: string;
+  stateFeedSourceGeneratedAt: number;
+  profileNamespaceFeedSourceGeneratedAt: number;
   inboundProfileNamespaceFeedPulledThrough: string;
 }
 
+export interface FederationFeedHeadReceipt {
+  namespaceId: number;
+  stateFeedEndId: string;
+  profileNamespaceFeedEndId: string;
+  generatedAt: number;
+  sentAt: number;
+  receivedAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FederationHealthObservation {
+  namespaceId: number;
+  domain: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status: 'available' | 'degraded' | 'unavailable' | null;
+  error: string | null;
+  source: 'automatic' | 'manual';
+}
+
 export interface FederationPeerState {
+  rootPublicKey: string | null;
+  identityPinnedAt: number | null;
+  peerAssignedLocalNamespaceId: number | null;
+  signingKeyCreatedAt: number;
   domain: string;
   trustLevel: FederationTrustLevel;
   addedBy: string | null;
@@ -251,6 +280,7 @@ export interface FederationPeerState {
   localServiceAvailable: boolean;
   remoteServiceReachable: boolean;
   feedProgress: FederationFeedProgress;
+  latestFeedHeadReceipt: FederationFeedHeadReceipt | null;
 }
 
 export interface FederationPeerStateListResult {
@@ -471,7 +501,7 @@ interface DashboardAction {
   status: 'STARTED' | 'SUCCEEDED' | 'FAILED';
   errorMessage: string | null;
   ip: string | null;
-  at: number;
+  createdAt: number;
 }
 
 export interface DashboardTasks {

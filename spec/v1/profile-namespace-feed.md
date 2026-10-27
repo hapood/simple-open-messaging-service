@@ -100,6 +100,7 @@ capacity-based floor.
 interface ProfileNamespaceFeedItem {
   namespaceId: SafeNonNegativeInteger;
   feedId: PositiveDecimalString;
+  generatedAt: EpochMilliseconds;
 }
 ```
 
@@ -111,6 +112,14 @@ The item body is the namespace id itself. An item states that the bindings of
 that identity changed at least through `feedId`; it carries no domain, no key,
 and no delta. A new-item entry for a namespace the consumer has never resolved
 has no effect.
+
+`generatedAt` MUST be the persisted generation time of this item version in
+Unix milliseconds, not the response or receipt time. Repeated reads of an
+unchanged item retain its time. Consumers MUST use `feedId`, never timestamps,
+for ordering and invalidation; generation times need not be monotonic. Pages
+carry no top-level generation time. A consumer recording synchronization times
+records the last processed item's time atomically with its progress; scanning
+an empty range preserves that time.
 
 ## 5. Consumer rules
 
@@ -139,9 +148,13 @@ interface ProfileNamespaceBindings {
   domain: Domain;
   rootPublicKey: Base64Ed25519Key;
   profileNamespaceFeedEndId: DecimalString;
+  generatedAt: EpochMilliseconds;
 }
 ```
 
+- `generatedAt` is the generation time of the corresponding namespace feed
+  item, read in the same source snapshot as the binding and feed end. Every
+  servable binding MUST have an item, including initial namespace `0`.
 - `nsid = 0` returns the publisher's own current public domain, root public
   key, and feed end.
 - A positive `nsid` returns the current bindings the publisher retains for

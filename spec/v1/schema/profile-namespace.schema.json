@@ -3,8 +3,16 @@
   "$id": "urn:somfp:v1:profile-namespace",
   "title": "GET /s2s/v1/profile-namespaces/:nsid response data",
   "type": "object",
-  "required": ["domain", "rootPublicKey", "profileNamespaceFeedEndId"],
+  "required": [
+    "domain",
+    "rootPublicKey",
+    "profileNamespaceFeedEndId",
+    "generatedAt"
+  ],
   "properties": {
+    "generatedAt": {
+      "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+    },
     "domain": {
       "$ref": "urn:somfp:v1:common#/$defs/domain"
     },

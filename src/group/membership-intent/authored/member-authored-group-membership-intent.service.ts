@@ -563,9 +563,9 @@ export class MemberAuthoredGroupMembershipIntentService {
     if (row.invitationOutstanding) return this.prepareAcceptanceInTx(base);
     if (base.params.decision !== 'REQUESTED')
       throw new Error('request command required');
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     const expiresAt = new Date(
-      requestedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
+      statusChangedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
     );
     if (row.namespaceId !== 0)
       return this.finalizeValidationInTx(base, {
@@ -585,7 +585,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         profileNamespaceId: 0,
         localMemberId: row.localMemberId!,
         note: (base.params.note ?? '').slice(0, 255),
-        requestedAt,
+        statusChangedAt,
         expiresAt,
       },
     });

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  probeFederationHealth,
   blockFederationPeer,
   approveFederationIdentityReview,
   federationPeerNamespaces,
@@ -18,6 +19,13 @@ vi.mock('@/api/client', () => ({ request }));
 
 describe('federation admin API', () => {
   beforeEach(() => request.mockReset().mockResolvedValue(undefined));
+
+  it('probes an exact namespace through the unified health endpoint', async () => {
+    await probeFederationHealth(12);
+    expect(request).toHaveBeenCalledWith('/admin/federation/health/probe', {
+      namespaceId: 12,
+    });
+  });
 
   it('encodes peer domains as one path segment for detail and namespaces', async () => {
     await getFederationPeer('peer.test/path');

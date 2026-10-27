@@ -211,10 +211,10 @@ export class FederationStatePullService {
   ): Promise<bigint> {
     const [row] = await this.database.db
       .select({
-        pulledThrough: tables.identityNamespace.stateFeedPulledThrough,
+        pulledThrough: tables.federationFeedState.inboundStateFeedPulledThrough,
       })
-      .from(tables.identityNamespace)
-      .where(eq(tables.identityNamespace.id, namespaceId))
+      .from(tables.federationFeedState)
+      .where(eq(tables.federationFeedState.namespaceId, namespaceId))
       .limit(1);
     if (!row) throw new Error(`peer ${domain} has no namespace row`);
     // NULL is the never-bootstrapped marker: nothing has been drained yet.

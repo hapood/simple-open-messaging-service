@@ -27,19 +27,20 @@ function createService(routed: string) {
 }
 
 function intentItem(status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED') {
-  const requestedAt = Date.now() - 60_000;
-  const expiresAt = requestedAt + 24 * 60 * 60 * 1000;
+  const statusChangedAt = Date.now() - 60_000;
+  const expiresAt = statusChangedAt + 24 * 60 * 60 * 1000;
   return {
     account: 'Remote.User',
     peerAccount: 'Local.User',
     eventType: 'RELATIONSHIP_INTENT' as const,
     feedId: '10',
+    generatedAt: 1_700_000_000_000,
     body: {
       status,
       namespaceId: 7,
       profileRev: 12,
       note: '',
-      requestedAt: status === 'REVOKED' ? null : requestedAt,
+      statusChangedAt,
       expiresAt: status === 'REQUESTED' ? expiresAt : null,
       ...(status === 'REVOKED' ? {} : { messageEndSeq: 0, tombstoneEndSeq: 0 }),
     },
@@ -47,6 +48,75 @@ function intentItem(status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED') {
 }
 
 describe('FederationStateFeedConsumerService relationship profile prefetch', () => {
+  it.each([undefined, null, -1, 0.5, '1', NaN, Infinity, 2 ** 53])(
+    'skips an invalid generation time (%s) without blocking a later item',
+    async (generatedAt) => {
+      const { service, receivedUserIntents } =
+        createService('recorded-request');
+      const invalid = {
+        ...intentItem('REQUESTED'),
+        generatedAt,
+      };
+      if (generatedAt === undefined) delete invalid.generatedAt;
+      const valid = { ...intentItem('REQUESTED'), feedId: '11' };
+      await service.applyPageInTx(tx() as never, 'remote.test', 5, {
+        items: [invalid as never, valid],
+        scannedThrough: '11',
+        stateFeedEndId: '11',
+        profileNamespaceFeedEndId: '0',
+        hasMore: false,
+      });
+      expect(receivedUserIntents.applyInTx).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('accepts future, decreasing, and zero generation times in feed order', async () => {
+    const { service, receivedUserIntents } = createService('recorded-request');
+    await service.applyPageInTx(tx() as never, 'remote.test', 5, {
+      items: [Number.MAX_SAFE_INTEGER, 1, 0].map((generatedAt, index) => ({
+        ...intentItem('REQUESTED'),
+        feedId: String(index + 1),
+        generatedAt,
+      })),
+      scannedThrough: '3',
+      stateFeedEndId: '3',
+      profileNamespaceFeedEndId: '0',
+      hasMore: false,
+    });
+    expect(receivedUserIntents.applyInTx).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['REQUESTED', 'ACCEPTED', 'REVOKED'] as const)(
+    'drops missing, null, and legacy transition times for %s without applying them',
+    async (status) => {
+      const item = intentItem(status);
+      const { statusChangedAt, ...withoutTime } = item.body;
+      const bodies = [
+        withoutTime,
+        { ...withoutTime, statusChangedAt: null },
+        { ...withoutTime, requestedAt: statusChangedAt },
+        { ...item.body, requestedAt: statusChangedAt },
+      ];
+      for (const body of bodies) {
+        const { service, receivedUserIntents } =
+          createService('recorded-request');
+        await expect(
+          service.applyPageInTx(tx() as never, 'remote.test', 5, {
+            items: [{ ...item, body }],
+            scannedThrough: '10',
+            stateFeedEndId: '10',
+            profileNamespaceFeedEndId: '0',
+            hasMore: false,
+          }),
+        ).resolves.toMatchObject({
+          clientFeedUpdates: [],
+          profileDemands: [],
+          threadRoundWakes: [],
+        });
+        expect(receivedUserIntents.applyInTx).not.toHaveBeenCalled();
+      }
+    },
+  );
   it.each(['REQUESTED', 'ACCEPTED'] as const)(
     'prefetches the peer profile for %s intents while disclosure is live',
     async (status) => {

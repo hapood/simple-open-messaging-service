@@ -25,7 +25,7 @@ export function memberAuthoredMembershipRequestSql(
       threadId: input.threadId,
       status: 'REQUESTED',
       note: input.note,
-      requestedAt: input.requestedAt,
+      statusChangedAt: input.statusChangedAt,
       expiresAt: input.expiresAt,
       snapshot: input.snapshot,
     }),

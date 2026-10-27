@@ -18,7 +18,7 @@ export function threadFanoutAdmissionSql(params: {
   const prefix = sql.raw(params.prefix);
   return sql`
     ${prefix}_merge AS (
-      UPDATE "DurableTask" d SET payload = jsonb_build_object(
+      UPDATE "DurableTask" d SET "updatedAt" = CURRENT_TIMESTAMP, payload = jsonb_build_object(
         'threadId', ${params.threadId}::integer,
         'messageEndSeq', GREATEST((d.payload->>'messageEndSeq')::bigint, (SELECT seq FROM system_message)),
         'tombstoneEndSeq', GREATEST((d.payload->>'tombstoneEndSeq')::bigint,

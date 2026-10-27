@@ -123,10 +123,10 @@ describe('federated Address friend requests', () => {
     const incoming = await vi.waitFor(
       async () => {
         const rows = await appB.database.execute<{
-          requestedAt: Date;
+          statusChangedAt: Date;
           expiresAt: Date;
         }>(sql`
-          SELECT intent."requestedAt", intent."expiresAt"
+          SELECT intent."statusChangedAt", intent."expiresAt"
           FROM "RelationshipIntent" intent
           WHERE intent.status = 'REQUESTED'
             AND intent."authorAccount" = 'address-alice'
@@ -143,7 +143,7 @@ describe('federated Address friend requests', () => {
     );
     expect(
       new Date(incoming.expiresAt).getTime() -
-        new Date(incoming.requestedAt).getTime(),
+        new Date(incoming.statusChangedAt).getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
     const pendingRequest = await vi.waitFor(
       async () => {
@@ -337,9 +337,9 @@ describe('federated Address friend requests', () => {
       note: 'original request',
       snapshot: { displayName: 'Charlie', avatar: null },
     });
-    expect(before!.expiresAt!.getTime() - before!.requestedAt!.getTime()).toBe(
-      7 * 24 * 60 * 60 * 1000,
-    );
+    expect(
+      before!.expiresAt!.getTime() - before!.statusChangedAt!.getTime(),
+    ).toBe(7 * 24 * 60 * 60 * 1000);
     const requestCount = async () => {
       const rows = await appA.database
         .select({
@@ -397,7 +397,7 @@ describe('federated Address friend requests', () => {
         expect(await readMirroredRequest()).toMatchObject({
           status: 'REQUESTED',
           note: 'original request',
-          requestedAt: before!.requestedAt,
+          statusChangedAt: before!.statusChangedAt,
           expiresAt: before!.expiresAt,
         });
       },

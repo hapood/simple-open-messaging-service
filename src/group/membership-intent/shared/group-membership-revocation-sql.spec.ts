@@ -81,7 +81,7 @@ describe('group departure system message SQL', () => {
           threadId: 41,
           status: 'REVOKED',
           note: '',
-          requestedAt: null,
+          statusChangedAt: new Date(1000),
           expiresAt: null,
         }),
       );

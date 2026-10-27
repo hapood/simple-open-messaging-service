@@ -26,7 +26,7 @@ export function userIntentRequestSql(input: UserIntentRequestInput) {
       threadId: input.threadId,
       status: 'REQUESTED',
       note: input.note,
-      requestedAt: input.requestedAt,
+      statusChangedAt: input.statusChangedAt,
       expiresAt: input.expiresAt,
       requestId: input.requestId,
       snapshot: input.snapshot,

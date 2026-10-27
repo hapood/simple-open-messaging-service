@@ -26,7 +26,6 @@ import { FederationRecognitionService } from './federation-recognition.service.j
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
 import { FederationMessageProvenanceService } from './federation-message-provenance.service.js';
 import { FederationAdminMessageProvenanceService } from './federation-admin-message-provenance.service.js';
-import { FederationAdminHealthProbeService } from './federation-admin-health-probe.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
@@ -78,6 +77,7 @@ import { FederationInboundMessageValidatorService } from './federation-inbound-m
 import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
 import { FederationLocalSystemMessagePublisher } from './federation-local-system-message-publisher.service.js';
 import { FederationStatePullService } from './federation-state-pull.service.js';
+import { FederationFeedHeadReceiptService } from './federation-feed-head-receipt.service.js';
 import { FederationStateFeedHeadClient } from './federation-state-feed-head-client.service.js';
 import { FederationStateFeedPushSchedulerService } from './federation-state-feed-push-scheduler.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
@@ -273,6 +273,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     FederationLocalSystemMessagePublisher,
     FederationStatePullService,
     FederationStateFeedHeadClient,
+    FederationFeedHeadReceiptService,
     FederationStateFeedPushSchedulerService,
     FederationPeerResourceService,
     FederationInboundMessageCommitService,
@@ -287,7 +288,6 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     FederationMessageFeedService,
     FederationMessageProvenanceService,
     FederationAdminMessageProvenanceService,
-    FederationAdminHealthProbeService,
     FederationMessageTombstoneFeedService,
     FederationDownloadScheduler,
     FederationHttpScheduler,
@@ -338,7 +338,6 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     FederationMessageFeedService,
     FederationMessageProvenanceService,
     FederationAdminMessageProvenanceService,
-    FederationAdminHealthProbeService,
     FederationMessageTombstoneFeedService,
     FederationDownloadScheduler,
     FederationHttpScheduler,

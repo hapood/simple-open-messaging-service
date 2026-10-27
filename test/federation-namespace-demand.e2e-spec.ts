@@ -1,7 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
-import { identityNamespace, profileNamespace } from '../src/database/schema.js';
+import {
+  identityNamespace,
+  federationFeedState,
+  profileNamespace,
+} from '../src/database/schema.js';
 import { ProfileNamespaceService } from '../src/federation/profile-namespace.service.js';
 import { ProfileNamespaceRefreshService } from '../src/federation/profile-namespace-refresh.service.js';
 import { ProfileNamespaceResolutionService } from '../src/federation/profile-namespace-resolution.service.js';
@@ -28,15 +32,13 @@ describe('client namespace demand after prefetch work is absent', () => {
       domain,
     );
     await database.db
-      .update(identityNamespace)
+      .update(federationFeedState)
       .set({
-        profileNamespaceFeedPulledThrough: 8n,
-        profileNamespaceFeedEndId: 8n,
+        inboundProfileNamespaceFeedPulledThrough: 8n,
       })
-      .where(eq(identityNamespace.id, publisherNamespaceId));
+      .where(eq(federationFeedState.namespaceId, publisherNamespaceId));
     feed = new ProfileNamespaceFeedService(
       database,
-      {} as never,
       new ProfileNamespaceChangeStore(database),
     );
     refresh = new ProfileNamespaceRefreshService(
@@ -120,12 +122,16 @@ describe('client namespace demand after prefetch work is absent', () => {
           status,
         });
       }
+      await database.db.transaction((tx) =>
+        feed.recordNamespaceChangeInTx(tx, profileNamespaceId),
+      );
       const bindings = await feed.resolveBindings(profileNamespaceId);
       assertFederationWireSchema('urn:somfp:v1:profile-namespace', bindings);
       expect(bindings).toEqual({
         domain: subjectDomain,
         rootPublicKey: fakeRootPublicKey(subjectDomain),
         profileNamespaceFeedEndId: expect.any(String),
+        generatedAt: expect.any(Number),
       });
       peerGet.mockResolvedValueOnce(bindings);
       refresh.scheduleRefresh(pair, 0n);
@@ -141,6 +147,7 @@ describe('client namespace demand after prefetch work is absent', () => {
           domain: subjectDomain,
           rootPublicKey: fakeRootPublicKey(subjectDomain),
           updateFeedId: BigInt(bindings.profileNamespaceFeedEndId),
+          sourceGeneratedAt: bindings.generatedAt,
           expired: false,
           status,
         });

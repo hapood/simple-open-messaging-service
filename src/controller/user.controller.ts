@@ -37,7 +37,6 @@ import {
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserResolveDto,
-  UserSearchDto,
   UpdateProfileDto,
 } from '../dto/user.dto.js';
 import { S2sResponseError } from '../federation/federation-errors.js';
@@ -605,25 +604,6 @@ export class UserController {
       isDeleted: false,
       profileRev: 0,
     };
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('user/search')
-  @ApiOperation({
-    summary:
-      'Fuzzy local identity discovery by account OR display name (local users and groups)',
-  })
-  async searchUsers(@Body() dto: UserSearchDto) {
-    // Discovery endpoint — the two abuse guardrails are the DTO's @MinLength(2) on q and the hard
-    // take cap here (a client must never page through the whole user table). Federated users are not
-    // discoverable: resolve those by exact account + domain via /user/resolve. Only local,
-    // non-deleted user and group accounts are returned.
-    const take = Math.min(dto.take ?? 20, 20);
-    return this.userService.searchUsers(dto.q.trim(), {
-      skip: dto.skip ?? 0,
-      take,
-    });
   }
 
   @Public()

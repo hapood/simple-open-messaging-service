@@ -68,6 +68,7 @@ export async function seedFederatedPeerNamespace(
       await database
         .insert(identityNamespace)
         .values({
+          signingKeyCreatedAt: 1700000000000,
           domain,
           rootPublicKey: fakeRootPublicKey(domain),
           identityPinnedAt: new Date(),
@@ -248,7 +249,7 @@ export async function seedAcceptedRelationship(
           status: 'ACCEPTED',
           messageEndSeq: 0,
           tombstoneEndSeq: 0,
-          requestedAt: updatedAt,
+          statusChangedAt: updatedAt,
           updatedAt,
         })),
       )
@@ -264,7 +265,7 @@ export async function seedAcceptedRelationship(
           messageEndSeq: 0,
           tombstoneEndSeq: 0,
           profileRev: sql`excluded."profileRev"`,
-          requestedAt: updatedAt,
+          statusChangedAt: updatedAt,
           expiresAt: null,
           updatedAt,
         },
@@ -312,6 +313,7 @@ export async function seedUser(
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
+      generatedAt: Date.now(),
       displayName: opts.name ?? account,
       avatar: '',
       bio: '',

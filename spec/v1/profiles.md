@@ -76,6 +76,7 @@ is a closed object with exactly these fields:
 ```ts
 interface PublicAccountProfile {
   account: Account;
+  generatedAt: EpochMilliseconds;
   profileRev: SafeNonNegativeInteger;
   profile: {
     displayName: string;
@@ -126,14 +127,15 @@ Their success `data` is a closed object with exactly these fields:
 ```ts
 interface EvidenceProfile {
   account: Account;
+  generatedAt: EpochMilliseconds;
   displayName: string;
   bio: string;
   avatar: InlineProfileAvatar | null;
 }
 ```
 
-The two exact profile-validation operations return only the profile content
-and subject account, without a domain. Their request path already supplies `namespaceId` and
+The two exact profile-validation operations return the profile content,
+subject account, and generation time, without a domain. Their request path already supplies `namespaceId` and
 `profileRev`; the caller combines those request values with the returned
 content to reconstruct the complete profile reference. These coordinates are
 not repeated in the response, so a response cannot conflict with its request
@@ -146,6 +148,27 @@ code points without unpaired surrogates. `bio` contains 0-120 Unicode code
 points without unpaired surrogates. `avatar` is either `null` or the shared
 inline `InlineProfileAvatar` object `{ mimeType, base64, width, height }`; no
 URL, digest, or independently fetchable avatar reference is returned.
+
+### 2.3 Generation time
+
+Every successful profile response MUST carry top-level `generatedAt` as
+non-negative Unix epoch milliseconds encoded as a safe JSON integer. For a
+positive revision, it is the original profile authority's generation time for
+that immutable revision. Every publisher disclosing the revision MUST preserve
+that time unchanged, including a group origin disclosing a foreign member's
+profile. Receiving, retaining, reading, or retransmitting a revision MUST NOT
+replace its generation time with a local timestamp. Conflicting content or
+generation times for the same exact profile reference MUST NOT overwrite the
+accepted revision. A public revision-0 response MUST carry
+`generatedAt: 0` because no profile version exists.
+
+`generatedAt` is not response generation, transmission, or receipt time.
+Profile identity and revision selection use the account, namespace, and
+`profileRev`, not this timestamp. Clock corrections and inter-server clock
+skew are permitted: consumers MUST NOT require timestamp monotonicity or
+reject an otherwise valid profile because this time is old or in the future.
+It is not an authorization boundary or replay-protection credential. Missing,
+null, negative, fractional, non-numeric, or unsafe-integer values are malformed.
 
 ## 3. Public Account Profile
 

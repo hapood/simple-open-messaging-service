@@ -3,9 +3,10 @@
   "$id": "urn:somfp:v1:profile",
   "title": "GET /s2s/v1/accounts/:account response data",
   "type": "object",
-  "required": ["account", "profileRev", "profile", "proof"],
+  "required": ["account", "generatedAt", "profileRev", "profile", "proof"],
   "properties": {
     "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+    "generatedAt": { "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds" },
     "profileRev": {
       "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
     },
@@ -17,7 +18,12 @@
   "allOf": [
     {
       "if": { "properties": { "profileRev": { "const": 0 } } },
-      "then": { "properties": { "profile": { "type": "null" } } },
+      "then": {
+        "properties": {
+          "profile": { "type": "null" },
+          "generatedAt": { "const": 0 }
+        }
+      },
       "else": {
         "properties": { "profile": { "$ref": "#/$defs/profileContent" } }
       }

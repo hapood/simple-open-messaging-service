@@ -50,6 +50,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Local historical',
       },
       {
@@ -57,6 +58,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Local current',
       },
       {
@@ -64,6 +66,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         publisherNamespaceId: ns,
         profileNamespaceId: ns,
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Wrong foreign copy',
       },
     ]);

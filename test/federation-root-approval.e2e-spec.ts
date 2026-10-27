@@ -39,6 +39,8 @@ describe('database-backed root approval proof binding', () => {
   async function cleanup() {
     for (const table of [
       'S2SKeyCache',
+      'FederationFeedHeadReceipt',
+      'FederationFeedState',
       'ProfileNamespaceFeed',
       'ProfileNamespaceChangeFeed',
     ]) {
@@ -70,6 +72,7 @@ describe('database-backed root approval proof binding', () => {
       .values({
         domain,
         rootPublicKey: predecessor,
+        signingKeyCreatedAt: 1700000000000,
         identityPinnedAt: new Date(),
         active: true,
         trustLevel: 'available',
@@ -100,7 +103,6 @@ describe('database-backed root approval proof binding', () => {
   function approvalSubject() {
     const feed = new ProfileNamespaceFeedService(
       database,
-      {} as never,
       new ProfileNamespaceChangeStore(database),
     );
     const notify = vi.fn();
@@ -113,6 +115,7 @@ describe('database-backed root approval proof binding', () => {
       {
         fetchWellKnown: async () => ({
           protocolVersions: [1],
+          signingKeyCreatedAt: 1700000000000,
           roots: [
             { ed25519: successor, notBefore: 0, notAfter: 253402300799999 },
           ],
@@ -352,6 +355,7 @@ describe('database-backed root approval proof binding', () => {
         {
           fetchWellKnown: async () => ({
             protocolVersions: [1],
+            signingKeyCreatedAt: 1700000000000,
             roots: [
               { ed25519: successor, notBefore: 0, notAfter: 253402300799999 },
             ],

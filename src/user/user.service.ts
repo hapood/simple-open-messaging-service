@@ -1,5 +1,5 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
-import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { account as accountTable, profileTable } from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
@@ -124,6 +124,7 @@ export class UserService {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: nextRev,
+        generatedAt: Date.now(),
         displayName: data.name,
         bio: data.bio,
         avatar:
@@ -142,37 +143,6 @@ export class UserService {
         .where(eq(accountTable.id, userId));
       return row;
     });
-  }
-
-  async searchUsers(
-    q: string,
-    opts: { skip?: number; take: number },
-  ): Promise<{ list: PublicUser[]; total: number }> {
-    const where = and(
-      eq(accountTable.kind, 'USER'),
-      eq(accountTable.availability, 'AVAILABLE'),
-      or(
-        ilike(accountTable.account, `%${q}%`),
-        ilike(profileTable.displayName, `%${q}%`),
-      ),
-    );
-    const [list, total] = await Promise.all([
-      this.database.db
-        .select(publicUserColumns)
-        .from(accountTable)
-        .leftJoin(profileTable, selectedProfile)
-        .where(where)
-        .orderBy(desc(accountTable.createdAt))
-        .offset(opts.skip ?? 0)
-        .limit(opts.take),
-      this.database.db
-        .select({ value: count() })
-        .from(accountTable)
-        .leftJoin(profileTable, selectedProfile)
-        .where(where)
-        .then(([row]) => row.value),
-    ]);
-    return { list, total };
   }
 
   /** Single account-creation choke point. Creates the Account at profile rev 0 — the established

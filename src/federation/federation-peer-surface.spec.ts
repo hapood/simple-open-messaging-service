@@ -334,6 +334,7 @@ describe('FederationProfileService resource path', () => {
         account: '!group',
         profile: { displayName: 'Group', bio: '', avatar: null },
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         proof: canonicalProof('!group', 'peer.test'),
       };
     });
@@ -359,6 +360,7 @@ describe('FederationProfileService resource path', () => {
         account: 'alice',
         profile: { displayName: 'Alice', bio: '', avatar: null },
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         proof: canonicalProof('alice', 'peer.test'),
       };
     });
@@ -427,6 +429,7 @@ describe('FederationProfileService resource path', () => {
         account: 'alice',
         profile: { displayName: 'Alice', bio: '', avatar: null },
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         proof: canonicalProof('alice', 'other.test'),
       }),
     });
@@ -472,6 +475,7 @@ describe('FederationProfileService resource path', () => {
         account: 'alice',
         profile: { displayName: 'Alice', bio: '', avatar: null },
         profileRev,
+        generatedAt: 1_700_000_000_000,
         proof: canonicalProof('alice', 'peer.test'),
       });
       Object.assign(peerHttp, { get: getSigned });
@@ -488,12 +492,58 @@ describe('FederationProfileService resource path', () => {
     },
   );
 
+  it.each([0, 1])(
+    'requires generatedAt on public revision %i',
+    async (profileRev) => {
+      const { profiles, peerHttp } = makeStubs();
+      const get = vi.fn();
+      Object.assign(peerHttp, { get });
+      const fetch = () =>
+        profiles.fetchRemoteAccount(
+          { account: 'alice', domain: 'peer.test' },
+          { kind: 'PIN' },
+        );
+      const base = {
+        account: 'alice',
+        profileRev,
+        profile:
+          profileRev === 0
+            ? null
+            : { displayName: 'Alice', bio: '', avatar: null },
+        proof: canonicalProof('alice', 'peer.test'),
+      };
+      for (const generatedAt of [
+        undefined,
+        null,
+        -1,
+        0.5,
+        '1',
+        Number.MAX_SAFE_INTEGER + 1,
+        ...(profileRev === 0 ? [1] : []),
+      ]) {
+        const body: Record<string, unknown> = { ...base, generatedAt };
+        if (generatedAt === undefined) delete body.generatedAt;
+        get.mockResolvedValueOnce(body);
+        await expect(fetch()).rejects.toMatchObject({
+          code: BusinessCode.FEDERATION_MALFORMED,
+        });
+      }
+      for (const generatedAt of profileRev === 0
+        ? [0]
+        : [0, 1, Number.MAX_SAFE_INTEGER]) {
+        get.mockResolvedValueOnce({ ...base, generatedAt });
+        await expect(fetch()).resolves.toMatchObject({ generatedAt });
+      }
+    },
+  );
+
   it('accepts a verified no-profile result without storing a snapshot', async () => {
     const { profiles, peerHttp } = makeStubs();
     Object.assign(peerHttp, {
       get: vi.fn().mockResolvedValue({
         account: 'alice',
         profileRev: 0,
+        generatedAt: 0,
         profile: null,
         proof: canonicalProof('alice', 'peer.test'),
       }),
@@ -507,6 +557,7 @@ describe('FederationProfileService resource path', () => {
     ).resolves.toMatchObject({
       account: 'alice',
       profileRev: 0,
+      generatedAt: 0,
       displayName: 'alice',
       bio: '',
       avatar: null,
@@ -528,6 +579,7 @@ describe('FederationProfileService resource path', () => {
     Object.assign(peerHttp, {
       get: vi.fn().mockResolvedValue({
         account: 'alice',
+        generatedAt: 0,
         proof: canonicalProof('alice', 'peer.test'),
         ...fields,
       }),
@@ -559,6 +611,7 @@ describe('FederationProfileService resource path', () => {
         avatar: '/uploads/avatars/alice.webp',
         bio: '',
         profileRev: 7,
+        generatedAt: 1_700_000_000_000,
       }),
     ).resolves.toEqual({
       namespaceId: 12,
@@ -572,6 +625,7 @@ describe('FederationProfileService resource path', () => {
         height: 24,
       },
       profileRev: 7,
+      generatedAt: 1_700_000_000_000,
     });
   });
 

@@ -44,6 +44,7 @@ describe('group invitations by public address', () => {
         publisherNamespaceId: directNs,
         profileNamespaceId: directNs,
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Friend',
       },
       {
@@ -51,6 +52,7 @@ describe('group invitations by public address', () => {
         publisherNamespaceId: mirrorNs,
         profileNamespaceId: mirrorNs,
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Group copy',
       },
     ]);

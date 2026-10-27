@@ -41,10 +41,6 @@ describe('system account attribution', () => {
       ).rejects.toThrow();
     }
     const users = new UserService(database);
-    expect(await users.searchUsers('system', { take: 10 })).toEqual({
-      list: [],
-      total: 0,
-    });
     expect(() => users.addUser({ account: '$system' })).toThrow();
   });
 

@@ -698,9 +698,9 @@ export class UserIntentService {
       });
     }
 
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     const expiresAt = new Date(
-      requestedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
+      statusChangedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
     );
     return this.finalize(base, {
       kind: 'request',
@@ -708,7 +708,7 @@ export class UserIntentService {
         ...feedInput(base),
         snapshot: base.params.snapshot,
         note: (base.params.note ?? '').slice(0, 255),
-        requestedAt,
+        statusChangedAt,
         expiresAt,
       },
     });
@@ -928,7 +928,7 @@ export class UserIntentService {
           authorProfileNamespaceId: 0,
           authorProfileRev: context.authorization.actorProfileRev,
           note: context.input.note,
-          requestedAt: context.input.requestedAt,
+          requestedAt: context.input.statusChangedAt,
           expiresAt: context.input.expiresAt,
           snapshot: context.input.snapshot,
         },
@@ -1066,7 +1066,7 @@ export class UserIntentService {
             threadId: context.threadId,
             status: 'REVOKED',
             note: '',
-            requestedAt: null,
+            statusChangedAt: new Date(),
             expiresAt: null,
           }),
         );
@@ -1102,7 +1102,7 @@ export class UserIntentService {
           threadId: context.threadId,
           status: 'REVOKED',
           note: '',
-          requestedAt: null,
+          statusChangedAt: new Date(),
           expiresAt: null,
         }),
       );

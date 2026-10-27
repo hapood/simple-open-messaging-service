@@ -256,7 +256,7 @@ export class ThreadFeedHeadWriter {
     if (input.userIds.length === 0) return [];
     const changed = await tx.execute<{ accountId: number }>(sql`
       UPDATE "AccountThreadState" s
-      SET "groupMetaFeedEndId" = GREATEST(
+      SET "updatedAt" = CURRENT_TIMESTAMP, "groupMetaFeedEndId" = GREATEST(
         COALESCE(s."groupMetaFeedEndId", 0), ${input.groupMetaFeedEndId}),
         "threadProfileRev" = CASE WHEN ${input.profileSourceId}::integer IS NOT NULL
           AND (s."profileSourceId" IS NULL OR s."profileSourceId" < ${input.profileSourceId})
@@ -409,6 +409,7 @@ export class ThreadFeedHeadWriter {
         ORDER BY message.seq DESC LIMIT 1
       )
       UPDATE "AccountThreadState" SET
+        "updatedAt" = CURRENT_TIMESTAMP,
         "previewSeqs" = ${sql.param(previewSeqs)}::integer[],
         "unreadCount" = ${unreadCount},
         "lastMentionSeq" = ${lastMentionSeq},

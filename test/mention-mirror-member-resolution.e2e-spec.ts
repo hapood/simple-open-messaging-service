@@ -118,6 +118,7 @@ describe('mention target resolution across group authority modes', () => {
         profileNamespaceId: 0,
         account: `peer-owner-${suffix}`,
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Peer Owner',
       },
       {
@@ -125,6 +126,7 @@ describe('mention target resolution across group authority modes', () => {
         profileNamespaceId: 1,
         account: `peer-member-${suffix}`,
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Peer Member',
       },
       {
@@ -132,6 +134,7 @@ describe('mention target resolution across group authority modes', () => {
         profileNamespaceId: 0,
         account: `authority-pairless-${suffix}`,
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Authority Pairless',
       },
     ]);
@@ -215,6 +218,7 @@ describe('mention target resolution across group authority modes', () => {
       .delete(groupAccount)
       .where(eq(groupAccount.id, authorityGroupId));
     await database.db.delete(user).where(inArray(user.id, createdUserIds));
+    await database.pool.query('DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1', [peerNamespaceId]);
     await database.db
       .delete(identityNamespace)
       .where(eq(identityNamespace.id, peerNamespaceId));

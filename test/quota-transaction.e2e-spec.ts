@@ -70,8 +70,8 @@ describe('quota operations reuse the source transaction', () => {
         database.db.transaction(async (tx) => {
           const namespace = await tx.execute<{ id: number }>(sql`
             INSERT INTO "IdentityNamespace"
-              (domain, "rootPublicKey", "identityPinnedAt", "dailyMsgLimit", "dailyFileLimit", "dailyFileBytesLimit", "dailyRequestLimit")
-            VALUES (${domain}, ${Buffer.alloc(32, 1).toString('base64')}, NOW(), 2, 2, 10, 2) RETURNING id
+              (domain, "signingKeyCreatedAt", "rootPublicKey", "identityPinnedAt", "dailyMsgLimit", "dailyFileLimit", "dailyFileBytesLimit", "dailyRequestLimit")
+            VALUES (${domain}, 1700000000000, ${Buffer.alloc(32, 1).toString('base64')}, NOW(), 2, 2, 10, 2) RETURNING id
           `);
           const namespaceId = namespace.rows[0].id;
           await tx.execute(sql`

@@ -157,6 +157,65 @@ test('enforces semantic ordering after schema validation', (t) => {
   assert.match(result.stderr, /input is not conformant/);
 });
 
+for (const kind of ['RELATIONSHIP_INTENT', 'P2P', 'GROUP']) {
+  test(`requires a valid item generation time for ${kind}`, (t) => {
+    const directory = workspace(t);
+    const template = vectors.find(
+      (vector) => vector.name === 'relationship intent timestamp states',
+    ).values[0];
+    const page = structuredClone(template);
+    if (kind !== 'RELATIONSHIP_INTENT') {
+      page.items[0] = {
+        account: kind === 'GROUP' ? '!team' : 'alice',
+        ...(kind === 'P2P' ? { peerAccount: 'bob' } : {}),
+        eventType: 'THREAD_CONTENT_HEAD',
+        feedId: '1',
+        generatedAt: 0,
+        body: {
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
+          ...(kind === 'GROUP' ? { groupMetaFeedEndId: 0 } : {}),
+        },
+      };
+    }
+    const schema = 'urn:somfp:v1:state-feed';
+    for (const time of [0, Number.MAX_SAFE_INTEGER]) {
+      page.items[0].generatedAt = time;
+      const result = run(directory, input(directory, page, schema));
+      assert.equal(result.status, 0, result.stderr);
+    }
+    for (const time of [undefined, null, -1, 0.5, '1', 2 ** 53]) {
+      page.items[0].generatedAt = time;
+      const result = run(directory, input(directory, page, schema));
+      assert.equal(result.status, 1, result.stderr);
+    }
+  });
+}
+
+for (const status of ['REQUESTED', 'ACCEPTED', 'REVOKED']) {
+  test(`requires the author transition time for ${status}`, (t) => {
+    const directory = workspace(t);
+    const intentPages = vectors.find(
+      (vector) => vector.name === 'relationship intent timestamp states',
+    ).values;
+    const page = structuredClone(
+      intentPages.find((page) => page.items[0].body.status === status),
+    );
+    const schema = 'urn:somfp:v1:state-feed';
+    const valid = run(directory, input(directory, page, schema));
+    assert.equal(valid.status, 0, valid.stderr);
+    const body = page.items[0].body;
+    body.requestedAt = body.statusChangedAt;
+    delete body.statusChangedAt;
+    const legacy = run(directory, input(directory, page, schema));
+    assert.equal(legacy.status, 1, legacy.stderr);
+    delete body.requestedAt;
+    body.statusChangedAt = null;
+    const missingTime = run(directory, input(directory, page, schema));
+    assert.equal(missingTime.status, 1, missingTime.stderr);
+  });
+}
+
 test('requires an explicit release directory', (t) => {
   const result = run(workspace(t), [], false);
   assert.equal(result.status, 1, result.stderr);

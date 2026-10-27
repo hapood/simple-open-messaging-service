@@ -253,7 +253,7 @@ export class GroupRelationshipMutationService {
         note: membership.request.note,
         messageEndSeq: membership.request.messageEndSeq,
         tombstoneEndSeq: membership.request.tombstoneEndSeq,
-        requestedAt: membership.request.requestedAt,
+        statusChangedAt: membership.request.statusChangedAt,
         expiresAt: membership.request.expiresAt,
       },
     };
@@ -390,7 +390,7 @@ export class GroupRelationshipMutationService {
         note: membership.request.note,
         messageEndSeq: membership.request.messageEndSeq,
         tombstoneEndSeq: membership.request.tombstoneEndSeq,
-        requestedAt: membership.request.requestedAt,
+        statusChangedAt: membership.request.statusChangedAt,
         expiresAt: membership.request.expiresAt,
       },
     };
@@ -476,7 +476,7 @@ export class GroupRelationshipMutationService {
         profileNamespaceId: tables.relationshipIntent.profileNamespaceId,
         profileRev: tables.relationshipIntent.profileRev,
         note: tables.relationshipIntent.note,
-        requestedAt: tables.relationshipIntent.requestedAt,
+        statusChangedAt: tables.relationshipIntent.statusChangedAt,
         expiresAt: tables.relationshipIntent.expiresAt,
       })
       .from(tables.relationshipIntent)
@@ -498,7 +498,7 @@ export class GroupRelationshipMutationService {
     if (!intent) return unchanged;
 
     if (status === 'REQUESTED') {
-      if (!intent.requestedAt || !intent.expiresAt) return unchanged;
+      if (!intent.statusChangedAt || !intent.expiresAt) return unchanged;
       if (!createIfMissing && !intent.requestId) return unchanged;
       const result = await this.requestCapability.openRequestInTx(tx, {
         flow,
@@ -506,7 +506,7 @@ export class GroupRelationshipMutationService {
           authorProfileNamespaceId: intent.profileNamespaceId,
           authorProfileRev: intent.profileRev,
           note: intent.note,
-          requestedAt: intent.requestedAt,
+          requestedAt: intent.statusChangedAt,
           expiresAt: intent.expiresAt,
           snapshot: await this.resolveRoundSnapshotInTx(tx, snapshot, flow),
         },

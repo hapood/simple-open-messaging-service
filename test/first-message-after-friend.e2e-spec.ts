@@ -353,6 +353,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
         },
         [],
       );
+      const requestedAt = Date.now();
       await receivedUserIntents.applyInTx(
         tx,
         {
@@ -363,8 +364,8 @@ describe('First message after friend-add is delivered (single instance)', () => 
             profileNamespaceId: foreignBob.namespaceId,
             profileRev: 0,
             note: '',
-            requestedAt: Date.now(),
-            expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+            statusChangedAt: requestedAt,
+            expiresAt: requestedAt + 7 * 24 * 60 * 60 * 1000,
           },
         },
         [],
@@ -439,7 +440,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
             profileNamespaceId: foreignBob.namespaceId,
             profileRev: 1,
             note: 'crossed request',
-            requestedAt: Date.now(),
+            statusChangedAt: Date.now(),
             expiresAt: Date.now() + 60_000,
           },
         },
@@ -465,7 +466,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
             profileNamespaceId: foreignBob.namespaceId,
             profileRev: 1,
             note: 'crossed request',
-            requestedAt: Date.now(),
+            statusChangedAt: Date.now(),
             expiresAt: null,
             messageEndSeq: 0,
             tombstoneEndSeq: 0,

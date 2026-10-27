@@ -39,10 +39,9 @@
       </div>
       <mat-card appearance="outlined" class="group-profile-card">
         <div class="profile-meta">
-          {{ userMsgTrd()?.account }}
-          @if (displayDomain()) {
-            &#64;{{ displayDomain() }}
-          }
+          {{ userMsgTrd()?.account }}{{
+            displayDomain() ? '@' + displayDomain() : ''
+          }}
         </div>
         <button
           class="group-profile-row"

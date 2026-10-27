@@ -48,7 +48,7 @@ describe('IdentityNamespace peer-state schema', () => {
   it('rejects an unsupported trust level', async () => {
     await expect(
       database.pool.query(
-        'INSERT INTO "IdentityNamespace" (domain, "rootPublicKey", "identityPinnedAt", "trustLevel") VALUES ($1, $2, NOW(), $3)',
+        'INSERT INTO "IdentityNamespace" (domain, "signingKeyCreatedAt", "rootPublicKey", "identityPinnedAt", "trustLevel") VALUES ($1, 1700000000000, $2, NOW(), $3)',
         [
           `${DOMAIN_PREFIX}invalid.test`,
           Buffer.alloc(32, 1).toString('base64'),

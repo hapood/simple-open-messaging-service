@@ -76,6 +76,7 @@ describe('mirror Group Meta rounds', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Local member',
     });
     const [thread] = await database.db

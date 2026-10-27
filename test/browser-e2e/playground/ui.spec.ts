@@ -44,7 +44,7 @@ test('friend requests: accept, reject, search, send and withdraw retain the new 
   await dialog.getByRole('tab').nth(2).click();
   const emma = dialog
     .locator('app-friend-request-card')
-    .filter({ hasText: 'Emma' });
+    .filter({ hasText: 'emma' });
   await expect(emma).toContainText('Playground request note');
   await emma.locator('.action button').click();
   await expect(emma.locator('.action button')).toBeDisabled();
@@ -57,7 +57,7 @@ test('friend requests: accept, reject, search, send and withdraw retain the new 
   await expect(
     requests(page)
       .locator('app-friend-request-card')
-      .filter({ hasText: 'Emma' })
+      .filter({ hasText: 'emma' })
       .locator('.action button'),
   ).toBeDisabled();
 });
@@ -106,7 +106,7 @@ test('group requests: invite, revoke, accept and reject update candidates and ro
   await expect(
     groupInfo(page)
       .locator('.member-manager .member')
-      .filter({ hasText: 'Jack' }),
+      .filter({ hasText: 'jack' }),
   ).toHaveCount(0);
 });
 
@@ -202,7 +202,7 @@ test('member management updates roles, removal, transfer and leave', async ({
   await page.locator('app-confirm-dialog').getByRole('button').last().click();
   await expect(maya.locator('.role-badge')).toHaveText('Owner');
   await expect(
-    roster.locator('.member').filter({ hasText: 'Me' }).locator('.role-badge'),
+    roster.locator('.member').filter({ hasText: 'me' }).locator('.role-badge'),
   ).toHaveText('Admin');
   await roster.locator('.page-header__back').click();
   await page
@@ -225,7 +225,7 @@ test('accepting a group invitation adds a group, and unfriend keeps a read-only 
     .click();
   const bookClub = requests(page)
     .locator('app-friend-request-card')
-    .filter({ hasText: 'Book Club' });
+    .filter({ hasText: '!bookclub' });
   await bookClub
     .getByRole('button', { name: 'Join group', exact: true })
     .click();
@@ -236,7 +236,7 @@ test('accepting a group invitation adds a group, and unfriend keeps a read-only 
   await expect(bookClub.locator('.action button')).toBeDisabled();
   await requests(page).locator('.page-header__back').click();
   await expect(
-    page.getByRole('button', { name: /^Book Club, chat/ }),
+    page.getByRole('button', { name: /^(Book Club|!bookclub), chat/ }),
   ).toBeVisible();
   await page.getByRole('button', { name: /^Alice, chat/ }).click();
   await page

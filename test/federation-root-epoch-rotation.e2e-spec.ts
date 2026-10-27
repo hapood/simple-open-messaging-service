@@ -407,6 +407,7 @@ describe('database-backed root-epoch rotation', () => {
     );
     expect(ownFeed.data.items).toContainEqual({
       namespaceId: 0,
+      generatedAt: expect.any(Number),
       feedId: expect.stringMatching(/^[1-9][0-9]*$/),
     });
 

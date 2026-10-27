@@ -60,6 +60,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 9,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Resolved self',
         avatar: '',
         bio: 'Complete',
@@ -92,6 +93,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       publisherNamespaceId: namespaceId,
       profileNamespaceId: namespaceId,
       profileRev: 7,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Disclosed profile',
     });
     const [thread] = await database.db
@@ -127,7 +129,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         profileRev: 0,
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
-        requestedAt: new Date(),
+        statusChangedAt: new Date(),
         expiresAt: null,
       },
       {
@@ -140,7 +142,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         profileRev: 7,
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
-        requestedAt: new Date(),
+        statusChangedAt: new Date(),
         expiresAt: null,
       },
     ]);
@@ -462,6 +464,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 8,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Updated',
       avatar: '',
       bio: '',
@@ -542,6 +545,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 8,
+      generatedAt: 1_700_000_000_000,
       displayName: 'New establishment',
     });
     await expect(

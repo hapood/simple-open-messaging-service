@@ -87,6 +87,79 @@ describe('MessageThreadComponent native draft persistence', () => {
 });
 
 describe('MessageThreadComponent blocked presentation', () => {
+  function blockedPane() {
+    const thread = signal(
+      createP2PConversation({
+        threadId: 6,
+        account: 'liam',
+        publisherNamespaceId: 1,
+        profileRev: 1,
+        blocked: true,
+      }),
+    );
+    const component = Object.create(MessageThreadComponent.prototype);
+    Object.assign(component, {
+      userMsgTrd: thread,
+      viewportRef: () => ({ nativeElement: {} }),
+      contentRef: () => ({ nativeElement: {} }),
+      currentTrdId: null,
+      blockedReadyTrdId: null,
+      kernelReady: false,
+      initialLoading: signal(true),
+      initialLoadFailed: signal(false),
+      unreadDividerReady: signal(false),
+      ready: { emit: vi.fn() },
+      teardown: vi.fn(),
+      initScroller: vi.fn(),
+    });
+    return { component, thread };
+  }
+
+  it('treats a settled blocked pane as reusable without a message kernel', () => {
+    const { component, thread } = blockedPane();
+    expect(component.isWarm()).toBe(false);
+    component['presentBlockedThread'](6);
+    expect(component.isWarm()).toBe(true);
+    expect(component['initScroller']).not.toHaveBeenCalled();
+
+    thread.update((item) => ({ ...item, blocked: false }));
+    expect(component.isWarm()).toBe(false);
+    component['reinit']();
+    expect(component['initScroller']).toHaveBeenCalledOnce();
+    expect(component['blockedReadyTrdId']).toBeNull();
+  });
+
+  it.each([false, true])(
+    'acknowledges a reselected blocked pane (already ready: %s) without loading history',
+    async (settled) => {
+      const { component } = blockedPane();
+      if (settled) component['presentBlockedThread'](6);
+      component.ready.emit.mockClear();
+      component.reset();
+      expect(component.ready.emit).not.toHaveBeenCalled();
+      await Promise.resolve();
+      expect(component.ready.emit).toHaveBeenCalledExactlyOnceWith(6);
+      expect(component.isWarm()).toBe(true);
+      expect(component['initScroller']).not.toHaveBeenCalled();
+    },
+  );
+
+  it('guards direct reinitialization of a blocked thread', () => {
+    const { component } = blockedPane();
+    component['reinit']();
+    expect(component.isWarm()).toBe(true);
+    expect(component['initScroller']).not.toHaveBeenCalled();
+  });
+
+  it('does not publish a deferred blocked handshake after changing conversations', async () => {
+    const { component, thread } = blockedPane();
+    component.reset();
+    thread.update((item) => ({ ...item, threadId: 1 }));
+    await Promise.resolve();
+    expect(component.ready.emit).not.toHaveBeenCalled();
+    expect(component['initScroller']).not.toHaveBeenCalled();
+  });
+
   it('settles a blocked cold pane without starting a message kernel, and leaves unblock eligible for reinit', () => {
     const component = Object.create(MessageThreadComponent.prototype);
     const destroy = vi.fn();

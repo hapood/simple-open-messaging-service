@@ -9,16 +9,14 @@ import {
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom, finalize } from 'rxjs';
+import { AsyncPipe } from '@angular/common';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { UserAvatarType } from '../user-avatar/model';
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import {
-  ConversationItem,
-  displayUserAccount,
-  displayUserName,
-} from '../../services/model';
+import { ConversationItem, displayUserName } from '../../services/model';
 import { UserService } from '../../services/user.service';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { PopupType, RouteService } from '../../services/route.service';
@@ -43,6 +41,8 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
 @Component({
   selector: 'app-peer-profile',
   imports: [
+    AsyncPipe,
+    NamespaceDomainPipe,
     DemandAvatarComponent,
     TranslocoPipe,
     ThreadAliasEditorComponent,
@@ -93,7 +93,10 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
         }
 
         <mat-card appearance="outlined" class="peer-profile-card">
-          <div class="profile-meta">{{ peerAccount() }}</div>
+          @let domain = peer()?.publisherNamespaceId | namespaceDomain | async;
+          <div class="profile-meta">
+            {{ peer()?.account }}{{ domain ? '@' + domain : '' }}
+          </div>
           <div class="peer-profile-row">
             <span class="profile-copy">
               <strong>{{ peerDisplayName() }}</strong>
@@ -469,15 +472,6 @@ export class PeerProfileComponent {
   readonly peerDisplayName = computed(() => {
     const p = this.peer();
     return p ? displayUserName(p.profile) : '';
-  });
-  readonly peerAccount = computed(() => {
-    const p = this.peer();
-    return p
-      ? displayUserAccount({
-          account: p.account,
-          namespaceId: p.publisherNamespaceId,
-        })
-      : '';
   });
 
   constructor() {

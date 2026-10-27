@@ -42,7 +42,7 @@ function generateCode(): string {
  *  SessionToken row id the consumed code created — the safe, displayable audit link into session detail. */
 export interface LoginCodeView {
   id: number;
-  issuedAt: Date;
+  createdAt: Date;
   expiresAt: Date;
   consumedAt: Date | null;
   consumedIp: string | null;
@@ -127,10 +127,8 @@ export class OtpLoginService {
           userId,
           codeHash: await argon2.hash(code),
           issuedBy: adminId,
-          // Keep both ends of the validity window on the same clock. Relying on the
-          // database CURRENT_TIMESTAMP here while computing expiresAt in Node can
-          // skew the displayed duration when their timezone settings differ.
-          issuedAt: now,
+          // Keep both ends of the validity window on the same clock.
+          createdAt: now,
           expiresAt,
         })
         .returning()
@@ -138,7 +136,7 @@ export class OtpLoginService {
       return {
         id: created.id,
         code,
-        issuedAt: created.issuedAt,
+        createdAt: created.createdAt,
         expiresAt: created.expiresAt,
         consumedAt: null,
         consumedIp: null,
@@ -221,7 +219,7 @@ export class OtpLoginService {
           isNull(loginCode.revokedAt),
         ),
       )
-      .orderBy(desc(loginCode.issuedAt))
+      .orderBy(desc(loginCode.createdAt))
       .limit(VERIFY_CANDIDATE_LIMIT);
     let matched: { id: number } | null = null;
     let expiredMatch = false;
@@ -293,10 +291,10 @@ export class OtpLoginService {
   async listCodes(userId: number): Promise<LoginCodeView[]> {
     return this.database.db.query.loginCode.findMany({
       where: eq(loginCode.userId, userId),
-      orderBy: desc(loginCode.issuedAt),
+      orderBy: desc(loginCode.createdAt),
       columns: {
         id: true,
-        issuedAt: true,
+        createdAt: true,
         expiresAt: true,
         consumedAt: true,
         consumedIp: true,

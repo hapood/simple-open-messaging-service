@@ -7,7 +7,7 @@ export interface ReceivedUserIntentWriteInput {
   profileNamespaceId: number;
   profileRev: number;
   note: string;
-  requestedAt: Date | null;
+  statusChangedAt: Date;
   expiresAt: Date | null;
   messageEndSeq?: number;
   tombstoneEndSeq?: number;
@@ -26,12 +26,12 @@ export function receivedUserIntentWriteSql(
     INSERT INTO "RelationshipIntent" (
       "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
       status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq",
-      "requestedAt", "expiresAt", "updatedAt"
+      "statusChangedAt", "expiresAt", "updatedAt"
     ) VALUES (${input.author.account}, ${input.author.namespaceId},
       ${input.receiver.account}, ${input.receiver.namespaceId},
       ${input.status}::"RelationshipIntentStatus", ${input.profileNamespaceId}, ${input.profileRev}, ${input.note.slice(0, 255)},
       ${revoked ? 0 : input.messageEndSeq!}, ${revoked ? 0 : input.tombstoneEndSeq!},
-      ${input.requestedAt}, ${input.expiresAt}, CURRENT_TIMESTAMP)
+      ${input.statusChangedAt}, ${input.expiresAt}, CURRENT_TIMESTAMP)
     ON CONFLICT ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId") DO UPDATE SET
       status = EXCLUDED.status, note = EXCLUDED.note,
       "messageEndSeq" = CASE WHEN EXCLUDED.status = 'REVOKED'
@@ -43,16 +43,16 @@ export function receivedUserIntentWriteSql(
           THEN EXCLUDED."profileRev"
         ELSE "RelationshipIntent"."profileRev"
       END,
-      "requestedAt" = EXCLUDED."requestedAt", "expiresAt" = EXCLUDED."expiresAt",
+      "statusChangedAt" = EXCLUDED."statusChangedAt", "expiresAt" = EXCLUDED."expiresAt",
       "updatedAt" = CURRENT_TIMESTAMP
     WHERE (EXCLUDED.status <> 'REVOKED' AND (
          "RelationshipIntent"."messageEndSeq" IS DISTINCT FROM EXCLUDED."messageEndSeq"
          OR "RelationshipIntent"."tombstoneEndSeq" IS DISTINCT FROM EXCLUDED."tombstoneEndSeq"))
        OR "RelationshipIntent".status IS DISTINCT FROM EXCLUDED.status
        OR "RelationshipIntent".note IS DISTINCT FROM EXCLUDED.note
-       OR "RelationshipIntent"."requestedAt" IS DISTINCT FROM EXCLUDED."requestedAt"
+       OR "RelationshipIntent"."statusChangedAt" IS DISTINCT FROM EXCLUDED."statusChangedAt"
        OR "RelationshipIntent"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
-    RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
+    RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt",
       "messageEndSeq", "tombstoneEndSeq"
   `;
 }

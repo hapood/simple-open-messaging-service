@@ -10,6 +10,7 @@ import { WebdbService, WebdbStorage } from '../../services/webdb.service';
 import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { RouteService } from '../../services/route.service';
 import { NewGroupComponent } from './new-group.component';
+import { ToastService } from '../../services/toast.service';
 
 describe('NewGroupComponent', () => {
   function createComponent() {
@@ -17,6 +18,7 @@ describe('NewGroupComponent', () => {
       imports: [NewGroupComponent],
       providers: [
         provideZonelessChangeDetection(),
+        { provide: ToastService, useValue: { warn: vi.fn() } },
         { provide: GroupService, useValue: { createGroup: vi.fn() } },
         { provide: RouteService, useValue: { closeDlg: vi.fn() } },
         {
@@ -54,6 +56,7 @@ describe('NewGroupComponent', () => {
       imports: [NewGroupComponent],
       providers: [
         provideZonelessChangeDetection(),
+        { provide: ToastService, useValue: { warn: vi.fn() } },
         { provide: GroupService, useValue: groupService },
         { provide: RouteService, useValue: routeService },
         {
