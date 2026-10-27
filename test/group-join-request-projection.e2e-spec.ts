@@ -19,7 +19,6 @@ import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
 import { readCurrentGroupMemberInTx } from '../src/group/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
 import { createTestApp } from './support/app.js';
-import { localIdentityDomain } from './support/local-domain.js';
 
 type Actor = Awaited<ReturnType<typeof seedUserWithSession>>;
 interface GroupFixture {
@@ -402,17 +401,20 @@ describe('permanent group request history and online visibility', () => {
         readCurrentGroupMemberInTx(tx, group.threadId, member.id),
       ),
     ).resolves.toBeUndefined();
-    const candidates = await post(owner, 'group/invite-candidates', {
-      groupId: group.threadId,
-      search: member.account,
-    });
-    expect(candidates.body.code).toBe(BusinessCode.OK);
-    expect(candidates.body.data.data).toEqual([
+    // Candidate listing is gone: the owner's INVITED/MEMBER view is now the
+    // group's outgoing invitation rounds plus duplicate-invite rejections.
+    const pending = await groupPage(owner, group, true);
+    expect(
+      pending.items.filter(
+        (row) =>
+          row.receiver.account === member.account &&
+          row.receiver.namespaceId === 0,
+      ),
+    ).toEqual([
       expect.objectContaining({
-        account: member.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-        state: 'INVITED',
+        kind: 'GROUP_INVITATION',
+        direction: 'OUTGOING',
+        status: 'REQUESTED',
       }),
     ]);
     const received = (await personalPage(member)).items.filter(
@@ -427,17 +429,37 @@ describe('permanent group request history and online visibility', () => {
     });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data.status).toBe('OK');
-    const acceptedCandidates = await post(owner, 'group/invite-candidates', {
+    const acceptedPage = await groupPage(owner, group, true);
+    expect(
+      acceptedPage.items.filter(
+        (row) =>
+          row.receiver.account === member.account &&
+          row.receiver.namespaceId === 0,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'GROUP_INVITATION',
+        direction: 'OUTGOING',
+        status: 'ACCEPTED',
+      }),
+    ]);
+    const memberProbe = await post(owner, 'group/invite', {
       groupId: group.threadId,
-      search: member.account,
+      users: [
+        {
+          account: member.account,
+          namespaceId: 0,
+          snapshot: { displayName: 'Member at invitation', avatar: null },
+        },
+      ],
     });
-    expect(acceptedCandidates.body.code).toBe(BusinessCode.OK);
-    expect(acceptedCandidates.body.data.data).toEqual([
+    expect(memberProbe.body.code).toBe(BusinessCode.OK);
+    expect(memberProbe.body.data.invited).toEqual([]);
+    expect(memberProbe.body.data.skipped).toEqual([
       expect.objectContaining({
         account: member.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
-        state: 'MEMBER',
+        reason: 'ALREADY_MEMBER',
       }),
     ]);
     const history = await stored(group, member);
