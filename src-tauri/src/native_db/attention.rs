@@ -100,7 +100,7 @@ impl FeedIntent {
         self.query(false, path, None).await
     }
 
-    async fn post_query(
+    pub(super) async fn post_query(
         &mut self,
         path: String,
         body: Vec<u8>,
@@ -357,7 +357,7 @@ pub(crate) async fn native_db_drain_thread_misc(
             })
             .await;
     });
-    let mut tombstone_intent = intent.clone();
+    let tombstone_intent = intent.clone();
     let tombstone_flight = flights.tombstone.clone();
     let tombstone_events = tombstone_intent.events(Some(&app));
     let tombstone_task = tokio::spawn(async move {
@@ -514,6 +514,24 @@ enum ProfileDemand {
 struct ProfileCacheKey {
     publisher_namespace_id: i64,
     target: ProfileTarget,
+}
+
+/// Stable identity of the immutable snapshot a request addresses, prefixed
+/// with the owning login connection so watch-core LRU entries never cross
+/// sessions. The request form (evidenced or cache-only) is deliberately
+/// ignored: both forms address the same snapshot.
+pub(super) fn profile_request_cache_key(
+    owner: &crate::login_session_store::LoginSessionId,
+    request: &Value,
+) -> Result<String, String> {
+    let (key, _) = parse_profile_request(request)?;
+    Ok(format!(
+        "{owner}:{}:{}:{}:{}",
+        key.publisher_namespace_id,
+        key.target.profile_namespace_id,
+        key.target.account,
+        key.target.rev,
+    ))
 }
 
 fn parse_profile_request(request: &Value) -> Result<(ProfileCacheKey, bool), String> {

@@ -1,6 +1,10 @@
 //! Shared native demand consumers. Dropping one consumer never cancels another;
-//! the last consumer releases the pending request and wake subscription.
-use super::attention::{resolve_profile_intent, FeedIntent};
+//! the last consumer releases the pending request and wake subscription, and
+//! dropping the in-flight resolve future aborts its HTTP request at the
+//! socket. Settled snapshots also enter a bounded LRU so a re-subscription
+//! answers without even the durable-cache read.
+use super::attention::{profile_request_cache_key, resolve_profile_intent, FeedIntent};
+use super::lru::RecencyLru;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -13,6 +17,12 @@ struct Flight {
 }
 static FLIGHTS: OnceLock<Mutex<HashMap<String, Weak<Flight>>>> = OnceLock::new();
 static WAKES: OnceLock<broadcast::Sender<(i64, String, Value)>> = OnceLock::new();
+/** Capacity mirrors the web repository's profile LRU. */
+static LRU: OnceLock<Mutex<RecencyLru<Value>>> = OnceLock::new();
+
+fn lru() -> &'static Mutex<RecencyLru<Value>> {
+    LRU.get_or_init(|| Mutex::new(RecencyLru::new(1000)))
+}
 
 pub(crate) fn wake(user_id: i64, event: &str, data: &Value) {
     let _ = WAKES.get_or_init(|| broadcast::channel(128).0).send((
@@ -60,10 +70,47 @@ impl Subscription {
                 .map_err(|_| "profile subscription closed")?;
         }
     }
+
+    /// Current watch state, marking it seen. `None` is the pre-resolution
+    /// state a watch consumer renders as the empty first frame; `Some(_)` is
+    /// terminal (an immutable snapshot or a failure).
+    pub(super) fn state(&mut self) -> Outcome {
+        self.receiver
+            .as_mut()
+            .expect("live profile consumer")
+            .borrow_and_update()
+            .clone()
+    }
+
+    /// Resolves when the state advances; false when the flight ended.
+    pub(super) async fn changed(&mut self) -> bool {
+        self.receiver
+            .as_mut()
+            .expect("live profile consumer")
+            .changed()
+            .await
+            .is_ok()
+    }
 }
 
 pub(super) fn subscribe(intent: FeedIntent, request: Value) -> Result<Subscription, String> {
     intent.work.assert_current().map_err(|e| e.to_string())?;
+    // The LRU key ignores the request form (evidenced or cache-only): both
+    // forms address one immutable snapshot.
+    let cache_key = profile_request_cache_key(intent.work.owner().id(), &request)?;
+    if let Ok(mut lru) = lru().lock() {
+        if let Some(profile) = lru.get(&cache_key) {
+            // A local cache hit answers synchronously: a detached cell, never
+            // registered, never cancelled, no flight, no network.
+            let (result, receiver) = watch::channel(Some(Ok(profile)));
+            let flight = Arc::new(Flight { result, intent });
+            return Ok(Subscription {
+                key: cache_key,
+                _flight: flight,
+                receiver: Some(receiver),
+            });
+        }
+    }
     let key = format!("{}:{}", intent.work.owner().id(), request);
     let mut flights = FLIGHTS
         .get_or_init(Default::default)
@@ -86,6 +133,7 @@ pub(super) fn subscribe(intent: FeedIntent, request: Value) -> Result<Subscripti
     let flight = Arc::new(Flight { result, intent });
     flights.insert(key.clone(), Arc::downgrade(&flight));
     let work = flight.clone();
+    let settled_lru_key = cache_key.clone();
     // Subscribe before the first request so a fast materialization cannot be lost
     // between receiving PENDING and beginning to wait for its wake.
     let mut wakes = WAKES.get_or_init(|| broadcast::channel(128).0).subscribe();
@@ -132,6 +180,11 @@ pub(super) fn subscribe(intent: FeedIntent, request: Value) -> Result<Subscripti
             .assert_current()
             .map_err(|error| error.to_string())
             .and(result);
+        if let Ok(profile) = &result {
+            if let Ok(mut lru) = lru().lock() {
+                lru.insert(settled_lru_key, profile.clone());
+            }
+        }
         work.result.send_replace(Some(result));
     });
     Ok(Subscription {

@@ -822,6 +822,30 @@ async fn open_one_stream(
                                             app.publish(crate::realtime::Output::IncomingCall(call.clone()));
                                         }
                                     }
+                                    // Catch up the namespace change feed on every (re)connect. The
+                                    // drain reads the durable cursor first, so an up-to-date login
+                                    // costs one empty page; the browser shell instead compares the
+                                    // HELLO anchor before pulling.
+                                    if let Some(user_id) = parsed.data["userId"]
+                                        .as_i64()
+                                        .filter(|value| *value > 0)
+                                    {
+                                        let ns_proxy = proxy.clone();
+                                        let ns_cancel = cancel.child_token();
+                                        crate::realtime::spawn(app.clone(), async move {
+                                            let result = tokio::select! { biased;
+                                                _ = ns_cancel.cancelled() => return,
+                                                result = crate::native_db::namespace_feed::synchronize(
+                                                    &ns_proxy, user_id,
+                                                ) => result,
+                                            };
+                                            if let Err(error) = result {
+                                                warn!(
+                                                    "profile-namespace catch-up failed; next wake retries: {error}"
+                                                );
+                                            }
+                                        });
+                                    }
                                 }
                                 merge_cached_hello(cached_hello, parsed.event.as_str(), &parsed.data);
                                 if let Some(head) = state_head.accept(&parsed.event, &parsed.data) {
@@ -871,6 +895,29 @@ async fn open_one_stream(
                                     if let Some(user_id) = feed_head.user_id {
                                         crate::native_db::profile_subscriptions::wake(user_id, &parsed.event, &parsed.data);
                                     }
+                                }
+                                if parsed.event == "PROFILE_NAMESPACE_UPDATED" {
+                                    // Rust owns the native namespace change-feed drain: converged
+                                    // pairs wake the subscription flights and warm undemanded
+                                    // bindings, so the event needs no renderer round trip.
+                                    if let Some(user_id) = feed_head.user_id {
+                                        let ns_proxy = proxy.clone();
+                                        let ns_cancel = cancel.child_token();
+                                        crate::realtime::spawn(app.clone(), async move {
+                                            let result = tokio::select! { biased;
+                                                _ = ns_cancel.cancelled() => return,
+                                                result = crate::native_db::namespace_feed::synchronize(
+                                                    &ns_proxy, user_id,
+                                                ) => result,
+                                            };
+                                            if let Err(error) = result {
+                                                warn!(
+                                                    "profile-namespace drain failed; next wake retries: {error}"
+                                                );
+                                            }
+                                        });
+                                    }
+                                    continue;
                                 }
                                 let _ = app.emit(
                                     "soms-sse-event",

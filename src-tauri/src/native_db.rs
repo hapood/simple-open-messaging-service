@@ -17,8 +17,12 @@ mod group_meta_store;
 mod lifetime;
 pub(crate) mod location;
 mod login_connections;
-pub(crate) mod messages;
+mod lru;
+#[cfg(any(target_os = "android", test))]
 pub(crate) mod mentions;
+pub(crate) mod messages;
+pub(crate) mod namespace_feed;
+pub(crate) mod namespace_subscriptions;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod notifications;
 pub(crate) mod preferences;
@@ -28,6 +32,7 @@ pub(crate) mod profile_subscriptions;
 pub(crate) mod state_feed_sync;
 mod thread_patch;
 mod thread_store;
+pub(crate) mod watch_ipc;
 pub(crate) use client_state::chrono_millis;
 #[cfg(test)]
 use messages::{

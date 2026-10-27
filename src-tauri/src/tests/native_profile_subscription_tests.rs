@@ -170,3 +170,46 @@ async fn last_release_removes_the_flight_and_session_end_finishes_consumers() {
         .is_err());
     intent.work.owner().close().unwrap();
 }
+
+#[tokio::test]
+async fn settled_profile_enters_lru_and_a_rewatch_answers_without_http() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = ServerSessionState::new();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    *proxy.api_origin.lock().unwrap() = origin.clone();
+    *proxy.api_origin_primary.lock().unwrap() = origin;
+    let intent = fixture(&proxy);
+    let count = Arc::new(AtomicUsize::new(0));
+    let calls = count.clone();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        calls.fetch_add(1, Ordering::SeqCst);
+        response(
+            &mut socket,
+            json!({"status":"READY","profile":{
+            "publisherNamespaceId":7,"profileNamespaceId":12,"account":"alice","rev":3,
+            "name":"Alice","bio":"","avatarBase64":null}}),
+        )
+        .await;
+    });
+    let profile = subscribe(intent.clone(), demand())
+        .unwrap()
+        .ready()
+        .await
+        .unwrap();
+    assert_eq!(profile["name"], "Alice");
+    drop(profile);
+    // The settled snapshot is in the LRU: a re-subscription observes Ready
+    // synchronously and starts no second resolve round.
+    let mut rewatch = subscribe(intent.clone(), demand()).unwrap();
+    match rewatch.state() {
+        Some(Ok(profile)) => assert_eq!(profile["name"], "Alice"),
+        other => panic!("LRU rewatch must be Ready immediately, got {other:?}"),
+    }
+    drop(rewatch);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    server.await.unwrap();
+    intent.work.owner().end().unwrap();
+    intent.work.owner().close().unwrap();
+}

@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::FutureExt;
 use serde_json::json;
 
 /// Exercise real IPC entry points on the lifecycle test's owner, including TEMP state that
@@ -101,7 +102,7 @@ pub(super) async fn verify_owned_local_commands() {
         serde_json::to_value(bindings).unwrap()[0]["domain"],
         "peer.test"
     );
-    profile_namespaces::native_db_apply_profile_namespace_changes(42, vec![])
+    profile_namespaces::native_db_apply_profile_namespace_changes(42, vec![], None)
         .await
         .unwrap();
     profile_namespaces::native_db_write_profile_tomb(
@@ -340,13 +341,13 @@ pub(super) fn verify_queued_commands_end_before_sql() {
         ));
         let mut message_head = Box::pin(messages::native_db_put_message_head(42, 7, 99));
         let mut message_read = Box::pin(messages::native_db_get_message(42, 7, 8));
-        assert!(futures_util::poll!(&mut page_commit).is_pending());
-        assert!(futures_util::poll!(&mut message_head).is_pending());
-        assert!(futures_util::poll!(&mut message_read).is_pending());
-        assert!(futures_util::poll!(&mut threads).is_pending());
-        assert!(futures_util::poll!(&mut delete).is_pending());
-        assert!(futures_util::poll!(&mut bindings).is_pending());
-        assert!(futures_util::poll!(&mut member).is_pending());
+        assert!(page_commit.as_mut().now_or_never().is_none());
+        assert!(message_head.as_mut().now_or_never().is_none());
+        assert!(message_read.as_mut().now_or_never().is_none());
+        assert!(threads.as_mut().now_or_never().is_none());
+        assert!(delete.as_mut().now_or_never().is_none());
+        assert!(bindings.as_mut().now_or_never().is_none());
+        assert!(member.as_mut().now_or_never().is_none());
         owner.end().unwrap();
         release_login_connection(&owner).unwrap();
         let next_database = Connection::open_in_memory().unwrap();

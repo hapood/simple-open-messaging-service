@@ -215,6 +215,7 @@ impl ServerSessionState {
         None
     }
 
+    #[cfg(any(target_os = "android", test))]
     pub(crate) fn update_session_token_admitted(
         &self,
         token: Option<String>,
@@ -258,6 +259,7 @@ impl ServerSessionState {
         }
     }
 
+    #[cfg(any(target_os = "android", test))]
     pub(crate) fn clear_residual_token(&self) -> Result<(), String> {
         let active = self
             .login_session
@@ -562,6 +564,9 @@ pub fn run() {
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
                     native_db::attention::native_db_thread_states,
+                    native_db::watch_ipc::native_watch_profile,
+                    native_db::watch_ipc::native_watch_namespace,
+                    native_db::watch_ipc::native_watch_cancel,
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
@@ -649,6 +654,9 @@ pub fn run() {
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
                     native_db::attention::native_db_thread_states,
+                    native_db::watch_ipc::native_watch_profile,
+                    native_db::watch_ipc::native_watch_namespace,
+                    native_db::watch_ipc::native_watch_cancel,
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
