@@ -9,7 +9,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { MatButtonModule } from '@angular/material/button';
-import { MatSnackBar } from '@angular/material/snack-bar';
+import { ToastService } from '../../services/toast.service';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatCardModule } from '@angular/material/card';
 import { MatDialog } from '@angular/material/dialog';
@@ -64,7 +64,7 @@ export class SettingsDevicesComponent implements OnInit {
   private readonly qrScanner = inject(QrScannerService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
-  private readonly snackbar = inject(MatSnackBar);
+  private readonly toastService = inject(ToastService);
   private readonly dialog = inject(MatDialog);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -292,7 +292,7 @@ export class SettingsDevicesComponent implements OnInit {
   }
 
   private toast(key: string): void {
-    this.snackbar.open(this.transloco.translate(key), undefined, {
+    this.toastService.warn(this.transloco.translate(key), {
       duration: 3000,
     });
   }

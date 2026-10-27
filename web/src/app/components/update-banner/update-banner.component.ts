@@ -8,14 +8,11 @@ import {
   output,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import {
-  MatSnackBar,
-  MatSnackBarRef,
-  TextOnlySnackBar,
-} from '@angular/material/snack-bar';
+import { MatSnackBar, MatSnackBarRef } from '@angular/material/snack-bar';
 import { TranslocoService } from '@jsverse/transloco';
 import { UpdateService } from '../../services/update.service';
 import { LanguageService } from '../../services/language.service';
+import { ToastContentComponent } from '../toast-content/toast-content.component';
 
 /**
  * Global update notification controller. It has no visual DOM of its own: update availability is surfaced
@@ -43,7 +40,7 @@ export class UpdateBannerComponent implements OnDestroy {
     return demo !== null ? demo : this.update.available();
   });
 
-  private ref?: MatSnackBarRef<TextOnlySnackBar>;
+  private ref?: MatSnackBarRef<ToastContentComponent>;
 
   constructor() {
     effect(() => {
@@ -57,19 +54,15 @@ export class UpdateBannerComponent implements OnDestroy {
       }
       if (this.ref) return;
 
-      const ref = this.snackBar.open(
-        this.transloco.translate('update.banner'),
-        this.transloco.translate('update.reload'),
-        {
-          // An available update remains actionable until the user applies or dismisses it.
-          duration: 0,
-          panelClass: [
-            'soms-snack-bar',
-            'soms-snack-bar--interactive',
-            'soms-update-snack-bar',
-          ],
+      const ref = this.snackBar.openFromComponent(ToastContentComponent, {
+        data: {
+          message: this.transloco.translate('update.banner'),
+          action: this.transloco.translate('update.reload'),
         },
-      );
+        // An available update remains actionable until the user applies or dismisses it.
+        duration: 0,
+        panelClass: ['soms-snack-bar', 'soms-update-snack-bar'],
+      });
       this.ref = ref;
 
       ref.onAction().subscribe(() => void this.update.applyUpdate());

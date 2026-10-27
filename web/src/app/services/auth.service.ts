@@ -668,7 +668,7 @@ export class AuthService {
           error: () =>
             this.toast.warn(
               this.t('auth.notice.logoutCacheClearFailed'),
-              IMPORTANT_NOTICE_MS,
+              { duration: IMPORTANT_NOTICE_MS },
             ),
         }),
       );
@@ -682,7 +682,7 @@ export class AuthService {
         if (!nativeOk)
           this.toast.warn(
             this.t('auth.notice.logoutClearFailed'),
-            IMPORTANT_NOTICE_MS,
+            { duration: IMPORTANT_NOTICE_MS },
           );
       }),
     ).pipe(
@@ -690,7 +690,7 @@ export class AuthService {
         error: () =>
           this.toast.warn(
             this.t('auth.notice.logoutClearFailed'),
-            IMPORTANT_NOTICE_MS,
+            { duration: IMPORTANT_NOTICE_MS },
           ),
       }),
     );

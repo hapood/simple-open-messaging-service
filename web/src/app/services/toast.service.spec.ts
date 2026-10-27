@@ -1,13 +1,14 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { ToastContentComponent } from '../components/toast-content/toast-content.component';
 import { ToastService } from './toast.service';
 
 describe('ToastService', () => {
-  const snackBar = { open: vi.fn().mockName('open') };
+  const snackBar = { openFromComponent: vi.fn() };
 
   beforeEach(() => {
-    snackBar.open.mockClear();
+    snackBar.openFromComponent.mockClear();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -17,45 +18,62 @@ describe('ToastService', () => {
     });
   });
 
-  it('makes informational feedback passive by default', () => {
+  it('uses dismissible content while keeping informational text passive', () => {
     TestBed.inject(ToastService).info('Saved');
 
-    expect(snackBar.open).toHaveBeenCalledWith(
-      'Saved',
-      undefined,
+    expect(snackBar.openFromComponent).toHaveBeenCalledWith(
+      ToastContentComponent,
       expect.objectContaining({
+        data: { message: 'Saved' },
         duration: 4000,
-        panelClass: expect.arrayContaining(['soms-snack-bar--passive']),
+        panelClass: [
+          'soms-snack-bar',
+          'soms-snack-bar--info',
+          'soms-snack-bar--passive',
+        ],
       }),
     );
   });
 
-  it('keeps explicitly interactive feedback clickable', () => {
-    TestBed.inject(ToastService).warn('Retry?', {
-      duration: 'forever',
-      interactive: true,
-    });
+  it('allows persistent warnings with a close control', () => {
+    TestBed.inject(ToastService).warn('Warning', { duration: 'forever' });
 
-    expect(snackBar.open).toHaveBeenCalledWith(
-      'Retry?',
-      undefined,
+    expect(snackBar.openFromComponent).toHaveBeenCalledWith(
+      ToastContentComponent,
       expect.objectContaining({
+        data: { message: 'Warning' },
         duration: 0,
-        panelClass: expect.arrayContaining(['soms-snack-bar--interactive']),
+        panelClass: [
+          'soms-snack-bar',
+          'soms-snack-bar--warn',
+          'soms-snack-bar--passive',
+        ],
       }),
     );
   });
 
-  it('continues to accept a duration as the second argument', () => {
-    TestBed.inject(ToastService).warn('Warning', 10000);
+  it('accepts an explicit duration through options', () => {
+    TestBed.inject(ToastService).warn('Warning', { duration: 10000 });
 
-    expect(snackBar.open).toHaveBeenCalledWith(
-      'Warning',
-      undefined,
+    expect(snackBar.openFromComponent).toHaveBeenCalledWith(
+      ToastContentComponent,
       expect.objectContaining({
+        data: { message: 'Warning' },
         duration: 10000,
-        panelClass: expect.arrayContaining(['soms-snack-bar--passive']),
+        panelClass: expect.arrayContaining([
+          'soms-snack-bar--warn',
+          'soms-snack-bar--passive',
+        ]),
       }),
+    );
+  });
+
+  it('also provides a close control for persistent passive feedback', () => {
+    TestBed.inject(ToastService).info('Notice', { duration: 'forever' });
+
+    expect(snackBar.openFromComponent).toHaveBeenCalledWith(
+      ToastContentComponent,
+      expect.objectContaining({ data: { message: 'Notice' }, duration: 0 }),
     );
   });
 });

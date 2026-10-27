@@ -396,13 +396,15 @@ $dark-theme: mat.define-theme(
   );
 }
 
-/* Informational snackbars have no action, so neither their surface nor the CDK pane around it should
- * consume taps. Interactive snackbars (for example the OTA update prompt) deliberately omit this class.
- * The pane rule is necessary: disabling hit testing on the snackbar alone would leave its parent pane
- * intercepting the same rectangle. */
+/* Passive feedback lets taps pass through its text and surrounding pane. Its explicit close button
+ * remains interactive; update prompts keep their whole surface interactive for the business action. */
 .cdk-overlay-pane:has(.soms-snack-bar--passive),
 .soms-snack-bar--passive {
   pointer-events: none;
+}
+
+.soms-snack-bar--passive .toast-close {
+  pointer-events: auto;
 }
 
 /* Semantic variants used by ToastService while retaining Material's standard snackbar structure. */

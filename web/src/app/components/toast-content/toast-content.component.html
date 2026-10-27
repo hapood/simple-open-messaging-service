@@ -1,0 +1,32 @@
+<div matSnackBarLabel>{{ data.message }}</div>
+<div matSnackBarActions>
+  @if (data.action) {
+    <button
+      mat-button
+      matSnackBarAction
+      type="button"
+      (click)="ref.dismissWithAction()"
+    >
+      {{ data.action }}
+    </button>
+  }
+  <button
+    mat-icon-button
+    type="button"
+    class="toast-close"
+    [attr.aria-label]="'common.close' | transloco"
+    (click)="ref.dismiss()"
+  >
+    <svg
+      viewBox="0 0 24 24"
+      width="24"
+      height="24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12Z"
+      />
+    </svg>
+  </button>
+</div>
