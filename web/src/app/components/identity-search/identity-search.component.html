@@ -1,0 +1,92 @@
+<form class="search-bar" (ngSubmit)="submitted.emit()" role="search">
+  <input
+    class="search-input"
+    [ngModelOptions]="{ standalone: true }"
+    [ngModel]="text()"
+    (ngModelChange)="text.set($event)"
+    [readOnly]="readOnly()"
+    type="text"
+    [placeholder]="'friend.searchPlaceholder' | transloco"
+    [attr.aria-label]="'friend.searchPlaceholder' | transloco"
+    autocomplete="off"
+    [disabled]="lookup().status() === Status.SEARCHING"
+  />
+  <button
+    mat-flat-button
+    type="submit"
+    [disabled]="lookup().status() === Status.SEARCHING || !text().trim()"
+  >
+    {{
+      (lookup().status() === Status.SEARCHING
+        ? 'common.searching'
+        : 'common.search'
+      ) | transloco
+    }}
+  </button>
+</form>
+<div class="result-area">
+  @switch (lookup().status()) {
+    @case (Status.INIT) {
+      <div class="state-hint">
+        <app-icon
+          [type]="searchIcon"
+          [style]="{ width: '40px', height: '40px' }"
+        />
+        <div class="state-title">{{ 'friend.findTitle' | transloco }}</div>
+        <div class="state-sub">{{ 'friend.findSub' | transloco }}</div>
+      </div>
+    }
+    @case (Status.SEARCHING) {
+      <div class="connecting-progress" aria-live="polite">
+        @if (lookup().connectingDomain(); as domain) {
+          <div class="state-title">
+            {{ 'friend.connecting' | transloco: { domain } }}
+          </div>
+          <div>{{ lookup().stageKey() | transloco }}</div>
+          <div>
+            {{
+              'friend.federationProgress'
+                | transloco
+                  : {
+                      current: lookup().progress().current,
+                      total: lookup().progress().total,
+                    }
+            }}
+          </div>
+          <mat-progress-bar
+            mode="determinate"
+            [value]="lookup().progress().percent"
+            [attr.aria-label]="lookup().stageKey() | transloco"
+          />
+        } @else {
+          <div class="state-title">{{ 'common.searching' | transloco }}</div>
+          <mat-progress-bar mode="indeterminate" />
+        }
+        <button mat-button type="button" (click)="cancelled.emit()">
+          {{ 'common.cancel' | transloco }}
+        </button>
+      </div>
+    }
+    @case (Status.EMPTY) {
+      <div class="state-hint">
+        <div class="state-title">{{ 'friend.noUserTitle' | transloco }}</div>
+        <div class="state-sub">
+          {{ 'friend.noUserSub' | transloco: { q: lookup().query() } }}
+        </div>
+      </div>
+    }
+    @case (Status.ERROR) {
+      <div class="state-hint">
+        <div class="state-title state-error" role="alert">
+          {{ lookup().errorKey() | transloco }}
+        </div>
+        <button mat-button type="button" (click)="submitted.emit()">
+          {{ 'friend.retry' | transloco }}
+        </button>
+      </div>
+    }
+  }
+  <div class="results" [hidden]="lookup().status() !== Status.SUCCESS">
+    <ng-content />
+  </div>
+</div>

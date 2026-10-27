@@ -17,7 +17,7 @@
         } @else if (invitations().length === 0) {
           <p class="state">{{ 'group.noSentInvitations' | transloco }}</p>
         } @else {
-          @for (request of invitations(); track requestKey(request)) {
+          <ng-template #invitationRow let-request>
             @let snapshot = invitationSnapshot(request);
             @let resolvedDomain =
               request.receiver.namespaceId | namespaceDomain | async;
@@ -60,22 +60,27 @@
                 }}</span>
               }
             </article>
-          }
-          @if (invitationsHasMore()) {
-            <button
-              mat-button
-              type="button"
-              class="load-more"
-              [disabled]="loadingInvitations()"
-              (click)="loadMoreRequests('INVITATION')"
-            >
-              {{
-                (loadingInvitations() ? 'common.loading' : 'common.loadMore')
-                  | transloco
-              }}
-            </button>
-          }
+          </ng-template>
+          <app-virtual-infinite-list
+            [items]="invitations()"
+            [itemTemplate]="invitationRow"
+            [itemKey]="requestItemKey"
+            [itemSize]="80"
+            [active]="activeTab() === 0"
+            [loading]="loadingInvitations()"
+            [hasMore]="invitationsHasMore() && !invitationsError()"
+            (loadMore)="loadMoreRequests('INVITATION')"
+          />
           <p class="history-note">{{ 'group.sevenDayHistory' | transloco }}</p>
+        }
+        @if (invitationsError()) {
+          <button mat-button (click)="retryRequests('INVITATION')">
+            {{ 'common.retry' | transloco }}
+          </button>
+        } @else if (loadingInvitations() && invitations().length > 0) {
+          <p class="loading-note" role="status">
+            {{ 'common.loading' | transloco }}
+          </p>
         }
       </div>
     </mat-tab>
@@ -87,10 +92,10 @@
         } @else if (applications().length === 0) {
           <p class="state">{{ 'group.noJoinRequests' | transloco }}</p>
         } @else {
-          @for (request of applications(); track requestKey(request)) {
+          <ng-template #applicationRow let-request>
             @let resolvedDomain =
               request.author.namespaceId | namespaceDomain | async;
-            <article class="request-row">
+            <article class="request-row application-row">
               <app-demand-avatar
                 class="avatar"
                 [type]="UserAvatarType.OTHER"
@@ -102,14 +107,19 @@
                 }"
               />
               <div class="request-copy">
-                <app-user-identity-label class="request-name"
-                  [account]="request.author.account" [profileRef]="applicationProfile(request)" />
+                <app-user-identity-label
+                  class="request-name"
+                  [account]="request.author.account"
+                  [profileRef]="applicationProfile(request)"
+                />
                 <div class="request-account">
                   {{ request.author.account
                   }}{{ resolvedDomain ? '@' + resolvedDomain : '' }}
                 </div>
                 @if (request.note) {
-                  <div class="request-note">{{ request.note }}</div>
+                  <div class="request-note" [title]="request.note">
+                    {{ request.note }}
+                  </div>
                 }
               </div>
               <div class="request-actions">
@@ -138,131 +148,87 @@
                 }
               </div>
             </article>
-          }
-          @if (applicationsHasMore()) {
-            <button
-              mat-button
-              type="button"
-              class="load-more"
-              [disabled]="loadingApplications()"
-              (click)="loadMoreRequests('APPLICATION')"
-            >
-              {{
-                (loadingApplications() ? 'common.loading' : 'common.loadMore')
-                  | transloco
-              }}
-            </button>
-          }
+          </ng-template>
+          <app-virtual-infinite-list
+            [items]="applications()"
+            [itemTemplate]="applicationRow"
+            [itemKey]="requestItemKey"
+            [itemSize]="128"
+            [active]="activeTab() === 1"
+            [loading]="loadingApplications()"
+            [hasMore]="applicationsHasMore() && !applicationsError()"
+            (loadMore)="loadMoreRequests('APPLICATION')"
+          />
           <p class="history-note">{{ 'group.sevenDayHistory' | transloco }}</p>
+        }
+        @if (applicationsError()) {
+          <button mat-button (click)="retryRequests('APPLICATION')">
+            {{ 'common.retry' | transloco }}
+          </button>
+        } @else if (loadingApplications() && applications().length > 0) {
+          <p class="loading-note" role="status">
+            {{ 'common.loading' | transloco }}
+          </p>
         }
       </div>
     </mat-tab>
 
     <mat-tab [label]="'group.inviteMembers' | transloco">
       <div class="tab-pane candidates-pane">
-        <form class="search-bar" (ngSubmit)="search()" role="search">
-          <input
-            class="search-input"
-            [ngModel]="searchText()"
-            (ngModelChange)="searchText.set($event)"
-            [ngModelOptions]="{ standalone: true }"
-            [placeholder]="'group.searchInviteCandidates' | transloco"
-            autocomplete="off"
-          />
-          <button mat-flat-button color="primary" type="submit">
-            {{ 'common.search' | transloco }}
-          </button>
-        </form>
-        @if (invalidGroupAddress()) {
-          <p class="state compact">
-            {{ 'group.cannotInviteGroup' | transloco }}
-          </p>
-        } @else if (loadingCandidates() && candidates().length === 0) {
-          <p class="state">{{ 'common.loading' | transloco }}</p>
-        } @else if (candidates().length > 0) {
-          <div class="candidate-list">
-            @for (candidate of candidates(); track candidateKey(candidate)) {
-              @let resolvedDomain =
-                candidate.namespaceId | namespaceDomain | async;
-              <article class="candidate-row">
-                <app-snapshot-avatar
-                  class="avatar"
-                  [type]="UserAvatarType.OTHER"
-                  [name]="candidate.name"
+        <app-identity-search
+          [lookup]="lookup"
+          [(text)]="searchText"
+          (submitted)="search()"
+          (cancelled)="cancelSearch()"
+        >
+          <ng-template #candidateRow let-candidate>
+            @let resolvedDomain =
+              candidate.namespaceId | namespaceDomain | async;
+            <article class="candidate-row">
+              <app-snapshot-avatar
+                class="avatar"
+                [type]="UserAvatarType.OTHER"
+                [name]="candidate.name"
+                [account]="candidate.account"
+                [src]="candidate.avatar"
+                [domainSource]="{
+                  type: 'namespace',
+                  namespaceId: candidate.namespaceId,
+                }"
+              />
+              <div class="candidate-meta">
+                <app-user-identity-label
                   [account]="candidate.account"
-                  [src]="candidate.avatar"
-                  [domainSource]="{ type: 'namespace', namespaceId: candidate.namespaceId }"
+                  [profile]="candidate"
+                  [domain]="resolvedDomain"
                 />
-                <div class="candidate-meta">
-                  <app-user-identity-label
-                    [account]="candidate.account"
-                    [profile]="candidate"
-                    [domain]="resolvedDomain"
-                  />
-                  <div class="candidate-bio">
-                    {{ candidate.bio || ('friend.noBio' | transloco) }}
-                  </div>
+                <div class="candidate-bio">
+                  {{ candidate.bio || ('friend.noBio' | transloco) }}
                 </div>
-                <button
-                  mat-button
-                  class="candidate-action"
-                  type="button"
-                  [disabled]="
-                    invitationState(candidate) !== 'AVAILABLE' ||
-                    inviting().has(candidateKey(candidate))
-                  "
-                  (click)="invite(candidate)"
-                >
-                  {{ candidateActionKey(candidate) | transloco }}
-                </button>
-              </article>
-            }
-          </div>
-          @if (candidatesHasMore()) {
-            <button
-              mat-button
-              type="button"
-              class="load-more"
-              [disabled]="loadingCandidates()"
-              (click)="loadMoreCandidates()"
-            >
-              {{
-                (loadingCandidates() ? 'common.loading' : 'common.loadMore')
-                  | transloco
-              }}
-            </button>
-          }
-        } @else if (federatedAddress(); as address) {
-          <button
-            class="federated-lookup"
-            type="button"
-            [disabled]="resolvingFederated()"
-            (click)="resolveFederated()"
-          >
-            <span class="lookup-copy">
-              <strong>{{ 'group.queryFederatedFriend' | transloco }}</strong>
-              <span>{{ address.account }}&#64;{{ address.domain }}</span>
-              @if (resolvingFederated()) {
-                <span>{{
-                  'friend.federationStage.' + federationStage() | transloco
-                }}</span>
-              }
-            </span>
-            <span class="lookup-action">{{
-              (resolvingFederated()
-                ? 'common.searching'
-                : 'group.queryFederatedAction'
-              ) | transloco
-            }}</span>
-          </button>
-          @if (resolvingFederated()) {
-            <mat-progress-bar mode="indeterminate" />
-          }
-        } @else {
-          <p class="state compact">
-            {{ 'group.noMatchingFriends' | transloco }}
-          </p>
-        }
+              </div>
+              <button
+                mat-button
+                class="candidate-action"
+                type="button"
+                [disabled]="
+                  invitationState(candidate) !== 'AVAILABLE' ||
+                  inviting().has(candidateKey(candidate))
+                "
+                (click)="invite(candidate)"
+              >
+                {{ candidateActionKey(candidate) | transloco }}
+              </button>
+            </article>
+          </ng-template>
+          <app-virtual-infinite-list
+            [items]="lookup.results()"
+            [itemTemplate]="candidateRow"
+            [itemKey]="candidateItemKey"
+            [itemSize]="80"
+            [active]="activeTab() === 2"
+            [resetKey]="lookup.generationId()"
+          />
+        </app-identity-search>
       </div>
     </mat-tab>
   </mat-tab-group>

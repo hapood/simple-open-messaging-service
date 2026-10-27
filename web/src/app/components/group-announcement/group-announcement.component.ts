@@ -28,31 +28,29 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
         [title]="'group.announcement' | transloco"
         (back)="close()"
       />
-      <div class="announcement-times">
-        <span>{{
-          'group.announcementPublishedAt' | transloco
-            : { time: publishedAtLabel() }
-        }}</span>
-        <span>{{
-          'group.announcementReceivedAt' | transloco
-            : { time: receivedAtLabel() }
-        }}</span>
-      </div>
       <div class="announcement-text">{{ text() }}</div>
       <footer class="announcement-actions">
-        @if (failed()) {
-          <button mat-button color="warn" type="button" (click)="acknowledge()">
-            {{ 'group.announcementRetry' | transloco }}
+        <div class="announcement-times">
+          <span class="announcement-time">{{
+            'group.announcementReceivedAt' | transloco
+              : { time: receivedAtLabel() }
+          }}</span>
+        </div>
+        <div class="announcement-buttons">
+          @if (failed()) {
+            <button mat-button color="warn" type="button" (click)="acknowledge()">
+              {{ 'group.announcementRetry' | transloco }}
+            </button>
+          }
+          <button
+            mat-flat-button
+            color="primary"
+            type="button"
+            (click)="confirm()"
+          >
+            {{ 'common.confirm' | transloco }}
           </button>
-        }
-        <button
-          mat-flat-button
-          color="primary"
-          type="button"
-          (click)="confirm()"
-        >
-          {{ 'common.confirm' | transloco }}
-        </button>
+        </div>
       </footer>
     </section>
   `,
@@ -68,27 +66,19 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
         flex-direction: column;
         max-height: 100%;
         box-sizing: border-box;
-        background: var(--app-surface, white);
+        background: var(--app-surface);
         color: var(--app-text);
-      }
-      .announcement-times {
-        box-sizing: border-box;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 16px;
-        padding: 8px 20px 0;
-        font-size: 12px;
-        line-height: 18px;
-        color: var(--app-text-secondary, rgba(0, 0, 0, 0.55));
       }
       .announcement-text {
         min-height: 0;
+        flex: 1 1 auto;
         white-space: pre-wrap;
         overflow-y: auto;
         overflow-wrap: anywhere;
         font-size: 15px;
         line-height: 24px;
         padding: 16px 20px;
+        color: var(--app-text);
       }
       .announcement-actions {
         box-sizing: border-box;
@@ -96,9 +86,29 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
         padding: 10px 16px;
         display: flex;
         align-items: center;
-        justify-content: flex-end;
-        gap: 8px;
+        justify-content: space-between;
+        gap: 12px;
         border-top: 1px solid var(--app-border-strong);
+      }
+      .announcement-times {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+      }
+      .announcement-time {
+        display: inline-block;
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--app-text-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .announcement-buttons {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
       }
       .announcement-actions button {
         box-sizing: border-box;

@@ -750,16 +750,6 @@ export class UserService {
     });
   }
 
-  /** Local user discovery (fuzzy over account OR display name, case-insensitive). Returns up to 20
-   *  LOCAL matches (server excludes federated stubs + soft-deleted; min query length 2). Federated
-   *  users are NOT discoverable here — resolve those by exact account + domain via resolveUser. */
-  searchUsers(params: { q: string; skip?: number; take?: number }) {
-    return this.http.post<StandardResponse<{ list: User[]; total: number }>>(
-      `${apiPrefix()}/user/search`,
-      params,
-    );
-  }
-
   /** A RECEIVED page was seen: persist the durable read intent first, publish
    * it only once persisted, then submit it. The durable target survives a
    * failed submission for the next retry; a superseded session publishes

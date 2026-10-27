@@ -1,7 +1,7 @@
 import { RequestProjectionStatus } from '../../../../../shared/request-projection-status';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { MatSnackBar } from '@angular/material/snack-bar';
+import { ToastService } from '../../services/toast.service';
 import { TranslocoService } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
 import { RouteService } from '../../services/route.service';
@@ -15,10 +15,8 @@ import {
   UserService,
   User,
 } from '../../services/user.service';
-import {
-  AddTabStatus,
-  FriendRequestsComponent,
-} from './friend-requests.component';
+import { IdentitySearchStatus } from '../../services/identity-search';
+import { FriendRequestsComponent } from './friend-requests.component';
 
 describe('FriendRequestsComponent federated search progress', () => {
   it.each(['bob', '!team'])('keeps the fixed card address for %s across retry and cancellation', (account) => {
@@ -32,7 +30,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         { provide: TranslocoService, useValue: { translate: (key: string) => key } },
       ],
     }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
@@ -79,7 +77,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -192,7 +190,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           provideZonelessChangeDetection(),
           { provide: UserService, useValue: userService },
           { provide: RouteService, useValue: {} },
-          { provide: MatSnackBar, useValue: { open: vi.fn() } },
+          { provide: ToastService, useValue: { info: vi.fn() } },
           {
             provide: TranslocoService,
             useValue: { translate: (key: string) => key },
@@ -242,7 +240,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           },
         },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -268,7 +266,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           relationshipIntentStateRevision: signal(0), friendReqBadge: signal(false),
         } },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         { provide: TranslocoService, useValue: { translate: (key: string) => key } },
       ],
     }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
@@ -314,7 +312,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -380,7 +378,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -401,7 +399,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       account: 'alice',
     });
     expect(userService.searchUsers).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(component.localResults()).toEqual([local]));
+    await vi.waitFor(() => expect(component.lookup.results()).toEqual([local]));
   });
 
   it('shows but does not activate the current user resolved by a bare account', () => {
@@ -428,7 +426,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -443,8 +441,8 @@ describe('FriendRequestsComponent federated search progress', () => {
     component.searchUser();
     component.activateResult(self);
 
-    expect(component.localResults()).toEqual([self]);
-    expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
+    expect(component.lookup.results()).toEqual([self]);
+    expect(component.lookup.status()).toBe(IdentitySearchStatus.SUCCESS);
     expect(component.inviteUser()).toBeNull();
     expect(userService.localRelationship).not.toHaveBeenCalled();
   });
@@ -472,7 +470,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -489,19 +487,19 @@ describe('FriendRequestsComponent federated search progress', () => {
     const progress = vi.mocked(userService.resolveFederatedUser).mock
       .lastCall![1] as (stage: 'WAITING_FOR_PEER') => void;
     progress('WAITING_FOR_PEER');
-    expect(component.connectingDomain()).toBe('peer.test');
-    expect(component.federationStage()).toBe('WAITING_FOR_PEER');
-    expect(component.federationProgress()).toEqual({
+    expect(component.lookup.connectingDomain()).toBe('peer.test');
+    expect(component.lookup.stage()).toBe('WAITING_FOR_PEER');
+    expect(component.lookup.progress()).toEqual({
       current: 4,
       total: 5,
       percent: 80,
     });
-    expect(component.addTabStatus()).toBe(AddTabStatus.SEARCHING);
+    expect(component.lookup.status()).toBe(IdentitySearchStatus.SEARCHING);
     resolve.next({ user: remote });
     resolve.complete();
-    expect(component.connectingDomain()).toBeNull();
-    await vi.waitFor(() => expect(component.localResults()).toEqual([remote]));
-    expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
+    expect(component.lookup.connectingDomain()).toBeNull();
+    await vi.waitFor(() => expect(component.lookup.results()).toEqual([remote]));
+    expect(component.lookup.status()).toBe(IdentitySearchStatus.SUCCESS);
     expect(userService.localRelationship).toHaveBeenCalledWith(remote);
   });
 
@@ -528,7 +526,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -542,12 +540,12 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     component.searchUser();
 
-    await vi.waitFor(() => expect(component.localResults()).toEqual([local]));
+    await vi.waitFor(() => expect(component.lookup.results()).toEqual([local]));
     expect(
       component.relationshipStates().get(component.userIdentity(local)),
     ).toBe('FRIEND');
-    expect(component.connectingDomain()).toBeNull();
-    expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
+    expect(component.lookup.connectingDomain()).toBeNull();
+    expect(component.lookup.status()).toBe(IdentitySearchStatus.SUCCESS);
   });
 
   it('allows a new federated request after the synchronized projection records rejection', async () => {
@@ -573,7 +571,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -587,7 +585,7 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     component.searchUser();
 
-    await vi.waitFor(() => expect(component.localResults()).toEqual([remote]));
+    await vi.waitFor(() => expect(component.lookup.results()).toEqual([remote]));
     expect(component.relationshipLabel(remote)).toBe('friend.addAction');
     component.activateResult(remote);
     expect(component.inviteUser()).toEqual(remote);
@@ -614,7 +612,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -628,8 +626,8 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     component.searchUser();
 
-    expect(component.localResults()).toEqual([self]);
-    expect(component.addTabStatus()).toBe(AddTabStatus.SUCCESS);
+    expect(component.lookup.results()).toEqual([self]);
+    expect(component.lookup.status()).toBe(IdentitySearchStatus.SUCCESS);
 
     component.activateResult(self);
 
@@ -649,7 +647,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -664,8 +662,8 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     component.cancelSearch();
 
-    expect(component.connectingDomain()).toBeNull();
-    expect(component.addTabStatus()).toBe(AddTabStatus.INIT);
+    expect(component.lookup.connectingDomain()).toBeNull();
+    expect(component.lookup.status()).toBe(IdentitySearchStatus.INIT);
     expect(resolve.observed).toBe(false);
   });
 
@@ -682,7 +680,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -697,8 +695,8 @@ describe('FriendRequestsComponent federated search progress', () => {
     component.searchUser();
     resolve.error(new FederatedResolveError('NOT_FOUND'));
 
-    expect(component.addTabStatus()).toBe(AddTabStatus.ERROR);
-    expect(component.errMsg()).toBe('friend.msg.friendNotFound');
+    expect(component.lookup.status()).toBe(IdentitySearchStatus.EMPTY);
+    expect(component.lookup.query()).toBe('missing@peer.test');
   });
 
   it.each(['STALE_REQUEST', 'EXPIRED'] as const)(
@@ -718,7 +716,7 @@ describe('FriendRequestsComponent federated search progress', () => {
           provideZonelessChangeDetection(),
           { provide: UserService, useValue: userService },
           { provide: RouteService, useValue: {} },
-          { provide: MatSnackBar, useValue: { open: vi.fn() } },
+          { provide: ToastService, useValue: { info: vi.fn() } },
           { provide: TranslocoService, useValue: { translate: (key: string) => key } },
         ],
       }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
@@ -767,7 +765,7 @@ describe('FriendRequestsComponent federated search progress', () => {
         provideZonelessChangeDetection(),
         { provide: UserService, useValue: userService },
         { provide: RouteService, useValue: {} },
-        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: ToastService, useValue: { info: vi.fn() } },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },

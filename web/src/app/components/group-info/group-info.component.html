@@ -407,7 +407,7 @@
         "
         (back)="goBack()"
       />
-      <div class="manager-body" (scroll)="onRosterScroll($event)">
+      <div class="manager-body">
         <input
           class="member-search"
           [ngModel]="memberQuery()"
@@ -420,7 +420,7 @@
               | transloco: { count: groupMeta()?.memberCount ?? 0 }
           }}
         </div>
-        @for (m of filteredRoster(); track m.identityKey) {
+        <ng-template #memberRow let-m>
           <div class="member">
             <div class="member-main">
               <app-demand-avatar
@@ -489,6 +489,26 @@
               </mat-menu>
             }
           </div>
+        </ng-template>
+        <app-virtual-infinite-list
+          [items]="roster()"
+          [itemTemplate]="memberRow"
+          [itemKey]="memberItemKey"
+          [itemSize]="64"
+          [resetKey]="rosterReset()"
+          [loading]="loading() || loadingMore()"
+          [hasMore]="rosterHasMore() && !rosterError()"
+          (loadMore)="loadMoreMembers()"
+        />
+        @if (loading() || loadingMore()) {
+          <div class="muted center" role="status">
+            {{ 'common.loading' | transloco }}
+          </div>
+        }
+        @if (rosterError()) {
+          <button mat-button (click)="retryMembers()">
+            {{ 'common.retry' | transloco }}
+          </button>
         }
       </div>
     </div>

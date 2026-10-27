@@ -18,21 +18,13 @@ import { Observable, Subject, Subscription, finalize } from 'rxjs';
 import { firstValueFrom } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
-import { MatSnackBar } from '@angular/material/snack-bar';
+import { ToastService } from '../../services/toast.service';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
-import { IconComponent, AppIconType } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
-import { FormsModule } from '@angular/forms';
-import {
-  FederatedResolveStage,
-  FederatedResolveError,
-  UserService,
-  User,
-} from '../../services/user.service';
+import { UserService, User } from '../../services/user.service';
 import { type InviteSubject, type StandardResponse } from '../../services/model';
 import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
@@ -45,20 +37,8 @@ import { FriendRequestCardComponent } from '../friend-request-card/friend-reques
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 
-export enum AddTabStatus {
-  INIT,
-  EMPTY,
-  SEARCHING,
-  SUCCESS,
-  ERROR,
-}
-const FEDERATED_RESOLVE_STAGES: readonly FederatedResolveStage[] = [
-  'DISCOVERING',
-  'VERIFYING_IDENTITY',
-  'CONNECTING',
-  'WAITING_FOR_PEER',
-  'FETCHING_USER',
-];
+import { IdentitySearch } from '../../services/identity-search';
+import { IdentitySearchComponent } from '../identity-search/identity-search.component';
 // One server-owned request round as shown in this dialog. Actions always use the
 // exact requestId so an older card can never address a newer round.
 type PendingReq = {
@@ -86,15 +66,13 @@ type RelationshipState =
 @Component({
   selector: 'app-friend-requests',
   imports: [
+    IdentitySearchComponent,
     AsyncPipe,
     DemandAvatarComponent,
     SnapshotAvatarComponent,
-    FormsModule,
     MatButtonModule,
     MatCardModule,
-    MatProgressBarModule,
     MatTabsModule,
-    IconComponent,
     PageHeaderComponent,
     TranslocoPipe,
     FriendInviteDialogComponent,
@@ -110,32 +88,14 @@ type RelationshipState =
 export class FriendRequestsComponent implements OnDestroy {
   readonly RequestProjectionStatus = RequestProjectionStatus;
   readonly searchText = signal('');
-  /** Set when the server reports recognition or Health progress for a federated resolve. */
-  readonly connectingDomain = signal<string | null>(null);
-  readonly federationStage = signal<FederatedResolveStage>('DISCOVERING');
-  readonly federationStageKey = computed(
-    () => `friend.federationStage.${this.federationStage()}`,
-  );
-  readonly federationProgress = computed(() => {
-    const index = FEDERATED_RESOLVE_STAGES.indexOf(this.federationStage());
-    const current = index < 0 ? 1 : index + 1;
-    return {
-      current,
-      total: FEDERATED_RESOLVE_STAGES.length,
-      percent: (current / FEDERATED_RESOLVE_STAGES.length) * 100,
-    };
-  });
-  private searchSub: Subscription | undefined;
-  private searchGeneration = 0;
-  /** Exact account resolution always yields zero or one row. */
-  readonly localResults = signal<User[]>([]);
+  readonly lookup = new IdentitySearch();
   readonly inviteUser = signal<InviteSubject | null>(null);
-  readonly errMsg = signal('');
-  readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT);
   readonly relationshipStates = signal<ReadonlyMap<string, RelationshipState>>(
     new Map(),
   );
-  readonly curSearchText = signal('');
+
+  readonly resultItemKey = (_index: number, user: User) => this.userIdentity(user);
+  readonly requestItemKey = (_index: number, request: PendingReq) => request.id;
   readonly pendingReqList = signal([] as PendingReq[]);
   readonly toPendingErrTxt = signal('');
   readonly sentReqList = signal([] as PendingReq[]);
@@ -147,6 +107,8 @@ export class FriendRequestsComponent implements OnDestroy {
   readonly pendingCount = signal(0);
   readonly sentCount = signal(0);
   readonly pendingHasMore = signal(false);
+  readonly loadingIncoming = signal(false);
+  readonly loadingOutgoing = signal(false);
   readonly sentHasMore = signal(false);
   readonly hasUnreadIncoming = computed(() =>
     this.userService.friendReqBadge(),
@@ -191,8 +153,6 @@ export class FriendRequestsComponent implements OnDestroy {
     viewChild<VirtualInfiniteListComponent<PendingReq>>('outgoingList');
 
   UserAvatarType = UserAvatarType;
-  AddTabStatus = AddTabStatus;
-  AppIconType = AppIconType;
 
   openRequest(req: PendingReq): void {
     this.selectedRequest.set(req);
@@ -266,7 +226,7 @@ export class FriendRequestsComponent implements OnDestroy {
     private routeService: RouteService,
     private userService: UserService,
     private transloco: TranslocoService,
-    private snackBar: MatSnackBar,
+    private toastService: ToastService,
   ) {}
   setTab(tab: number) {
     this.activeTab.set(tab);
@@ -312,129 +272,20 @@ export class FriendRequestsComponent implements OnDestroy {
 
   searchUser() {
     const address = this.initialAddress();
-    const curSearchText = address
-      ? `${address.account}@${address.domain}`
-      : this.searchText().trim();
-    if (!curSearchText) return;
-    this.addTabStatus.set(AddTabStatus.SEARCHING);
-    this.cancelInFlight();
-    this.localResults.set([]);
-
-    // Identity search is exact. A local account resolves by account alone; a federated address resolves
-    // by account + domain. This deliberately never calls fuzzy user discovery, so the UI can show at most
-    // one result and cannot be used to enumerate accounts or display names.
-    // The `@` is a UI input aid ONLY — split the typed `account@domain` into two fields here, at the
-    // input boundary, so the API never carries an @-joined string. A bare account (no `@`) is a local
-    // lookup (domain omitted).
-    const at = curSearchText.lastIndexOf('@');
-    const firstAt = curSearchText.indexOf('@');
-    if (
-      firstAt !== -1 &&
-      (at <= 0 || at === curSearchText.length - 1 || firstAt !== at)
-    ) {
-      this.curSearchText.set(curSearchText);
-      this.addTabStatus.set(AddTabStatus.EMPTY);
-      return;
-    }
-    const domain =
-      at > 0 && at < curSearchText.length - 1
-        ? curSearchText.slice(at + 1)
-        : null;
-    const account = at > 0 ? curSearchText.slice(0, at) : curSearchText;
-
-    // Local exact resolve remains a normal request. Federated resolve is a temporary SSE proxy and
-    // returns a transient id=0 card. Both search paths read relationship state from local projections.
-    const runResolve = () => {
-      this.searchSub = domain
-        ? this.userService
-            .resolveFederatedUser(
-              {
-                account,
-                domain,
-                ...(address ? { publicKey: address.publicKey } : {}),
-              },
-              (stage) => {
-              this.connectingDomain.set(domain);
-              this.federationStage.set(stage);
-            })
-            .subscribe({
-              next: ({ user }) => {
-                this.connectingDomain.set(null);
-                this.applySelectedUser(user);
-              },
-              error: (error: unknown) => {
-                this.connectingDomain.set(null);
-                const reason =
-                  error instanceof FederatedResolveError
-                    ? error.reason
-                    : 'UNKNOWN';
-                const keys: Record<string, string> = {
-                  DOMAIN_RESOLUTION_FAILED: 'friend.error.domainResolution',
-                  TIMEOUT: 'friend.error.timeout',
-                  BLOCKED: 'friend.error.blocked',
-                  NOT_FOUND: 'friend.msg.friendNotFound',
-                  UNREACHABLE: 'friend.error.unreachable',
-                  INVALID_ADDRESS: 'friend.error.invalidAddress',
-                };
-                this.errMsg.set(
-                  this.transloco.translate(
-                    keys[reason] ?? 'friend.error.unknownError',
-                  ),
-                );
-                this.addTabStatus.set(AddTabStatus.ERROR);
-              },
-            })
-        : this.userService.resolveUser({ account }).subscribe({
-            next: (res) => {
-              this.connectingDomain.set(null);
-              if (res.code === 0) {
-                this.applySelectedUser(res.data!);
-              } else {
-                this.curSearchText.set(curSearchText);
-                this.addTabStatus.set(AddTabStatus.EMPTY);
-              }
-            },
-            error: () => {
-              this.connectingDomain.set(null);
-              this.errMsg.set(
-                this.transloco.translate('friend.error.unknownError'),
-              );
-              this.addTabStatus.set(AddTabStatus.ERROR);
-            },
+    this.relationshipStates.set(new Map());
+    this.lookup.search(
+      address ? `${address.account}@${address.domain}` : this.searchText(),
+      {
+        publicKey: address?.publicKey,
+        prepare: (user, isCurrent) => {
+          if (this.isSelf(user)) return;
+          return this.userService.localRelationship(user).then((state) => {
+            if (isCurrent())
+              this.relationshipStates.set(new Map([[this.userIdentity(user), state]]));
           });
-    };
-
-    runResolve();
-  }
-
-  /** A single exact account has been resolved: check the P2P relationship
-   *  state to decide can-add / already-friends / request-already-sent / they-sent-you-one, then show
-   *  the single-user card. Shared by both search paths so the post-select UX is identical. */
-  private applySelectedUser(user: User) {
-    if (this.isSelf(user)) {
-      this.relationshipStates.set(new Map());
-      this.localResults.set([user]);
-      this.addTabStatus.set(AddTabStatus.SUCCESS);
-      return;
-    }
-    this.showResults([user]);
-  }
-
-  private async showResults(users: User[]) {
-    const generation = this.searchGeneration;
-    const states = await Promise.all(
-      users.map(
-        async (user) =>
-          [
-            this.userIdentity(user),
-            await this.userService.localRelationship(user),
-          ] as const,
-      ),
+        },
+      },
     );
-    if (generation !== this.searchGeneration) return;
-    this.relationshipStates.set(new Map(states));
-    this.localResults.set(users);
-    this.addTabStatus.set(AddTabStatus.SUCCESS);
   }
 
   activateResult(user: InviteSubject) {
@@ -497,27 +348,14 @@ export class FriendRequestsComponent implements OnDestroy {
     }
   }
 
-  /** Abort any in-flight resolve and drop the connecting banner. Recognition is idempotent, so an
-   * interrupted attempt is safe to repeat on the next search. */
-  private cancelInFlight() {
-    this.searchGeneration++;
-    this.searchSub?.unsubscribe();
-    this.searchSub = undefined;
-    this.connectingDomain.set(null);
-    this.federationStage.set('DISCOVERING');
-  }
-
-  /** Cancel button: abort the in-flight search and reset the Add tab to its initial state. */
   cancelSearch() {
-    this.cancelInFlight();
-    this.addTabStatus.set(AddTabStatus.INIT);
+    this.lookup.cancel();
     const address = this.initialAddress();
     this.searchText.set(address ? `${address.account}@${address.domain}` : '');
-    this.localResults.set([]);
   }
 
   ngOnDestroy() {
-    this.cancelInFlight();
+    this.lookup.cancel();
     this.cancelInviteActions();
   }
 
@@ -582,9 +420,8 @@ export class FriendRequestsComponent implements OnDestroy {
                   }
                 : item,
             );
-          this.snackBar.open(
+          this.toastService.info(
             this.transloco.translate('friend.revokedToast'),
-            undefined,
             { duration: 3000 },
           );
         } else {
@@ -637,11 +474,6 @@ export class FriendRequestsComponent implements OnDestroy {
     this.inviteActionSubscriptions.clear();
     this.pendingInviteActionIds.set(new Set());
     for (const entry of subscriptions) entry.subscription?.unsubscribe();
-  }
-
-  private inviteAction(req: PendingReq): { requestId: string } {
-    if (!req.requestId) throw new Error('request round has no ID');
-    return { requestId: req.requestId };
   }
 
   private projectionToPending(record: RequestRecord): PendingReq {
@@ -720,6 +552,7 @@ export class FriendRequestsComponent implements OnDestroy {
       ? ++this.pendingLoadGeneration
       : this.pendingLoadGeneration;
     this.pendingLoadInFlightGeneration = generation;
+    this.loadingIncoming.set(true);
     if (reset) {
       this.pendingCursor = null;
     }
@@ -760,8 +593,10 @@ export class FriendRequestsComponent implements OnDestroy {
         this.transloco.translate('friend.error.unknownError'),
       );
     } finally {
-      if (this.pendingLoadInFlightGeneration === generation)
+      if (this.pendingLoadInFlightGeneration === generation) {
         this.pendingLoadInFlightGeneration = null;
+        this.loadingIncoming.set(false);
+      }
     }
   }
 
@@ -771,6 +606,7 @@ export class FriendRequestsComponent implements OnDestroy {
       ? ++this.sentLoadGeneration
       : this.sentLoadGeneration;
     this.sentLoadInFlightGeneration = generation;
+    this.loadingOutgoing.set(true);
     if (reset) {
       this.sentCursor = null;
     }
@@ -800,8 +636,10 @@ export class FriendRequestsComponent implements OnDestroy {
         this.transloco.translate('friend.error.unknownError'),
       );
     } finally {
-      if (this.sentLoadInFlightGeneration === generation)
+      if (this.sentLoadInFlightGeneration === generation) {
         this.sentLoadInFlightGeneration = null;
+        this.loadingOutgoing.set(false);
+      }
     }
   }
 

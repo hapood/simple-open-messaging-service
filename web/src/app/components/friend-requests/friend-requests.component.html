@@ -42,176 +42,82 @@
         </span>
       </ng-template>
       <div class="tab-pane">
-        <form class="search-bar" (ngSubmit)="searchUser()" role="search">
-          <input
-            class="search-input"
-            [ngModelOptions]="{ standalone: true }"
-            [(ngModel)]="searchText"
-            [readOnly]="initialAddress() !== undefined"
-            type="text"
-            [placeholder]="'friend.searchPlaceholder' | transloco"
-            autocomplete="off"
-            [disabled]="addTabStatus() === AddTabStatus.SEARCHING"
-          />
-          <button
-            mat-flat-button
-            color="primary"
-            class="search-btn"
-            type="submit"
-            [disabled]="
-              addTabStatus() === AddTabStatus.SEARCHING || !searchText().trim()
-            "
-          >
-            @if (addTabStatus() === AddTabStatus.SEARCHING) {
-              {{ 'common.searching' | transloco }}
-            } @else {
-              {{ 'common.search' | transloco }}
-            }
-          </button>
-        </form>
-
-        <div class="result-area">
-          @switch (addTabStatus()) {
-            @case (AddTabStatus.INIT) {
-              <div class="state-hint">
-                <app-icon
-                  [type]="AppIconType.SEARCH"
-                  [style]="{ width: '40px', height: '40px' }"
-                ></app-icon>
-                <div class="state-title">
-                  {{ 'friend.findTitle' | transloco }}
+        <app-identity-search
+          [lookup]="lookup"
+          [(text)]="searchText"
+          [readOnly]="initialAddress() !== undefined"
+          (submitted)="searchUser()"
+          (cancelled)="cancelSearch()"
+        >
+          <div class="search-results">
+            <ng-template #resultRow let-u>
+              <div
+                class="result-row"
+                [attr.role]="isSelf(u) ? null : 'button'"
+                [attr.tabindex]="isSelf(u) ? null : 0"
+                (click)="activateResult(u)"
+                (keydown.enter)="activateResult(u)"
+              >
+                <div class="user-avatar">
+                  <app-snapshot-avatar
+                    [type]="
+                      u.isGroup ? UserAvatarType.GROUP : UserAvatarType.OTHER
+                    "
+                    [name]="u.name"
+                    [account]="u.account"
+                    [src]="u.avatar"
+                    [domainSource]="{
+                      type: 'namespace',
+                      namespaceId: u.namespaceId,
+                    }"
+                  ></app-snapshot-avatar>
                 </div>
-                <div class="state-sub">{{ 'friend.findSub' | transloco }}</div>
-              </div>
-            }
-            @case (AddTabStatus.SEARCHING) {
-              @if (connectingDomain(); as dom) {
-                <div class="connecting-progress" aria-live="polite">
-                  <div class="connecting-heading">
-                    <div class="connecting-copy">
-                      <div class="connecting-title">
-                        {{ 'friend.connecting' | transloco: { domain: dom } }}
-                      </div>
-                      <div class="connecting-stage">
-                        {{ federationStageKey() | transloco }}
-                      </div>
-                    </div>
-                    <span class="connecting-step">
-                      {{
-                        'friend.federationProgress'
-                          | transloco
-                            : {
-                                current: federationProgress().current,
-                                total: federationProgress().total,
-                              }
-                      }}
-                    </span>
-                  </div>
-                  <mat-progress-bar
-                    class="connecting-bar"
-                    mode="determinate"
-                    [value]="federationProgress().percent"
-                    [attr.aria-label]="federationStageKey() | transloco"
+                <div class="result-meta">
+                  <app-user-identity-label
+                    [account]="u.account"
+                    [profile]="u"
+                    [domain]="u.namespaceId | namespaceDomain | async"
                   />
+                  <div class="user-account">
+                    {{ u.bio || ('friend.noBio' | transloco) }}
+                  </div>
+                </div>
+                @if (isSelf(u)) {
+                  <span class="result-status">
+                    {{ 'friend.selfStatus' | transloco }}
+                  </span>
+                } @else if (
+                  relationshipStates().get(userIdentity(u)) === 'NONE' ||
+                  relationshipStates().get(userIdentity(u)) ===
+                    'INCOMING_PENDING'
+                ) {
                   <button
                     mat-button
+                    class="result-action"
                     type="button"
-                    class="connecting-cancel app-secondary-action"
-                    (click)="cancelSearch()"
+                    (click)="$event.stopPropagation(); activateResult(u)"
                   >
-                    {{ 'common.cancel' | transloco }}
+                    {{ relationshipLabel(u) | transloco }}
                   </button>
-                </div>
-              } @else {
-                <div class="state-hint">
-                  <div class="state-title">
-                    {{ 'common.searching' | transloco }}
-                  </div>
-                </div>
-              }
-            }
-            @case (AddTabStatus.EMPTY) {
-              <div class="state-hint">
-                <div class="state-title">
-                  {{ 'friend.noUserTitle' | transloco }}
-                </div>
-                <div class="state-sub">
-                  {{
-                    'friend.noUserSub'
-                      | transloco: { q: curSearchText().trim() }
-                  }}
-                </div>
-              </div>
-            }
-            @case (AddTabStatus.ERROR) {
-              <div class="state-hint">
-                <div class="state-title state-error">{{ errMsg() }}</div>
-                <button mat-button type="button" (click)="searchUser()">
-                  {{ 'friend.retry' | transloco }}
-                </button>
-              </div>
-            }
-            @case (AddTabStatus.SUCCESS) {
-              <div class="search-results">
-                @for (u of localResults(); track u.id) {
-                  <div
-                    class="result-row"
-                    [attr.role]="isSelf(u) ? null : 'button'"
-                    [attr.tabindex]="isSelf(u) ? null : 0"
-                    (click)="activateResult(u)"
-                    (keydown.enter)="activateResult(u)"
-                  >
-                    <div class="user-avatar">
-                      <app-snapshot-avatar
-                        [type]="
-                          u.isGroup
-                            ? UserAvatarType.GROUP
-                            : UserAvatarType.OTHER
-                        "
-                        [name]="u.name"
-                        [account]="u.account"
-                        [src]="u.avatar"
-                        [domainSource]="{ type: 'namespace', namespaceId: u.namespaceId }"
-                      ></app-snapshot-avatar>
-                    </div>
-                    <div class="result-meta">
-                      <app-user-identity-label
-                        [account]="u.account"
-                        [profile]="u"
-                        [domain]="u.namespaceId | namespaceDomain | async"
-                      />
-                      <div class="user-account">
-                        {{ u.bio || ('friend.noBio' | transloco) }}
-                      </div>
-                    </div>
-                    @if (isSelf(u)) {
-                      <span class="result-status">
-                        {{ 'friend.selfStatus' | transloco }}
-                      </span>
-                    } @else if (
-                      relationshipStates().get(userIdentity(u)) === 'NONE' ||
-                      relationshipStates().get(userIdentity(u)) ===
-                        'INCOMING_PENDING'
-                    ) {
-                      <button
-                        mat-button
-                        class="result-action"
-                        type="button"
-                        (click)="$event.stopPropagation(); activateResult(u)"
-                      >
-                        {{ relationshipLabel(u) | transloco }}
-                      </button>
-                    } @else {
-                      <span class="result-status">
-                        {{ relationshipLabel(u) | transloco }}
-                      </span>
-                    }
-                  </div>
+                } @else {
+                  <span class="result-status">
+                    {{ relationshipLabel(u) | transloco }}
+                  </span>
                 }
               </div>
-            }
-          }
-        </div>
+            </ng-template>
+            <app-virtual-infinite-list
+              [items]="lookup.results()"
+              [itemTemplate]="resultRow"
+              [itemKey]="resultItemKey"
+              [itemSize]="80"
+              [active]="
+                activeTab() === 0 && !inviteUser() && !selectedRequest()
+              "
+              [resetKey]="lookup.generationId()"
+            />
+          </div>
+        </app-identity-search>
       </div>
     </mat-tab>
 
@@ -260,9 +166,12 @@
             <app-virtual-infinite-list
               #incomingList
               [items]="pendingReqList()"
+              [itemKey]="requestItemKey"
+              [active]="activeTab() === 1"
               [itemTemplate]="incomingCard"
               [itemSize]="92"
               [hasMore]="pendingHasMore()"
+              [loading]="loadingIncoming()"
               (loadMore)="loadIncomingInvites()"
             />
           }
@@ -311,9 +220,12 @@
             <app-virtual-infinite-list
               #outgoingList
               [items]="sentReqList()"
+              [itemKey]="requestItemKey"
+              [active]="activeTab() === 2"
               [itemTemplate]="outgoingCard"
               [itemSize]="92"
               [hasMore]="sentHasMore()"
+              [loading]="loadingOutgoing()"
               (loadMore)="loadOutgoingInvites()"
             />
           }
@@ -341,20 +253,27 @@
           </div>
         }
         <div class="detail-profile-row">
-          @let avatarType = req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER;
+          @let avatarType =
+            req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER;
           @if (req.snapshot; as snapshot) {
             <app-snapshot-avatar
               [type]="avatarType"
               [name]="snapshot.displayName"
               [src]="snapshot.avatar"
               [account]="req.account"
-              [domainSource]="{ type: 'namespace', namespaceId: req.namespaceId }"
+              [domainSource]="{
+                type: 'namespace',
+                namespaceId: req.namespaceId,
+              }"
             />
           } @else {
             <app-demand-avatar
               [type]="avatarType"
               [account]="req.account"
-              [domainSource]="{ type: 'namespace', namespaceId: req.namespaceId }"
+              [domainSource]="{
+                type: 'namespace',
+                namespaceId: req.namespaceId,
+              }"
               [profile]="avatarProfile(req)"
             />
           }

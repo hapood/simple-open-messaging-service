@@ -631,23 +631,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/user/search": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Fuzzy local identity discovery by account OR display name (local users and groups) */
-        post: operations["UserController_searchUsers"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/user/register": {
         parameters: {
             query?: never;
@@ -707,7 +690,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Invite friends to an existing group */
+        /** Invite users to an existing group */
         post: operations["GroupController_inviteUsers"];
         delete?: never;
         options?: never;
@@ -4504,23 +4487,6 @@ export interface components {
              */
             profileNamespaceId?: number;
         };
-        UserSearchDto: {
-            /**
-             * @description Search query (≥2 chars; matches account OR display name)
-             * @example ali
-             */
-            q: string;
-            /**
-             * @description Records to skip (optional)
-             * @example 0
-             */
-            skip?: number;
-            /**
-             * @description Records to take (1-20; clamped server-side)
-             * @example 20
-             */
-            take?: number;
-        };
         RegisterDto: {
             /**
              * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
@@ -4572,7 +4538,7 @@ export interface components {
             namespaceId: number;
         };
         InviteGroupDto: {
-            /** @description Existing friends to invite by public address. */
+            /** @description Users to invite by public address; friendship is not required. */
             users: components["schemas"]["GroupInviteAddressDto"][];
             /**
              * @description Group id
@@ -6293,27 +6259,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    UserController_searchUsers: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserSearchDto"];
-            };
-        };
         responses: {
             200: {
                 headers: {

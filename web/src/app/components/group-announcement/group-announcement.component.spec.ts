@@ -66,8 +66,8 @@ describe('GroupAnnouncementComponent', () => {
     expect(title?.textContent).toContain('Group announcement');
 
     const times = element.querySelector('.announcement-times');
-    expect(times?.textContent).toContain('Published:');
     expect(times?.textContent).toContain('Received:');
+    expect(times?.textContent).not.toContain('Published:');
 
     const body = element.querySelector('.announcement-text');
     expect(body?.textContent).toContain('Test notice content');

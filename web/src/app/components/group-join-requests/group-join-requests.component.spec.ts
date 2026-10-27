@@ -14,12 +14,9 @@ import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { ToastService } from '../../services/toast.service';
+import { IdentitySearchStatus } from '../../services/identity-search';
 import { UserService } from '../../services/user.service';
-import {
-  createP2PConversation,
-  type User,
-  type StandardResponse,
-} from '../../services/model';
+import { type User, type StandardResponse } from '../../services/model';
 
 const lookupUser: User = {
   id: 12,
@@ -116,9 +113,10 @@ describe('GroupJoinRequestsComponent', () => {
       get: vi.fn(() => of(new Blob(['x'], { type: 'image/webp' }))),
     };
     const users = {
-      searchUsers: vi.fn(() =>
-        of({ code: 0, message: 'ok', data: { list: [lookupUser], total: 1 } }),
+      resolveUser: vi.fn(() =>
+        of({ code: 0, message: 'ok', data: lookupUser }),
       ),
+      searchUsers: vi.fn(),
       resolveFederatedUser: vi.fn(() => of({ user: lookupUser })),
     };
     const groups = {
@@ -147,16 +145,7 @@ describe('GroupJoinRequestsComponent', () => {
           provide: ConversationListService,
           useValue: {
             openThreadId,
-            items: () => [
-              thread,
-              createP2PConversation({
-                threadId: 12,
-                account: 'friend',
-                publisherNamespaceId: 7,
-                profileRev: 1,
-                conversationState: 'ACTIVE',
-              }),
-            ],
+            items: () => [thread],
             markJoinRequestsReadLocally,
           },
         },
@@ -188,65 +177,76 @@ describe('GroupJoinRequestsComponent', () => {
       component.searchText.set(address);
       component.search();
       expect(users.searchUsers).not.toHaveBeenCalled();
-      expect(component.candidatesHasMore()).toBe(false);
-      component.resolveFederated();
       expect(users.resolveFederatedUser).toHaveBeenCalledWith(
         { account: 'friend', domain: address.split('@')[1] },
         expect.any(Function),
       );
-      expect(component.candidates()[0]).toBe(lookupUser);
+      expect(component.lookup.results()[0]).toBe(lookupUser);
     },
   );
 
-  it.each(['friend', 'friend@', '@remote.test', 'friend@@remote.test'])(
-    'routes %s to fuzzy search, not exact lookup',
+  it.each(['friend', 'a'])('resolves the exact local account %s', (query) => {
+    const { component, users } = create(vi.fn(() => of(response())));
+    component.searchText.set(query);
+    component.search();
+    expect(users.resolveUser).toHaveBeenCalledWith({ account: query });
+    expect(users.searchUsers).not.toHaveBeenCalled();
+    expect(users.resolveFederatedUser).not.toHaveBeenCalled();
+    expect(component.lookup.results()).toEqual([lookupUser]);
+  });
+
+  it.each(['friend@', '@remote.test', 'friend@@remote.test', 'first last'])(
+    'rejects malformed address %s without fuzzy fallback',
     (query) => {
       const { component, users } = create(vi.fn(() => of(response())));
       component.searchText.set(query);
       component.search();
-      expect(users.searchUsers).toHaveBeenCalledWith({
-        q: query,
-        skip: 0,
-        take: 20,
-      });
+      expect(users.searchUsers).not.toHaveBeenCalled();
+      expect(users.resolveUser).not.toHaveBeenCalled();
       expect(users.resolveFederatedUser).not.toHaveBeenCalled();
-      expect(component.candidates()[0]).toBe(lookupUser);
+      expect(component.lookup.errorKey()).toBe('friend.error.invalidAddress');
     },
   );
 
-  it('derives friendship from both returned coordinates without altering the lookup snapshot', () => {
-    const { component } = create(vi.fn(() => of(response())));
-    expect(component.invitationState(lookupUser)).toBe('AVAILABLE');
-    expect(component.invitationState({ ...lookupUser, namespaceId: 8 })).toBe(
-      'NOT_FRIEND',
-    );
-    expect(component.invitationState({ ...lookupUser, account: 'other' })).toBe(
-      'NOT_FRIEND',
-    );
-    expect(lookupUser).not.toHaveProperty('state');
-  });
+  it.each([0, 7])(
+    'allows a resolved non-friend in namespace %s without altering the lookup snapshot',
+    (namespaceId) => {
+      const { component, groups } = create(vi.fn(() => of(response())));
+      const candidate = { ...lookupUser, namespaceId };
+      expect(component.invitationState(candidate)).toBe('AVAILABLE');
+      expect(component.candidateActionKey(candidate)).toBe(
+        'group.inviteAction',
+      );
+      component.invite(candidate);
+      expect(groups.inviteUsers).toHaveBeenCalledWith({
+        groupId: 7,
+        users: [
+          {
+            account: candidate.account,
+            namespaceId,
+            snapshot: { displayName: candidate.name, avatar: null },
+          },
+        ],
+      });
+      expect(candidate).not.toHaveProperty('state');
+    },
+  );
 
-  it('paginates only fuzzy results and resets pagination for a new query', () => {
-    const { component, users } = create(vi.fn(() => of(response())));
-    users.searchUsers.mockReturnValue(
-      of({ code: 0, message: 'ok', data: { list: [lookupUser], total: 2 } }),
-    );
-    component.searchText.set('friend');
-    component.search();
-    component.loadMoreCandidates();
-    expect(users.searchUsers).toHaveBeenLastCalledWith({
-      q: 'friend',
-      skip: 1,
-      take: 20,
-    });
-    component.searchText.set('other');
-    component.search();
-    expect(users.searchUsers).toHaveBeenLastCalledWith({
-      q: 'other',
-      skip: 0,
-      take: 20,
-    });
-  });
+  it.each(['!team', '!team@remote.test'])(
+    'rejects group target %s',
+    (query) => {
+      const { component, users } = create(vi.fn(() => of(response())));
+      const group = { ...lookupUser, account: '!team', isGroup: true };
+      users.resolveUser.mockReturnValue(
+        of({ code: 0, message: 'ok', data: group }),
+      );
+      users.resolveFederatedUser.mockReturnValue(of({ user: group }));
+      component.searchText.set(query);
+      component.search();
+      expect(component.lookup.errorKey()).toBe('group.cannotInviteGroup');
+      expect(component.lookup.results()).toEqual([]);
+    },
+  );
 
   it('derives pending invitation hints from both receiver coordinates and ignores expired rounds', () => {
     const { component } = create(vi.fn(() => of(response())));
@@ -257,7 +257,10 @@ describe('GroupJoinRequestsComponent', () => {
     component.invitations.set([invitation]);
     expect(component.invitationState(lookupUser)).toBe('INVITED');
     expect(component.invitationState({ ...lookupUser, namespaceId: 8 })).toBe(
-      'NOT_FRIEND',
+      'AVAILABLE',
+    );
+    expect(component.invitationState({ ...lookupUser, account: 'other' })).toBe(
+      'AVAILABLE',
     );
     component.invitations.set([
       { ...invitation, expiresAt: new Date(Date.now() - 1).toISOString() },
@@ -291,22 +294,22 @@ describe('GroupJoinRequestsComponent', () => {
     },
   );
 
-  it('cancels fuzzy search when a new exact address is submitted', () => {
+  it('cancels a local lookup when a new address is submitted', () => {
     const { component, users } = create(vi.fn(() => of(response())));
     const pending = new Subject<{
       code: number;
       message: string;
-      data: { list: User[]; total: number };
+      data: User;
     }>();
-    users.searchUsers.mockReturnValue(pending);
+    users.resolveUser.mockReturnValue(pending);
     component.searchText.set('friend');
     component.search();
     expect(pending.observed).toBe(true);
     component.searchText.set('friend@remote.test');
     component.search();
     expect(pending.observed).toBe(false);
-    expect(component.loadingCandidates()).toBe(false);
-    expect(component.candidates()).toEqual([]);
+    expect(component.lookup.status()).toBe(IdentitySearchStatus.SUCCESS);
+    expect(component.lookup.results()).toEqual([lookupUser]);
   });
 
   it('loads applications when the application tab opens', async () => {
@@ -333,6 +336,48 @@ describe('GroupJoinRequestsComponent', () => {
     });
   });
 
+  it('appends cursor pages once, preserves loaded rows on failure and retries the same cursor', async () => {
+    const first = {
+      ...response(applicationRow('20')),
+      data: {
+        ...response(applicationRow('20')).data,
+        hasMore: true,
+        before: '20',
+      },
+    };
+    const pending = new Subject<ReturnType<typeof response>>();
+    const query = vi
+      .fn()
+      .mockReturnValueOnce(of(first))
+      .mockReturnValueOnce(pending);
+    const { component } = create(query, true);
+    await Promise.resolve();
+    component.loadMoreRequests('APPLICATION');
+    component.loadMoreRequests('APPLICATION');
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenLastCalledWith({
+      groupId: 7,
+      before: '20',
+      take: 20,
+    });
+    pending.error(new Error('offline'));
+    await Promise.resolve();
+    expect(component.applicationsError()).toBe(true);
+    expect(component.applications().map((row) => row.id)).toEqual(['20']);
+    query.mockReturnValueOnce(of(response(applicationRow('10'))));
+    component.retryRequests('APPLICATION');
+    await Promise.resolve();
+    expect(query).toHaveBeenLastCalledWith({
+      groupId: 7,
+      before: '20',
+      take: 20,
+    });
+    expect(component.applications().map((row) => row.id)).toEqual(['20', '10']);
+    expect(component.applicationsError()).toBe(false);
+    component.loadMoreRequests('APPLICATION');
+    expect(query).toHaveBeenCalledTimes(3);
+  });
+
   it('does not mark applications read when the list request fails', async () => {
     const queryJoinRequests = vi.fn(() =>
       of({ code: 1, message: 'failed', data: undefined }),
@@ -346,7 +391,7 @@ describe('GroupJoinRequestsComponent', () => {
     expect(groups.markJoinRequestsRead).not.toHaveBeenCalled();
   });
 
-  it('invites a foreign friend by its address', async () => {
+  it('invites a foreign non-friend by its address', async () => {
     const { component, groups } = create(vi.fn(() => of(response())));
     const candidate = {
       ...lookupUser,
@@ -357,7 +402,7 @@ describe('GroupJoinRequestsComponent', () => {
       avatar: '',
       bio: '',
     };
-    component.candidates.set([candidate]);
+    component.lookup.results.set([candidate]);
     groups.inviteUsers.mockReturnValue(
       of({
         code: 0,
@@ -379,7 +424,7 @@ describe('GroupJoinRequestsComponent', () => {
         },
       ],
     });
-    expect(component.invitationState(component.candidates()[0])).toBe(
+    expect(component.invitationState(component.lookup.results()[0])).toBe(
       'INVITED',
     );
   });
@@ -485,7 +530,7 @@ describe('GroupJoinRequestsComponent', () => {
       vi.fn(() => of(response())),
       true,
     );
-    component.candidates.set([lookupUser]);
+    component.lookup.results.set([lookupUser]);
     component.invitations.set([
       invitationRow('12', 'REQUESTED', {
         account: 'friend',
@@ -497,7 +542,7 @@ describe('GroupJoinRequestsComponent', () => {
       groupId: 7,
       requestId: '12',
     });
-    expect(component.invitationState(component.candidates()[0])).toBe(
+    expect(component.invitationState(component.lookup.results()[0])).toBe(
       'AVAILABLE',
     );
     expect(component.invitations()[0].status).toBe('WITHDRAWN');

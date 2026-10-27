@@ -45,6 +45,7 @@
 }
 
 .muted {
+  line-height: 20px;
   color: var(--app-text-muted);
   font-size: 13px;
 }
@@ -172,6 +173,8 @@
 .section-label {
   padding: 8px 16px 4px;
   font-size: 12px;
+  line-height: 18px;
+  flex: 0 0 auto;
   font-weight: 600;
   color: var(--app-text-muted);
   text-transform: uppercase;
@@ -179,6 +182,9 @@
 }
 
 .member {
+  height: 64px;
+  box-sizing: border-box;
+  line-height: 20px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -645,10 +651,19 @@ button.action-row {
 .manager-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 12px 0 24px;
+
+  app-virtual-infinite-list {
+    flex: 1 1 0;
+    min-height: 0;
+  }
 }
 .member-search {
+  flex: 0 0 40px;
+  line-height: 20px;
   display: block;
   width: calc(100% - 32px);
   height: 40px;

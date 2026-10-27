@@ -16,7 +16,6 @@ import {
   signal,
 } from '@angular/core';
 import { AsyncPipe } from '@angular/common';
-import { FormsModule } from '@angular/forms';
 import {
   defer,
   finalize,
@@ -26,14 +25,12 @@ import {
   map,
   Observable,
   of,
-  Subscription,
   switchMap,
   take,
   takeUntil,
 } from 'rxjs';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
 import { GroupService } from '../../services/group.service';
 import type { User } from '../../services/model';
@@ -46,16 +43,14 @@ import { UserAvatarType } from '../user-avatar/model';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
-import {
-  FederatedResolveError,
-  type FederatedResolveStage,
-  UserService,
-} from '../../services/user.service';
+import { IdentitySearch } from '../../services/identity-search';
+import { IdentitySearchComponent } from '../identity-search/identity-search.component';
 import {
   applyGroupJoinRequestAction,
   hasUnreadGroupJoinRequests,
   mergeGroupJoinRequestPage,
 } from '../../services/group-join-request-state';
+import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 
 type RequestListKind = 'INVITATION' | 'APPLICATION';
@@ -63,10 +58,9 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
 @Component({
   selector: 'app-group-join-requests',
   imports: [
+    IdentitySearchComponent,
     AsyncPipe,
-    FormsModule,
     MatButtonModule,
-    MatProgressBarModule,
     MatTabsModule,
     PageHeaderComponent,
     TranslocoPipe,
@@ -74,6 +68,7 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
     SnapshotAvatarComponent,
     UserIdentityLabelComponent,
     NamespaceDomainPipe,
+    VirtualInfiniteListComponent,
   ],
   templateUrl: './group-join-requests.component.html',
   styleUrl: './group-join-requests.component.scss',
@@ -86,38 +81,31 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   private readonly sessionLifecycle = inject(SessionLifecycleService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly conversations = inject(ConversationListService);
-  private readonly users = inject(UserService);
   private readonly nav = inject(NavStateMachineService);
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
 
   readonly activeTab = signal(0);
+  readonly requestItemKey = (_index: number, request: RequestRecord) =>
+    request.id;
+  readonly candidateItemKey = (_index: number, candidate: User) =>
+    this.candidateKey(candidate);
+  readonly invitationsError = signal(false);
+  readonly applicationsError = signal(false);
   readonly invitations = signal<RequestRecord[]>([]);
   readonly applications = signal<RequestRecord[]>([]);
-  readonly candidates = signal<User[]>([]);
+  readonly lookup = new IdentitySearch();
   private readonly sentInvitations = signal<ReadonlySet<string>>(new Set());
   readonly loadingInvitations = signal(false);
   readonly loadingApplications = signal(false);
-  readonly loadingCandidates = signal(false);
   readonly invitationsHasMore = signal(false);
   readonly applicationsHasMore = signal(false);
-  readonly candidatesHasMore = signal(false);
   readonly acting = signal<ReadonlySet<string>>(new Set());
   readonly inviting = signal<ReadonlySet<string>>(new Set());
   readonly searchText = signal('');
-  readonly appliedSearch = signal('');
-  readonly federatedAddress = signal<{
-    account: string;
-    domain: string;
-  } | null>(null);
-  readonly invalidGroupAddress = signal(false);
-  readonly resolvingFederated = signal(false);
-  readonly federationStage = signal<FederatedResolveStage>('DISCOVERING');
 
   private invitationBefore?: string;
   private applicationBefore?: string;
-  private searchOffset = 0;
-  private resolveSub?: Subscription;
 
   constructor() {
     const threadId = this.conversations.openThreadId();
@@ -168,28 +156,24 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   }
 
   search(): void {
-    this.resolveSub?.unsubscribe();
-    const query = this.searchText().trim();
-    this.appliedSearch.set(query);
-    this.invalidGroupAddress.set(/^!\S+@\S+$/.test(query));
-    this.federatedAddress.set(null);
-    this.candidates.set([]);
-    this.candidatesHasMore.set(false);
-    const address = /^([^@\s]+)@([^@\s]+)$/.exec(query);
-    if (address) {
-      if (!this.invalidGroupAddress()) {
-        this.federatedAddress.set({ account: address[1], domain: address[2] });
-      }
-      return;
-    }
-    void this.loadCandidates(false);
+    this.lookup.search(this.searchText(), {
+      reject: (user) => (user.isGroup ? 'group.cannotInviteGroup' : null),
+    });
+  }
+
+  cancelSearch(): void {
+    this.lookup.cancel();
+    this.searchText.set('');
   }
 
   loadMoreRequests(kind: RequestListKind): void {
     void this.loadRequests(kind, true);
   }
-  loadMoreCandidates(): void {
-    void this.loadCandidates(true);
+
+  retryRequests(kind: RequestListKind): void {
+    const rows =
+      kind === 'INVITATION' ? this.invitations() : this.applications();
+    void this.loadRequests(kind, rows.length > 0);
   }
 
   async handleApplication(
@@ -281,7 +265,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     }
   }
 
-  invitationState(user: User): 'AVAILABLE' | 'INVITED' | 'NOT_FRIEND' {
+  invitationState(user: User): 'AVAILABLE' | 'INVITED' {
     const key = this.candidateKey(user);
     const pending = this.invitations().some(
       (request) =>
@@ -289,17 +273,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
         new Date(request.expiresAt ?? 0).getTime() > Date.now() &&
         this.candidateKey(request.receiver) === key,
     );
-    if (pending || this.sentInvitations().has(key)) return 'INVITED';
-    const friend = this.conversations.items().some(
-      (thread) =>
-        thread.type === 'P2P' &&
-        thread.conversationState === 'ACTIVE' &&
-        this.candidateKey({
-          account: thread.account,
-          namespaceId: thread.publisherNamespaceId,
-        }) === key,
-    );
-    return friend ? 'AVAILABLE' : 'NOT_FRIEND';
+    return pending || this.sentInvitations().has(key) ? 'INVITED' : 'AVAILABLE';
   }
 
   candidateKey(candidate: { account: string; namespaceId: number }): string {
@@ -387,43 +361,6 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       });
   }
 
-  resolveFederated(): void {
-    const address = this.federatedAddress();
-    if (!address || this.resolvingFederated()) return;
-    const session = this.sessionLifecycle.capture();
-    this.resolvingFederated.set(true);
-    this.federationStage.set('DISCOVERING');
-    this.resolveSub = this.users
-      .resolveFederatedUser(address, (stage) => this.federationStage.set(stage))
-      .pipe(
-        takeUntil(fromEvent(session.signal, 'abort')),
-        takeUntilDestroyed(this.destroyRef),
-        finalize(() => this.resolvingFederated.set(false)),
-      )
-      .subscribe({
-        next: ({ user }) => {
-          // The panel stays with its captured group; switching the visible
-          // chat neither retargets nor cancels an in-flight address resolve.
-          if (user.isGroup) {
-            this.invalidGroupAddress.set(true);
-            return;
-          }
-
-          if (!this.sessionLifecycle.isCurrent(session)) return;
-          this.candidates.set([user]);
-          this.federatedAddress.set(null);
-        },
-        error: (error: unknown) => {
-          const key =
-            error instanceof FederatedResolveError &&
-            error.reason === 'NOT_FOUND'
-              ? 'group.noMatchingFriends'
-              : 'errors.networkError';
-          this.toast.warn(this.transloco.translate(key));
-        },
-      });
-  }
-
   applicationStatusKey(status: RequestRecord['status']): string {
     switch (status) {
       case RequestProjectionStatus.ACCEPTED:
@@ -448,12 +385,11 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       return 'group.inviting';
     const state = this.invitationState(candidate);
     if (state === 'INVITED') return 'group.invitedStatus';
-    if (state === 'NOT_FRIEND') return 'group.friendRequired';
     return 'group.inviteAction';
   }
 
   ngOnDestroy(): void {
-    this.resolveSub?.unsubscribe();
+    this.lookup.cancel();
   }
 
   private async loadRequests(
@@ -466,8 +402,15 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       kind === 'INVITATION'
         ? this.loadingInvitations
         : this.loadingApplications;
-    if (loading()) return;
+    const hasMore =
+      kind === 'INVITATION'
+        ? this.invitationsHasMore
+        : this.applicationsHasMore;
+    const error =
+      kind === 'INVITATION' ? this.invitationsError : this.applicationsError;
+    if (loading() || (append && !hasMore())) return;
     loading.set(true);
+    error.set(false);
     try {
       const before =
         kind === 'INVITATION' ? this.invitationBefore : this.applicationBefore;
@@ -484,7 +427,10 @@ export class GroupJoinRequestsComponent implements OnDestroy {
               take: 20,
             }),
       );
-      if (res.code !== 0 || !res.data) return this.showBusinessError(res);
+      if (res.code !== 0 || !res.data) {
+        error.set(true);
+        return this.showBusinessError(res);
+      }
       const target =
         kind === 'INVITATION' ? this.invitations : this.applications;
       target.update((rows) =>
@@ -500,39 +446,11 @@ export class GroupJoinRequestsComponent implements OnDestroy {
           this.markApplicationsRead(res.data.joinRequestEndFeedId);
       }
     } catch {
+      error.set(true);
       this.showNetworkError();
     } finally {
       loading.set(false);
     }
-  }
-
-  private loadCandidates(append: boolean): void {
-    const groupId = this.conversations.openThreadId();
-    const query = this.appliedSearch();
-    if (groupId === undefined || this.loadingCandidates() || query.length < 2)
-      return;
-    const session = this.sessionLifecycle.capture();
-    const offset = append ? this.searchOffset : 0;
-    this.loadingCandidates.set(true);
-    this.resolveSub = this.users
-      .searchUsers({ q: query, skip: offset, take: 20 })
-      .pipe(
-        takeUntil(fromEvent(session.signal, 'abort')),
-        takeUntilDestroyed(this.destroyRef),
-        finalize(() => this.loadingCandidates.set(false)),
-      )
-      .subscribe({
-        next: (res) => {
-          if (res.code !== 0 || !res.data) return this.showBusinessError(res);
-          const snapshots = res.data.list.filter((user) => !user.isGroup);
-          this.candidates.update((rows) =>
-            append ? [...rows, ...snapshots] : snapshots,
-          );
-          this.searchOffset = offset + res.data.list.length;
-          this.candidatesHasMore.set(this.searchOffset < res.data.total);
-        },
-        error: () => this.showNetworkError(),
-      });
   }
 
   private markApplicationsRead(joinRequestReadFeedId: number): void {

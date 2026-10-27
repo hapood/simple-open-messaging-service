@@ -51,6 +51,7 @@ import {
   MemberProfileRepository,
   type ResolvedMemberProfile,
 } from '../../services/member-profile-store.service';
+import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import {
   limitUnicodeCodePoints,
@@ -96,6 +97,7 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
     TranslocoPipe,
     ThreadAliasEditorComponent,
     PageHeaderComponent,
+    VirtualInfiniteListComponent,
   ],
   templateUrl: './group-info.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -150,6 +152,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly loading = signal(true);
   readonly loadingMore = signal(false);
   readonly rosterHasMore = signal(false);
+  readonly rosterError = signal(false);
+  readonly rosterReset = signal(0);
+  readonly memberItemKey = (_index: number, member: ResolvedMemberProfile) =>
+    member.identityKey;
   readonly busy = signal(false); // a mutation is in flight (disables action buttons)
   readonly blockedSaving = signal(false);
   readonly blockedControl = signal(false);
@@ -213,7 +219,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       (this.groupMeta()?.memberCount ?? 0) - this.overviewMembers().length,
     ),
   );
-  readonly filteredRoster = this.roster.asReadonly();
   readonly canLeave = computed(() => !this.isOwner());
   readonly confirmDissolve = signal(false);
   readonly announcementEditing = signal(false);
@@ -362,6 +367,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     this.destroyed = true;
+    this.rosterRequest++;
     this.rosterSub?.unsubscribe();
     this.clearStagedAvatar();
   }
@@ -372,15 +378,28 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     const request = ++this.rosterRequest;
     const threadId = this.threadId();
     if (threadId === undefined || this.readOnly()) return;
+    this.roster.set([]);
+    this.rosterHasMore.set(false);
+    this.rosterError.set(false);
+    this.rosterReset.update((value) => value + 1);
+    this.loadingMore.set(false);
     this.loading.set(true);
-    const resolved = await this.memberProfiles.queryPage(threadId, {
-      take: 50,
-      search: this.memberQuery(),
-    });
-    if (request !== this.rosterRequest) return;
-    this.roster.set(resolved);
-    this.rosterHasMore.set(resolved.length === 50);
-    this.loading.set(false);
+    try {
+      const resolved = await this.memberProfiles.queryPage(threadId, {
+        take: 50,
+        search: this.memberQuery(),
+      });
+      if (request !== this.rosterRequest) return;
+      this.roster.set(resolved);
+      this.rosterHasMore.set(resolved.length === 50);
+    } catch {
+      if (request === this.rosterRequest) {
+        this.rosterError.set(true);
+        this.showNetworkError();
+      }
+    } finally {
+      if (request === this.rosterRequest) this.loading.set(false);
+    }
   }
 
   async loadMoreMembers(): Promise<void> {
@@ -388,6 +407,8 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     const current = this.roster();
     if (
       threadId === undefined ||
+      this.readOnly() ||
+      this.loading() ||
       !this.rosterHasMore() ||
       this.loadingMore() ||
       current.length === 0
@@ -395,6 +416,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       return;
     const request = this.rosterRequest;
     this.loadingMore.set(true);
+    this.rosterError.set(false);
     try {
       const page = await this.memberProfiles.queryPage(threadId, {
         afterIdentity: current.at(-1)!.identityKey,
@@ -404,15 +426,19 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       if (request !== this.rosterRequest) return;
       this.roster.update((members) => [...members, ...page]);
       this.rosterHasMore.set(page.length === 50);
+    } catch {
+      if (request === this.rosterRequest) {
+        this.rosterError.set(true);
+        this.showNetworkError();
+      }
     } finally {
-      this.loadingMore.set(false);
+      if (request === this.rosterRequest) this.loadingMore.set(false);
     }
   }
 
-  onRosterScroll(event: Event): void {
-    const element = event.currentTarget as HTMLElement;
-    if (element.scrollHeight - element.scrollTop - element.clientHeight < 160)
-      void this.loadMoreMembers();
+  retryMembers(): void {
+    if (this.roster().length) void this.loadMoreMembers();
+    else void this.loadMembers();
   }
 
   /** Whether the caller has any action available on this member row. */
@@ -642,9 +668,11 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       );
       if (res.code !== 0) return this.showBusinessError(res);
       this.nav.closeAside();
-      void this.convList.refreshAfterMutation().catch((error) =>
-        console.warn('[group] post-dissolution state refresh failed', error),
-      );
+      void this.convList
+        .refreshAfterMutation()
+        .catch((error) =>
+          console.warn('[group] post-dissolution state refresh failed', error),
+        );
     } catch {
       this.showNetworkError();
     } finally {

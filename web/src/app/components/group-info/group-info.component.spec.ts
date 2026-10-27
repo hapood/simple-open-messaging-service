@@ -16,9 +16,16 @@ describe('GroupInfoComponent dissolution acknowledgement', () => {
       readOnly: () => false,
       busy: signal(false),
       groupService: {
-        dissolveGroup: vi.fn(() => of({ code: 0, data: { status: 'PENDING' } })),
+        dissolveGroup: vi.fn(() =>
+          of({ code: 0, data: { status: 'PENDING' } }),
+        ),
       },
-      convList: { applyThreadMeta, applyGroupUpdate, refreshAfterMutation, load: vi.fn() },
+      convList: {
+        applyThreadMeta,
+        applyGroupUpdate,
+        refreshAfterMutation,
+        load: vi.fn(),
+      },
       nav: { closeAside },
     });
     await component['dissolve']();
@@ -49,6 +56,9 @@ function harness() {
     readOnly: () => false,
     roster: signal<ResolvedMemberProfile[]>([]),
     rosterHasMore: signal(true),
+    rosterError: signal(false),
+    rosterReset: signal(0),
+    showNetworkError: vi.fn(),
     memberProfiles: { queryPage },
   };
   return {
@@ -70,6 +80,50 @@ describe('GroupInfoComponent roster query ordering', () => {
 
     expect(queryPage).not.toHaveBeenCalled();
     expect(state.loading()).toBe(false);
+  });
+
+  it('clears loaded pages immediately for a new search and rejects the old page', async () => {
+    const { state, component, queryPage } = harness();
+    state.roster.set([member('Old')]);
+    const oldPage = deferred<ResolvedMemberProfile[]>();
+    const newPage = deferred<ResolvedMemberProfile[]>();
+    queryPage
+      .mockReturnValueOnce(oldPage.promise)
+      .mockReturnValueOnce(newPage.promise);
+    const append = GroupInfoComponent.prototype.loadMoreMembers.call(component);
+    state.memberQuery.set('New');
+    const reset = GroupInfoComponent.prototype.loadMembers.call(component);
+    expect(state.roster()).toEqual([]);
+    expect(state.rosterHasMore()).toBe(false);
+    expect(state.rosterReset()).toBe(1);
+    expect(queryPage).toHaveBeenLastCalledWith(42, { take: 50, search: 'New' });
+    oldPage.resolve([member('Old page')]);
+    await append;
+    expect(state.roster()).toEqual([]);
+    newPage.resolve([member('New')]);
+    await reset;
+    expect(state.roster().map((row) => row.name)).toEqual(['New']);
+  });
+
+  it('prevents duplicate next-page requests and retains rows on failure', async () => {
+    const { state, component, queryPage } = harness();
+    state.roster.set([member('Current')]);
+    let reject!: (reason: Error) => void;
+    queryPage.mockReturnValue(
+      new Promise((_resolve, fail) => {
+        reject = fail;
+      }),
+    );
+    const pending =
+      GroupInfoComponent.prototype.loadMoreMembers.call(component);
+    await GroupInfoComponent.prototype.loadMoreMembers.call(component);
+    expect(queryPage).toHaveBeenCalledOnce();
+    reject(new Error('offline'));
+    await pending;
+    expect(state.roster()[0].name).toBe('Current');
+    expect(state.rosterError()).toBe(true);
+    expect(state.loadingMore()).toBe(false);
+    expect(state.showNetworkError).toHaveBeenCalledOnce();
   });
 
   it('does not let an older query overwrite a refreshed roster', async () => {
