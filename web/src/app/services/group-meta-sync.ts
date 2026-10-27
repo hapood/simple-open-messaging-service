@@ -83,11 +83,6 @@ function validatePage(
     (!page.hasMore && page.scannedThrough !== expected.through) ||
     page.items.some(
       (entry) =>
-        !Number.isSafeInteger(entry.createdAt) ||
-        entry.createdAt < 0 ||
-        (entry.originCreatedAt !== null &&
-          (!Number.isSafeInteger(entry.originCreatedAt) ||
-            entry.originCreatedAt < 0)) ||
         (entry.operation !== 'GROUP_PROFILE' &&
           entry.operation !== 'GROUP_ANNOUNCEMENT' &&
           entry.operation !== 'MEMBER_UPSERT' &&

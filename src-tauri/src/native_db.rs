@@ -40,7 +40,7 @@ use messages::{
     MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 2;
+const CACHE_SCHEMA_VERSION: i64 = 1;
 
 /// Whether one immutable login owner is still the admitted cache owner. Identity admission for
 /// platform callbacks and notification batches; never opens or creates a connection.
