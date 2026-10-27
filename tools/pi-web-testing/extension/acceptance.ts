@@ -14,12 +14,17 @@ import {
   pauseRun,
   recordCase,
   registerCases,
-  progressSummary,
   saveRun,
   resolveDeploymentIdentity,
 } from '../../../test/browser-e2e/infrastructure/acceptance-run.mjs';
 import { localOperationBlockReason } from './local-operation-policy';
 import { recoverTestError } from './test-error-recovery';
+import {
+  compactRunContext,
+  compactRunSummary,
+  caseDetail,
+  roundView,
+} from './acceptance-summary';
 import {
   loadLocalConfig,
   localConfigPath,
@@ -55,8 +60,8 @@ export function installAcceptance(
   const prompt = () => {
     if (!run) return;
     pi.sendUserMessage(
-      `/skill:web-testing Execute this authorized acceptance run: ${JSON.stringify(summary())}. First read the selected plan and perform preflight. Use webtest_run for progress and all pauses. No driver/shared-harness or product edits without a new explicit operator confirmation. Correct invocation errors and temporary-step mistakes using webtest_run recover with diagnostic evidence, without an operator dialog. Never use a shell or another browser client to bypass a pause.`,
-      { expandPromptTemplates: true },
+      `/skill:web-testing Execute this authorized acceptance run: ${JSON.stringify(compactRunContext(run))}. Full state stays in webtest_run status and the persisted evidence directory. First read the selected plan and perform preflight. Use webtest_run for progress and all pauses. No driver/shared-harness or product edits without a new explicit operator confirmation. Correct invocation errors and temporary-step mistakes using webtest_run recover with diagnostic evidence, without an operator dialog. Never use a shell or another browser client to bypass a pause.`,
+      { expandPromptTemplates: true, deliverAs: 'followUp' },
     );
   };
   async function setup(
@@ -196,26 +201,12 @@ export function installAcceptance(
       throw new Error('Operator confirmation requires interactive Pi TUI.');
     const issue = run.state.issues.at(-1);
     if (!issue) throw new Error('Paused run has no issue record.');
-    const options = [
-      'Retry after verification',
-      'Skip and preserve gap/defect',
-      'Stop run',
-    ];
-    if (issue.proposal?.trim())
-      options.push('Authorize ONLY the proposed repair (remain paused)');
     const choice = await ctx.ui.select(
-      `${issue.kind}: ${issue.summary}\n${issue.evidence}\nProposed repair: ${issue.proposal || 'none'}`,
-      options,
+      `${issue.kind}: ${issue.summary}\n${issue.evidence}\nProposed repair: ${issue.proposal || 'none'}\nApproving continues the run; when a repair is proposed, the same approval authorizes only that proposal for this issue.`,
+      ['Approve and continue', 'Stop run'],
     );
     if (!choice) return;
-    const decision = choice.startsWith('Retry')
-      ? 'retry'
-      : choice.startsWith('Skip')
-        ? 'skip'
-        : choice.startsWith('Stop')
-          ? 'stop'
-          : 'repair';
-    decideRun(run.state, decision);
+    decideRun(run.state, choice.startsWith('Approve') ? 'continue' : 'stop');
     persist();
   }
   pi.registerFlag('webtest-wizard', {
@@ -229,9 +220,14 @@ export function installAcceptance(
     handler: async (_args, ctx) => setup(ctx),
   });
   pi.registerCommand('webtest-status', {
-    description: 'Show current acceptance progress document',
+    description: 'Show current acceptance round view',
     handler: async (_args, ctx) => {
-      ctx.ui.notify(JSON.stringify(summary(), null, 2), 'info');
+      if (!run) {
+        ctx.ui.notify(JSON.stringify(summary(), null, 2), 'info');
+        return;
+      }
+      // Round view: current round's cases/issues plus the persisted document path.
+      ctx.ui.notify(JSON.stringify(roundView(run), null, 2), 'info');
     },
   });
   pi.registerCommand('webtest-resume', {
@@ -277,7 +273,7 @@ export function installAcceptance(
       label: 'Acceptance progress',
       executionMode: 'sequential',
       description:
-        'Persist acceptance scope, assertion-backed results, resume notes and issues. pause writes an issue before asking the operator; decision asks the operator for a paused driver failure. recover resumes only an unclassified browser-command failure diagnosed as an argument or temporary-step mistake, with evidence, without a dialog; it never authorizes shared-harness/product edits. record requires id, title and outcome. Never pass credentials or OTPs. Use register with up to 200 {id,title} cases per batch to expand matrices as NOT RUN before testing; existing results are preserved. register and record return compact summaries; status returns full state.',
+        'Persist acceptance scope, assertion-backed results, resume notes and issues. pause writes an issue before asking the operator; decision reopens the two-choice operator dialog — approve-and-continue (which also authorizes the issue recorded repair proposal) or stop. recover resumes only an unclassified browser-command failure diagnosed as an argument or temporary-step mistake, with evidence, without a dialog; it never authorizes shared-harness/product edits. record requires id, title and outcome. Never pass credentials or OTPs. Use register with up to 200 {id,title} cases per batch to expand matrices as NOT RUN before testing; existing results are preserved; registering a round manifest switches the status round to exactly that batch of case IDs (the common prefix is its label). register, record, pause, decision, recover, checkpoint and finish return compact summaries. status returns the active round view — the round cases with outcomes and evidence plus the round issue digests; status with id returns that case with its full issues; older history stays in run.json.',
       parameters: Type.Object({
         action: Type.Union(
           [
@@ -386,21 +382,28 @@ export function installAcceptance(
           run.state.checkpoint = params.next;
         } else if (params.action === 'finish') finishRun(run.state);
         persist();
+        // Only the explicit status action returns a round-scoped view: the
+        // active round's cases and issues, or one case's detail via id.
+        // Every mutation reports bounded progress plus the current issue.
+        const compactResponse = ['register', 'record', 'recover'].includes(
+          params.action,
+        )
+          ? {
+              ...compactRunSummary(run),
+              ...(registration ? { registration } : {}),
+              ...(params.action === 'record' ? { caseId: params.id } : {}),
+            }
+          : compactRunSummary(run);
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify(
-                ['register', 'record', 'recover'].includes(params.action)
-                  ? {
-                      directory: run.directory,
-                      ...progressSummary(run.state),
-                      ...(registration ? { registration } : {}),
-                      ...(params.action === 'record'
-                        ? { caseId: params.id }
-                        : {}),
-                    }
-                  : summary(),
+                params.action === 'status'
+                  ? params.id
+                    ? caseDetail(run, params.id)
+                    : roundView(run)
+                  : compactResponse,
                 null,
                 2,
               ),

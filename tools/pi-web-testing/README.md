@@ -76,7 +76,8 @@ no longer needed for evidence/resume. Temporary scenario modules belong in
 Commands:
 
 - `/webtest`: configure a new run.
-- `/webtest-status`: show active state and document path.
+- `/webtest-status`: show the active round view (round cases, outcomes and
+  issue digests) and the full document path.
 - `/webtest-resume RUN_ID`: reload that run using the shared local configuration.
   The saved endpoints/account must match the restored run; credentials are never
   silently sent to changed targets. Deployment versions, identities, profiles and
@@ -115,15 +116,19 @@ must be rerun. Progress-tool parameter errors that leave the run running can be
 corrected directly without a pause. Ambiguous failures, product/environment
 faults, unsupported driver capabilities and shared-code repairs are not eligible.
 For these the agent records PRODUCT_BUG, DRIVER_MISMATCH or ENVIRONMENT with
-reproduction, expected/actual and evidence, then asks the operator to retry,
-skip, stop, or authorize **only a specific proposed repair**. Escape leaves the
-run paused. A repair remains paused until focused checks pass and the operator
-approves retry. Earlier approval never authorizes a later mismatch.
+reproduction, expected/actual and evidence, then asks the operator to approve
+and continue, or stop. Escape leaves the run paused. Approving resumes the run;
+when the issue carries a repair proposal, the same approval authorizes only
+that proposal — its scoped edits and focused checks — before the failed
+assertion is rerun. Earlier approval never authorizes a later mismatch;
+skipping a case is recorded by the agent as SKIPPED with a reason, not chosen
+by the operator.
 
 Run authorization covers routine non-destructive local checks, fixture preparation,
 and creation/editing of temporary `.mjs` steps under `/tmp/soms-browser-e2e/steps/`;
-these do not prompt per operation. Source changes need one specific repair approval,
-not another confirmation for every edit or verification command within that proposal.
+these do not prompt per operation. Source changes need one operator continue
+approval on a paused issue with a concrete proposal, not another confirmation
+for every edit or verification command within that proposal.
 Paused runs block local execution/writers until an operator decision or eligible
 routine test-error recovery; safe read/browser
 diagnostics remain available. Never use a shell or step to change source without

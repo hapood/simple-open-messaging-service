@@ -203,6 +203,23 @@ export function loadRun(root, id) {
   return { directory, state };
 }
 
+/**
+ * Longest common dotted prefix across a registration batch. The leaf segment
+ * is never consumed, so a batch of sibling assertions keeps its shared parent
+ * as the active round; mixed batches fall back to the chapter prefix.
+ */
+export function roundPrefixOf(ids) {
+  const segments = ids.map((id) => id.split('.'));
+  const depth = Math.min(...segments.map((parts) => parts.length - 1));
+  const round = [];
+  for (let index = 0; index < depth; index += 1) {
+    const segment = segments[0][index];
+    if (!segments.every((parts) => parts[index] === segment)) break;
+    round.push(segment);
+  }
+  return round.join('.') || segments[0][0];
+}
+
 export function registerCases(state, items) {
   if (state.phase !== 'running')
     throw new Error('Resolve the pause with the operator first.');
@@ -233,10 +250,14 @@ export function registerCases(state, items) {
   }
   // Validate the complete batch before mutating; re-registration never resets results.
   state.cases.push(...additions);
+  // Registering a round manifest switches the status round to that manifest.
+  state.roundCaseIds = items.map((item) => item.id);
+  state.round = roundPrefixOf(state.roundCaseIds);
   return {
     requested: items.length,
     added: additions.length,
     preserved: items.length - additions.length,
+    round: state.round,
   };
 }
 
@@ -302,31 +323,23 @@ export function pauseRun(state, issue) {
 }
 
 export function decideRun(state, decision) {
-  if (!['retry', 'skip', 'repair', 'stop'].includes(decision))
+  if (!['continue', 'stop'].includes(decision))
     throw new Error('Invalid decision.');
   const issue = state.issues.at(-1);
   if (state.phase !== 'paused' || !issue) throw new Error('No paused issue.');
-  if (decision === 'repair' && !issue.proposal?.trim())
-    throw new Error('A concrete proposal is required before repair approval.');
   issue.decision = decision;
-  if (decision === 'repair') {
-    state.next = `Repair authorized for ${issue.id} only: ${issue.proposal || issue.summary}. Run focused harness checks, then ask the operator before retrying.`;
+  if (decision === 'stop') {
+    state.phase = 'stopped';
+    state.next =
+      'Stopped by operator; retain evidence and document remaining cleanup.';
     return;
   }
-  if (decision === 'skip' && issue.caseId) {
-    const item = state.cases.find((entry) => entry.id === issue.caseId);
-    if (item && item.outcome !== 'BUG') {
-      item.outcome = 'SKIPPED';
-      item.evidence += '\nOperator skipped; original issue retained.';
-    }
-  }
-  state.phase = decision === 'stop' ? 'stopped' : 'running';
-  state.next =
-    decision === 'retry'
-      ? 'Revalidate environment and retry the blocked case; never infer PASS from a repair.'
-      : decision === 'skip'
-        ? 'Continue with the next independent case; retain defect and dependency gaps.'
-        : 'Stopped by operator; retain evidence and document remaining cleanup.';
+  // The operator's continue approval also approves a repair proposal recorded
+  // on this issue; authorization ends at the next pause.
+  state.phase = 'running';
+  state.next = issue.proposal?.trim()
+    ? `Operator approved continuing with ${issue.id}'s recorded proposal: perform only its scoped edits, run focused checks, then rerun the failed assertion; never infer PASS from a repair.`
+    : 'Revalidate the environment and retry the blocked case, or record SKIPPED with a reason and continue with the next independent case; never infer PASS.';
 }
 
 export function assertBrowserAction(state, action) {
