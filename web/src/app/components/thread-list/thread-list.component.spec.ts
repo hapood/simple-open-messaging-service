@@ -256,8 +256,9 @@ describe('ThreadListComponent', () => {
     );
     expect(row.querySelector('.thread-msg')).toBeNull();
     const rows = row.querySelectorAll('.thread-row');
-    expect(rows[0].querySelectorAll('.thread-status-icon')).toHaveLength(1);
+    expect(rows[0].querySelectorAll('.thread-status-icon')).toHaveLength(0);
     expect(rows[1].querySelectorAll('.thread-status-icon')).toHaveLength(0);
+    expect(row.querySelector('.pin-corner-badge')).not.toBeNull();
     expect(row.getAttribute('aria-label')).not.toContain(
       TestBed.inject(TranslocoService).translate('threadList.muted'),
     );
@@ -301,6 +302,34 @@ describe('ThreadListComponent', () => {
     expect(rows[1].querySelector('.group-avatar-badge')).toBeNull();
   });
 
+  it('renders muted icon in second row preview for unblocked muted conversation', async () => {
+    items.set([
+      {
+        ...p2p(1, 11),
+        muted: true,
+        blocked: false,
+        pinned: true,
+        lastMessagePreview: 'Hello there',
+      },
+    ]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const row = fixture.nativeElement.querySelector(
+      '.thread-item',
+    ) as HTMLElement;
+    const rows = row.querySelectorAll('.thread-row');
+    expect(rows[0].querySelectorAll('.thread-status-icon')).toHaveLength(0);
+    expect(row.querySelector('.pin-corner-badge')).not.toBeNull();
+    expect(rows[1].querySelectorAll('.thread-status-icon--muted')).toHaveLength(
+      1,
+    );
+    expect(row.querySelector('.thread-msg-text')?.textContent?.trim()).toBe(
+      'Hello there',
+    );
+  });
+
   it('shows a separate @ badge only while the conversation has an unread mention', async () => {
     items.set([
       {
@@ -317,7 +346,7 @@ describe('ThreadListComponent', () => {
       '.thread-item',
     ) as HTMLElement;
     expect(
-      row.querySelector('.mention-unread-badge')?.textContent?.trim(),
+      row.querySelector('.thread-status-icon--mention')?.textContent?.trim(),
     ).toBe('@');
     expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('2');
     expect(row.getAttribute('aria-label')).toContain(
@@ -348,11 +377,11 @@ describe('ThreadListComponent', () => {
     await fixture.whenStable();
 
     const badge = fixture.nativeElement.querySelector(
-      '.join-request-badge',
+      '.thread-status-icon--warning',
     ) as HTMLElement;
     expect(badge).not.toBeNull();
     const icon = fixture.debugElement.query(
-      By.css('.join-request-badge app-icon'),
+      By.css('.thread-status-icon--warning app-icon'),
     ).componentInstance as IconComponent;
     expect(icon.type()).toBe(AppIconType.GROUP_JOIN_REQUESTS);
     expect(badge.textContent?.trim()).toBe('');

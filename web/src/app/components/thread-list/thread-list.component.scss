@@ -35,6 +35,7 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  overflow: hidden;
 
   &:hover {
     background: var(--app-hover);
@@ -117,19 +118,48 @@
       align-items: center;
       color: var(--app-text-muted);
       line-height: 16px;
+
+      &--blocked {
+        color: var(--app-danger);
+      }
+
+      &--warning {
+        color: var(--app-warning);
+      }
+
+      &--mention {
+        color: var(--app-action-primary);
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 16px;
+      }
     }
 
     .thread-msg {
       flex: 1 1 auto;
       min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
       font-size: 14px;
       color: var(--app-text-muted);
+      line-height: 16px;
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+
+      .thread-status-icon--muted {
+        flex: 0 0 auto;
+      }
+
+      .thread-msg-text {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
     }
 
-    .thread-msg::first-letter {
+    .thread-msg-text::first-letter {
       text-transform: none;
     }
 
@@ -142,6 +172,11 @@
       color: var(--app-text-muted);
       font-size: 14px;
       line-height: 16px;
+
+      app-icon {
+        flex: 0 0 auto;
+        color: var(--app-danger);
+      }
     }
 
     .unread-badge {
@@ -158,42 +193,41 @@
       text-align: center;
       box-sizing: border-box;
     }
+  }
 
-    .mention-unread-badge {
-      flex: 0 0 auto;
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      background: color-mix(in srgb, var(--app-brand) 14%, transparent);
-      color: var(--app-brand);
-      font-size: 13px;
-      font-weight: 750;
-      line-height: 20px;
-      text-align: center;
-    }
+  // Top-right pinned conversation badge: clean 14px angled pin shifted flush to top-right corner
+  .pin-corner-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--app-text-muted);
+    z-index: 2;
+    pointer-events: none;
 
-    .join-request-badge {
-      flex: 0 0 auto;
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      display: inline-flex;
+    app-icon {
+      display: flex;
       align-items: center;
       justify-content: center;
-      background: color-mix(in srgb, var(--app-brand) 14%, transparent);
-      color: var(--app-brand);
+      transform: rotate(45deg);
+      opacity: 0.85;
     }
+  }
+
+  &.pinned .thread-time {
+    margin-right: 4px;
+  }
+
+  &:hover .pin-corner-badge {
+    color: var(--app-text);
   }
 }
 
 .thread-item.muted .unread-badge {
-  background: var(--app-bg-muted);
-  color: var(--app-text-muted);
-  border: 1px solid var(--app-border-strong);
-  line-height: 18px;
-}
-
-.thread-item.muted .mention-unread-badge {
   background: var(--app-bg-muted);
   color: var(--app-text-muted);
   border: 1px solid var(--app-border-strong);

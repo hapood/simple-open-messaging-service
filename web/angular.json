@@ -27,9 +27,7 @@
               {
                 "glob": "**/*",
                 "input": "public",
-                "ignore": [
-                  "push/sw-runtime.js"
-                ]
+                "ignore": ["push/sw-runtime.js"]
               },
               {
                 "glob": "**/*",
@@ -37,14 +35,9 @@
                 "output": "/"
               }
             ],
-            "styles": [
-              "src/styles.scss"
-            ],
+            "styles": ["src/styles.scss"],
             "scripts": [],
-            "allowedCommonJsDependencies": [
-              "dayjs",
-              "@messageformat/core"
-            ]
+            "allowedCommonJsDependencies": ["dayjs", "@messageformat/core"]
           },
           "configurations": {
             "production": {
@@ -92,6 +85,12 @@
               "index": "src/playground/index.html",
               "browser": "src/playground/main.ts",
               "tsConfig": "tsconfig.playground.json",
+              "fileReplacements": [
+                {
+                  "replace": "src/app/services/sha256.ts",
+                  "with": "src/playground/sha256-fallback.ts"
+                }
+              ],
               "optimization": true,
               "extractLicenses": true,
               "sourceMap": false,
@@ -101,9 +100,7 @@
                 {
                   "glob": "**/*",
                   "input": "public",
-                  "ignore": [
-                    "push/sw-runtime.js"
-                  ]
+                  "ignore": ["push/sw-runtime.js"]
                 },
                 {
                   "glob": "**/*",
@@ -116,6 +113,12 @@
               "index": "src/playground/index.html",
               "browser": "src/playground/main.ts",
               "tsConfig": "tsconfig.playground.json",
+              "fileReplacements": [
+                {
+                  "replace": "src/app/services/sha256.ts",
+                  "with": "src/playground/sha256-fallback.ts"
+                }
+              ],
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true,
@@ -125,9 +128,7 @@
                 {
                   "glob": "**/*",
                   "input": "public",
-                  "ignore": [
-                    "push/sw-runtime.js"
-                  ]
+                  "ignore": ["push/sw-runtime.js"]
                 },
                 {
                   "glob": "**/*",
@@ -147,9 +148,7 @@
                 {
                   "glob": "**/*",
                   "input": "public",
-                  "ignore": [
-                    "push/sw-runtime.js"
-                  ]
+                  "ignore": ["push/sw-runtime.js"]
                 },
                 {
                   "glob": "**/*",
@@ -164,9 +163,7 @@
                 {
                   "glob": "**/*",
                   "input": "public",
-                  "ignore": [
-                    "push/sw-runtime.js"
-                  ]
+                  "ignore": ["push/sw-runtime.js"]
                 },
                 {
                   "glob": "**/*",
@@ -182,9 +179,7 @@
                 {
                   "glob": "**/*",
                   "input": "public",
-                  "ignore": [
-                    "push/sw-runtime.js"
-                  ]
+                  "ignore": ["push/sw-runtime.js"]
                 },
                 {
                   "glob": "**/*",

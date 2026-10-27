@@ -69,6 +69,8 @@ export interface PaneEntry {
   readonly desktopHeight?: DialogDesktopHeight;
   /** Conversation-local dialogs are rendered inside the matching message thread instead of RootPopup. */
   readonly scopeThreadId?: number;
+  /** Prevent dismissal by clicking the backdrop or pressing escape. */
+  readonly disableClose?: boolean;
   /** This dialog owns the mobile Settings drill-down stack. While it is topmost, back peels a category
    * before closing the dialog itself; dialogs pushed above it still close first as usual. */
   readonly settingsDrilldown?: boolean;

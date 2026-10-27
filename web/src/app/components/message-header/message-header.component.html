@@ -59,23 +59,6 @@
             />
           </button>
         }
-        <span class="thread-indicators">
-          @if (userMsgTrd()?.blocked) {
-            <app-icon
-              [type]="AppIconType.BLOCK"
-              [style]="{ width: '16px', height: '16px' }"
-              [attr.aria-label]="'threadList.blocked' | transloco"
-              [title]="'threadList.blocked' | transloco"
-            ></app-icon>
-          } @else if (userMsgTrd()?.muted) {
-            <app-icon
-              [type]="AppIconType.MUTE"
-              [style]="{ width: '16px', height: '16px' }"
-              [attr.aria-label]="'threadList.muted' | transloco"
-              [title]="'threadList.muted' | transloco"
-            ></app-icon>
-          }
-        </span>
       </span>
       @if (subtitle()) {
         <span class="msg-subtitle" [title]="subtitle()">{{ subtitle() }}</span>

@@ -34,9 +34,6 @@
     </app-page-header>
 
     <div class="body">
-      @if (saveError()) {
-        <div class="save-error" role="alert">{{ saveError() }}</div>
-      }
       <div class="avatar-wrap">
         <div class="avatar">
           @if (avatarPreviewUrl(); as previewUrl) {
@@ -55,7 +52,10 @@
               [account]="self.account"
             />
           } @else {
-            <app-snapshot-avatar [type]="UserAvatarType.SELF" [loading]="true" />
+            <app-snapshot-avatar
+              [type]="UserAvatarType.SELF"
+              [loading]="true"
+            />
           }
           <button
             class="avatar-edit"

@@ -16,6 +16,7 @@ import { MatInputModule } from '@angular/material/input';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserService } from '../../services/user.service';
 import { LocalDomainService } from '../../services/local-domain.service';
+import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
 import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
@@ -62,6 +63,7 @@ export class ProfileEditorComponent {
   private readonly userService = inject(UserService);
   private readonly localDomain = inject(LocalDomainService);
   private readonly transloco = inject(TranslocoService);
+  private readonly toast = inject(ToastService);
   private readonly destroyRef = inject(DestroyRef);
 
   readonly UserAvatarType = UserAvatarType;
@@ -86,7 +88,6 @@ export class ProfileEditorComponent {
   /** Local crop preview shown until the refreshed session profile takes over. */
   readonly avatarPreviewUrl = signal('');
   readonly saving = signal(false);
-  readonly saveError = signal('');
   /** Brief "Saved" confirmation on the Save button after a successful save (~1.5s). */
   readonly justSaved = signal(false);
   private savedTimer?: ReturnType<typeof setTimeout>;
@@ -96,9 +97,7 @@ export class ProfileEditorComponent {
   readonly accountAddress = computed(() => {
     const profile = this.sessionProfile();
     const domain = this.localDomain.domain();
-    return profile?.account && domain
-      ? `${profile.account}@${domain}`
-      : '';
+    return profile?.account && domain ? `${profile.account}@${domain}` : '';
   });
 
   nameLength(): number {
@@ -110,12 +109,10 @@ export class ProfileEditorComponent {
   }
 
   onNameInput(value: string): void {
-    this.saveError.set('');
     this.name.set(limitUnicodeCodePoints(value, this.NAME_MAX));
   }
 
   onBioInput(value: string): void {
-    this.saveError.set('');
     this.bio.set(limitUnicodeCodePoints(value, this.BIO_MAX));
   }
 
@@ -191,7 +188,6 @@ export class ProfileEditorComponent {
   }
 
   finishAvatarEdit(file: File) {
-    this.saveError.set('');
     this.avatarDraft.set(null);
     this.pendingAvatar.set(file);
     this.clearAvatarPreview();
@@ -200,7 +196,6 @@ export class ProfileEditorComponent {
 
   async save() {
     if (!this.canSave()) return;
-    this.saveError.set('');
     this.saving.set(true);
     let avatarBase64: string | undefined;
     const avatar = this.pendingAvatar();
@@ -209,7 +204,7 @@ export class ProfileEditorComponent {
         avatarBase64 = await this.fileBase64(avatar);
       } catch {
         this.saving.set(false);
-        this.saveError.set(this.transloco.translate('profile.saveFailed'));
+        this.toast.warn(this.transloco.translate('profile.saveFailed'));
         return;
       }
     }
@@ -228,7 +223,7 @@ export class ProfileEditorComponent {
             this.saved.emit();
             this.flashSaved();
           } else {
-            this.saveError.set(
+            this.toast.warn(
               res.message === 'invalid avatar'
                 ? this.transloco.translate('profile.avatarInvalid')
                 : translateBizResult(res, this.transloco) ||
@@ -238,7 +233,7 @@ export class ProfileEditorComponent {
         },
         error: () => {
           this.saving.set(false);
-          this.saveError.set(this.transloco.translate('profile.saveFailed'));
+          this.toast.warn(this.transloco.translate('profile.saveFailed'));
         },
       });
   }

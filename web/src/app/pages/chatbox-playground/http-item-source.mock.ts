@@ -27,6 +27,7 @@ import {
   type StandardResponse,
   type User,
 } from '../../services/model';
+import { messageAuthorAvatarProfile } from '../../services/avatar-profile-ref';
 
 const mockCreatorKey = (id: number): string =>
   JSON.stringify([0, `user-${id}`]);
@@ -42,7 +43,7 @@ function mockUser(id: number, account: string): readonly [number, User] {
     {
       id,
       account,
-      name: account,
+      name: account[0].toUpperCase() + account.slice(1),
       avatar: '',
       bio: '',
       isGroup: false,
@@ -53,39 +54,53 @@ function mockUser(id: number, account: string): readonly [number, User] {
   ];
 }
 
+/**
+ * Mirrors production HttpItemSource: a revision-backed sender carries a demand profile ref so the
+ * shared presentation pipeline resolves name/avatar; pre-revision senders fall back to a name-only
+ * snapshot. Accounts intentionally match the playground profile fixtures (lowercase keys).
+ */
+function mockSender(
+  user: User | undefined,
+  fallbackName: string,
+  creatorId: number,
+): ChatMsgData['sender'] {
+  const profile = user
+    ? messageAuthorAvatarProfile({
+        publisherNamespaceId: 0,
+        profileNamespaceId: user.namespaceId,
+        profileRev: user.profileRev,
+        creator: { account: user.account },
+      })
+    : undefined;
+  const domainSource = {
+    type: 'profile-namespace' as const,
+    publisherNamespaceId: 0,
+    profileNamespaceId: user?.namespaceId ?? 0,
+  };
+  return profile
+    ? {
+        kind: 'demand',
+        profile,
+        fallbackName,
+        account: user?.account ?? String(creatorId),
+        domainSource,
+      }
+    : {
+        kind: 'snapshot',
+        name: fallbackName,
+        imageUrl: null,
+        account: user?.account ?? String(creatorId),
+        domainSource,
+      };
+}
+
 /** Mock user table (id → User). Mirrors the production backend user table; MockItemSource.ensureProfiles looks up by creator here. */
 const MOCK_USERS: ReadonlyMap<number, User> = new Map([
-  [
-    1,
-    {
-      id: 1,
-      account: 'Me',
-      name: 'Me',
-      avatar: '',
-      bio: '',
-      isGroup: false,
-      namespaceId: 0,
-      profileRev: 1,
-      isDeleted: false,
-    },
-  ],
-  [
-    2,
-    {
-      id: 2,
-      account: 'Alice',
-      name: 'Alice',
-      avatar: '',
-      bio: '',
-      isGroup: false,
-      namespaceId: 0,
-      profileRev: 1,
-      isDeleted: false,
-    },
-  ],
-  mockUser(3, 'Maya'),
-  mockUser(4, 'Noah'),
-  mockUser(5, 'Olivia'),
+  mockUser(1, 'me'),
+  mockUser(2, 'alice'),
+  mockUser(3, 'maya'),
+  mockUser(4, 'noah'),
+  mockUser(5, 'olivia'),
 ]);
 
 /**
@@ -542,12 +557,9 @@ export class MockItemSource implements CbSource<ChatItemData> {
         : (p?.isSelf ?? creatorId === this.userId),
       avatarIdentityId: creator,
       // Authored echoes retain the revision/snapshot selected when sending.
-      sender: it.data.sender ?? {
-        kind: 'snapshot',
-        name: p?.name ?? 'Unknown',
-        imageUrl: null,
-        account: String(creatorId),
-      },
+      sender:
+        it.data.sender ??
+        mockSender(MOCK_USERS.get(creatorId), p?.name ?? 'Unknown', creatorId),
       senderDisplayContext: this.isGroupConversation ? 'group' : 'direct',
       isGroupConversation: this.isGroupConversation,
     };

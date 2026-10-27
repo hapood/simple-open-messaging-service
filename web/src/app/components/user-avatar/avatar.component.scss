@@ -36,15 +36,15 @@
 
 :host-context([data-theme='dark']) {
   .avatar-federated-disc {
-    fill: var(--app-surface-elevated);
+    fill: var(--app-thread-list-bg, #1b2127);
   }
 
   .avatar-federated-halo {
-    stroke: var(--app-surface-elevated);
+    stroke: var(--app-thread-list-bg, #1b2127);
   }
 
   .avatar-federated-globe {
-    stroke: color-mix(in srgb, var(--app-action-primary) 78%, white);
+    stroke: #60a5fa;
   }
 }
 
@@ -61,7 +61,7 @@
   height: 100%;
   overflow: visible;
   pointer-events: none;
-  fill: var(--app-action-primary);
+  fill: var(--app-text);
   stroke: var(--app-surface);
   stroke-width: 3px;
   stroke-linejoin: round;
@@ -69,7 +69,8 @@
 }
 
 :host-context([data-theme='dark']) .group-avatar-badge {
-  stroke: var(--app-surface-elevated);
+  fill: #cbd5e1;
+  stroke: var(--app-thread-list-bg, #1b2127);
 }
 
 .ua.img {

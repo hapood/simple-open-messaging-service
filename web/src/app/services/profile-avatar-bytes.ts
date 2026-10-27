@@ -1,3 +1,5 @@
+import { sha256 } from './sha256';
+
 /** Decode the JSON transport once, then keep only binary bytes in the client cache. */
 export async function decodeProfileAvatar(
   base64: string | null,
@@ -6,10 +8,9 @@ export async function decodeProfileAvatar(
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  const digest = Array.from(hash, (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
+  // sha256() prefers SubtleCrypto; the production module throws without it, and the
+  // playground build swaps in a pure-TypeScript fallback for plain-HTTP origins.
+  const digest = await sha256(bytes);
   return { digest, blob: new Blob([bytes], { type: 'image/webp' }) };
 }
 

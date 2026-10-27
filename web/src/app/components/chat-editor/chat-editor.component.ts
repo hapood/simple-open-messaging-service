@@ -386,12 +386,23 @@ export function suggestionPopup(presentations: AvatarPresentationService) {
         avatar.className = 'cb-mention-avatar';
         avatar.setAttribute('aria-hidden', 'true');
         avatar.textContent = avatarInitial(m.label);
+        // Same identity coordinates as the sender/list surfaces so fallback colors match.
+        const identity = m.profile
+          ? {
+              account: m.profile.account,
+              domainSource: {
+                type: 'profile-namespace' as const,
+                publisherNamespaceId: m.profile.publisherNamespaceId,
+                profileNamespaceId: m.profile.profileNamespaceId,
+              },
+            }
+          : { account: m.id, domainSource: undefined };
         avatar.style.background = avatarBackground(
           initialAvatarView({
             kind: 'snapshot',
             name: m.label,
             imageUrl: null,
-            account: m.id,
+            ...identity,
           }),
         );
         row.append(avatar, label);
@@ -403,6 +414,7 @@ export function suggestionPopup(presentations: AvatarPresentationService) {
                 profile: m.profile,
                 account: m.profile.account,
                 fallbackName: m.label,
+                domainSource: identity.domainSource,
               })
               .subscribe((view) => {
                 // The selected reference is fixed for this result page. Presentation

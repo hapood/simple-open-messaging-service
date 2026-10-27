@@ -118,6 +118,10 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.GROUP_ANNOUNCEMENT]: 'chatbox',
 };
 
+const disableCloseDict: Partial<Record<PopupType, boolean>> = {
+  [PopupType.GROUP_ANNOUNCEMENT]: true,
+};
+
 // per-popup input contracts — what each dialog's input() fields accept
 export interface PopupInput {
   [PopupType.FRIEND_REQUESTS]: {
@@ -211,10 +215,12 @@ export interface DlgInfo {
   desktopSize: DialogDesktopSize;
   desktopHeight: DialogDesktopHeight;
   scopeThreadId?: number;
+  disableClose?: boolean;
 }
 
 export interface PopupOptions {
   scopeThreadId?: number;
+  disableClose?: boolean;
 }
 
 /**
@@ -280,6 +286,7 @@ export class RouteService {
       desktopSize: p.desktopSize ?? 'standard',
       desktopHeight: p.desktopHeight ?? 'content',
       scopeThreadId: p.scopeThreadId,
+      disableClose: p.disableClose ?? false,
     })),
   );
 
@@ -349,6 +356,8 @@ export class RouteService {
       desktopHeight:
         popupType === PopupType.FRIEND_REQUESTS ? 'workspace' : 'content',
       scopeThreadId: options?.scopeThreadId,
+      disableClose:
+        options?.disableClose ?? disableCloseDict[popupType] ?? false,
     });
     return { id };
   }

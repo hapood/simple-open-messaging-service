@@ -60,8 +60,12 @@
 
 // ── expanded: icon rail | resizable list | chat | aside overlay ──
 .mode-expanded {
-  .rail { flex: 0 0 auto; }
-  .list { flex: 0 0 auto; }            /* width driven by [style.width.px] */
+  .rail {
+    flex: 0 0 auto;
+  }
+  .list {
+    flex: 0 0 auto;
+  } /* width driven by [style.width.px] */
   .resizer {
     flex: 0 0 4px;
     cursor: col-resize;
@@ -71,8 +75,10 @@
        the bar was indistinguishable from both. --app-border is the semantic divider token, a shade off
        the bg in either theme; hover steps to --app-border-strong. */
     background: var(--app-border);
-    transition: background-color .15s ease;
-    &:hover { background: var(--app-border-strong); }
+    transition: background-color 0.15s ease;
+    &:hover {
+      background: var(--app-border-strong);
+    }
     &:focus-visible {
       outline: 2px solid var(--app-focus-ring);
       outline-offset: -2px;
@@ -97,13 +103,18 @@
          step darker than faint) so the dots read against the --app-border bar; the dark override at the
          foot of this file keeps dark at --app-text-faint. `currentColor 90%` keeps each disc solid to
          90% of its radius and AA-fades only the last 10%. */
-      background-image:
-        radial-gradient(circle 2px at 50% 6px, currentColor 90%, transparent),
+      background-image: radial-gradient(
+          circle 2px at 50% 6px,
+          currentColor 90%,
+          transparent
+        ),
         radial-gradient(circle 2px at 50% 16px, currentColor 90%, transparent),
         radial-gradient(circle 2px at 50% 26px, currentColor 90%, transparent);
       background-repeat: no-repeat;
-      opacity: .6;
-      transition: opacity .15s ease, color .15s ease;
+      opacity: 0.6;
+      transition:
+        opacity 0.15s ease,
+        color 0.15s ease;
     }
     &:hover::after,
     &:focus-visible::after {
@@ -111,7 +122,9 @@
       opacity: 1;
     }
   }
-  .chat-slot { flex: 1 1 auto; }
+  .chat-slot {
+    flex: 1 1 auto;
+  }
   /* Desktop aside = an OVERLAY drawer floating over the chat from the right (NOT an inline flex column —
      it no longer squeezes the chat). Pairs with the global .drawer-mask behind it: click the mask to
      close. The Angular [@overlaySlide] is `static` on desktop (transform:none, visibility:visible inline),
@@ -172,13 +185,19 @@
   animation: drawer-mask-fade 180ms ease;
 }
 .mode-medium .drawer-mask,
-.mode-expanded .drawer-mask { z-index: 24; }
+.mode-expanded .drawer-mask {
+  z-index: 24;
+}
 @keyframes drawer-mask-fade {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
-// ── compact: list(full screen) | chat(full-screen overlay) | aside(overlay) ──
+// ── compact: list(shell-sized) | chat(shell overlay) | aside(overlay) ──
 .mode-compact {
   .drawer-body {
     flex: 1 1 auto;
@@ -191,21 +210,21 @@
     will-change: transform, opacity;
   }
   .chat-slot {
-    position: fixed;
+    // The shell owns the available surface, which need not start at the window origin.
+    position: absolute;
     inset: 0;
     z-index: 30;
     background: var(--app-surface);
-    /* Full-screen edge-to-edge: the input bar (.ci-input-bar) owns the gesture-bar inset itself, so its
-       background extends seamlessly under the system bar. Clipping this slot to the inset (the old
-       approach) exposed .shell's --app-bg below the bar — a tonal seam in dark theme. The KbdOffsetDirective
-       host (.msg-container) still spans the full screen, so its offset math is unchanged. */
+    /* Fill the shell edge-to-edge: the input bar (.ci-input-bar) owns the gesture-bar inset itself,
+       so its background extends seamlessly under the system bar when the shell is full-screen.
+       Do not subtract safe-area insets from this slot; the keyboard policy remains on .msg-container. */
     /* Hidden/shown by the [@chatSlide] animation, NOT display:none↔flex (display is not animatable):
        mobile-closed = translate3d(100%,0,0) + visibility:hidden (off-screen right, the list shows through),
        mobile-open = in place. display stays flex (from the shared rule above) so the routed component lays
        out while still off-screen and is ready to glide in. */
   }
   .aside-slot {
-    position: fixed;
+    position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
@@ -214,7 +233,7 @@
     background: var(--app-surface);
     border-left: 0;
     box-shadow: none;
-    /* Full-screen; the shared .aside-slot padding-bottom carries the gesture-bar inset so the panel's
+    /* Shell-sized; the shared .aside-slot padding-bottom carries the gesture-bar inset so the panel's
        scrollable content clears the bar while its background extends under it. */
     /* Same transform-driven show/hide as .chat-slot above: [@overlaySlide] slides this overlay in/out on
        mobile (over the chat at z-index 40); display stays flex so the routed panel lays out off-screen. */
@@ -222,7 +241,7 @@
 }
 .mode-compact.chat-open .drawer-body {
   transform: translate3d(-12%, 0, 0);
-  opacity: .96;
+  opacity: 0.96;
   // Enter tracks the foreground chat exactly. On close the base rule's shorter accelerating transition
   // takes over, matching overlaySlide's 200ms leave instead of letting the list drift after chat is gone.
   transition-duration: 300ms;
@@ -230,7 +249,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mode-compact .drawer-body { transition-duration: 0ms; }
+  .mode-compact .drawer-body {
+    transition-duration: 0ms;
+  }
 }
 
 // Conversation-list column (compact/medium): header + list stack and fill.
@@ -248,7 +269,9 @@
   box-sizing: border-box;
   padding-bottom: var(--soms-safe-bottom, 0px);
 }
-.drawer-body .header { flex: 0 0 auto; }
+.drawer-body .header {
+  flex: 0 0 auto;
+}
 .section-content {
   flex: 1 1 auto;
   min-height: 0;
@@ -257,10 +280,15 @@
   box-sizing: border-box;
 }
 // Each section (chat-list-pane / settings / profile-section) fills the section area and owns its scroll.
-.section-content > * { flex: 1 1 auto; min-height: 0; }
+.section-content > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 // Dark theme: keep the grip dots at --app-text-faint. Light uses the darker --app-text-muted (set in the
 // .resizer ::after above) so the dots read against the --app-border bar; in dark, faint is already
 // legible on the bar, so no need to darken (matches the auth-brand dark-override pattern).
-:host-context([data-theme="dark"]) {
-  .mode-expanded .resizer::after { color: var(--app-text-faint); }
+:host-context([data-theme='dark']) {
+  .mode-expanded .resizer::after {
+    color: var(--app-text-faint);
+  }
 }

@@ -157,8 +157,11 @@ describe('RouteService adaptive account surfaces', () => {
           name: 'Alice',
           bio: '',
           profile: {
-            account: 'alice', publisherNamespaceId: 0,
-            profileNamespaceId: 0, rev: 1, linked: true,
+            account: 'alice',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            rev: 1,
+            linked: true,
           },
         },
       },
@@ -170,6 +173,27 @@ describe('RouteService adaptive account surfaces', () => {
       expect.objectContaining({
         presentation: 'chatbox',
         scopeThreadId: 17,
+      }),
+    );
+  });
+
+  it('opens group announcement with disableClose=true and chatbox presentation', () => {
+    service.popupDlg(
+      PopupType.GROUP_ANNOUNCEMENT,
+      {
+        threadId: 2,
+        feedId: '1',
+        text: 'Important announcement',
+      },
+      undefined,
+      { scopeThreadId: 2 },
+    );
+
+    expect(nav.pushPane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        presentation: 'chatbox',
+        scopeThreadId: 2,
+        disableClose: true,
       }),
     );
   });

@@ -124,7 +124,8 @@ export class RootPopupComponent {
   @HostListener('document:keydown.escape', ['$event'])
   onEscape(event: Event): void {
     const stack = this.nav.paneStack();
-    if (stack.at(-1)?.kind !== 'dialog') return;
+    const top = stack.at(-1);
+    if (top?.kind !== 'dialog' || top.disableClose) return;
     event.preventDefault();
     event.stopPropagation();
     this.nav.back();

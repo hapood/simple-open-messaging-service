@@ -36,7 +36,11 @@ export class ChatboxPopupComponent {
       );
   });
 
+  protected readonly topDialog = computed(() => this.dialogs().at(-1));
+
   protected cancelTop(): void {
+    const top = this.topDialog();
+    if (top?.disableClose) return;
     if (this.dialogs().length) this.route.closeDlg();
   }
 }

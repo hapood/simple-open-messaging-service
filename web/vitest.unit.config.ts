@@ -10,6 +10,7 @@ export default defineConfig({
     restoreMocks: true,
     include: [
       'src/playground/deployment/compose-generator.spec.ts',
+      'src/playground/sha256-fallback.spec.ts',
       'src/app/services/thread-list-order.spec.ts',
     ],
   },
