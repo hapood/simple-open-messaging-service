@@ -64,7 +64,7 @@ async fn deadline_yields_send_failed_for_an_unreachable_host() {
 #[tokio::test]
 async fn http_path_validation_allows_api_and_uploads_only() {
     assert!(is_allowed_http_path("/api/v1/threads"));
-    assert!(is_allowed_http_path("/api/v1/user/search?q=abc"));
+    assert!(is_allowed_http_path("/api/v1/example?account=abc"));
     assert!(is_allowed_http_path("/uploads/avatars/test.jpg"));
     assert!(is_allowed_http_path("/uploads/cas/deadbeef"));
 
