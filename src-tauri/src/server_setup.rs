@@ -337,7 +337,8 @@ mod tests {
         };
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut bytes = [0; 4096];
-        stream.read(&mut bytes).await.unwrap();
+        // Wait for request activity, not a fixed-size read or a complete HTTP frame.
+        assert!(stream.read(&mut bytes).await.unwrap() > 0);
         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{").await.unwrap();
         setups.cancel(&id);
         let error = tokio::time::timeout(std::time::Duration::from_secs(2), worker)

@@ -1,7 +1,7 @@
 use super::*;
 use crate::login_connection::LoginConnection;
 use crate::login_session_store::LoginSessionId;
-use std::sync::Arc;
+use futures_util::FutureExt;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -72,7 +72,7 @@ async fn cancellation_releases_a_waiter_without_waiting_for_the_lane() {
         let events = intent.events(None);
         let lane = THREAD_FEED_SYNC.lock().await;
         let mut pending = Box::pin(sync_thread_feed_intent(intent, events, 0));
-        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert!(pending.as_mut().now_or_never().is_none());
         if repair {
             owner.invalidate_database_work().unwrap();
         } else {
@@ -100,7 +100,7 @@ async fn dropping_a_commit_awaiter_does_not_hide_its_durable_page() {
     // is the completion signal.
     let gate = super::super::lifetime::CACHE_LIFETIME.invalidate().unwrap();
     let mut pending = Box::pin(intent.commit_thread_page(intent.events(None), vec![], 1));
-    assert!(futures_util::poll!(&mut pending).is_pending());
+    assert!(pending.as_mut().now_or_never().is_none());
     drop(pending);
     drop(gate);
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -127,7 +127,7 @@ async fn queued_page_rejects_repair_or_end_without_committing() {
         let intent = fixture(&ServerSessionState::new());
         let gate = super::super::lifetime::CACHE_LIFETIME.invalidate().unwrap();
         let mut pending = Box::pin(intent.commit_thread_page(intent.events(None), vec![], 1));
-        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert!(pending.as_mut().now_or_never().is_none());
         if repair {
             intent.work.owner().invalidate_database_work().unwrap();
         } else {

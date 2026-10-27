@@ -126,7 +126,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).await.unwrap();
+            // Any request bytes establish that the client reached the headers phase.
+            assert!(stream.read(&mut request).await.unwrap() > 0);
             if let Some(headers) = headers {
                 stream.write_all(headers).await.unwrap();
             }

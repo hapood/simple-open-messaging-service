@@ -21,7 +21,7 @@ pub(crate) enum Output {
     Reconnect,
     Origin(String, String),
     Identity(i32, i64),
-    #[cfg(any(target_os = "android", test))]
+    #[cfg(target_os = "android")]
     Notifications(crate::native_db::notifications::NotificationBatch),
     IncomingCall(Value),
 }
@@ -240,6 +240,7 @@ impl Run {
             self.sink.publish(Output::State(state.into()));
         }
     }
+    #[cfg(any(target_os = "android", test))]
     pub(crate) fn event_payload(&self, event: &str, message: &str, data: Value) -> Option<Value> {
         if !self.authenticated() {
             return None;
@@ -252,6 +253,7 @@ impl Run {
         ))
     }
 
+    #[cfg(any(target_os = "android", test))]
     pub fn replay_snapshot(&self) -> Option<Value> {
         let hello = self.event_payload("HELLO", "retained hello", self.replay()?)?;
         if !self.authenticated() {
@@ -284,10 +286,12 @@ impl Supervisor {
             run: Mutex::new(None),
         }
     }
+    #[cfg(any(desktop, test))]
     pub fn start(&self, proxy: ServerSessionState, sink: Arc<dyn Sink>) -> u64 {
         let identity = RunIdentity::capture(&proxy).ok();
         self.start_inner(proxy, sink, false, None, false, identity)
     }
+    #[cfg(target_os = "android")]
     pub fn replace(&self, proxy: ServerSessionState, sink: Arc<dyn Sink>) -> u64 {
         let identity = RunIdentity::capture(&proxy).ok();
         self.start_inner(proxy, sink, true, None, false, identity)
@@ -453,6 +457,7 @@ impl Supervisor {
 mod native_event_owner_tests;
 
 /// Serialize an event owned by an already captured login; adapters must preserve this envelope.
+#[cfg(any(target_os = "android", test))]
 pub(crate) fn login_event_payload(
     login: &crate::login_session_store::LoginSessionId,
     event: &str,
@@ -472,6 +477,7 @@ pub(crate) fn login_event_payload(
 #[derive(Clone)]
 pub(crate) struct NativeEvents {
     run: Option<Arc<Run>>,
+    #[cfg(desktop)]
     app: Option<tauri::AppHandle>,
     work: Option<crate::login_connection::DatabaseWork>,
 }
@@ -491,11 +497,14 @@ impl NativeEvents {
         app: Option<&tauri::AppHandle>,
         work: Option<crate::login_connection::DatabaseWork>,
     ) -> Self {
+        #[cfg(not(desktop))]
+        let _ = app;
         let run = WORK_RUN.try_with(Clone::clone).ok();
         #[cfg(target_os = "android")]
         let run = run.or_else(crate::android_realtime::current_run);
         Self {
             run,
+            #[cfg(desktop)]
             app: app.cloned(),
             work,
         }
@@ -592,7 +601,11 @@ impl Sink for DesktopSink {
             Output::Reconnect => {
                 let _ = self.0.emit("soms-sse-reconnect", ());
             }
-            _ => {}
+            // Android consumes these as adapter commands. The desktop renderer uses
+            // the forwarded SSE envelope instead of separate platform callbacks.
+            Output::Origin(_origin, _mode) => {}
+            Output::Identity(_user, _session) => {}
+            Output::IncomingCall(_call) => {}
         }
     }
 }

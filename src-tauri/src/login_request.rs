@@ -1,7 +1,5 @@
 use crate::login_connection::LoginConnection;
-use crate::proxy::{
-    is_network_failure, race_origin_candidates, read_body_with_inactivity_timeout,
-};
+use crate::proxy::{is_network_failure, race_origin_candidates, read_body_with_inactivity_timeout};
 use crate::{ServerSessionState, API_BODY_INACTIVITY_TIMEOUT, API_HEADERS_TIMEOUT};
 use std::sync::Arc;
 
@@ -26,7 +24,6 @@ pub(crate) struct LoginEndpoint {
 
 pub(crate) struct LoginRequestResult {
     pub(crate) status: u16,
-    pub(crate) headers: std::collections::HashMap<String, String>,
     pub(crate) body: String,
 }
 
@@ -198,7 +195,6 @@ impl LoginRequest {
                     return match failure {
                         Err(_) => Ok(LoginRequestResult {
                             status: 504,
-                            headers: Default::default(),
                             body: "Gateway Timeout".into(),
                         }),
                         Ok(Err(error)) => Err(format!("api_request send: {error}")),
@@ -207,26 +203,6 @@ impl LoginRequest {
                 }
             };
             let status = upstream.status().as_u16();
-            let headers = upstream
-                .headers()
-                .iter()
-                .filter_map(|(name, value)| {
-                    if matches!(
-                        name.as_str(),
-                        "transfer-encoding"
-                            | "connection"
-                            | "keep-alive"
-                            | "content-encoding"
-                            | "content-length"
-                    ) {
-                        return None;
-                    }
-                    value
-                        .to_str()
-                        .ok()
-                        .map(|value| (name.to_string(), value.to_string()))
-                })
-                .collect();
             let bytes = read_body_with_inactivity_timeout(
                 upstream.bytes_stream(),
                 API_BODY_INACTIVITY_TIMEOUT,
@@ -235,7 +211,6 @@ impl LoginRequest {
             .await?;
             return Ok(LoginRequestResult {
                 status,
-                headers,
                 body: String::from_utf8_lossy(&bytes).into_owned(),
             });
         }

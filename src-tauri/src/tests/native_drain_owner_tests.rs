@@ -1,6 +1,7 @@
 use super::*;
 use crate::login_connection::LoginConnection;
 use crate::login_session_store::LoginSessionId;
+use futures_util::FutureExt;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -212,15 +213,6 @@ async fn delayed_drain_futures_reject_end_and_repair_before_any_work() {
     }
 }
 
-fn count_threads(conn: &Connection) -> i64 {
-    conn.query_row(
-        "SELECT COUNT(*) FROM threads WHERE user_id=42 AND thread_id=?1",
-        [THREAD_ID],
-        |row| row.get(0),
-    )
-    .unwrap()
-}
-
 /// A stalled Group Meta or tombstone response must close its actual socket when the login
 /// ends or same-login repair supersedes the captured cache view.
 #[tokio::test]
@@ -329,7 +321,7 @@ async fn a_queued_group_meta_page_commit_rejects_end_or_repair() {
             Box::pin(intent.db(move |conn| {
                 super::super::client_state::apply_group_meta_page(conn, 42, update)
             }));
-        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert!(pending.as_mut().now_or_never().is_none());
         if repair {
             intent.work.owner().invalidate_database_work().unwrap();
         } else {
@@ -398,7 +390,7 @@ async fn a_queued_tombstone_page_commit_rejects_end_or_repair() {
             tombstones,
             5,
         ));
-        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert!(pending.as_mut().now_or_never().is_none());
         if repair {
             intent.work.owner().invalidate_database_work().unwrap();
         } else {

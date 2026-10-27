@@ -4,7 +4,7 @@ version = "0.1.0-alpha.1"
 description = "SOMS cross-platform client (Tauri v2 shell around the Angular consumer client)"
 authors = ["hapood"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.89"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

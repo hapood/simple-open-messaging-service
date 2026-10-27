@@ -1,6 +1,7 @@
 //! Native mention page ownership. Search is local; each fixed reference owns an
 //! independent consumer of the shared demand pipeline, never a page-wide barrier.
 use super::{attention::FeedIntent, contacts, profile_avatars, profile_subscriptions};
+#[cfg(target_os = "android")]
 use crate::ServerSessionState;
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use rusqlite::{params, OptionalExtension};
@@ -35,6 +36,7 @@ impl Owner {
             }
         }
     }
+    #[cfg(target_os = "android")]
     pub(crate) fn query(
         self: &Arc<Self>,
         proxy: &ServerSessionState,

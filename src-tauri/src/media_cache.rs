@@ -710,6 +710,8 @@ async fn write_file_range(
     }
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
+        // Range writes must preserve the other cached segments of this sparse file.
+        .truncate(false)
         .write(true)
         .open(path)
         .await
@@ -738,6 +740,8 @@ async fn stream_response_range(
 ) -> Result<(), String> {
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
+        // Range writes must preserve the other cached segments of this sparse file.
+        .truncate(false)
         .write(true)
         .open(path)
         .await

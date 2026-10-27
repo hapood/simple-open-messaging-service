@@ -9,11 +9,13 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Binary delivery shared by native notifications and live presentation pages.
 /// Metadata carries indices only; each cached digest crosses the boundary once.
+#[cfg(any(target_os = "android", test))]
 #[derive(Default)]
 pub(super) struct AvatarBatch {
     pub(super) bytes: Vec<Vec<u8>>,
     indices: std::collections::BTreeMap<String, usize>,
 }
+#[cfg(any(target_os = "android", test))]
 impl AvatarBatch {
     pub(super) fn index(&mut self, user_id: i64, digest: &str) -> Result<Option<usize>, String> {
         if let Some(index) = self.indices.get(digest) {

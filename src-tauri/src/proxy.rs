@@ -237,6 +237,7 @@ pub(crate) enum HeadersError {
 /// upload is legitimate and must not be aborted (a total-duration timeout would wrongly kill it; see
 /// `BACKEND_CONNECT_TIMEOUT`'s comment). Extracted from the `tokio::time::timeout` block `api_request`
 /// and `media_request` previously inlined, so the deadline + its 504 outcome are unit-testable.
+#[cfg(any(not(desktop), test))]
 pub(crate) async fn send_with_headers_deadline(
     req: reqwest::RequestBuilder,
     deadline: Duration,

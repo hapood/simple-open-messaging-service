@@ -119,6 +119,55 @@ fn extracts_authoritative_digest_only_from_cas_filename() {
     assert_eq!(expected_digest("/uploads/avatars/user.webp"), None);
 }
 
+#[tokio::test]
+async fn sparse_range_writes_preserve_other_segments() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("sparse.bin");
+    // Start with a missing file, then fill disjoint ranges in reverse order.
+    super::write_file_range(&path, CachedRange { start: 8, end: 12 }, 12, b"tail")
+        .await
+        .unwrap();
+    super::write_file_range(&path, CachedRange { start: 0, end: 4 }, 12, b"head")
+        .await
+        .unwrap();
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), b"head\0\0\0\0tail");
+}
+
+#[tokio::test]
+async fn streamed_range_writes_preserve_other_segments() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("sparse.bin");
+    tokio::fs::write(&path, b"head----tail").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            headers.push(socket.read_u8().await.unwrap());
+        }
+        socket
+            .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nContent-Range: bytes 4-7/12\r\nConnection: close\r\n\r\nbody")
+            .await
+            .unwrap();
+    });
+    let response = reqwest::Client::new().get(origin).send().await.unwrap();
+    super::stream_response_range(
+        response,
+        &path,
+        CachedRange { start: 4, end: 8 },
+        12,
+        None,
+        8,
+    )
+    .await
+    .unwrap();
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), b"headbodytail");
+    server.await.unwrap();
+}
+
 #[cfg(desktop)]
 #[test]
 fn desktop_filename_is_confined_to_its_basename() {

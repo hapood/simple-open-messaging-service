@@ -34,10 +34,22 @@ async fn external_work_does_not_borrow_sqlite_or_the_maintenance_lock() {
         })
     };
     ready.recv_timeout(Duration::from_secs(2)).unwrap();
-    let maintenance = super::lifetime::CACHE_LIFETIME.invalidate().unwrap();
+    let (maintenance_started, maintenance_ready) = tokio::sync::oneshot::channel();
+    let (release_maintenance, maintenance_finished) = mpsc::channel();
+    // Keep the synchronous guard on its owning thread while the async task proves
+    // external work does not need either the database or the maintenance lock.
+    let maintenance_worker = std::thread::spawn(move || {
+        let _maintenance = super::lifetime::CACHE_LIFETIME.invalidate().unwrap();
+        maintenance_started.send(()).unwrap();
+        maintenance_finished
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+    });
+    maintenance_ready.await.unwrap();
     let result =
         tokio::time::timeout(Duration::from_secs(2), spawn_owned_work(work, || Ok(17))).await;
-    drop(maintenance);
+    release_maintenance.send(()).unwrap();
+    maintenance_worker.join().unwrap();
     release.send(()).unwrap();
     sql_worker.join().unwrap().unwrap();
     assert_eq!(result.unwrap().unwrap().unwrap(), 17);
