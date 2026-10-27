@@ -23,14 +23,22 @@ describe('playground self profile', () => {
     target: { profileNamespaceId: 0, account, rev },
   });
 
-  it('seeds six published profiles and six unprofiled identities, including requests', async () => {
+  it('seeds seven published profiles and five unprofiled identities, including requests', async () => {
     expect(
       state.users
         .filter((user) => user.avatar)
         .map((user) => user.account)
         .sort(),
-    ).toEqual(['!playground', 'alice', 'ivy', 'liam', 'maya', 'noah']);
-    expect(state.users.filter((user) => !user.avatar)).toHaveLength(6);
+    ).toEqual([
+      '!bookclub',
+      '!playground',
+      'alice',
+      'ivy',
+      'liam',
+      'maya',
+      'noah',
+    ]);
+    expect(state.users.filter((user) => !user.avatar)).toHaveLength(5);
     for (const user of state.users) {
       expect(user.profileRev).toBe(user.avatar ? 1 : 0);
       if (!user.avatar) {
@@ -159,5 +167,9 @@ describe('playground self profile', () => {
       (await firstValueFrom(profiles.resolve(demand('!bookclub', 0))))
         .avatarBlob,
     ).toBeNull();
+    expect(
+      (await firstValueFrom(profiles.resolve(demand('!bookclub', 1))))
+        .avatarBlob,
+    ).not.toBeNull();
   });
 });

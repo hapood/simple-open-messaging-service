@@ -36,6 +36,7 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
           useValue: {
             drainThreadMisc,
             profileWake$: new Subject(),
+            profileNamespaceWake$: new Subject(),
             workerFailed$: new Subject(),
             threadFeedCommitted$: new Subject(),
             threadAttentionProjectionCommitted$: new Subject(),

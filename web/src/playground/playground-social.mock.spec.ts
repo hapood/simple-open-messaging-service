@@ -24,6 +24,22 @@ describe('playground social contracts', () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  it('initializes the federated friend with the correct namespace only once', () => {
+    expect(state.user('liam')).toBeUndefined();
+    expect(state.user('liam', 1)).toBeDefined();
+    const conversations = [...state.conversations.items()];
+    expect(conversations.find((item) => item.threadId === 6)).toMatchObject({
+      type: 'P2P',
+      account: 'liam',
+      publisherNamespaceId: 1,
+      conversationState: 'ACTIVE',
+      blocked: true,
+    });
+
+    state.initialize();
+    expect(state.conversations.items()).toEqual(conversations);
+  });
+
   it('pages the seven-day online window with decimal bigint IDs and no totals', async () => {
     const first = (
       await firstValueFrom(
@@ -266,18 +282,19 @@ describe('playground social contracts', () => {
   });
 
   it('retains sent snapshots and rejects duplicate invitations without auto-joining', async () => {
+    state.activateFriend(state.user('emma')!);
     const params = {
       groupId: 2,
       users: [
         {
-          account: 'liam',
+          account: 'emma',
           namespaceId: 0,
-          snapshot: { displayName: 'Liam snapshot', avatar: null },
+          snapshot: { displayName: 'Emma snapshot', avatar: null },
         },
       ],
     };
     const response = (await firstValueFrom(groups.inviteUsers(params))).data!;
-    expect(response.invited).toEqual([{ account: 'liam', namespaceId: 0 }]);
+    expect(response.invited).toEqual([{ account: 'emma', namespaceId: 0 }]);
     expect(response.skipped).toEqual([]);
     expect(await members.queryPage(2, { take: 50 })).toHaveLength(5);
     expect(

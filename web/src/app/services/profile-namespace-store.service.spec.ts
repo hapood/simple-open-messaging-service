@@ -2,6 +2,10 @@ import { TestBed } from '@angular/core/testing';
 import { Subject, firstValueFrom, take } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import { ProfileNamespaceRepository } from './profile-namespace-store.service';
+import {
+  BrowserProfileWatchEngine,
+  PROFILE_WATCH_ENGINE,
+} from './profile-watch.service';
 import { WebdbService } from './webdb.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import type {
@@ -67,6 +71,7 @@ function createFakeWebdb() {
       return { pending, failed, unrecoverable };
     },
     profileNamespaceWake$: wake.asObservable(),
+    profileWake$: new Subject(),
     emitWake: (pairs: ProfileNamespacePairKey[]) => wake.next(pairs),
   };
 }
@@ -83,12 +88,17 @@ function setUp() {
         provide: SessionLifecycleService,
         useValue: { ended$: ended.asObservable() },
       },
+      {
+        provide: PROFILE_WATCH_ENGINE,
+        useFactory: () => new BrowserProfileWatchEngine(),
+      },
     ],
   });
-  const repo = TestBed.runInInjectionContext(
-    () => new ProfileNamespaceRepository(),
-  );
-  return { repo, webdb, ended };
+  const engine = TestBed.inject(
+    PROFILE_WATCH_ENGINE,
+  ) as BrowserProfileWatchEngine;
+  const repo = TestBed.inject(ProfileNamespaceRepository);
+  return { repo, webdb, ended, engine };
 }
 
 const PAIR_A: ProfileNamespacePairKey = {
@@ -119,31 +129,25 @@ function seedRow(
 }
 
 describe('ProfileNamespaceRepository', () => {
-  it('skips native prefetch rather than subscribing to a no-emission resolver', () => {
+  it('watch emits the empty first frame, then the current binding', async () => {
     const { repo, webdb } = setUp();
-    const previous = Object.getOwnPropertyDescriptor(
-      window,
-      '__TAURI_INTERNALS__',
+    seedRow(webdb, PAIR_A, { domain: 'before.test' });
+    const emissions: Array<ProfileNamespaceBinding | null> = [];
+    const subscription = repo
+      .watch(PAIR_A)
+      .subscribe((binding) => emissions.push(binding));
+    // The main-thread LRU is empty on first watch, so the fast first frame
+    // is null (render a fallback); the durable read follows immediately.
+    expect(emissions[0]).toBeNull();
+    await vi.waitFor(() =>
+      expect(emissions[1]).toMatchObject({ domain: 'before.test' }),
     );
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      configurable: true,
-      value: {},
-    });
-    try {
-      repo.prefetch(PAIR_A);
-      webdb.emitWake([PAIR_A]);
-      expect((repo as any).background.size).toBe(0);
-      expect((repo as any).resolutions.size).toBe(0);
-      expect(webdb.resolveCalls).toEqual([]);
-    } finally {
-      if (previous)
-        Object.defineProperty(window, '__TAURI_INTERNALS__', previous);
-      else delete window.__TAURI_INTERNALS__;
-    }
+    expect(webdb.resolveCalls).toEqual([]);
+    subscription.unsubscribe();
   });
 
   it('prefetches undemanded changed pairs and shares in-flight demand', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -158,14 +162,14 @@ describe('ProfileNamespaceRepository', () => {
     await vi.waitFor(() => expect(webdb.resolveCalls).toHaveLength(1));
     release();
     expect(await demanded).toMatchObject({ domain: 'prefetched.test' });
-    expect((repo as any).background.size).toBe(0);
-    expect((repo as any).lru.get(pairKey(PAIR_A)).domain).toBe(
+    expect((engine as any).background.size).toBe(0);
+    expect((engine as any).namespaceLru.get(pairKey(PAIR_A)).domain).toBe(
       'prefetched.test',
     );
   });
 
   it('handles optional errors explicitly and allows a later retry', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       webdb.setResolveImpl(async () => {
@@ -173,7 +177,7 @@ describe('ProfileNamespaceRepository', () => {
       });
       repo.prefetch(PAIR_A);
       await vi.waitFor(() => expect(warn).toHaveBeenCalled());
-      expect((repo as any).background.size).toBe(0);
+      expect((engine as any).background.size).toBe(0);
       webdb.setResolveImpl(async () => {
         seedRow(webdb, PAIR_A, {});
       });
@@ -186,7 +190,7 @@ describe('ProfileNamespaceRepository', () => {
   });
 
   it('reports failed resolution instead of emitting an expired binding as success', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     seedRow(webdb, PAIR_A, { expired: true });
     vi.spyOn(webdb, 'resolveProfileNamespacePairs').mockResolvedValue({
       pending: [],
@@ -196,11 +200,11 @@ describe('ProfileNamespaceRepository', () => {
     await expect(firstValueFrom(repo.resolve(PAIR_A))).rejects.toThrow(
       'namespace resolve failed',
     );
-    expect((repo as any).lru.size).toBe(0);
+    expect((engine as any).namespaceLru.size).toBe(0);
   });
 
   it('bounds no-emission prefetch subscriptions', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
@@ -208,8 +212,8 @@ describe('ProfileNamespaceRepository', () => {
       repo.prefetch(PAIR_A);
       await vi.advanceTimersByTimeAsync(30_000);
       expect(warn).toHaveBeenCalled();
-      expect((repo as any).background.size).toBe(0);
-      expect((repo as any).resolutions.size).toBe(0);
+      expect((engine as any).background.size).toBe(0);
+      expect((engine as any).namespaceEntries.size).toBe(0);
     } finally {
       vi.useRealTimers();
       warn.mockRestore();
@@ -217,7 +221,7 @@ describe('ProfileNamespaceRepository', () => {
   });
 
   it('discards old-session completion without polluting new cache or entries', async () => {
-    const { repo, webdb, ended } = setUp();
+    const { repo, webdb, ended, engine } = setUp();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -228,21 +232,21 @@ describe('ProfileNamespaceRepository', () => {
     repo.prefetch(PAIR_A);
     await vi.waitFor(() => expect(webdb.resolveCalls).toHaveLength(1));
     ended.next();
-    expect((repo as any).background.size).toBe(0);
+    expect((engine as any).background.size).toBe(0);
     seedRow(webdb, PAIR_A, { domain: 'new-session.test' });
     const subscription = repo.resolve(PAIR_A).subscribe();
-    await vi.waitFor(() => expect((repo as any).lru.size).toBe(1));
+    await vi.waitFor(() => expect((engine as any).namespaceLru.size).toBe(1));
     release();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect((repo as any).lru.get(pairKey(PAIR_A)).domain).toBe(
+    expect((engine as any).namespaceLru.get(pairKey(PAIR_A)).domain).toBe(
       'new-session.test',
     );
-    expect((repo as any).resolutions.size).toBe(1);
+    expect((engine as any).namespaceEntries.size).toBe(1);
     subscription.unsubscribe();
   });
 
   it('resolve emits a fresh IDB row without hitting the server', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     seedRow(webdb, PAIR_A, { domain: 'fresh.test' });
     const binding = await firstValueFrom(repo.resolve(PAIR_A));
     expect(binding).toMatchObject({ domain: 'fresh.test' });
@@ -250,14 +254,14 @@ describe('ProfileNamespaceRepository', () => {
   });
 
   it('resolve triggers a server round when the IDB row is missing', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     const binding = await firstValueFrom(repo.resolve(PAIR_B));
     expect(webdb.resolveCalls).toEqual([{ pairs: [PAIR_B], roundEnd: 0 }]);
     expect(binding).toMatchObject({ domain: '13-0.test', expired: false });
   });
 
   it('re-emits an updated binding on wake', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     seedRow(webdb, PAIR_A, { domain: 'before.test', expired: false });
     const emissions: ProfileNamespaceBinding[] = [];
     repo.resolve(PAIR_A).subscribe((b) => emissions.push(b));
@@ -272,7 +276,7 @@ describe('ProfileNamespaceRepository', () => {
   });
 
   it('guards cache writes on both coordinates', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     seedRow(webdb, PAIR_A, { changeSeq: 5, updateFeedId: 7, expired: false });
     const emissions: ProfileNamespaceBinding[] = [];
     const subscription = repo
@@ -323,7 +327,7 @@ describe('ProfileNamespaceRepository', () => {
   });
 
   it('bounds the LRU at 100 entries', async () => {
-    const { repo, webdb } = setUp();
+    const { repo, webdb, engine } = setUp();
     for (let i = 0; i < 100; i += 1)
       seedRow(
         webdb,
@@ -344,17 +348,17 @@ describe('ProfileNamespaceRepository', () => {
       repo.resolve({ publisherNamespaceId: 101, profileNamespaceId: 0 }),
     );
     const lru = (
-      repo as unknown as {
-        lru: Map<string, ProfileNamespaceBinding>;
+      engine as unknown as {
+        namespaceLru: Map<string, ProfileNamespaceBinding>;
       }
-    ).lru;
+    ).namespaceLru;
     expect(lru.size).toBe(100);
     expect(lru.has('1:0')).toBe(false);
     expect(lru.has('101:0')).toBe(true);
   });
 
   it('clears the cache when the session ends', async () => {
-    const { repo, webdb, ended } = setUp();
+    const { repo, webdb, ended, engine } = setUp();
     seedRow(webdb, PAIR_A, {});
     await firstValueFrom(repo.resolve(PAIR_A));
     ended.next();

@@ -810,6 +810,12 @@ export class WebdbStorage implements AccountStateStorage {
 
   /** The userId whose DB is open (or being opened). */
   protected currentUserId: string | null = null;
+
+  /** Numeric mirror of `currentUserId` for the native watch engine's IPC
+   *  arguments (Rust identifies users numerically). */
+  get numericUserId(): number | null {
+    return this.currentUserId === null ? null : Number(this.currentUserId);
+  }
   /** Whether `navigator.storage.persist()` has been requested for this origin. */
   private persistedRequested = false;
 
@@ -2087,7 +2093,9 @@ export class WebdbStorage implements AccountStateStorage {
     const result = isTauri()
       ? await nativeProfileRequest<ProfileResolutionAttempt>(
           Number(userId),
-          Object.hasOwn(options, 'evidence') ? { demand, evidence: null } : demand,
+          Object.hasOwn(options, 'evidence')
+            ? { demand, evidence: null }
+            : demand,
           options.signal,
         )
       : await this.requestDbWorker<ProfileResolutionAttempt>({

@@ -9,6 +9,10 @@ import {
 } from './webdb.service';
 import type { ProfileDemand } from '../../../../shared/profile-demand';
 import { ProfileRepository } from './profile-store.service';
+import {
+  BrowserProfileWatchEngine,
+  PROFILE_WATCH_ENGINE,
+} from './profile-watch.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { WebdbStorage } from './webdb-storage';
 
@@ -53,6 +57,7 @@ describe('ProfileRepository resolution scheduler', () => {
   const resolveProfileEvidence = vi.fn();
   const getProfileAvatarBlob = vi.fn();
   let repository: ProfileRepository;
+  let engine: BrowserProfileWatchEngine;
 
   beforeEach(() => {
     resolveProfileEvidence.mockReset();
@@ -68,6 +73,7 @@ describe('ProfileRepository resolution scheduler', () => {
           provide: WebdbService,
           useValue: {
             profileWake$: profileWake,
+            profileNamespaceWake$: new Subject(),
             resolveProfileDemand: resolveProfileEvidence,
             getProfileAvatarBlob,
           },
@@ -76,8 +82,13 @@ describe('ProfileRepository resolution scheduler', () => {
           provide: SessionLifecycleService,
           useValue: { ended$: sessionEnded },
         },
+        {
+          provide: PROFILE_WATCH_ENGINE,
+          useFactory: () => new BrowserProfileWatchEngine(),
+        },
       ],
     });
+    engine = TestBed.inject(PROFILE_WATCH_ENGINE) as BrowserProfileWatchEngine;
     repository = TestBed.inject(ProfileRepository);
   });
 
@@ -99,7 +110,7 @@ describe('ProfileRepository resolution scheduler', () => {
     expect(signal.aborted).toBe(false);
     second.unsubscribe();
     expect(signal.aborted).toBe(true);
-    expect(repository['resolutions'].size).toBe(0);
+    expect(engine['profileEntries'].size).toBe(0);
   });
 
   it('aborts live requests on session end', () => {
@@ -132,13 +143,13 @@ describe('ProfileRepository resolution scheduler', () => {
       target: { profileNamespaceId: 1, account: 'alice', rev: 7 },
     };
     const first = repository.resolve(demand).subscribe();
-    const old = [...repository['resolutions'].values()][0];
+    const old = [...engine['profileEntries'].values()][0];
     first.unsubscribe();
     const second = repository.resolve(demand).subscribe();
-    const replacement = [...repository['resolutions'].values()][0];
+    const replacement = [...engine['profileEntries'].values()][0];
     rejectOld(new Error('cancelled'));
     await vi.waitFor(() => expect(old.running).toBe(false));
-    expect([...repository['resolutions'].values()]).toEqual([replacement]);
+    expect([...engine['profileEntries'].values()]).toEqual([replacement]);
     expect(replacement.cancellation.signal.aborted).toBe(false);
     second.unsubscribe();
   });
@@ -259,7 +270,7 @@ describe('ProfileRepository resolution scheduler', () => {
         signal: expect.any(AbortSignal),
       }),
     );
-    expect(repository['resolutions'].size).toBe(0);
+    expect(engine['profileEntries'].size).toBe(0);
     // The committed READY result is cached like an authorized one: a second
     // unevidenced resolve hits the main-thread LRU without another lookup.
     await expect(
@@ -307,7 +318,7 @@ describe('ProfileRepository resolution scheduler', () => {
     );
     // The unevidenced request dedups onto the pending authorized entry instead
     // of starting its own cache-only attempt, so no second lookup runs.
-    expect(repository['resolutions'].size).toBe(1);
+    expect(engine['profileEntries'].size).toBe(1);
     resolveProfileEvidence.mockResolvedValue({
       status: 'READY',
       profile: snapshot,
@@ -345,7 +356,7 @@ describe('ProfileRepository resolution scheduler', () => {
     ).rejects.toThrow('profile revision is not cached');
     // The errored cache-only entry is gone, so an authorized attempt starts
     // fresh through the evidenced strategy.
-    expect(repository['resolutions'].size).toBe(0);
+    expect(engine['profileEntries'].size).toBe(0);
     const subscription = repository.resolve(demand).subscribe();
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(2);
     expect(resolveProfileEvidence).toHaveBeenLastCalledWith(

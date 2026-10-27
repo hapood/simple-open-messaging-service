@@ -6,6 +6,7 @@ import type {
   RequestRecord,
   RequestPage,
 } from '../../../shared/relationship-request';
+import type { ProfileDemand } from '../../../shared/profile-demand';
 import type { RequestSnapshot } from '../../../shared/request-snapshot';
 import {
   createGroupConversation,
@@ -28,6 +29,8 @@ const seededBios: Record<string, string> = {
   liam: 'Building things and sharing what I learn along the way.',
   ivy: 'Here to learn, collaborate, and meet the community.',
   '!playground': 'A place to try things out together.',
+  '!bookclub':
+    'A cozy community for book lovers to share reads, reviews, and thoughtful discussions.',
 };
 
 /** Shared in-memory server/projection state. Reloading the standalone entry resets all fixtures. */
@@ -54,12 +57,14 @@ export class PlaygroundSocialState {
     name:
       account === '!playground'
         ? 'Playground Team'
-        : playgroundAvatars[account]
-          ? account[0].toUpperCase() + account.slice(1)
-          : account,
+        : account === '!bookclub'
+          ? 'Book Club'
+          : playgroundAvatars[account]
+            ? account[0].toUpperCase() + account.slice(1)
+            : account,
     avatar: playgroundAvatars[account] ?? '',
     bio: seededBios[account] ?? '',
-    namespaceId: 0,
+    namespaceId: account === 'liam' ? 1 : 0,
     profileRev: playgroundAvatars[account] ? 1 : 0,
     isDeleted: false,
     isGroup: account.startsWith('!'),
@@ -81,7 +86,7 @@ export class PlaygroundSocialState {
     if (this.initialized) return;
     this.initialized = true;
     this.activateFriend(this.user('alice')!, 1);
-    this.activateFriend(this.user('liam')!, 6);
+    this.activateFriend(this.user('liam', 1)!, 6);
     this.conversations.setRelatedConversations([
       createGroupConversation({
         threadId: 2,
@@ -97,10 +102,12 @@ export class PlaygroundSocialState {
           memberCount: 5,
           groupMetaFeedId: '1',
           announcementFeedId: '1',
-          announcementText: null,
+          announcementText:
+            'Welcome to Playground Team! This group is for exploring group chat, announcements, and member management. All modifications are stored only in the current session; refresh the page to reset.',
         },
         role: 'OWNER',
         groupMetaFeedEndId: '1',
+        announcementReadFeedId: 0,
         lastMessageAt: Date.now() - 120_000,
         lastMessagePreview: 'Welcome to the team',
         messageEndSeq: 100,
@@ -112,7 +119,17 @@ export class PlaygroundSocialState {
       lastMessageAt: Date.now() - 60_000,
       lastMessagePreview: 'See you in the playground!',
       messageEndSeq: 100,
-      unreadCount: 2,
+      muted: true,
+      pinned: true,
+    });
+    this.conversations.applyThreadMeta(2, {
+      unreadCount: 3,
+      mentionUnread: ['me'],
+    });
+    this.conversations.applyThreadMeta(6, {
+      blocked: true,
+      lastMessageAt: Date.now() - 180_000,
+      lastMessagePreview: 'Hey, are you free to chat?',
     });
     this.rosters.set(
       2,
@@ -181,6 +198,30 @@ export class PlaygroundSocialState {
     if (current?.profileRev !== profileRev) return undefined;
     this.profiles.set(key, { ...current });
     return { ...current };
+  }
+
+  /** Map an immutable profile demand onto the seeded fixtures.
+   * ACCOUNT_PROFILE: an account's own profile lives at namespace 0 inside
+   * its home (publisher) namespace's store, mirroring homeProfileDemand.
+   * GROUP_MEMBER_PROFILE: the group's publisher namespace authorizes the
+   * lookup; the member's home namespace is the subject profile namespace
+   * inside that publisher's store. */
+  profileOfDemand(demand: ProfileDemand): User | undefined {
+    if (demand.lookup === 'ACCOUNT_PROFILE') {
+      if (demand.target.profileNamespaceId !== 0) return undefined;
+      return this.profile(
+        demand.target.account,
+        demand.publisherNamespaceId,
+        demand.target.rev,
+      );
+    }
+    const group = this.user(demand.groupAccount, demand.publisherNamespaceId);
+    if (!group?.isGroup) return undefined;
+    return this.profile(
+      demand.target.account,
+      demand.target.profileNamespaceId,
+      demand.target.rev,
+    );
   }
 
   publishProfile(
