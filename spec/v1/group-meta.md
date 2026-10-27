@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Group Meta Feed
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document is entirely normative. `GET /s2s/v1/group-meta` exposes the one
 canonical Group Meta Feed owned by a group's origin. The feed is the origin's
@@ -81,6 +81,8 @@ interface GroupMetaFeedPage {
 
 interface GroupMetaItemBase {
   feedId: PositiveSafeInteger;
+  createdAt: EpochMilliseconds;
+  originCreatedAt: EpochMilliseconds | null;
 }
 
 interface GroupMetaUpsertItem extends GroupMetaItemBase {
@@ -93,8 +95,7 @@ interface GroupMetaDepartItem extends GroupMetaItemBase {
   body: GroupMetaMemberBody;
 }
 
-interface GroupMetaProfileItem {
-  feedId: PositiveSafeInteger;
+interface GroupMetaProfileItem extends GroupMetaItemBase {
   operation: 'GROUP_PROFILE';
   body: {
     account: GroupAccount;
@@ -103,8 +104,7 @@ interface GroupMetaProfileItem {
   };
 }
 
-interface GroupMetaAnnouncementItem {
-  feedId: PositiveSafeInteger;
+interface GroupMetaAnnouncementItem extends GroupMetaItemBase {
   operation: 'GROUP_ANNOUNCEMENT';
   body: {
     text: string | null;
@@ -140,8 +140,13 @@ Closing and later restoring one peer's authorization does not reset the group
 coordinate space or create a peer-specific copy. Reauthorization advances that
 audience's delta visibility floor instead.
 
-Every item has exactly `feedId`, `operation`, and `body`; operation-specific
-fields, including subject identity, are inside `body`. No item carries `domain`.
+Every item has exactly `feedId`, `createdAt`, `originCreatedAt`, `operation`,
+and `body`. Both time fields are REQUIRED: `createdAt` is this publisher copy's
+creation time in epoch milliseconds; `originCreatedAt` is the direct source
+copy's creation time, or `null` at the authoritative origin. This origin-only
+S2S feed MUST carry `originCreatedAt: null`. Ordering uses `feedId`, not time.
+Operation-specific fields, including subject identity, are inside `body`.
+No item carries `domain`.
 Member items have stable key `(body.namespaceId, body.account)` in the group
 origin's namespace space. Their required, non-null `body.namespaceId` follows
 [Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation):
@@ -244,8 +249,9 @@ Relationship Intent, or a profile revision.
 Consumers select the committed announcement with the greatest `feedId`, not a
 wall-clock timestamp. This is a current-state register, not an announcement
 history, a list of pinned messages, or a read-receipt channel. Intermediate
-edits may be compacted. A displayed announcement has no implied author or
-publication time; implementations MUST NOT infer either from `feedId`.
+edits may be compacted. The item carries its publisher-copy time under the
+common item rules, not the author's device time. Implementations MUST NOT infer
+an author or a publication time from `feedId`.
 
 The existing Group Meta audience and visibility-floor rules apply unchanged.
 A new or reauthorized peer obtains only the current announcement in full mode,

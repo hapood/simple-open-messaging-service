@@ -1,6 +1,6 @@
 # `CONTACT_CARD` Message
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document defines a `CONTACT_CARD` containing a user or group address and an
 immutable display snapshot. A card may refer to its author, another user, or a

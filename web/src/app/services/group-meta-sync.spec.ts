@@ -53,6 +53,8 @@ function fixture() {
         memberCount: thread.meta.memberCount,
         groupMetaFeedId: page.scannedThrough,
         announcementFeedId: null,
+        announcementCreatedAt: null,
+        announcementOriginCreatedAt: null,
         announcementText: null,
         groupMetaRecoveryThrough: thread.meta.recoveryThrough,
       };
@@ -168,6 +170,8 @@ describe('Group Meta per-thread drain', () => {
           items: [
             {
               feedId: '1',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'GROUP_PROFILE',
               body: { account: 'room', namespaceId: 7, profileRev: 1 },
             },

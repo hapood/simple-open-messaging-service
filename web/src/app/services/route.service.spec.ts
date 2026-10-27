@@ -184,6 +184,8 @@ describe('RouteService adaptive account surfaces', () => {
         threadId: 2,
         feedId: '1',
         text: 'Important announcement',
+        createdAt: 1_000,
+        originCreatedAt: null,
       },
       undefined,
       { scopeThreadId: 2 },

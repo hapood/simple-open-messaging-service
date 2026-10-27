@@ -6,6 +6,10 @@ import type { DatabaseTransaction } from '../../database/database.service.js';
 
 interface GroupMetaFeedItemBase {
   feedId: number;
+  /** First persistence at this publisher, in epoch milliseconds. */
+  createdAt: number;
+  /** Direct source copy time; null on the group's origin. */
+  originCreatedAt: number | null;
 }
 
 /** One Group Meta feed item. The wire item is the stored body verbatim: the
@@ -126,32 +130,37 @@ export async function readGroupMetaPageInTx(
         | 'GROUP_PROFILE'
         | 'GROUP_ANNOUNCEMENT';
       body: Record<string, unknown>;
+      createdAt: Date | string;
+      originCreatedAt: Date | string | null;
     }>(sql`
-    SELECT fact."feedId", fact.operation::text AS operation, fact.body
+    SELECT fact."feedId", fact.operation::text AS operation, fact.body, fact."createdAt", fact."originCreatedAt"
     FROM "GroupMetaMemberFeed" fact
     WHERE fact."threadId" = ${params.groupId}
       AND fact."feedId" > ${params.after} AND fact."feedId" <= ${scanEnd}
-      ${params.feedMode === 'full' ? sql`AND fact.operation IN ('MEMBER_UPSERT', 'GROUP_PROFILE')` : sql.empty()}
-    UNION ALL
-    SELECT meta."announcementFeedId", 'GROUP_ANNOUNCEMENT'::text,
-      jsonb_build_object('text', meta."announcementText")
-    FROM "GroupMeta" meta WHERE meta."threadId" = ${params.groupId}
-      AND meta."announcementFeedId" > ${params.after}
-      AND meta."announcementFeedId" <= ${scanEnd}
+      ${params.feedMode === 'full' ? sql`AND fact.operation <> 'MEMBER_DEPART'` : sql.empty()}
     ORDER BY "feedId" LIMIT ${queryLimit}
   `)
   ).rows;
   const items: GroupMetaFeedItem[] = memberRows
     .map((row): GroupMetaFeedItem => {
+      const times = {
+        createdAt: new Date(row.createdAt).getTime(),
+        originCreatedAt:
+          row.originCreatedAt === null
+            ? null
+            : new Date(row.originCreatedAt).getTime(),
+      };
       if (row.operation === 'GROUP_ANNOUNCEMENT')
         return {
           feedId: row.feedId,
+          ...times,
           operation: 'GROUP_ANNOUNCEMENT',
           body: { text: (row.body.text as string | null) ?? null },
         };
       if (row.operation === 'GROUP_PROFILE')
         return {
           feedId: row.feedId,
+          ...times,
           operation: 'GROUP_PROFILE',
           body: {
             account: String(row.body.account),
@@ -161,6 +170,7 @@ export async function readGroupMetaPageInTx(
         };
       return {
         feedId: row.feedId,
+        ...times,
         operation: row.operation,
         body: {
           account: String(row.body.account),

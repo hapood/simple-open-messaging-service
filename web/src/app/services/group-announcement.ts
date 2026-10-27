@@ -25,10 +25,22 @@ export function isGroupMetaCurrent(
 
 export function currentGroupAnnouncement(
   thread: ConversationItem | undefined,
-): { feedId: string; text: string } | null {
+): {
+  feedId: string;
+  text: string;
+  createdAt: number;
+  originCreatedAt: number | null;
+} | null {
   if (!isGroupMetaCurrent(thread) || thread?.type !== 'GROUP') return null;
   const { announcementFeedId, announcementText } = thread.meta;
-  return announcementFeedId != null && announcementText != null
-    ? { feedId: announcementFeedId, text: announcementText }
+  return announcementFeedId != null &&
+    announcementText != null &&
+    thread.meta.announcementCreatedAt != null
+    ? {
+        feedId: announcementFeedId,
+        text: announcementText,
+        createdAt: thread.meta.announcementCreatedAt,
+        originCreatedAt: thread.meta.announcementOriginCreatedAt,
+      }
     : null;
 }

@@ -685,6 +685,8 @@ describe('departure system message paths', () => {
           },
           item: {
             feedId: 6,
+            createdAt: 1700000000000,
+            originCreatedAt: null,
             operation: 'MEMBER_DEPART',
             account: h.member.account,
             namespaceId: 0,

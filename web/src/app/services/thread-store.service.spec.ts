@@ -513,6 +513,8 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
         memberCount: number;
         announcementFeedId: null;
         announcementText: null;
+        announcementCreatedAt: null;
+        announcementOriginCreatedAt: null;
         groupMetaRecoveryThrough: null;
       }>;
     }>;
@@ -526,6 +528,8 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
           memberCount: 3,
           announcementFeedId: null,
           announcementText: null,
+          announcementCreatedAt: null,
+          announcementOriginCreatedAt: null,
           groupMetaRecoveryThrough: null,
         },
       ],

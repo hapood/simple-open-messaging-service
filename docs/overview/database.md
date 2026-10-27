@@ -135,16 +135,17 @@ these rows.
 
 `GroupMeta` is keyed by `threadId`. It holds the origin allocation end or the
 mirror's completed-round coordinate (`metaEndId`), selected group-profile
-revision, current announcement, and group request allocators. A null
-`announcementFeedId` means unknown; a positive coordinate with null text means
-an explicit clear. `metaTargetId`, `metaProcessedThroughId`, and
+revision, and group request allocators. `metaTargetId`, `metaProcessedThroughId`, and
 `metaRecoveryThroughId` retain independent mirror synchronization progress.
 
 `GroupMetaMemberFeed` stores one current operation per stable key, including
 member upsert/departure and the group-wide projections. It is used for both
 canonical origin state and validated mirror replicas; there is no separate
 physical `GroupMetaProfileFeed`. A member departure retains its final reference
-but does not request a profile fetch.
+but does not request a profile fetch. Announcements use the same fact rows:
+`{ text: null }` means an explicit clear, while an absent row means unknown.
+All facts share `createdAt`, `updatedAt`, and nullable `originCreatedAt`; no
+announcement-specific time columns exist.
 
 `ThreadAudience` is the origin's current federation delivery/visibility
 projection, including history and Group Meta floors. A remote-group mirror has

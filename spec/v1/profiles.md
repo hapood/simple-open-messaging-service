@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Profiles
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document is entirely normative. It defines the three Federation v1 profile
 read operations:
@@ -86,10 +86,14 @@ interface PublicAccountProfile {
 }
 ```
 
-The public current-profile response includes `profileRev` because the requester
-must learn which current snapshot was selected, or that none exists (`0`). It does not include
-`namespaceId`; this lookup is only for the responding server's authoritative
-local account namespace.
+A `profileRev` of `0` denotes no current public profile snapshot; `profile`
+MUST be `null`. A positive `profileRev` identifies an immutable snapshot;
+`profile` MUST be a non-null closed object containing exactly `displayName`,
+`bio`, and `avatar`. A revision-0 result MUST NOT be used as exact profile
+evidence.
+
+The response omits `namespaceId` because the lookup resolves only the responding
+server's authoritative local account namespace.
 
 `proof` is the answer to the request's sealed challenge: the responder opens
 the `challenge` box with the private counterpart of the supplied `publicKey`
@@ -112,18 +116,7 @@ comparing. The sealed-box construction is defined in
 the stateless possession-proof discipline is defined in
 [Peer Recognition, Section 12](./recognition.md#12-sealed-challenge-verification-service).
 
-A `profileRev` of `0` confirms that the account exists but has no current
-public profile snapshot; `profile` MUST be `null`. A positive `profileRev`
-MUST have a non-null `profile` containing exactly `displayName`, `bio`, and
-`avatar`. The outer object contains exactly `account`, `profileRev`, `profile`,
-and `proof`; flattened profile fields are not accepted.
-
-`proof` retains exactly the same possession-verification requirements for both
-cases. The caller MUST NOT store a revision-0 result as an exact profile snapshot
-or issue an exact-revision request for revision `0`. A caller MAY display the
-account name when `profile` is null; that local presentation is not profile
-evidence. A later positive revision identifies a real immutable snapshot and
-does not conflict with this no-profile result.
+Possession proof is required even for revision-0 responses.
 
 ### 2.2 Exact evidence profiles
 
@@ -162,12 +155,17 @@ GET /s2s/v1/accounts/:account
 
 `account` MAY be a `UserAccount` or `GroupAccount`. The operation resolves only
 an account local to the publisher's own domain; a path, query, or header MUST NOT
-select another domain. It returns the account's current public profile when
-available. An existing local user or live group with no current profile snapshot
-returns the revision-0 null-profile result defined in Section 2.1, rather than `NOT_FOUND`.
-Any `recognized signed` peer MAY query this operation; a revision-0 success
-therefore discloses account existence, but grants no P2P, group, message, media,
-or subsequent profile permission. A dissolved group is unavailable.
+select another domain. Any `recognized signed` peer MAY query this operation,
+subject to the responder's disclosure policy.
+
+For an existing local user or live group whose public lookup is available to
+the signer, the responder returns the current public profile, or the revision-0
+null-profile result defined in Section 2.1 if no current profile snapshot exists.
+Otherwise, it returns HTTP `200 NOT_FOUND` with `data: null`, including for a
+dissolved group. Absence of a profile snapshot alone MUST NOT cause `NOT_FOUND`.
+
+A successful lookup discloses account existence but grants no P2P, group,
+message, media, or subsequent profile permission.
 
 The request MUST carry exactly two query parameters, in this order:
 `publicKey`, then `challenge`. `publicKey` is a
@@ -180,12 +178,6 @@ a missing, duplicated, malformed, or unknown additional query parameter, or
 a challenge that fails to open under the supplied key, returns
 `400 FEDERATION_MALFORMED`. Both parameters travel in the URL, so they are
 covered by the signed `@query` component and cannot be altered in transit.
-
-An account that is not an existing local user or live group, or whose public
-lookup is unavailable to the signer under the responder's disclosure policy,
-returns HTTP `200 NOT_FOUND` with `data: null`. Absence of a profile snapshot
-alone MUST NOT be treated as account absence. Exact-revision operations remain
-positive-revision-only; their authorization and snapshot rules are unchanged.
 
 ## 4. Account Profile by Account Evidence
 

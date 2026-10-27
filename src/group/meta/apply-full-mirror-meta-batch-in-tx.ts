@@ -57,9 +57,13 @@ export async function applyFullMirrorMetaBatchInTx(
     mirror.threadId,
     mirror.threadId,
   );
-  await tx
-    .delete(groupMetaMemberFeed)
-    .where(eq(groupMetaMemberFeed.threadId, mirror.threadId));
+  // Retain facts at the same coordinate so recovery cannot reset their first
+  // local persistence time. Remove facts absent from the completed full scan.
+  await tx.execute(sql`
+    DELETE FROM "GroupMetaMemberFeed"
+    WHERE "threadId" = ${mirror.threadId}
+      AND "feedId" <> ALL(${sql.param(input.items.map((item) => item.feedId))}::integer[])
+  `);
   const profileDemands = input.items
     .map((item) => selectMirrorMetaProfileDemand(input.group, item))
     .filter((demand): demand is ProfilePrefetchDemand => demand !== null);
@@ -69,12 +73,22 @@ export async function applyFullMirrorMetaBatchInTx(
       throw new Error(
         'a full group-meta snapshot cannot contain MEMBER_DEPART',
       );
-    if (item.operation === 'GROUP_ANNOUNCEMENT') return [];
+    if (item.operation === 'GROUP_ANNOUNCEMENT')
+      return [
+        {
+          threadId: mirror.threadId,
+          feedId: item.feedId,
+          originCreatedAt: new Date(item.createdAt),
+          operation: 'GROUP_ANNOUNCEMENT',
+          body: { text: item.text },
+        },
+      ];
     if (item.operation === 'GROUP_PROFILE')
       return [
         {
           threadId: mirror.threadId,
           feedId: item.feedId,
+          originCreatedAt: new Date(item.createdAt),
           operation: 'GROUP_PROFILE' as const,
           body: {
             account: item.account,
@@ -87,6 +101,7 @@ export async function applyFullMirrorMetaBatchInTx(
       {
         threadId: mirror.threadId,
         feedId: item.feedId,
+        originCreatedAt: new Date(item.createdAt),
         operation: item.operation,
         body: {
           account: item.account,
@@ -98,20 +113,6 @@ export async function applyFullMirrorMetaBatchInTx(
     ];
   });
   await upsertCurrentGroupMetaFactsInTx(tx, facts);
-  const announcement = input.items.find(
-    (item) => item.operation === 'GROUP_ANNOUNCEMENT',
-  );
-  await tx
-    .update(groupMeta)
-    .set({
-      announcementFeedId: announcement?.feedId ?? null,
-      announcementText:
-        announcement?.operation === 'GROUP_ANNOUNCEMENT'
-          ? announcement.text
-          : null,
-      updatedAt: new Date(),
-    })
-    .where(eq(groupMeta.threadId, mirror.threadId));
   const profile = input.items.find(
     (item) => item.operation === 'GROUP_PROFILE',
   );

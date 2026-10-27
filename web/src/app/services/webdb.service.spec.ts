@@ -384,6 +384,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'me',
@@ -394,6 +396,8 @@ describe('WebdbService', () => {
             },
             {
               feedId: '2',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'other',
@@ -404,6 +408,8 @@ describe('WebdbService', () => {
             },
             {
               feedId: '3',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'GROUP_PROFILE',
               body: { account: '!mirror', namespaceId: 7, profileRev: 4 },
             },
@@ -571,6 +577,8 @@ describe('WebdbService', () => {
             items: [
               {
                 feedId: '1',
+                createdAt: 1_000,
+                originCreatedAt: null,
                 operation: 'MEMBER_UPSERT',
                 body: {
                   account: 'bob',
@@ -581,6 +589,8 @@ describe('WebdbService', () => {
               },
               {
                 feedId: '2',
+                createdAt: 1_000,
+                originCreatedAt: null,
                 operation: 'MEMBER_UPSERT',
                 body: {
                   account: 'alice',
@@ -1495,11 +1505,15 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'GROUP_PROFILE',
               body: { account: '!team', namespaceId: 0, profileRev: 4 },
             },
             {
               feedId: '2',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'alice',
@@ -1510,6 +1524,8 @@ describe('WebdbService', () => {
             },
             {
               feedId: '3',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'bob',
@@ -1560,6 +1576,8 @@ describe('WebdbService', () => {
         scannedThrough: string,
         items: Array<{
           feedId: string;
+          createdAt: number;
+          originCreatedAt: number | null;
           operation: 'GROUP_ANNOUNCEMENT';
           body: { text: string | null };
         }>,
@@ -1579,6 +1597,8 @@ describe('WebdbService', () => {
         page('full', '2', [
           {
             feedId: '2',
+            createdAt: 1_000,
+            originCreatedAt: null,
             operation: 'GROUP_ANNOUNCEMENT',
             body: { text: 'Hello' },
           },
@@ -1587,11 +1607,15 @@ describe('WebdbService', () => {
       expect(await groupMeta()).toMatchObject({
         announcementFeedId: '2',
         announcementText: 'Hello',
+        announcementCreatedAt: 1_000,
+        announcementOriginCreatedAt: null,
       });
       await webdb.applyGroupMetaPage(
         page('delta', '4', [
           {
             feedId: '4',
+            createdAt: 4_000,
+            originCreatedAt: 2_000,
             operation: 'GROUP_ANNOUNCEMENT',
             body: { text: null },
           },
@@ -1600,6 +1624,8 @@ describe('WebdbService', () => {
       expect(await groupMeta()).toMatchObject({
         announcementFeedId: '4',
         announcementText: null,
+        announcementCreatedAt: 4_000,
+        announcementOriginCreatedAt: 2_000,
       });
       await webdb.applyGroupMetaPage(page('full', '5', []));
       expect(await groupMeta()).toMatchObject({
@@ -1623,6 +1649,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
+              createdAt: 1_500,
+              originCreatedAt: null,
               operation: 'GROUP_ANNOUNCEMENT',
               body: { text: 'Notice' },
             },
@@ -1647,6 +1675,8 @@ describe('WebdbService', () => {
       expect(await groupMeta()).toMatchObject({
         announcementFeedId: '1',
         announcementText: 'Notice',
+        announcementCreatedAt: 1_500,
+        announcementOriginCreatedAt: null,
       });
     });
 
@@ -1665,6 +1695,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'alice',
@@ -1770,6 +1802,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'self',
@@ -1780,6 +1814,8 @@ describe('WebdbService', () => {
             },
             {
               feedId: '2',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'alice',
@@ -1836,6 +1872,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '3',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'a-z',
@@ -1846,6 +1884,8 @@ describe('WebdbService', () => {
             },
             {
               feedId: '4',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'a_z',
@@ -1915,6 +1955,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '3',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'alice',
@@ -1943,6 +1985,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '4',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'self',
@@ -1983,6 +2027,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '5',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_DEPART',
               body: {
                 account: 'self',
@@ -2023,6 +2069,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '6',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_DEPART',
               body: {
                 account: 'alice',
@@ -2098,6 +2146,8 @@ describe('WebdbService', () => {
           items: [
             {
               feedId: '1',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'alice',
@@ -2108,6 +2158,8 @@ describe('WebdbService', () => {
             },
             {
               feedId: '2',
+              createdAt: 1_000,
+              originCreatedAt: null,
               operation: 'MEMBER_UPSERT',
               body: {
                 account: 'bob',

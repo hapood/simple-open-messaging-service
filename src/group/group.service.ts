@@ -16,6 +16,7 @@ import {
 import {
   groupAccount,
   groupMeta,
+  groupMetaMemberFeed,
   account as userAccount,
   accountThreadState,
   messageThread,
@@ -279,8 +280,12 @@ export class GroupService {
             await tx.insert(groupMeta).values({
               threadId: thread.id,
               metaEndId: 1,
-              announcementFeedId: 1,
-              announcementText: null,
+            });
+            await tx.insert(groupMetaMemberFeed).values({
+              threadId: thread.id,
+              feedId: 1,
+              operation: 'GROUP_ANNOUNCEMENT',
+              body: { text: null },
             });
             const owner = await tx.query.account.findFirst({
               where: eq(userAccount.id, params.owner),
@@ -561,11 +566,12 @@ export class GroupService {
         UPDATE "AccountThreadState" state
         SET "announcementReadFeedId" = GREATEST(state."announcementReadFeedId", ${params.feedId}),
           "updatedAt" = CURRENT_TIMESTAMP
-        FROM "GroupMeta" meta
+        FROM "GroupMetaMemberFeed" meta
         WHERE state."threadId" = ${params.threadId}
           AND state."accountId" = ${params.accountId}
           AND meta."threadId" = state."threadId"
-          AND meta."announcementFeedId" >= ${params.feedId}
+          AND meta.operation = 'GROUP_ANNOUNCEMENT'
+          AND meta."feedId" >= ${params.feedId}
           AND state."announcementReadFeedId" < ${params.feedId}
         RETURNING state."announcementReadFeedId"
       `);

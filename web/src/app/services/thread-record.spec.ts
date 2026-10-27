@@ -96,9 +96,13 @@ describe('separate thread and group meta records', () => {
       groupMetaFeedId: '0',
       announcementFeedId: null,
       announcementText: null,
+      announcementCreatedAt: null,
+      announcementOriginCreatedAt: null,
       recoveryThrough: null,
       recoveryAnnouncementFeedId: null,
       recoveryAnnouncementText: null,
+      recoveryAnnouncementCreatedAt: null,
+      recoveryAnnouncementOriginCreatedAt: null,
     });
   });
 

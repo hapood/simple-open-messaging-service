@@ -1,6 +1,24 @@
 {
   "vectors": [
     {
+      "name": "all Group Meta operations require both copy-time fields",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "values": [
+        { "feedId": 1, "originCreatedAt": null, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
+        { "feedId": 1, "createdAt": 0, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
+        { "feedId": 1, "originCreatedAt": null, "operation": "MEMBER_DEPART", "body": { "account": "alice", "namespaceId": 0, "role": "MEMBER", "profileRev": 1 } },
+        { "feedId": 1, "createdAt": 0, "operation": "MEMBER_DEPART", "body": { "account": "alice", "namespaceId": 0, "role": "MEMBER", "profileRev": 1 } },
+        { "feedId": 1, "originCreatedAt": null, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
+        { "feedId": 1, "createdAt": 0, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
+        { "feedId": 1, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "createdAt": 0, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "createdAt": null, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "createdAt": -1, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "createdAt": 0.5, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "createdAt": 0, "originCreatedAt": 1, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } }
+      ]
+    },
+    {
       "name": "public profile rejects flat content and inconsistent nullness",
       "schema": "urn:somfp:v1:profile",
       "values": [

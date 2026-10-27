@@ -394,6 +394,8 @@
     "announcement": "Group announcement",
     "announcementUnread": "Unread group announcement",
     "announcementRetry": "Retry marking as read",
+    "announcementPublishedAt": "Published: {{time}}",
+    "announcementReceivedAt": "Received: {{time}}",
     "announcementSaveFailed": "Couldn't save the announcement",
     "announcementClear": "Clear announcement",
     "announcementClearConfirm": "Clear the current group announcement?",

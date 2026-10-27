@@ -101,6 +101,8 @@
           "responseItems": [
             {
               "feedId": 11,
+              "createdAt": 1700000000000,
+              "originCreatedAt": null,
               "operation": "GROUP_ANNOUNCEMENT",
               "body": { "text": null }
             }

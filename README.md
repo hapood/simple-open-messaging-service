@@ -14,7 +14,7 @@
   <a href="https://hapood.github.io/simple-open-messaging-service/"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a.svg"></a>
   <img alt="SOMS 0.1.0 alpha 1" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.1-7c3aed.svg">
-  <a href="spec/v1/README.md"><img alt="SOMFP v1.0.0 draft 1" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.1-e95420.svg"></a>
+  <a href="spec/v1/README.md"><img alt="SOMFP v1.0.0 draft 2" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.2-e95420.svg"></a>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
 </p>
 
 > [!IMPORTANT]
-> SOMS `0.1.0-alpha.1` and SOMFP `v1.0.0-draft.1` are currently available for **technical preview only**. Before beta, stable operation and upgrade compatibility are not guaranteed; APIs, the federation wire contract, and storage formats may change incompatibly. Use isolated test deployments with disposable data, not production or critical communications.
+> SOMS `0.1.0-alpha.1` and SOMFP `v1.0.0-draft.2` are currently available for **technical preview only**. Before beta, stable operation and upgrade compatibility are not guaranteed; APIs, the federation wire contract, and storage formats may change incompatibly. Use isolated test deployments with disposable data, not production or critical communications.
 
 ## Features
 

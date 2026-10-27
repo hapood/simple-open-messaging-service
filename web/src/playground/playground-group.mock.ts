@@ -325,6 +325,8 @@ export class PlaygroundGroupService
           groupMetaFeedId: String(feedId),
           announcementFeedId: String(feedId),
           announcementText: text,
+          announcementCreatedAt: Date.now(),
+          announcementOriginCreatedAt: null,
         },
       });
       this.state.conversations.applyThreadMeta(groupId, {

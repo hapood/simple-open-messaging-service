@@ -145,7 +145,8 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
         WHERE operation <> 'GROUP_ANNOUNCEMENT'
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
         operation = EXCLUDED.operation, body = EXCLUDED.body,
-        "profileSourceSeq" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+        "profileSourceSeq" = NULL, "createdAt" = EXCLUDED."createdAt",
+        "originCreatedAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), profile_fact AS (
       INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", operation, body)
@@ -159,7 +160,9 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       ON CONFLICT ("threadId", (body ->> 'account'), (body -> 'namespaceId'))
         WHERE operation <> 'GROUP_ANNOUNCEMENT'
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
-        operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
+        operation = EXCLUDED.operation, body = EXCLUDED.body,
+        "createdAt" = EXCLUDED."createdAt", "originCreatedAt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), group_profile_source AS MATERIALIZED (
       SELECT "feedId" AS "profileSourceId" FROM profile_fact

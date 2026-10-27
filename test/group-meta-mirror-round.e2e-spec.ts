@@ -153,6 +153,8 @@ describe('mirror Group Meta rounds', () => {
     role: GroupRole = GroupRole.MEMBER,
   ): MirrorMetaReplicatedItem => ({
     feedId,
+    createdAt: 1700000000000,
+    originCreatedAt: null,
     operation: 'MEMBER_UPSERT',
     account: memberAccount,
     namespaceId: originNamespaceId,
@@ -163,6 +165,8 @@ describe('mirror Group Meta rounds', () => {
   const memberDepart = (feedId: number, memberAccount: string) =>
     ({
       feedId,
+      createdAt: 1700000000000,
+      originCreatedAt: null,
       operation: 'MEMBER_DEPART',
       account: memberAccount,
       namespaceId: originNamespaceId,
@@ -240,6 +244,8 @@ describe('mirror Group Meta rounds', () => {
       memberUpsert(5, 'peer-three'),
       {
         feedId: 9,
+        createdAt: 1700000000000,
+        originCreatedAt: null,
         operation: 'GROUP_PROFILE',
         account: groupAccount,
         namespaceId: originNamespaceId,
@@ -429,6 +435,8 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 5,
+          createdAt: 1700000000000,
+          originCreatedAt: null,
           operation: 'GROUP_PROFILE',
           account: groupAccount,
           namespaceId: originNamespaceId,
@@ -644,13 +652,24 @@ describe('mirror Group Meta rounds', () => {
         through: 2,
         scannedThrough: 2,
         reachedBoundary: true,
-        items: [{ feedId: 2, operation: 'GROUP_ANNOUNCEMENT', text: 'Hello' }],
+        items: [
+          {
+            feedId: 2,
+            createdAt: 1700000000000,
+            originCreatedAt: null,
+            operation: 'GROUP_ANNOUNCEMENT',
+            text: 'Hello',
+          },
+        ],
       }),
     );
-    expect(await readMirrorMeta()).toMatchObject({
-      announcementFeedId: 2,
-      announcementText: 'Hello',
-    });
+    expect(await roster()).toEqual([
+      expect.objectContaining({
+        feedId: 2,
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text: 'Hello' },
+      }),
+    ]);
     await database.db.transaction((tx) =>
       mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 3 }),
     );
@@ -660,13 +679,22 @@ describe('mirror Group Meta rounds', () => {
         through: 3,
         reachedBoundary: true,
         messages,
-        item: { feedId: 3, operation: 'GROUP_ANNOUNCEMENT', text: null },
+        item: {
+          feedId: 3,
+          createdAt: 1700000000001,
+          originCreatedAt: null,
+          operation: 'GROUP_ANNOUNCEMENT',
+          text: null,
+        },
       }),
     );
-    expect(await readMirrorMeta()).toMatchObject({
-      announcementFeedId: 3,
-      announcementText: null,
-    });
+    expect(await roster()).toEqual([
+      expect.objectContaining({
+        feedId: 3,
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text: null },
+      }),
+    ]);
     await database.db.transaction((tx) =>
       reopenMirrorMetaRecoveryInTx(tx, group, 4),
     );
@@ -679,10 +707,126 @@ describe('mirror Group Meta rounds', () => {
         items: [],
       }),
     );
-    expect(await readMirrorMeta()).toMatchObject({
-      announcementFeedId: null,
-      announcementText: null,
-    });
+    expect(await roster()).toEqual([]);
+  });
+
+  it.each([
+    'MEMBER_UPSERT',
+    'MEMBER_DEPART',
+    'GROUP_PROFILE',
+    'GROUP_ANNOUNCEMENT',
+  ] as const)(
+    'keeps source and first local copy times separate for %s',
+    async (operation) => {
+      await database.db.insert(groupMeta).values({ threadId });
+      const sourceTime = 1700000000000;
+      const item = {
+        ...memberUpsert(1, 'copy-time-member'),
+        operation,
+        account:
+          operation === 'GROUP_PROFILE' ? groupAccount : 'copy-time-member',
+        text: 'Notice',
+        createdAt: sourceTime,
+      } as MirrorMetaReplicatedItem;
+      const apply = (fact: MirrorMetaReplicatedItem) =>
+        database.db.transaction((tx) =>
+          applyMirrorMetaFactInTx(tx, threadId, group, fact, 'delta'),
+        );
+      await apply(item);
+      const savedLocalTime = new Date('2000-01-01T00:00:00.000Z');
+      await database.db
+        .update(groupMetaMemberFeed)
+        .set({ createdAt: savedLocalTime })
+        .where(eq(groupMetaMemberFeed.threadId, threadId));
+      await apply(item);
+      const [same] = await database.db
+        .select()
+        .from(groupMetaMemberFeed)
+        .where(eq(groupMetaMemberFeed.threadId, threadId));
+      expect(same.createdAt).toEqual(savedLocalTime);
+      expect(same.originCreatedAt).toEqual(new Date(sourceTime));
+      await apply({ ...item, feedId: 2, createdAt: sourceTime + 1 });
+      const [replacement] = await database.db
+        .select()
+        .from(groupMetaMemberFeed)
+        .where(eq(groupMetaMemberFeed.threadId, threadId));
+      expect(replacement.createdAt.getTime()).toBeGreaterThan(
+        savedLocalTime.getTime(),
+      );
+      expect(replacement.originCreatedAt).toEqual(new Date(sourceTime + 1));
+      const page = await database.db.transaction((tx) =>
+        readGroupMetaPageInTx(tx, {
+          groupId: threadId,
+          account: groupAccount,
+          viewMode: 'client',
+          feedMode: 'delta',
+          after: 0,
+          take: 100,
+          end: 2,
+          visibleAfter: 0,
+        }),
+      );
+      expect(page.items[0]).toMatchObject({
+        createdAt: replacement.createdAt.getTime(),
+        originCreatedAt: sourceTime + 1,
+      });
+    },
+  );
+
+  it('preserves all retained copy times across a complete full recovery', async () => {
+    const items: MirrorMetaReplicatedItem[] = [
+      memberUpsert(1, 'copy-time-member'),
+      {
+        feedId: 2,
+        createdAt: 1700000000001,
+        originCreatedAt: null,
+        operation: 'GROUP_PROFILE',
+        account: groupAccount,
+        namespaceId: 0,
+        profileRev: 0,
+      },
+      {
+        feedId: 3,
+        createdAt: 1700000000002,
+        originCreatedAt: null,
+        operation: 'GROUP_ANNOUNCEMENT',
+        text: null,
+      },
+    ];
+    await database.db.transaction((tx) =>
+      mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 3 }),
+    );
+    const recover = () =>
+      database.db.transaction((tx) =>
+        applyFullMirrorMetaBatchInTx(tx, {
+          group,
+          items,
+          through: 3,
+          scannedThrough: 3,
+          reachedBoundary: true,
+        }),
+      );
+    await recover();
+    const savedLocalTime = new Date('2000-01-01T00:00:00.000Z');
+    await database.db
+      .update(groupMetaMemberFeed)
+      .set({ createdAt: savedLocalTime })
+      .where(eq(groupMetaMemberFeed.threadId, threadId));
+    await database.db.transaction((tx) =>
+      reopenMirrorMetaRecoveryInTx(tx, group, 3),
+    );
+    await recover();
+    const facts = await database.db
+      .select()
+      .from(groupMetaMemberFeed)
+      .where(eq(groupMetaMemberFeed.threadId, threadId));
+    expect(facts).toHaveLength(3);
+    for (const fact of facts) {
+      expect(fact.createdAt).toEqual(savedLocalTime);
+      expect(fact.originCreatedAt).toEqual(
+        new Date(items.find((item) => item.feedId === fact.feedId)!.createdAt),
+      );
+    }
   });
 
   it('upserts the same stable profile key in full and delta modes', async () => {
@@ -691,6 +835,8 @@ describe('mirror Group Meta rounds', () => {
     );
     const profileItem: MirrorMetaReplicatedItem = {
       feedId: 2,
+      createdAt: 1700000000000,
+      originCreatedAt: null,
       operation: 'GROUP_PROFILE',
       account: groupAccount,
       namespaceId: originNamespaceId,
@@ -719,6 +865,8 @@ describe('mirror Group Meta rounds', () => {
         group,
         {
           feedId: 2,
+          createdAt: 1700000000000,
+          originCreatedAt: null,
           operation: 'GROUP_PROFILE',
           account: groupAccount,
           namespaceId: originNamespaceId,
@@ -738,6 +886,8 @@ describe('mirror Group Meta rounds', () => {
         group,
         {
           feedId: 3,
+          createdAt: 1700000000000,
+          originCreatedAt: null,
           operation: 'GROUP_PROFILE',
           account: groupAccount,
           namespaceId: originNamespaceId,
@@ -820,6 +970,8 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 1,
+          createdAt: 1700000000000,
+          originCreatedAt: null,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
           namespaceId: 0,
@@ -852,6 +1004,8 @@ describe('mirror Group Meta rounds', () => {
           group,
           item: {
             feedId,
+            createdAt: 1700000000000,
+            originCreatedAt: null,
             operation,
             account: localMemberAccount,
             namespaceId: 0,
@@ -898,6 +1052,8 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 4,
+          createdAt: 1700000000000,
+          originCreatedAt: null,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
           namespaceId: 0,
@@ -924,6 +1080,8 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 5,
+          createdAt: 1700000000000,
+          originCreatedAt: null,
           operation: 'MEMBER_DEPART',
           account: localMemberAccount,
           namespaceId: 0,

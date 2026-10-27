@@ -74,6 +74,8 @@ export class MessageHeaderComponent {
         threadId: thread.threadId,
         feedId: announcement.feedId,
         text: announcement.text,
+        createdAt: announcement.createdAt,
+        originCreatedAt: announcement.originCreatedAt,
       },
       undefined,
       { scopeThreadId: thread.threadId },

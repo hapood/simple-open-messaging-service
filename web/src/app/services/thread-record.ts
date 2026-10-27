@@ -134,9 +134,13 @@ export function restoreThread(
       groupMetaFeedId: meta.groupMetaFeedId,
       announcementFeedId: meta.announcementFeedId,
       announcementText: meta.announcementText,
+      announcementCreatedAt: meta.announcementCreatedAt,
+      announcementOriginCreatedAt: meta.announcementOriginCreatedAt,
       recoveryThrough: meta.recoveryThrough,
       recoveryAnnouncementFeedId: meta.recoveryAnnouncementFeedId,
       recoveryAnnouncementText: meta.recoveryAnnouncementText,
+      recoveryAnnouncementCreatedAt: meta.recoveryAnnouncementCreatedAt,
+      recoveryAnnouncementOriginCreatedAt: meta.recoveryAnnouncementOriginCreatedAt,
     },
   };
 }

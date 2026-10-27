@@ -21,12 +21,16 @@ describe('group announcement visibility', () => {
     group.groupMetaFeedEndId = '5';
     group.meta.announcementFeedId = '2';
     group.meta.announcementText = 'A notice';
+    group.meta.announcementCreatedAt = 1_000;
+    group.meta.announcementOriginCreatedAt = null;
     expect(currentGroupAnnouncement(group)).toBeNull();
     expect(isGroupMetaCurrent(group)).toBe(false);
     group.meta.groupMetaFeedId = '5';
     expect(currentGroupAnnouncement(group)).toEqual({
       feedId: '2',
       text: 'A notice',
+      createdAt: 1_000,
+      originCreatedAt: null,
     });
     group.meta.recoveryThrough = '6';
     expect(currentGroupAnnouncement(group)).toBeNull();
@@ -38,6 +42,8 @@ describe('group announcement visibility', () => {
     group.meta.groupMetaFeedId = '3';
     group.meta.announcementFeedId = '3';
     group.meta.announcementText = null;
+    group.meta.announcementCreatedAt = 2_000;
+    group.meta.announcementOriginCreatedAt = 1_000;
     expect(isGroupMetaCurrent(group)).toBe(true);
     expect(currentGroupAnnouncement(group)).toBeNull();
     group.meta.announcementFeedId = null;

@@ -2,12 +2,19 @@
  *  subject identity is (account, namespaceId) in the publisher's coordinate
  *  space, and no domain travels on the wire — consumers resolve the display
  *  domain through publisher-scoped namespace bindings. */
+export interface ClientGroupMetaFeedItemBase {
+  feedId: string;
+  /** Server copy creation time in epoch milliseconds. */
+  createdAt: number;
+  /** Origin publication time; null when the serving server authored the fact. */
+  originCreatedAt: number | null;
+}
+
 export interface ClientGroupMetaFeedPage {
   account: string;
   mode: 'full' | 'delta';
   items: Array<
-    | {
-        feedId: string;
+    | (ClientGroupMetaFeedItemBase & {
         operation: 'MEMBER_UPSERT';
         body: {
           account: string;
@@ -15,9 +22,8 @@ export interface ClientGroupMetaFeedPage {
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
         };
-      }
-    | {
-        feedId: string;
+      })
+    | (ClientGroupMetaFeedItemBase & {
         operation: 'MEMBER_DEPART';
         body: {
           account: string;
@@ -25,17 +31,15 @@ export interface ClientGroupMetaFeedPage {
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
         };
-      }
-    | {
-        feedId: string;
+      })
+    | (ClientGroupMetaFeedItemBase & {
         operation: 'GROUP_PROFILE';
         body: { account: string; namespaceId: number; profileRev: number };
-      }
-    | {
-        feedId: string;
+      })
+    | (ClientGroupMetaFeedItemBase & {
         operation: 'GROUP_ANNOUNCEMENT';
         body: { text: string | null };
-      }
+      })
   >;
   scannedThrough: string;
   groupMetaFeedEndId: string;
@@ -52,6 +56,8 @@ export interface ClientGroupMetaApply {
 export interface GroupMetaAnnouncementFact {
   feedId: string;
   text: string | null;
+  createdAt: number | null;
+  originCreatedAt: number | null;
 }
 
 /** Group Meta facts one committed page materialized into the thread row. Carried on the
@@ -67,6 +73,8 @@ export interface GroupMetaCommitPatch {
   /** Tri-state announcement fields: a null feedId carries no announcement. */
   announcementFeedId: string | null;
   announcementText: string | null;
+  announcementCreatedAt: number | null;
+  announcementOriginCreatedAt: number | null;
   groupMetaRecoveryThrough: string | null;
 }
 

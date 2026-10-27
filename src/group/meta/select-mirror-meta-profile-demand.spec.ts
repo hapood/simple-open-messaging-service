@@ -10,6 +10,8 @@ const group = {
 
 const member: MirrorMetaReplicatedItem = {
   feedId: 42,
+  createdAt: 0,
+  originCreatedAt: null,
   operation: 'MEMBER_UPSERT',
   account: 'remote-member',
   namespaceId: 23,
@@ -40,6 +42,8 @@ describe('selectMirrorMetaProfileDemand', () => {
       operation === 'GROUP_PROFILE'
         ? {
             feedId: 43,
+            createdAt: 0,
+            originCreatedAt: null,
             operation,
             account: group.account,
             namespaceId: 0,

@@ -64,6 +64,8 @@ describe('group-meta drain vs renderer local patches', () => {
         items: [
           {
             feedId: '2',
+            createdAt: 1_000,
+            originCreatedAt: null,
             operation: 'GROUP_PROFILE',
             body: {
               account: '!four-one-alpha',
@@ -73,6 +75,8 @@ describe('group-meta drain vs renderer local patches', () => {
           },
           {
             feedId: '3',
+            createdAt: 1_100,
+            originCreatedAt: null,
             operation: 'MEMBER_UPSERT',
             body: {
               account: 'alice.w1007',

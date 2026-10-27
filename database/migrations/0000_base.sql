@@ -678,6 +678,8 @@ CREATE TABLE public."Admin" (
 --
 
 CREATE TABLE public."AdminActionLog" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     "adminId" integer NOT NULL,
     "adminRole" public."AdminRole" NOT NULL,
@@ -718,6 +720,7 @@ ALTER SEQUENCE public."AdminActionLog_id_seq" OWNED BY public."AdminActionLog".i
 --
 
 CREATE TABLE public."AdminLoginChallenge" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     jti character varying(36) NOT NULL,
     "adminId" integer NOT NULL,
     "consumedAt" timestamp(3) with time zone,
@@ -730,6 +733,7 @@ CREATE TABLE public."AdminLoginChallenge" (
 --
 
 CREATE TABLE public."AdminSession" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     "adminId" integer NOT NULL,
     "tokenHash" text NOT NULL,
@@ -787,6 +791,8 @@ ALTER SEQUENCE public."Admin_id_seq" OWNED BY public."Admin".id;
 --
 
 CREATE TABLE public."CallHistory" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     key text NOT NULL,
     "threadId" integer NOT NULL,
     snapshot jsonb NOT NULL,
@@ -869,6 +875,7 @@ ALTER SEQUENCE public."DiagnosticsReport_id_seq" OWNED BY public."DiagnosticsRep
 --
 
 CREATE TABLE public."DurableTask" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     kind public."DurableTaskKind" NOT NULL,
     "scopeType" public."DurableTaskScopeType" NOT NULL,
@@ -1003,6 +1010,7 @@ ALTER SEQUENCE public."FederationIdentityReview_id_seq" OWNED BY public."Federat
 --
 
 CREATE TABLE public."FederationIdentityConflict" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     domain character varying(63) NOT NULL,
     "rootPublicKey" character varying(44) NOT NULL,
@@ -1085,6 +1093,7 @@ ALTER SEQUENCE public."FederationThreadHistoryGap_id_seq" OWNED BY public."Feder
 --
 
 CREATE TABLE public."FederationThreadSyncState" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
     "messageTargetSeq" integer DEFAULT 0 NOT NULL,
     "deletionTargetSeq" integer DEFAULT 0 NOT NULL,
@@ -1147,6 +1156,7 @@ ALTER SEQUENCE public."FileSyncProgress_id_seq" OWNED BY public."FileSyncProgres
 --
 
 CREATE TABLE public."ForwardBundle" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigserial NOT NULL,
     messages jsonb NOT NULL,
     "messageCount" integer NOT NULL,
@@ -1169,6 +1179,8 @@ CREATE TABLE public."ForwardBundle" (
 --
 
 CREATE TABLE public."ForwardBundleAsset" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "bundleId" bigint NOT NULL,
     digest character varying(64) NOT NULL,
     ordinal integer NOT NULL,
@@ -1181,6 +1193,8 @@ CREATE TABLE public."ForwardBundleAsset" (
 --
 
 CREATE TABLE public."ForwardBundleDependency" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "parentBundleId" bigint NOT NULL,
     "childBundleId" bigint NOT NULL,
     ordinal integer NOT NULL
@@ -1192,6 +1206,8 @@ CREATE TABLE public."ForwardBundleDependency" (
 --
 
 CREATE TABLE public."ForwardMessage" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "messageId" bigint NOT NULL,
     "bundleId" bigint NOT NULL
 );
@@ -1238,6 +1254,7 @@ ALTER SEQUENCE public."GroupAccount_id_seq" OWNED BY public."GroupAccount".id;
 --
 
 CREATE TABLE public."GroupMeta" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "metaEndId" integer DEFAULT 0 NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
@@ -1247,10 +1264,6 @@ CREATE TABLE public."GroupMeta" (
     "metaTargetId" integer DEFAULT 0 NOT NULL,
     "metaProcessedThroughId" integer DEFAULT 0 NOT NULL,
     "metaRecoveryThroughId" integer,
-    "announcementFeedId" integer,
-    "announcementText" text,
-    CONSTRAINT "GroupMeta_announcementFeedId_check" CHECK ((("announcementFeedId" IS NULL) OR ("announcementFeedId" > 0))),
-    CONSTRAINT "GroupMeta_announcementText_check" CHECK ((("announcementText" IS NULL) OR (("announcementFeedId" IS NOT NULL) AND (char_length("announcementText") >= 1) AND (char_length("announcementText") <= 4096)))),
     CONSTRAINT "GroupMeta_applicationEndId_check" CHECK (("applicationEndId" >= 0)),
     CONSTRAINT "GroupMeta_invitationEndId_check" CHECK (("invitationEndId" >= 0)),
     CONSTRAINT "GroupMeta_metaEndId_check" CHECK (("metaEndId" >= 0)),
@@ -1266,6 +1279,7 @@ CREATE TABLE public."GroupMeta" (
 --
 
 CREATE TABLE public."GroupMetaMemberFeed" (
+    "originCreatedAt" timestamp(3) with time zone,
     "feedId" integer NOT NULL,
     operation public."GroupMetaMemberOperation" NOT NULL,
     body jsonb NOT NULL,
@@ -1273,6 +1287,14 @@ CREATE TABLE public."GroupMetaMemberFeed" (
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
     "profileSourceSeq" integer,
+    CONSTRAINT "GroupMetaMemberFeed_announcement_check" CHECK (operation <> 'GROUP_ANNOUNCEMENT' OR COALESCE(
+      body ? 'text' AND (body - 'text') = '{}'::jsonb
+      AND (body -> 'text' = 'null'::jsonb OR (
+        jsonb_typeof(body -> 'text') = 'string'
+        AND char_length(body ->> 'text') BETWEEN 1 AND 4096)), false)),
+    CONSTRAINT "GroupMetaMemberFeed_time_check" CHECK (
+      "createdAt" >= '1970-01-01'::timestamptz AND (
+        "originCreatedAt" IS NULL OR "originCreatedAt" >= '1970-01-01'::timestamptz)),
     CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (body <> '{}'::jsonb))),
     CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0)),
     CONSTRAINT "GroupMetaMemberFeed_profileSourceSeq_check" CHECK ((("profileSourceSeq" IS NULL) OR ("profileSourceSeq" > 0)))
@@ -1284,6 +1306,7 @@ CREATE TABLE public."GroupMetaMemberFeed" (
 --
 
 CREATE TABLE public."IdentityNamespace" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     domain character varying(63) NOT NULL,
     "rootPublicKey" character varying(44),
@@ -1349,6 +1372,7 @@ ALTER SEQUENCE public."IdentityNamespace_id_seq" OWNED BY public."IdentityNamesp
 --
 
 CREATE TABLE public."LocalFederationRoot" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "rootPublicKey" character varying(44) NOT NULL,
     "rootPrivateKey" character varying(44) NOT NULL,
@@ -1387,6 +1411,7 @@ ALTER SEQUENCE public."LocalFederationRoot_id_seq" OWNED BY public."LocalFederat
 --
 
 CREATE TABLE public."LocalFederationSigningKey" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "keyName" character varying(64) NOT NULL,
     "publicKey" character varying(44) NOT NULL,
     "privateKey" character varying(44) NOT NULL,
@@ -1404,6 +1429,7 @@ CREATE TABLE public."LocalFederationSigningKey" (
 --
 
 CREATE TABLE public."LocalFederationSigningState" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer DEFAULT 0 NOT NULL,
     "currentKeyName" character varying(64) NOT NULL,
     "plannedSwitchAt" timestamp(3) with time zone,
@@ -1419,6 +1445,8 @@ CREATE TABLE public."LocalFederationSigningState" (
 --
 
 CREATE TABLE public."LoginCode" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "userId" integer NOT NULL,
     "codeHash" character varying(127) NOT NULL,
@@ -1458,6 +1486,7 @@ ALTER SEQUENCE public."LoginCode_id_seq" OWNED BY public."LoginCode".id;
 --
 
 CREATE TABLE public."MediaAsset" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     digest character varying(64) NOT NULL,
     bytes bigint NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL,
@@ -1630,6 +1659,7 @@ ALTER SEQUENCE public."PendingMedia_id_seq" OWNED BY public."PendingMedia".id;
 --
 
 CREATE TABLE public."Profile" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     account character varying(31) NOT NULL,
     "profileRev" integer NOT NULL,
     "displayName" character varying(31) NOT NULL,
@@ -1661,6 +1691,8 @@ CREATE TABLE public."ProfileNamespaceChangeFeed" (
 --
 
 CREATE TABLE public."ProfileNamespaceChangeFeedHead" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "endId" bigint DEFAULT 0 NOT NULL,
     CONSTRAINT "ProfileNamespaceChangeFeedHead_endId_check" CHECK (("endId" >= 0)),
@@ -1733,6 +1765,8 @@ CREATE TABLE public."ProfileTombstone" (
 --
 
 CREATE TABLE public."QuotaDailyAllowance" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "namespaceId" integer NOT NULL,
     date date NOT NULL,
     "extraMsg" integer DEFAULT 0 NOT NULL,
@@ -1746,6 +1780,8 @@ CREATE TABLE public."QuotaDailyAllowance" (
 --
 
 CREATE TABLE public."QuotaDailyUsage" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "namespaceId" integer NOT NULL,
     date date NOT NULL,
     category character varying(15) NOT NULL,
@@ -1758,6 +1794,8 @@ CREATE TABLE public."QuotaDailyUsage" (
 --
 
 CREATE TABLE public."QuotaFileByteUsage" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "namespaceId" integer NOT NULL,
     date date NOT NULL,
     bytes bigint DEFAULT 0 NOT NULL
@@ -1769,6 +1807,7 @@ CREATE TABLE public."QuotaFileByteUsage" (
 --
 
 CREATE TABLE public."RelationshipIntent" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "requestId" bigint,
     "authorAccount" character varying(31) NOT NULL,
     "authorNamespaceId" integer NOT NULL,
@@ -1838,6 +1877,7 @@ CREATE INDEX "RelationshipRequest_receiver_page_idx" ON public."RelationshipRequ
 --
 
 CREATE TABLE public."RelationshipPair" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     kind character varying(16) NOT NULL,
     "endpointAType" character varying(8) NOT NULL,
@@ -1882,6 +1922,8 @@ ALTER SEQUENCE public."RelationshipPair_id_seq" OWNED BY public."RelationshipPai
 --
 
 CREATE TABLE public."S2SKeyCache" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     domain character varying(63) NOT NULL,
     "namespaceId" integer NOT NULL,
     "keyId" character varying(127) NOT NULL,
@@ -1899,6 +1941,7 @@ CREATE TABLE public."S2SKeyCache" (
 --
 
 CREATE TABLE public."SessionToken" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "userId" integer NOT NULL,
     "tokenHash" character varying(127) NOT NULL,
@@ -1951,6 +1994,7 @@ ALTER SEQUENCE public."SessionToken_id_seq" OWNED BY public."SessionToken".id;
 --
 
 CREATE TABLE public."SystemSetting" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     key character varying(63) NOT NULL,
     value text NOT NULL,
     "updatedAt" timestamp(3) with time zone NOT NULL
@@ -1962,6 +2006,7 @@ CREATE TABLE public."SystemSetting" (
 --
 
 CREATE TABLE public."ThreadAudience" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     "targetNamespaceId" integer DEFAULT 0 NOT NULL,
     "localUserId" integer,
@@ -1999,6 +2044,7 @@ ALTER SEQUENCE public."ThreadAudience_id_seq" OWNED BY public."ThreadAudience".i
 --
 
 CREATE TABLE public."TwoFactorBackupCode" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "adminId" integer NOT NULL,
     "codeHash" character varying(64) NOT NULL,
@@ -2081,6 +2127,7 @@ ALTER SEQUENCE public."UploadSession_id_seq" OWNED BY public."UploadSession".id;
 --
 
 CREATE TABLE public."UserPreference" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "userId" integer NOT NULL,
     key character varying(100) NOT NULL,
     value jsonb NOT NULL,
@@ -2096,6 +2143,8 @@ CREATE TABLE public."UserPreference" (
 --
 
 CREATE TABLE public."UserQuotaDailyAllowance" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "userId" integer NOT NULL,
     date date NOT NULL,
     "extraMsg" integer DEFAULT 0 NOT NULL,
@@ -2109,6 +2158,8 @@ CREATE TABLE public."UserQuotaDailyAllowance" (
 --
 
 CREATE TABLE public."UserQuotaDailyUsage" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "userId" integer NOT NULL,
     date date NOT NULL,
     category character varying(15) NOT NULL,
@@ -2121,6 +2172,8 @@ CREATE TABLE public."UserQuotaDailyUsage" (
 --
 
 CREATE TABLE public."UserQuotaFileByteUsage" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "userId" integer NOT NULL,
     date date NOT NULL,
     bytes bigint DEFAULT 0 NOT NULL
@@ -2132,6 +2185,7 @@ CREATE TABLE public."UserQuotaFileByteUsage" (
 --
 
 CREATE TABLE public."UserQuotaPolicy" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "userId" integer NOT NULL,
     "dailyMsgLimit" integer,
     "dailyRequestLimit" integer,
@@ -2146,6 +2200,7 @@ CREATE TABLE public."UserQuotaPolicy" (
 --
 
 CREATE TABLE public."WebAuthnCredential" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "adminId" integer NOT NULL,
     "credentialId" character varying(510) NOT NULL,
@@ -3113,6 +3168,8 @@ CREATE INDEX "ForwardMessage_bundleId_idx" ON public."ForwardMessage" USING btre
 --
 -- Name: GroupMetaMemberFeed_member_key; Type: INDEX; Schema: public; Owner: -
 --
+
+CREATE UNIQUE INDEX "GroupMetaMemberFeed_announcement_key" ON public."GroupMetaMemberFeed" ("threadId") WHERE operation = 'GROUP_ANNOUNCEMENT';
 
 CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key" ON public."GroupMetaMemberFeed" USING btree ("threadId", ((body ->> 'account'::text)), ((body -> 'namespaceId'::text))) WHERE (operation <> 'GROUP_ANNOUNCEMENT'::public."GroupMetaMemberOperation");
 

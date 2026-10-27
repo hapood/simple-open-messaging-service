@@ -48,6 +48,8 @@ describe('GroupAnnouncementComponent', () => {
     fixture.componentRef.setInput('threadId', 123);
     fixture.componentRef.setInput('feedId', '2');
     fixture.componentRef.setInput('text', text);
+    fixture.componentRef.setInput('createdAt', 1_000);
+    fixture.componentRef.setInput('originCreatedAt', null);
     fixture.detectChanges();
     return fixture.componentRef;
   }
@@ -62,6 +64,10 @@ describe('GroupAnnouncementComponent', () => {
 
     const title = element.querySelector('.page-header__title');
     expect(title?.textContent).toContain('Group announcement');
+
+    const times = element.querySelector('.announcement-times');
+    expect(times?.textContent).toContain('Published:');
+    expect(times?.textContent).toContain('Received:');
 
     const body = element.querySelector('.announcement-text');
     expect(body?.textContent).toContain('Test notice content');

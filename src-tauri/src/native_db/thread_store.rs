@@ -155,9 +155,13 @@ pub(super) fn read(
            meta.member_count AS group_member_count,meta.feed_id AS group_meta_feed_id,
            meta.announcement_feed_id AS group_announcement_feed_id,
            meta.announcement_text AS group_announcement_text,
+           meta.announcement_created_at AS group_announcement_created_at,
+           meta.announcement_origin_created_at AS group_announcement_origin_created_at,
            meta.recovery_through AS group_meta_recovery_through,
            meta.recovery_announcement_feed_id AS group_recovery_announcement_feed_id,
            meta.recovery_announcement_text AS group_recovery_announcement_text,
+           meta.recovery_announcement_created_at AS group_recovery_announcement_created_at,
+           meta.recovery_announcement_origin_created_at AS group_recovery_announcement_origin_created_at,
            last_message_at,muted,pinned,pinned_at,
            last_message_preview,last_message_sender_account,last_message_sender_namespace_id,mention_me,mention_all,
            unread_count,last_read_seq,role,
@@ -215,9 +219,13 @@ pub(super) fn read(
                     "groupMetaFeedId": row.get::<_, String>("group_meta_feed_id")?,
                     "announcementFeedId": row.get::<_, Option<String>>("group_announcement_feed_id")?,
                     "announcementText": row.get::<_, Option<String>>("group_announcement_text")?,
+                    "announcementCreatedAt": row.get::<_, Option<i64>>("group_announcement_created_at")?,
+                    "announcementOriginCreatedAt": row.get::<_, Option<i64>>("group_announcement_origin_created_at")?,
                     "recoveryThrough": row.get::<_, Option<String>>("group_meta_recovery_through")?,
                     "recoveryAnnouncementFeedId": row.get::<_, Option<String>>("group_recovery_announcement_feed_id")?,
                     "recoveryAnnouncementText": row.get::<_, Option<String>>("group_recovery_announcement_text")?,
+                    "recoveryAnnouncementCreatedAt": row.get::<_, Option<i64>>("group_recovery_announcement_created_at")?,
+                    "recoveryAnnouncementOriginCreatedAt": row.get::<_, Option<i64>>("group_recovery_announcement_origin_created_at")?,
                 });
             }
             Ok(item)
@@ -299,9 +307,13 @@ mod tests {
             feed_id: "3".into(),
             announcement_feed_id: None,
             announcement_text: None,
+            announcement_created_at: None,
+            announcement_origin_created_at: None,
             recovery_through: None,
             recovery_announcement_feed_id: None,
             recovery_announcement_text: None,
+            recovery_announcement_created_at: None,
+            recovery_announcement_origin_created_at: None,
         };
         super::super::group_meta_store::commit(&conn, 1, 7, &meta).unwrap();
         let restored = read(&conn, 1, 7).unwrap().unwrap();
@@ -386,8 +398,12 @@ mod tests {
         assert!(cleared["meta"]["announcementFeedId"].is_null());
         assert!(cleared["meta"]["recoveryAnnouncementFeedId"].is_null());
         meta.announcement_feed_id = Some("4".into());
+        meta.announcement_created_at = Some(1_000);
+        meta.announcement_origin_created_at = Some(500);
         meta.recovery_announcement_feed_id = Some("5".into());
         meta.recovery_announcement_text = Some("Notice".into());
+        meta.recovery_announcement_created_at = Some(2_000);
+        meta.recovery_announcement_origin_created_at = Some(1_500);
         super::super::group_meta_store::commit(&conn, 1, 7, &meta).unwrap();
         // Reinitialization is rejected rather than overwriting committed facts.
         assert!(insert(&conn, 1, &snapshot, 0).is_err());
@@ -395,9 +411,16 @@ mod tests {
         assert_eq!(restored["meta"]["memberCount"], 2);
         assert_eq!(restored["meta"]["groupMetaFeedId"], "3");
         assert_eq!(restored["meta"]["announcementFeedId"], "4");
+        assert_eq!(restored["meta"]["announcementCreatedAt"], 1_000);
+        assert_eq!(restored["meta"]["announcementOriginCreatedAt"], 500);
         assert_eq!(restored["meta"]["announcementText"], Value::Null);
         assert_eq!(restored["meta"]["recoveryAnnouncementFeedId"], "5");
         assert_eq!(restored["meta"]["recoveryAnnouncementText"], "Notice");
+        assert_eq!(restored["meta"]["recoveryAnnouncementCreatedAt"], 2_000);
+        assert_eq!(
+            restored["meta"]["recoveryAnnouncementOriginCreatedAt"],
+            1_500
+        );
         meta.announcement_feed_id = None;
         meta.announcement_text = Some("Missing feed id".into());
         assert!(super::super::group_meta_store::commit(&conn, 1, 7, &meta).is_err());

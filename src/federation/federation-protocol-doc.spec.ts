@@ -86,12 +86,25 @@ describe('Federation v1 protocol documentation', () => {
       readFileSync(join(process.cwd(), 'spec/RELEASE.json'), 'utf8'),
     );
     expect(release).toMatchObject({
-      version: '1.0.0-draft.1',
+      version: '1.0.0-draft.2',
       status: 'draft',
       reviewStage: 'final-review',
       language: 'en',
       authoritativeLanguage: 'en',
     });
+    const validatorPath = join(process.cwd(), 'tools/federation-conformance');
+    const validator = JSON.parse(
+      readFileSync(join(validatorPath, 'package.json'), 'utf8'),
+    );
+    const lock = JSON.parse(
+      readFileSync(join(validatorPath, 'package-lock.json'), 'utf8'),
+    );
+    expect(validator.version).toBe(release.version);
+    expect(lock.version).toBe(release.version);
+    expect(lock.packages[''].version).toBe(release.version);
+    expect(
+      readFileSync(join(process.cwd(), 'spec/CHANGELOG.md'), 'utf8'),
+    ).toContain(`## ${release.version}`);
     for (const directory of ['', 'message', 'schema']) {
       for (const file of readdirSync(
         join(process.cwd(), 'spec/v1', directory),
@@ -250,8 +263,16 @@ describe('Federation v1 protocol documentation', () => {
       ['GROUP_PROFILE', { account: '!team', namespaceId: 0, profileRev: 3 }],
       ['GROUP_ANNOUNCEMENT', { text: null }],
     ] as const) {
-      const item = { feedId: 1, operation, body };
+      const item = { feedId: 1, createdAt: 0, originCreatedAt: null, operation, body };
       expect(validate(item)).toBe(true);
+      const { createdAt: _createdAt, ...withoutCreatedAt } = item;
+      const { originCreatedAt: _originCreatedAt, ...withoutOriginCreatedAt } = item;
+      expect(validate(withoutCreatedAt)).toBe(false);
+      expect(validate(withoutOriginCreatedAt)).toBe(false);
+      for (const createdAt of [null, -1, 0.5, '0', Number.MAX_SAFE_INTEGER + 1])
+        expect(validate({ ...item, createdAt })).toBe(false);
+      for (const originCreatedAt of [0, '0', false])
+        expect(validate({ ...item, originCreatedAt })).toBe(false);
       expect(validate({ ...item, account: 'alice' })).toBe(false);
       expect(validate({ ...item, domain: 'a.example' })).toBe(false);
       expect(

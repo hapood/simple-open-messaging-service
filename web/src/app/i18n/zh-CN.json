@@ -394,6 +394,8 @@
     "announcement": "群公告",
     "announcementUnread": "未读群公告",
     "announcementRetry": "重试标记已读",
+    "announcementPublishedAt": "发布时间：{{time}}",
+    "announcementReceivedAt": "接收时间：{{time}}",
     "announcementSaveFailed": "保存群公告失败",
     "announcementClear": "清除公告",
     "announcementClearConfirm": "确定清除当前群公告吗？",

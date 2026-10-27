@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1
 
-- Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+- Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 - Protocol identifier: `1`
 - S2S API prefix: `/s2s/v1`
 - Cross-version discovery path: `/.well-known/somfp`
@@ -40,7 +40,7 @@ The Federation v1 data plane uses a fixed authoritative topology. An author's ho
 
 ## 2. Versioning and compatibility
 
-SOMFP distinguishes the wire-protocol major from the specification-package version. The wire negotiates only a positive integer major such as `1`; URLs use `/s2s/v1`, and discovery uses `protocolVersions: [1]`. The package containing normative text, JSON Schema, vectors, and conformance tooling uses Semantic Versioning, such as `1.0.0-draft.1`, `1.0.0-rc.0`, or `1.0.0`. The package version MUST NOT appear in an S2S body, URL, or version-selection algorithm and MUST NOT be used for capability negotiation. A v1 patch release may contain only errata and artifact corrections that do not change peer-observable wire behavior. Once a wire major is frozen, any wire behavior change requires a new integer major. Before freezing a draft or release candidate, protocol gaps MAY be corrected within that working major only when the breaking wire changes are identified in the reviewable pull request during draft review, or in the release notes once a release candidate is published; implementations of an earlier working package do not thereby become compatible with the revised package.
+SOMFP distinguishes the wire-protocol major from the specification-package version. The wire negotiates only a positive integer major such as `1`; URLs use `/s2s/v1`, and discovery uses `protocolVersions: [1]`. The package containing normative text, JSON Schema, vectors, and conformance tooling uses Semantic Versioning, such as `1.0.0-draft.2`, `1.0.0-rc.0`, or `1.0.0`. The package version MUST NOT appear in an S2S body, URL, or version-selection algorithm and MUST NOT be used for capability negotiation. A v1 patch release may contain only errata and artifact corrections that do not change peer-observable wire behavior. Once a wire major is frozen, any wire behavior change requires a new integer major. Before freezing a draft or release candidate, protocol gaps MAY be corrected within that working major only when the breaking wire changes are identified in the reviewable pull request during draft review, or in the release notes once a release candidate is published; implementations of an earlier working package do not thereby become compatible with the revised package.
 
 Every Federation v1 S2S data-plane endpoint is under `/s2s/v1/*`. The public discovery endpoint is fixed at `/.well-known/somfp` because a caller cannot rely on an API prefix before reading discovery.
 

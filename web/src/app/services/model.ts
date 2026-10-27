@@ -107,10 +107,16 @@ export interface GroupMetaSlot {
    * text is a known clear; both set carry the current announcement. */
   announcementFeedId: string | null;
   announcementText: string | null;
+  /** Server copy time of the current announcement (epoch milliseconds). */
+  announcementCreatedAt: number | null;
+  /** Origin publication time of the current announcement; null on origin servers. */
+  announcementOriginCreatedAt: number | null;
   /** Fixed full-recovery boundary; null outside a resumable Group Meta rebuild. */
   recoveryThrough: string | null;
   recoveryAnnouncementFeedId: string | null;
   recoveryAnnouncementText: string | null;
+  recoveryAnnouncementCreatedAt: number | null;
+  recoveryAnnouncementOriginCreatedAt: number | null;
 }
 
 /** Cross-dialog user reference: display fields plus the identity namespace coordinate. Unlike
@@ -295,9 +301,13 @@ export function createGroupMeta(): GroupMetaSlot {
     groupMetaFeedId: '0',
     announcementFeedId: null,
     announcementText: null,
+    announcementCreatedAt: null,
+    announcementOriginCreatedAt: null,
     recoveryThrough: null,
     recoveryAnnouncementFeedId: null,
     recoveryAnnouncementText: null,
+    recoveryAnnouncementCreatedAt: null,
+    recoveryAnnouncementOriginCreatedAt: null,
   };
 }
 

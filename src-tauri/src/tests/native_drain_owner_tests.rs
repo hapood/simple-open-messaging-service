@@ -309,7 +309,7 @@ async fn a_queued_group_meta_page_commit_rejects_end_or_repair() {
             namespace_id: 0,
             page: serde_json::from_value(json!({
                 "account": "!dev", "mode": "delta",
-                "items": [{"feedId": "1", "operation": "MEMBER_UPSERT",
+                "items": [{"feedId": "1", "createdAt":1000,"originCreatedAt":null,"operation": "MEMBER_UPSERT",
                            "body": {"account": "bob", "namespaceId": 0,
                                     "role": "MEMBER", "profileRev": 2}}],
                 "scannedThrough": "2", "groupMetaFeedEndId": "2", "hasMore": false,
@@ -454,7 +454,7 @@ async fn group_meta_drain_retains_owner_and_materializes_profiles() {
                 group_meta_page(
                     "1",
                     true,
-                    json!([{"feedId": "1", "operation": "MEMBER_UPSERT",
+                    json!([{"feedId": "1", "createdAt":1000,"originCreatedAt":null,"operation": "MEMBER_UPSERT",
                             "body": {"account": "bob", "namespaceId": 0,
                                      "role": "MEMBER", "profileRev": 2}}]),
                 ),
@@ -475,7 +475,7 @@ async fn group_meta_drain_retains_owner_and_materializes_profiles() {
                 group_meta_page(
                     "2",
                     false,
-                    json!([{"feedId": "2", "operation": "GROUP_ANNOUNCEMENT",
+                    json!([{"feedId": "2", "createdAt":1000,"originCreatedAt":null,"operation": "GROUP_ANNOUNCEMENT",
                             "body": {"text": "hello"}}]),
                 ),
             )

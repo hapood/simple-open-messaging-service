@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 State Feed
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document is entirely normative. `GET /s2s/v1/state-feed` is the
 per-peer compacted feed for relationship facts and per-thread message,

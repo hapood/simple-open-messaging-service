@@ -104,6 +104,8 @@ export class PlaygroundSocialState {
           announcementFeedId: '1',
           announcementText:
             'Welcome to Playground Team! This group is for exploring group chat, announcements, and member management. All modifications are stored only in the current session; refresh the page to reset.',
+          announcementCreatedAt: Date.now() - 120_000,
+          announcementOriginCreatedAt: null,
         },
         role: 'OWNER',
         groupMetaFeedEndId: '1',

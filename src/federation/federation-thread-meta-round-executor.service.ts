@@ -146,7 +146,9 @@ export class FederationThreadMetaRoundExecutorService {
       });
       if (fetched.groupMetaFeedEndId < plan.metaTargetId)
         throw new Error('group-meta page did not reach its fixed target');
-      const items = fetched.items.map((item) => validateItem(item, 'delta'));
+      const items = fetched.items.map((item) =>
+        validateOriginGroupMetaItem(item, 'delta'),
+      );
       const reachedBoundary = !fetched.hasMore;
       if (items.length === 0 && reachedBoundary) {
         await this.database.db.transaction(async (tx) =>
@@ -199,7 +201,9 @@ export class FederationThreadMetaRoundExecutorService {
         after,
         through,
       });
-      const items = page.items.map((item) => validateItem(item, 'full'));
+      const items = page.items.map((item) =>
+        validateOriginGroupMetaItem(item, 'full'),
+      );
       const reachedBoundary = !page.hasMore;
       snapshot.push(...items);
       if (reachedBoundary) {
@@ -239,13 +243,30 @@ export class FederationThreadMetaRoundExecutorService {
 /** The origin refused an authorized read — 'group meta is not visible to this
  * peer'. There is no authorized state behind a denial, so this is terminal. */
 
-function validateItem(
+export function validateOriginGroupMetaItem(
   item: GroupMetaFeedItem,
   mode: 'full' | 'delta',
 ): MirrorMetaReplicatedItem {
   const feedId = item.feedId;
+  requireKeys(item, [
+    'feedId',
+    'createdAt',
+    'originCreatedAt',
+    'operation',
+    'body',
+  ]);
+  const createdAt = item.createdAt;
+  // Only the group's authoritative origin serves this S2S feed. Its facts
+  // have no upstream copy, but must still explicitly carry the null field.
+  if (
+    !Number.isSafeInteger(createdAt) ||
+    createdAt < 0 ||
+    !Number.isFinite(new Date(createdAt).getTime()) ||
+    item.originCreatedAt !== null
+  )
+    throw new Error('invalid group-meta copy times');
+  const originCreatedAt = item.originCreatedAt;
   if (item.operation === 'GROUP_ANNOUNCEMENT') {
-    requireKeys(item, ['feedId', 'operation', 'body']);
     requireKeys(item.body, ['text']);
     const text = item.body.text;
     if (
@@ -255,10 +276,15 @@ function validateItem(
         [...text].length > 4096)
     )
       throw new Error('invalid group-meta announcement item');
-    return { feedId, operation: 'GROUP_ANNOUNCEMENT', text };
+    return {
+      feedId,
+      createdAt,
+      originCreatedAt,
+      operation: 'GROUP_ANNOUNCEMENT',
+      text,
+    };
   }
   if (item.operation === 'GROUP_PROFILE') {
-    requireKeys(item, ['feedId', 'operation', 'body']);
     requireKeys(item.body, ['account', 'namespaceId', 'profileRev']);
     if (
       !isValidGroupAccount(item.body.account) ||
@@ -268,6 +294,8 @@ function validateItem(
       throw new Error('invalid group-meta profile item');
     return {
       feedId,
+      createdAt,
+      originCreatedAt,
       operation: 'GROUP_PROFILE',
       account: item.body.account,
       namespaceId: item.body.namespaceId,
@@ -280,7 +308,6 @@ function validateItem(
   )
     throw new Error('invalid group-meta member address');
   if (item.operation === 'MEMBER_DEPART') {
-    requireKeys(item, ['feedId', 'operation', 'body']);
     if (mode === 'full')
       throw new Error('full group-meta cannot contain MEMBER_DEPART');
     requireKeys(item.body, ['account', 'namespaceId', 'role', 'profileRev']);
@@ -292,6 +319,8 @@ function validateItem(
       throw new Error('invalid group-meta member body');
     return {
       feedId,
+      createdAt,
+      originCreatedAt,
       operation: 'MEMBER_DEPART',
       account: item.body.account,
       namespaceId: item.body.namespaceId,
@@ -299,7 +328,8 @@ function validateItem(
       profileRev: item.body.profileRev,
     };
   }
-  requireKeys(item, ['feedId', 'operation', 'body']);
+  if (item.operation !== 'MEMBER_UPSERT')
+    throw new Error('invalid group-meta operation');
   requireKeys(item.body, ['account', 'namespaceId', 'role', 'profileRev']);
   if (
     !Object.values(GroupRole).includes(item.body.role as GroupRole) ||
@@ -309,6 +339,8 @@ function validateItem(
     throw new Error('invalid group-meta member body');
   return {
     feedId,
+    createdAt,
+    originCreatedAt,
     operation: 'MEMBER_UPSERT',
     account: item.body.account,
     namespaceId: item.body.namespaceId,

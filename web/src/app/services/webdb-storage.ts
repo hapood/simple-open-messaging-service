@@ -2306,9 +2306,13 @@ export class WebdbStorage implements AccountStateStorage {
             if (update.page.mode === 'full') {
               meta.recoveryAnnouncementFeedId = item.feedId;
               meta.recoveryAnnouncementText = item.body.text;
+              meta.recoveryAnnouncementCreatedAt = item.createdAt;
+              meta.recoveryAnnouncementOriginCreatedAt = item.originCreatedAt;
             } else {
               meta.announcementFeedId = item.feedId;
               meta.announcementText = item.body.text;
+              meta.announcementCreatedAt = item.createdAt;
+              meta.announcementOriginCreatedAt = item.originCreatedAt;
             }
             continue;
           }
@@ -2348,10 +2352,15 @@ export class WebdbStorage implements AccountStateStorage {
           if (update.page.mode === 'full') {
             next.announcementFeedId = meta.recoveryAnnouncementFeedId;
             next.announcementText = meta.recoveryAnnouncementText;
+            next.announcementCreatedAt = meta.recoveryAnnouncementCreatedAt;
+            next.announcementOriginCreatedAt =
+              meta.recoveryAnnouncementOriginCreatedAt;
           }
           next.recoveryThrough = null;
           next.recoveryAnnouncementFeedId = null;
           next.recoveryAnnouncementText = null;
+          next.recoveryAnnouncementCreatedAt = null;
+          next.recoveryAnnouncementOriginCreatedAt = null;
         }
         await groupMetaStore.put(next);
         patches.push({
@@ -2360,6 +2369,8 @@ export class WebdbStorage implements AccountStateStorage {
           memberCount: next.memberCount,
           announcementFeedId: next.announcementFeedId,
           announcementText: next.announcementText,
+          announcementCreatedAt: next.announcementCreatedAt,
+          announcementOriginCreatedAt: next.announcementOriginCreatedAt,
           groupMetaRecoveryThrough: next.recoveryThrough,
         });
       }

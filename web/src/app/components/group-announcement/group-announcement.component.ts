@@ -2,6 +2,7 @@ import {
   afterNextRender,
   ChangeDetectionStrategy,
   Component,
+  computed,
   inject,
   input,
   OnDestroy,
@@ -9,6 +10,7 @@ import {
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { firstValueFrom } from 'rxjs';
+import dayjs from 'dayjs';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { GroupService } from '../../services/group.service';
 import { RouteService } from '../../services/route.service';
@@ -26,6 +28,16 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
         [title]="'group.announcement' | transloco"
         (back)="close()"
       />
+      <div class="announcement-times">
+        <span>{{
+          'group.announcementPublishedAt' | transloco
+            : { time: publishedAtLabel() }
+        }}</span>
+        <span>{{
+          'group.announcementReceivedAt' | transloco
+            : { time: receivedAtLabel() }
+        }}</span>
+      </div>
       <div class="announcement-text">{{ text() }}</div>
       <footer class="announcement-actions">
         @if (failed()) {
@@ -58,6 +70,16 @@ import { PageHeaderComponent } from '../page-header/page-header.component';
         box-sizing: border-box;
         background: var(--app-surface, white);
         color: var(--app-text);
+      }
+      .announcement-times {
+        box-sizing: border-box;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+        padding: 8px 20px 0;
+        font-size: 12px;
+        line-height: 18px;
+        color: var(--app-text-secondary, rgba(0, 0, 0, 0.55));
       }
       .announcement-text {
         min-height: 0;
@@ -93,6 +115,17 @@ export class GroupAnnouncementComponent implements OnDestroy {
   readonly threadId = input.required<number>();
   readonly feedId = input.required<string>();
   readonly text = input.required<string>();
+  readonly createdAt = input.required<number>();
+  readonly originCreatedAt = input.required<number | null>();
+  /** Origin publication time; the serving origin carries it in createdAt. */
+  readonly publishedAtLabel = computed(() =>
+    dayjs(this.originCreatedAt() ?? this.createdAt()).format(
+      'YYYY-MM-DD HH:mm',
+    ),
+  );
+  readonly receivedAtLabel = computed(() =>
+    dayjs(this.createdAt()).format('YYYY-MM-DD HH:mm'),
+  );
   readonly failed = signal(false);
   private readonly group = inject(GroupService);
   private readonly route = inject(RouteService);

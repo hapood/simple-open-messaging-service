@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Move to SOMFP 1.0.0-draft.2 (in progress; not backward compatible).
+  See the [protocol changelog](./spec/CHANGELOG.md).
+
 ## 0.1.0-alpha.1
 
 - Add a Docker Compose configuration generator for public and LAN/NAS deployments.

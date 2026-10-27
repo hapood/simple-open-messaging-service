@@ -1091,6 +1091,8 @@ export class ThreadRepository {
             groupMetaFeedId: patch.groupMetaFeedId,
             announcementFeedId: patch.announcementFeedId,
             announcementText: patch.announcementText,
+            announcementCreatedAt: patch.announcementCreatedAt,
+            announcementOriginCreatedAt: patch.announcementOriginCreatedAt,
             recoveryThrough: patch.groupMetaRecoveryThrough,
           },
         };

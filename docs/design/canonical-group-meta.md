@@ -40,11 +40,10 @@ projection in its group-scoped replica, sharing those rows and remote coordinate
 Per-account state contains only a
 compacted head and device cursor; it never copies member-feed rows. The replica
 can be rebuilt by a full Group Meta synchronization.
-Origin and mirror member/profile facts share one table and one global unique
-stable-member key. The group-wide announcement instead occupies nullable
-columns on `GroupMeta`, with the same coordinate allocator and a distinct
-stable key. Each new operation replaces its previous projection and feed
-coordinate.
+Origins and mirrors store all four operations in the same current-fact table.
+Member and group-profile facts use the publisher-scoped subject key; the
+announcement uses a separate group-wide key. Each new operation replaces its
+previous projection and feed coordinate.
 
 ## 3. Canonical Group Meta storage
 
@@ -55,26 +54,35 @@ authors it; a mirror stores the received coordinates:
 GroupMeta(threadId)
   metaEndId                             origin allocation end | mirror applied cursor
   profileRev                            the newest GROUP_PROFILE row's revision
-  announcementFeedId                    current announcement id; NULL means unknown
-  announcementText                      plain text or explicit NULL clear when id exists
   metaTargetId                          greatest target merged from State Feed heads
   metaProcessedThroughId                greatest source feed id durably scanned
   metaRecoveryThroughId                 open recovery drain's fixed through; NULL selects delta
 
 GroupMetaMemberFeed(threadId, feedId)
-  stable member subject = account + profileNamespaceId (stored columns)
-  operation = MEMBER_UPSERT | MEMBER_DEPART | GROUP_PROFILE
+  stable subject = body.account + body.namespaceId (except announcements)
+  operation = MEMBER_UPSERT | MEMBER_DEPART | GROUP_PROFILE | GROUP_ANNOUNCEMENT
   member body = { account, namespaceId, role, profileRev }
   group profile body = { account, namespaceId, profileRev }
+  announcement body = { text }
+  createdAt / updatedAt                 common local row timestamps
+  originCreatedAt                       source copy time; NULL on the origin
 ```
 
-`namespaceId` in the stored/published body is the profile-subject namespace; the indexed member column is named `profileNamespaceId`. Departure retains the same complete member body rather than `{}`. The S2S item envelope is `{ feedId, operation, body }` for all four operations, including announcements with body `{ text }`. Subject identity remains in the operation body; no item carries a domain. The final-review draft and schemas now describe these body-based wire shapes.
+`namespaceId` inside `body` is the subject namespace in the publisher's space.
+Departure retains the complete member body rather than `{}`. Every S2S item
+has `{ feedId, createdAt, originCreatedAt, operation, body }`; no item carries a
+domain. Both time fields are required, including explicit null on the origin.
 
-`GroupMetaMemberFeed` stores member and profile facts. The announcement
-projection resides on `GroupMeta` rather than borrowing a member identity.
-A positive `announcementFeedId` with null `announcementText` means a known
-clear; a null coordinate means unknown. Full/delta page readers merge its
-current coordinate with the compacted member/profile rows in feed order.
+`GroupMetaMemberFeed` retains its legacy name but now stores all Meta facts.
+A partial unique index on `threadId` for `GROUP_ANNOUNCEMENT` enforces one
+current announcement. A row with `{ text: null }` is a known clear; absence is
+unknown. Full/delta readers scan the one fact table in feed order.
+
+On mirrors, incoming `createdAt` is stored as `originCreatedAt`; `createdAt`
+records first local persistence of that coordinate. Full recovery retains rows
+returned at the same coordinate and deletes only facts absent from the scan,
+so it cannot reset their copy times. A replacement coordinate starts a new
+local copy time. Container cursor updates do not change any fact's times.
 Client presentation and its per-account acknowledgement are described in
 [Group announcement](./group-announcement.md).
 

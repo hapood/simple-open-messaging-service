@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import { groupAccount, groupMeta, messageThread } from '../database/schema.js';
+import {
+  groupAccount,
+  groupMeta,
+  groupMetaMemberFeed,
+  messageThread,
+} from '../database/schema.js';
 import { GroupService } from './group.service.js';
 
 describe('GroupService creation', () => {
@@ -125,7 +130,12 @@ describe('GroupService creation', () => {
         revision === 0 ? 0 : 1,
       );
 
-      expect(insertedTables).toEqual([groupAccount, messageThread, groupMeta]);
+      expect(insertedTables).toEqual([
+        groupAccount,
+        messageThread,
+        groupMeta,
+        groupMetaMemberFeed,
+      ]);
       expect(database.db.transaction).toHaveBeenCalledTimes(2);
       expect(updateProfile).toHaveBeenCalledWith(
         tx,

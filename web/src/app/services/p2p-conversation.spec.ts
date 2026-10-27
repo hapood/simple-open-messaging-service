@@ -30,7 +30,13 @@ describe('conversation construction', () => {
       ...identity,
       account: '!room',
       profile: { name: 'Room', bio: '', avatarDigest: null },
-      meta: { memberCount: 3, announcementFeedId: '2', announcementText: null },
+      meta: {
+        memberCount: 3,
+        announcementFeedId: '2',
+        announcementText: null,
+        announcementCreatedAt: 1_000,
+        announcementOriginCreatedAt: null,
+      },
     });
     expect(item.account).toBe('!room');
     expect(item.meta).toEqual({
@@ -38,9 +44,13 @@ describe('conversation construction', () => {
       groupMetaFeedId: '0',
       announcementFeedId: '2',
       announcementText: null,
+      announcementCreatedAt: 1_000,
+      announcementOriginCreatedAt: null,
       recoveryThrough: null,
       recoveryAnnouncementFeedId: null,
       recoveryAnnouncementText: null,
+      recoveryAnnouncementCreatedAt: null,
+      recoveryAnnouncementOriginCreatedAt: null,
     });
   });
 });

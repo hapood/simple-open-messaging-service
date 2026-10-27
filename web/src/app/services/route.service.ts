@@ -167,6 +167,8 @@ export interface PopupInput {
     threadId: number;
     feedId: string;
     text: string;
+    createdAt: number;
+    originCreatedAt: number | null;
   };
 }
 

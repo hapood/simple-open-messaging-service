@@ -394,7 +394,7 @@ fn native_group_roster_rebuilds_through_departure_and_reestablishment() {
     let page = serde_json::from_value(serde_json::json!({
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"full","items":[
-                {"feedId":"21","operation":"MEMBER_UPSERT","body":{
+                {"feedId":"21","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
                     "account":"bob","namespaceId":0,"role":"MEMBER","profileRev":3
                 }}
             ],
@@ -439,10 +439,10 @@ fn meta_commits_and_thread_operations_never_write_each_others_table() {
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"full","hasMore":false,
             "scannedThrough":"2","groupMetaFeedEndId":"2","items":[
-                {"feedId":"1","operation":"MEMBER_UPSERT","body":{
+                {"feedId":"1","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
                     "account":"bob","namespaceId":0,"role":"MEMBER","profileRev":3
                 }},
-                {"feedId":"2","operation":"GROUP_ANNOUNCEMENT","body":{"text":"Notice"}}
+                {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_ANNOUNCEMENT","body":{"text":"Notice"}}
             ]
         }
     }))
@@ -477,7 +477,7 @@ fn late_meta_page_commits_server_truth_even_after_departure() {
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"delta","hasMore":false,
             "scannedThrough":"2","groupMetaFeedEndId":"2","items":[
-                {"feedId":"2","operation":"MEMBER_UPSERT","body":{
+                {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
                     "account":"late","namespaceId":0,"role":"MEMBER","profileRev":3
                 }}
             ]
@@ -708,9 +708,9 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     super::attention::write_state(&conn, 1, &local).unwrap();
     let page = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"full","scannedThrough":"3","items":[
-        {"feedId":"1","operation":"MEMBER_UPSERT","body":{"account":"me","namespaceId":0,"role":"ADMIN","profileRev":2}},
-        {"feedId":"2","operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"MEMBER","profileRev":2}},
-        {"feedId":"3","operation":"GROUP_PROFILE","body":{"account":"!mirror","namespaceId":7,"profileRev":4}}
+        {"feedId":"1","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"me","namespaceId":0,"role":"ADMIN","profileRev":2}},
+        {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"MEMBER","profileRev":2}},
+        {"feedId":"3","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_PROFILE","body":{"account":"!mirror","namespaceId":7,"profileRev":4}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,
@@ -768,7 +768,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
 
     let delta = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"delta","scannedThrough":"4","items":[
-        {"feedId":"4","operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"ADMIN","profileRev":2}}
+        {"feedId":"4","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"ADMIN","profileRev":2}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,

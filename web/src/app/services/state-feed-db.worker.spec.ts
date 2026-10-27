@@ -95,6 +95,8 @@ describe('database worker Group Meta completion', () => {
         groupMetaFeedId: page.scannedThrough,
         announcementFeedId: null,
         announcementText: null,
+        announcementCreatedAt: null,
+        announcementOriginCreatedAt: null,
         groupMetaRecoveryThrough: page.hasMore ? '3' : null,
       }));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);

@@ -123,7 +123,9 @@ export function groupMembershipRevocationSql(
       ON CONFLICT ("threadId", (body ->> 'account'), (body -> 'namespaceId'))
         WHERE operation <> 'GROUP_ANNOUNCEMENT'
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
-        operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
+        operation = EXCLUDED.operation, body = EXCLUDED.body,
+        "createdAt" = EXCLUDED."createdAt", "originCreatedAt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), seq_alloc AS (
       -- One update per row per statement: the head allocation and the touch

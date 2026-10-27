@@ -283,8 +283,12 @@ describe('canonical Group Meta feed', () => {
     await database.db.insert(groupMeta).values({
       threadId: groupId,
       metaEndId: 1,
-      announcementFeedId: 1,
-      announcementText: 'Welcome',
+    });
+    await database.db.insert(groupMetaMemberFeed).values({
+      threadId: groupId,
+      feedId: 1,
+      operation: 'GROUP_ANNOUNCEMENT',
+      body: { text: 'Welcome' },
     });
     const page = await clientFeed.serve(
       ownerUserId,
@@ -301,6 +305,8 @@ describe('canonical Group Meta feed', () => {
       items: [
         {
           feedId: '1',
+          createdAt: expect.any(Number),
+          originCreatedAt: null,
           operation: 'GROUP_ANNOUNCEMENT',
           body: { text: 'Welcome' },
         },
@@ -312,8 +318,12 @@ describe('canonical Group Meta feed', () => {
     await database.db.insert(groupMeta).values({
       threadId: groupId,
       metaEndId: 1,
-      announcementFeedId: 1,
-      announcementText: null,
+    });
+    await database.db.insert(groupMetaMemberFeed).values({
+      threadId: groupId,
+      feedId: 1,
+      operation: 'GROUP_ANNOUNCEMENT',
+      body: { text: null },
     });
     const read = async (
       mode: 'full' | 'delta',
@@ -341,6 +351,8 @@ describe('canonical Group Meta feed', () => {
     expect((await read('full', 0)).items).toEqual([
       {
         feedId: 1,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'GROUP_ANNOUNCEMENT',
         body: { text: null },
       },
@@ -358,6 +370,8 @@ describe('canonical Group Meta feed', () => {
     expect((await read('delta', 1)).items).toEqual([
       {
         feedId: 2,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'GROUP_ANNOUNCEMENT',
         body: { text: 'Welcome' },
       },
@@ -370,6 +384,8 @@ describe('canonical Group Meta feed', () => {
     expect((await read('full', 0)).items).toEqual([
       {
         feedId: 3,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'GROUP_ANNOUNCEMENT',
         body: { text: null },
       },
@@ -517,11 +533,17 @@ describe('canonical Group Meta feed', () => {
       expect(state).toMatchObject({
         metaProcessedThroughId: 5,
         metaRecoveryThroughId: null,
-        announcementText: 'Wire contract',
       });
       const facts = await database.db.query.groupMetaMemberFeed.findMany({
         where: eq(groupMetaMemberFeed.threadId, mirror.id),
       });
+      expect(
+        facts.find((fact) => fact.operation === 'GROUP_ANNOUNCEMENT')?.body,
+      ).toEqual({ text: 'Wire contract' });
+      for (const fact of facts) {
+        expect(fact.createdAt).toBeInstanceOf(Date);
+        expect(fact.originCreatedAt).toBeInstanceOf(Date);
+      }
       expect(facts.map(({ operation, body }) => ({ operation, body }))).toEqual(
         expect.arrayContaining([
           {
@@ -569,6 +591,8 @@ describe('canonical Group Meta feed', () => {
     expect(full.items).toEqual([
       {
         feedId: 1,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'MEMBER_UPSERT',
         body: {
           account: ownerAccount,
@@ -579,6 +603,8 @@ describe('canonical Group Meta feed', () => {
       },
       {
         feedId: 3,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'GROUP_PROFILE',
         body: { account: groupAccount, namespaceId: 0, profileRev: 1 },
       },
@@ -593,6 +619,8 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       {
         feedId: 4,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'MEMBER_DEPART',
         body: {
           account: memberAccount,
@@ -739,6 +767,8 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       {
         feedId: 5,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'MEMBER_UPSERT',
         body: {
           account: memberAccount,

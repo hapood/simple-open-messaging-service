@@ -82,11 +82,15 @@ describe('group creation', () => {
       owner: owner.id,
       name: 'Notice room',
     });
-    const initial = await database.db.query.groupMeta.findFirst({
-      where: eq(groupMeta.threadId, created.threadId),
+    const initial = await database.db.query.groupMetaMemberFeed.findFirst({
+      where: and(
+        eq(groupMetaMemberFeed.threadId, created.threadId),
+        eq(groupMetaMemberFeed.operation, 'GROUP_ANNOUNCEMENT'),
+      ),
     });
-    expect(initial?.announcementFeedId).toBe(1);
-    expect(initial?.announcementText).toBeNull();
+    expect(initial?.feedId).toBe(1);
+    expect(initial?.body).toEqual({ text: null });
+    expect(initial?.originCreatedAt).toBeNull();
     const published = await groups.setAnnouncement({
       threadId: created.threadId,
       operatorUserId: owner.id,
@@ -400,7 +404,13 @@ describe('group creation', () => {
       .where(eq(groupMetaMemberFeed.threadId, created.threadId));
 
     expect(meta?.metaEndId).toBeGreaterThan(0);
-    expect(facts).toHaveLength(2);
+    expect(facts).toHaveLength(3);
+    expect(
+      facts.find((fact) => fact.operation === 'GROUP_ANNOUNCEMENT'),
+    ).toMatchObject({
+      feedId: 1,
+      body: { text: null },
+    });
     expect(facts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ operation: 'GROUP_PROFILE' }),

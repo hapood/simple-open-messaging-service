@@ -22,7 +22,10 @@ export interface MirrorGroupAddress {
  * member/group subject identity is (account, namespaceId) in the publisher's
  * coordinate space and is stored verbatim; the display domain resolves through
  * publisher-scoped namespace bindings, never from the item. */
-export type MirrorMetaReplicatedItem =
+export type MirrorMetaReplicatedItem = {
+  createdAt: number;
+  originCreatedAt: number | null;
+} & (
   | {
       feedId: number;
       operation: 'MEMBER_UPSERT';
@@ -50,7 +53,8 @@ export type MirrorMetaReplicatedItem =
       feedId: number;
       operation: 'GROUP_ANNOUNCEMENT';
       text: string | null;
-    };
+    }
+);
 
 export interface MirrorMetaCursor {
   threadId: number;
@@ -136,14 +140,15 @@ export async function applyMirrorMetaFactInTx(
   if (mode === 'full' && item.operation === 'MEMBER_DEPART')
     throw new Error('a full group-meta snapshot cannot contain MEMBER_DEPART');
   if (item.operation === 'GROUP_ANNOUNCEMENT') {
-    await tx
-      .update(groupMeta)
-      .set({
-        announcementFeedId: item.feedId,
-        announcementText: item.text,
-        updatedAt: new Date(),
-      })
-      .where(eq(groupMeta.threadId, threadId));
+    await upsertCurrentGroupMetaFactsInTx(tx, [
+      {
+        threadId,
+        feedId: item.feedId,
+        originCreatedAt: new Date(item.createdAt),
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text: item.text },
+      },
+    ]);
     return;
   }
   if (item.operation === 'GROUP_PROFILE') {
@@ -151,6 +156,7 @@ export async function applyMirrorMetaFactInTx(
       {
         threadId,
         feedId: item.feedId,
+        originCreatedAt: new Date(item.createdAt),
         operation: 'GROUP_PROFILE',
         body: {
           account: item.account,
@@ -169,6 +175,7 @@ export async function applyMirrorMetaFactInTx(
     {
       threadId,
       feedId: item.feedId,
+      originCreatedAt: new Date(item.createdAt),
       operation: item.operation,
       body: {
         account: item.account,

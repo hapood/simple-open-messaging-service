@@ -36,6 +36,8 @@ pub(super) struct GroupMetaCommitPatch {
     pub(super) member_count: i64,
     pub(super) announcement_feed_id: Option<String>,
     pub(super) announcement_text: Option<String>,
+    pub(super) announcement_created_at: Option<i64>,
+    pub(super) announcement_origin_created_at: Option<i64>,
     pub(super) group_meta_recovery_through: Option<String>,
 }
 
@@ -57,6 +59,10 @@ pub(crate) struct ClientGroupMetaPage {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientGroupMetaItem {
     pub(super) feed_id: String,
+    /// Server copy creation time in epoch milliseconds.
+    pub(super) created_at: i64,
+    /// Origin publication time; null when the serving server authored the fact.
+    pub(super) origin_created_at: Option<i64>,
     pub(super) operation: String,
     #[serde(default)]
     pub(super) body: Value,
@@ -177,7 +183,8 @@ pub(super) fn begin_group_meta_recovery(
         .execute(
             "UPDATE group_meta SET member_count=0, feed_id='0',
       recovery_through=?3,
-      recovery_announcement_feed_id=NULL, recovery_announcement_text=NULL
+      recovery_announcement_feed_id=NULL, recovery_announcement_text=NULL,
+      recovery_announcement_created_at=NULL, recovery_announcement_origin_created_at=NULL
       WHERE user_id=?1 AND thread_id=?2",
             params![user_id, thread_id, through],
         )
@@ -222,6 +229,14 @@ pub(super) fn apply_state_feed_page_with_resume(
         }
         let mut meta = super::group_meta_store::read(&tx, user_id, update.thread_id)?;
         for item in update.page.items {
+            if item.created_at < 0 {
+                return Err("group-meta item createdAt must be non-negative".into());
+            }
+            if let Some(origin) = item.origin_created_at {
+                if origin < 0 {
+                    return Err("group-meta item originCreatedAt must be non-negative".into());
+                }
+            }
             if item.operation == "GROUP_ANNOUNCEMENT" {
                 let text = item
                     .body
@@ -238,9 +253,13 @@ pub(super) fn apply_state_feed_page_with_resume(
                 if update.page.mode == "full" {
                     meta.recovery_announcement_feed_id = Some(item.feed_id);
                     meta.recovery_announcement_text = text.as_str().map(str::to_owned);
+                    meta.recovery_announcement_created_at = Some(item.created_at);
+                    meta.recovery_announcement_origin_created_at = item.origin_created_at;
                 } else {
                     meta.announcement_feed_id = Some(item.feed_id);
                     meta.announcement_text = text.as_str().map(str::to_owned);
+                    meta.announcement_created_at = Some(item.created_at);
+                    meta.announcement_origin_created_at = item.origin_created_at;
                 }
                 continue;
             }
@@ -315,11 +334,16 @@ pub(super) fn apply_state_feed_page_with_resume(
         if update.page.mode == "full" && !update.page.has_more {
             meta.announcement_feed_id = meta.recovery_announcement_feed_id.take();
             meta.announcement_text = meta.recovery_announcement_text.take();
+            meta.announcement_created_at = meta.recovery_announcement_created_at.take();
+            meta.announcement_origin_created_at =
+                meta.recovery_announcement_origin_created_at.take();
         }
         if !update.page.has_more {
             meta.recovery_through = None;
             meta.recovery_announcement_feed_id = None;
             meta.recovery_announcement_text = None;
+            meta.recovery_announcement_created_at = None;
+            meta.recovery_announcement_origin_created_at = None;
         }
         meta.feed_id = update.page.scanned_through;
         super::group_meta_store::commit(&tx, user_id, update.thread_id, &meta)?;
@@ -329,6 +353,8 @@ pub(super) fn apply_state_feed_page_with_resume(
             member_count: meta.member_count,
             announcement_feed_id: meta.announcement_feed_id,
             announcement_text: meta.announcement_text,
+            announcement_created_at: meta.announcement_created_at,
+            announcement_origin_created_at: meta.announcement_origin_created_at,
             group_meta_recovery_through: meta.recovery_through,
         });
     }

@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Call Signaling
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document defines normative requirements. Examples and the explicitly
 non-normative operational defaults illustrate those requirements without

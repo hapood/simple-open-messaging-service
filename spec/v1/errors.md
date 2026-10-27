@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Error Code Registry
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 Normative scope: this document defines S2S HTTP failure classes, HTTP `200` application results, stable `code` values, structured `data`, and caller actions.
 
 ## Error envelope

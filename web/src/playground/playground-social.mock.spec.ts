@@ -421,10 +421,11 @@ describe('playground social contracts', () => {
       name: 'Updated',
       bio: 'New description',
     });
-    expect(currentGroupAnnouncement(thread())).toEqual({
-      feedId: '2',
-      text: 'Announcement',
-    });
+    const announcement = currentGroupAnnouncement(thread())!;
+    expect(announcement.feedId).toBe('2');
+    expect(announcement.text).toBe('Announcement');
+    expect(announcement.createdAt).toBeGreaterThan(0);
+    expect(announcement.originCreatedAt).toBeNull();
     await firstValueFrom(groups.markAnnouncementRead(2, 2));
     await firstValueFrom(groups.markAnnouncementRead(2, 1));
     expect(thread().announcementReadFeedId).toBe(2);
