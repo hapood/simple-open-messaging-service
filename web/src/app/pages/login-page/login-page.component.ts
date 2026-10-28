@@ -20,7 +20,6 @@ import { ConfigService } from '../../services/config.service';
 import { apiOrigin, apiOriginSecondary, isTauri } from '../../services/runtime';
 import { AuthViewportDirective } from '../../directives/auth-viewport.directive';
 import { ServerConfigDialogService } from '../../services/server-config-dialog.service';
-import { AuthMethodMenuComponent } from '../../components/auth-method-menu/auth-method-menu.component';
 
 @Component({
   selector: 'app-login-page',
@@ -34,7 +33,6 @@ import { AuthMethodMenuComponent } from '../../components/auth-method-menu/auth-
     MatProgressSpinnerModule,
     IconComponent,
     AuthViewportDirective,
-    AuthMethodMenuComponent,
   ],
   templateUrl: './login-page.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -90,20 +88,6 @@ export class LoginPageComponent {
       }),
   );
 
-  /** Render the password form only when password is an enabled method for this platform. Before config
-   *  loads (methodsForPlatform() is empty) this is false, so nothing flashes; under APP_OTP_AND_QR mode it
-   *  stays false and the constructor redirects to the platform's method. */
-  readonly showPassword = computed(() =>
-    this.config.methodsForPlatform().includes('password'),
-  );
-  /** Switcher targets — each shows only when that method is enabled for this platform (so the switcher
-   *  appears iff >1 method is available, per the multi-method requirement). */
-  readonly canOtp = computed(() =>
-    this.config.methodsForPlatform().includes('otp'),
-  );
-  readonly canQr = computed(() =>
-    this.config.methodsForPlatform().includes('qr'),
-  );
   /** True once `/config` has settled (loaded) WITHOUT a `loginMode` — the backend is unreachable or
    *  returned no config. `ensureLoaded` catches the fetch failure silently (so route guards can await it),
    *  so without this the user sees an empty page with no clue why; this surfaces a visible error + a
@@ -112,34 +96,15 @@ export class LoginPageComponent {
     () => this.config.loaded() && this.config.loginMode() === null,
   );
   readonly connectionCancelled = this.config.cancelled;
-  /** True when the login page is a legitimate destination and should paint its CONTENT: the first `/config`
-   *  fetch has settled AND (password is an enabled method, OR the backend is unreachable so the error card
-   *  must show). Until then the splash-continuous loading view is shown — and that splash window covers TWO
-   *  gaps, not one:
-   *    1. the `/config` fetch (bridges the index.html app-splash so the window never paints blank), and
-   *    2. the redirect window: when password is disabled and the backend is fine the page is the WRONG
-   *       destination — the constructor bounces to the platform's enabled method (otp/qr) — and holding the
-   *       splash until that navigation lands means the form / origin-banner / method-switcher never flash
-   *       for a frame on the way out (the `APP_OTP_AND_QR` flash). The splash is the negation of this. */
+  readonly availableMethods = computed(() => this.config.methodsForPlatform());
   readonly ready = computed(
-    () => this.config.loaded() && (this.showPassword() || this.configFailed()),
+    () =>
+      this.config.loaded() &&
+      (this.availableMethods().length > 0 || this.configFailed()),
   );
 
   constructor(private routeService: RouteService) {
-    void this.config
-      .ensureLoaded()
-      .then(() => this.routeAwayIfPasswordDisabled());
-  }
-
-  /** Under APP_OTP_AND_QR mode password is disabled — bounce to an enabled method so the user never lands on
-   *  an empty password page. QR is the preferred landing (self-service scan); OTP is the fallback. No-op when
-   *  password is available (the form renders normally). */
-  private routeAwayIfPasswordDisabled(): void {
-    const methods = this.config.methodsForPlatform();
-    if (methods.includes('password')) return;
-    if (methods.includes('qr')) this.routeService.redirect(RoutePage.AUTH_QR);
-    else if (methods.includes('otp'))
-      this.routeService.redirect(RoutePage.AUTH_OTP);
+    void this.config.ensureLoaded();
   }
 
   /** Login succeeded. The payload is the session's `mustChangePassword` flag — route to the forced
@@ -148,14 +113,6 @@ export class LoginPageComponent {
     this.routeService.redirect(
       mustChangePassword ? RoutePage.AUTH_SET_PASSWORD : RoutePage.HOME,
     );
-  }
-
-  jumpToOtp() {
-    this.routeService.redirect(RoutePage.AUTH_OTP);
-  }
-
-  jumpToQr() {
-    this.routeService.redirect(RoutePage.AUTH_QR);
   }
 
   /** Edit an existing server configuration without leaving the current auth surface. */

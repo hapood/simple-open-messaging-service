@@ -112,7 +112,7 @@
 
 // Green-check confirmation overlay centered over the cutout once a QR is decoded — `inset:0; margin:auto`
 // centers a fixed-size box on both axes WITHOUT a transform, so the pop keyframe can own transform: scale()
-// (parity with qr-login-page's .qr-scan-badge).
+// (parity with qr-stage's .qr-scan-badge).
 .qr-scan-badge {
   position: absolute;
   inset: 0;

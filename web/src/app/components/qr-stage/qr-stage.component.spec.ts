@@ -1,13 +1,11 @@
-import { EnvironmentInjector, signal } from '@angular/core';
+import { EnvironmentInjector } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { AuthService } from '../../services/auth.service';
-import { ConfigService } from '../../services/config.service';
-import { RouteService } from '../../services/route.service';
 import { ServerConfigDialogService } from '../../services/server-config-dialog.service';
-import { QrLoginPageComponent } from './qr-login-page.component';
+import { QrStageComponent } from './qr-stage.component';
 
-describe('QrLoginPageComponent polling', () => {
+describe('QrStageComponent polling', () => {
   afterEach(() => {
     vi.useRealTimers();
     TestBed.resetTestingModule();
@@ -31,25 +29,18 @@ describe('QrLoginPageComponent polling', () => {
             qrPoll,
           },
         },
-        {
-          provide: ConfigService,
-          useValue: {
-            ensureLoaded: () => Promise.resolve(),
-            methodsForPlatform: signal<string[]>([]),
-          },
-        },
-        { provide: RouteService, useValue: { redirect: vi.fn() } },
         ServerConfigDialogService,
       ],
     });
 
     const injector = TestBed.inject(EnvironmentInjector);
-    const component = injector.runInContext(() => new QrLoginPageComponent());
+    const component = injector.runInContext(() => new QrStageComponent());
+    component.ngOnInit();
 
     await vi.advanceTimersByTimeAsync(1_500);
     expect(qrPoll).toHaveBeenCalledTimes(1);
 
-    // The old setInterval implementation would have started several more requests here.
+    // Concurrent timers should not trigger extra polling while one is pending
     await vi.advanceTimersByTimeAsync(6_000);
     expect(qrPoll).toHaveBeenCalledTimes(1);
 

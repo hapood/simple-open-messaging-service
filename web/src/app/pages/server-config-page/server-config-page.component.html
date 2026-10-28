@@ -38,7 +38,7 @@
     [attr.aria-modal]="dialog() ? 'true' : null"
   >
     @if (!dialog()) {
-      <app-brand-logo class="cfg-logo" [size]="80" />
+      <app-brand-logo class="cfg-logo" [size]="52" [wordmark]="false" />
     }
     <h1 class="cfg-title">{{ titleKey() | transloco }}</h1>
     <p class="cfg-intro">{{ introKey() | transloco }}</p>
@@ -55,13 +55,11 @@
           spellcheck="false"
           enterkeyhint="go"
           [formControl]="url"
-          [readOnly]="busy() || !!autoFill()"
+          [readOnly]="busy() || !!autoFill() || !!confirmHttp()"
           [placeholder]="'serverConfig.placeholder' | transloco"
         />
         @if (url.invalid && url.touched) {
-          <mat-error>{{
-            'serverConfig.urlInvalidDetailed' | transloco
-          }}</mat-error>
+          <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>
         }
       </mat-form-field>
 
@@ -70,7 +68,7 @@
         color="primary"
         type="submit"
         class="cfg-action"
-        [disabled]="!canSubmit() || busy() || autoFill()"
+        [disabled]="!canSubmit() || busy() || !!autoFill() || !!confirmHttp()"
       >
         {{ (busy() ? 'serverConfig.connecting' : actionKey()) | transloco }}
       </button>
@@ -114,13 +112,14 @@
         <div
           class="cfg-modal"
           role="dialog"
+          aria-labelledby="server-pair-confirm-title"
           aria-modal="true"
           tabindex="-1"
           cdkFocusInitial
           cdkTrapFocus
           [cdkTrapFocusAutoCapture]="true"
         >
-          <h2 class="cfg-modal__title">
+          <h2 class="cfg-modal__title" id="server-pair-confirm-title">
             {{ 'serverConfig.secondDetectedTitle' | transloco }}
           </h2>
           <p class="cfg-modal__body">
@@ -156,6 +155,57 @@
               (click)="confirmAutoFill()"
             >
               {{ 'serverConfig.secondUse' | transloco }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </app-material-dialog>
+  }
+
+  <!-- HTTP security confirmation modal: shown when connecting to an unencrypted endpoint. -->
+  @if (confirmHttp()) {
+    <app-material-dialog [isShow]="true">
+      <div class="cfg-modal-frame">
+        <div
+          class="cfg-modal"
+          role="dialog"
+          aria-labelledby="server-http-confirm-title"
+          aria-modal="true"
+          tabindex="-1"
+          cdkFocusInitial
+          cdkTrapFocus
+          [cdkTrapFocusAutoCapture]="true"
+        >
+          <h2 class="cfg-modal__title" id="server-http-confirm-title">
+            {{ 'serverConfig.httpConfirmTitle' | transloco }}
+          </h2>
+          <p class="cfg-modal__body">
+            {{ 'serverConfig.httpConfirmBody' | transloco }}
+          </p>
+          <dl class="cfg-modal__addresses">
+            <div class="cfg-modal__address-row">
+              <dt>{{ 'serverConfig.urlLabel' | transloco }}</dt>
+              <dd>
+                <code>{{ confirmHttp() }}</code>
+              </dd>
+            </div>
+          </dl>
+          <div class="cfg-modal__actions">
+            <button
+              mat-button
+              class="app-secondary-action"
+              type="button"
+              (click)="declineHttp()"
+            >
+              {{ 'serverConfig.httpConfirmBack' | transloco }}
+            </button>
+            <button
+              mat-flat-button
+              color="primary"
+              type="button"
+              (click)="proceedHttp()"
+            >
+              {{ 'serverConfig.httpConfirmProceed' | transloco }}
             </button>
           </div>
         </div>

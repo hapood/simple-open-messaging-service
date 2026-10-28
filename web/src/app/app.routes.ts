@@ -34,26 +34,16 @@ export const routes: Routes = [
     component: RegisterPageComponent,
     canActivate: [configGuard, guestGuard, registrationOpenGuard],
   },
-  // One-time-code login — every platform (admin-issued code). The session's lifetime follows platform trust
-  // (native permanent, browser 14-day); no platform gate. Switchable with QR + password where enabled.
+  // Unified login handles password, OTP, and QR modes in a single surface. Legacy routes redirect to it.
   {
     path: 'auth/otp',
-    loadComponent: () =>
-      import('./pages/otp-login-page/otp-login-page.component').then(
-        (m) => m.OtpLoginPageComponent,
-      ),
-    canActivate: [configGuard, guestGuard],
+    redirectTo: 'auth/login',
+    pathMatch: 'full',
   },
-  // QR-scan login — every platform (confirmed by an already-logged-in phone). Permanent session on the
-  // trusted native clients (Android app / desktop with keyring), 14-day sliding on the browser. No
-  // platform gate: reachable on Android, desktop, and web alike.
   {
     path: 'auth/qr',
-    loadComponent: () =>
-      import('./pages/qr-login-page/qr-login-page.component').then(
-        (m) => m.QrLoginPageComponent,
-      ),
-    canActivate: [configGuard, guestGuard],
+    redirectTo: 'auth/login',
+    pathMatch: 'full',
   },
   // Forced set-own-password — reached proactively after any login whose session is still on the admin-
   // generated initial password (the backend gates every other route until this clears it). A POST-login

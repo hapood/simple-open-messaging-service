@@ -48,8 +48,6 @@ export enum RoutePage {
   HOME,
   AUTH_LOGIN,
   AUTH_REGISTER,
-  AUTH_OTP,
-  AUTH_QR,
   AUTH_SET_PASSWORD,
   CONFIG,
 }
@@ -303,12 +301,6 @@ export class RouteService {
         break;
       case RoutePage.AUTH_REGISTER:
         commands = ['auth/register'];
-        break;
-      case RoutePage.AUTH_OTP:
-        commands = ['auth/otp'];
-        break;
-      case RoutePage.AUTH_QR:
-        commands = ['auth/qr'];
         break;
       case RoutePage.AUTH_SET_PASSWORD:
         commands = ['auth/set-password'];

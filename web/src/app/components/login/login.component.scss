@@ -1,8 +1,9 @@
 @use "../../assets/utils.scss" as *;
 
-// Password form card — shared auth-card surface (mirrors the OTP / QR cards so all methods read as one).
 .login-card {
   @include auth-card;
+  position: relative;
+  padding: 32px 28px 24px;
 }
 
 // Android shell only: the auth viewport measures the focused input against the native IME top and
@@ -22,68 +23,100 @@
 }
 
 .login-title {
-  margin: 0;
+  margin: 0 0 16px;
   font-size: 24px;
   font-weight: 600;
+  line-height: 32px;
+  text-align: center;
 }
 
-.login-sub {
-  margin: 6px 0 22px;
-  font-size: 14px;
-  color: var(--app-text-muted);
+.auth-tabs-slot {
+  width: 100%;
+
+  // Angular Material Tab Group styling adjustments
+  ::ng-deep {
+    .mat-mdc-tab-header {
+      height: 48px;
+      --mat-tab-header-height: 48px;
+      --mdc-tab-indicator-active-indicator-color: var(--app-brand);
+      --mat-tab-header-active-label-text-color: var(--app-brand);
+      --mat-tab-header-active-focus-label-text-color: var(--app-brand);
+      --mat-tab-header-active-hover-label-text-color: var(--app-brand);
+      border-bottom: 1px solid color-mix(in srgb, var(--app-text) 8%, transparent);
+      margin-bottom: 20px;
+    }
+
+    .mat-mdc-tab-body-wrapper {
+      height: 200px;
+      overflow: hidden;
+    }
+
+    .mat-mdc-tab-body-content {
+      height: 200px;
+      overflow: hidden;
+    }
+  }
+
+  .tab-label {
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+}
+
+.auth-tab-group {
+  width: 100%;
+}
+
+.tab-content-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 200px;
+  box-sizing: border-box;
 }
 
 .field {
   width: 100%;
 }
 
-.keep-cb {
-  align-self: flex-start;
-  margin-top: 4px;
-}
-
-// One-line explanation under the desktop "Trust this device" toggle — the user is opting into a
-// permanent session, so the implication is spelled out (integer-px metrics per the project rule).
-.trust-hint {
-  margin: 2px 0 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--app-text-muted);
-}
-
-.error-slot {
-  min-height: 44px;
-  padding: 8px 2px 0;
-  box-sizing: border-box;
-}
-
-.error {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--mat-form-field-error-text-color);
-}
-
 .submit-btn {
   width: 100%;
   height: 44px;
   font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+  margin-top: 4px;
 }
 
-.alt-action {
-  margin-top: 10px;
-  text-align: center;
+// Out-of-flow registration link below the card:
+// Absolutely positioned so its presence or absence has 0 impact on the card's vertical center.
+.alt-action-out-of-flow {
+  position: absolute;
+  top: calc(100% + 16px);
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   font-size: 14px;
+  line-height: 20px;
   color: var(--app-text-muted);
-}
 
-.link-btn {
-  @include auth-link;
-  // Gap after the inline "No account?" question text in .alt-action — the in-card register CTA sits
-  // inline with preceding text, unlike the footer switchers which stand alone.
-  margin-left: 4px;
-}
+  .link-btn {
+    @include auth-link;
+    color: var(--app-brand);
+    font-weight: 500;
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-size: 14px;
+    line-height: 20px;
 
-.link-btn:hover {
-  text-decoration: underline;
+    &:hover {
+      text-decoration: underline;
+    }
+  }
 }

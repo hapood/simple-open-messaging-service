@@ -156,18 +156,18 @@
 @mixin auth-card {
   position: relative;
   width: 100%;
-  max-width: 380px;
+  max-width: 400px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  padding: 40px 32px 32px;
+  padding: 32px 28px 24px;
   background: var(--app-surface);
   border: 1px solid color-mix(in srgb, var(--app-brand) 10%, var(--app-border));
   border-radius: var(--app-radius-lg);
   box-shadow: 0 20px 56px rgba(20, 22, 24, 0.10), 0 2px 8px rgba(20, 22, 24, 0.04);
 
   @media (max-width: 479px) {
-    padding: 32px 24px 24px;
+    padding: 28px 20px 20px;
   }
 }
 
@@ -195,8 +195,8 @@
 @mixin auth-footer {
   .auth-footer {
     width: 100%;
-    max-width: 380px;
-    margin-top: 12px;
+    max-width: 400px;
+    margin-top: 56px;
     min-height: 24px;
     box-sizing: border-box;
     display: flex;

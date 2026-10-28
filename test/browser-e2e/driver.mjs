@@ -419,20 +419,17 @@ async function userLogin(user, node, account) {
   await page.goto(NODES[node].edge, { waitUntil: 'domcontentloaded' });
   // Wait for either the authenticated shell or the login entry.
   const hint = page.locator('app-icon-rail .icon-rail');
-  const other = page.locator('app-auth-method-menu > button');
-  await expect(hint.or(other)).toBeVisible({ timeout: 30000 });
+  const otpTab = page.getByRole('tab', { name: /OTP/i });
+  await expect(hint.or(otpTab)).toBeVisible({ timeout: 30000 });
   if (await hint.isVisible())
     return { user, node, url: page.url(), resumed: true };
   const code = otps.get(otpKey(node, account));
   if (!code) throw new Error(`no OTP in memory for ${account}; issue first`);
-  if (await other.isVisible().catch(() => false)) {
-    await other.click();
-    // Password sign-in does not offer a password menu item, so OTP is first.
-    await page.getByRole('menu').getByRole('menuitem').first().click();
-  }
-  await page.locator('input[name="account"]').fill(account);
-  await page.locator('input[name="code"]').fill(code);
-  await page.locator('form button[type="submit"]').click();
+  await otpTab.click();
+  const panel = page.locator('.mat-mdc-tab-body-active');
+  await panel.locator('input[name="otpAccount"]').fill(account);
+  await panel.locator('input[name="code"]').fill(code);
+  await panel.locator('button[type="submit"]').click();
   // Wait for the authenticated shell, including when a thread is selected.
   await hint.waitFor({ state: 'visible', timeout: 30000 });
   otps.delete(otpKey(node, account));

@@ -291,7 +291,10 @@ export class AuthService {
   /** QR-login: a client mints a sign-in token to render as a QR. `client` is the real platform
    *  ('app'/'web'/'desktop' — see {@link sessionClient}); `trusted` opts a desktop into a permanent session
    *  (its token kept in OS keyring), is implicit-true for 'app', and ignored for 'web' (never trusted). */
-  qrCreate(client: 'app' | 'web' | 'desktop') {
+  qrCreate(client: 'app' | 'web' | 'desktop'): Observable<{
+    code: number;
+    data?: { qrToken: string; expiresAt: number };
+  }> {
     return this.pickThen(() =>
       this.http.post<{
         code: number;
@@ -310,7 +313,14 @@ export class AuthService {
 
   /** QR-login: poll the sign-in token's status. On 'confirmed' the response carries the session token,
    *  which activates a permanent session (if `trusted` was chosen at create) or a 14-day sliding one. */
-  qrPoll(qrToken: string, device?: string) {
+  qrPoll(qrToken: string, device?: string): Observable<{
+    code: number;
+    data?: {
+      status: string;
+      session_token?: string;
+      mustChangePassword?: boolean;
+    };
+  }> {
     return this.pickThen((context) =>
       this.http
         .post<{

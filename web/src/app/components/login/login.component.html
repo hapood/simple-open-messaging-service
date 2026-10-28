@@ -5,68 +5,137 @@
     }
   </div>
 
-  <h1 class="login-title">{{ 'auth.loginTitle' | transloco }}</h1>
-  <p class="login-sub">{{ 'auth.loginSub' | transloco }}</p>
+  <h1 class="login-title">{{ 'auth.loginBtn' | transloco }}</h1>
 
-  <mat-form-field class="field" appearance="fill">
-    <mat-label>{{ 'auth.account' | transloco }}</mat-label>
-    <input
-      matInput
-      name="account"
-      autocomplete="username"
-      enterkeyhint="next"
-      autofocus
-      [ngModel]="account()"
-      (ngModelChange)="onAccountInput($event)"
-    />
-  </mat-form-field>
-
-  <mat-form-field class="field" appearance="fill">
-    <mat-label>{{ 'auth.password' | transloco }}</mat-label>
-    <input
-      matInput
-      name="password"
-      autocomplete="current-password"
-      enterkeyhint="go"
-      [type]="showPassword() ? 'text' : 'password'"
-      [ngModel]="password()"
-      (ngModelChange)="onPasswordInput($event)"
-    />
-    <button
-      mat-icon-button
-      matSuffix
-      type="button"
-      (click)="togglePassword()"
-      [attr.aria-label]="
-        (showPassword() ? 'auth.hidePassword' : 'auth.showPassword') | transloco
-      "
+  <div class="auth-tabs-slot">
+    <mat-tab-group
+      [selectedIndex]="selectedTabIndex()"
+      (selectedIndexChange)="onTabChange($event)"
+      animationDuration="250ms"
+      class="auth-tab-group"
+      mat-stretch-tabs="false"
+      mat-align-tabs="center"
     >
-      <app-icon
-        [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE"
-        [style]="{ width: '20px', height: '20px' }"
-      />
-    </button>
-  </mat-form-field>
+      <mat-tab [disabled]="!canPassword()">
+        <ng-template mat-tab-label>
+          <span class="tab-label">{{ 'auth.tabPassword' | transloco }}</span>
+        </ng-template>
 
-  <button
-    mat-flat-button
-    color="primary"
-    type="submit"
-    class="submit-btn"
-    [disabled]="isLoginBtnDisabled()"
-  >
-    {{ 'auth.loginBtn' | transloco }}
-  </button>
+        <div class="tab-content-panel">
+          <mat-form-field class="field" appearance="fill">
+            <mat-label>{{ 'auth.account' | transloco }}</mat-label>
+            <input
+              matInput
+              name="account"
+              autocomplete="username"
+              enterkeyhint="next"
+              autofocus
+              [ngModel]="account()"
+              (ngModelChange)="onAccountInput($event)"
+            />
+          </mat-form-field>
 
-  <!-- Always reserve two lines below the primary action. A localized login error can appear without
-    changing the button's position; longer exceptional messages may still grow naturally. -->
-  <div class="error-slot">
-    <div class="error" role="alert">{{ resp() }}</div>
+          <mat-form-field class="field" appearance="fill">
+            <mat-label>{{ 'auth.password' | transloco }}</mat-label>
+            <input
+              matInput
+              name="password"
+              autocomplete="current-password"
+              enterkeyhint="go"
+              [type]="showPassword() ? 'text' : 'password'"
+              [ngModel]="password()"
+              (ngModelChange)="onPasswordInput($event)"
+            />
+            <button
+              mat-icon-button
+              matSuffix
+              type="button"
+              (click)="togglePassword()"
+              [attr.aria-label]="
+                (showPassword() ? 'auth.hidePassword' : 'auth.showPassword')
+                  | transloco
+              "
+            >
+              <app-icon
+                [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE"
+                [style]="{ width: '20px', height: '20px' }"
+              />
+            </button>
+          </mat-form-field>
+
+          <button
+            mat-flat-button
+            color="primary"
+            type="submit"
+            class="submit-btn"
+            [disabled]="isLoginBtnDisabled()"
+          >
+            {{ 'auth.loginBtn' | transloco }}
+          </button>
+        </div>
+      </mat-tab>
+
+      <mat-tab [disabled]="!canOtp()">
+        <ng-template mat-tab-label>
+          <span class="tab-label">{{ 'auth.tabOtp' | transloco }}</span>
+        </ng-template>
+
+        <div class="tab-content-panel">
+          <mat-form-field class="field" appearance="fill">
+            <mat-label>{{ 'auth.account' | transloco }}</mat-label>
+            <input
+              matInput
+              name="otpAccount"
+              autocomplete="username"
+              enterkeyhint="next"
+              [ngModel]="account()"
+              (ngModelChange)="onAccountInput($event)"
+            />
+          </mat-form-field>
+
+          <mat-form-field class="field" appearance="fill">
+            <mat-label>{{ 'auth.otpCode' | transloco }}</mat-label>
+            <input
+              matInput
+              name="code"
+              inputmode="numeric"
+              maxlength="6"
+              autocomplete="one-time-code"
+              enterkeyhint="go"
+              [ngModel]="code()"
+              (ngModelChange)="onCodeInput($event)"
+            />
+          </mat-form-field>
+
+          <button
+            mat-flat-button
+            color="primary"
+            type="submit"
+            class="submit-btn"
+            [disabled]="isLoginBtnDisabled()"
+          >
+            {{ 'auth.loginBtn' | transloco }}
+          </button>
+        </div>
+      </mat-tab>
+
+      <mat-tab [disabled]="!canQr()">
+        <ng-template mat-tab-label>
+          <span class="tab-label">{{ 'auth.tabQr' | transloco }}</span>
+        </ng-template>
+
+        <ng-template matTabContent>
+          <div class="tab-content-panel">
+            <app-qr-stage (onSuccess)="onQrSuccess($event)" />
+          </div>
+        </ng-template>
+      </mat-tab>
+    </mat-tab-group>
   </div>
 
   @if (config.registrationOpen()) {
-    <div class="alt-action">
-      {{ 'auth.loginAltQuestion' | transloco }}
+    <div class="alt-action-out-of-flow">
+      <span>{{ 'auth.loginAltQuestion' | transloco }}</span>
       <button type="button" class="link-btn" (click)="jumpToRegister()">
         {{ 'auth.register' | transloco }}
       </button>

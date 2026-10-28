@@ -172,4 +172,78 @@ describe('ServerConfigPage flow', () => {
       commands().filter((command) => command === 'begin_server_setup'),
     ).toHaveLength(2);
   });
+
+  it('automatically defaults schemeless entered addresses to https', async () => {
+    const fixture = TestBed.createComponent(ServerConfigPageComponent);
+    fixture.componentRef.setInput('dialog', true);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+    component.url.setValue('schemeless.example:7667');
+    component.save();
+    admission.resolve('setup-1');
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('check_server_setup', {
+        id: 'setup-1',
+        origin: 'https://schemeless.example:7667',
+      }),
+    );
+  });
+
+  it('rejects unsupported schemes before starting native setup', () => {
+    const fixture = TestBed.createComponent(ServerConfigPageComponent);
+    const component = fixture.componentInstance;
+    component.url.setValue('ftp://example.com');
+    component.save();
+    expect(component.errorKey()).toBe('serverConfig.urlInvalidDetailed');
+    expect(commands()).not.toContain('begin_server_setup');
+  });
+
+  it.each([false, true])(
+    'Escape dismisses only HTTP confirmation (dialog=%s)',
+    (dialog) => {
+      const fixture = TestBed.createComponent(ServerConfigPageComponent);
+      fixture.componentRef.setInput('dialog', dialog);
+      const component = fixture.componentInstance;
+      const closed = vi.fn();
+      component.closed.subscribe(closed);
+      component.url.setValue('http://lan.example:3000');
+      component.save();
+      component.onEscape(new Event('keydown'));
+      expect(component.confirmHttp()).toBeNull();
+      expect(closed).not.toHaveBeenCalled();
+      expect(commands()).not.toContain('begin_server_setup');
+    },
+  );
+
+  it('intercepts http connections with a confirmation gate', async () => {
+    const fixture = TestBed.createComponent(ServerConfigPageComponent);
+    fixture.componentRef.setInput('dialog', true);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+    component.url.setValue('http://lan.example:3000');
+    component.save();
+
+    // Confirmation gate is active, setup is NOT yet started
+    expect(component.confirmHttp()).toBe('http://lan.example:3000');
+    expect(commands()).not.toContain('begin_server_setup');
+
+    // If declined, modal closes and no setup begins
+    component.declineHttp();
+    expect(component.confirmHttp()).toBeNull();
+    expect(commands()).not.toContain('begin_server_setup');
+
+    // If saved and proceeded, flow begins
+    component.save();
+    expect(component.confirmHttp()).toBe('http://lan.example:3000');
+    component.proceedHttp();
+    expect(component.confirmHttp()).toBeNull();
+
+    admission.resolve('setup-http');
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('check_server_setup', {
+        id: 'setup-http',
+        origin: 'http://lan.example:3000',
+      }),
+    );
+  });
 });

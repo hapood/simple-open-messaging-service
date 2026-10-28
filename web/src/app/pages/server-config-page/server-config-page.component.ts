@@ -46,7 +46,6 @@ import {
 import {
   apiOrigin,
   canonicalOrigin,
-  originIsInsecure,
   tauriInvoke,
 } from '../../services/runtime';
 import { RouteService, RoutePage } from '../../services/route.service';
@@ -72,6 +71,41 @@ export function resolveOriginSelection(
     lan: selectedLan,
     confirmPair: selectedLan !== null,
   };
+}
+
+/** Normalize entered server address: trim, default to https:// if scheme is missing, and strip trailing slashes. */
+export function normalizeServerUrl(raw: string): string {
+  let trimmed = raw.trim();
+  if (!trimmed) return '';
+  // Preserve explicit schemes for validation instead of turning ftp://host into https://ftp://host.
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed)) {
+    trimmed = `https://${trimmed}`;
+  }
+  return canonicalOrigin(trimmed);
+}
+
+/** Check if normalized origin is a syntactically valid HTTP/HTTPS URL with host. */
+export function isValidServerUrl(url: string): boolean {
+  if (/[\s\\]/.test(url) || !/^https?:\/\/[^/]/i.test(url)) return false;
+  try {
+    const parsed = new URL(url);
+    return Boolean(
+      parsed.hostname &&
+        /^https?:$/i.test(parsed.protocol) &&
+        !parsed.username &&
+        !parsed.password &&
+        parsed.pathname === '/' &&
+        !parsed.search &&
+        !parsed.hash,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** True when the URL explicitly starts with http://. */
+export function isExplicitHttp(origin: string): boolean {
+  return /^http:\/\//i.test(origin.trim());
 }
 
 /**
@@ -133,9 +167,8 @@ export class ServerConfigPageComponent implements OnInit {
 
   readonly url = new FormControl(canonicalOrigin(apiOrigin()), {
     nonNullable: true,
-    // `required` rejects empty; the pattern rejects scheme-less input (e.g. "10.0.0.10:3000") so the
-    // user is guided inline instead of sending a bare host to Rust and getting an opaque failure.
-    validators: [Validators.required, Validators.pattern(/^https?:\/\//i)],
+    // Schemeless input (e.g. "soms.example.com") is accepted and normalized to https:// on submit.
+    validators: [Validators.required],
   });
   /** Pending second-server confirmation. The second endpoint is server-advertised configuration, never a
    *  user-authored field: showing the exact address and asking for consent avoids both jargon and typos. */
@@ -144,6 +177,8 @@ export class ServerConfigPageComponent implements OnInit {
     lan: string | null;
     reachable: string;
   } | null>(null);
+  /** Pending HTTP security confirmation when an unencrypted connection is attempted. */
+  readonly confirmHttp = signal<string | null>(null);
   readonly phase = signal<Phase>('form');
   /** The live origin value the insecure-warning reacts to (separate from the control so the warning can
    *  show before the control is considered touched). */
@@ -177,7 +212,7 @@ export class ServerConfigPageComponent implements OnInit {
   canSubmit(): boolean {
     return this.url.value.trim().length > 0;
   }
-  readonly insecure = computed(() => originIsInsecure(this.origin()));
+  readonly insecure = computed(() => isExplicitHttp(this.origin()));
   private readonly progressByPhase: Record<Phase, number> = {
     form: 0,
     compat: 40,
@@ -244,24 +279,49 @@ export class ServerConfigPageComponent implements OnInit {
    *  the form stays mounted for an edit-and-retry (no reflow). */
   save(event?: Event): void {
     event?.preventDefault();
-    // A connect flow is in flight OR the modal is up — ignore re-submits (Enter) that would race it.
-    if (this.busy() || this.autoFill()) return;
+    // A connect flow is in flight OR a modal is up — ignore re-submits (Enter) that would race it.
+    if (this.busy() || this.autoFill() || this.confirmHttp()) return;
     if (!this.canSubmit()) {
       this.url.markAsTouched();
       queueMicrotask(() => this.serverInput?.nativeElement.focus());
       return;
     }
-    const primaryRaw = this.url.value.trim()
-      ? canonicalOrigin(this.url.value)
-      : null;
-    if (!primaryRaw || this.url.invalid) {
+    const raw = this.url.value.trim();
+    const normalized = normalizeServerUrl(raw);
+    if (!isValidServerUrl(normalized)) {
+      this.errorKey.set('serverConfig.urlInvalidDetailed');
+      this.errorDetail.set('');
       this.url.markAsTouched();
       queueMicrotask(() => this.serverInput?.nativeElement.focus());
       return;
     }
+
+    if (isExplicitHttp(normalized)) {
+      this.confirmHttp.set(normalized);
+      return;
+    }
+
+    this.commitSubmit(normalized);
+  }
+
+  declineHttp(): void {
+    this.confirmHttp.set(null);
+    queueMicrotask(() => this.serverInput?.nativeElement.focus());
+  }
+
+  proceedHttp(): void {
+    const target = this.confirmHttp();
+    this.confirmHttp.set(null);
+    if (target) {
+      this.commitSubmit(target);
+    }
+  }
+
+  private commitSubmit(target: string): void {
+    this.url.setValue(target);
     this.errorKey.set(null);
     this.errorDetail.set('');
-    this.submits.next(primaryRaw);
+    this.submits.next(target);
   }
 
   /** verify → (pair confirmation) → commit. Verification is cancellable; commit is not. */
@@ -346,10 +406,15 @@ export class ServerConfigPageComponent implements OnInit {
    *  lifecycle-scoped AppBackDispatcher registration below. */
   @HostListener('document:keydown.escape', ['$event'])
   onEscape(event: Event): void {
-    if (this.saving() || (!this.autoFill() && !this.dialog())) return;
+    if (
+      this.saving() ||
+      (!this.confirmHttp() && !this.autoFill() && !this.dialog())
+    )
+      return;
     event.preventDefault();
     event.stopPropagation();
-    if (this.autoFill()) this.declineAutoFill();
+    if (this.confirmHttp()) this.declineHttp();
+    else if (this.autoFill()) this.declineAutoFill();
     else this.goBack();
   }
 
@@ -399,6 +464,10 @@ export class ServerConfigPageComponent implements OnInit {
   private installBackHandler(): void {
     this.unregisterBack = this.appBack.register(() => {
       if (this.saving()) return;
+      if (this.confirmHttp()) {
+        this.declineHttp();
+        return;
+      }
       if (this.autoFill()) {
         this.declineAutoFill();
         return;

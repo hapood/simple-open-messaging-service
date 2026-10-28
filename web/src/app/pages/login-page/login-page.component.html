@@ -12,7 +12,7 @@
         flash for a frame on the way out. Mirrors the app-splash (brand mark + 40px spinner) for one
         continuous loading feel; the toolbar stays available so theme/language are reachable immediately. -->
       <div class="auth-loading" role="status" aria-live="polite">
-        <app-brand-logo class="form-brand" [size]="80" />
+        <app-brand-logo class="form-brand" [size]="52" [wordmark]="false" />
         <mat-progress-spinner mode="indeterminate" [diameter]="40" />
         @if (isTauri()) {
           <!-- Cancel the connection wait and return to the editable server dialog. The in-flight request
@@ -31,7 +31,7 @@
       <!-- Compact brand shown only where the side <app-auth-brand> panel is hidden (below the split
         breakpoint), so every auth state keeps brand identity on the narrow Tauri shell / Android WebView.
         Desktop owns the full panel; showing both there would be redundant. -->
-      <app-brand-logo class="form-brand" [size]="80" />
+      <app-brand-logo class="form-brand" [size]="52" [wordmark]="false" />
       @if (isTauri() && configuredOrigins().length) {
         <div class="origin-list" role="status">
           @for (server of configuredOrigins(); track server.origin) {
@@ -98,25 +98,13 @@
           </div>
         </div>
       }
-      @if (showPassword()) {
+      @if (ready() && !configFailed()) {
         <app-login (onSuccess)="onSuccess($event)"></app-login>
       }
 
-      <!-- Footer row below the form: login-method switchers on the LEFT (as .link-btn text links, matching
-        the OTP/QR pages), server-config link on the RIGHT (Tauri only). Shares the ready() gate with the
-        form; always mounted when shown so its reserved min-height holds the line even before /config
-        resolves the switchers — no init-time height jump. -->
+      <!-- Footer row below the form: server-config link on the RIGHT (Tauri only). -->
       <div class="auth-footer">
-        <div class="auth-footer__methods">
-          @if (canQr() || canOtp()) {
-            <app-auth-method-menu
-              [qr]="canQr()"
-              [otp]="canOtp()"
-              (qrSelected)="jumpToQr()"
-              (otpSelected)="jumpToOtp()"
-            />
-          }
-        </div>
+        <div></div>
         @if (isTauri() && !configFailed()) {
           <button
             mat-button
