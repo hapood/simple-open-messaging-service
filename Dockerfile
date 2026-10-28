@@ -36,6 +36,7 @@ COPY admin-web/package.json admin-web/package-lock.json ./admin-web/
 RUN --mount=type=cache,target=/root/.npm \
     cd admin-web && npm ci
 COPY admin-web ./admin-web
+COPY shared ./shared
 RUN cd admin-web && npm run build
 
 # ---- Stage 3: build server (reusable base supplies python/make/g++ for native Node dependencies) ----
@@ -51,7 +52,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY web/package.json web/package-lock.json ./web/
 COPY admin-web/package.json admin-web/package-lock.json ./admin-web/
 COPY src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
-COPY scripts/check-version-sync.mjs scripts/migrate-db.ts ./scripts/
+COPY scripts/check-version-sync.mjs scripts/android-version.mjs scripts/migrate-db.ts ./scripts/
 RUN node scripts/check-version-sync.mjs
 COPY src ./src
 COPY shared ./shared
