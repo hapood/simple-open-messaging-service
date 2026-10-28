@@ -37,17 +37,14 @@ describe('database-backed root approval proof binding', () => {
   let reviewId: number;
 
   async function cleanup() {
-    for (const table of [
-      'S2SKeyCache',
-      'FederationFeedHeadReceipt',
-      'FederationFeedState',
-      'ProfileNamespaceFeed',
-      'ProfileNamespaceChangeFeed',
+    for (const [table, column] of [
+      ['S2SKeyCache', 'namespaceId'],
+      ['FederationFeedHeadReceipt', 'namespaceId'],
+      ['FederationFeedState', 'namespaceId'],
+      ['ProfileNamespaceFeed', 'namespaceId'],
+      ['ProfileNamespaceChangeFeed', 'publisherNamespaceId'],
+      ['ProfileNamespace', 'publisherNamespaceId'],
     ]) {
-      const column =
-        table === 'ProfileNamespaceChangeFeed'
-          ? 'publisherNamespaceId'
-          : 'namespaceId';
       await database.pool.query(
         `DELETE FROM "${table}" WHERE "${column}" IN (SELECT id FROM "IdentityNamespace" WHERE domain = $1)`,
         [domain],
@@ -106,11 +103,9 @@ describe('database-backed root approval proof binding', () => {
       new ProfileNamespaceChangeStore(database),
     );
     const notify = vi.fn();
-    const refresh = vi.fn();
     const service = new FederationNamespaceAdminService(
       database,
       feed,
-      { scheduleRefresh: refresh } as never,
       { notifyProfileNamespaceChange: notify } as never,
       {
         fetchWellKnown: async () => ({
@@ -152,7 +147,7 @@ describe('database-backed root approval proof binding', () => {
       { signOutbound: async () => ({}) } as never,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
     );
-    return { service, notify, refresh };
+    return { service, notify };
   }
 
   it.each(['new-peer', 'replace-identity'] as const)(
@@ -263,6 +258,7 @@ describe('database-backed root approval proof binding', () => {
       'ProfileNamespaceFeed',
       'ProfileNamespaceChangeFeed',
       'ProfileNamespaceChangeFeedHead',
+      'ProfileNamespace',
     ]) {
       result[table] = (
         await database.pool.query(
@@ -273,7 +269,11 @@ describe('database-backed root approval proof binding', () => {
     return result;
   }
 
-  it.each(['S2SKeyCache', 'FederationIdentityReview'] as const)(
+  it.each([
+    'S2SKeyCache',
+    'FederationIdentityReview',
+    'ProfileNamespace',
+  ] as const)(
     'rolls back the entire approval when writing %s fails',
     async (table) => {
       await database.pool.query(
@@ -291,11 +291,11 @@ describe('database-backed root approval proof binding', () => {
         ],
       );
       const before = await snapshot();
-      const { service, notify, refresh } = approvalSubject();
+      const { service, notify } = approvalSubject();
       await database.pool.query(`
         CREATE FUNCTION fail_root_approval_write() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'injected approval write failure'; END $$;
-        CREATE TRIGGER fail_root_approval_write BEFORE ${table === 'S2SKeyCache' ? 'INSERT' : 'UPDATE'}
+        CREATE TRIGGER fail_root_approval_write BEFORE ${table === 'FederationIdentityReview' ? 'UPDATE' : 'INSERT'}
         ON "${table}" FOR EACH ROW EXECUTE FUNCTION fail_root_approval_write();
       `);
       try {
@@ -304,7 +304,6 @@ describe('database-backed root approval proof binding', () => {
         });
         expect(await snapshot()).toEqual(before);
         expect(notify).not.toHaveBeenCalled();
-        expect(refresh).not.toHaveBeenCalled();
       } finally {
         await database.pool.query(
           `DROP TRIGGER fail_root_approval_write ON "${table}"; DROP FUNCTION fail_root_approval_write();`,
@@ -339,6 +338,18 @@ describe('database-backed root approval proof binding', () => {
         [namespaceId],
       );
       expect(keys.rows).toEqual([{ root: successor }]);
+      const direct = await database.pool.query(
+        'SELECT domain, "rootPublicKey", expired, "sourceGeneratedAt" FROM "ProfileNamespace" WHERE "publisherNamespaceId" = $1 AND "profileNamespaceId" = 0',
+        [namespaceId],
+      );
+      expect(direct.rows).toEqual([
+        {
+          domain,
+          rootPublicKey: successor,
+          expired: false,
+          sourceGeneratedAt: '0',
+        },
+      ]);
     },
   );
 
@@ -350,7 +361,6 @@ describe('database-backed root approval proof binding', () => {
       const service = new FederationNamespaceAdminService(
         database,
         { recordNamespaceChangeInTx } as never,
-        {} as never,
         {} as never,
         {
           fetchWellKnown: async () => ({

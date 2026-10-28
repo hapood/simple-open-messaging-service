@@ -11,7 +11,7 @@
           "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
         "namespaceId": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "feedId": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"

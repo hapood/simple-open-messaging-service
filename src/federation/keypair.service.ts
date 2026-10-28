@@ -453,13 +453,8 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         .where(eq(localFederationSigningState.id, 0));
       const next = await this.reloadSnapshot(tx);
       if (!next) throw new Error('local identity rows disappeared');
-      // The replacement is a binding change of namespace 0 — this server
-      // itself: publish it on the shared s2s feed (peers re-pull
-      // /profile-namespaces/0 for the new root public key) and record the
-      // client-visible (0, 0) change so every device wakes and re-resolves
-      // the pair. Both entries share the replacement transaction, so a
-      // crash can never leave the new root claimable but unannounced.
-      await this.changes.recordNamespaceChangeInTx(tx, 0);
+      // Notify local clients of the new self binding. Remote identity adoption
+      // follows the verified root-rotation exchange, not the namespace feed.
       const clientChangeId = await this.changes.recordClientChangeInTx(tx, {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
@@ -644,7 +639,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       .update(account)
       .set({ updatedAt: new Date() })
       .where(eq(account.namespaceId, 0));
-    await this.changes.recordNamespaceChangeInTx(tx, 0);
     await this.changes.recordClientChangeInTx(tx, {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
@@ -779,9 +773,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
 
     const snapshot = await this.reloadSnapshot(tx);
     if (!snapshot) throw new Error('local identity rows disappeared');
-    // Publish the initial local binding atomically with its root. Every
-    // servable namespace, including 0, must have a persisted generation time.
-    await this.changes.recordNamespaceChangeInTx(tx, 0);
     return snapshot;
   }
 

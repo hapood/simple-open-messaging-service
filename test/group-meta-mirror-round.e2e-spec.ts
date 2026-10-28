@@ -154,8 +154,7 @@ describe('mirror Group Meta rounds', () => {
     role: GroupRole = GroupRole.MEMBER,
   ): MirrorMetaReplicatedItem => ({
     feedId,
-    createdAt: 1700000000000,
-    originCreatedAt: null,
+    originCreatedAt: 1700000000000,
     operation: 'MEMBER_UPSERT',
     account: memberAccount,
     namespaceId: originNamespaceId,
@@ -166,8 +165,7 @@ describe('mirror Group Meta rounds', () => {
   const memberDepart = (feedId: number, memberAccount: string) =>
     ({
       feedId,
-      createdAt: 1700000000000,
-      originCreatedAt: null,
+      originCreatedAt: 1700000000000,
       operation: 'MEMBER_DEPART',
       account: memberAccount,
       namespaceId: originNamespaceId,
@@ -245,8 +243,7 @@ describe('mirror Group Meta rounds', () => {
       memberUpsert(5, 'peer-three'),
       {
         feedId: 9,
-        createdAt: 1700000000000,
-        originCreatedAt: null,
+        originCreatedAt: 1700000000000,
         operation: 'GROUP_PROFILE',
         account: groupAccount,
         namespaceId: originNamespaceId,
@@ -436,8 +433,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 5,
-          createdAt: 1700000000000,
-          originCreatedAt: null,
+          originCreatedAt: 1700000000000,
           operation: 'GROUP_PROFILE',
           account: groupAccount,
           namespaceId: originNamespaceId,
@@ -656,8 +652,7 @@ describe('mirror Group Meta rounds', () => {
         items: [
           {
             feedId: 2,
-            createdAt: 1700000000000,
-            originCreatedAt: null,
+            originCreatedAt: 1700000000000,
             operation: 'GROUP_ANNOUNCEMENT',
             text: 'Hello',
           },
@@ -682,8 +677,7 @@ describe('mirror Group Meta rounds', () => {
         messages,
         item: {
           feedId: 3,
-          createdAt: 1700000000001,
-          originCreatedAt: null,
+          originCreatedAt: 1700000000001,
           operation: 'GROUP_ANNOUNCEMENT',
           text: null,
         },
@@ -727,7 +721,7 @@ describe('mirror Group Meta rounds', () => {
         account:
           operation === 'GROUP_PROFILE' ? groupAccount : 'copy-time-member',
         text: 'Notice',
-        createdAt: sourceTime,
+        originCreatedAt: sourceTime,
       } as MirrorMetaReplicatedItem;
       const apply = (fact: MirrorMetaReplicatedItem) =>
         database.db.transaction((tx) =>
@@ -746,7 +740,7 @@ describe('mirror Group Meta rounds', () => {
         .where(eq(groupMetaMemberFeed.threadId, threadId));
       expect(same.createdAt).toEqual(savedLocalTime);
       expect(same.originCreatedAt).toEqual(new Date(sourceTime));
-      await apply({ ...item, feedId: 2, createdAt: sourceTime + 1 });
+      await apply({ ...item, feedId: 2, originCreatedAt: sourceTime + 1 });
       const [replacement] = await database.db
         .select()
         .from(groupMetaMemberFeed)
@@ -779,8 +773,7 @@ describe('mirror Group Meta rounds', () => {
       memberUpsert(1, 'copy-time-member'),
       {
         feedId: 2,
-        createdAt: 1700000000001,
-        originCreatedAt: null,
+        originCreatedAt: 1700000000001,
         operation: 'GROUP_PROFILE',
         account: groupAccount,
         namespaceId: 0,
@@ -788,8 +781,7 @@ describe('mirror Group Meta rounds', () => {
       },
       {
         feedId: 3,
-        createdAt: 1700000000002,
-        originCreatedAt: null,
+        originCreatedAt: 1700000000002,
         operation: 'GROUP_ANNOUNCEMENT',
         text: null,
       },
@@ -825,7 +817,9 @@ describe('mirror Group Meta rounds', () => {
     for (const fact of facts) {
       expect(fact.createdAt).toEqual(savedLocalTime);
       expect(fact.originCreatedAt).toEqual(
-        new Date(items.find((item) => item.feedId === fact.feedId)!.createdAt),
+        new Date(
+          items.find((item) => item.feedId === fact.feedId)!.originCreatedAt,
+        ),
       );
     }
   });
@@ -836,8 +830,7 @@ describe('mirror Group Meta rounds', () => {
     );
     const profileItem: MirrorMetaReplicatedItem = {
       feedId: 2,
-      createdAt: 1700000000000,
-      originCreatedAt: null,
+      originCreatedAt: 1700000000000,
       operation: 'GROUP_PROFILE',
       account: groupAccount,
       namespaceId: originNamespaceId,
@@ -866,8 +859,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         {
           feedId: 2,
-          createdAt: 1700000000000,
-          originCreatedAt: null,
+          originCreatedAt: 1700000000000,
           operation: 'GROUP_PROFILE',
           account: groupAccount,
           namespaceId: originNamespaceId,
@@ -887,8 +879,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         {
           feedId: 3,
-          createdAt: 1700000000000,
-          originCreatedAt: null,
+          originCreatedAt: 1700000000000,
           operation: 'GROUP_PROFILE',
           account: groupAccount,
           namespaceId: originNamespaceId,
@@ -971,8 +962,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 1,
-          createdAt: 1700000000000,
-          originCreatedAt: null,
+          originCreatedAt: 1700000000000,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
           namespaceId: 0,
@@ -1005,8 +995,7 @@ describe('mirror Group Meta rounds', () => {
           group,
           item: {
             feedId,
-            createdAt: 1700000000000,
-            originCreatedAt: null,
+            originCreatedAt: 1700000000000,
             operation,
             account: localMemberAccount,
             namespaceId: 0,
@@ -1053,8 +1042,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 4,
-          createdAt: 1700000000000,
-          originCreatedAt: null,
+          originCreatedAt: 1700000000000,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
           namespaceId: 0,
@@ -1081,8 +1069,7 @@ describe('mirror Group Meta rounds', () => {
         group,
         item: {
           feedId: 5,
-          createdAt: 1700000000000,
-          originCreatedAt: null,
+          originCreatedAt: 1700000000000,
           operation: 'MEMBER_DEPART',
           account: localMemberAccount,
           namespaceId: 0,

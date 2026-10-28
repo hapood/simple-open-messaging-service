@@ -9,7 +9,6 @@ import {
 } from '../database/database.service.js';
 import {
   identityNamespace,
-  localFederationRoot,
   profileNamespaceFeedHead,
   profileNamespaceChangeFeed,
   profileNamespaceChangeFeedHead,
@@ -264,16 +263,14 @@ export class ProfileNamespaceFeedService {
     );
   }
 
-  /** Resolves one namespace id in this responder's own namespace space.
-   *  Id 0 answers the responder itself from local authority; a positive id
-   *  answers the identity currently bound there. A retired or unknown id is
-   *  a business miss (HTTP 200 + NOT_FOUND), never a protocol 404. The
-   *  answer is display/vouching data only. */
+  /** Resolves a positive namespace id in this responder's namespace space.
+   * Retired identities retain their last binding; unknown ids are business
+   * misses. The responder's own binding is established by identity exchange. */
   async resolveBindings(nsid: number): Promise<ProfileNamespaceBindings> {
-    if (!Number.isSafeInteger(nsid) || nsid < 0) {
+    if (!Number.isSafeInteger(nsid) || nsid <= 0) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'nsid must be a non-negative safe integer',
+        'nsid must be a positive safe integer',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -293,23 +290,7 @@ export class ProfileNamespaceFeedService {
           .from(identityNamespace)
           .where(eq(identityNamespace.id, nsid))
           .limit(1);
-        // Namespace 0's claimable root lives in the key lifecycle tables, not
-        // IdentityNamespace. Read it in this snapshot, never from process memory.
-        const [root] =
-          nsid === LOCAL_NAMESPACE_ID
-            ? await tx
-                .select({ rootPublicKey: localFederationRoot.rootPublicKey })
-                .from(localFederationRoot)
-                .where(eq(localFederationRoot.claimable, true))
-                .limit(1)
-            : [];
-        const rootPublicKey =
-          nsid === LOCAL_NAMESPACE_ID
-            ? root?.rootPublicKey
-            : row?.rootPublicKey;
-        if (!row || !rootPublicKey) {
-          if (nsid === LOCAL_NAMESPACE_ID)
-            throw new Error('local identity binding is missing');
+        if (!row || !row.rootPublicKey) {
           throw new BusinessException(
             BusinessCode.NOT_FOUND,
             'namespace id is not bound to a servable identity',
@@ -325,7 +306,7 @@ export class ProfileNamespaceFeedService {
         // Reset-retired identities retain their last bindings and generation time.
         return {
           domain: row.domain,
-          rootPublicKey,
+          rootPublicKey: row.rootPublicKey,
           profileNamespaceFeedEndId: head.feedEndId.toString(),
           generatedAt: item.updatedAt.getTime(),
         };

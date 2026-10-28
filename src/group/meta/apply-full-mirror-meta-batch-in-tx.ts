@@ -78,7 +78,7 @@ export async function applyFullMirrorMetaBatchInTx(
         {
           threadId: mirror.threadId,
           feedId: item.feedId,
-          originCreatedAt: new Date(item.createdAt),
+          originCreatedAt: new Date(item.originCreatedAt),
           operation: 'GROUP_ANNOUNCEMENT',
           body: { text: item.text },
         },
@@ -88,7 +88,7 @@ export async function applyFullMirrorMetaBatchInTx(
         {
           threadId: mirror.threadId,
           feedId: item.feedId,
-          originCreatedAt: new Date(item.createdAt),
+          originCreatedAt: new Date(item.originCreatedAt),
           operation: 'GROUP_PROFILE' as const,
           body: {
             account: item.account,
@@ -101,7 +101,7 @@ export async function applyFullMirrorMetaBatchInTx(
       {
         threadId: mirror.threadId,
         feedId: item.feedId,
-        originCreatedAt: new Date(item.createdAt),
+        originCreatedAt: new Date(item.originCreatedAt),
         operation: item.operation,
         body: {
           account: item.account,

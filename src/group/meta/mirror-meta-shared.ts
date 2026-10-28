@@ -23,8 +23,7 @@ export interface MirrorGroupAddress {
  * coordinate space and is stored verbatim; the display domain resolves through
  * publisher-scoped namespace bindings, never from the item. */
 export type MirrorMetaReplicatedItem = {
-  createdAt: number;
-  originCreatedAt: number | null;
+  originCreatedAt: number;
 } & (
   | {
       feedId: number;
@@ -144,7 +143,7 @@ export async function applyMirrorMetaFactInTx(
       {
         threadId,
         feedId: item.feedId,
-        originCreatedAt: new Date(item.createdAt),
+        originCreatedAt: new Date(item.originCreatedAt),
         operation: 'GROUP_ANNOUNCEMENT',
         body: { text: item.text },
       },
@@ -156,7 +155,7 @@ export async function applyMirrorMetaFactInTx(
       {
         threadId,
         feedId: item.feedId,
-        originCreatedAt: new Date(item.createdAt),
+        originCreatedAt: new Date(item.originCreatedAt),
         operation: 'GROUP_PROFILE',
         body: {
           account: item.account,
@@ -175,7 +174,7 @@ export async function applyMirrorMetaFactInTx(
     {
       threadId,
       feedId: item.feedId,
-      originCreatedAt: new Date(item.createdAt),
+      originCreatedAt: new Date(item.originCreatedAt),
       operation: item.operation,
       body: {
         account: item.account,

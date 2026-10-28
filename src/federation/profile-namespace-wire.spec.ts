@@ -11,7 +11,7 @@ const binding = () => ({
   generatedAt: 1000,
 });
 const page = () => ({
-  items: [{ namespaceId: 0, feedId: '3', generatedAt: 1000 }],
+  items: [{ namespaceId: 1, feedId: '3', generatedAt: 1000 }],
   scannedThrough: '3',
   feedEndId: '9',
   hasMore: true,
@@ -45,10 +45,16 @@ describe('profile namespace wire generation times', () => {
     expect(() =>
       assertProfileNamespaceFeedPage({
         ...page(),
-        items: [{ namespaceId: 0, feedId: '3', generatedAt }],
+        items: [{ namespaceId: 1, feedId: '3', generatedAt }],
       }),
     ).toThrow();
   });
+  it('rejects publisher self bindings in the namespace feed', () => {
+    const value = page();
+    value.items[0].namespaceId = 0;
+    expect(() => assertProfileNamespaceFeedPage(value)).toThrow();
+  });
+
   it('rejects omitted fields and page-level generation times', () => {
     const { generatedAt: _, ...missing } = binding();
     expect(() => assertProfileNamespaceBindings(missing)).toThrow();
@@ -58,7 +64,7 @@ describe('profile namespace wire generation times', () => {
     expect(() =>
       assertProfileNamespaceFeedPage({
         ...page(),
-        items: [{ namespaceId: 0, feedId: '3' }],
+        items: [{ namespaceId: 1, feedId: '3' }],
       }),
     ).toThrow();
   });

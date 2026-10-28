@@ -218,15 +218,14 @@ export class S2sController {
     return this.profileNamespaceFeed.serve(after, take, through);
   }
 
-  /** Current bindings of one namespace id in this responder's own namespace
-   *  space. Id 0 is the responder itself; display/vouching data only. */
+  /** Current third-party bindings in this responder's namespace space. */
   @Get('profile-namespaces/:nsid')
   async getProfileNamespace(@Req() req: FastifyRequest): Promise<unknown> {
     const raw = (req.params as { nsid?: unknown }).nsid;
-    if (typeof raw !== 'string' || !/^(0|[1-9][0-9]{0,15})$/.test(raw)) {
+    if (typeof raw !== 'string' || !/^[1-9][0-9]{0,15}$/.test(raw)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'nsid must be a non-negative decimal path parameter',
+        'nsid must be a positive decimal path parameter',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -506,7 +505,14 @@ export class S2sController {
         `account ${account} not found`,
       );
     }
-    const { account: owner, displayName, bio, avatar, profileRev, generatedAt } = profile;
+    const {
+      account: owner,
+      displayName,
+      bio,
+      avatar,
+      profileRev,
+      generatedAt,
+    } = profile;
     return {
       account: owner,
       generatedAt,

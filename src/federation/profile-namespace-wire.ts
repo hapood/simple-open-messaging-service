@@ -46,6 +46,7 @@ export function assertProfileNamespaceFeedPage(
     if (!integer(item.generatedAt)) throw new Error('invalid item.generatedAt');
     if (
       !integer(item.namespaceId) ||
+      item.namespaceId === 0 ||
       !decimal(item.feedId) ||
       item.feedId === '0'
     )

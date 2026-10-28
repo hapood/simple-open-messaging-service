@@ -105,15 +105,15 @@ describe('ProfileNamespaceFeedService', () => {
     expect(upsertValues).toEqual([{ namespaceId: 12, feedId: 5n }]);
   });
 
-  it('rejects a negative or fractional namespace id', async () => {
-    const { service } = harness([]);
-    await expect(
-      service.recordNamespaceChangeInTx({} as never, -1),
-    ).rejects.toThrow('non-negative safe integer');
-    await expect(
-      service.recordNamespaceChangeInTx({} as never, 1.5),
-    ).rejects.toThrow('non-negative safe integer');
-  });
+  it.each([0, -1, 1.5])(
+    'rejects namespace id %s before writing',
+    async (nsid) => {
+      const { service } = harness([]);
+      await expect(
+        service.recordNamespaceChangeInTx({} as never, nsid),
+      ).rejects.toThrow('positive safe integer');
+    },
+  );
 
   it('reads the publisher-wide feed end from the sentinel row', async () => {
     const { service } = harness([[{ feedEndId: 9n }]]);
@@ -188,7 +188,6 @@ describe('ProfileNamespaceFeedService', () => {
   });
 
   it.each([
-    { nsid: 0, active: true, retiredAt: null },
     { nsid: 12, active: true, retiredAt: null },
     { nsid: 12, active: false, retiredAt: new Date() },
   ])('emits schema-valid bindings without local lifecycle: %j', async (row) => {
@@ -205,7 +204,6 @@ describe('ProfileNamespaceFeedService', () => {
     const { service } = harness([
       [{ feedEndId: 7n }],
       [{ ...row, domain: 'peer.test', rootPublicKey: ROOT }],
-      ...(row.nsid === 0 ? [[{ rootPublicKey: ROOT }]] : []),
       [{ updatedAt: new Date(1234) }],
     ]);
     const bindings = await service.resolveBindings(row.nsid);
@@ -214,19 +212,13 @@ describe('ProfileNamespaceFeedService', () => {
     expect(validate({ ...bindings, status: 'ACTIVE' })).toBe(false);
   });
 
-  it('answers nsid 0 from local authority', async () => {
-    const { service } = harness([
-      [{ feedEndId: 7n }],
-      [{ domain: 'soms.test' }],
-      [{ rootPublicKey: ROOT }],
-      [{ updatedAt: new Date(1234) }],
-    ]);
-    await expect(service.resolveBindings(0)).resolves.toEqual({
-      domain: 'soms.test',
-      rootPublicKey: ROOT,
-      profileNamespaceFeedEndId: '7',
-      generatedAt: 1234,
+  it('rejects nsid 0 without reading or requiring a self feed item', async () => {
+    const { service, reads } = harness([]);
+    await expect(service.resolveBindings(0)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
     });
+    expect(reads).toEqual([]);
   });
 
   it('answers a bound positive nsid and reports never-handshaked ids as NOT_FOUND business outcomes', async () => {

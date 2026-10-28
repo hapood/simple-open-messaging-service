@@ -36,7 +36,7 @@ export class ProfileNamespaceFeedConsumerService {
   ): Promise<ProfileNamespaceItemEffect> {
     if (
       !Number.isSafeInteger(item.namespaceId) ||
-      item.namespaceId < 0 ||
+      item.namespaceId <= 0 ||
       item.feedId <= 0n
     )
       throw new Error('profile namespace feed item is malformed');

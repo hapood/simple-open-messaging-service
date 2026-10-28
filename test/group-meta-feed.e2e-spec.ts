@@ -493,7 +493,18 @@ describe('canonical Group Meta feed', () => {
         after: 0,
         through: 5,
       });
-      for (const item of page.items) operations.add(item.operation);
+      for (const item of page.items) {
+        operations.add(item.operation);
+        expect(item).not.toHaveProperty('createdAt');
+        const source = await database.db.query.groupMetaMemberFeed.findFirst({
+          where: and(
+            eq(groupMetaMemberFeed.threadId, groupId),
+            eq(groupMetaMemberFeed.feedId, item.feedId),
+          ),
+        });
+        expect(source!.originCreatedAt).toBeNull();
+        expect(item.originCreatedAt).toBe(source!.createdAt.getTime());
+      }
       expect(page.scannedThrough).toBe(5);
       expect(page.hasMore).toBe(false);
     }
@@ -593,8 +604,7 @@ describe('canonical Group Meta feed', () => {
     expect(full.items).toEqual([
       {
         feedId: 1,
-        createdAt: expect.any(Number),
-        originCreatedAt: null,
+        originCreatedAt: expect.any(Number),
         operation: 'MEMBER_UPSERT',
         body: {
           account: ownerAccount,
@@ -605,8 +615,7 @@ describe('canonical Group Meta feed', () => {
       },
       {
         feedId: 3,
-        createdAt: expect.any(Number),
-        originCreatedAt: null,
+        originCreatedAt: expect.any(Number),
         operation: 'GROUP_PROFILE',
         body: { account: groupAccount, namespaceId: 0, profileRev: 1 },
       },
@@ -621,8 +630,7 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       {
         feedId: 4,
-        createdAt: expect.any(Number),
-        originCreatedAt: null,
+        originCreatedAt: expect.any(Number),
         operation: 'MEMBER_DEPART',
         body: {
           account: memberAccount,
@@ -769,8 +777,7 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       {
         feedId: 5,
-        createdAt: expect.any(Number),
-        originCreatedAt: null,
+        originCreatedAt: expect.any(Number),
         operation: 'MEMBER_UPSERT',
         body: {
           account: memberAccount,

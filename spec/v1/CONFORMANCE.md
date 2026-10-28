@@ -151,8 +151,8 @@ observable requirements:
   namespace are in the body. Member upsert/depart share a body shape;
   GROUP_PROFILE names the page's group account; announcement contains only text.
 - Public and exact profile response objects carry no `domain`.
-- Public current-profile responses have exactly `account`, `profileRev`, `profile`,
-  and `proof`. Revision 0 requires `profile: null`; a positive revision requires
+- Public current-profile responses have exactly `account`, `generatedAt`,
+  `profileRev`, `profile`, and `proof`. Revision 0 requires `profile: null`; a positive revision requires
   a closed complete `profile` object. Flattened responses, mismatched nullness,
   and extra nested fields are rejected. Possession proof is checked even for
   revision 0. Revision-0 results are not used as exact profile evidence, and

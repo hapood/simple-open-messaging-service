@@ -6,7 +6,7 @@ import {
   FederationThreadMetaRoundExecutorService,
   validateOriginGroupMetaItem,
 } from './federation-thread-meta-round-executor.service.js';
-import type { GroupMetaFeedItem } from '../group/meta/group-meta-page.js';
+import type { GroupMetaFeedItem } from './group-meta-feed.service.js';
 
 describe('origin Group Meta copy times', () => {
   const member = {
@@ -20,52 +20,53 @@ describe('origin Group Meta copy times', () => {
     ['MEMBER_DEPART', member],
     ['GROUP_PROFILE', { account: '!team', namespaceId: 0, profileRev: 0 }],
     ['GROUP_ANNOUNCEMENT', { text: null }],
-  ] as const)('requires both timestamp fields on %s', (operation, body) => {
-    const item = {
-      feedId: 1,
-      createdAt: 0,
-      originCreatedAt: null,
-      operation,
-      body,
-    } as GroupMetaFeedItem;
-    expect(validateOriginGroupMetaItem(item, 'delta')).toMatchObject({
-      createdAt: 0,
-      originCreatedAt: null,
-    });
-    for (const field of ['createdAt', 'originCreatedAt']) {
-      const missing: Record<string, unknown> = { ...item };
-      delete missing[field];
-      expect(() =>
-        validateOriginGroupMetaItem(
-          missing as unknown as GroupMetaFeedItem,
-          'delta',
-        ),
-      ).toThrow();
-    }
-    for (const createdAt of [
-      undefined,
-      null,
-      -1,
-      0.5,
-      '0',
-      Number.MAX_SAFE_INTEGER + 1,
-    ]) {
-      expect(() =>
-        validateOriginGroupMetaItem(
-          { ...item, createdAt } as GroupMetaFeedItem,
-          'delta',
-        ),
-      ).toThrow();
-    }
-    for (const originCreatedAt of [undefined, 0, '0', false]) {
-      expect(() =>
-        validateOriginGroupMetaItem(
-          { ...item, originCreatedAt } as GroupMetaFeedItem,
-          'delta',
-        ),
-      ).toThrow();
-    }
-  });
+  ] as const)(
+    'requires creation time and rejects replica fields on %s',
+    (operation, body) => {
+      const item = {
+        feedId: 1,
+        originCreatedAt: 0,
+        operation,
+        body,
+      } as GroupMetaFeedItem;
+      expect(validateOriginGroupMetaItem(item, 'delta')).toMatchObject({
+        originCreatedAt: 0,
+      });
+      for (const field of ['originCreatedAt']) {
+        const missing: Record<string, unknown> = { ...item };
+        delete missing[field];
+        expect(() =>
+          validateOriginGroupMetaItem(
+            missing as unknown as GroupMetaFeedItem,
+            'delta',
+          ),
+        ).toThrow();
+      }
+      for (const originCreatedAt of [
+        undefined,
+        null,
+        -1,
+        0.5,
+        '0',
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        expect(() =>
+          validateOriginGroupMetaItem(
+            { ...item, originCreatedAt } as GroupMetaFeedItem,
+            'delta',
+          ),
+        ).toThrow();
+      }
+      for (const createdAt of [undefined, null, 0, '0', false]) {
+        expect(() =>
+          validateOriginGroupMetaItem(
+            { ...item, createdAt } as unknown as GroupMetaFeedItem,
+            'delta',
+          ),
+        ).toThrow();
+      }
+    },
+  );
 });
 
 describe('federation Group Meta round profile behavior', () => {
@@ -137,8 +138,7 @@ describe('federation Group Meta round profile behavior', () => {
       items: [
         {
           feedId: 2,
-          createdAt: 0,
-          originCreatedAt: null,
+          originCreatedAt: 0,
           operation: 'MEMBER_UPSERT',
           body: {
             account: 'alice',

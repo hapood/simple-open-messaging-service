@@ -4,20 +4,18 @@ import { BusinessCode } from '../../common/business-code.js';
 import { BusinessException } from '../../common/business.exception.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 
-interface GroupMetaFeedItemBase {
-  feedId: number;
+interface GroupMetaCopyTimes {
   /** First persistence at this publisher, in epoch milliseconds. */
   createdAt: number;
   /** Direct source copy time; null on the group's origin. */
   originCreatedAt: number | null;
 }
 
-/** One Group Meta feed item. The wire item is the stored body verbatim: the
- * subject identity is (account, namespaceId) in the publisher's coordinate
- * space, and no domain travels on the wire — consumers resolve the display
- * domain through publisher-scoped namespace bindings. */
-export type GroupMetaFeedItem =
-  | (GroupMetaFeedItemBase & {
+/** Shared operation bodies and coordinates, independent of local or federation
+ * timestamp projection. Subject identities use the publisher's namespace. */
+export type GroupMetaFact =
+  | {
+      feedId: number;
       operation: 'MEMBER_UPSERT';
       body: {
         account: string;
@@ -25,8 +23,9 @@ export type GroupMetaFeedItem =
         role: 'OWNER' | 'ADMIN' | 'MEMBER';
         profileRev: number;
       };
-    })
-  | (GroupMetaFeedItemBase & {
+    }
+  | {
+      feedId: number;
       operation: 'MEMBER_DEPART';
       body: {
         account: string;
@@ -34,15 +33,19 @@ export type GroupMetaFeedItem =
         role: 'OWNER' | 'ADMIN' | 'MEMBER';
         profileRev: number;
       };
-    })
-  | (GroupMetaFeedItemBase & {
+    }
+  | {
+      feedId: number;
       operation: 'GROUP_PROFILE';
       body: { account: string; namespaceId: number; profileRev: number };
-    })
-  | (GroupMetaFeedItemBase & {
+    }
+  | {
+      feedId: number;
       operation: 'GROUP_ANNOUNCEMENT';
       body: { text: string | null };
-    });
+    };
+
+export type GroupMetaFeedItem = GroupMetaFact & GroupMetaCopyTimes;
 
 export interface GroupMetaFeedPage {
   account: string;

@@ -50,14 +50,10 @@
     },
     "item": {
       "type": "object",
-      "required": ["feedId", "createdAt", "originCreatedAt", "operation", "body"],
+      "required": ["feedId", "originCreatedAt", "operation", "body"],
       "properties": {
         "feedId": { "$ref": "#/$defs/feedId" },
-        "createdAt": { "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds" },
-        "originCreatedAt": {
-          "type": "null",
-          "description": "Required and explicitly null: only the authoritative group origin serves this S2S feed."
-        },
+        "originCreatedAt": { "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds" },
         "operation": { "enum": ["MEMBER_UPSERT", "MEMBER_DEPART", "GROUP_PROFILE", "GROUP_ANNOUNCEMENT"] },
         "body": { "type": "object" }
       },

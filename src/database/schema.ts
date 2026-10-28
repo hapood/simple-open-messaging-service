@@ -2313,6 +2313,10 @@ export const profileNamespaceFeed = pgTable(
       name: 'ProfileNamespaceFeed_namespace_fkey',
     }).onDelete('restrict'),
     check('ProfileNamespaceFeed_feedId_check', sql`${table.feedId} > 0`),
+    check(
+      'ProfileNamespaceFeed_namespace_check',
+      sql`${table.namespaceId} > 0`,
+    ),
   ],
 );
 

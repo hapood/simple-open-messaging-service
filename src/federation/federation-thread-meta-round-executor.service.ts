@@ -248,24 +248,14 @@ export function validateOriginGroupMetaItem(
   mode: 'full' | 'delta',
 ): MirrorMetaReplicatedItem {
   const feedId = item.feedId;
-  requireKeys(item, [
-    'feedId',
-    'createdAt',
-    'originCreatedAt',
-    'operation',
-    'body',
-  ]);
-  const createdAt = item.createdAt;
-  // Only the group's authoritative origin serves this S2S feed. Its facts
-  // have no upstream copy, but must still explicitly carry the null field.
-  if (
-    !Number.isSafeInteger(createdAt) ||
-    createdAt < 0 ||
-    !Number.isFinite(new Date(createdAt).getTime()) ||
-    item.originCreatedAt !== null
-  )
-    throw new Error('invalid group-meta copy times');
+  requireKeys(item, ['feedId', 'originCreatedAt', 'operation', 'body']);
   const originCreatedAt = item.originCreatedAt;
+  if (
+    !Number.isSafeInteger(originCreatedAt) ||
+    originCreatedAt < 0 ||
+    !Number.isFinite(new Date(originCreatedAt).getTime())
+  )
+    throw new Error('invalid group-meta origin creation time');
   if (item.operation === 'GROUP_ANNOUNCEMENT') {
     requireKeys(item.body, ['text']);
     const text = item.body.text;
@@ -278,7 +268,6 @@ export function validateOriginGroupMetaItem(
       throw new Error('invalid group-meta announcement item');
     return {
       feedId,
-      createdAt,
       originCreatedAt,
       operation: 'GROUP_ANNOUNCEMENT',
       text,
@@ -294,7 +283,6 @@ export function validateOriginGroupMetaItem(
       throw new Error('invalid group-meta profile item');
     return {
       feedId,
-      createdAt,
       originCreatedAt,
       operation: 'GROUP_PROFILE',
       account: item.body.account,
@@ -319,7 +307,6 @@ export function validateOriginGroupMetaItem(
       throw new Error('invalid group-meta member body');
     return {
       feedId,
-      createdAt,
       originCreatedAt,
       operation: 'MEMBER_DEPART',
       account: item.body.account,
@@ -339,7 +326,6 @@ export function validateOriginGroupMetaItem(
     throw new Error('invalid group-meta member body');
   return {
     feedId,
-    createdAt,
     originCreatedAt,
     operation: 'MEMBER_UPSERT',
     account: item.body.account,

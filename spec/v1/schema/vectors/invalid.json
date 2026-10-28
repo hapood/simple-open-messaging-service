@@ -1,6 +1,32 @@
 {
   "vectors": [
     {
+      "name": "namespace feed excludes the publisher self binding",
+      "schema": "urn:somfp:v1:profile-namespace-feed",
+      "value": {
+        "items": [{ "namespaceId": 0, "feedId": "1", "generatedAt": 0 }],
+        "scannedThrough": "1", "feedEndId": "1", "hasMore": false
+      }
+    },
+    {
+      "name": "namespace binding query excludes namespace zero",
+      "schema": "urn:somfp:v1:http-parameters#/$defs/profileNamespaceParameters",
+      "value": { "nsid": "0" }
+    },
+    {
+      "name": "Group Meta requires non-null origin time without local creation time",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "values": [
+        { "feedId": 1, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "originCreatedAt": -1, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "originCreatedAt": 0.5, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "originCreatedAt": "0", "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "originCreatedAt": 9007199254740992, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "originCreatedAt": 0, "createdAt": 0, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } }
+      ]
+    },
+    {
       "name": "state item generation time requires a non-negative safe integer",
       "schema": "urn:somfp:v1:state-feed#/$defs/item",
       "values": [
@@ -27,17 +53,17 @@
       ]
     },
     {
-      "name": "all Group Meta operations require both copy-time fields",
+      "name": "Group Meta requires creation time and rejects replica fields",
       "schema": "urn:somfp:v1:group-meta#/$defs/item",
       "values": [
         { "feedId": 1, "originCreatedAt": null, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
-        { "feedId": 1, "createdAt": 0, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
+        { "feedId": 1, "createdAt": 0, "originCreatedAt": null, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
         { "feedId": 1, "originCreatedAt": null, "operation": "MEMBER_DEPART", "body": { "account": "alice", "namespaceId": 0, "role": "MEMBER", "profileRev": 1 } },
-        { "feedId": 1, "createdAt": 0, "operation": "MEMBER_DEPART", "body": { "account": "alice", "namespaceId": 0, "role": "MEMBER", "profileRev": 1 } },
+        { "feedId": 1, "createdAt": 0, "originCreatedAt": null, "operation": "MEMBER_DEPART", "body": { "account": "alice", "namespaceId": 0, "role": "MEMBER", "profileRev": 1 } },
         { "feedId": 1, "originCreatedAt": null, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
-        { "feedId": 1, "createdAt": 0, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
+        { "feedId": 1, "createdAt": 0, "originCreatedAt": null, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
         { "feedId": 1, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
-        { "feedId": 1, "createdAt": 0, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
+        { "feedId": 1, "createdAt": 0, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
         { "feedId": 1, "createdAt": null, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
         { "feedId": 1, "createdAt": -1, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },
         { "feedId": 1, "createdAt": 0.5, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } },

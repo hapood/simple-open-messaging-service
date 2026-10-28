@@ -32,11 +32,8 @@ export class ProfileNamespaceChangeStore {
     tx: DatabaseTransaction,
     namespaceId: number,
   ): Promise<bigint> {
-    if (
-      !Number.isSafeInteger(namespaceId) ||
-      namespaceId < LOCAL_NAMESPACE_ID
-    ) {
-      throw new Error('namespace id must be a non-negative safe integer');
+    if (!Number.isSafeInteger(namespaceId) || namespaceId <= 0) {
+      throw new Error('namespace id must be a positive safe integer');
     }
     const [allocated] = await tx
       .update(profileNamespaceFeedHead)

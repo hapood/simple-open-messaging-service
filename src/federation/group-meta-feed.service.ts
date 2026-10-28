@@ -10,12 +10,15 @@ import {
 } from '../group/shared/group-state.js';
 import { readGroupMetaPageInTx } from '../group/meta/group-meta-page.js';
 import type {
-  GroupMetaFeedItem,
-  GroupMetaFeedPage,
+  GroupMetaFact,
+  GroupMetaFeedPage as LocalGroupMetaFeedPage,
 } from '../group/meta/group-meta-page.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 
-export type { GroupMetaFeedItem, GroupMetaFeedPage };
+export type GroupMetaFeedItem = GroupMetaFact & { originCreatedAt: number };
+export type GroupMetaFeedPage = Omit<LocalGroupMetaFeedPage, 'items'> & {
+  items: GroupMetaFeedItem[];
+};
 
 const DEFAULT_TAKE = 100;
 
@@ -88,7 +91,15 @@ export class FederationGroupMetaFeedService {
           end: feed?.metaEndId ?? 0,
           visibleAfter: audience?.visibleAfter ?? 0,
         });
-        return page;
+        return {
+          ...page,
+          items: page.items.map(
+            ({ createdAt, originCreatedAt: _localSourceTime, ...item }) => ({
+              ...item,
+              originCreatedAt: createdAt,
+            }),
+          ),
+        };
       },
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );

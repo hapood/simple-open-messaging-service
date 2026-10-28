@@ -26,10 +26,10 @@
       "name": "Group Meta item variants accept the maximum allocatable coordinate",
       "schema": "urn:somfp:v1:group-meta#/$defs/item",
       "values": [
-        { "feedId": 9007199254740990, "createdAt": 0, "originCreatedAt": null, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
-        { "feedId": 9007199254740990, "createdAt": 0, "originCreatedAt": null, "operation": "MEMBER_DEPART", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 1 } },
-        { "feedId": 9007199254740990, "createdAt": 0, "originCreatedAt": null, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
-        { "feedId": 9007199254740990, "createdAt": 0, "originCreatedAt": null, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } }
+        { "feedId": 9007199254740990, "originCreatedAt": 0, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
+        { "feedId": 9007199254740990, "originCreatedAt": 0, "operation": "MEMBER_DEPART", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 1 } },
+        { "feedId": 9007199254740990, "originCreatedAt": 0, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
+        { "feedId": 9007199254740990, "originCreatedAt": 0, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } }
       ]
     },
     {
@@ -110,8 +110,7 @@
       "values": [
         {
           "feedId": 11,
-          "createdAt": 1700000000000,
-          "originCreatedAt": null,
+          "originCreatedAt": 1700000000000,
           "operation": "GROUP_ANNOUNCEMENT",
           "body": {
             "text": "Welcome to the group.\nPlease read the rules."
@@ -119,8 +118,7 @@
         },
         {
           "feedId": 12,
-          "createdAt": 1700000000001,
-          "originCreatedAt": null,
+          "originCreatedAt": 1700000000001,
           "operation": "GROUP_ANNOUNCEMENT",
           "body": {
             "text": null
@@ -137,8 +135,7 @@
         "items": [
           {
             "feedId": 12,
-            "createdAt": 1700000000001,
-            "originCreatedAt": null,
+            "originCreatedAt": 1700000000001,
             "operation": "GROUP_ANNOUNCEMENT",
             "body": {
               "text": null
@@ -430,8 +427,7 @@
         "items": [
           {
             "feedId": 7,
-            "createdAt": 1700000000000,
-            "originCreatedAt": null,
+            "originCreatedAt": 1700000000000,
             "operation": "MEMBER_UPSERT",
             "body": {
               "account": "alice",
@@ -442,8 +438,7 @@
           },
           {
             "feedId": 8,
-            "createdAt": 1700000000001,
-            "originCreatedAt": null,
+            "originCreatedAt": 1700000000001,
             "operation": "MEMBER_UPSERT",
             "body": {
               "account": "bob",
@@ -454,8 +449,7 @@
           },
           {
             "feedId": 9,
-            "createdAt": 1700000000002,
-            "originCreatedAt": null,
+            "originCreatedAt": 1700000000002,
             "operation": "GROUP_PROFILE",
             "body": {
               "account": "!01arz3ndektsv4rrffq69g5fav",
@@ -478,8 +472,7 @@
         "items": [
           {
             "feedId": 10,
-            "createdAt": 1700000000003,
-            "originCreatedAt": null,
+            "originCreatedAt": 1700000000003,
             "operation": "MEMBER_DEPART",
             "body": {
               "account": "bob",

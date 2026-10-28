@@ -265,21 +265,24 @@ describe('Federation v1 protocol documentation', () => {
     ] as const) {
       const item = {
         feedId: 1,
-        createdAt: 0,
-        originCreatedAt: null,
+        originCreatedAt: 0,
         operation,
         body,
       };
       expect(validate(item)).toBe(true);
-      const { createdAt: _createdAt, ...withoutCreatedAt } = item;
       const { originCreatedAt: _originCreatedAt, ...withoutOriginCreatedAt } =
         item;
-      expect(validate(withoutCreatedAt)).toBe(false);
       expect(validate(withoutOriginCreatedAt)).toBe(false);
-      for (const createdAt of [null, -1, 0.5, '0', Number.MAX_SAFE_INTEGER + 1])
-        expect(validate({ ...item, createdAt })).toBe(false);
-      for (const originCreatedAt of [0, '0', false])
+      for (const originCreatedAt of [
+        null,
+        -1,
+        0.5,
+        '0',
+        Number.MAX_SAFE_INTEGER + 1,
+      ])
         expect(validate({ ...item, originCreatedAt })).toBe(false);
+      for (const createdAt of [null, 0, '0', false])
+        expect(validate({ ...item, createdAt })).toBe(false);
       expect(validate({ ...item, account: 'alice' })).toBe(false);
       expect(validate({ ...item, domain: 'a.example' })).toBe(false);
       expect(

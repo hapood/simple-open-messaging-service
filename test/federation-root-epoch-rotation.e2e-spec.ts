@@ -405,15 +405,14 @@ describe('database-backed root-epoch rotation', () => {
       'urn:somfp:v1:profile-namespace-feed',
       ownFeed.data,
     );
-    expect(ownFeed.data.items).toContainEqual({
-      namespaceId: 0,
-      generatedAt: expect.any(Number),
-      feedId: expect.stringMatching(/^[1-9][0-9]*$/),
-    });
+    expect(
+      ownFeed.data.items.every(
+        (entry: { namespaceId: number }) => entry.namespaceId > 0,
+      ),
+    ).toBe(true);
 
     for (const [sender, publisher, namespaceId] of [
       [appB, appA, peerNamespaceId],
-      [appA, appB, 0],
     ] as const) {
       const bindings = await signedRequest(
         sender,

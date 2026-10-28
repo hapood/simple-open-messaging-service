@@ -81,8 +81,7 @@ interface GroupMetaFeedPage {
 
 interface GroupMetaItemBase {
   feedId: PositiveSafeInteger;
-  createdAt: EpochMilliseconds;
-  originCreatedAt: EpochMilliseconds | null;
+  originCreatedAt: EpochMilliseconds;
 }
 
 interface GroupMetaUpsertItem extends GroupMetaItemBase {
@@ -140,11 +139,11 @@ Closing and later restoring one peer's authorization does not reset the group
 coordinate space or create a peer-specific copy. Reauthorization advances that
 audience's delta visibility floor instead.
 
-Every item has exactly `feedId`, `createdAt`, `originCreatedAt`, `operation`,
-and `body`. Both time fields are REQUIRED: `createdAt` is this publisher copy's
-creation time in epoch milliseconds; `originCreatedAt` is the direct source
-copy's creation time, or `null` at the authoritative origin. This origin-only
-S2S feed MUST carry `originCreatedAt: null`. Ordering uses `feedId`, not time.
+Every item has exactly `feedId`, `originCreatedAt`, `operation`, and `body`.
+`originCreatedAt` is REQUIRED and non-null: the authoritative origin's creation
+time for this item version in epoch milliseconds. It MUST remain unchanged
+across reads and retransmission. No `createdAt` field is sent in this S2S feed.
+Ordering uses `feedId`, not time.
 Operation-specific fields, including subject identity, are inside `body`.
 No item carries `domain`.
 Member items have stable key `(body.namespaceId, body.account)` in the group
@@ -249,8 +248,8 @@ Relationship Intent, or a profile revision.
 Consumers select the committed announcement with the greatest `feedId`, not a
 wall-clock timestamp. This is a current-state register, not an announcement
 history, a list of pinned messages, or a read-receipt channel. Intermediate
-edits may be compacted. The item carries its publisher-copy time under the
-common item rules, not the author's device time. Implementations MUST NOT infer
+edits may be compacted. The item carries the authoritative origin's creation
+time under the common item rules, not the author's device time. Implementations MUST NOT infer
 an author or a publication time from `feedId`.
 
 The existing Group Meta audience and visibility-floor rules apply unchanged.

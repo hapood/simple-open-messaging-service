@@ -84,7 +84,7 @@ describe('persisted feed item source times', () => {
         }
         return namespace.run(domain, id, {
           fetch: async () => ({
-            items: items.map((item) => ({ ...item, namespaceId: 0 })),
+            items: items.map((item) => ({ ...item, namespaceId: 1 })),
             scannedThrough: end,
             feedEndId: end,
             hasMore: false,
