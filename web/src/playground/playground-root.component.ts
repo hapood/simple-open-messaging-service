@@ -29,6 +29,8 @@ export class PlaygroundRootComponent {
   readonly callState = inject(PlaygroundCallState);
   readonly presentation = inject(CallPresentationService);
   constructor() {
-    inject(PlaygroundSocialState).initialize();
+    const state = inject(PlaygroundSocialState);
+    state.initialize();
+    state.startGroupTicker();
   }
 }

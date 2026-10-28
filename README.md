@@ -18,11 +18,13 @@
 </p>
 
 <p align="center">
-  <img src="docs/design/assets/playground-preview.png" alt="SOMS Web Client Preview - Self-Hosted Federated Chat UI" width="850">
+  <img src="docs/design/assets/playground-preview.png" alt="SOMS Web Client (Desktop) - Self-Hosted Federated Chat UI" height="410">
+  &nbsp;&nbsp;
+  <img src="docs/design/assets/playground-mobile.png" alt="SOMS Web Client (Mobile) - Responsive Adaptive Chat" height="410">
 </p>
 
 <p align="center">
-  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live playground</strong></a> — client-only demo.
+  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live playground</strong></a> — responsive client demo for desktop & mobile.
 </p>
 
 > [!IMPORTANT]

@@ -5037,6 +5037,7 @@ export interface components {
             seq?: number;
         };
         AdminSetQuotaDto: {
+            dailySignalLimit?: number | null;
             /**
              * @description Messages/day (null = default)
              * @example 5000
@@ -5136,11 +5137,12 @@ export interface components {
             dailyFileBytesLimit: number;
         };
         UserQuotaDefaultsDto: {
+            dailySignalLimit: number;
             dailyMsgLimit: number;
             dailyRequestLimit: number;
             dailyFileLimit: number;
             /** @example 1073741824 */
-            dailyFileBytesLimit: string;
+            dailyFileBytesLimit: number;
         };
         FederationHttpLimitsDto: {
             /** @example 16 */
@@ -5232,6 +5234,8 @@ export interface components {
             note?: string;
         };
         AdminContinueQuotaDto: {
+            addRequest?: number;
+            addSignal?: number;
             /**
              * @description Additional messages granted for today
              * @example 1000

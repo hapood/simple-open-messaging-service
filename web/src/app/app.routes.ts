@@ -79,6 +79,13 @@ export const routes: Routes = [
       ),
     canMatch: [() => isTauri()],
   },
+  {
+    path: 'effects',
+    loadComponent: () =>
+      import('../playground/effects/effects-page.component').then(
+        (m) => m.EffectsPageComponent,
+      ),
+  },
   { path: 'forbidden', component: ForbiddenPageComponent },
   { path: '**', component: PageNotFoundComponent },
 ];

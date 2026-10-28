@@ -82,7 +82,14 @@ describe('PlaygroundRootComponent', () => {
             sessionUserId: signal(null),
           },
         },
-        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
+        {
+          provide: WebdbService,
+          useFactory: () =>
+            new WebdbStorage(
+              () => null,
+              new SessionLifecycleService(),
+            ) as WebdbService,
+        },
       ],
     });
     TestBed.overrideComponent(PlaygroundRootComponent, {

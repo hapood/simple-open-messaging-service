@@ -41,10 +41,9 @@ const CALL_END_REASON: Record<string, CallTerminalReason> = {
   failed: 'failed',
 };
 
-/** Maps a CALL_EVENT `type` to the UI {@link CallPhase}. Terminal types (declined/cancelled/missed/ended)
- *  map to `'ended'`, which {@link commit} normalizes back to `'idle'` — the terminal system notice in the
- *  thread is the user-visible record, so the call overlay simply dismisses on terminal. `incoming` is
- *  handled specially (it seeds the whole snapshot); the caller's `ringing` only applies to the caller. */
+/** Maps a CALL_EVENT `type` to the UI phase. Terminal events briefly show their result before
+ *  returning to idle; the system notice remains in the thread. `incoming` seeds the snapshot,
+ *  and advisory `ringing` applies only to the caller. */
 const PHASE_BY_EVENT: Record<string, CallPhase> = {
   ringing: 'ringing',
   accepted: 'connecting',
@@ -60,19 +59,13 @@ const PHASE_BY_EVENT: Record<string, CallPhase> = {
  * of "native owns the call, the WebView is disposable chrome" (mirrors how the thread repository routes
  * GROUP_* and how {@link WebsocketService} self-starts).
  *
- * Two feeds merge into `callState`:
- *  - the SSE `CALL_EVENT` lifecycle (the incoming frame carries the peer's display name/avatar, which the
- *    native snapshot does NOT);
- *  - the native `window.__SOMS_CALL_EVENT__` snapshot push (authoritative for phase/mediaState/startedAt/
- *    muted — the Rust call runtime owns signaling and the native adapter owns the RTCPeerConnection).
- * Last-write-wins per field; peerName + peerAvatar prefer the native value when present (the caller passes
- * the callee's at initiate; the callee's come from the FCM push / SSE frame), else keep the SSE-set one.
- * On Android the WebRTC signaling (CALL_SIGNAL) is handled entirely natively, so this
- * service consumes CALL_EVENT only.
+ * The UI merges SSE lifecycle events with snapshots from the selected call adapter. Android forwards
+ * Rust-owned snapshots through `window.__SOMS_CALL_EVENT__`; browser/desktop uses the adapter listener.
+ * Native peer display info takes precedence when present. On Android, Rust consumes WebRTC signaling
+ * and Kotlin adapts platform media; the renderer only presents the call state.
  *
- * `callState` is normalized to be either an ACTIVE phase or `'idle'`: a terminal ('ended') is folded to
- * `'idle'` (the call overlay dismisses; the terminal record is a system notice). So the overlay gates on
- * `phase !== 'idle'`.
+ * `callState` holds active phases, a brief `'ended'` result, or `'idle'`. The overlay remains visible
+ * through the terminal display interval; the system notice is the persistent call record.
  *
  * Root singleton, subscribes in its constructor. Injected for the app's lifetime so an incoming ring is
  * never missed (AppComponent injects it eagerly). On a WebView re-attach it re-seeds `callState` from the
@@ -92,7 +85,6 @@ export class CallEventService implements OnDestroy {
   private terminalDisplayTimer: ReturnType<typeof setTimeout> | null = null;
   private lastOwnedCallSid: string | null = null;
   private lastOwnedSnapshot: CallSnapshot | null = null;
-  private locallyTerminatedCallSid: string | null = null;
 
   private readonly sub: Subscription;
 
@@ -101,7 +93,7 @@ export class CallEventService implements OnDestroy {
     // (no native bridge) this returns idle.
     this.callState.set(this.adapter.snapshot());
     this.adapter.setSnapshotListener((snap) => this.applyAdapter(snap));
-    // Native snapshot push — authoritative for phase/mediaState (CallController.pushSnapshot).
+    // Rust-owned native snapshot forwarded by the Android media adapter.
     window.__SOMS_CALL_EVENT__ = (snap) => this.applyNative(snap);
     // SSE CALL_EVENT lifecycle (the incoming frame carries the peer display info).
     this.sub = this.ws.eventSubject
@@ -119,17 +111,9 @@ export class CallEventService implements OnDestroy {
           this.handleCallEvent(m.data as CallEventPayload);
         }
       });
-    this.sub.add(
-      this.adapter.rejected$.subscribe((reason) => {
-        if (reason === 'busy' && this.lastOwnedCallSid) {
-          this.showTerminal(this.lastOwnedCallSid, 'busy');
-        }
-      }),
-    );
   }
 
-  /** Set the call state, folding a terminal ('ended') to 'idle' so the overlay dismisses and the state is
-   *  clean for the next call. The terminal system notice in the thread is the user-visible record. */
+  /** Commit lifecycle state and notify the adapter. Terminal presentation uses showTerminal instead. */
   private commit(next: CallSnapshot): void {
     this.rememberOwnedCall(next);
     this.callState.set(next);
@@ -159,11 +143,6 @@ export class CallEventService implements OnDestroy {
     }
   }
 
-  /** Marks a command initiated by this renderer so its echoed terminal event does not look peer-initiated. */
-  markLocalTermination(callSid: string): void {
-    this.locallyTerminatedCallSid = callSid;
-  }
-
   /** Merge a native snapshot push. The native snapshot carries peerName + peerAvatar (the caller passes the
    *  callee's at initiate; the callee gets the caller's from the CALL_INCOMING FCM push or the SSE frame) —
    *  prefer the native value when present, else keep the SSE-set one (the foreground incoming path). */
@@ -184,9 +163,10 @@ export class CallEventService implements OnDestroy {
     peerName?: string;
     peerAvatar?: string;
     step?: string;
+    terminalReason?: CallTerminalReason | null;
   }): void {
     if (snap.phase === 'ended' && snap.callSid) {
-      this.showTerminal(snap.callSid, 'completed');
+      this.showTerminal(snap.callSid, snap.terminalReason ?? 'completed');
       return;
     }
     if (this.callState().phase === 'ended' && snap.phase === 'idle') return;
@@ -290,9 +270,6 @@ export class CallEventService implements OnDestroy {
     callSid: string,
     terminalReason: CallTerminalReason,
   ): void {
-    if (this.locallyTerminatedCallSid === callSid) {
-      this.locallyTerminatedCallSid = null;
-    }
     const current = this.callState();
     const base = current.callSid === callSid ? current : this.lastOwnedSnapshot;
     if (!base || base.callSid !== callSid) return;

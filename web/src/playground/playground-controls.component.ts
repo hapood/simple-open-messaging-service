@@ -253,6 +253,37 @@ type KernelFieldKey =
             Apply defaults
           </button>
         </mat-expansion-panel>
+
+        <mat-expansion-panel>
+          <mat-expansion-panel-header>
+            <mat-panel-title>Page previews</mat-panel-title>
+          </mat-expansion-panel-header>
+          <p>Quickly preview error pages & standalone views:</p>
+          <div
+            style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;"
+          >
+            <a
+              mat-stroked-button
+              href="#/effects"
+              (click)="panelOpen.set(false)"
+            >
+              Visual Effects & Error Pages Showcase
+            </a>
+            <a mat-stroked-button href="#/404" (click)="panelOpen.set(false)">
+              404 (Page Not Found)
+            </a>
+            <a mat-stroked-button href="#/403" (click)="panelOpen.set(false)">
+              403 (Access Denied)
+            </a>
+            <a
+              mat-stroked-button
+              href="#/deploy"
+              (click)="panelOpen.set(false)"
+            >
+              Deploy SOMS
+            </a>
+          </div>
+        </mat-expansion-panel>
       </mat-accordion>
     </aside>
   `,

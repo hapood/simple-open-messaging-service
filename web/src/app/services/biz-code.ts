@@ -53,6 +53,7 @@ export const BusinessCode = {
   FEDERATION_NAMESPACE_UNRECOVERABLE: 50032,
   FEDERATION_PROFILE_UNRECOVERABLE: 50033,
   CALL_BUSY: 70004,
+  CALL_PEER_UNREACHABLE: 70006,
 } as const;
 
 /**
@@ -89,7 +90,8 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
   [BusinessCode.INVITE_NOT_YOURS]: 'errors.biz.inviteNotYours',
   [BusinessCode.INVITE_ALREADY_HANDLED]: 'errors.biz.inviteAlreadyHandled',
   [BusinessCode.MESSAGE_EMPTY]: 'errors.biz.messageEmpty',
-  [BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED]: 'errors.biz.forwardMaxDepthExceeded',
+  [BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED]:
+    'errors.biz.forwardMaxDepthExceeded',
   [BusinessCode.FORWARD_INVALID_BUNDLE]: 'errors.biz.forwardInvalidBundle',
   [BusinessCode.THREAD_NOT_APPROVED]: 'errors.biz.threadNotApproved',
   [BusinessCode.THREAD_NOT_FOUND]: 'errors.biz.threadNotFound',

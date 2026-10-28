@@ -32,7 +32,10 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
                 [type]="UserAvatarType.OTHER"
                 [name]="peerName() || '?'"
                 [account]="identity.account"
-                [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                [domainSource]="{
+                  type: 'namespace',
+                  namespaceId: identity.namespaceId,
+                }"
                 [profile]="peerProfile()"
               />
             } @else {
@@ -40,9 +43,7 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
             }
           </span>
           <span class="copy"
-            ><strong>{{
-              peerName() || ('call.audioCall' | transloco)
-            }}</strong
+            ><strong>{{ peerName() || ('call.audioCall' | transloco) }}</strong
             ><span>{{ status() }}</span></span
           >
         </button>
@@ -190,16 +191,12 @@ export class CallBannerComponent {
   }
   decline(): void {
     const sid = this.state().callSid;
-    if (sid) {
-      this.events.markLocalTermination(sid);
-      this.adapter.decline(sid);
-    }
+    if (sid) this.adapter.decline(sid);
   }
   hangUp(): void {
     const state = this.state();
     const sid = state.callSid;
     if (!sid) return;
-    this.events.markLocalTermination(sid);
     if (
       state.phase === 'starting' ||
       state.phase === 'calling' ||

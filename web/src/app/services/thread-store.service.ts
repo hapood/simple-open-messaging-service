@@ -36,6 +36,9 @@ import {
 import { isAndroidNative } from './runtime';
 import type { ThreadNotificationUpdate } from './thread-notification';
 import { compareThreadItems, mergeThreadItems } from './thread-list-order';
+import { ConversationLoadStatus } from './conversation-load-status';
+
+export { ConversationLoadStatus } from './conversation-load-status';
 
 import {
   advanceLocalAttentionRead,
@@ -56,15 +59,6 @@ type ThreadContentHead = Pick<
   ThreadFeedSnapshot,
   'threadId' | 'messageEndSeq' | 'tombstoneEndSeq'
 >;
-
-/** Load status as a const object so it can be used as a VALUE in templates and as a TYPE. */
-export const ConversationLoadStatus = {
-  LOADING: 'LOADING',
-  READY: 'READY',
-  ERROR: 'ERROR',
-} as const;
-export type ConversationLoadStatus =
-  (typeof ConversationLoadStatus)[keyof typeof ConversationLoadStatus];
 
 /**
  * In-memory conversation-list projection. The database Worker or Rust runtime owns state-feed

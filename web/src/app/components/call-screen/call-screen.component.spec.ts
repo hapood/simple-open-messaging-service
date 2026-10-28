@@ -91,7 +91,6 @@ describe('CallScreenComponent', () => {
           provide: CallEventService,
           useValue: {
             callState,
-            markLocalTermination: vi.fn().mockName('markLocalTermination'),
           },
         },
         { provide: CallAdapterService, useValue: adapter },
@@ -295,6 +294,31 @@ describe('CallScreenComponent', () => {
     ).toBe(0);
     fixture.destroy();
   });
+
+  it.each([
+    ['unreachable', 0, "Couldn't connect. Please try again later"],
+    ['failed', 0, 'Call connection failed'],
+    ['failed', 1000, 'The call disconnected unexpectedly'],
+  ] as const)(
+    'renders %s with connection start %s accurately',
+    (terminalReason, startedAt, text) => {
+      callState.update((state) => ({
+        ...state,
+        phase: 'ended',
+        terminalReason,
+        startedAt,
+      }));
+      const fixture = TestBed.createComponent(CallScreenComponent);
+      fixture.detectChanges();
+      expect(
+        (fixture.nativeElement as HTMLElement)
+          .querySelector('.status')
+          ?.textContent?.trim(),
+      ).toBe(text);
+      expect(ringtone.setMode).toHaveBeenCalledWith('ended');
+      fixture.destroy();
+    },
+  );
 
   afterEach(() => TestBed.resetTestingModule());
 

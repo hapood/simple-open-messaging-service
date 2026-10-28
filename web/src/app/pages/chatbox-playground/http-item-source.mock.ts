@@ -57,12 +57,12 @@ function mockUser(id: number, account: string): readonly [number, User] {
 /**
  * Mirrors production HttpItemSource: a revision-backed sender carries a demand profile ref so the
  * shared presentation pipeline resolves name/avatar; pre-revision senders fall back to a name-only
- * snapshot. Accounts intentionally match the playground profile fixtures (lowercase keys).
+ * snapshot. Accepts any identity carrying the profile coordinates (mock users and roster members),
+ * so live pushes authored under real playground accounts resolve like production rows.
  */
-function mockSender(
-  user: User | undefined,
+export function mockSender(
+  user: Pick<User, 'account' | 'namespaceId' | 'profileRev'> | undefined,
   fallbackName: string,
-  creatorId: number,
 ): ChatMsgData['sender'] {
   const profile = user
     ? messageAuthorAvatarProfile({
@@ -82,14 +82,14 @@ function mockSender(
         kind: 'demand',
         profile,
         fallbackName,
-        account: user?.account ?? String(creatorId),
+        account: user?.account ?? '',
         domainSource,
       }
     : {
         kind: 'snapshot',
         name: fallbackName,
         imageUrl: null,
-        account: user?.account ?? String(creatorId),
+        account: user?.account ?? '',
         domainSource,
       };
 }
@@ -526,7 +526,12 @@ export class MockItemSource implements CbSource<ChatItemData> {
     for (const it of items) {
       if (it.data.type !== 'msg') continue;
       const creator = it.data.creator;
-      if (!this.profiles.has(creator)) missing.add(mockCreatorId(creator));
+      if (it.data.sender || this.profiles.has(creator)) continue;
+      const creatorId = mockCreatorId(creator);
+      // Live pushes can arrive under real-account identity keys (not the
+      // synthetic `user-N` scheme); they carry their own sender and need no
+      // fixture lookup, so only resolvable ids reach the query.
+      if (Number.isFinite(creatorId)) missing.add(creatorId);
     }
     if (missing.size === 0) return;
     const res = await firstValueFrom(
@@ -559,7 +564,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
       // Authored echoes retain the revision/snapshot selected when sending.
       sender:
         it.data.sender ??
-        mockSender(MOCK_USERS.get(creatorId), p?.name ?? 'Unknown', creatorId),
+        mockSender(MOCK_USERS.get(creatorId), p?.name ?? 'Unknown'),
       senderDisplayContext: this.isGroupConversation ? 'group' : 'direct',
       isGroupConversation: this.isGroupConversation,
     };

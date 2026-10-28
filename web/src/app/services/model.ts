@@ -370,20 +370,26 @@ export function displayUserAccount(u: {
   return namespaceId === 0 || !u.domain ? account : `${account}@${u.domain}`;
 }
 
-export type PersonalQuotaCategory = 'messages' | 'files' | 'requests';
+export type QuotaDimension =
+  | 'messages'
+  | 'files'
+  | 'requests'
+  | 'signals'
+  | 'fileBytes';
+export type QuotaCountDimension = Exclude<QuotaDimension, 'fileBytes'>;
 
 /** Per-user quota breaker snapshot (msg cnt / file cnt / file total size). `fileBytes` is a decimal string
  *  because file-total-size is a backend bigint. */
 interface PersonalQuotaBreaker {
   tripped: boolean;
-  trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
+  trippedDims: QuotaDimension[];
   msg: { count: number; limit: number };
   file: { count: number; limit: number };
   fileBytes: { bytes: string; limit: number };
 }
 
 export interface PersonalQuotaState {
-  usage: Record<PersonalQuotaCategory, { count: number; limit: number }>;
+  usage: Record<QuotaCountDimension, { count: number; limit: number }>;
   breaker: PersonalQuotaBreaker;
   resetAt: number;
 }

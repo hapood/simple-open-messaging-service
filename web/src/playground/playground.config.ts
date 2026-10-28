@@ -112,6 +112,27 @@ export const playgroundConfig: ApplicationConfig = {
               (m) => m.DeploymentPageComponent,
             ),
         },
+        {
+          path: 'effects',
+          loadComponent: () =>
+            import('./effects/effects-page.component').then(
+              (m) => m.EffectsPageComponent,
+            ),
+        },
+        {
+          path: '404',
+          loadComponent: () =>
+            import('../app/pages/page-not-found/page-not-found.component').then(
+              (m) => m.PageNotFoundComponent,
+            ),
+        },
+        {
+          path: '403',
+          loadComponent: () =>
+            import('../app/pages/forbidden-page/forbidden-page.component').then(
+              (m) => m.ForbiddenPageComponent,
+            ),
+        },
         { path: '**', redirectTo: '' },
       ],
       withHashLocation(),

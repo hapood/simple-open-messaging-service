@@ -19,21 +19,26 @@
   box-shadow: 0 8px 32px rgb(0 0 0 / 18%);
   cursor: grab;
   touch-action: none;
-  transition: background 120ms ease, left 200ms ease, top 200ms ease;
+  transition:
+    background 120ms ease,
+    left 200ms ease,
+    top 200ms ease;
 }
 
 .playground-settings-button:hover {
   background: var(--app-brand-hover);
 }
 
-:host-context([data-theme='dark']) .playground-settings-button:not(.panel-open) {
+:host-context([data-theme='dark'])
+  .playground-settings-button:not(.panel-open) {
   border: 1px solid var(--app-border);
   color: var(--app-text);
   background: var(--app-surface-elevated);
   box-shadow: 0 8px 32px rgb(0 0 0 / 36%);
 }
 
-:host-context([data-theme='dark']) .playground-settings-button:not(.panel-open):hover {
+:host-context([data-theme='dark'])
+  .playground-settings-button:not(.panel-open):hover {
   background: var(--app-hover);
 }
 

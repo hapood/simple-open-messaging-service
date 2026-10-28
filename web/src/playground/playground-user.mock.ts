@@ -315,19 +315,17 @@ export class PlaygroundUserService
   }
 
   private activeThread(user: { account: string; namespaceId: number }) {
-    return this.state.conversations
-      .items()
-      .find(
-        (item) =>
-          item.conversationState === 'ACTIVE' &&
-          sameIdentity(
-            {
-              account: item.account,
-              namespaceId: item.publisherNamespaceId,
-            },
-            user,
-          ),
-      );
+    return this.state.conversations.items().find(
+      (item) =>
+        item.conversationState === 'ACTIVE' &&
+        sameIdentity(
+          {
+            account: item.account,
+            namespaceId: item.publisherNamespaceId,
+          },
+          user,
+        ),
+    );
   }
 
   private decide(
@@ -361,19 +359,17 @@ export class PlaygroundUserService
             threadId = this.state.activateFriend(user);
           else {
             threadId =
-              this.state.conversations
-                .items()
-                .find(
-                  (item) =>
-                    item.type === 'GROUP' &&
-                      sameIdentity(
-                        {
-                          account: item.account,
-                          namespaceId: item.publisherNamespaceId,
-                        },
-                        user,
-                      ),
-                )?.threadId ?? this.state.allocateThreadId();
+              this.state.conversations.items().find(
+                (item) =>
+                  item.type === 'GROUP' &&
+                  sameIdentity(
+                    {
+                      account: item.account,
+                      namespaceId: item.publisherNamespaceId,
+                    },
+                    user,
+                  ),
+              )?.threadId ?? this.state.allocateThreadId();
             this.state.conversations.setRelatedConversations([
               createGroupConversation({
                 threadId,

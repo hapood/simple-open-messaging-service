@@ -47,6 +47,8 @@
     "reconnecting": "Reconnecting…",
     "peerDeclined": "The other side declined the call",
     "peerBusy": "The other side is busy",
+    "peerUnreachable": "Couldn't connect. Please try again later",
+    "connectionFailed": "Call connection failed",
     "peerMissed": "The call was not answered",
     "peerTimeout": "The call request timed out",
     "peerDisconnected": "The call disconnected unexpectedly",
@@ -253,11 +255,12 @@
       "category": {
         "messages": "Messages",
         "files": "Files",
-        "requests": "Friend requests"
+        "requests": "Relationship operations",
+        "signals": "Call budget"
       },
       "disabled": "Unavailable",
       "paused": "Your daily quota is exhausted — sending is paused until 00:00 UTC or until an administrator adds quota.",
-      "reset": "Resets at {{time}}"
+      "reset": "Process-local usage; resets at {{time}} or server restart"
     }
   },
   "session": {
@@ -821,20 +824,31 @@
     }
   },
   "forbidden": {
+    "badge": "403 · Access Restricted",
     "homeAria": "Back to SOMS home",
     "code": "403",
-    "title": "Access denied",
-    "desc": "You don't have permission to view this page.",
+    "title": "Access Restricted",
+    "desc": "You don't have permission to view this conversation or resource. Please check the URL or return to chat.",
     "back": "Back to SOMS",
-    "goBack": "Go back"
+    "goBack": "Go back",
+    "pathLabel": "Restricted path"
   },
   "notFound": {
+    "badge": "404 · Page Not Found",
     "homeAria": "Back to SOMS home",
     "code": "404",
-    "title": "Page not found",
-    "desc": "The page you're looking for doesn't exist or may have been moved.",
+    "title": "Page Not Found",
+    "desc": "The page you're looking for doesn't exist or may have been moved. Please verify the URL or return to chat.",
     "back": "Back to SOMS",
-    "goBack": "Go back"
+    "goBack": "Go back",
+    "quickLinks": "Helpful Shortcuts",
+    "linkChat": "Chat Overview",
+    "linkChatDesc": "Return to your conversations and friends",
+    "linkDeploy": "Deployment Guide",
+    "linkDeployDesc": "Explore self-hosting and federated setups",
+    "linkHelp": "Open Source Community",
+    "linkHelpDesc": "Visit GitHub repository for docs and feedback",
+    "pathLabel": "Requested route"
   },
   "date": {
     "today": "Today",

@@ -54,36 +54,80 @@
 }
 
 :host(.cb-mention-me-pulse) .msg-bubble {
-  animation: mention-me-visible 1400ms ease-out;
+  animation: mention-me-visible 1300ms cubic-bezier(0.2, 0.8, 0.25, 1);
 }
 
 :host(.cb-mention-all-pulse) .msg-bubble {
-  animation: mention-all-visible 1400ms ease-out;
+  animation: mention-all-visible 1300ms cubic-bezier(0.2, 0.8, 0.25, 1);
 }
 
 @keyframes mention-me-visible {
-  0%,
-  38% {
-    background: #fff7ed;
+  0% {
+    background: var(--bubble-bg);
+    box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  }
+  22% {
+    background: color-mix(in srgb, var(--bubble-bg) 84%, #f97316 16%);
     box-shadow:
-      0 0 0 3px #fb923c,
-      0 4px 18px rgba(234, 88, 12, 0.26);
+      0 0 0 1px rgba(251, 146, 60, 0.45),
+      0 3px 18px rgba(234, 88, 12, 0.24);
   }
   100% {
+    background: var(--bubble-bg);
     box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
   }
 }
 
 @keyframes mention-all-visible {
-  0%,
-  38% {
-    background: #fff1f2;
+  0% {
+    background: var(--bubble-bg);
+    box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  }
+  22% {
+    background: color-mix(in srgb, var(--bubble-bg) 84%, #f43f5e 16%);
     box-shadow:
-      0 0 0 3px #fb7185,
-      0 4px 18px rgba(225, 29, 72, 0.22);
+      0 0 0 1px rgba(244, 63, 94, 0.45),
+      0 3px 18px rgba(225, 29, 72, 0.22);
   }
   100% {
+    background: var(--bubble-bg);
     box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  }
+}
+
+:host-context([data-theme='dark']) {
+  @keyframes mention-me-visible {
+    0% {
+      background: var(--bubble-bg);
+      box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.3);
+    }
+    22% {
+      background: color-mix(in srgb, var(--bubble-bg) 80%, #f97316 20%);
+      box-shadow:
+        0 0 0 1px rgba(251, 146, 60, 0.55),
+        0 3px 20px rgba(251, 146, 60, 0.32);
+    }
+    100% {
+      background: var(--bubble-bg);
+      box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.3);
+    }
+  }
+
+  @keyframes mention-all-visible {
+    0% {
+      background: var(--bubble-bg);
+      box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.3);
+    }
+    22% {
+      background: color-mix(in srgb, var(--bubble-bg) 80%, #f43f5e 20%);
+      box-shadow:
+        0 0 0 1px rgba(251, 113, 133, 0.55),
+        0 3px 20px rgba(244, 63, 94, 0.3);
+    }
+    100% {
+      background: var(--bubble-bg);
+      box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.3);
+    }
   }
 }
 

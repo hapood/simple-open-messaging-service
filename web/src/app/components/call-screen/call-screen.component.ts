@@ -88,7 +88,10 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
                     [type]="UserAvatarType.OTHER"
                     [name]="peerName() || '?'"
                     [account]="identity.account"
-                    [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                    [domainSource]="{
+                      type: 'namespace',
+                      namespaceId: identity.namespaceId,
+                    }"
                     [profile]="peerProfile()"
                   />
                 } @else {
@@ -129,7 +132,10 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
                     [type]="UserAvatarType.OTHER"
                     [name]="peerName() || '?'"
                     [account]="identity.account"
-                    [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                    [domainSource]="{
+                      type: 'namespace',
+                      namespaceId: identity.namespaceId,
+                    }"
                     [profile]="peerProfile()"
                   />
                 } @else {
@@ -189,7 +195,10 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
                   [type]="UserAvatarType.OTHER"
                   [name]="peerName() || '?'"
                   [account]="identity.account"
-                  [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                  [domainSource]="{
+                    type: 'namespace',
+                    namespaceId: identity.namespaceId,
+                  }"
                   [profile]="peerProfile()"
                 />
               } @else {
@@ -1106,12 +1115,18 @@ export class CallScreenComponent implements OnDestroy {
             return this.transloco.translate('call.peerDeclined');
           case 'busy':
             return this.transloco.translate('call.peerBusy');
+          case 'unreachable':
+            return this.transloco.translate('call.peerUnreachable');
           case 'missed':
             return this.transloco.translate('call.peerMissed');
           case 'timeout':
             return this.transloco.translate('call.peerTimeout');
           case 'failed':
-            return this.transloco.translate('call.peerDisconnected');
+            return this.transloco.translate(
+              this.snap().startedAt > 0
+                ? 'call.peerDisconnected'
+                : 'call.connectionFailed',
+            );
           case 'cancelled':
             return this.transloco.translate('call.peerCancelled');
           default:
@@ -1180,16 +1195,12 @@ export class CallScreenComponent implements OnDestroy {
   }
   decline(): void {
     const sid = this.snap().callSid;
-    if (sid) {
-      this.events.markLocalTermination(sid);
-      this.adapter.decline(sid);
-    }
+    if (sid) this.adapter.decline(sid);
   }
   hangUp(): void {
     const s = this.snap();
     const sid = s.callSid;
     if (!sid) return;
-    this.events.markLocalTermination(sid);
     // Pre-accept (the caller is still 'calling'/'ringing'): the server's /calls/end REJECTS a ringing call
     // (CALL_NOT_FOUND), which would leave it live server-side → busy lockout + the peer's incoming UI never
     // dismissed. /calls/cancel is the ringing-state terminal (releases both parties). Post-accept → end.

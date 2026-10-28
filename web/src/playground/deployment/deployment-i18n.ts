@@ -1,8 +1,11 @@
+import type { TranslocoService } from '@jsverse/transloco';
+
 export const deploymentMessages = {
   en: {
     nav: {
       chat: 'Chat demo',
       deploy: 'Deployment',
+      effects: 'Effects & Motion',
       expand: 'Expand navigation',
       collapse: 'Collapse navigation',
       language: 'Language',
@@ -125,6 +128,7 @@ export const deploymentMessages = {
     nav: {
       chat: '聊天演示',
       deploy: '部署配置',
+      effects: '交互动效展示',
       expand: '展开导航',
       collapse: '收起导航',
       language: '切换语言',
@@ -293,3 +297,24 @@ export const issueMessages: Record<string, [string, string]> = {
   ],
   image: ['镜像地址格式不正确。', 'Invalid image reference.'],
 };
+
+export function ensureDeploymentTranslations(
+  translator: TranslocoService,
+): void {
+  for (const [key, lang] of [
+    ['en', 'en'],
+    ['zh', 'zh-CN'],
+  ] as const) {
+    const errors = Object.fromEntries(
+      Object.entries(issueMessages).map(([name, text]) => [
+        name,
+        text[key === 'zh' ? 0 : 1],
+      ]),
+    );
+    translator.setTranslation(
+      { deployment: { ...deploymentMessages[key], errors } },
+      lang,
+      { merge: true },
+    );
+  }
+}

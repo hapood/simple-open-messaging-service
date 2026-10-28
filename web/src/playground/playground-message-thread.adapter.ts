@@ -1,4 +1,4 @@
-import { Injectable, signal } from '@angular/core';
+import { inject, Injectable, signal } from '@angular/core';
 import { of } from 'rxjs';
 import type {
   CbConfig,
@@ -31,7 +31,21 @@ import type {
 import {
   MockItemSource,
   MockUserService,
+  mockSender,
 } from '../app/pages/chatbox-playground/http-item-source.mock';
+import {
+  PlaygroundLiveMessage,
+  PlaygroundSocialState,
+  sameIdentity,
+} from './playground-social-state';
+import {
+  toDisplayText,
+  toRenderMessageEntities,
+} from '../app/lib/message-entity';
+import {
+  parseTextMessageContent,
+  stringifyTextMessageContent,
+} from '../../../shared/text-message-content';
 
 @Injectable({ providedIn: 'root' })
 export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
@@ -57,6 +71,17 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   private readonly sources = new Map<number, MockItemSource>();
   private readonly groupSources = new WeakSet<MessageThreadSource>();
+  private readonly state = inject(PlaygroundSocialState);
+
+  constructor() {
+    super();
+    // Live ticker messages reach an open thread through the source; the
+    // conversation-list commit already happened in the shared state.
+    this.state.groupLive$.subscribe((event) =>
+      this.deliverLiveGroupMessage(event),
+    );
+  }
+
   override createSource(
     conversation: ConversationItem,
     _callbacks: MessageThreadLiveCallbacks,
@@ -117,7 +142,8 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       ? this.groupPushCount()
       : this.opponentPushCount();
     const incoming = this.makeReplies(source, replies, isGroupConversation);
-    void this.deliverEcho(source, sent, incoming);
+    this.commitSentMessage(request);
+    void this.deliverEcho(request.threadId, source, sent, incoming);
     return { code: 0, message: 'ok' };
   }
 
@@ -154,6 +180,16 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
           },
         },
       ]);
+      if (optimistic.data.text) {
+        this.state.commitMessage(request.threadId, {
+          senderAccount: this.state.self.account,
+          senderNamespaceId: 0,
+          contentType: 'LINK',
+          content: optimistic.data.text,
+          createdAtMs: now.getTime(),
+          isSelf: true,
+        });
+      }
     }
     return { code: 0, message: 'ok' };
   }
@@ -292,19 +328,111 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   }
 
   private async deliverEcho(
+    threadId: number,
     source: MockItemSource,
     sent: CbItem<ChatItemData>,
     incoming: CbItem<ChatItemData>[],
   ): Promise<void> {
     await wait(this.pushSignalDelay());
-    source.pushLive(
+    const interleaved =
       this.opponentInterleave() && incoming.length > 0
-        ? [incoming.shift()!, sent]
-        : [sent],
-    );
+        ? incoming.shift()!
+        : null;
+    source.pushLive(interleaved ? [interleaved, sent] : [sent]);
+    if (interleaved) this.commitIncoming(threadId, interleaved.data);
     if (incoming.length === 0) return;
     await wait(this.replyDelay());
     source.pushLive(incoming);
+    for (const item of incoming) this.commitIncoming(threadId, item.data);
+  }
+
+  /** Replies update the thread list like committed feed rows: preview, unread,
+   *  and feed order advance together. Display text is wrapped back into the
+   *  persisted PURE_TEXT envelope so previews use the production shape. */
+  private commitIncoming(threadId: number, data: ChatItemData): void {
+    if (data.type !== 'msg') return;
+    const thread = this.state.conversations
+      .items()
+      .find((item) => item.threadId === threadId);
+    if (!thread) return;
+    const senderAccount =
+      thread.type === 'P2P'
+        ? thread.account
+        : (data.name?.toLowerCase() ?? thread.account);
+    this.state.commitMessage(threadId, {
+      senderAccount,
+      senderNamespaceId: thread.publisherNamespaceId,
+      contentType: data.contentType ?? 'PURE_TEXT',
+      content: stringifyTextMessageContent({ text: data.text }),
+      createdAtMs: data.createdAtMs,
+      isSelf: false,
+    });
+  }
+
+  /** Commit the confirmed optimistic row: PURE_TEXT carries the wire envelope
+   *  from the send request; CONTACT_CARD/LINK keep their persisted JSON bodies. */
+  private commitSentMessage(
+    request: SendTextRequest | SendContactRequest,
+  ): void {
+    const data = request.optimistic.data;
+    if (data.type !== 'msg') return;
+    const contentType = data.contentType;
+    const content =
+      contentType === 'PURE_TEXT' && 'content' in request
+        ? request.content
+        : data.text;
+    this.state.commitMessage(request.threadId, {
+      senderAccount: this.state.self.account,
+      senderNamespaceId: 0,
+      contentType,
+      content,
+      createdAtMs: Date.now(),
+      isSelf: true,
+    });
+  }
+
+  /** Render one live ticker message into the open group thread, reusing the
+   *  production mention parser for segments and viewer-relative state. */
+  private deliverLiveGroupMessage(event: PlaygroundLiveMessage): void {
+    const source = this.sources.get(event.threadId);
+    if (!source) return;
+    const id = source.allocateMsgId();
+    const body =
+      event.contentType === 'PURE_TEXT'
+        ? (parseTextMessageContent(event.content)?.text ?? '')
+        : event.content;
+    const rendered = toRenderMessageEntities(body, {
+      account: this.state.self.account,
+      namespaceId: 0,
+    });
+    const at = new Date(event.createdAtMs);
+    source.pushLive([
+      {
+        id,
+        data: {
+          type: 'msg',
+          msgId: id,
+          creator: event.sender.identityKey,
+          isSelf: sameIdentity(event.sender, this.state.self),
+          isGroupConversation: true,
+          name: event.sender.name,
+          // Live pushes are authored under real playground accounts, which the
+          // source's synthetic `user-N` profile table cannot resolve; without a
+          // sender the shaping fallback would render "Unknown". Mirror
+          // production toMsgData: attach the roster member's revision-backed
+          // sender so the shared pipeline resolves name and avatar.
+          sender: mockSender(event.sender, event.sender.name),
+          text: toDisplayText(body),
+          textSegments: rendered.segments,
+          mentionState: rendered.mentionState,
+          time: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
+          contentType: 'PURE_TEXT',
+          images: null,
+          file: null,
+          createdAtMs: event.createdAtMs,
+        },
+      },
+    ]);
   }
 
   private mockResponse(): StandardResponse<unknown> {

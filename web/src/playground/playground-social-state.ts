@@ -17,10 +17,46 @@ import {
 import type { ResolvedMemberProfile } from '../app/services/member-profile-store.service';
 import { PlaygroundConversationList } from './playground-conversation-list.mock';
 import { playgroundAvatars } from './playground-avatars';
+import {
+  serializeAudienceMention,
+  serializeUserMention,
+  toDisplayText,
+  toRenderMessageEntities,
+} from '../app/lib/message-entity';
+import { deriveMessagePreview } from '../../../shared/message-preview';
+import {
+  parseTextMessageContent,
+  stringifyTextMessageContent,
+} from '../../../shared/text-message-content';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const sameIdentity = (a: RequestEndpoint, b: RequestEndpoint) =>
   a.account === b.account && a.namespaceId === b.namespaceId;
+
+/** The seeded "Playground Team" group, the demo surface for live activity. */
+export const PLAYGROUND_TEAM_THREAD_ID = 2;
+
+/** One committed group message from the live ticker, in the production message
+ *  shape: a content type plus the persisted `Message.content` body. The adapter
+ *  renders it into an open thread; the state commits it into the thread list. */
+export interface PlaygroundLiveMessage {
+  threadId: number;
+  sender: ResolvedMemberProfile;
+  contentType: string;
+  content: string;
+  createdAtMs: number;
+}
+
+const liveGroupTexts = [
+  'Trying the playground controls again — latency looks fine.',
+  'The virtual scroll handles this burst nicely.',
+  'Anyone else seeing the announcement popup reset?',
+  'Pinned rows stay above the feed order, right?',
+  'The unread badge should only move with server feed updates.',
+  'Mentions render as chips once the body parses.',
+  'Scroll position survives the FLIP animation here.',
+  'Drafts are per-thread now, check the composer.',
+];
 
 const seededBios: Record<string, string> = {
   alice: 'Curious mind, coffee lover, and weekend explorer.',
@@ -36,8 +72,11 @@ const seededBios: Record<string, string> = {
 /** Shared in-memory server/projection state. Reloading the standalone entry resets all fixtures. */
 @Injectable({ providedIn: 'root' })
 export class PlaygroundSocialState {
-  readonly conversations = inject(PlaygroundConversationList);
+  readonly conversations: PlaygroundConversationList;
   readonly membersChanged$ = new Subject<readonly number[]>();
+  /** Live group messages committed by {@link startGroupTicker}. */
+  readonly groupLive$ = new Subject<PlaygroundLiveMessage>();
+  private groupTicker: ReturnType<typeof setInterval> | null = null;
   readonly users: User[] = [
     'me',
     'alice',
@@ -81,6 +120,12 @@ export class PlaygroundSocialState {
   private nextRequestId = 9007199254740993n;
   private nextThreadId = 20;
   private initialized = false;
+
+  /** Plain construction stays available for node-runnable specs; DI resolves
+   *  the same root-provided list when constructed through the injector. */
+  constructor(conversations?: PlaygroundConversationList) {
+    this.conversations = conversations ?? inject(PlaygroundConversationList);
+  }
 
   initialize(): void {
     if (this.initialized) return;
@@ -307,6 +352,118 @@ export class PlaygroundSocialState {
       meta: { memberCount: this.rosters.get(groupId)?.length ?? 0 },
     });
     this.membersChanged$.next([groupId]);
+  }
+
+  /** Commit one message row the way a production thread-feed snapshot would:
+   *  preview/sender/attention advance together with the feed ordering key.
+   *  Takes the production message shape (contentType + persisted content) and
+   *  derives the preview through the shared deriveMessagePreview, so previews
+   *  cannot drift from server-hydrated rows. Mentions are detected from the
+   *  PURE_TEXT body against the viewer identity. */
+  commitMessage(
+    threadId: number,
+    message: {
+      senderAccount: string;
+      senderNamespaceId: number;
+      contentType: string;
+      content: string;
+      createdAtMs?: number;
+      isSelf: boolean;
+    },
+  ): void {
+    const thread = this.conversations
+      .items()
+      .find((item) => item.threadId === threadId);
+    if (!thread) return;
+    const body =
+      message.contentType === 'PURE_TEXT'
+        ? (parseTextMessageContent(message.content)?.text ?? '')
+        : message.content;
+    const rendered = toRenderMessageEntities(body, {
+      account: this.self.account,
+      namespaceId: 0,
+    });
+    this.conversations.applyThreadMeta(threadId, {
+      lastMessageAt: message.createdAtMs ?? Date.now(),
+      lastMessagePreview: deriveMessagePreview(
+        message.contentType,
+        message.content,
+        toDisplayText,
+      ),
+      lastMessageSenderAccount: message.senderAccount,
+      lastMessageSenderNamespaceId: message.senderNamespaceId,
+      messageEndSeq: (thread.messageEndSeq ?? 0) + 1,
+      ...(message.isSelf
+        ? {}
+        : {
+            unreadCount: thread.unreadCount + 1,
+            mentionUnread:
+              rendered.mentionState === 'none'
+                ? thread.mentionUnread
+                : Array.from(
+                    new Set([...thread.mentionUnread, rendered.mentionState]),
+                  ),
+          }),
+    });
+  }
+
+  /** Simulate a live group: every interval a random Playground Team member
+   *  posts a text message, occasionally mentioning the viewer or the whole
+   *  audience. Bodies use the persisted PURE_TEXT JSON envelope. */
+  startGroupTicker(intervalMs = 5000): void {
+    if (this.groupTicker !== null) return;
+    this.groupTicker = setInterval(
+      () => this.tickLiveGroupMessage(),
+      intervalMs,
+    );
+  }
+
+  private tickLiveGroupMessage(): void {
+    // The ticker may speak only while the viewer is an active member. Leaving
+    // (role null + READ_ONLY) or dissolving (READ_ONLY) ends the feed: no
+    // member may post into a group the viewer no longer belongs to, even
+    // though the roster still holds the remaining members.
+    const team = this.conversations
+      .items()
+      .find((item) => item.threadId === PLAYGROUND_TEAM_THREAD_ID);
+    if (
+      team?.type !== 'GROUP' ||
+      team.role == null ||
+      team.conversationState === 'READ_ONLY'
+    )
+      return;
+    // Senders are always current members: kicks and leaves prune the roster,
+    // so a removed member is never picked again.
+    const roster = this.rosters.get(PLAYGROUND_TEAM_THREAD_ID);
+    if (!roster?.length) return;
+    const sender = roster[Math.floor(Math.random() * roster.length)];
+    const isSelf = sameIdentity(sender, this.self);
+    const roll = Math.random();
+    const text =
+      liveGroupTexts[Math.floor(Math.random() * liveGroupTexts.length)];
+    const body =
+      !isSelf && roll < 0.15
+        ? `${serializeUserMention('You', 0, this.self.account)} ${text}`
+        : !isSelf && roll < 0.25
+          ? `${serializeAudienceMention('all', 'all')} ${text}`
+          : text;
+    const content = stringifyTextMessageContent({ text: body });
+    const createdAtMs = Date.now();
+    this.commitMessage(PLAYGROUND_TEAM_THREAD_ID, {
+      senderAccount: sender.account,
+      senderNamespaceId: sender.namespaceId,
+      contentType: 'PURE_TEXT',
+      content,
+      createdAtMs,
+      isSelf,
+    });
+    this.groupLive$.next({
+      threadId: PLAYGROUND_TEAM_THREAD_ID,
+      sender,
+      contentType: 'PURE_TEXT',
+      content,
+      createdAtMs,
+    });
   }
 
   addMember(groupId: number, user: User): void {

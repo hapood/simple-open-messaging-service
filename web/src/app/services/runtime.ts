@@ -21,6 +21,7 @@
 
 import { signal } from '@angular/core';
 import type { StandardMessage } from './realtime-transport';
+import type { CallTerminalReason } from './call-adapter';
 
 /**
  * The persistence surface for state that must survive WebView/renderer death and be readable with no
@@ -232,13 +233,10 @@ declare global {
     __SOMS_COMPOSER_EVENT__?: (
       event: import('./native-composer.service').NativeComposerEvent,
     ) => void;
-    /** Native call command rejection (for example, the previous call is still being released). */
-    __SOMS_CALL_REJECTED__?: (reason: 'busy') => void;
-    /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): the COMMAND direction of the native
-     *  1:1-call bridge. On Android the RTCPeerConnection + the call lifecycle FSM live in native
-     *  (CallController); the Angular layer is the call "chrome" and drives it through these. The EVENT
-     *  direction rides the existing {@link __SOMS_EVENT__} (CALL_EVENT/CALL_SIGNAL, fanned by RealtimeService)
-     *  PLUS the {@link __SOMS_CALL_EVENT__} snapshot push (phase/mediaState transitions the native FSM owns).
+    /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): commands enter the Rust-owned
+     *  call lifecycle through this bridge. Kotlin adapts platform media and OS capabilities; Angular
+     *  renders the call controls. Events arrive through {@link __SOMS_EVENT__} for server frames and
+     *  {@link __SOMS_CALL_EVENT__} for Rust-owned snapshots.
      *  Android-only; guaranteed present after the isAndroidNative() gate, so call sites use `!`. */
     SomsCall?: {
       initiate: (
@@ -359,6 +357,7 @@ declare global {
      *  `callState` signal alongside the SSE CALL_EVENT lifecycle frames. */
     __SOMS_CALL_EVENT__?: (snapshot: {
       phase: string;
+      terminalReason?: CallTerminalReason | null;
       callSid: string | null;
       threadId: number;
       peerUserId: number;

@@ -164,10 +164,12 @@ export class WebCallAdapter implements CallAdapter {
     this.outgoingBusy = true;
     const generation = this.generation;
     let registered = false;
+    let mediaAcquired = false;
     try {
       // Request the mic directly from the click chain. Waiting for the HTTP round-trip first loses browser
       // user activation, which makes Tauri WebView/browser permission prompts reject getUserMedia.
       await this.acquireLocalMedia(callType === 'VIDEO');
+      mediaAcquired = true;
       if (generation !== this.generation) return;
       // Own the pending call before the response arrives so a rejection has a callSid to display.
       this.update({
@@ -191,6 +193,10 @@ export class WebCallAdapter implements CallAdapter {
         this.finish('busy');
         return;
       }
+      if (response.code === BusinessCode.CALL_PEER_UNREACHABLE) {
+        this.finish('unreachable');
+        return;
+      }
       if (response.code !== BusinessCode.OK)
         throw new Error(`calls/initiate rejected: ${response.code}`);
       registered = true;
@@ -209,7 +215,8 @@ export class WebCallAdapter implements CallAdapter {
     } catch (error) {
       if (generation !== this.generation) return;
       console.error('[call:web] outgoing setup failed', error);
-      if (!registered) this.notifyMediaError?.(callMediaErrorStep(error));
+      // Only acquisition failures are media-device errors, never HTTP or business rejections.
+      if (!mediaAcquired) this.notifyMediaError?.(callMediaErrorStep(error));
       this.finish('failed');
       if (registered) void this.bestEffortPost('calls/cancel', { callSid });
     } finally {

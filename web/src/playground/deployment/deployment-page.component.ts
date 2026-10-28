@@ -32,7 +32,11 @@ import {
   publishedPort,
   randomPassword,
 } from './compose-generator';
-import { deploymentMessages, issueMessages } from './deployment-i18n';
+import {
+  deploymentMessages,
+  ensureDeploymentTranslations,
+  issueMessages,
+} from './deployment-i18n';
 
 /** Quote a configured path as one literal POSIX shell argument. */
 export function shellQuote(value: string): string {
@@ -110,6 +114,22 @@ export function shellQuote(value: string): string {
           />
           @if (!collapsed()) {
             <span>{{ t().nav.deploy }}</span>
+          }
+        </a>
+        <a
+          class="rail-item"
+          routerLink="/effects"
+          [title]="t().nav.effects"
+          [attr.aria-label]="t().nav.effects"
+        >
+          <app-icon
+            class="icon"
+            [type]="AppIconType.NOTIFICATIONS"
+            [style]="navIconStyle"
+            aria-hidden="true"
+          />
+          @if (!collapsed()) {
+            <span>{{ t().nav.effects }}</span>
           }
         </a>
         <div class="sidebar-footer">
@@ -1488,22 +1508,7 @@ export class DeploymentPageComponent {
   );
 
   constructor() {
-    for (const [key, lang] of [
-      ['en', 'en'],
-      ['zh', 'zh-CN'],
-    ] as const) {
-      const errors = Object.fromEntries(
-        Object.entries(issueMessages).map(([name, text]) => [
-          name,
-          text[key === 'zh' ? 0 : 1],
-        ]),
-      );
-      this.translator.setTranslation(
-        { deployment: { ...deploymentMessages[key], errors } },
-        lang,
-        { merge: true },
-      );
-    }
+    ensureDeploymentTranslations(this.translator);
     void fetch(
       new URL('deployment-templates/nas/docker-compose.yml', document.baseURI),
     )

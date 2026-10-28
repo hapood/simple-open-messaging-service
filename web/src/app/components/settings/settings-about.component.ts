@@ -14,7 +14,7 @@ import { DebugToolsService } from '../../services/debug-tools.service';
 import { appVersion } from '../../version';
 import { UserService } from '../../services/user.service';
 import type {
-  PersonalQuotaCategory,
+  QuotaCountDimension,
   PersonalQuotaState,
 } from '../../services/model';
 import { personalQuotaStatus } from '../profile-editor/personal-quota-status';
@@ -171,10 +171,11 @@ export class SettingsAboutComponent {
   readonly downloadPercent = signal(0);
   readonly quota = signal<PersonalQuotaState | null>(null);
   readonly quotaLoading = signal(true);
-  readonly quotaCategories: PersonalQuotaCategory[] = [
+  readonly quotaCategories: QuotaCountDimension[] = [
     'messages',
     'files',
     'requests',
+    'signals',
   ];
   readonly quotaStatus = computed(() => {
     const state = this.quota();
@@ -199,7 +200,7 @@ export class SettingsAboutComponent {
     });
   }
 
-  quotaPercent(category: PersonalQuotaCategory): number {
+  quotaPercent(category: QuotaCountDimension): number {
     const item = this.quota()?.usage[category];
     if (!item || item.limit === 0) return 0;
     return Math.min(100, Math.round((item.count / item.limit) * 100));

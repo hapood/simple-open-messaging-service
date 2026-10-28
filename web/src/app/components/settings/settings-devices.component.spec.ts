@@ -147,9 +147,9 @@ describe('SettingsDevicesComponent', () => {
   it('expiresLabel(): null → "No expiry"; otherwise a formatted date', () => {
     expect(comp.expiresLabel(row(1, { expiresAt: null }))).toBe('No expiry');
     const labelled = comp.expiresLabel(
-      row(2, { expiresAt: Date.UTC(2026, 1, 1) }),
+      row(2, { expiresAt: new Date(2026, 1, 1, 12, 0).getTime() }),
     );
-    expect(labelled).toMatch(/2026-02-0/); // dayjs YYYY-MM-DD in the formatted string
+    expect(labelled).toBe('2026-02-01 12:00');
   });
 
   it('location(): prefers lastSeenIp, then ip, then "-"', () => {

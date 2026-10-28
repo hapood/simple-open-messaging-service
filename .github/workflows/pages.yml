@@ -40,7 +40,7 @@ jobs:
         run: npm run build:playground --prefix web -- --base-href /simple-open-messaging-service/
 
       - name: Include Pages static files
-        run: cp .github/pages/google81ab49229bacef40.html .github/pages/sitemap.xml web/dist/playground/browser/
+        run: cp .github/pages/* web/dist/playground/browser/
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

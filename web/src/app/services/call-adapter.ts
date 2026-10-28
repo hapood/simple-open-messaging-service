@@ -4,10 +4,8 @@ import { TranslocoService } from '@jsverse/transloco';
 import { isAndroidNative } from './runtime';
 import { WebCallAdapter } from './web-call.adapter';
 import { ToastService } from './toast.service';
-import { Subject } from 'rxjs';
 
-/** The UI phase of a 1:1 call — the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels
- *  + the reconnecting/weak UX). `idle` = no live call. */
+/** The UI phase of a 1:1 call, combining lifecycle and media state. `idle` = no live call. */
 export type CallPhase =
   | 'idle'
   | 'starting'
@@ -22,15 +20,15 @@ export type CallPhase =
 export type CallTerminalReason =
   | 'declined'
   | 'busy'
+  | 'unreachable'
   | 'missed'
   | 'timeout'
   | 'failed'
   | 'cancelled'
   | 'completed';
 
-/** The live call snapshot. Shape mirrors the native `CallController.snapshotJson()` (the authoritative
- *  source — the native FSM owns the RTCPeerConnection state); `peerName`/`peerAvatar` are added here from
- *  the CALL_EVENT{incoming} SSE frame (the native snapshot carries only ids, not display info). */
+/** Shared call presentation from the selected adapter. Android forwards the Rust-owned snapshot
+ *  through its native bridge; peer display info may also arrive through CALL_EVENT SSE frames. */
 export interface CallSnapshot {
   phase: CallPhase;
   callSid: string | null;
@@ -58,7 +56,7 @@ export interface CallSnapshot {
   /** Self↔peer swapped (tap the PiP): true = local camera full-bleed, peer in the PiP. In the snapshot so a
    *  WebView recreate mid-call re-derives the swap state (native owns it; the UI is disposable chrome). */
   swapped: boolean;
-  /** Display info from CALL_EVENT{incoming}; empty until then. */
+  /** Peer display info from the adapter snapshot or CALL_EVENT{incoming}. */
   peerName: string;
   peerAvatar: string;
   /** A finer WebRTC-negotiation step CODE ("offer-sent" / "answer-received" / …) from the native FSM — a
@@ -103,11 +101,10 @@ export type CallSignalPayload = {
 );
 
 /**
- * The call COMMAND adapter — hides platform differences behind one polymorphic surface (mirrors
- * {@link NotificationAdapter}). On Android the RTCPeerConnection + the call lifecycle FSM live in NATIVE
- * Kotlin (CallController); this adapter delegates each command to the `window.SomsCall` `@JavascriptInterface`.
- * The web/desktop builds have no native call layer (calling is deferred there), so they use the no-op
- * {@link UnsupportedCallAdapter} — `CallAdapterService.supported` is false, and the UI hides the call path.
+ * The call command adapter hides platform differences. Android delegates commands through
+ * `window.SomsCall` to the Rust-owned lifecycle; Kotlin adapts platform media and OS capabilities.
+ * Capable browser/desktop hosts use {@link WebCallAdapter}. Hosts without either implementation
+ * use {@link UnsupportedCallAdapter}, and the UI hides the call controls.
  *
  * The EVENT direction is separate: CALL_EVENT/CALL_SIGNAL ride the existing `window.__SOMS_EVENT__` SSE
  * channel + the native `window.__SOMS_CALL_EVENT__` snapshot push, consumed by {@link CallEventService}.
@@ -227,7 +224,7 @@ class AndroidCallAdapter extends CallAdapter {
   applyLifecycle(): void {}
 }
 
-/** Web/desktop: no native call layer (calling is deferred on those platforms). Commands are no-ops;
+/** Fallback for hosts without native calling or renderer WebRTC support. Commands are no-ops;
  *  `snapshot()` returns idle. The UI gates the call button on `CallAdapterService.supported`. */
 class UnsupportedCallAdapter extends CallAdapter {
   setSnapshotListener(): void {}
@@ -256,9 +253,8 @@ class UnsupportedCallAdapter extends CallAdapter {
  * The single app-wide call-command surface. Selects ONE adapter by platform at construction (mirrors how
  * WebsocketService selects its transport) and delegates. Call sites inject this, never a concrete adapter.
  *
- * `supported` is the gate the UI uses to show/hide the call affordance: calling works only in the Android
- * native shell; web/desktop show no call button (the unsupported adapter is a defensive no-op so an
- * accidental call site can't throw).
+ * `supported` enables call controls on Android and WebRTC-capable browser/desktop hosts.
+ * The unsupported adapter is a defensive no-op for other environments.
  */
 @Injectable({ providedIn: 'root' })
 export class CallAdapterService {
@@ -266,12 +262,10 @@ export class CallAdapterService {
 
   /** WebRTC is native-owned on Android and renderer-owned in capable browser/desktop builds. */
   readonly supported: boolean;
-  /** Video media is still native-only; Web audio ships as an independently testable first phase. */
+  /** Both native and renderer-owned adapters support video when calling is available. */
   readonly videoSupported: boolean;
   /** Browser/desktop video needs an HTMLVideoElement first-frame gate; Android renders into native surfaces. */
   readonly rendererOwnsVideo: boolean;
-  /** Native initiate failures that have user-visible call semantics rather than generic transport errors. */
-  readonly rejected$ = new Subject<'busy'>();
 
   constructor(
     http: HttpClient,
@@ -289,11 +283,6 @@ export class CallAdapterService {
             toast.warn(transloco.translate(`call.${step}`)),
           )
         : new UnsupportedCallAdapter();
-    if (isAndroidNative()) {
-      window.__SOMS_CALL_REJECTED__ = (reason) => {
-        if (reason === 'busy') this.rejected$.next(reason);
-      };
-    }
     this.supported = isAndroidNative() || webRtcSupported;
     this.videoSupported = this.supported;
     this.rendererOwnsVideo = !isAndroidNative() && webRtcSupported;

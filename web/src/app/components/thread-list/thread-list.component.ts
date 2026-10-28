@@ -9,7 +9,11 @@ import {
   inject,
   OnInit,
   ElementRef,
+  afterRenderEffect,
   effect,
+  DestroyRef,
+  signal,
+  viewChild,
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
@@ -33,7 +37,8 @@ import { UserIdentityLabelComponent } from '../user-identity-label/user-identity
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { LanguageService } from '../../services/language.service';
 import { formatListTime } from '../message-cards/date-format';
-import { playFlipList } from '../../lib/flip-list';
+import { FlipListAnimator, FlipListLayout } from '../../lib/flip-list';
+import { THREAD_ROW_HEIGHT, threadListWindow } from './thread-list-window';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 
@@ -69,21 +74,59 @@ export class ThreadListComponent implements OnInit {
   private readonly userService = inject(UserService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
-  private readonly host = inject(ElementRef);
+  private readonly viewport =
+    viewChild<ElementRef<HTMLElement>>('listViewport');
   readonly composerDrafts = inject(ComposerDraftService);
-  private prevRects = new Map<string, DOMRect>();
+  private readonly listAnimator = new FlipListAnimator();
+  private previousSearch = '';
+  private readonly viewportHeight = signal(0);
+  private readonly scrollState = signal({ search: '', top: 0 });
+  private readonly pendingFocus = signal<number | null>(null);
 
   constructor() {
-    // Animate insertions and feed-ordered moves after Angular commits the new list layout.
+    inject(DestroyRef).onDestroy(() => this.listAnimator.destroy());
     effect(() => {
-      this.convList.items();
-      requestAnimationFrame(() => {
-        const container = (
-          this.host.nativeElement as HTMLElement | null
-        )?.querySelector('.thread-list') as HTMLElement | null;
-        if (!container) return;
-        this.prevRects = playFlipList(container, this.prevRects);
-      });
+      this.scrollState.set({ search: this.searchText(), top: 0 });
+    });
+    afterRenderEffect((onCleanup) => {
+      const container = this.viewport()?.nativeElement;
+      if (!container) return;
+      const measure = () => this.viewportHeight.set(container.clientHeight);
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(container);
+      onCleanup(() => observer.disconnect());
+    });
+    // Angular commits the keyed window before both animation axes start. Scrolling
+    // changes only the window, not the complete layout's identity or revisions.
+    afterRenderEffect(() => {
+      const container = this.viewport()?.nativeElement;
+      const layout = this.animationLayout();
+      const window = this.renderedWindow();
+      const search = this.searchText();
+      const status = this.status();
+      if (
+        search !== this.previousSearch ||
+        status !== ConversationLoadStatus.READY
+      )
+        this.listAnimator.destroy();
+      if (container) {
+        // Clamp after shrinking/filtering as well as when resetting search.
+        if (container.scrollTop !== window.scrollTop)
+          container.scrollTop = window.scrollTop;
+        if (this.scrollState().top !== window.scrollTop)
+          this.scrollState.set({ search, top: window.scrollTop });
+        if (status === ConversationLoadStatus.READY)
+          this.listAnimator.play(container, layout);
+        const focus = this.pendingFocus();
+        if (focus !== null) {
+          container
+            .querySelector<HTMLElement>(`[data-flip-key="${focus}"]`)
+            ?.focus({ preventScroll: true });
+          this.pendingFocus.set(null);
+        }
+      }
+      this.previousSearch = search;
     });
   }
 
@@ -105,6 +148,89 @@ export class ThreadListComponent implements OnInit {
       return true;
     });
   });
+
+  readonly renderedWindow = computed(() => {
+    const scroll = this.scrollState();
+    return threadListWindow(
+      this.filteredThreadList().length,
+      this.viewportHeight(),
+      scroll.search === this.searchText() ? scroll.top : 0,
+    );
+  });
+
+  readonly visibleThreadList = computed(() => {
+    const window = this.renderedWindow();
+    return this.filteredThreadList().slice(window.start, window.end);
+  });
+
+  // O(n) data-only work happens on list updates, never on scroll. DOM work and
+  // visual snapshots remain bounded by the viewport plus its small buffer.
+  private readonly animationLayout = computed<FlipListLayout>(
+    () =>
+      new Map(
+        this.filteredThreadList().map((item, index) => [
+          String(item.threadId),
+          {
+            top: index * THREAD_ROW_HEIGHT,
+            revision: JSON.stringify([
+              item.pinned,
+              item.pinnedAt,
+              item.threadFeedId,
+              item.lastMessageAt,
+            ]),
+          },
+        ]),
+      ),
+  );
+
+  onViewportScroll(): void {
+    const container = this.viewport()?.nativeElement;
+    if (container)
+      this.scrollState.set({
+        search: this.searchText(),
+        top: container.scrollTop,
+      });
+  }
+
+  /** Arrow navigation can reach rows beyond the mounted window; native Enter,
+   * Space and Tab behavior remains on the actual conversation buttons. */
+  onRowKeydown(event: KeyboardEvent, threadId: number): void {
+    const position = this.animationLayout().get(String(threadId));
+    const container = this.viewport()?.nativeElement;
+    const items = this.filteredThreadList();
+    if (!position || !container || !items.length) return;
+    const index = position.top / THREAD_ROW_HEIGHT;
+    let target: number;
+    switch (event.key) {
+      case 'ArrowDown':
+        target = Math.min(index + 1, items.length - 1);
+        break;
+      case 'ArrowUp':
+        target = Math.max(index - 1, 0);
+        break;
+      case 'Home':
+        target = 0;
+        break;
+      case 'End':
+        target = items.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    const top = target * THREAD_ROW_HEIGHT;
+    const height = Math.max(THREAD_ROW_HEIGHT, this.viewportHeight());
+    const current = this.renderedWindow().scrollTop;
+    const offset =
+      top < current
+        ? top
+        : top + THREAD_ROW_HEIGHT > current + height
+          ? top + THREAD_ROW_HEIGHT - height
+          : current;
+    container.scrollTop = offset;
+    this.scrollState.set({ search: this.searchText(), top: offset });
+    this.pendingFocus.set(items[target].threadId);
+  }
 
   /** A search term is set but the filter yields nothing → "no search results" state (distinct from the true
    *  empty state; carries no CTA). */

@@ -47,6 +47,8 @@
     "reconnecting": "正在重新连接…",
     "peerDeclined": "对方已拒绝",
     "peerBusy": "对方正在通话中",
+    "peerUnreachable": "暂时无法接通，请稍后重试",
+    "connectionFailed": "通话连接失败",
     "peerMissed": "对方未接听",
     "peerTimeout": "通话请求超时",
     "peerDisconnected": "通话意外断开",
@@ -253,11 +255,12 @@
       "category": {
         "messages": "消息",
         "files": "文件",
-        "requests": "好友请求"
+        "requests": "关系操作",
+        "signals": "电话额度"
       },
       "disabled": "不可使用",
       "paused": "今日额度已用尽 — 发送已暂停，将于 00:00 (UTC) 自动重置或由管理员追加额度后恢复。",
-      "reset": "将在 {{time}} 自动重置"
+      "reset": "用量仅存内存，在 {{time}} 或服务重启后清零"
     }
   },
   "session": {
@@ -821,20 +824,31 @@
     }
   },
   "forbidden": {
+    "badge": "403 · 访问受限",
     "homeAria": "返回 SOMS 首页",
     "code": "403",
-    "title": "访问被拒绝",
-    "desc": "你没有权限查看此页面。",
+    "title": "没有访问权限",
+    "desc": "您当前没有权限查看此页面或会话。请确认链接地址，或返回会话大厅。",
     "back": "返回 SOMS",
-    "goBack": "返回上一页"
+    "goBack": "返回上一页",
+    "pathLabel": "受限路径"
   },
   "notFound": {
+    "badge": "404 · 页面未找到",
     "homeAria": "返回 SOMS 首页",
     "code": "404",
-    "title": "页面未找到",
-    "desc": "你要找的页面不存在或已被移动。",
+    "title": "找不到请求的页面",
+    "desc": "你要访问的页面不存在或已被移除。请检查地址是否输入正确，或返回会话大厅。",
     "back": "返回 SOMS",
-    "goBack": "返回上一页"
+    "goBack": "返回上一页",
+    "quickLinks": "常用快捷入口",
+    "linkChat": "会话大厅",
+    "linkChatDesc": "回到主消息列表继续畅聊",
+    "linkDeploy": "部署中心",
+    "linkDeployDesc": "了解自建与联邦部署指南",
+    "linkHelp": "开源社区",
+    "linkHelpDesc": "前往 GitHub 查阅项目文档或反馈",
+    "pathLabel": "请求路径"
   },
   "date": {
     "today": "今天",

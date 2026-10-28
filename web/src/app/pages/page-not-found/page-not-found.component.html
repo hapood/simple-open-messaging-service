@@ -1,34 +1,230 @@
-<main class="pnf">
-  <!-- Hero: a delivered bubble ("?") beside a dashed "unsent" bubble — the lost-message
-       metaphor for a chat app. Purely decorative, so aria-hidden keeps it out of the a11y tree. -->
-  <div class="pnf-art" aria-hidden="true">
-    <svg class="pnf-bubble pnf-bubble--ghost" width="74" height="58" viewBox="0 0 74 58" fill="none">
-      <path d="M14 3h46a10 10 0 0 1 10 10v20a10 10 0 0 1-10 10H32l-14 10V43H14A10 10 0 0 1 4 33V13A10 10 0 0 1 14 3z"
-        stroke="currentColor" stroke-width="2.5" stroke-dasharray="5 7" stroke-linejoin="round" />
-    </svg>
-    <svg class="pnf-bubble pnf-bubble--main" width="132" height="106" viewBox="0 0 132 106" fill="none">
-      <defs>
-        <linearGradient id="pnfBubbleGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#4b5055" />
-          <stop offset="1" stop-color="#25282c" />
-        </linearGradient>
-      </defs>
-      <path d="M22 4h88a18 18 0 0 1 18 18v36a18 18 0 0 1-18 18H58l-24 22V76H22A18 18 0 0 1 4 58V22A18 18 0 0 1 22 4z"
-        fill="url(#pnfBubbleGrad)" />
-      <text x="66" y="42" text-anchor="middle" dominant-baseline="central"
-        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif"
-        font-size="54" font-weight="800" fill="#ffffff">?</text>
-    </svg>
-  </div>
+<main class="error-page error-page--404">
+  <div class="error-card">
+    <!-- Header status badge (M3 Tonal Container) -->
+    <div class="error-badge">
+      <span class="error-badge__dot"></span>
+      <span class="error-badge__text">{{ 'notFound.badge' | transloco }}</span>
+    </div>
 
-  <p class="pnf-code">{{ 'notFound.code' | transloco }}</p>
-  <h1 class="pnf-title">{{ 'notFound.title' | transloco }}</h1>
-  <p class="pnf-desc">{{ 'notFound.desc' | transloco }}</p>
+    <!-- Material Design 3 Duotone Vector Illustration -->
+    <div class="error-art" aria-hidden="true">
+      <svg
+        class="error-illustration"
+        viewBox="0 0 200 140"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <!-- Grounding surface shadow -->
+        <ellipse
+          cx="100"
+          cy="126"
+          rx="64"
+          ry="7"
+          fill="var(--app-border)"
+          opacity="0.45"
+        />
 
-  <div class="pnf-actions">
-    <button type="button" class="pnf-btn pnf-btn--primary" (click)="goHome()">{{ 'notFound.back' | transloco }}</button>
-    @if (canGoBack()) {
-      <button type="button" class="pnf-btn pnf-btn--ghost" (click)="goBack()">{{ 'notFound.goBack' | transloco }}</button>
-    }
+        <!-- Compass search ring -->
+        <circle
+          cx="100"
+          cy="65"
+          r="48"
+          fill="var(--app-surface)"
+          stroke="var(--app-border)"
+          stroke-width="1.5"
+          stroke-dasharray="3 4"
+        />
+        <line
+          x1="100"
+          y1="13"
+          x2="100"
+          y2="23"
+          stroke="var(--app-border-strong)"
+          stroke-width="1.5"
+          stroke-linecap="round"
+        />
+        <line
+          x1="100"
+          y1="107"
+          x2="100"
+          y2="117"
+          stroke="var(--app-border-strong)"
+          stroke-width="1.5"
+          stroke-linecap="round"
+        />
+        <line
+          x1="48"
+          y1="65"
+          x2="58"
+          y2="65"
+          stroke="var(--app-border-strong)"
+          stroke-width="1.5"
+          stroke-linecap="round"
+        />
+        <line
+          x1="142"
+          y1="65"
+          x2="152"
+          y2="65"
+          stroke="var(--app-border-strong)"
+          stroke-width="1.5"
+          stroke-linecap="round"
+        />
+
+        <!-- Material Chat Bubble with subtle elevation -->
+        <g class="m3-bubble">
+          <path
+            d="M72 40 h56 a16 16 0 0 1 16 16 v24 a16 16 0 0 1 -16 16 h-20 l-14 12 v-12 h-22 a16 16 0 0 1 -16 -16 v-24 a16 16 0 0 1 16 -16 z"
+            fill="var(--app-surface-elevated)"
+            stroke="var(--app-border-strong)"
+            stroke-width="1.5"
+          />
+
+          <!-- Search Lens (Action Blue) -->
+          <circle
+            cx="97"
+            cy="58"
+            r="13"
+            stroke="var(--app-action-primary)"
+            stroke-width="2.5"
+            fill="none"
+          />
+          <line
+            x1="106"
+            y1="67"
+            x2="115"
+            y2="76"
+            stroke="var(--app-action-primary)"
+            stroke-width="2.5"
+            stroke-linecap="round"
+          />
+          <circle cx="97" cy="58" r="3" fill="var(--app-action-primary)" />
+
+          <!-- Subtle SOMS logo vermilion node -->
+          <circle cx="126" cy="46" r="3" fill="var(--app-brand-accent)" />
+        </g>
+      </svg>
+    </div>
+
+    <!-- Error Title & Description -->
+    <div class="error-content">
+      <div class="error-code">{{ 'notFound.code' | transloco }}</div>
+      <h1 class="error-title">{{ 'notFound.title' | transloco }}</h1>
+      <p class="error-desc">{{ 'notFound.desc' | transloco }}</p>
+
+      @if (currentPath() && currentPath() !== '/' && currentPath() !== '/**') {
+        <div class="error-path-chip">
+          <span class="error-path-chip__label"
+            >{{ 'notFound.pathLabel' | transloco }}:</span
+          >
+          <code>{{ currentPath() }}</code>
+        </div>
+      }
+    </div>
+
+    <!-- Actions Bar (Angular Material Buttons) -->
+    <div class="error-actions">
+      <button
+        mat-flat-button
+        color="primary"
+        type="button"
+        class="error-action-btn"
+        (click)="goHome()"
+      >
+        <app-icon
+          class="btn-icon"
+          [type]="AppIcon.CHATS"
+          [style]="{ width: '18px', height: '18px' }"
+          aria-hidden="true"
+        />
+        <span>{{ 'notFound.back' | transloco }}</span>
+      </button>
+
+      @if (canGoBack()) {
+        <button
+          mat-stroked-button
+          type="button"
+          class="error-action-btn"
+          (click)="goBack()"
+        >
+          <app-icon
+            class="btn-icon"
+            [type]="AppIcon.BACK"
+            [style]="{ width: '18px', height: '18px' }"
+            aria-hidden="true"
+          />
+          <span>{{ 'notFound.goBack' | transloco }}</span>
+        </button>
+      }
+    </div>
+
+    <!-- Helpful Quick Destination Cards (Identical in 404 & 403) -->
+    <div class="error-shortcuts">
+      <span class="error-shortcuts__title">{{
+        'notFound.quickLinks' | transloco
+      }}</span>
+      <div class="error-shortcuts__grid">
+        <button type="button" class="error-shortcut-card" (click)="goHome()">
+          <span class="error-shortcut-card__icon">
+            <app-icon
+              [type]="AppIcon.CHATS"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <div class="error-shortcut-card__content">
+            <span class="error-shortcut-card__name">{{
+              'notFound.linkChat' | transloco
+            }}</span>
+            <span class="error-shortcut-card__desc">{{
+              'notFound.linkChatDesc' | transloco
+            }}</span>
+          </div>
+        </button>
+
+        <a
+          class="error-shortcut-card"
+          href="https://hapood.github.io/simple-open-messaging-service/#/deploy"
+          target="_blank"
+          rel="noopener"
+        >
+          <span class="error-shortcut-card__icon">
+            <app-icon
+              [type]="AppIcon.SERVER"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <div class="error-shortcut-card__content">
+            <span class="error-shortcut-card__name">{{
+              'notFound.linkDeploy' | transloco
+            }}</span>
+            <span class="error-shortcut-card__desc">{{
+              'notFound.linkDeployDesc' | transloco
+            }}</span>
+          </div>
+        </a>
+
+        <a
+          class="error-shortcut-card"
+          href="https://github.com/hapood/simple-open-messaging-service"
+          target="_blank"
+          rel="noopener"
+        >
+          <span class="error-shortcut-card__icon">
+            <app-icon
+              [type]="AppIcon.GLOBE"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <div class="error-shortcut-card__content">
+            <span class="error-shortcut-card__name">{{
+              'notFound.linkHelp' | transloco
+            }}</span>
+            <span class="error-shortcut-card__desc">{{
+              'notFound.linkHelpDesc' | transloco
+            }}</span>
+          </div>
+        </a>
+      </div>
+    </div>
   </div>
 </main>

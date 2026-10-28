@@ -205,11 +205,18 @@
         min-height: 0;
       }
       .playground-viewport app-home-shell,
-      .playground-viewport app-deployment-page {
+      .playground-viewport app-deployment-page,
+      .playground-viewport app-effects-page,
+      .playground-viewport app-page-not-found,
+      .playground-viewport app-forbidden {
         height: 100%;
       }
-      .playground-viewport app-deployment-page {
+      .playground-viewport app-deployment-page,
+      .playground-viewport app-effects-page,
+      .playground-viewport app-page-not-found,
+      .playground-viewport app-forbidden {
         position: relative;
+        overflow-y: auto;
       }
       .playground-page .app-splash {
         height: 100%;

@@ -1958,16 +1958,28 @@ export class MessageThreadComponent implements OnDestroy {
       (item.data.mentionState !== 'me' && item.data.mentionState !== 'all')
     )
       return;
-    const className =
-      item.data.mentionState === 'me'
-        ? 'cb-mention-me-pulse'
-        : 'cb-mention-all-pulse';
+    const isMe = item.data.mentionState === 'me';
+    const className = isMe ? 'cb-mention-me-pulse' : 'cb-mention-all-pulse';
+    const animName = isMe ? 'mention-me-visible' : 'mention-all-visible';
     host.classList.remove(className);
     void host.offsetWidth;
     host.classList.add(className);
-    const clear = () => host.classList.remove(className);
-    host.addEventListener('animationend', clear, { once: true });
-    setTimeout(clear, 1600);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      host.removeEventListener('animationend', onEnd);
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      host.classList.remove(className);
+    };
+    const onEnd = (event: AnimationEvent) => {
+      if (event.animationName === animName) {
+        cleanup();
+      }
+    };
+    host.addEventListener('animationend', onEnd);
+    timer = setTimeout(cleanup, 1600);
   }
 
   updateStickyOverlays(): void {

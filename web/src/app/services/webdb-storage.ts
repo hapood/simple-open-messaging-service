@@ -2870,6 +2870,8 @@ export class WebdbStorage implements AccountStateStorage {
         recoveryThrough: through,
         recoveryAnnouncementFeedId: null,
         recoveryAnnouncementText: null,
+        recoveryAnnouncementCreatedAt: null,
+        recoveryAnnouncementOriginCreatedAt: null,
       });
       await tx.done;
     });

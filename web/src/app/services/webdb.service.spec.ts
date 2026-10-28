@@ -1679,6 +1679,61 @@ describe('WebdbService', () => {
       });
     });
 
+    it('clears every staged recovery announcement field when a recovery window restarts', async () => {
+      await webdb.openForUser('1');
+      await seedGroupFeed(webdb);
+      await webdb.beginGroupMetaRecovery(9, '3');
+      await webdb.applyGroupMetaPage({
+        threadId: 9,
+        namespaceId: 0,
+        page: {
+          account: '!team',
+          mode: 'full',
+          scannedThrough: '1',
+          groupMetaFeedEndId: '3',
+          hasMore: true,
+          items: [
+            {
+              feedId: '1',
+              createdAt: 1_500,
+              originCreatedAt: 900,
+              operation: 'GROUP_ANNOUNCEMENT',
+              body: { text: 'Notice' },
+            },
+          ],
+        },
+      });
+      // A server-directed window restart must drop the whole staged
+      // announcement, timestamps included.
+      await webdb.beginGroupMetaRecovery(9, '2');
+      expect(await groupMeta()).toMatchObject({
+        recoveryAnnouncementFeedId: null,
+        recoveryAnnouncementText: null,
+        recoveryAnnouncementCreatedAt: null,
+        recoveryAnnouncementOriginCreatedAt: null,
+      });
+      // A narrowed window with no announcement ends fully cleared instead of
+      // resurrecting the interrupted window's timestamps.
+      await webdb.applyGroupMetaPage({
+        threadId: 9,
+        namespaceId: 0,
+        page: {
+          account: '!team',
+          mode: 'full',
+          scannedThrough: '2',
+          groupMetaFeedEndId: '2',
+          hasMore: false,
+          items: [],
+        },
+      });
+      expect(await groupMeta()).toMatchObject({
+        announcementFeedId: null,
+        announcementText: null,
+        announcementCreatedAt: null,
+        announcementOriginCreatedAt: null,
+      });
+    });
+
     it('reads and commits member profiles in the group publisher space, never a diagonal', async () => {
       await webdb.openForUser('1');
       await seedGroupFeed(webdb, 7);

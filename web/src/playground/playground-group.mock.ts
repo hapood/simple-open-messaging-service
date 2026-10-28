@@ -88,10 +88,7 @@ export class PlaygroundGroupService
       if (params.description !== undefined) profile.bio = params.description;
       this.state.conversations.applyGroupUpdate(groupId, { profile });
       const thread = this.group(groupId);
-      const user = this.state.user(
-        thread.account,
-        thread.publisherNamespaceId,
-      );
+      const user = this.state.user(thread.account, thread.publisherNamespaceId);
       if (user) {
         this.state.publishProfile(user, {
           name: thread.profile.name,
@@ -119,18 +116,19 @@ export class PlaygroundGroupService
         message: string;
       }> = [];
       for (const target of params.users) {
-        const friend = this.state.conversations
-          .items()
-          .find(
-            (thread) =>
-              thread.type === 'P2P' &&
-              thread.conversationState === 'ACTIVE' &&
-              !thread.blocked &&
-              sameIdentity(
-                { account: thread.account, namespaceId: thread.publisherNamespaceId },
-                target,
-              ),
-          );
+        const friend = this.state.conversations.items().find(
+          (thread) =>
+            thread.type === 'P2P' &&
+            thread.conversationState === 'ACTIVE' &&
+            !thread.blocked &&
+            sameIdentity(
+              {
+                account: thread.account,
+                namespaceId: thread.publisherNamespaceId,
+              },
+              target,
+            ),
+        );
         const reason = !friend
           ? 'FRIEND_REQUIRED'
           : this.candidateState(params.groupId, target);
@@ -154,7 +152,10 @@ export class PlaygroundGroupService
         }
         this.state.addRequest(
           'GROUP_INVITATION',
-          { account: conversation.account, namespaceId: conversation.publisherNamespaceId },
+          {
+            account: conversation.account,
+            namespaceId: conversation.publisherNamespaceId,
+          },
           target,
           'OUTGOING',
           params.groupId,

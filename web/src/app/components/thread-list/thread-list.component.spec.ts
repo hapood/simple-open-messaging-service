@@ -38,8 +38,8 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
  * ConversationListService is stubbed with controllable signals so assertions stay at the component
  * boundary. This also avoids instantiating the real repo → WebdbService → WebsocketService chain: the
  * SSE worker is a `file://` cross-origin Worker that Karma cannot load from its `localhost:9876` origin.
- * No detectChanges — only component TS signals are read (pulling in child rendering + Material animations
- * is unnecessary and brittle).
+ * Rendering tests cover row semantics and the bounded virtual window with deterministic viewport
+ * measurements. Animation geometry and offscreen transitions are covered separately by FlipListAnimator.
  */
 describe('ThreadListComponent', () => {
   let fixture: ComponentFixture<ThreadListComponent>;
@@ -109,6 +109,130 @@ describe('ThreadListComponent', () => {
     });
     fixture = TestBed.createComponent(ThreadListComponent);
     comp = fixture.componentInstance;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  async function renderLargeList(height: () => number = () => 720) {
+    // Keep native scroll clamping consistent with the measured viewport.
+    (fixture.nativeElement as HTMLElement).style.height = `${height()}px`;
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains('thread-list') ? height() : 0;
+      },
+    );
+    items.set(
+      Array.from({ length: 5000 }, (_, index) => {
+        const item = p2p(index + 1, index + 1);
+        return {
+          ...item,
+          profile: { ...item.profile, name: `User ${index + 1}` },
+        };
+      }),
+    );
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    return fixture.nativeElement.querySelector('.thread-list') as HTMLElement;
+  }
+
+  it('mounts only the viewport and buffer rows for 5000 conversations', async () => {
+    const viewport = await renderLargeList();
+    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(16);
+    expect(
+      viewport.querySelector<HTMLElement>('.thread-list-spacer')!.style.height,
+    ).toBe('360000px');
+    viewport.scrollTop = 2000 * 72;
+    viewport.dispatchEvent(new Event('scroll'));
+    await fixture.whenStable();
+    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(22);
+    expect(viewport.querySelector('[data-flip-key="2001"]')).not.toBeNull();
+    expect(viewport.querySelector('[data-flip-key="1"]')).toBeNull();
+    expect(
+      viewport.querySelector('.thread-slot')?.getAttribute('aria-posinset'),
+    ).toBe('1995');
+    expect(
+      viewport.querySelector('.thread-slot')?.getAttribute('aria-setsize'),
+    ).toBe('5000');
+    expect(
+      viewport.querySelector<HTMLElement>('.thread-list-window')!.style
+        .transform,
+    ).toBe('translateY(143568px)');
+  });
+
+  it('resets search to the top and clamps the window after the list shrinks', async () => {
+    const viewport = await renderLargeList();
+    viewport.scrollTop = 300000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await fixture.whenStable();
+    fixture.componentRef.setInput('searchText', 'User 4999');
+    await fixture.whenStable();
+    expect(viewport.scrollTop).toBe(0);
+    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(1);
+    expect(viewport.querySelector('[data-flip-key="4999"]')).not.toBeNull();
+    fixture.componentRef.setInput('searchText', '');
+    await fixture.whenStable();
+    viewport.scrollTop = 300000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await fixture.whenStable();
+    items.set(items().slice(0, 3));
+    await fixture.whenStable();
+    expect(viewport.scrollTop).toBe(0);
+    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(3);
+  });
+
+  it('moves keyboard focus beyond the mounted window without selecting a conversation', async () => {
+    const viewport = await renderLargeList();
+    const select = vi.fn();
+    comp.onSelect.subscribe(select);
+    viewport.querySelector<HTMLElement>('[data-flip-key="1"]')!.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'End',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await fixture.whenStable();
+    expect(viewport.scrollTop).toBe(359280);
+    expect(document.activeElement?.getAttribute('data-flip-key')).toBe('5000');
+    document.activeElement!.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Home',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await fixture.whenStable();
+    expect(viewport.scrollTop).toBe(0);
+    expect(document.activeElement?.getAttribute('data-flip-key')).toBe('1');
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it('recalculates the window on resize and disconnects the observer on destroy', async () => {
+    let resized!: ResizeObserverCallback;
+    const disconnect = vi.fn();
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resized = callback;
+        }
+        observe() {}
+        disconnect = disconnect;
+      },
+    );
+    let height = 720;
+    const viewport = await renderLargeList(() => height);
+    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(16);
+    height = 144;
+    resized([], {} as ResizeObserver);
+    await fixture.whenStable();
+    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(8);
+    fixture.destroy();
+    expect(disconnect).toHaveBeenCalledOnce();
   });
 
   /** Empty profile projection; identity coordinates are available before profile hydration. */
@@ -370,6 +494,8 @@ describe('ThreadListComponent', () => {
         ...group,
         joinRequestReadFeedId: 4,
         joinRequestEndFeedId: 5,
+        unreadCount: 2,
+        mentionUnread: ['me'],
       },
     ]);
     status.set(ConversationLoadStatus.READY);
@@ -385,5 +511,14 @@ describe('ThreadListComponent', () => {
     ).componentInstance as IconComponent;
     expect(icon.type()).toBe(AppIconType.GROUP_JOIN_REQUESTS);
     expect(badge.textContent?.trim()).toBe('');
+    const statusGroup = badge.closest('.thread-status-group')!;
+    expect(statusGroup).not.toBeNull();
+    expect(statusGroup.getAttribute('aria-hidden')).toBe('true');
+    expect(statusGroup.querySelectorAll('.thread-status-icon')).toHaveLength(2);
+    expect(
+      statusGroup
+        .querySelector('.thread-status-icon--mention')
+        ?.textContent?.trim(),
+    ).toBe('@');
   });
 });
