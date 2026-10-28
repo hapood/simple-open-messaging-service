@@ -58,10 +58,10 @@ describe('log viewer SSE', () => {
     expect(received).toHaveLength(2);
   });
 
-  it('releases an actual framework log stream on HTTP disconnect', async () => {
+  it('commits headers with a heartbeat even when no log matches the filter', async () => {
     const unsubscribe = vi.fn();
     const service = new LogViewerService({
-      snapshot: () => [record],
+      snapshot: () => [],
       subscribe: () => unsubscribe,
     } as never);
     const module = await Test.createTestingModule({
@@ -84,7 +84,9 @@ describe('log viewer SSE', () => {
       expect(response.headers['content-type']).toBe('text/event-stream');
       const chunks: string[] = [];
       response.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
-      await vi.waitFor(() => expect(chunks.join('')).toContain('event: log'));
+      await vi.waitFor(() =>
+        expect(chunks.join('')).toContain('event: heartbeat'),
+      );
       request.destroy();
       await vi.waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
     } finally {

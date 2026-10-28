@@ -1,3 +1,8 @@
+import {
+  consumeSse,
+  SseDecoder,
+  type SseFrame,
+} from '../../../../shared/sse-client';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot';
 import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
 import {
@@ -26,7 +31,10 @@ import {
   PersonalQuotaState,
 } from './model';
 import { WebdbService } from './webdb.service';
-import { ProfileRepository, type ResolvedProfile } from './profile-store.service';
+import {
+  ProfileRepository,
+  type ResolvedProfile,
+} from './profile-store.service';
 import { PreferenceStore } from './preference-store.service';
 import { isTauri, tauriInvoke } from './runtime';
 import { SessionLifecycleService } from './session-lifecycle.service';
@@ -112,7 +120,8 @@ export const CACHE_REBUILD_RELOAD = new InjectionToken<() => void>(
 );
 
 /** Transient self presentation; only account facts are persisted in account state. */
-export type SelfProfileView = SelfAccount & Pick<ResolvedProfile, 'name' | 'bio'>;
+export type SelfProfileView = SelfAccount &
+  Pick<ResolvedProfile, 'name' | 'bio'>;
 
 @Injectable({
   providedIn: 'root',
@@ -135,7 +144,9 @@ export class UserService {
   private readonly _stateFeedCursor = signal<number | undefined>(undefined);
   readonly stateFeedCursor = this._stateFeedCursor.asReadonly();
 
-  private readonly _relationshipRequestHead = signal<IncomingRequestHead | undefined>(undefined);
+  private readonly _relationshipRequestHead = signal<
+    IncomingRequestHead | undefined
+  >(undefined);
   readonly relationshipRequestHead = this._relationshipRequestHead.asReadonly();
   private readonly _intentOptimisticReadId = signal<string | null>(null);
   /** Publish only a durable optimistic target, monotonically. A null durable
@@ -150,8 +161,10 @@ export class UserService {
     if (head === undefined) return false;
     const optimistic = this._intentOptimisticReadId();
     const read = BigInt(head.requestReadId);
-    const covered = optimistic !== null && BigInt(optimistic) > read
-      ? BigInt(optimistic) : read;
+    const covered =
+      optimistic !== null && BigInt(optimistic) > read
+        ? BigInt(optimistic)
+        : read;
     return BigInt(head.requestEndId) > covered;
   });
   private readonly webdb = inject(WebdbService);
@@ -200,7 +213,9 @@ export class UserService {
   }
 
   constructor(private http: HttpClient) {
-    this.sessionLifecycle.invalidated$.subscribe(() => this.sessionId.set(null));
+    this.sessionLifecycle.invalidated$.subscribe(() =>
+      this.sessionId.set(null),
+    );
   }
 
   /** Mark the next HELLO-established user partition for drop + clean v1 initialization. */
@@ -253,8 +268,13 @@ export class UserService {
    *  matches HELLO's, the cached profile is fresh and the fetch is skipped; otherwise (first boot / stale)
    *  the full profile is fetched + cached. Friend-request notification state is restored from this device's
    *  per-account database and subsequently advanced by the unified state delta. */
-  async establishSession(userId: number, profileRev: number, sessionId: number): Promise<void> {
-    if (!Number.isSafeInteger(sessionId) || sessionId <= 0) throw new Error('invalid HELLO sessionId');
+  async establishSession(
+    userId: number,
+    profileRev: number,
+    sessionId: number,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(sessionId) || sessionId <= 0)
+      throw new Error('invalid HELLO sessionId');
     const scope = this.sessionLifecycle.capture();
     const checkSession = () => {
       if (!this.sessionLifecycle.isCurrent(scope))
@@ -303,8 +323,10 @@ export class UserService {
     this.sessionUserId.set(userId);
     this.sessionId.set(sessionId);
     if (state.intentRequestEndId !== null && state.intentRequestReadId !== null)
-      this.applyRelationshipRequestHead({ requestEndId: state.intentRequestEndId,
-        requestReadId: state.intentRequestReadId });
+      this.applyRelationshipRequestHead({
+        requestEndId: state.intentRequestEndId,
+        requestReadId: state.intentRequestReadId,
+      });
     this._intentOptimisticReadId.set(state.intentRequestOptimisticReadId);
     // Durable resubmission: a read target that was persisted but never
     // confirmed (failed submission, restart in between) retries once the
@@ -350,16 +372,25 @@ export class UserService {
   applyRelationshipRequestHead(value: unknown): void {
     const next = parseIncomingRequestHead(value);
     const current = this.relationshipRequestHead();
-    const merged = current ? {
-      requestEndId: BigInt(next.requestEndId) > BigInt(current.requestEndId)
-        ? next.requestEndId : current.requestEndId,
-      requestReadId: BigInt(next.requestReadId) > BigInt(current.requestReadId)
-        ? next.requestReadId : current.requestReadId,
-    } : next;
+    const merged = current
+      ? {
+          requestEndId:
+            BigInt(next.requestEndId) > BigInt(current.requestEndId)
+              ? next.requestEndId
+              : current.requestEndId,
+          requestReadId:
+            BigInt(next.requestReadId) > BigInt(current.requestReadId)
+              ? next.requestReadId
+              : current.requestReadId,
+        }
+      : next;
     this._relationshipRequestHead.set(merged);
     // Mirror the storage rule: a confirmed read covering the optimistic target retires it.
     const optimistic = this._intentOptimisticReadId();
-    if (optimistic !== null && BigInt(merged.requestReadId) >= BigInt(optimistic))
+    if (
+      optimistic !== null &&
+      BigInt(merged.requestReadId) >= BigInt(optimistic)
+    )
       this._intentOptimisticReadId.set(null);
   }
 
@@ -367,11 +398,19 @@ export class UserService {
   async markRelationshipRequestsRead(requestReadId: string): Promise<void> {
     const scope = this.sessionLifecycle.capture();
     const sessionId = this.sessionId();
-    if (sessionId === null) throw new Error('request read requires an active session');
-    const res = await firstValueFrom(this.http.post<StandardResponse<IncomingRequestHead>>(
-      `${apiPrefix()}/relationship/requests/read`, { requestReadId },
-    ));
-    if (!this.sessionLifecycle.isCurrent(scope) || this.sessionId() !== sessionId) return;
+    if (sessionId === null)
+      throw new Error('request read requires an active session');
+    const res = await firstValueFrom(
+      this.http.post<StandardResponse<IncomingRequestHead>>(
+        `${apiPrefix()}/relationship/requests/read`,
+        { requestReadId },
+      ),
+    );
+    if (
+      !this.sessionLifecycle.isCurrent(scope) ||
+      this.sessionId() !== sessionId
+    )
+      return;
     if (res.code !== 0) throw new Error(res.message);
     this.applyRelationshipRequestHead(res.data);
   }
@@ -428,7 +467,10 @@ export class UserService {
     }
   }
 
-  private async restoreCachedSelfProfile(userId: number, signal?: AbortSignal): Promise<void> {
+  private async restoreCachedSelfProfile(
+    userId: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const cached = (await this.webdb.readAccountState()).selfProfile;
     if (signal?.aborted) throw new SessionSupersededError();
     if (cached?.id === userId)
@@ -454,8 +496,12 @@ export class UserService {
 
   async clearSessionPreferences(userId?: number): Promise<void> {
     if (userId === undefined) {
-      const saved = await this.preferences.getStrict<unknown>('device', LAST_USER_ID_KEY);
-      if (typeof saved === 'number' && Number.isSafeInteger(saved) && saved > 0) userId = saved;
+      const saved = await this.preferences.getStrict<unknown>(
+        'device',
+        LAST_USER_ID_KEY,
+      );
+      if (typeof saved === 'number' && Number.isSafeInteger(saved) && saved > 0)
+        userId = saved;
     }
     await Promise.all([
       this.preferences.remove('device', LAST_USER_ID_KEY),
@@ -572,7 +618,11 @@ export class UserService {
     const scope = this.sessionLifecycle.capture();
     const state = await this.webdb.readAccountState();
     const cursor = state.stateFeedId;
-    if (!this.sessionLifecycle.isCurrent(scope) || this.sessionUserId() !== userId) return undefined;
+    if (
+      !this.sessionLifecycle.isCurrent(scope) ||
+      this.sessionUserId() !== userId
+    )
+      return undefined;
     const committed = cursor ?? 0;
     if (
       typeof committed !== 'number' ||
@@ -582,8 +632,10 @@ export class UserService {
       return undefined;
     this.seedStateFeedCursor(committed);
     if (state.intentRequestEndId !== null && state.intentRequestReadId !== null)
-      this.applyRelationshipRequestHead({ requestEndId: state.intentRequestEndId,
-        requestReadId: state.intentRequestReadId });
+      this.applyRelationshipRequestHead({
+        requestEndId: state.intentRequestEndId,
+        requestReadId: state.intentRequestReadId,
+      });
     this._intentOptimisticReadId.set(state.intentRequestOptimisticReadId);
     return committed;
   }
@@ -602,7 +654,10 @@ export class UserService {
       message: string;
       data?: { id: number; account: string };
     }>(`${apiPrefix()}/user/register`, params, {
-      context: new HttpContext().set(REQUEST_SCOPE, RequestScope.Authentication),
+      context: new HttpContext().set(
+        REQUEST_SCOPE,
+        RequestScope.Authentication,
+      ),
     });
   }
 
@@ -661,6 +716,25 @@ export class UserService {
       query.set('publisherNamespaceId', String(params.publisherNamespaceId));
     if (params.profileNamespaceId !== undefined)
       query.set('profileNamespaceId', String(params.profileNamespaceId));
+    const decodeFrame = ({
+      event,
+      data,
+    }: SseFrame): FederatedResolveResult | undefined => {
+      if (!data) return undefined;
+      if (event === 'progress') {
+        onProgress?.(
+          (JSON.parse(data) as { stage: FederatedResolveStage }).stage,
+        );
+      } else if (event === 'resolved') {
+        return JSON.parse(data) as FederatedResolveResult;
+      } else if (event === 'failed') {
+        throw new FederatedResolveError(
+          (JSON.parse(data) as { reason?: FederatedResolveFailure }).reason ??
+            'UNKNOWN',
+        );
+      }
+      return undefined;
+    };
     // HttpClient is intentional: browser requests use the httpOnly cookie and
     // TauriHttpBackend routes native requests through Rust, which injects its
     // in-memory Bearer. The response is terminal and server-closed, so native
@@ -676,73 +750,34 @@ export class UserService {
         )
         .pipe(
           map((text) => {
-            for (const frame of text.split(/\r?\n\r?\n/)) {
-              const event = /^event:\s*(.+)$/m.exec(frame)?.[1]?.trim();
-              const data = /^data:\s*(.+)$/m.exec(frame)?.[1];
-              if (!event || !data) continue;
-              if (event === 'progress') {
-                onProgress?.(
-                  (JSON.parse(data) as { stage: FederatedResolveStage }).stage,
-                );
-              }
-              if (event === 'resolved')
-                return JSON.parse(data) as FederatedResolveResult;
-              if (event === 'failed')
-                throw new FederatedResolveError(
-                  (JSON.parse(data) as { reason?: FederatedResolveFailure })
-                    .reason ?? 'UNKNOWN',
-                );
-            }
-            throw new Error('resolve stream ended without a terminal event');
+            let result: FederatedResolveResult | undefined;
+            new SseDecoder().push(text, (frame) => {
+              if (!result) result = decodeFrame(frame);
+            });
+            if (!result)
+              throw new Error('resolve stream ended without a terminal event');
+            return result;
           }),
         );
 
     return new Observable<FederatedResolveResult>((subscriber) => {
       const aborter = new AbortController();
       void (async () => {
-        const response = await fetch(
+        await consumeSse(
           `${apiPrefix()}/user/resolve-federated-stream?${query.toString()}`,
           {
             signal: aborter.signal,
-            headers: { Accept: 'text/event-stream' },
-            cache: 'no-store',
+            onFrame: (frame) => {
+              const result = decodeFrame(frame);
+              if (result) {
+                subscriber.next(result);
+                subscriber.complete();
+              }
+            },
           },
         );
-        if (!response.ok || !response.body) {
-          throw new Error(`federated resolve failed: HTTP ${response.status}`);
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-          let boundary: number;
-          while ((boundary = buffer.indexOf('\n\n')) !== -1) {
-            const frame = buffer.slice(0, boundary);
-            buffer = buffer.slice(boundary + 2);
-            const event = /^event:\s*(.+)$/m.exec(frame)?.[1]?.trim();
-            const data = /^data:\s*(.+)$/m.exec(frame)?.[1];
-            if (!event || !data) continue;
-            if (event === 'progress') {
-              onProgress?.(
-                (JSON.parse(data) as { stage: FederatedResolveStage }).stage,
-              );
-            } else if (event === 'resolved') {
-              subscriber.next(JSON.parse(data) as FederatedResolveResult);
-              subscriber.complete();
-              return;
-            } else if (event === 'failed') {
-              throw new FederatedResolveError(
-                (JSON.parse(data) as { reason?: FederatedResolveFailure })
-                  .reason ?? 'UNKNOWN',
-              );
-            }
-          }
-        }
-        throw new Error('resolve stream ended without a terminal event');
+        if (!subscriber.closed)
+          throw new Error('resolve stream ended without a terminal event');
       })().catch((error: unknown) => {
         if (!aborter.signal.aborted) subscriber.error(error);
       });
@@ -758,9 +793,14 @@ export class UserService {
     parseIncomingRequestHead(head);
     const scope = this.sessionLifecycle.capture();
     const sessionId = this.sessionId();
-    if (sessionId === null) throw new Error('request read requires an active session');
+    if (sessionId === null)
+      throw new Error('request read requires an active session');
     const state = await this.webdb.advanceIntentRequestRead(head.requestEndId);
-    if (!this.sessionLifecycle.isCurrent(scope) || this.sessionId() !== sessionId) return;
+    if (
+      !this.sessionLifecycle.isCurrent(scope) ||
+      this.sessionId() !== sessionId
+    )
+      return;
     this.publishIntentOptimisticRead(state.intentRequestOptimisticReadId);
     await this.markRelationshipRequestsRead(head.requestEndId);
   }
@@ -779,9 +819,7 @@ export class UserService {
   }
 
   /** Threads own established relationships; pending rounds are queried online. */
-  async localRelationship(
-    user: Pick<User, 'id' | 'account' | 'namespaceId'>,
-  ) {
+  async localRelationship(user: Pick<User, 'id' | 'account' | 'namespaceId'>) {
     const threads = await this.webdb.getThreads();
     const isGroup = user.account.startsWith('!');
     const friendship = threads.some(
@@ -793,8 +831,10 @@ export class UserService {
     );
     if (friendship) return 'FRIEND' as const;
     if (isGroup) return 'NONE' as const;
-    if (await this.hasPendingRound('SENT', user)) return 'OUTGOING_PENDING' as const;
-    if (await this.hasPendingRound('RECEIVED', user)) return 'INCOMING_PENDING' as const;
+    if (await this.hasPendingRound('SENT', user))
+      return 'OUTGOING_PENDING' as const;
+    if (await this.hasPendingRound('RECEIVED', user))
+      return 'INCOMING_PENDING' as const;
     return 'NONE' as const;
   }
 
@@ -811,49 +851,68 @@ export class UserService {
       );
       const page = res.data;
       if (res.code !== 0 || !page) throw new Error(res.message);
-      if (page.items.some((item) => {
-        const peer = bucket === 'SENT' ? item.receiver : item.author;
-        return item.kind === kind && item.status === 'REQUESTED' &&
-          peer.account === target.account && peer.namespaceId === target.namespaceId;
-      })) return true;
+      if (
+        page.items.some((item) => {
+          const peer = bucket === 'SENT' ? item.receiver : item.author;
+          return (
+            item.kind === kind &&
+            item.status === 'REQUESTED' &&
+            peer.account === target.account &&
+            peer.namespaceId === target.namespaceId
+          );
+        })
+      )
+        return true;
       if (!page.hasMore) return false;
-      if (page.before === null) throw new Error('request page has no continuation');
+      if (page.before === null)
+        throw new Error('request page has no continuation');
       before = page.before;
     }
   }
 
   /** Group cards disable their join action while one live application exists. */
-  async hasPendingGroupApplication(target: Pick<User, 'account' | 'namespaceId'>): Promise<boolean> {
+  async hasPendingGroupApplication(
+    target: Pick<User, 'account' | 'namespaceId'>,
+  ): Promise<boolean> {
     return this.hasPendingRound('SENT', target, 'GROUP_APPLICATION');
   }
 
-  queryRelationshipRequests(params: { bucket: RequestBucket; before?: string; take?: number }) {
+  queryRelationshipRequests(params: {
+    bucket: RequestBucket;
+    before?: string;
+    take?: number;
+  }) {
     return this.http.post<StandardResponse<PersonalRequestPage>>(
-      `${apiPrefix()}/relationship/requests`, params,
+      `${apiPrefix()}/relationship/requests`,
+      params,
     );
   }
 
   acceptRelationship(params: { requestId: string }) {
     return this.http.post<StandardResponse<RequestDecisionResult>>(
-      `${apiPrefix()}/relationship/accept`, params,
+      `${apiPrefix()}/relationship/accept`,
+      params,
     );
   }
 
   rejectRelationshipRequest(params: { requestId: string }) {
     return this.http.post<StandardResponse<RequestDecisionResult>>(
-      `${apiPrefix()}/relationship/requests/reject`, params,
+      `${apiPrefix()}/relationship/requests/reject`,
+      params,
     );
   }
 
   withdrawRelationshipRequest(params: { requestId: string }) {
     return this.http.post<StandardResponse<RequestDecisionResult>>(
-      `${apiPrefix()}/relationship/requests/withdraw`, params,
+      `${apiPrefix()}/relationship/requests/withdraw`,
+      params,
     );
   }
 
   joinGroupRequest(params: { requestId: string }) {
     return this.http.post<StandardResponse<RequestDecisionResult>>(
-      `${apiPrefix()}/group/join-request`, params,
+      `${apiPrefix()}/group/join-request`,
+      params,
     );
   }
 

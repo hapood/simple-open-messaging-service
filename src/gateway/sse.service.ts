@@ -72,9 +72,8 @@ export interface MediaFileDownloadProgressEvent {
  *
  * One registry, `clients`, keyed by userId (a user may have multiple live connections — multiple
  * tabs/devices — in an array): the primary session stream (GET /events) carrying wake-ups and
- * ephemeral call coordination, with Observable teardown on disconnect. (The former
- * separate notification-stream registry + its scoped notification token were removed — the Android
- * foreground service now consumes `/events` directly via the Kotlin-owned connection.)
+ * ephemeral call coordination, with Observable teardown on disconnect. The native
+ * shared Rust runtime consumes this stream independently of the renderer.
  */
 @Injectable()
 export class SseService implements OnModuleDestroy {

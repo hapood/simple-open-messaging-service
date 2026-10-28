@@ -1,5 +1,6 @@
 import { Public } from '../common/public.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
+import { withSseHeartbeat } from '../common/sse-heartbeat.js';
 import {
   Body,
   Controller,
@@ -69,7 +70,9 @@ export class LogViewerController {
     @Query('scope') scope?: string,
     @Query('taskId') taskId?: string,
   ): Observable<MessageEvent> {
-    return this.viewer.attach(scope || undefined, taskId || undefined);
+    return this.viewer
+      .attach(scope || undefined, taskId || undefined)
+      .pipe(withSseHeartbeat());
   }
 
   /**

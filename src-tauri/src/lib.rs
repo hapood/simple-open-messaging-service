@@ -51,9 +51,8 @@ use std::path::PathBuf;
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use futures_util::StreamExt;
 // `log` facade macros (warn!/error!) — backed at runtime by `tauri-plugin-log`, registered FIRST in
 // run(). Its Webview target forwards each record into the webview console via the `log://log` event
 // (re-emitted by the frontend attachConsole-equivalent in main.ts), so Rust-side failures — SSE connect
@@ -99,11 +98,6 @@ const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 16;
 /// Timeout for the unauthenticated client-compatibility probe used in origin selection.
 /// Bounds the full request (including its response body) during cold start and failover.
 const ORIGIN_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Max wait for the SSE stream's opening response. A server that accepts the connection but
-/// never sends headers would hang the connect forever. On timeout → treat as a network error → backoff
-/// + reconnect (parity with any other connect failure).
-const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The backend origin the shell talks to when nothing else is configured. A deliberate non-routable
 /// placeholder — identical in debug and release APKs (no dev-only `localhost`/LAN default, so the

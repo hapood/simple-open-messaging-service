@@ -46,6 +46,38 @@ const profile = (
   } as User,
 });
 
+describe('UserService federated resolve SSE', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('ignores heartbeats, decodes fragmented progress, and closes on the terminal result', async () => {
+    const service = Object.create(UserService.prototype) as UserService;
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const text =
+          'event: heartbeat\r\ndata: {}\r\n\r\nevent: progress\r\ndata: {"stage":"DISCOVERING"}\r\n\r\nevent: resolved\r\ndata: {"user":{"account":"bob"}}\r\n\r\n';
+        for (const character of text)
+          controller.enqueue(new TextEncoder().encode(character));
+      },
+      cancel,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)));
+    const progress = vi.fn();
+    const result = await firstValueFrom(
+      service.resolveFederatedUser(
+        { account: 'bob', domain: 'peer.example' },
+        progress,
+      ),
+    );
+    expect(result.user.account).toBe('bob');
+    expect(progress).toHaveBeenCalledExactlyOnceWith('DISCOVERING');
+    // Allow attempt cleanup after Observable completion to release the locked reader.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
+});
+
 describe('UserService.localRelationship', () => {
   it.each([
     { namespaceId: 7, state: 'ACTIVE', expected: 'FRIEND' },

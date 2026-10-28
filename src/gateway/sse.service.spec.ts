@@ -7,6 +7,7 @@ import type { Observable, Subscription } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import { profileNamespaceChangeFeedHead } from '../database/schema.js';
 import { SseService } from './sse.service.js';
+import { withSseHeartbeat } from '../common/sse-heartbeat.js';
 
 function makeService() {
   const database = {
@@ -72,7 +73,7 @@ class FixtureController {
 
   @Sse('events')
   stream(): Observable<MessageEvent> {
-    return this.sse.register(7, 11);
+    return this.sse.register(7, 11).pipe(withSseHeartbeat());
   }
 }
 
@@ -319,7 +320,7 @@ describe('framework SSE streams', () => {
     }
   });
 
-  it('does not poll database or send idle ping events', async () => {
+  it('keeps transport heartbeats out of the domain registry and does not poll database', async () => {
     vi.useFakeTimers();
     const { svc, database } = makeService();
     try {
@@ -328,7 +329,7 @@ describe('framework SSE streams', () => {
       database.db.select.mockClear();
       await vi.advanceTimersByTimeAsync(70_000);
       expect(database.db.select).not.toHaveBeenCalled();
-      expect(eventsOf(client, 'ping')).toHaveLength(0);
+      expect(eventsOf(client, 'heartbeat')).toHaveLength(0);
     } finally {
       svc.onModuleDestroy();
       vi.useRealTimers();

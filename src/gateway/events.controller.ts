@@ -11,6 +11,7 @@ import {
 import type { FastifyRequest } from 'fastify';
 import type { Observable } from 'rxjs';
 import { Raw } from '../common/raw.decorator.js';
+import { withSseHeartbeat } from '../common/sse-heartbeat.js';
 import { EventsReceiptDto } from './events-receipt.dto.js';
 import { SseService } from './sse.service.js';
 
@@ -34,7 +35,9 @@ export class EventsController {
   @Sse()
   stream(@Req() req: FastifyRequest): Observable<MessageEvent> {
     const user = req.user as { userId: number; sessionId: number };
-    return this.sseService.register(user.userId, user.sessionId);
+    return this.sseService
+      .register(user.userId, user.sessionId)
+      .pipe(withSseHeartbeat());
   }
 
   @Post('receipt')

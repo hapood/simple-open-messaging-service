@@ -84,9 +84,8 @@ export class WebsocketService implements OnDestroy {
    *  not a graceful wait. The server sends HELLO right after flushing headers (sub-second normally); 10s is
    *  a generous threshold that avoids false triggers on slow networks. If it fires the open stream is
    *  treated as unusable: the disconnect surfaces at the connection indicator and the stream is force-
-   *  reconnected so the new connection re-pushes HELLO. The existing staleness watchdogs do NOT cover this
-   *  — they arm only after the first ping, so an open stream still receiving pings but never HELLO would
-   *  hang the threadlist forever. */
+   *  reconnected so the new connection re-pushes HELLO. Transport heartbeats only prove liveness;
+   *  they do not complete this domain handshake. */
   private static readonly HELLO_TIMEOUT_MS = 10_000;
   private helloTimeout?: ReturnType<typeof setTimeout>;
   constructor() {

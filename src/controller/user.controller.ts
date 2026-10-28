@@ -35,10 +35,7 @@ import {
   UserResponseDto,
 } from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
-import {
-  UserResolveDto,
-  UpdateProfileDto,
-} from '../dto/user.dto.js';
+import { UserResolveDto, UpdateProfileDto } from '../dto/user.dto.js';
 import { S2sResponseError } from '../federation/federation-errors.js';
 import type { S2SProfile } from '../federation/federation-profile.js';
 import type { PossessionKey } from '../federation/federation-profile.service.js';
@@ -48,6 +45,7 @@ import { KeypairService } from '../federation/keypair.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
 import { Raw } from '../common/raw.decorator.js';
+import { withSseHeartbeat } from '../common/sse-heartbeat.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
@@ -581,7 +579,7 @@ export class UserController {
         clearTimeout(deadline);
         unsubscribeProgress();
       };
-    });
+    }).pipe(withSseHeartbeat());
   }
 
   /** Transient resolve card. Identity is the pure `(namespaceId, account)`

@@ -19,6 +19,7 @@ cc = "1.2"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
 
 [dependencies]
 tauri = { version = "2", features = [] }

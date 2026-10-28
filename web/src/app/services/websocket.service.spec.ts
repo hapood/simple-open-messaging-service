@@ -103,6 +103,21 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(events).toHaveBeenCalledTimes(1);
   });
 
+  it('does not mark a stream ready merely because it is open and receiving transport heartbeats', () => {
+    vi.useFakeTimers();
+    try {
+      const initial = liveWorker;
+      liveWorker!.emit({ type: 'state', state: 'open' });
+      // Transport heartbeats are consumed below the facade; no HELLO is delivered.
+      expect(ws.helloReady$.value).toBe(false);
+      vi.advanceTimersByTime(10_000);
+      expect(liveWorker).not.toBe(initial);
+      expect(ws.helloReady$.value).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports forced logout after stopping transport without constructing AuthService', () => {
     const revoked = vi.fn(() => expect(ws.state()).toBe('closed'));
     ws.forcedLogout$.subscribe(revoked);

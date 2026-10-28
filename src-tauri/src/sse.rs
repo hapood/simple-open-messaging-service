@@ -7,7 +7,37 @@ use log::warn;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ServerSessionState, SSE_CONNECT_TIMEOUT};
+use crate::ServerSessionState;
+
+const SSE_CONNECT_TIMEOUT: Duration = Duration::from_millis(15_000);
+const SSE_IDLE_TIMEOUT: Duration = Duration::from_millis(30_000);
+const SSE_HEARTBEAT_EVENT: &str = "heartbeat";
+
+/// A stream-scoped receive deadline. Control wakes cannot extend it, and dropping
+/// the attempt drops its timer. Empty chunks do not count as network progress.
+struct ReceiveDeadline {
+    timer: std::pin::Pin<Box<tokio::time::Sleep>>,
+}
+
+impl ReceiveDeadline {
+    fn new() -> Self {
+        Self {
+            timer: Box::pin(tokio::time::sleep(SSE_IDLE_TIMEOUT)),
+        }
+    }
+
+    fn received(&mut self, bytes: usize) {
+        if bytes > 0 {
+            self.timer
+                .as_mut()
+                .reset(tokio::time::Instant::now() + SSE_IDLE_TIMEOUT);
+        }
+    }
+
+    async fn expired(&mut self) {
+        self.timer.as_mut().await;
+    }
+}
 
 // Shared Rust /events protocol. Desktop commands below are transport control adapters;
 // Android's headless JNI adapter uses the same run_loop and typed publication sink.
@@ -757,6 +787,8 @@ async fn open_one_stream(
 
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let mut stream = resp.bytes_stream();
+    // Keep a persistent deadline: control wakes must not extend receive liveness.
+    let mut idle = ReceiveDeadline::new();
     loop {
         tokio::select! {
             biased;
@@ -775,10 +807,16 @@ async fn open_one_stream(
                     return outcome;
                 }
             }
+            _ = idle.expired() => {
+                warn!("sse stream received no data for 30s; reconnecting");
+                return StreamOutcome::Err;
+            }
             chunk = stream.next() => match chunk {
                 None => return StreamOutcome::StreamClosed,    // server closed → reconnect
                 Some(Err(_)) => return StreamOutcome::Err,     // network error → reconnect
                 Some(Ok(bytes)) => {
+                    idle.received(bytes.len());
+                    if bytes.is_empty() { continue; }
                     buf.extend_from_slice(&bytes);
                     while let Some(content) = take_sse_frame(&mut buf) {
                         if !app.authenticated() { return StreamOutcome::Cancelled; }
@@ -1021,6 +1059,9 @@ fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
         }
     }
     let event = event?;
+    if event.is_empty() || event == SSE_HEARTBEAT_EVENT {
+        return None;
+    }
     let joined = data_lines.join("\n");
     let data = if joined.is_empty() {
         serde_json::Value::Null
@@ -1030,9 +1071,11 @@ fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
     Some(ParsedFrame { event, data })
 }
 
-// SSE parser unit tests (desktop-only — the parser fns are #[cfg(desktop)]). Pure byte/string logic,
-// the trickiest new code in the supervisor: line-end forms, frame boundaries, multi-line data join,
-// comment lines, malformed-JSON handling. Run with `cargo test` (the docker desktop build).
-#[cfg(all(test, desktop))]
+// The shared runtime parser and receive deadline behave identically on all hosts.
+#[cfg(test)]
 #[path = "tests/sse_parser_tests.rs"]
 mod sse_parser_tests;
+
+#[cfg(test)]
+#[path = "tests/sse_liveness_tests.rs"]
+mod sse_liveness_tests;
