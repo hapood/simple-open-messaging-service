@@ -24,10 +24,8 @@ describe('browser SSE to database-worker state-feed handoff', () => {
     'forwards commits for the current port generation (port before HELLO: %s)',
     async (portBeforeHello) => {
       posted.length = 0;
-      let streamController!: ReadableStreamDefaultController<Uint8Array>;
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          streamController = controller;
           controller.enqueue(
             new TextEncoder().encode(
               'event: HELLO\ndata: {"userId":1,"stateFeedEndId":3,"threadFeedEndId":0}\n\n',
@@ -67,8 +65,8 @@ describe('browser SSE to database-worker state-feed handoff', () => {
         expect(port.postMessage).toHaveBeenCalledWith({ target: 0 });
       } finally {
         send({ type: 'stop' });
-        // The mocked fetch does not cancel its stream on AbortSignal, so close it explicitly.
-        streamController.close();
+        // The shared reader owns attempt-scoped cancellation and cancels the
+        // response body on stop; the mock stream needs no manual close.
         await vi.waitFor(() =>
           expect(
             posted.filter(
