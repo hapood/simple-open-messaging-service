@@ -14,6 +14,7 @@ import { SettingsLanguageComponent } from './settings-language.component';
 import { SettingsMediaComponent } from './settings-media.component';
 import { SettingsPushComponent } from './settings-push.component';
 import { SettingsNotificationsComponent } from './settings-notifications.component';
+import { SettingsDesktopNotificationsComponent } from './settings-desktop-notifications.component';
 import { SettingsConnectionComponent } from './settings-connection.component';
 import { SettingsAboutComponent } from './settings-about.component';
 import { SettingsDevicesComponent } from './settings-devices.component';
@@ -107,6 +108,7 @@ export function buildSettingsCategories(
   };
   const notifSummary = (): string => {
     void d.language.lang();
+    if (isTauri()) return d.transloco.translate('settings.nativeNotifSummary');
     const p = d.webPush.permission();
     if (p === 'granted') return d.transloco.translate('settings.notifOn');
     if (p === 'unsupported')
@@ -194,14 +196,16 @@ export function buildSettingsCategories(
       order: 3,
     },
     {
-      // Browser build only (PC browser + iOS PWA). Android uses FCM (the `push` category above); the
-      // Tauri desktop shell posts via window.__TAURI__.notification with no browser permission needed.
+      // Desktop uses native permissions and preferences; browsers use Web Push.
+      // Android retains its FCM-specific category above.
       id: 'notifications',
       icon: AppIconType.NOTIFICATIONS,
       titleKey: 'settings.notifications',
       summary: notifSummary,
-      component: SettingsNotificationsComponent,
-      visible: () => !isTauri(),
+      component: isTauri()
+        ? SettingsDesktopNotificationsComponent
+        : SettingsNotificationsComponent,
+      visible: () => !(isTauri() && isAndroid()),
       order: 3,
     },
     {

@@ -10,6 +10,8 @@ pub(crate) mod attention;
 pub(crate) mod call_peer;
 pub(crate) mod client_state;
 pub(crate) mod contacts;
+#[cfg(any(target_os = "macos", test))]
+mod desktop_badge;
 #[cfg(desktop)]
 pub(crate) mod desktop_notifications;
 mod device_connection;
@@ -203,6 +205,8 @@ pub(crate) fn end_login_connection(
 ) -> Result<std::sync::Arc<crate::login_connection::LoginConnection>, String> {
     let owner = login_connection(id)?;
     owner.end().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    desktop_badge::reset();
     Ok(owner)
 }
 
@@ -529,6 +533,8 @@ fn prepare_fresh_login(preferences: &DeviceConnection) -> Result<String, String>
             // A mismatched handle is stale and admits no business work; end it before draining
             // under the lifetime guard, exactly like the full boundary.
             owner.end().map_err(|e| e.to_string())?;
+            #[cfg(target_os = "macos")]
+            desktop_badge::reset();
         }
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
         if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
@@ -561,6 +567,8 @@ fn prepare_fresh_login(preferences: &DeviceConnection) -> Result<String, String>
     // Hold the lifetime write guard until the new cache file is active and the journal is settled.
     if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
         owner.end().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        desktop_badge::reset();
     }
     let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
     if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {

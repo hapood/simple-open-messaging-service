@@ -8,6 +8,7 @@ fn main() {
                 .flag("-fblocks")
                 .compile("soms_notifications");
             println!("cargo:rustc-link-lib=framework=Foundation");
+            println!("cargo:rustc-link-lib=framework=AppKit");
             println!("cargo:rustc-link-lib=framework=UserNotifications");
             println!("cargo:rerun-if-changed=src/native_db/macos_notifications.m");
         }

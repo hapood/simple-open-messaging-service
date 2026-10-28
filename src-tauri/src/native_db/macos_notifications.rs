@@ -7,9 +7,15 @@ type Completion = extern "C" fn(*mut c_void, *const c_char);
 
 extern "C" {
     fn soms_macos_notifications_init();
+    fn soms_macos_notifications_status(
+        context: *mut c_void,
+        completion: extern "C" fn(*mut c_void, i32),
+    );
     fn soms_macos_notifications_authorize(context: *mut c_void, completion: Completion);
     fn soms_macos_notification_post(
         thread: i32,
+        session: i32,
+        origin: *const c_char,
         title: *const c_char,
         body: *const c_char,
         silent: bool,
@@ -42,17 +48,45 @@ fn wait_for_completion(start: impl FnOnce(*mut c_void, Completion)) -> Result<()
 }
 
 pub(crate) fn initialize(app: tauri::AppHandle) {
+    super::super::desktop_badge::initialize(app.clone());
     let _ = APP.set(app);
     unsafe { soms_macos_notifications_init() };
 }
 
 #[no_mangle]
-extern "C" fn soms_macos_notification_tapped(thread: i32) {
-    if let Some(app) = APP.get() {
-        if thread > 0 {
-            super::tapped(app, thread);
-        }
+extern "C" fn soms_macos_notification_tapped(thread: i32, session: i32, origin: *const c_char) {
+    if thread <= 0 || session <= 0 || origin.is_null() {
+        return;
     }
+    // The native delegate owns this UTF-8 string for the duration of the callback.
+    let Ok(origin) = (unsafe { CStr::from_ptr(origin) }).to_str() else {
+        return;
+    };
+    if let Some(app) = APP.get() {
+        super::tapped(app, thread, session, origin);
+    }
+}
+
+extern "C" fn status_completed(context: *mut c_void, status: i32) {
+    // The native completion owns this box and calls back exactly once.
+    let sender = unsafe { Box::from_raw(context.cast::<mpsc::Sender<i32>>()) };
+    let _ = sender.send(status);
+}
+
+pub(super) async fn permission() -> Result<super::DesktopNotificationPermission, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let (sender, receiver) = mpsc::channel::<i32>();
+        unsafe {
+            soms_macos_notifications_status(
+                Box::into_raw(Box::new(sender)).cast(),
+                status_completed,
+            );
+        }
+        let status = receiver.recv().map_err(|error| error.to_string())?;
+        Ok(super::permission_from_macos_status(status))
+    })
+    .await
+    .map_err(|error| format!("notification permission: {error}"))?
 }
 
 /// Permission prompts must never hold the account lifetime read guard.
@@ -71,11 +105,14 @@ pub(super) fn update(input: DesktopNotification) -> Result<(), String> {
         unsafe { soms_macos_notification_remove(input.thread_id) };
         return Ok(());
     }
+    let origin = CString::new(input.origin).map_err(|error| error.to_string())?;
     let title = CString::new(input.title.replace('\0', "")).map_err(|error| error.to_string())?;
     let body = CString::new(input.body.replace('\0', "")).map_err(|error| error.to_string())?;
     wait_for_completion(|context, completion| unsafe {
         soms_macos_notification_post(
             input.thread_id,
+            input.session_id,
+            origin.as_ptr(),
             title.as_ptr(),
             body.as_ptr(),
             input.silent,

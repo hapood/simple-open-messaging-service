@@ -37,6 +37,7 @@ import { WebdbService } from './webdb.service';
 import { WebPushService } from './web-push.service';
 import { ThreadNavigationIntentService } from './thread-navigation-intent.service';
 import { uuid } from '../lib/uuid';
+import { DesktopBadgeService } from './desktop-badge.service';
 
 /** Browser: bridge worker-projected updates to the push service worker, and answer active-chat
  * queries. Android sends only the selected chat to native; Rust projects its notifications. */
@@ -81,7 +82,10 @@ export class UnreadAttentionService {
       this.destroyRef.onDestroy(() => window.SomsFcm?.setActiveThreadId(-1));
       return;
     }
-    if (isTauri()) this.nativeAdapter = new TauriNotificationAdapter();
+    if (isTauri()) {
+      this.nativeAdapter = new TauriNotificationAdapter();
+      inject(DesktopBadgeService);
+    }
     this.adapter = this.nativeAdapter ?? new BrowserNotificationAdapter();
     if (isTauri()) this.installDesktopNavigation();
     const blur = () => this.onFocusChange(false);

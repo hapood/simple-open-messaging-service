@@ -255,7 +255,7 @@ commands.allow = [
 [[permission]]
 identifier = "allow-desktop-notifications"
 description = "Updates or clears desktop message notifications through the native manager."
-commands.allow = ["desktop_notification_update", "desktop_notifications_clear", "desktop_notification_pending", "desktop_notification_acknowledge"]
+commands.allow = ["desktop_notification_update", "desktop_notifications_clear", "desktop_notification_pending", "desktop_notification_acknowledge", "desktop_notification_permission", "desktop_notification_request_permission", "desktop_notification_open_settings", "desktop_badge_refresh"]
 
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."

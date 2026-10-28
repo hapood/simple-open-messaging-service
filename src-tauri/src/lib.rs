@@ -498,6 +498,10 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 tauri::generate_handler![
+                    native_db::desktop_notifications::desktop_badge_refresh,
+                    native_db::desktop_notifications::desktop_notification_permission,
+                    native_db::desktop_notifications::desktop_notification_request_permission,
+                    native_db::desktop_notifications::desktop_notification_open_settings,
                     native_db::desktop_notifications::desktop_notification_update,
                     native_db::profile_namespaces::native_db_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_commit_profile_namespace_bindings,

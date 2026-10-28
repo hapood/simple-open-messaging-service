@@ -367,6 +367,133 @@ mod windows_platform {
 }
 
 #[tauri::command]
+pub(crate) async fn desktop_badge_refresh(
+    app: tauri::AppHandle,
+    session_uuid: String,
+    user_id: i64,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        super::desktop_badge::refresh(app, session_uuid, user_id).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, session_uuid, user_id);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum DesktopNotificationPermission {
+    Unsupported,
+    NotDetermined,
+    Denied,
+    Authorized,
+    Provisional,
+    Unknown,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn permission_from_macos_status(status: i32) -> DesktopNotificationPermission {
+    match status {
+        0 => DesktopNotificationPermission::NotDetermined,
+        1 => DesktopNotificationPermission::Denied,
+        2 => DesktopNotificationPermission::Authorized,
+        3 => DesktopNotificationPermission::Provisional,
+        _ => DesktopNotificationPermission::Unknown,
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_notification_permission(
+) -> Result<DesktopNotificationPermission, String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_platform::permission().await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(DesktopNotificationPermission::Unsupported)
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_notification_request_permission(
+) -> Result<DesktopNotificationPermission, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // A denial is a permission state, not a transport failure. Re-query after the prompt.
+        let result = macos_platform::authorize().await;
+        let permission = macos_platform::permission().await?;
+        if permission == DesktopNotificationPermission::Denied {
+            return Ok(permission);
+        }
+        result?;
+        Ok(permission)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(DesktopNotificationPermission::Unsupported)
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_notification_open_settings(
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        // This command accepts no URL from the webview.
+        app.opener()
+            .open_url(
+                "x-apple.systempreferences:com.apple.preference.notifications",
+                None::<&str>,
+            )
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("notification settings are not supported on this platform".into())
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn macos_permission_states_are_explicit_and_unknown_is_not_authorized() {
+        assert_eq!(
+            permission_from_macos_status(0),
+            DesktopNotificationPermission::NotDetermined
+        );
+        assert_eq!(
+            permission_from_macos_status(1),
+            DesktopNotificationPermission::Denied
+        );
+        assert_eq!(
+            permission_from_macos_status(2),
+            DesktopNotificationPermission::Authorized
+        );
+        assert_eq!(
+            permission_from_macos_status(3),
+            DesktopNotificationPermission::Provisional
+        );
+        assert_eq!(
+            permission_from_macos_status(99),
+            DesktopNotificationPermission::Unknown
+        );
+        assert_eq!(
+            serde_json::to_string(&permission_from_macos_status(0)).unwrap(),
+            "\"notDetermined\""
+        );
+    }
+}
+
+#[tauri::command]
 pub(crate) async fn desktop_notification_update(
     app: tauri::AppHandle,
     notification: DesktopNotification,
