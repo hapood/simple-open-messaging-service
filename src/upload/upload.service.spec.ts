@@ -31,38 +31,6 @@ const mediaMetadata = {
   fromFile: vi.fn(metadataProbe),
 };
 
-/**
- * A minimal multipart FastifyRequest stand-in for consumeParts: yields the given file parts (each with
- * a `toBuffer()`) interleaved with non-file form fields. Mirrors the shape @fastify/multipart exposes.
- */
-function fakeReq(
-  files: Array<{
-    buf: Buffer;
-    filename?: string;
-    mimetype?: string;
-  }>,
-  fields: Record<string, string> = {},
-): any {
-  const parts: any[] = [];
-  for (const [k, v] of Object.entries(fields)) {
-    parts.push({ type: 'field', fieldname: k, value: v });
-  }
-  for (const f of files) {
-    parts.push({
-      type: 'file',
-      mimetype: f.mimetype ?? 'application/octet-stream',
-      ...(f.filename ? { filename: f.filename } : {}),
-      file: { resume: () => {} },
-      toBuffer: async () => f.buf,
-    });
-  }
-  return {
-    parts: async function* () {
-      for (const p of parts) yield p;
-    },
-  };
-}
-
 describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
   function target() {
     const svc = new UploadService({} as never, mediaMetadata as never);
@@ -327,42 +295,6 @@ describe('UploadService.landStagedPart — idempotent CAS landing', () => {
   });
 });
 
-describe('UploadService.consumeParts — multi-file drain', () => {
-  const svc = new UploadService({} as never, mediaMetadata as never);
-
-  it('collects file parts and companion form fields', async () => {
-    const r = await svc.consumeParts(
-      fakeReq([{ buf: PNG, filename: 'a.png', mimetype: 'image/png' }], {
-        w: '10',
-        h: '20',
-      }),
-      { maxBytes: 1024 },
-    );
-    expect(r.kind).toBe('ok');
-    if (r.kind === 'ok') {
-      expect(r.files).toHaveLength(1);
-      expect(r.files[0].filename).toBe('a.png');
-      expect(r.fields).toEqual({ w: '10', h: '20' });
-    }
-  });
-
-  it('drops empty parts and rejects with no-file when none remain', async () => {
-    const r = await svc.consumeParts(
-      fakeReq([{ buf: Buffer.alloc(0), filename: 'empty.bin' }]),
-      { maxBytes: 1024 },
-    );
-    expect(r).toEqual({ kind: 'rejected', reason: 'no-file' });
-  });
-
-  it('rejects a part exceeding the per-part cap as too-large', async () => {
-    const r = await svc.consumeParts(
-      fakeReq([{ buf: Buffer.alloc(10), filename: 'big.bin' }]),
-      { maxBytes: 4 },
-    );
-    expect(r).toEqual({ kind: 'rejected', reason: 'too-large' });
-  });
-});
-
 describe('UploadService.saveCasFromStream — persistent resume', () => {
   let root: string | undefined;
   afterEach(async () => {
@@ -376,6 +308,76 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     Object.defineProperty(service, 'casDir', { value: root });
     Object.defineProperty(service, 'casTmpDir', { value: join(root!, 'tmp') });
   };
+
+  it.each([
+    {
+      declaredBytes: 4,
+      maxFileBytes: 3,
+      body: 'data',
+      error: 'maximum attachment size',
+    },
+    { declaredBytes: 3, maxFileBytes: 4, body: 'data', error: 'declared size' },
+    { declaredBytes: 5, maxFileBytes: 5, body: 'data', error: 'size mismatch' },
+  ])(
+    'rejects object/declared-size violations before publishing: $declaredBytes/$maxFileBytes',
+    async ({ declaredBytes, maxFileBytes, body, error }) => {
+      root = await mkdtemp(join(tmpdir(), 'soms-cas-size-'));
+      const mediaAsset = { publishReady: vi.fn() };
+      const service = new UploadService(
+        mediaAsset as never,
+        mediaMetadata as never,
+      );
+      stubService(service);
+      const digest = createHash('sha256').update(body).digest('hex');
+      const fetch = vi.fn(() =>
+        (async function* () {
+          yield Buffer.from(body);
+        })(),
+      );
+      await expect(
+        service.saveCasFromStream(fetch, digest, {
+          declaredBytes,
+          maxFileBytes,
+        }),
+      ).rejects.toThrow(error);
+      expect(mediaAsset.publishReady).not.toHaveBeenCalled();
+      if (declaredBytes > maxFileBytes) expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rechecks the declared size and object limit on an existing CAS file', async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-cas-cached-'));
+    const mediaAsset = { publishReady: vi.fn() };
+    const service = new UploadService(
+      mediaAsset as never,
+      mediaMetadata as never,
+    );
+    stubService(service);
+    const body = Buffer.from('data');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const fetch = vi.fn(() =>
+      (async function* () {
+        yield body;
+      })(),
+    );
+    await service.saveCasFromStream(fetch, digest, {
+      declaredBytes: 4,
+      maxFileBytes: 4,
+    });
+    await expect(
+      service.saveCasFromStream(fetch, digest, {
+        declaredBytes: 3,
+        maxFileBytes: 4,
+      }),
+    ).rejects.toThrow('size mismatch');
+    await expect(
+      service.saveCasFromStream(fetch, digest, {
+        declaredBytes: 4,
+        maxFileBytes: 3,
+      }),
+    ).rejects.toThrow('maximum attachment size');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 
   it('retains a completed prefix after transport failure and resumes at its offset', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
@@ -392,22 +394,30 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     const firstOffsets: number[] = [];
 
     await expect(
-      service.saveCasFromStream((offset) => {
-        firstOffsets.push(offset);
-        return (async function* () {
-          yield body.subarray(0, 10);
-          throw new Error('network dropped');
-        })();
-      }, digest),
+      service.saveCasFromStream(
+        (offset) => {
+          firstOffsets.push(offset);
+          return (async function* () {
+            yield body.subarray(0, 10);
+            throw new Error('network dropped');
+          })();
+        },
+        digest,
+        { declaredBytes: body.length, maxFileBytes: body.length },
+      ),
     ).rejects.toThrow('network dropped');
 
     const resumedOffsets: number[] = [];
-    const saved = await service.saveCasFromStream((offset) => {
-      resumedOffsets.push(offset);
-      return (async function* () {
-        yield body.subarray(offset);
-      })();
-    }, digest);
+    const saved = await service.saveCasFromStream(
+      (offset) => {
+        resumedOffsets.push(offset);
+        return (async function* () {
+          yield body.subarray(offset);
+        })();
+      },
+      digest,
+      { declaredBytes: body.length, maxFileBytes: body.length },
+    );
     expect(firstOffsets).toEqual([0]);
     expect(resumedOffsets).toEqual([10]);
     expect(
@@ -442,6 +452,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
             throw new Error('network dropped');
           })(),
         digest,
+        { declaredBytes: body.length, maxFileBytes: body.length },
       ),
     ).rejects.toThrow('network dropped');
 
@@ -451,12 +462,16 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     await writeFile(partPath, corrupt);
 
     const offsets: number[] = [];
-    await service.saveCasFromStream((offset) => {
-      offsets.push(offset);
-      return (async function* () {
-        yield body.subarray(offset);
-      })();
-    }, digest);
+    await service.saveCasFromStream(
+      (offset) => {
+        offsets.push(offset);
+        return (async function* () {
+          yield body.subarray(offset);
+        })();
+      },
+      digest,
+      { declaredBytes: body.length, maxFileBytes: body.length },
+    );
 
     expect(offsets).toEqual([6]);
     expect(
@@ -480,17 +495,21 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     const offsets: number[] = [];
     let removed = false;
 
-    await service.saveCasFromStream((offset) => {
-      offsets.push(offset);
-      return (async function* () {
-        if (!removed) {
-          yield body.subarray(offset, 8);
-          await rm(partPath);
-          removed = true;
-        }
-        yield body.subarray(removed && offset !== 0 ? offset : 0);
-      })();
-    }, digest);
+    await service.saveCasFromStream(
+      (offset) => {
+        offsets.push(offset);
+        return (async function* () {
+          if (!removed) {
+            yield body.subarray(offset, 8);
+            await rm(partPath);
+            removed = true;
+          }
+          yield body.subarray(removed && offset !== 0 ? offset : 0);
+        })();
+      },
+      digest,
+      { declaredBytes: body.length, maxFileBytes: body.length },
+    );
 
     expect(offsets).toEqual([0, 0]);
     expect(
@@ -518,6 +537,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
             yield Buffer.from('corrupt');
           })(),
         expected,
+        { declaredBytes: 7, maxFileBytes: 7 },
       ),
     ).rejects.toThrow('CAS digest mismatch');
     // Tmp transients live under <root>/tmp/<digest>.*; a digest mismatch removes the part + sidecar.

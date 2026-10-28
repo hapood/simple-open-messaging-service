@@ -381,6 +381,7 @@ export type QuotaCountDimension = Exclude<QuotaDimension, 'fileBytes'>;
 /** Per-user quota breaker snapshot (msg cnt / file cnt / file total size). `fileBytes` is a decimal string
  *  because file-total-size is a backend bigint. */
 interface PersonalQuotaBreaker {
+  maxFileBytes: number;
   tripped: boolean;
   trippedDims: QuotaDimension[];
   msg: { count: number; limit: number };

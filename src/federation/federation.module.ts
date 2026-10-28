@@ -27,6 +27,7 @@ import { FederationRecognitionService } from './federation-recognition.service.j
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
 import { FederationMessageProvenanceService } from './federation-message-provenance.service.js';
 import { FederationAdminMessageProvenanceService } from './federation-admin-message-provenance.service.js';
+import { FederationMediaTransferService } from './federation-media-transfer.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
@@ -257,6 +258,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     ProfileEvidenceProjectionService,
     ProfileResolutionCoordinatorService,
     FederationMediaRangeClient,
+    FederationMediaTransferService,
     FederationInboundFileSync,
     FederationPendingMediaPromoter,
     FederationInboundMediaBatchService,

@@ -375,6 +375,7 @@ export type QuotaCountDimension = Exclude<QuotaDimension, 'fileBytes'>;
 
 /** Per-entity override set (null/absent = use the global default). */
 export interface QuotaOverrides {
+  maxFileBytes?: number | null;
   dailyMsgLimit?: number | null;
   dailyRequestLimit?: number | null;
   dailySignalLimit?: number | null;
@@ -401,6 +402,7 @@ export interface QuotaNode {
 /** One entity's circuit-breaker snapshot (msg cnt / file cnt / file total size). `fileBytes.bytes` is a
  *  decimal string because file-total-size is a backend bigint that can exceed JS safe-integer range. */
 export interface BreakerStatus {
+  maxFileBytes: number;
   entity: string;
   scope: 'peer' | 'user';
   userId?: number;
@@ -485,6 +487,7 @@ export interface UserQuotaState {
   overrides: QuotaOverrides;
   usage: Record<QuotaCountDimension, QuotaCountDimensionUsage>;
   breaker: {
+    maxFileBytes: number;
     tripped: boolean;
     trippedDims: QuotaDimension[];
     msg: { count: number; limit: number };
@@ -675,6 +678,7 @@ export interface AdminSettings {
     mediaMaxChunkRetries: number;
   };
   userQuotaDefaults: {
+    maxFileBytes: number;
     dailyMsgLimit: number;
     dailyRequestLimit: number;
     dailySignalLimit: number;
@@ -682,6 +686,7 @@ export interface AdminSettings {
     dailyFileBytesLimit: number;
   };
   federationQuotaDefaults: {
+    maxFileBytes: number;
     dailyMsgLimit: number;
     dailyRequestLimit: number;
     dailySignalLimit: number;

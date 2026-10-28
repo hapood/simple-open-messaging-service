@@ -295,7 +295,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/send-message` — Send message
 
-- **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the matching `/upload*` endpoint.
+- **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the sequential `/uploads/resumable/*` protocol.
 - **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` publishes each recipient's compacted `THREAD_CONTENT_HEAD`, wakes live clients through `STATE_FEED_UPDATED`, and notifies offline recipients through Push. `clientMessageId` is the send-idempotency key (a retry returns the original message).
 - **Replies**: PURE_TEXT content is `{ "text": "...", "quote": { "seq": n } }`. `n` must be a positive sequence identifying a visible message in the same local thread when sending; zero is invalid. Replies received through federation retain their positive source coordinate and digest even if the target body has not arrived. Ordinary text omits `quote`. Internal federation namespaces are not client navigation coordinates.
 - **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
@@ -307,7 +307,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/send-media` — Send media (staged)
 
-- **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/upload` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
+- **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/uploads/resumable/*` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
 
 ### POST `/link-preview/generations` · GET `/link-preview/generations/:generationId`
 
@@ -583,18 +583,6 @@ client bootstrap can register again. Provider-reported expiry uses revision-base
 
 > Controller: [src/upload/upload.controller.ts](../../src/upload/upload.controller.ts) · Service: [src/upload/upload.service.ts](../../src/upload/upload.service.ts)
 
-### POST `/upload` — Upload staged chat media
-
-- **Body**: `multipart/form-data`, one or more `file` parts, plus the staged-send `x-client-message-id` and
-  per-file metadata such as `w`, `h`, or `duration`. The staged `/send-media` intent determines which
-  media families are accepted. Files are magic-byte validated; the multipart part cap is 100 MB.
-- **Behavior**: writes bytes through the **content-addressed CAS pipeline** — `MediaAsset` uses sha256 of
-  the raw bytes and stores exactly one extensionless blob at `data/cas/<dd>/<dd>/<digest>`. The upload
-  also records progress for the staged message; when all expected parts arrive, the pending send is
-  promoted to a `Message`.
-- **Response `data`**: one file returns its result (`digest`, `url`, `size`, and detected metadata); multiple
-  files return `{ items: [...] }`.
-
 ### POST `/upload/avatar` — Upload a group avatar
 
 - **Body**: `multipart/form-data`, field `file`.
@@ -611,8 +599,12 @@ client bootstrap can register again. Provider-reported expiry uses revision-base
 - `PUT /uploads/resumable/:uploadId` appends one ordered `application/octet-stream` chunk using
   `Content-Range`.
 - `POST /uploads/resumable/:uploadId/complete` validates, publishes, and promotes the completed upload.
-- All four endpoints require the authenticated user who owns the upload session. The resumable flow is
-  an upload transport and does not replace `/send-media` or `/upload`'s staged-send contract.
+- All endpoints require the authenticated user who owns the upload session. Initialization declares
+  `clientMessageId`, `partId`, `position`, `intent`, `originalName`, `mimeType`, and `totalBytes`.
+  Object-size admission and the full file count/byte charge occur before any attachment bytes arrive.
+- Completion derives digest, family and display metadata, then publishes the staged message when all
+  parts are complete. `data.result` contains the per-part payload. Stage messages using `/send-media` first.
+- Legacy message multipart routes are removed. Only `/upload/avatar` accepts multipart files.
 
 ### Authenticated upload resources
 

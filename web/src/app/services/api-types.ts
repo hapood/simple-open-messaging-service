@@ -1885,23 +1885,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/upload": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Upload one or more media files (type-agnostic; promotes a staged send at the batch barrier) */
-        post: operations["UploadController_upload"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/upload/avatar": {
         parameters: {
             query?: never;
@@ -5037,6 +5020,8 @@ export interface components {
             seq?: number;
         };
         AdminSetQuotaDto: {
+            /** @description Maximum bytes per attachment; null inherits, zero disables new attachments. */
+            maxFileBytes?: number | null;
             dailySignalLimit?: number | null;
             /**
              * @description Messages/day (null = default)
@@ -5130,6 +5115,7 @@ export interface components {
             idleMinutes: number;
         };
         FederationQuotaDefaultsDto: {
+            maxFileBytes: number;
             dailyMsgLimit: number;
             dailyRequestLimit: number;
             dailySignalLimit: number;
@@ -5137,6 +5123,7 @@ export interface components {
             dailyFileBytesLimit: number;
         };
         UserQuotaDefaultsDto: {
+            maxFileBytes: number;
             dailySignalLimit: number;
             dailyMsgLimit: number;
             dailyRequestLimit: number;
@@ -7872,23 +7859,6 @@ export interface operations {
             path: {
                 clientMessageId: string;
             };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    UploadController_upload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
             cookie?: never;
         };
         requestBody?: never;

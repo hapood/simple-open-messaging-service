@@ -18,6 +18,7 @@ vi.mock('@/hooks/use-quota', () => ({
 }));
 
 const breaker = (scope: 'peer' | 'user'): BreakerStatus => ({
+  maxFileBytes: 1024 ** 3,
   entity: scope === 'peer' ? 'peer.test' : '42',
   userId: scope === 'user' ? 42 : undefined,
   scope,

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { withMessageDigest } from './support/message-fixture.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
+import { uploadMessagePart } from './support/upload';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
@@ -156,7 +157,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     token2 = (await seedUserWithSession(app, 'fastify2', { name: 'Fastify2' }))
       .token;
     // A sharp-valid PNG for the avatar endpoint (avatar validation decodes it; the hand-written
-    // PNG_1X1 used for the raw /upload tests has a header sharp's libpng rejects).
+    // PNG_1X1 used for attachment tests has a header sharp's libpng rejects).
     avatarPng = await makePng(200);
     // A DISTINCT PNG for the authz test so its CAS digest is not pre-authorized by the earlier
     // image-upload test (PNG_1X1 dedupes to the same digest across tests).
@@ -178,23 +179,36 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     return { thread, clientMessageId };
   }
 
+  it('does not expose legacy multipart message upload routes', async () => {
+    for (const path of [
+      '/upload',
+      '/upload/file',
+      '/upload/video',
+      '/upload/audio',
+    ]) {
+      const response = await request(app.getHttpServer())
+        .post(`/api/v1${path}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      expect(response.status).toBe(404);
+    }
+  });
+
   it('serves Swagger UI on Fastify', async () => {
     const res = await request(app.getHttpServer()).get('/api/v1/docs');
     expect(res.status).toBe(200);
   });
 
-  it('accepts a multipart image upload and serves it back at /uploads/', async () => {
+  it('accepts a sequential image upload and serves it back at /uploads/', async () => {
     const { clientMessageId } = await stageMedia('IMAGE');
-    const res = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', PNG_1X1, 'x.png')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE')
-      .field('w', '1')
-      .field('h', '1');
+    const res = await uploadMessagePart(
+      app.getHttpServer(),
+      token,
+      clientMessageId,
+      PNG_1X1,
+      'x.png',
+      'IMAGE',
+    );
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
     // CAS path contains only the sha256 identity; presentation metadata stays in the message.
@@ -232,26 +246,22 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       stageMedia('IMAGE'),
     ]);
     const [first, second] = await Promise.all([
-      request(app.getHttpServer())
-        .post('/api/v1/upload')
-        .set('Authorization', `Bearer ${token}`)
-        .set('x-client-message-id', firstStage.clientMessageId)
-        .attach('file', PNG_1X1, 'a.png')
-        .field('partId', randomUUID())
-        .field('position', '0')
-        .field('intent', 'IMAGE')
-        .field('w', '1')
-        .field('h', '1'),
-      request(app.getHttpServer())
-        .post('/api/v1/upload')
-        .set('Authorization', `Bearer ${token}`)
-        .set('x-client-message-id', secondStage.clientMessageId)
-        .attach('file', PNG_1X1, 'b.png')
-        .field('partId', randomUUID())
-        .field('position', '0')
-        .field('intent', 'IMAGE')
-        .field('w', '1')
-        .field('h', '1'),
+      uploadMessagePart(
+        app.getHttpServer(),
+        token,
+        firstStage.clientMessageId,
+        PNG_1X1,
+        'a.png',
+        'IMAGE',
+      ),
+      uploadMessagePart(
+        app.getHttpServer(),
+        token,
+        secondStage.clientMessageId,
+        PNG_1X1,
+        'b.png',
+        'IMAGE',
+      ),
     ]);
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
@@ -271,8 +281,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   });
 
   it('promotes a staged IMAGE send on upload and persists size in Message.content', async () => {
-    // The staged-send → upload → promote flow: POST /send-media records the intent, then POST /upload
-    // carrying the same x-client-message-id promotes it to a real Message whose content is the server-
+    // POST /send-media records the intent; completing its sequential upload promotes it to a real Message whose content is the server-
     // authored {url,w,h,size}. `size` (the real buffer length from saveCas) MUST land in the persisted
     // content — parseImageContent reads it back to render the meta bar; drop it and every reloaded /
     // SSE-echoed / received image renders "unknown size".
@@ -289,16 +298,14 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       });
     expect(stage.body.code).toBe(0);
 
-    const up = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .set('x-client-message-id', cid)
-      .attach('file', PNG_1X1, 'promote.png')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE')
-      .field('w', '2')
-      .field('h', '2');
+    const up = await uploadMessagePart(
+      app.getHttpServer(),
+      token,
+      cid,
+      PNG_1X1,
+      'promote.png',
+      'IMAGE',
+    );
     expect(up.status).toBe(200);
     expect(up.body.code).toBe(0);
     expect(up.body.data.size).toBe(PNG_1X1.length);
@@ -353,19 +360,15 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       });
     expect(stage.body.code).toBe(0);
 
-    const up = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .set('x-client-message-id', cid)
-      .attach('file', heic, {
-        filename: 'phone.heic',
-        contentType: 'image/heic',
-      })
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE')
-      .field('w', '4032')
-      .field('h', '3024');
+    const up = await uploadMessagePart(
+      app.getHttpServer(),
+      token,
+      cid,
+      heic,
+      'phone.heic',
+      'IMAGE',
+      { mimeType: 'image/heic' },
+    );
     expect(up.status).toBe(200);
     expect(up.body.code).toBe(0);
     expect(up.body.data.name).toBe('phone.heic');
@@ -413,17 +416,14 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
         contentType: 'IMAGE',
         clientMessageId: cid,
       });
-    const up = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .set('x-client-message-id', cid)
-      .attach('file', corrupt, {
-        filename: 'broken.png',
-        contentType: 'image/png',
-      })
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE');
+    const up = await uploadMessagePart(
+      app.getHttpServer(),
+      token,
+      cid,
+      corrupt,
+      'broken.png',
+      'IMAGE',
+    );
 
     expect(up.status).toBe(200);
     expect(up.body.code).toBe(0);
@@ -445,14 +445,14 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
 
   it('accepts a video upload (magic-byte container check) and serves it inline', async () => {
     const { clientMessageId } = await stageMedia('VIDEO');
-    const res = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', MP4_MIN, 'clip.mp4')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'VIDEO');
+    const res = await uploadMessagePart(
+      app.getHttpServer(),
+      token,
+      clientMessageId,
+      MP4_MIN,
+      'clip.mp4',
+      'VIDEO',
+    );
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
     expect(res.body.data.url).toMatch(
@@ -479,28 +479,28 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
 
   it('rejects forged video bytes for a staged VIDEO intent', async () => {
     const { clientMessageId } = await stageMedia('VIDEO');
-    const res = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', Buffer.from('not a video, just text'), 'fake.mp4')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'VIDEO');
+    const res = await uploadMessagePart(
+      app.getHttpServer(),
+      token,
+      clientMessageId,
+      Buffer.from('not a video, just text'),
+      'fake.mp4',
+      'VIDEO',
+    );
     expect(res.status).toBe(200);
     expect(res.body.code).not.toBe(0); // VALIDATION_FAILED — magic-byte gate rejected it
   });
 
   it('accepts an audio upload (ogg container)', async () => {
     const { clientMessageId } = await stageMedia('AUDIO');
-    const res = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', OGG_MIN, 'voice.ogg')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'AUDIO');
+    const res = await uploadMessagePart(
+      app.getHttpServer(),
+      token,
+      clientMessageId,
+      OGG_MIN,
+      'voice.ogg',
+      'AUDIO',
+    );
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(0);
     expect(res.body.data.url).toMatch(
@@ -512,16 +512,14 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   it('authorizes /uploads/msg-assets/ by thread membership (member 200, non-member 404)', async () => {
     // A uploads an image → a CAS shard url embedding the digest.
     const { thread, clientMessageId } = await stageMedia('IMAGE');
-    const up = await request(app.getHttpServer())
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${token}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', authzPng, 'authz.png')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE')
-      .field('w', '1')
-      .field('h', '1');
+    const up = await uploadMessagePart(
+      app.getHttpServer(),
+      token,
+      clientMessageId,
+      authzPng,
+      'authz.png',
+      'IMAGE',
+    );
     expect(up.body.code).toBe(0);
     const url: string = up.body.data.url;
     const digest = url

@@ -8,6 +8,7 @@ import {
 import { isRetryableFederationNetworkError } from './federation-http-scheduler.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
+import { CasOversizeError } from '../upload/upload.service.js';
 import { contentDigest, SignatureService } from './signature.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 
@@ -37,7 +38,8 @@ export class FederationMediaRangeClient {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
-    startOffset = 0,
+    startOffset: number,
+    declaredBytes: number,
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.transportConfig.get().mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
@@ -63,9 +65,20 @@ export class FederationMediaRangeClient {
         let buffer: Buffer;
         try {
           unit = await this.requestUnit(url, peerDomain, offset, requestedEnd);
+          if (unit.total !== declaredBytes) {
+            throw new Error('media declared size does not match Content-Range');
+          }
+          if (total !== null && unit.total !== total)
+            throw new Error('media total changed during transfer');
           const unitLength = unit.end - unit.start + 1;
           const pieces: Buffer[] = [];
-          for await (const piece of this.webBody(unit.res)) pieces.push(piece);
+          let received = 0;
+          for await (const piece of this.webBody(unit.res)) {
+            received += piece.length;
+            if (received > unitLength)
+              throw new CasOversizeError(BigInt(received - unitLength));
+            pieces.push(piece);
+          }
           buffer = Buffer.concat(pieces);
           if (buffer.length !== unitLength) {
             throw new Error(
@@ -81,6 +94,7 @@ export class FederationMediaRangeClient {
         } catch (error) {
           // Retry transport failures before headers as well as body/verification
           // failures, but do not repeat permanent peer rejections.
+          if (error instanceof CasOversizeError) throw error;
           if (!unit && !isRetryableFederationNetworkError(error)) throw error;
           if (++retries > this.transportConfig.get().mediaMaxChunkRetries) {
             throw new Error(
@@ -230,6 +244,9 @@ export class FederationMediaRangeClient {
     const returnedTotal = Number(match[3]);
     const digest = response.headers.get('content-digest');
     if (
+      !Number.isSafeInteger(returnedStart) ||
+      !Number.isSafeInteger(returnedEnd) ||
+      !Number.isSafeInteger(returnedTotal) ||
       returnedStart !== start ||
       returnedEnd < returnedStart ||
       returnedEnd > end ||

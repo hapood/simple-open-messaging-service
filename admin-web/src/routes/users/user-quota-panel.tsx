@@ -84,6 +84,9 @@ export function UserQuotaPanel({
           ) : null}
         </CardHeader>
         <CardContent className="space-y-5">
+          <p>
+            {t('settings.quotas.maxFileBytes')}: {state.breaker.maxFileBytes}
+          </p>
           <QuotaUsageCards
             usage={state.usage}
             fileBytes={state.breaker.fileBytes}
@@ -145,7 +148,13 @@ function EditUserQuota({
       ? ''
       : String(value.dailyFileBytesLimit / MB),
   );
+  const [maxFileBytes, setMaxFileBytes] = useState(
+    value.maxFileBytes?.toString() ?? '',
+  );
   const invalid =
+    (maxFileBytes.trim() !== '' &&
+      (!Number.isSafeInteger(Number(maxFileBytes)) ||
+        Number(maxFileBytes) < 0)) ||
     [...Object.values(counts), fileBytesMb].some((raw) => {
       if (!raw.trim()) return false;
       const n = Number(raw);
@@ -160,6 +169,7 @@ function EditUserQuota({
   const save = async () => {
     if (invalid) return;
     const overrides = {
+      maxFileBytes: maxFileBytes.trim() === '' ? null : Number(maxFileBytes),
       ...Object.fromEntries(
         countFields.map(([key]) => [
           key,
@@ -211,6 +221,17 @@ function EditUserQuota({
               value={fileBytesMb}
               placeholder={t('quota.placeholder.default')}
               onChange={(event) => setFileBytesMb(event.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('settings.quotas.maxFileBytes')}</Label>
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              value={maxFileBytes}
+              onChange={(event) => setMaxFileBytes(event.target.value)}
+              placeholder={t('quota.placeholder.default')}
             />
           </div>
           <p className="col-span-2 text-xs text-muted-foreground">

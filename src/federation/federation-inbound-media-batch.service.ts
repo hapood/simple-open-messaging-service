@@ -48,7 +48,11 @@ export class FederationInboundMediaBatchService {
 
   async runFileSyncBatch(
     batchId: string,
-    fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
+    fetchChunksFor: (
+      digest: string,
+      offset: number,
+      declaredBytes: number,
+    ) => AsyncIterable<Buffer>,
   ): Promise<void> {
     await this.fileSync.runBatch(
       batchId,
@@ -298,7 +302,7 @@ export class FederationInboundMediaBatchService {
     }
 
     const originSeq = stagedMessage.originSeq;
-    void this.runFileSyncBatch(batchId, (digest, offset) =>
+    void this.runFileSyncBatch(batchId, (digest, offset, declaredBytes) =>
       this.mediaRanges.fetch(
         batch.originDomain,
         digest,
@@ -307,6 +311,7 @@ export class FederationInboundMediaBatchService {
         toAccount,
         originSeq,
         offset,
+        declaredBytes,
       ),
     ).catch(() => undefined);
 

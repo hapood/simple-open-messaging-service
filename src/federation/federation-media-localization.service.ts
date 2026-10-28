@@ -18,7 +18,7 @@ import {
   extractDigestEntries,
   extractDigests,
 } from '../upload/file-content.js';
-import { UploadService } from '../upload/upload.service.js';
+import { FederationMediaTransferService } from './federation-media-transfer.service.js';
 import {
   federationFileSyncKind,
   isFederatedMediaContentType,
@@ -26,6 +26,7 @@ import {
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import { QuotaService } from '../quota/quota.service.js';
 import { localIdentityDomain } from '../common/local-identity.js';
 
 export interface FederationForwardAssetAuthorization {
@@ -40,33 +41,32 @@ export interface FederationForwardAssetAuthorization {
 export class FederationMediaLocalizationService {
   constructor(
     private readonly database: DatabaseService,
-    private readonly upload: UploadService,
+    private readonly transfers: FederationMediaTransferService,
     private readonly mediaRanges: FederationMediaRangeClient,
     private readonly visibility: MessageVisibilityService,
     private readonly forwardBundles: ForwardBundleService,
     private readonly inboundBatches: FederationInboundMediaBatchService,
     private readonly threadAccess: FederationThreadAccessService,
+    private readonly quota: QuotaService,
   ) {}
 
   async localizeForwardAssets(
     closure: ForwardWireBundle,
     peerDomain: string,
     authorization: FederationForwardAssetAuthorization,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    let ready = true;
     // Only validated per-bundle manifests authorize downloads; the top-level assets array is a
     // convenience summary and is not an independent authority.
     for (const asset of this.forwardBundles.assetsFromClosure(closure)) {
       try {
-        const have = await this.database.db.query.mediaAsset.findFirst({
-          where: and(
-            eq(tables.mediaAsset.digest, asset.digest),
-            eq(tables.mediaAsset.isDeleted, false),
-          ),
-          columns: { digest: true },
-        });
-        if (have) continue;
-        await this.upload.saveCasFromStream(
-          (offset) =>
+        const namespaceId = await this.quota.activeNamespaceId(peerDomain);
+        await this.transfers.receive({
+          namespaceId,
+          peerDomain,
+          digest: asset.digest,
+          declaredBytes: asset.bytes,
+          chunks: (offset) =>
             this.mediaRanges.fetch(
               peerDomain,
               asset.digest,
@@ -75,13 +75,15 @@ export class FederationMediaLocalizationService {
               authorization.toAccount,
               authorization.sourceSeq,
               offset,
+              asset.bytes,
             ),
-          asset.digest,
-        );
+        });
       } catch {
+        ready = false;
         // Bundle JSON remains usable and a later manual localization can retry the asset.
       }
     }
+    return ready;
   }
 
   async localizeMediaForMessage(
@@ -140,7 +142,7 @@ export class FederationMediaLocalizationService {
       });
       if (batchId) {
         void this.inboundBatches
-          .runFileSyncBatch(batchId, (digest, offset) =>
+          .runFileSyncBatch(batchId, (digest, offset, declaredBytes) =>
             this.mediaRanges.fetch(
               peerDomain,
               digest,
@@ -149,6 +151,7 @@ export class FederationMediaLocalizationService {
               toAccount,
               msg.originSeq!,
               offset,
+              declaredBytes,
             ),
           )
           .catch(() => undefined);
@@ -158,7 +161,7 @@ export class FederationMediaLocalizationService {
     }
 
     await this.threadAccess.assertThreadExists(msg.threadId, peerDomain);
-    await this.localizeMedia(
+    const admitted = await this.localizeMedia(
       msg,
       peerDomain,
       msg.creatorAccount,
@@ -166,7 +169,7 @@ export class FederationMediaLocalizationService {
       toAccount,
       msg.originSeq ?? msg.seq,
     );
-    return (await this.isMessageMediaReady(msg.id, msg.content))
+    return admitted && (await this.isMessageMediaReady(msg.id, msg.content))
       ? 'ready'
       : 'failed';
   }
@@ -208,31 +211,29 @@ export class FederationMediaLocalizationService {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
-  ): Promise<void> {
-    for (const { digest } of extractDigestEntries(msg.content)) {
+  ): Promise<boolean> {
+    let ready = true;
+    const namespaceId = await this.quota.activeNamespaceId(peerDomain);
+    for (const { digest, size } of extractDigestEntries(msg.content)) {
       try {
-        const have = await this.database.db.query.mediaAsset.findFirst({
-          where: and(
-            eq(tables.mediaAsset.digest, digest),
-            eq(tables.mediaAsset.isDeleted, false),
-          ),
-          columns: { digest: true },
+        if (size === undefined) throw new Error('missing media size');
+        await this.transfers.receive({
+          namespaceId,
+          peerDomain,
+          digest,
+          declaredBytes: size,
+          chunks: (offset) =>
+            this.mediaRanges.fetch(
+              peerDomain,
+              digest,
+              fromAccount,
+              fromDomain,
+              toAccount,
+              sourceSeq,
+              offset,
+              size,
+            ),
         });
-        if (!have) {
-          await this.upload.saveCasFromStream(
-            (offset) =>
-              this.mediaRanges.fetch(
-                peerDomain,
-                digest,
-                fromAccount,
-                fromDomain,
-                toAccount,
-                sourceSeq,
-                offset,
-              ),
-            digest,
-          );
-        }
         await this.database.db.transaction(async (tx) => {
           await this.threadAccess.assertResponseWritable(
             tx,
@@ -245,9 +246,11 @@ export class FederationMediaLocalizationService {
             .onConflictDoNothing();
         });
       } catch {
+        ready = false;
         // Best effort per file: a later manual retry can localize an inert cross-origin URL.
       }
     }
+    return ready;
   }
 
   private async isMessageMediaReady(
@@ -389,11 +392,12 @@ export class FederationMediaLocalizationService {
     }
     const closure = await this.forwardBundles.buildClosure(binding.bundleId);
     if (root.sourceDomain && root.sourceBundleId) {
-      await this.localizeForwardAssets(
+      const admitted = await this.localizeForwardAssets(
         closure,
         root.sourceDomain,
         await this.resolveForwardAssetAuth(msg),
       );
+      if (!admitted) return 'failed';
     }
     const digests = [
       ...new Set(

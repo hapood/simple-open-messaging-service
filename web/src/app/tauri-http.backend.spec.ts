@@ -173,7 +173,7 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
       new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' }),
       'voice.webm',
     );
-    const req = new HttpRequest('POST', '/api/v1/upload/audio', fd, {
+    const req = new HttpRequest('POST', '/api/v1/upload/avatar', fd, {
       headers: new HttpHeaders({ 'x-client-message-id': 'voice-cid-1' }),
     });
     await firstValueFrom(backend.handle(req));

@@ -325,8 +325,9 @@ checkpoints, coalescing keys, terminal results, and `SUPERSEDED` state support
 bounded resumable domain work. See [durable task scheduling](../design/durable-task-scheduling.md).
 
 Quota policy tables are symmetric: `FederationQuotaPolicy(nsid)` and
-`UserQuotaPolicy(account)` store nullable overrides for the same five dimensions.
-`SystemSetting` stores five defaults per scope. Usage and temporary grants exist
+`UserQuotaPolicy(account)` store nullable overrides for the same five daily dimensions
+and the independent `maxFileBytes` attachment bound (NULL inherits, zero disables).
+`SystemSetting` stores five daily defaults and a 1 GiB inclusive single-file default per scope. Usage and temporary grants exist
 only in process memory, reset at UTC midnight or restart, and have no database
 tables. Identity namespaces contain no quota policy columns. See
 [quota enforcement](../design/quota-enforcement.md).

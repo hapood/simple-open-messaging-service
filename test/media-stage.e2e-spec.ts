@@ -14,6 +14,7 @@ import {
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';
+import { ResumableUploadService } from '../src/upload/resumable-upload.service';
 import { UserQuotaService } from '../src/quota/user-quota.service';
 import { UserIntentService } from '../src/user/p2p-intent/authored/user-intent.service';
 import { BusinessCode } from '../src/common/business-code';
@@ -107,6 +108,46 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     family: 'FILE',
     name: 'stage.bin',
     mimeType: 'application/octet-stream',
+  });
+
+  it('admits against the user object policy and charges once before bytes, retaining usage after cancellation', async () => {
+    const upload = app.get(ResumableUploadService);
+    const cid = randomUUID();
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
+    await userQuota.setPolicy(userId, { maxFileBytes: 4n });
+    const before = await userQuota.breakerStatus(userId);
+    const dto = {
+      clientMessageId: cid,
+      partId: randomUUID(),
+      position: 0,
+      intent: 'FILE' as const,
+      originalName: 'test.bin',
+      mimeType: 'application/octet-stream',
+      totalBytes: 5,
+    };
+    await expect(upload.init(userId, dto)).rejects.toMatchObject({
+      bizCode: BusinessCode.FILE_TOO_LARGE,
+    });
+    expect((await userQuota.breakerStatus(userId)).fileBytes.bytes).toBe(
+      before.fileBytes.bytes,
+    );
+    dto.totalBytes = 4;
+    const session = await upload.init(userId, dto);
+    await upload.init(userId, dto);
+    expect((await userQuota.breakerStatus(userId)).file.count).toBe(
+      before.file.count + 1,
+    );
+    expect(
+      BigInt((await userQuota.breakerStatus(userId)).fileBytes.bytes),
+    ).toBe(BigInt(before.fileBytes.bytes) + 4n);
+    await expect(
+      upload.append(userId, session.uploadId, 'bytes 0-4/4', Buffer.alloc(5)),
+    ).rejects.toThrow();
+    await upload.cancel(userId, session.uploadId);
+    expect(
+      BigInt((await userQuota.breakerStatus(userId)).fileBytes.bytes),
+    ).toBe(BigInt(before.fileBytes.bytes) + 4n);
+    await userQuota.setPolicy(userId, {});
   });
 
   it('stageMedia creates a PendingMedia(pending) and is idempotent by clientMessageId', async () => {

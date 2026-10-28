@@ -19,13 +19,6 @@ export const QUOTA_FIELDS = [
   'dailyFileBytesLimit',
 ] as const;
 export type QuotaLimits = Record<(typeof QUOTA_FIELDS)[number], number>;
-export interface QuotaOverrides {
-  dailyMsgLimit?: number | null;
-  dailyRequestLimit?: number | null;
-  dailySignalLimit?: number | null;
-  dailyFileLimit?: number | null;
-  dailyFileBytesLimit?: bigint | null;
-}
 export const QUOTA_FIELD: Record<QuotaDimension, keyof QuotaLimits> = {
   messages: 'dailyMsgLimit',
   files: 'dailyFileLimit',
@@ -33,60 +26,12 @@ export const QUOTA_FIELD: Record<QuotaDimension, keyof QuotaLimits> = {
   signals: 'dailySignalLimit',
   fileBytes: 'dailyFileBytesLimit',
 };
-export type QuotaPolicyView = Omit<QuotaOverrides, 'dailyFileBytesLimit'> & {
-  dailyFileBytesLimit?: number | null;
-};
-export function policyView(policy: QuotaOverrides): QuotaPolicyView {
-  return {
-    ...policy,
-    dailyFileBytesLimit:
-      policy.dailyFileBytesLimit == null
-        ? null
-        : Number(policy.dailyFileBytesLimit),
-  };
-}
 export const CALL_INVITATION_QUOTA_COST = 400;
 export function retryAfterSeconds(now = Date.now()): number {
   return Math.max(
     1,
     Math.ceil(((Math.floor(now / 86400000) + 1) * 86400000 - now) / 1000),
   );
-}
-export function normalizeOverrides(input: QuotaOverrides): QuotaOverrides {
-  const result: QuotaOverrides = {};
-  for (const field of QUOTA_FIELDS) {
-    const value = input[field];
-    if (value == null) {
-      Object.assign(result, { [field]: null });
-      continue;
-    }
-    const n = Number(value);
-    if (!Number.isSafeInteger(n) || n < 0) throw new Error(`invalid ${field}`);
-    Object.assign(result, {
-      [field]: field === 'dailyFileBytesLimit' ? BigInt(n) : n,
-    });
-  }
-  return result;
-}
-export function validateLimits(input: Record<string, unknown>): QuotaLimits {
-  const result = {} as QuotaLimits;
-  for (const field of QUOTA_FIELDS) {
-    const raw = input[field];
-    if (
-      typeof raw !== 'number' &&
-      !(
-        field === 'dailyFileBytesLimit' &&
-        typeof raw === 'string' &&
-        /^\d+$/.test(raw)
-      )
-    )
-      throw new Error(`invalid ${field}`);
-    const value = Number(raw);
-    if (!Number.isSafeInteger(value) || value < 0)
-      throw new Error(`invalid ${field}`);
-    result[field] = value;
-  }
-  return result;
 }
 
 /** Process-local UTC daily accounting. Restart intentionally resets all usage and grants. */

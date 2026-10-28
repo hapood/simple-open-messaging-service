@@ -8,7 +8,7 @@ process.env.SOMS_DOMAIN ??= 'chat.example';
 function setup(options?: {
   visibleMessage?: unknown;
   pendingStatus?: string;
-  assets?: Array<{ digest: string }>;
+  assets?: Array<{ digest: string; bytes: number }>;
 }) {
   const mediaAssetFindFirst = vi.fn();
   const database = {
@@ -30,7 +30,7 @@ function setup(options?: {
       },
     },
   };
-  const upload = { saveCasFromStream: vi.fn() };
+  const upload = { receive: vi.fn() };
   const mediaRanges = { fetch: vi.fn() };
   const visibility = {
     findVisibleByThreadSeq: vi.fn().mockResolvedValue(options?.visibleMessage),
@@ -46,6 +46,11 @@ function setup(options?: {
     forwardBundles as never,
     {} as never,
     {} as never,
+    {
+      activeNamespaceId: vi.fn().mockResolvedValue(3),
+      assertFileSize: vi.fn().mockResolvedValue(1024 ** 3),
+      claimFile: vi.fn().mockResolvedValue(undefined),
+    } as never,
   );
   return {
     service,
@@ -97,6 +102,7 @@ describe('FederationMediaLocalizationService', () => {
     };
     const service = new FederationMediaLocalizationService(
       database as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -161,6 +167,7 @@ describe('FederationMediaLocalizationService', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     await expect(
@@ -203,11 +210,14 @@ describe('FederationMediaLocalizationService', () => {
     );
   });
 
-  it('deduplicates forward assets and downloads missing ones with the admitted route', async () => {
+  it('routes all forward assets through shared admission and IO, including cached digests', async () => {
     const present = 'a'.repeat(64);
     const missing = 'b'.repeat(64);
     const { service, upload, mediaRanges, mediaAssetFindFirst } = setup({
-      assets: [{ digest: present }, { digest: missing }],
+      assets: [
+        { digest: present, bytes: 36 },
+        { digest: missing, bytes: 36 },
+      ],
     });
     mediaAssetFindFirst
       .mockResolvedValueOnce({ digest: present })
@@ -216,11 +226,9 @@ describe('FederationMediaLocalizationService', () => {
       yield Buffer.from('data');
     })();
     mediaRanges.fetch.mockReturnValue(chunks);
-    upload.saveCasFromStream.mockImplementation(
-      async (fetchChunks: (offset: number) => AsyncIterable<Buffer>) => {
-        expect(fetchChunks(32)).toBe(chunks);
-      },
-    );
+    upload.receive.mockImplementation(async (input) => {
+      if (input.digest === missing) expect(input.chunks(32)).toBe(chunks);
+    });
 
     await service.localizeForwardAssets({} as never, 'peer.example', {
       fromAccount: 'alice',
@@ -229,9 +237,14 @@ describe('FederationMediaLocalizationService', () => {
       sourceSeq: 23,
     });
 
-    expect(upload.saveCasFromStream).toHaveBeenCalledExactlyOnceWith(
-      expect.any(Function),
-      missing,
+    expect(upload.receive).toHaveBeenCalledTimes(2);
+    expect(upload.receive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        digest: missing,
+        declaredBytes: 36,
+        namespaceId: 3,
+        peerDomain: 'peer.example',
+      }),
     );
     expect(mediaRanges.fetch).toHaveBeenCalledExactlyOnceWith(
       'peer.example',
@@ -241,6 +254,7 @@ describe('FederationMediaLocalizationService', () => {
       '!group',
       23,
       32,
+      36,
     );
   });
 });

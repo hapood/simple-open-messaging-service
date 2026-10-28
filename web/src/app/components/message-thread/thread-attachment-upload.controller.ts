@@ -16,8 +16,6 @@ import type { DebugToolsService } from '../../services/debug-tools.service';
 import type { ToastService } from '../../services/toast.service';
 import { MEDIA_STAGE_TIMEOUT_MS } from './message-send-timeout';
 
-import { MAX_MEDIA_FILE_BYTES } from '../../../../../shared/media-upload-limits';
-
 type UploadIntent = 'IMAGE' | 'VIDEO' | 'AUDIO';
 
 // Staging has no file transfer; uploads instead time out only after a period without progress.
@@ -55,6 +53,7 @@ export function withUploadIdleTimeout<T>(
 }
 
 export interface ThreadAttachmentUploadHost {
+  maxFileBytes(): Promise<number | undefined>;
   threadId(): number | undefined;
   failPending(item: CbItem<ChatItemData>): Promise<void>;
   markAccepted(item: CbItem<ChatItemData>): Promise<void>;
@@ -484,10 +483,11 @@ export class ThreadAttachmentUploadController {
     item: CbItem<ChatItemData>,
     file: File,
   ): Promise<boolean> {
-    if (file.size <= MAX_MEDIA_FILE_BYTES) return false;
+    const limit = await this.host.maxFileBytes();
+    if (limit === undefined || (limit > 0 && file.size <= limit)) return false;
     this.transfers.fail(
       cid,
-      this.transloco.translate('transfer.attachmentTooLarge'),
+      this.transloco.translate('transfer.attachmentTooLarge', { limit }),
       false,
     );
     await this.host.failPending(item);

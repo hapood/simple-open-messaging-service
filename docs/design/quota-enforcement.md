@@ -6,12 +6,12 @@ Quota policy is durable; daily accounting is intentionally process-local. A rest
 resets usage and temporary grants. Multiple backend processes do not share a daily
 budget; this design is for a single accounting process per server.
 
-- `SystemSetting` stores five defaults per scope, with prefixes
+- `SystemSetting` stores five daily defaults and `maxFileBytes` per scope, with prefixes
   `quota:federation:` and `quota:localUser:`. Missing values use code defaults.
 - `FederationQuotaPolicy(nsid)` references `IdentityNamespace.id`.
 - `UserQuotaPolicy(account)` references the unique local `Account.account`.
 - Both policy tables contain `dailyRequestLimit`, `dailySignalLimit`,
-  `dailyMsgLimit`, `dailyFileLimit`, and `dailyFileBytesLimit`.
+  `dailyMsgLimit`, `dailyFileLimit`, `dailyFileBytesLimit`, and `maxFileBytes`.
 - An absent policy or a NULL field inherits the scope default. Zero disallows
   new consumption of that dimension. A positive value overrides the default.
 
@@ -92,7 +92,7 @@ resource state, but daily charge deduplication is process-local and UTC-day scop
 
 User and federation details expose the same five limits and their current
 process-local usage, remaining amount, and default/custom source. The global
-settings page edits all ten defaults. Temporary additions support all five
+settings page edits both scopes' defaults, including the single-file limit. Temporary additions support only the five daily
 dimensions; omitted fields leave that dimension unchanged. Both usage and grants
 are lost on restart, and the UI states this explicitly.
 
@@ -102,7 +102,37 @@ Local quota is charged to the actor, not to an incoming call's recipient.
 
 ## Attachment limits
 
-Every message attachment must be strictly smaller than 1 GiB. The object cap is
-independent of daily file count/bytes admission. Resumable chunks remain bounded
-at 4 MiB; ordinary JSON requests retain the global 1 MiB body limit. Avatar
-format and size restrictions remain separate.
+Both scopes default to a maximum of 1 GiB (1,073,741,824 bytes), inclusive, per
+message attachment. `maxFileBytes` in `FederationQuotaPolicy(nsid)` and
+`UserQuotaPolicy(account)` overrides the respective `SystemSetting` default
+(`quota:federation:maxFileBytes` or `quota:localUser:maxFileBytes`). NULL inherits;
+zero disables new attachment admission. This is an object policy, not a daily
+ledger dimension: grants and UTC rollover do not change it. Local user policy
+applies to uploads, not received messages. Peer policy applies to the publishing
+namespace, including retries, forward assets, localization, and cached assets.
+
+Size admission precedes charging. Rejected descriptors consume no file budget.
+An admitted transfer charges one file and its full declared byte count before
+transferring; failure or cancellation does not refund the charge. Normal inbound
+and manual-localization jobs share the existing scheduler and deduplicate daily
+charges by publishing namespace, digest, and declared size per process/day. A changed
+size declaration is a new admission rather than a free retry. Received bytes exceeding the declaration
+are additionally charged before failure. Already cached assets require no transfer
+charge but still undergo object admission and descriptor validation.
+
+Active transfers retain their admitted bound; new initialization/retry operations
+resolve current policy. Lowering a bound neither deletes historical media nor
+blocks reads. Local initialization returns `FILE_TOO_LARGE` with `maxFileBytes`
+and `declaredBytes`; inbound jobs fail their media batch without pausing or
+degrading the peer or blocking subsequent message pages. Admin increases permit
+manual retries; midnight alone does not resolve an object-size rejection.
+
+Range totals must agree with descriptors, individual response bodies are bounded
+while reading, and final CAS size must equal the descriptor, including recovered
+and cached files. Content parsers validate safe integer sizes rather than a mutable
+admission policy. Message attachments use only sequential upload sessions;
+legacy message multipart routes are removed. Resumable chunks remain bounded
+at 4 MiB, and ordinary JSON requests at 1 MiB. These transport resource
+limits are independent of configurable object admission. Avatar format, pixel,
+and size restrictions remain separate. The local daily byte default remains
+500 MiB, so it can reject a file below the single-file default.

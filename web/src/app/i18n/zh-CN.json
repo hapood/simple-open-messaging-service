@@ -30,7 +30,7 @@
     "pickFailed": "读取所选文件失败，请重新选择。",
     "confirmationTimeout": "等待发送确认超时，请重试或取消。",
     "fileTooLarge": "文件过大，最大支持 {{limit}} MB",
-    "attachmentTooLarge": "单个文件必须小于 1 GiB",
+    "attachmentTooLarge": "单个文件最大允许 {{limit}} 字节（0 表示禁止上传）",
     "noActiveUploads": "当前没有上传任务",
     "headerUploading": "{{count}} 个文件上传中",
     "headerUploadingFailed": "{{uploading}} 个上传中 · {{failed}} 个失败",
@@ -781,6 +781,7 @@
       "member": "成员"
     },
     "biz": {
+      "fileTooLarge": "文件超过当前账号允许的单文件大小",
       "validation": "输入有误",
       "notFound": "未找到",
       "alreadyExists": "已存在",

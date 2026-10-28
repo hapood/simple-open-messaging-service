@@ -88,6 +88,9 @@ export function PeerQuotaPanel({ node }: { node: QuotaNode }) {
           ) : null}
         </CardHeader>
         <CardContent className="space-y-5">
+          <p>
+            {t('settings.quotas.maxFileBytes')}: {node.breaker.maxFileBytes}
+          </p>
           <QuotaUsageCards
             usage={node.usage}
             fileBytes={node.breaker.fileBytes}
@@ -127,6 +130,9 @@ function EditQuotaDialog({
       : String(node.overrides.dailyFileBytesLimit / MB),
   );
 
+  const [maxFileBytes, setMaxFileBytes] = useState(
+    node.overrides.maxFileBytes?.toString() ?? '',
+  );
   const parseCount = (value: string): number | null =>
     value.trim() === '' ? null : Number(value);
   const invalidCount = Object.values(counts).some((value) => {
@@ -139,11 +145,17 @@ function EditQuotaDialog({
     const bytes = Number(fileBytesMb) * MB;
     return !Number.isSafeInteger(bytes) || bytes < 0;
   })();
-  const invalid = invalidCount || invalidMb;
+  const invalid =
+    invalidCount ||
+    invalidMb ||
+    (maxFileBytes.trim() !== '' &&
+      (!Number.isSafeInteger(Number(maxFileBytes)) ||
+        Number(maxFileBytes) < 0));
 
   const onSave = async () => {
     if (invalid) return;
     const overrides: QuotaOverrides = {
+      maxFileBytes: parseCount(maxFileBytes),
       dailyMsgLimit: parseCount(counts.dailyMsgLimit),
       dailyFileLimit: parseCount(counts.dailyFileLimit),
       dailyRequestLimit: parseCount(counts.dailyRequestLimit),
@@ -194,6 +206,17 @@ function EditQuotaDialog({
               min={0}
               value={fileBytesMb}
               onChange={(event) => setFileBytesMb(event.target.value)}
+              placeholder={t('quota.placeholder.default')}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('settings.quotas.maxFileBytes')}</Label>
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              value={maxFileBytes}
+              onChange={(event) => setMaxFileBytes(event.target.value)}
               placeholder={t('quota.placeholder.default')}
             />
           </div>

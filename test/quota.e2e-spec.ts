@@ -42,8 +42,35 @@ describe('symmetric durable quota policies', () => {
     ]);
     await database.onApplicationShutdown();
   });
-  it('stores the same five overrides under namespace and account keys', async () => {
+  it('persists single-file overrides and enforces nullable safe-integer constraints', async () => {
+    for (const value of [0n, 2n * 1024n ** 3n, null]) {
+      await peers.setLimits(nsid, { maxFileBytes: value });
+      await users.setPolicy(userId, { maxFileBytes: value });
+      expect(await new QuotaService(database).fileSizeLimit(nsid)).toBe(
+        Number(value ?? 1024n ** 3n),
+      );
+      expect(await new UserQuotaService(database).fileSizeLimit(userId)).toBe(
+        Number(value ?? 1024n ** 3n),
+      );
+    }
+    for (const [table, key, id] of [
+      ['FederationQuotaPolicy', 'nsid', nsid],
+      ['UserQuotaPolicy', 'account', 'quota-policy-user'],
+    ] as const) {
+      for (const value of ['-1', '9007199254740992']) {
+        await expect(
+          database.pool.query(
+            `UPDATE "${table}" SET "maxFileBytes" = $1 WHERE "${key}" = $2`,
+            [value, id],
+          ),
+        ).rejects.toMatchObject({ code: '23514' });
+      }
+    }
+  });
+
+  it('stores symmetric daily and single-file overrides under namespace and account keys', async () => {
     const policy = {
+      maxFileBytes: 1024n ** 3n,
       dailyMsgLimit: 2,
       dailyRequestLimit: 3,
       dailySignalLimit: 401,

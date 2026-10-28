@@ -142,9 +142,10 @@ describe('FederationInboundMediaBatchService', () => {
     const fetchChunks = fileSync.runBatch.mock.calls[0]?.[1] as (
       digest: string,
       offset: number,
+      declaredBytes: number,
     ) => AsyncIterable<Buffer>;
 
-    expect(fetchChunks('a'.repeat(64), 128)).toBe(chunks);
+    expect(fetchChunks('a'.repeat(64), 128, 256)).toBe(chunks);
     expect(mediaRanges.fetch).toHaveBeenCalledWith(
       'origin.example',
       'a'.repeat(64),
@@ -153,6 +154,7 @@ describe('FederationInboundMediaBatchService', () => {
       'bob',
       91,
       128,
+      256,
     );
   });
 

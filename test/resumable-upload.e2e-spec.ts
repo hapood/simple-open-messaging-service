@@ -135,9 +135,9 @@ describe('sequential resumable uploads', () => {
     ).toBeDefined();
   });
 
-  it('ingests a buffered part through the same session state machine and commits the batch', async () => {
+  it('commits a sequential part and idempotently completes the same session', async () => {
     const clientMessageId = randomUUID();
-    const bytes = Buffer.from('buffered upload bytes');
+    const bytes = Buffer.from('sequential upload bytes');
     await messages.stageMedia(
       userId,
       threadId,
@@ -151,8 +151,16 @@ describe('sequential resumable uploads', () => {
       intent: 'FILE' as const,
       originalName: 'note.txt',
       mimeType: 'text/plain',
+      totalBytes: bytes.length,
     };
-    const view = await uploads.ingestBuffered(userId, dto, bytes);
+    const initialized = await uploads.init(userId, dto);
+    await uploads.append(
+      userId,
+      initialized.uploadId,
+      `bytes 0-${bytes.length - 1}/${bytes.length}`,
+      bytes,
+    );
+    const view = await uploads.complete(userId, initialized.uploadId);
     expect(view.status).toBe('COMPLETED');
     expect(view.result?.digest).toMatch(/^[0-9a-f]{64}$/);
     expect(view.result?.size).toBe(bytes.length);
@@ -164,7 +172,7 @@ describe('sequential resumable uploads', () => {
       .limit(1);
     expect(asset).toBeDefined();
     // Idempotent retry with the same part identity: free, same outcome, no second message.
-    const again = await uploads.ingestBuffered(userId, dto, bytes);
+    const again = await uploads.complete(userId, initialized.uploadId);
     expect(again.status).toBe('COMPLETED');
     expect(again.result?.digest).toBe(view.result?.digest);
     const messages2 = await database.db.query.message.findMany({

@@ -10,17 +10,11 @@
  * at the SERVING layer now: bootstrap.ts forces `Content-Disposition: attachment` +
  * `X-Content-Type-Options: nosniff` on every non-image /uploads response, so a user-uploaded
  * .html/.svg/.exe is always downloaded and never rendered/sniffed in the app origin. Images stay
- * inline (avatars/chat-images are magic-byte-verified at /upload). This file therefore only owns:
- * the size cap, a sanitized on-disk extension, a display MIME, and the FILE-content shape guard.
+ * inline (avatars and staged chat images are magic-byte-verified before publishing). This file therefore only owns:
+ * a sanitized on-disk extension, a display MIME, and the FILE-content shape guard.
  */
 
 import { ContentType } from '../database/enums.js';
-import { MAX_MEDIA_FILE_BYTES } from '../../shared/media-upload-limits.js';
-
-/** Message attachment caps are uniform; transport-specific request limits remain independent. */
-export const MAX_FILE_BYTES = MAX_MEDIA_FILE_BYTES;
-export const MAX_VIDEO_BYTES = MAX_MEDIA_FILE_BYTES;
-export const MAX_AUDIO_BYTES = MAX_MEDIA_FILE_BYTES;
 
 /** Max display length of a stored filename (the upload path sanitizes/trims to this). */
 export const MAX_FILE_NAME_LEN = 100;
@@ -281,7 +275,7 @@ export function parseFileContent(content: string): FileContent | null {
   // traversal, query/fragment, and any other shape.
   if (!isUploadUrl(url)) return null;
   if (mimeType.length === 0) return null;
-  if (!Number.isFinite(size) || size <= 0 || size > MAX_FILE_BYTES) return null;
+  if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (name.length === 0 || name.length > MAX_FILE_NAME_LEN) return null;
   return { url, name, size, mimeType };
 }

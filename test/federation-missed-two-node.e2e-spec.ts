@@ -12,6 +12,7 @@ import {
   vi,
 } from 'vitest';
 import request from 'supertest';
+import { uploadMessagePart } from './support/upload';
 import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
@@ -184,14 +185,14 @@ describe('federation durable missed transport (two nodes)', () => {
         clientMessageId,
       });
     expect(staged.body.code).toBe(BusinessCode.OK);
-    const uploaded = await request(appA.baseUrl)
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', bytes, 'restart-recovery.png')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE');
+    const uploaded = await uploadMessagePart(
+      appA.baseUrl,
+      tokenA,
+      clientMessageId,
+      bytes,
+      'restart-recovery.png',
+      'IMAGE',
+    );
     expect(uploaded.body.code).toBe(BusinessCode.OK);
     const url = (uploaded.body.data as { url: string }).url;
     const digest = url.split('/').pop()!;
@@ -387,14 +388,14 @@ describe('federation durable missed transport (two nodes)', () => {
         clientMessageId,
       });
     expect(staged.body.code).toBe(BusinessCode.OK);
-    const uploaded = await request(appA.baseUrl)
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', bytes, 'quota-resume.png')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE');
+    const uploaded = await uploadMessagePart(
+      appA.baseUrl,
+      tokenA,
+      clientMessageId,
+      bytes,
+      'quota-resume.png',
+      'IMAGE',
+    );
     expect(uploaded.body.code).toBe(BusinessCode.OK);
     const digest = (uploaded.body.data as { url: string }).url
       .split('/')

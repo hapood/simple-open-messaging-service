@@ -1002,6 +1002,7 @@
       "saved": "联邦传输设置已保存"
     },
     "quotas": {
+      "maxFileBytes": "单文件大小上限（字节，0 禁止）",
       "userTitle": "本地用户默认配额",
       "userDesc": "本地账户每日默认值；单用户覆盖值仍然优先。",
       "federationTitle": "联邦默认配额",

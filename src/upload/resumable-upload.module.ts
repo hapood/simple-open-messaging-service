@@ -8,7 +8,7 @@ import { QuotaModule } from '../quota/quota.module.js';
 
 /**
  * Resumable media upload: the upload-side staged-send-to-message promotion.
- * The promotion handoff (the `x-client-message-id` route header) needs
+ * The promotion handoff (the session's `clientMessageId`) needs
  * `MessageService`, which is why this feature sits in its own module on top
  * of the CAS core — `UploadModule` stays free of `MessageModule` and the
  * module graph stays acyclic:

@@ -43,16 +43,19 @@ export class FederationInboundMessageEffectsService {
   async publish(domain: string, effects: MissedPageEffect[]): Promise<void> {
     for (const effect of effects) {
       if (effect.kind === 'pending') {
-        void this.runFileSyncBatch(effect.batchId, (digest, offset) =>
-          this.fetchMediaChunks(
-            domain,
-            digest,
-            effect.author.account,
-            domain,
-            effect.toAccount,
-            effect.originSeq,
-            offset,
-          ),
+        void this.runFileSyncBatch(
+          effect.batchId,
+          (digest, offset, declaredBytes) =>
+            this.fetchMediaChunks(
+              domain,
+              digest,
+              effect.author.account,
+              domain,
+              effect.toAccount,
+              effect.originSeq,
+              offset,
+              declaredBytes,
+            ),
         ).catch(() => undefined);
         if (this.profileResolutions && effect.profileDemand) {
           void this.profileResolutions
@@ -127,7 +130,11 @@ export class FederationInboundMessageEffectsService {
    */
   private async runFileSyncBatch(
     batchId: string,
-    fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
+    fetchChunksFor: (
+      digest: string,
+      offset: number,
+      declaredBytes: number,
+    ) => AsyncIterable<Buffer>,
   ): Promise<void> {
     await this.inboundMediaBatches.runFileSyncBatch(batchId, fetchChunksFor);
   }
@@ -157,7 +164,8 @@ export class FederationInboundMessageEffectsService {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
-    startOffset = 0,
+    startOffset: number,
+    declaredBytes: number,
   ): AsyncGenerator<Buffer> {
     yield* this.mediaRangeClient.fetch(
       peerDomain,
@@ -167,6 +175,7 @@ export class FederationInboundMessageEffectsService {
       toAccount,
       sourceSeq,
       startOffset,
+      declaredBytes,
     );
   }
 }

@@ -19,6 +19,7 @@ import {
   vi,
 } from 'vitest';
 import request from 'supertest';
+import { uploadMessagePart } from './support/upload';
 import { Pool } from 'pg';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import {
@@ -933,14 +934,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         clientMessageId,
       });
     expect(stage.body.code).toBe(BusinessCode.OK);
-    const upload = await request(appA.baseUrl)
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', bytes, 'federated.png')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE');
+    const upload = await uploadMessagePart(
+      appA.baseUrl,
+      tokenA,
+      clientMessageId,
+      bytes,
+      'federated.png',
+      'IMAGE',
+    );
     expect(upload.body.code).toBe(BusinessCode.OK);
     const { url, size } = upload.body.data as { url: string; size: number };
     const digest = url
@@ -2559,7 +2560,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           profileNamespaceFeedSourceGeneratedAt: number;
           inboundProfileNamespaceFeedPulledThrough: string;
         };
-        expect(progress.profileNamespaceFeedSourceGeneratedAt).toBeGreaterThan(0);
+        expect(progress.profileNamespaceFeedSourceGeneratedAt).toBeGreaterThan(
+          0,
+        );
         expect(
           BigInt(progress.inboundProfileNamespaceFeedPulledThrough),
         ).toBeGreaterThan(0n);

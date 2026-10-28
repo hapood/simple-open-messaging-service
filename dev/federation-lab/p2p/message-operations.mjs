@@ -101,7 +101,7 @@ export async function admitMessageOperation(operation, actor) {
         };
       }),
     );
-    endpoint = '/send-media + /upload';
+    endpoint = '/send-media + /uploads/resumable/*';
     body = { threadId, clientMessageId, fileCnt: count };
     expected = {
       assets: parts.map(({ bytes }) => ({

@@ -12,8 +12,9 @@ import {
   type QuotaPolicyView,
   normalizeOverrides,
   type QuotaOverrides,
-  type QuotaCountDimension,
-} from './daily-quota-ledger.js';
+} from './quota-policy.js';
+import { DEFAULT_MAX_FILE_BYTES } from './quota-policy.js';
+import type { QuotaCountDimension } from './daily-quota-ledger.js';
 import {
   QuotaRuntime,
   type BreakerStatus,
@@ -27,6 +28,7 @@ export class UserQuotaService extends QuotaRuntime {
     super(
       database,
       {
+        maxFileBytes: DEFAULT_MAX_FILE_BYTES,
         dailyRequestLimit: 50,
         dailyMsgLimit: 1000,
         dailySignalLimit: 10_000,

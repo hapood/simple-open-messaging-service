@@ -450,6 +450,7 @@ export class AdminController {
     @Body() dto: AdminSetQuotaDto,
   ): Promise<void> {
     await this.userQuotaService.setPolicy(Number(id), {
+      maxFileBytes: dto.maxFileBytes == null ? null : BigInt(dto.maxFileBytes),
       dailyMsgLimit: dto.dailyMsgLimit,
       dailyRequestLimit: dto.dailyRequestLimit,
       dailySignalLimit: dto.dailySignalLimit,

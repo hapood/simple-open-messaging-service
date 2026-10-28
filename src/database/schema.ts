@@ -3192,6 +3192,7 @@ export const federationQuotaPolicy = pgTable(
   'FederationQuotaPolicy',
   {
     nsid: integer().primaryKey().notNull(),
+    maxFileBytes: bigint({ mode: 'bigint' }),
     dailyMsgLimit: integer(),
     dailyRequestLimit: integer(),
     dailySignalLimit: integer(),
@@ -3212,6 +3213,10 @@ export const federationQuotaPolicy = pgTable(
       name: 'FederationQuotaPolicy_nsid_fkey',
     }).onDelete('cascade'),
     check(
+      'FederationQuotaPolicy_maxFileBytes_check',
+      sql`${table.maxFileBytes} IS NULL OR ${table.maxFileBytes} BETWEEN 0 AND 9007199254740991`,
+    ),
+    check(
       'FederationQuotaPolicy_limits_check',
       sql`(${table.dailyMsgLimit} IS NULL OR ${table.dailyMsgLimit} >= 0) AND (${table.dailyRequestLimit} IS NULL OR ${table.dailyRequestLimit} >= 0) AND (${table.dailySignalLimit} IS NULL OR ${table.dailySignalLimit} >= 0) AND (${table.dailyFileLimit} IS NULL OR ${table.dailyFileLimit} >= 0) AND (${table.dailyFileBytesLimit} IS NULL OR ${table.dailyFileBytesLimit} BETWEEN 0 AND 9007199254740991)`,
     ),
@@ -3222,6 +3227,7 @@ export const userQuotaPolicy = pgTable(
   'UserQuotaPolicy',
   {
     account: varchar({ length: 31 }).primaryKey().notNull(),
+    maxFileBytes: bigint({ mode: 'bigint' }),
     dailyMsgLimit: integer(),
     dailyRequestLimit: integer(),
     dailySignalLimit: integer(),
@@ -3241,6 +3247,10 @@ export const userQuotaPolicy = pgTable(
       foreignColumns: [account.account],
       name: 'UserQuotaPolicy_account_fkey',
     }).onDelete('cascade'),
+    check(
+      'UserQuotaPolicy_maxFileBytes_check',
+      sql`${table.maxFileBytes} IS NULL OR ${table.maxFileBytes} BETWEEN 0 AND 9007199254740991`,
+    ),
     check(
       'UserQuotaPolicy_limits_check',
       sql`(${table.dailyMsgLimit} IS NULL OR ${table.dailyMsgLimit} >= 0) AND (${table.dailyRequestLimit} IS NULL OR ${table.dailyRequestLimit} >= 0) AND (${table.dailySignalLimit} IS NULL OR ${table.dailySignalLimit} >= 0) AND (${table.dailyFileLimit} IS NULL OR ${table.dailyFileLimit} >= 0) AND (${table.dailyFileBytesLimit} IS NULL OR ${table.dailyFileBytesLimit} BETWEEN 0 AND 9007199254740991)`,

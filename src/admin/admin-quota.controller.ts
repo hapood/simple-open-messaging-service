@@ -86,6 +86,7 @@ export class AdminQuotaController {
   ): Promise<void> {
     const namespaceId = await this.quota.activeNamespaceId(domain);
     await this.quota.setLimits(namespaceId, {
+      maxFileBytes: dto.maxFileBytes == null ? null : BigInt(dto.maxFileBytes),
       dailyMsgLimit: dto.dailyMsgLimit,
       dailyRequestLimit: dto.dailyRequestLimit,
       dailySignalLimit: dto.dailySignalLimit,

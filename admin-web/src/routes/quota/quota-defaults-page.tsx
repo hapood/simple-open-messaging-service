@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { formatApiError } from '@/lib/format-error';
 
 const fields = [
+  ['maxFileBytes', 'maxFileBytes'],
   ['dailyMsgLimit', 'messages'],
   ['dailyRequestLimit', 'requests'],
   ['dailyFileLimit', 'files'],
@@ -20,6 +21,7 @@ const fields = [
 ] as const;
 type Values = Record<(typeof fields)[number][0], string>;
 const empty: Values = {
+  maxFileBytes: '',
   dailyMsgLimit: '',
   dailyRequestLimit: '',
   dailyFileLimit: '',
@@ -56,6 +58,7 @@ export function QuotaDefaultsPage() {
     const value = peer ? peers : users;
     if (!valid(value)) return;
     const counts = {
+      maxFileBytes: Number(value.maxFileBytes),
       dailyMsgLimit: Number(value.dailyMsgLimit),
       dailyRequestLimit: Number(value.dailyRequestLimit),
       dailyFileLimit: Number(value.dailyFileLimit),

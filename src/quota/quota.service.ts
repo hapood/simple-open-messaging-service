@@ -14,14 +14,13 @@ import {
   policyView,
   type QuotaPolicyView,
   normalizeOverrides,
-  type QuotaCountDimension,
   type QuotaOverrides,
-} from './daily-quota-ledger.js';
+} from './quota-policy.js';
+import { DEFAULT_MAX_FILE_BYTES } from './quota-policy.js';
+import type { QuotaCountDimension } from './daily-quota-ledger.js';
 import { QuotaRuntime, type QuotaUsage } from './quota-runtime.js';
-export type {
-  QuotaCountDimension,
-  QuotaOverrides,
-} from './daily-quota-ledger.js';
+export type { QuotaCountDimension } from './daily-quota-ledger.js';
+export type { QuotaOverrides } from './quota-policy.js';
 export type { BreakerStatus } from './quota-runtime.js';
 
 @Injectable()
@@ -30,6 +29,7 @@ export class QuotaService extends QuotaRuntime {
     super(
       database,
       {
+        maxFileBytes: DEFAULT_MAX_FILE_BYTES,
         dailyRequestLimit: 1000,
         dailyMsgLimit: 5000,
         dailySignalLimit: 50_000,

@@ -1001,6 +1001,7 @@
       "saved": "Federation transport settings saved"
     },
     "quotas": {
+      "maxFileBytes": "Maximum bytes per attachment (0 disables)",
       "userTitle": "Default local-user quotas",
       "userDesc": "Daily defaults for local accounts. Per-user overrides continue to take precedence.",
       "federationTitle": "Default federation quotas",

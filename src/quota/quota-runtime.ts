@@ -9,15 +9,19 @@ import { BusinessException } from '../common/business.exception.js';
 import {
   DailyQuotaLedger,
   QUOTA_CATEGORIES,
-  QUOTA_FIELDS,
-  normalizeOverrides,
   retryAfterSeconds,
-  validateLimits,
   type QuotaCountDimension,
   type QuotaDimension,
   type QuotaLimits,
-  type QuotaOverrides,
 } from './daily-quota-ledger.js';
+import {
+  POLICY_FIELDS,
+  normalizeOverrides,
+  validateLimits,
+  type FileQuotaLimits,
+  type QuotaOverrides,
+} from './quota-policy.js';
+import { FileSizeLimitError } from '../upload/file-size-limit.js';
 
 export interface QuotaUsage {
   count: number;
@@ -25,6 +29,7 @@ export interface QuotaUsage {
   remaining: number;
 }
 export interface BreakerStatus {
+  maxFileBytes: number;
   entity: string;
   userId?: number;
   scope: 'peer' | 'user';
@@ -52,7 +57,7 @@ export abstract class QuotaRuntime {
   protected readonly ledger = new DailyQuotaLedger();
   protected constructor(
     protected readonly database: DatabaseService,
-    protected defaults: QuotaLimits,
+    protected defaults: FileQuotaLimits,
     private readonly prefix: string,
     readonly scope: 'peer' | 'user',
   ) {}
@@ -67,27 +72,29 @@ export abstract class QuotaRuntime {
       where: (s, { inArray }) =>
         inArray(
           s.key,
-          QUOTA_FIELDS.map((f) => this.prefix + f),
+          POLICY_FIELDS.map((f) => this.prefix + f),
         ),
     });
     for (const row of rows) {
-      const field = row.key.slice(this.prefix.length) as keyof QuotaLimits;
+      const field = row.key.slice(this.prefix.length) as keyof FileQuotaLimits;
       const value = Number(row.value);
       if (
-        QUOTA_FIELDS.includes(field) &&
+        POLICY_FIELDS.includes(field) &&
         Number.isSafeInteger(value) &&
         value >= 0
       )
         this.defaults[field] = value;
     }
   }
-  getDefaultLimits(): QuotaLimits {
+  getDefaultLimits(): FileQuotaLimits {
     return { ...this.defaults };
   }
-  async setDefaultLimits(input: Record<string, unknown>): Promise<QuotaLimits> {
+  async setDefaultLimits(
+    input: Record<string, unknown>,
+  ): Promise<FileQuotaLimits> {
     const values = validateLimits(input);
     await this.database.db.transaction(async (tx) => {
-      for (const field of QUOTA_FIELDS)
+      for (const field of POLICY_FIELDS)
         await tx
           .insert(systemSetting)
           .values({ key: this.prefix + field, value: String(values[field]) })
@@ -99,13 +106,25 @@ export abstract class QuotaRuntime {
     this.defaults = values;
     return this.getDefaultLimits();
   }
-  protected limits(policy: QuotaOverrides): QuotaLimits {
+  protected limits(policy: QuotaOverrides): FileQuotaLimits {
     return Object.fromEntries(
-      QUOTA_FIELDS.map((field) => [
+      POLICY_FIELDS.map((field) => [
         field,
         Number(policy[field] ?? this.defaults[field]),
       ]),
-    ) as QuotaLimits;
+    ) as FileQuotaLimits;
+  }
+  async fileSizeLimit(id: number, tx?: DatabaseTransaction): Promise<number> {
+    return (await this.context(id, tx)).limits.maxFileBytes;
+  }
+  async assertFileSize(
+    id: number,
+    bytes: number,
+    tx?: DatabaseTransaction,
+  ): Promise<number> {
+    const limit = await this.fileSizeLimit(id, tx);
+    FileSizeLimitError.assert(bytes, limit);
+    return limit;
   }
   async getOverrides(
     id: number,
@@ -271,6 +290,7 @@ export abstract class QuotaRuntime {
     );
     const bytes = this.usage(key, 'fileBytes', limits);
     return {
+      maxFileBytes: limits.maxFileBytes,
       entity: key,
       scope: this.scope,
       tripped: trippedDims.length > 0,

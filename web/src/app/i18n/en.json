@@ -30,7 +30,7 @@
     "pickFailed": "Couldn't read the selected file. Please choose it again.",
     "confirmationTimeout": "Delivery confirmation timed out. Retry or cancel.",
     "fileTooLarge": "File is too large. Maximum size: {{limit}} MB",
-    "attachmentTooLarge": "Each file must be smaller than 1 GiB.",
+    "attachmentTooLarge": "Maximum attachment size: {{limit}} bytes (0 disables uploads).",
     "noActiveUploads": "No active uploads",
     "headerUploading": "{{count}} files uploading",
     "headerUploadingFailed": "{{uploading}} uploading · {{failed}} failed",
@@ -781,6 +781,7 @@
       "member": "a member"
     },
     "biz": {
+      "fileTooLarge": "The file exceeds this account's maximum attachment size.",
       "validation": "Invalid input",
       "notFound": "Not found",
       "alreadyExists": "Already exists",

@@ -21,8 +21,17 @@ function setup(retries = 2, chunkBytes = 4) {
     } as never,
     { markContactSuccess: vi.fn(), isFatalPeerCode: () => false } as never,
   );
-  const fetch = (offset = 0) =>
-    client.fetch('peer.example', 'digest', 'a', 'peer.example', 'b', 1, offset);
+  const fetch = (offset = 0, bytes = 4) =>
+    client.fetch(
+      'peer.example',
+      'digest',
+      'a',
+      'peer.example',
+      'b',
+      1,
+      offset,
+      bytes,
+    );
   return { client, request, degraded, fetch };
 }
 
@@ -45,6 +54,47 @@ async function collect(stream: AsyncGenerator<Buffer>) {
 }
 
 describe('federation media range retries', () => {
+  it('rejects a header total different from the admitted descriptor without reading its body', async () => {
+    const { request, client, degraded } = setup(0);
+    const cancel = vi.fn();
+    request.mockResolvedValue(partial(new ReadableStream({ cancel }), 0, 3, 8));
+    await expect(
+      collect(
+        client.fetch(
+          'peer.example',
+          'digest',
+          'a',
+          'peer.example',
+          'b',
+          1,
+          0,
+          4,
+        ),
+      ),
+    ).rejects.toThrow('declared size');
+    expect(cancel).toHaveBeenCalled();
+    expect(degraded).not.toHaveBeenCalled();
+  });
+
+  it('stops reading an oversized range immediately and does not retry or degrade the peer', async () => {
+    const { request, fetch, degraded } = setup();
+    const cancel = vi.fn();
+    request.mockResolvedValue(
+      partial(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(Buffer.from('oversized'));
+          },
+          cancel,
+        }),
+      ),
+    );
+    await expect(collect(fetch())).rejects.toMatchObject({ extraBytes: 5n });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalled();
+    expect(degraded).not.toHaveBeenCalled();
+  });
+
   it('retries connection/header timeout failures at the same offset', async () => {
     const { request, fetch } = setup();
     request
@@ -76,7 +126,7 @@ describe('federation media range retries', () => {
         ),
       )
       .mockResolvedValueOnce(partial('efgh', 4, 7, 8));
-    expect(await collect(fetch())).toBe('abcdefgh');
+    expect(await collect(fetch(0, 8))).toBe('abcdefgh');
     expect(request.mock.calls.map(([, init]) => init.headers.range)).toEqual([
       'bytes=0-3',
       'bytes=4-7',
@@ -120,7 +170,7 @@ describe('federation media range retries', () => {
   it('resumes using a full chunk range from the persisted offset', async () => {
     const { request, fetch } = setup();
     request.mockResolvedValueOnce(partial('efgh', 4, 7, 8));
-    expect(await collect(fetch(4))).toBe('efgh');
+    expect(await collect(fetch(4, 8))).toBe('efgh');
     expect(request.mock.calls[0][1].headers.range).toBe('bytes=4-7');
   });
 

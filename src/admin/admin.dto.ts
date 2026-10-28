@@ -426,6 +426,20 @@ export class AdminFederationIdentityRecoverDto {
 /** Per-peer daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
  *  field means "use the global default". Stored in the scope's quota policy table. */
 export class AdminSetQuotaDto {
+  @ApiPropertyOptional({
+    type: Number,
+    description:
+      'Maximum bytes per attachment; null inherits, zero disables new attachments.',
+    minimum: 0,
+    maximum: Number.MAX_SAFE_INTEGER,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  maxFileBytes?: number | null;
+
   @ApiProperty({
     required: false,
     example: 5000,

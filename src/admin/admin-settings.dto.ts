@@ -123,6 +123,12 @@ export class AdminSessionPolicyDto {
 }
 
 export class UserQuotaDefaultsDto {
+  @ApiProperty({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  maxFileBytes!: number;
+
   @ApiProperty({ minimum: 0 })
   @IsInt()
   @Min(0)
@@ -155,6 +161,12 @@ export class UserQuotaDefaultsDto {
 }
 
 export class FederationQuotaDefaultsDto {
+  @ApiProperty({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  maxFileBytes!: number;
+
   @ApiProperty({ minimum: 0 })
   @IsInt()
   @Min(0)

@@ -4006,6 +4006,8 @@ AFTER INSERT ON public."IdentityNamespace"
 FOR EACH ROW EXECUTE FUNCTION public.initialize_federation_feed_state();
 
 CREATE TABLE public."FederationQuotaPolicy" (
+    "maxFileBytes" bigint,
+    CONSTRAINT "FederationQuotaPolicy_maxFileBytes_check" CHECK ("maxFileBytes" IS NULL OR "maxFileBytes" BETWEEN 0 AND 9007199254740991),
     "nsid" integer NOT NULL,
     "dailyMsgLimit" integer,
     "dailyRequestLimit" integer,
@@ -4026,6 +4028,8 @@ CREATE TABLE public."FederationQuotaPolicy" (
 );
 
 CREATE TABLE public."UserQuotaPolicy" (
+    "maxFileBytes" bigint,
+    CONSTRAINT "UserQuotaPolicy_maxFileBytes_check" CHECK ("maxFileBytes" IS NULL OR "maxFileBytes" BETWEEN 0 AND 9007199254740991),
     "account" character varying(31) NOT NULL,
     "dailyMsgLimit" integer,
     "dailyRequestLimit" integer,

@@ -24,12 +24,9 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { MAX_FILE_NAME_LEN, type OutboundFilePayload } from './file-content.js';
 import { ContentType } from '../database/enums.js';
 import { dataDirectory } from '../common/data-directory.js';
-import { UploadService } from './upload.service.js';
+import { InvalidUploadMediaError, UploadService } from './upload.service.js';
 
-import {
-  MAX_MEDIA_FILE_BYTES,
-  MEDIA_UPLOAD_CHUNK_BYTES,
-} from '../../shared/media-upload-limits.js';
+import { MEDIA_UPLOAD_CHUNK_BYTES } from '../../shared/media-upload-limits.js';
 
 export const RESUMABLE_CHUNK_SIZE = MEDIA_UPLOAD_CHUNK_BYTES;
 
@@ -84,13 +81,7 @@ export class ResumableUploadService {
     dto: InitResumableUploadDto,
   ): Promise<UploadSessionView> {
     const stage = await this.requireStageForPart(userId, dto);
-    // The complete attachment limit is independent of transport chunk size and daily quota.
-    if (dto.totalBytes > MAX_MEDIA_FILE_BYTES) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'file too large',
-      );
-    }
+    await this.quota.assertFileSize(userId, dto.totalBytes);
     const originalName = basename(dto.originalName).slice(0, MAX_FILE_NAME_LEN);
     if (!originalName) {
       throw new BusinessException(
@@ -168,177 +159,7 @@ export class ResumableUploadService {
     return this.viewOf(created);
   }
 
-  /**
-   * Buffered transport ingestion onto the SAME session state machine as the resumable transport
-   * (batch-commit model). The whole file arrives in one request body: it is written wholesale to a
-   * fresh staging file, hashed and recorded (record-first), then the identical batch commit runs.
-   * Quota is claimed only by the transaction that inserts the session row — a retry of the same
-   * part identity reuses the row and is free, exactly like resumable init.
-   */
-  async ingestBuffered(
-    userId: number,
-    dto: {
-      clientMessageId: string;
-      partId: string;
-      position: number;
-      intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
-      originalName: string;
-      mimeType: string;
-    },
-    body: Buffer,
-  ): Promise<UploadSessionView> {
-    if (body.length === 0) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'empty upload part',
-      );
-    }
-    if (body.length > MAX_MEDIA_FILE_BYTES) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'file too large',
-      );
-    }
-    const originalName = basename(dto.originalName).slice(0, MAX_FILE_NAME_LEN);
-    if (!originalName) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid filename',
-      );
-    }
-    let session = await this.database.db.query.uploadSession.findFirst({
-      where: and(
-        eq(uploadSession.clientMessageId, dto.clientMessageId),
-        eq(uploadSession.partId, dto.partId),
-      ),
-    });
-    if (
-      session &&
-      (session.status === 'COMPLETING' || session.status === 'COMPLETED') &&
-      session.result
-    ) {
-      // The stage may already have been consumed by a previous commit attempt. A recorded result is
-      // sufficient to resume the batch commit without requiring PendingMedia to still exist.
-      await this.tryCommitBatch(dto.clientMessageId, userId);
-      return this.viewOf(await this.owned(userId, session.uploadId));
-    }
-    const stage = await this.requireStageForPart(userId, dto);
-    if (!session) {
-      const created = await this.database.db.transaction(async (tx) => {
-        const [row] = await tx
-          .insert(uploadSession)
-          .values({
-            clientMessageId: dto.clientMessageId,
-            partId: dto.partId,
-            position: dto.position,
-            partIntent: dto.intent,
-            creatorId: userId,
-            contentType: stage.contentType,
-            originalName,
-            mimeType: dto.mimeType || 'application/octet-stream',
-            totalBytes: BigInt(body.length),
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (!row) return null;
-        await this.quota.claimFile(userId, 1, BigInt(body.length), tx);
-        return row;
-      });
-      if (!created) {
-        const winner = await this.database.db.query.uploadSession.findFirst({
-          where: and(
-            eq(uploadSession.clientMessageId, dto.clientMessageId),
-            eq(uploadSession.position, dto.position),
-          ),
-        });
-        if (winner?.partId !== dto.partId) {
-          throw new BusinessException(
-            BusinessCode.VALIDATION_FAILED,
-            'upload position is already assigned to another part',
-          );
-        }
-        return this.ingestBuffered(userId, dto, body);
-      }
-      session = created;
-    }
-    return this.exclusive(session.uploadId, async () => {
-      let current = await this.owned(userId, session!.uploadId);
-      if (
-        current.creatorId !== userId ||
-        current.position !== dto.position ||
-        current.partIntent !== dto.intent ||
-        current.originalName !== originalName ||
-        current.mimeType !== (dto.mimeType || 'application/octet-stream') ||
-        current.totalBytes !== BigInt(body.length)
-      ) {
-        throw new BusinessException(
-          BusinessCode.VALIDATION_FAILED,
-          'upload metadata does not match the existing session',
-        );
-      }
-      const stored = current.result as {
-        payload?: OutboundFilePayload;
-      } | null;
-      if (
-        stored?.payload &&
-        (current.status === 'COMPLETING' || current.status === 'COMPLETED')
-      ) {
-        // Idempotent retry: the part is already recorded (and possibly committed).
-        await this.tryCommitBatch(dto.clientMessageId, userId);
-        return this.viewOf(await this.owned(userId, session!.uploadId));
-      }
-      if (current.status === 'ABORTED') {
-        current = await this.resetForRetry(current);
-      }
-      // UPLOADING: a fresh row, or a stale resumable attempt — the buffered body is authoritative
-      // and is written wholesale over the staging file.
-      const path = this.partPath(current.tmpKey);
-      await mkdir(this.tmpDir, { recursive: true });
-      await writeFile(path, body);
-      await this.writeSidecar(current.tmpKey, BigInt(body.length));
-      const resolved = await this.upload.resolveStagedPart(
-        path,
-        dto.intent,
-        originalName,
-        dto.mimeType,
-      );
-      if (resolved.overrideContentType !== undefined) {
-        await this.messages.updateStagedContentType(
-          dto.clientMessageId,
-          userId,
-          resolved.overrideContentType,
-        );
-      }
-      if (this.upload.casShardExists(resolved.digest)) {
-        await this.discardStaging(current.tmpKey);
-      }
-      const [updated] = await this.database.db
-        .update(uploadSession)
-        .set({
-          status: 'COMPLETING',
-          digest: resolved.digest,
-          result: {
-            payload: resolved.payload,
-            ...(resolved.overrideContentType
-              ? { overrideContentType: resolved.overrideContentType }
-              : {}),
-          },
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(uploadSession.id, current.id),
-            eq(uploadSession.status, 'UPLOADING'),
-          ),
-        )
-        .returning();
-      if (!updated) return this.invalid('upload aborted');
-      await this.tryCommitBatch(dto.clientMessageId, userId);
-      return this.viewOf(await this.owned(userId, session!.uploadId));
-    });
-  }
-
-  /** Shared stage validation for one upload part (both transports): the staged send must be pending,
+  /** Stage validation for one sequential upload part: the staged send must be pending,
    *  authored by the caller, and the part must match the staged message's shape — single-file types
    *  take position 0 with the message type equal to the intent; GALLERY takes any position below
    *  fileCnt. */
@@ -459,12 +280,26 @@ export class ResumableUploadService {
       if (!stored || !stored.payload) {
         // Record-first: hash + resolve the staged bytes and durably record digest/result. The CAS
         // shard tree is NOT touched here — landing happens at the batch barrier.
-        const resolved = await this.upload.resolveStagedPart(
-          path,
-          session.partIntent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
-          session.originalName,
-          session.mimeType,
-        );
+        const resolved = await this.upload
+          .resolveStagedPart(
+            path,
+            session.partIntent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+            session.originalName,
+            session.mimeType,
+          )
+          .catch(async (error: unknown) => {
+            if (!(error instanceof InvalidUploadMediaError)) throw error;
+            await this.abortSession(session.id, error.message);
+            await this.messages.failStaged(
+              userId,
+              session.clientMessageId,
+              error.message,
+            );
+            throw new BusinessException(
+              BusinessCode.VALIDATION_FAILED,
+              error.message,
+            );
+          });
         if (resolved.overrideContentType !== undefined) {
           await this.messages.updateStagedContentType(
             session.clientMessageId,

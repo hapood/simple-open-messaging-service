@@ -141,7 +141,6 @@ import { GroupAnnouncementComponent } from '../group-announcement/group-announce
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
-import { MAX_MEDIA_FILE_BYTES } from '../../../../../shared/media-upload-limits';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import {
   ALL_MENTION_ID,
@@ -431,6 +430,7 @@ export class MessageThreadComponent implements OnDestroy {
       failPending: (item) => this.failPending(item),
       markAccepted: (item) => this.markAccepted(item),
       surfaceQuota: (response) => this.surfaceSendQuota(response),
+      maxFileBytes: () => this.currentMaxFileBytes(),
     },
   );
   private readonly messageSender = new ThreadMessageSendController(
@@ -2708,15 +2708,28 @@ export class MessageThreadComponent implements OnDestroy {
     });
   }
 
+  private async currentMaxFileBytes(): Promise<number | undefined> {
+    try {
+      const response = await firstValueFrom(this.userService.getMyQuota());
+      return response.code === 0
+        ? response.data?.breaker.maxFileBytes
+        : undefined;
+    } catch {
+      // A failed preflight must not substitute a stale hard-coded policy; upload admission is authoritative.
+      return undefined;
+    }
+  }
+
   private async rejectOversizedUpload(
     clientMessageId: string,
     item: CbItem<ChatItemData>,
     file: File,
   ): Promise<boolean> {
-    if (file.size <= MAX_MEDIA_FILE_BYTES) return false;
+    const limit = await this.currentMaxFileBytes();
+    if (limit === undefined || (limit > 0 && file.size <= limit)) return false;
     this.transfers.fail(
       clientMessageId,
-      this.transloco.translate('transfer.attachmentTooLarge'),
+      this.transloco.translate('transfer.attachmentTooLarge', { limit }),
       false,
     );
     await this.failPending(item);

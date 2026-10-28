@@ -7,13 +7,12 @@ import { DatabaseService } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import { QuotaService } from '../quota/quota.service.js';
-import { CasOversizeError, UploadService } from '../upload/upload.service.js';
+import { FederationMediaTransferService } from './federation-media-transfer.service.js';
 import {
   SseService,
   type MediaProgressFileRef,
 } from '../gateway/sse.service.js';
 import { extractDigestFileRefs } from '../upload/file-content.js';
-import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 
 type FileSyncKind =
   | 'IMAGE'
@@ -78,14 +77,17 @@ export class FederationInboundFileSync {
   constructor(
     private readonly database: DatabaseService,
     private readonly quota: QuotaService,
-    private readonly upload: UploadService,
-    private readonly downloadScheduler: FederationDownloadScheduler,
+    private readonly transfers: FederationMediaTransferService,
     private readonly sse: SseService,
   ) {}
 
   async runBatch(
     batchId: string,
-    fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
+    fetchChunksFor: (
+      digest: string,
+      offset: number,
+      declaredBytes: number,
+    ) => AsyncIterable<Buffer>,
     promote: (batchId: string) => Promise<void>,
     fail: (batchId: string) => Promise<void>,
     start?: (batchId: string) => Promise<void>,
@@ -97,7 +99,6 @@ export class FederationInboundFileSync {
           eq(tables.fileSyncProgress.status, 'PENDING'),
         ),
       });
-      const originDomain = rows[0]?.originDomain;
       const publisherNamespaceId = rows[0]?.publisherNamespaceId;
       if (
         publisherNamespaceId &&
@@ -119,21 +120,11 @@ export class FederationInboundFileSync {
       }
       if (rows.length > 0) await start?.(batchId);
       const results = await Promise.allSettled(
-        rows.map((row) => {
-          const peerDomain = row.originDomain ?? originDomain;
-          if (!peerDomain) {
-            return this.driveFile(row.id, row.digest, (offset) =>
-              fetchChunksFor(row.digest, offset),
-            );
-          }
-          return this.downloadScheduler
-            .schedule(peerDomain, row.digest, () =>
-              this.driveFile(row.id, row.digest, (offset) =>
-                fetchChunksFor(row.digest, offset),
-              ),
-            )
-            .then(() => this.markCoalescedWaiterReady(row.id));
-        }),
+        rows.map((row) =>
+          this.driveFile(row.id, row.digest, (offset) =>
+            fetchChunksFor(row.digest, offset, Number(row.bytesTotal)),
+          ),
+        ),
       );
       const rejected = results.find(
         (result): result is PromiseRejectedResult =>
@@ -167,51 +158,35 @@ export class FederationInboundFileSync {
         publisherNamespaceId: true,
       },
     });
-    const _originDomain = row?.originDomain;
     const declaredBytes = row?.bytesTotal ?? 0n;
     try {
-      const have = await this.database.db.query.mediaAsset.findFirst({
-        where: and(
-          eq(tables.mediaAsset.digest, digest),
-          eq(tables.mediaAsset.isDeleted, false),
-        ),
-        columns: { digest: true },
+      if (!row?.publisherNamespaceId)
+        throw new Error('missing media publisher namespace');
+      if (!row.originDomain) throw new Error('missing media source peer');
+      await this.claim(progressId, declaredBytes);
+      await this.publishProgress(progressId, 0);
+      await this.publishMessageProgress(progressId, true);
+      let lastWrite = 0;
+      await this.transfers.receive({
+        namespaceId: row.publisherNamespaceId,
+        peerDomain: row.originDomain,
+        digest,
+        declaredBytes: Number(declaredBytes),
+        chunks: (offset) => this.checkedChunks(progressId, fetchChunks(offset)),
+        onProgress: (received) => {
+          if (received - lastWrite >= 256 * 1024) {
+            lastWrite = received;
+            void this.writeProgress(progressId, received);
+          }
+        },
       });
-      if (!have) {
-        await this.chargeQuota(
-          progressId,
-          row?.publisherNamespaceId,
-          declaredBytes,
-        );
-        await this.claim(progressId, declaredBytes);
-        await this.publishProgress(progressId, 0);
-        await this.publishMessageProgress(progressId, true);
-        let lastWrite = 0;
-        await this.upload.saveCasFromStream(
-          (offset) => this.checkedChunks(progressId, fetchChunks(offset)),
-          digest,
-          {
-            declaredBytes:
-              declaredBytes > 0n ? Number(declaredBytes) : undefined,
-            onProgress: (received) => {
-              if (received - lastWrite >= 256 * 1024) {
-                lastWrite = received;
-                void this.writeProgress(progressId, received);
-              }
-            },
-          },
-        );
-      }
       const completed = await this.database.db
         .update(tables.fileSyncProgress)
         .set({ status: 'SUCCEEDED', updatedAt: new Date() })
         .where(
           and(
             eq(tables.fileSyncProgress.id, progressId),
-            inArray(
-              tables.fileSyncProgress.status,
-              have ? ['PENDING', 'DOWNLOADING'] : ['DOWNLOADING'],
-            ),
+            eq(tables.fileSyncProgress.status, 'DOWNLOADING'),
           ),
         )
         .returning({ id: tables.fileSyncProgress.id });
@@ -220,25 +195,9 @@ export class FederationInboundFileSync {
       await this.publishMessageProgress(progressId, false);
       this.progressTargets.delete(progressId.toString());
     } catch (error) {
-      await this.handleFailure(progressId, row?.publisherNamespaceId, error);
+      await this.handleFailure(progressId, error);
       throw error;
     }
-  }
-
-  private readonly chargedFiles = new Map<bigint, number>();
-
-  private async chargeQuota(
-    progressId: bigint,
-    namespaceId: number | undefined,
-    declaredBytes: bigint,
-  ): Promise<void> {
-    if (!namespaceId) return;
-    const day = Math.floor(Date.now() / 86400000);
-    if (this.chargedFiles.get(progressId) === day) return;
-    for (const [id, chargedDay] of this.chargedFiles)
-      if (chargedDay !== day) this.chargedFiles.delete(id);
-    await this.quota.claimFile(namespaceId, 1, declaredBytes);
-    this.chargedFiles.set(progressId, day);
   }
 
   private async claim(
@@ -417,12 +376,8 @@ export class FederationInboundFileSync {
 
   private async handleFailure(
     progressId: bigint,
-    namespaceId: number | undefined,
     error: unknown,
   ): Promise<void> {
-    if (error instanceof CasOversizeError && namespaceId) {
-      await this.quota.addFileBytesDelta(namespaceId, error.extraBytes);
-    }
     const quotaPaused =
       error instanceof BusinessException &&
       error.bizCode === BusinessCode.FEDERATION_QUOTA_EXCEEDED;
@@ -447,24 +402,6 @@ export class FederationInboundFileSync {
       .returning({ id: tables.fileSyncProgress.id });
     if (!quotaPaused && failed.length > 0)
       await this.publishFileTerminal(progressId, 'failed');
-    this.progressTargets.delete(progressId.toString());
-  }
-
-  private async markCoalescedWaiterReady(progressId: bigint): Promise<void> {
-    const updated = await this.database.db
-      .update(tables.fileSyncProgress)
-      .set({ status: 'SUCCEEDED', updatedAt: new Date() })
-      .where(
-        and(
-          eq(tables.fileSyncProgress.id, progressId),
-          eq(tables.fileSyncProgress.status, 'PENDING'),
-        ),
-      )
-      .returning({ id: tables.fileSyncProgress.id });
-    if (updated.length > 0) {
-      await this.publishFileTerminal(progressId, 'ready');
-      await this.publishMessageProgress(progressId, false);
-    }
     this.progressTargets.delete(progressId.toString());
   }
 }
