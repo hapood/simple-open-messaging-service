@@ -273,6 +273,9 @@ pub(super) fn apply_state_feed_page_with_resume(
                 // arrive first, so it cannot write a competing version into threads.
                 continue;
             }
+            if item.operation != "MEMBER_UPSERT" && item.operation != "MEMBER_DEPART" {
+                return Err("group-meta operation must be MEMBER_UPSERT or MEMBER_DEPART".into());
+            }
             let body = item.body;
             let account = body
                 .get("account")
@@ -288,6 +291,20 @@ pub(super) fn apply_state_feed_page_with_resume(
             if namespace_id < 0 {
                 return Err("group-meta member namespace must be non-negative".into());
             }
+            // Both member operations carry the complete member body on the wire;
+            // a departure only needs the address, but the page contract is
+            // validated as a whole so an out-of-contract page is rejected
+            // instead of silently coerced into stored member state.
+            let role = body
+                .get("role")
+                .and_then(Value::as_str)
+                .filter(|role| matches!(*role, "OWNER" | "ADMIN" | "MEMBER"))
+                .ok_or("group-meta member has invalid role")?;
+            let profile_rev = body
+                .get("profileRev")
+                .and_then(Value::as_i64)
+                .filter(|rev| *rev >= 0)
+                .ok_or("group-meta member has invalid profileRev")?;
             if item.operation == "MEMBER_DEPART" {
                 tx.execute(
                     "UPDATE members SET left_state=1
@@ -298,13 +315,6 @@ pub(super) fn apply_state_feed_page_with_resume(
                 .map_err(|e| format!("depart group member: {e}"))?;
                 continue;
             }
-            if item.operation != "MEMBER_UPSERT" {
-                return Err("group-meta operation must be MEMBER_UPSERT or MEMBER_DEPART".into());
-            }
-            let profile_rev = body
-                .get("profileRev")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "group-meta MEMBER_UPSERT has no profileRev".to_string())?;
             tx.execute(
                 "INSERT INTO members(
                        user_id,thread_id,member_account,namespace_id,role,left_state,
@@ -318,7 +328,7 @@ pub(super) fn apply_state_feed_page_with_resume(
                     update.thread_id,
                     account,
                     namespace_id,
-                    body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
+                    role,
                     profile_rev,
                 ],
             )

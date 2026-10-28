@@ -119,7 +119,7 @@ object CallController : NativeCallCallbacks {
             return
         }
         resources.execute {
-            if (!RustCallBridge.isCurrent(owner) || kind != "rejected" && !RustCallBridge.isLive(owner)) return@execute
+            if (!RustCallBridge.isCurrent(owner) || !RustCallBridge.isLive(owner)) return@execute
             val peer = value.optLong("peer")
             try {
                 when (kind) {
@@ -157,7 +157,6 @@ object CallController : NativeCallCallbacks {
                             else video.setupVideoCapture(ensureFactory(), connection)
                         fact(owner, peer, "camera-ready", JSONObject().put("enabled", enabled && ok).put("ok", ok).put("trackCreated", enabled && ok && !existingTrack))
                     }
-                    "rejected" -> SomsBridge.eval("window.__SOMS_CALL_REJECTED__ && window.__SOMS_CALL_REJECTED__('busy');")
                 }
             } catch (error: Exception) {
                 if (kind == "camera") fact(owner, peer, "camera-ready", JSONObject().put("enabled", false).put("ok", false))

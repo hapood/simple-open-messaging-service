@@ -92,6 +92,42 @@ fn terminal_releases_locally_before_scheduling_remote_report_and_never_ends_anot
     );
 }
 #[test]
+fn admission_failures_publish_their_reason_before_release_and_allow_explicit_retry() {
+    for (code, reason) in [(70006, "unreachable"), (70004, "busy"), (0, "failed")] {
+        let mut machine = start(true);
+        let effects = machine.response(
+            "initiate",
+            Response {
+                code,
+                ..Response::default()
+            },
+        );
+        let snapshot = &platform(&effects, "snapshot")["snapshot"];
+        assert_eq!(snapshot["phase"], "ended");
+        assert_eq!(snapshot["terminalReason"], reason);
+        assert_eq!(snapshot["callSid"], CALL);
+        assert_eq!(platform(&effects, "release")["callSid"], CALL);
+        let commands: Vec<_> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Platform(value) => value["command"].as_str(),
+                _ => None,
+            })
+            .collect();
+        // Admission results use the correlated snapshot, with no separate rejection event.
+        assert_eq!(commands, ["snapshot", "release", "snapshot"]);
+        assert_eq!(machine.snapshot.phase, "idle");
+        assert!(machine.snapshot.terminal_reason.is_none());
+        assert!(!effects.iter().any(|effect| matches!(effect,
+            Effect::Http { path, .. } if path.ends_with("/initiate"))));
+        assert!(machine
+            .command(json!({"type":"initiate","callSid":OTHER,"threadId":1}), 0)
+            .0);
+        assert!(machine.snapshot.terminal_reason.is_none());
+    }
+}
+
+#[test]
 fn duplicate_push_and_delayed_push_after_hangup_do_not_ring_again() {
     let mut machine = start(false);
     assert!(

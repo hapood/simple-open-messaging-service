@@ -468,6 +468,90 @@ fn meta_commits_and_thread_operations_never_write_each_others_table() {
 }
 
 #[test]
+fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
+    let mut conn = profile_cache_db();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
+    super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
+    // Roles outside the enum must be rejected instead of stored, and a missing
+    // or non-string role must not silently coerce to MEMBER. profileRev must
+    // be present and non-negative on both member operations.
+    let invalid_bodies = [
+        serde_json::json!({"account":"bob","namespaceId":0,"role":"SUPERUSER","profileRev":3}),
+        serde_json::json!({"account":"bob","namespaceId":0,"profileRev":3}),
+        serde_json::json!({"account":"bob","namespaceId":0,"role":42,"profileRev":3}),
+        serde_json::json!({"account":"bob","namespaceId":0,"role":"MEMBER"}),
+        serde_json::json!({"account":"bob","namespaceId":0,"role":"MEMBER","profileRev":-1}),
+    ];
+    for (operation, body) in invalid_bodies
+        .into_iter()
+        .flat_map(|body| [("MEMBER_UPSERT", body.clone()), ("MEMBER_DEPART", body)])
+    {
+        let page = serde_json::from_value(serde_json::json!({
+            "threadId":52,"namespaceId":0,"page":{
+                "account":"!dev","mode":"full","hasMore":false,
+                "scannedThrough":"21","groupMetaFeedEndId":"21","items":[
+                    {"feedId":"21","createdAt":1000,"originCreatedAt":null,
+                     "operation":operation,"body":body}
+                ]
+            }
+        }))
+        .unwrap();
+        assert!(
+            super::client_state::apply_group_meta_page(&mut conn, 1, page).is_err(),
+            "{operation} with an out-of-contract body must be rejected"
+        );
+        let members: i64 = conn
+            .query_row("SELECT COUNT(*) FROM members", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(members, 0);
+        let feed_id: String = conn
+            .query_row(
+                "SELECT feed_id FROM group_meta WHERE user_id=1 AND thread_id=52",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(feed_id, "0", "a rejected page must not advance the cursor");
+    }
+    // Pages carrying the complete member contract still apply, on both
+    // operations: rebuild the roster, then depart through a delta page.
+    let page = serde_json::from_value(serde_json::json!({
+        "threadId":52,"namespaceId":0,"page":{
+            "account":"!dev","mode":"full","hasMore":false,
+            "scannedThrough":"21","groupMetaFeedEndId":"21","items":[
+                {"feedId":"21","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
+                    "account":"bob","namespaceId":0,"role":"ADMIN","profileRev":3
+                }}
+            ]
+        }
+    }))
+    .unwrap();
+    let patch = super::client_state::apply_group_meta_page(&mut conn, 1, page)
+        .unwrap()
+        .unwrap();
+    assert_eq!(patch.member_count, 1);
+    let page = serde_json::from_value(serde_json::json!({
+        "threadId":52,"namespaceId":0,"page":{
+            "account":"!dev","mode":"delta","hasMore":false,
+            "scannedThrough":"22","groupMetaFeedEndId":"22","items":[
+                {"feedId":"22","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_DEPART","body":{
+                    "account":"bob","namespaceId":0,"role":"ADMIN","profileRev":3
+                }}
+            ]
+        }
+    }))
+    .unwrap();
+    let patch = super::client_state::apply_group_meta_page(&mut conn, 1, page)
+        .unwrap()
+        .unwrap();
+    assert_eq!(patch.member_count, 0);
+    let left_state: i64 = conn
+        .query_row("SELECT left_state FROM members", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(left_state, 1);
+}
+
+#[test]
 fn late_meta_page_commits_server_truth_even_after_departure() {
     let mut conn = profile_cache_db();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));

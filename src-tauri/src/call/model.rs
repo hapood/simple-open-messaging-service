@@ -9,6 +9,14 @@ pub const ANSWER_FETCH_MS: u64 = 3_000;
 pub const NEGOTIATION_MS: u64 = 60_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalReason {
+    Busy,
+    Unreachable,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Snapshot {
     pub phase: String,
@@ -29,6 +37,7 @@ pub struct Snapshot {
     pub camera_enabled: bool,
     pub remote_camera_enabled: bool,
     pub video_upgrade_state: String,
+    pub terminal_reason: Option<TerminalReason>,
 }
 
 impl Default for Snapshot {
@@ -52,6 +61,7 @@ impl Default for Snapshot {
             camera_enabled: false,
             remote_camera_enabled: false,
             video_upgrade_state: "idle".into(),
+            terminal_reason: None,
         }
     }
 }
@@ -774,8 +784,12 @@ impl Machine {
         match tag {
             "initiate" if self.snapshot.phase == "starting" => {
                 if !response.ok {
+                    self.snapshot.terminal_reason = Some(match response.code {
+                        70004 => TerminalReason::Busy,
+                        70006 => TerminalReason::Unreachable,
+                        _ => TerminalReason::Failed,
+                    });
                     self.reset(&mut out,Some(("cancel",None)));
-                    if response.code == 70004 { out.push(Effect::Platform(json!({"command":"rejected","reason":"busy"}))); }
                 } else {
                     self.snapshot.thread_id = response.data["threadId"].as_i64().unwrap_or(self.snapshot.thread_id);
                     self.snapshot.phase = "calling".into(); self.publish(&mut out); self.create_peer(&mut out);
