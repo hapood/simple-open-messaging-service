@@ -118,6 +118,7 @@ endef
 # gradle assembles. NOTE: no `@` after `;` — `@` is only a make quiet-prefix at line start; mid-line
 # it is passed to the shell as a literal and fails with "command not found".
 define do_build
+	@cd "$(ROOT)" && node scripts/check-version-sync.mjs
 	@# Single source of truth gate: tauri.conf.json version (VERSION) must equal Cargo.toml [package]
 	@# version (CARGO_VER). Drift => the APK's embedded version disagrees with the Rust crate version.
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
@@ -218,6 +219,7 @@ MAC_DIST_DIR := $(MAKE_DIR)dist/macos
 MAC_BUNDLE   := $(MAKE_DIR)target/universal-apple-darwin/release/bundle
 
 define do_macos
+	@cd "$(ROOT)" && node scripts/check-version-sync.mjs
 	@# Version gate — same single-source-of-truth assertion as the Android do_build.
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
 	@# Both Apple targets must be installed (universal-apple-darwin compiles each, then lipo-merges).

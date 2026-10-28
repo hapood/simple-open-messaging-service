@@ -26,6 +26,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "android": {
+      "versionCode": 1001,
+      "autoIncrementVersionCode": false
+    },
     "macOS": {
       "signingIdentity": "-",
       "minimumSystemVersion": "11.0"

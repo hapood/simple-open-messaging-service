@@ -1,7 +1,26 @@
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { validateAndroidVersion } from './android-version.mjs';
+
+const args = process.argv.slice(2);
+if (args.length !== 0 && (args.length !== 2 || args[0] !== '--base-ref')) {
+  throw new Error(
+    'Usage: node scripts/check-version-sync.mjs [--base-ref <git-ref>]',
+  );
+}
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 const rootVersion = readJson('package.json').version;
+const tauriConfig = readJson('src-tauri/tauri.conf.json');
+const previous =
+  args.length === 2
+    ? JSON.parse(
+        execFileSync('git', ['show', `${args[1]}:src-tauri/tauri.conf.json`], {
+          encoding: 'utf8',
+        }),
+      )
+    : undefined;
+validateAndroidVersion(tauriConfig, previous);
 
 const versions = new Map([
   ['package-lock.json', readJson('package-lock.json').version],
@@ -46,5 +65,7 @@ if (mismatches.length > 0) {
   }
   process.exitCode = 1;
 } else {
-  console.log(`SOMS version synchronized: ${rootVersion}`);
+  console.log(
+    `SOMS version synchronized: ${rootVersion}; Android versionCode: ${tauriConfig.bundle.android.versionCode}`,
+  );
 }
