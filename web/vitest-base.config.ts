@@ -1,14 +1,20 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
     clearMocks: true,
-    // Every spec file runs in its own isolated environment (isolate is enabled
-    // on the unit-test builder in angular.json), so parallel files cannot leak
-    // state into each other. Parallelism only shortens wall-clock time on
-    // multi-core machines; it does not affect test semantics.
+    attachmentsDir: fileURLToPath(
+      new URL('../test-results/web-unit/attachments/', import.meta.url),
+    ),
+    browser: {
+      screenshotDirectory: fileURLToPath(
+        new URL('../test-results/web-unit/', import.meta.url),
+      ),
+    },
+    // Angular's browser runner owns TestBed and file isolation. Use real browser APIs by default;
+    // specs must mock only the boundaries relevant to their scenario, not replace the entire DOM.
     fileParallelism: true,
     restoreMocks: true,
-    setupFiles: ['./src/test-setup.ts'],
   },
 });

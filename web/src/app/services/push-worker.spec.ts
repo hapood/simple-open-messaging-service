@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { installPushWorker } from '../../push/push-worker';
 import { WebdbStorage } from './webdb-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';

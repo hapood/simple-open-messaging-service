@@ -894,8 +894,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * demand flow is single-flight, so the post-write scroll event can safely re-check the region. The ONE site that pins
    * with noNewer=false
    * — onViewportResize — keeps its own manual suppress set (a shrink at a trimmed bottom would otherwise loadNewer
-   * and jump). In a real browser the pin's own scroll event consumes that flag; jsdom tests don't auto-fire it, so a
-   * global suppress here would wrongly swallow the next test-dispatched scroll.
+   * and jump). The resize pin's own scroll event consumes that flag; suppressing every anchor write here could
+   * instead swallow the next region check after a user scroll.
    */
   private applyAnchor(a: Anchor): void {
     if (this.destroyed) return;

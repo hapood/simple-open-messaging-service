@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { PreferenceStore } from './preference-store.service';
 
 describe('PreferenceStore', () => {

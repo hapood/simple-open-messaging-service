@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebdbStorage } from '../webdb-storage';
 import { createSessionCacheDescriptor } from './session-identity';

@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { provideZonelessChangeDetection, signal } from '@angular/core';

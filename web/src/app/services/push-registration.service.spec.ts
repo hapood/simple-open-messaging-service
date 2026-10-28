@@ -34,6 +34,15 @@ describe('Shared push registration recovery', () => {
     http.expectOne((request) => request.url.endsWith('/devices/register'));
 
   beforeEach(() => {
+    // These tests cover registration recovery, not cross-tab lock scheduling.
+    // Run the lock adapter inline so fake-timer retries remain deterministic.
+    vi.spyOn(navigator.locks, 'request').mockImplementation(
+      async (name, optionsOrCallback, callback) =>
+        (callback ?? (optionsOrCallback as LockGrantedCallback<unknown>))({
+          name,
+          mode: 'exclusive',
+        } as Lock),
+    );
     storage = new Map();
     local = { platform: 'WEB', token: 'old', p256dh: 'key', auth: 'auth' };
     create = vi.fn(

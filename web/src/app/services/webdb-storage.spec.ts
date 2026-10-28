@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import type { ProfileNamespacePairKey } from './webdb-storage';
 import { WebdbService } from './webdb.service';

@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import type { ConversationItem, Message } from './model';

@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import type { SessionCacheDescriptor } from './session/session-identity';

@@ -579,8 +579,8 @@ function mutableVh(
   };
 }
 
-/** Test seam: invoke the private viewport-resize handler directly (ResizeObserver cannot be driven from a getter-based
- *  clientHeight in the jsdom/Karma layout, so drive the handler the RO callback would call). */
+/** Test seam: invoke the viewport-resize handler directly. Changing a mocked clientHeight getter does
+ *  not resize the real element, so it cannot trigger the browser's ResizeObserver. */
 function reflow(s: ChatBoxScroller<number>): void {
   (
     s as unknown as {

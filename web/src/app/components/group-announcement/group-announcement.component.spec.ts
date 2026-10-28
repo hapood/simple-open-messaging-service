@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { ComponentRef, provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';

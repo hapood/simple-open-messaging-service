@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { prepareTestSessionCache } from './session/session-cache.test-helper';

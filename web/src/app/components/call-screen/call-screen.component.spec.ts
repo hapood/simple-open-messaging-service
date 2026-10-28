@@ -318,6 +318,14 @@ describe('CallScreenComponent', () => {
   });
 
   it('uses the same control shell for video with camera actions', () => {
+    let frameReady!: VideoFrameRequestCallback;
+    vi.spyOn(
+      HTMLVideoElement.prototype,
+      'requestVideoFrameCallback',
+    ).mockImplementation((callback) => {
+      frameReady = callback;
+      return 1;
+    });
     callState.update((state) => ({
       ...state,
       callType: 'VIDEO',
@@ -340,7 +348,7 @@ describe('CallScreenComponent', () => {
       'Waiting for video…',
     );
 
-    fixture.componentInstance.onRemoteVideoReady();
+    frameReady(0, {} as VideoFrameCallbackMetadata);
     fixture.detectChanges();
     expect(root.querySelector('.remote-camera-off')).toBeNull();
 

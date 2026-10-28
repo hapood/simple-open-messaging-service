@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { provideZonelessChangeDetection } from '@angular/core';
@@ -73,7 +72,7 @@ async function seedThread(
 }
 
 describe('WebdbService', () => {
-  describe('IDB-backed storage (fake-indexeddb)', () => {
+  describe('IDB-backed storage (browser IndexedDB)', () => {
     let webdb: WebdbService;
     let session: SessionCacheDescriptor;
 

@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { provideHttpClient } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService } from '@jsverse/transloco';

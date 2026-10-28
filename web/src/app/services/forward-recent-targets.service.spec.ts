@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { ForwardRecentTargetsService } from './forward-recent-targets.service';
 import { PreferenceStore } from './preference-store.service';

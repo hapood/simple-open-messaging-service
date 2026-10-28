@@ -1,5 +1,4 @@
 import '@angular/compiler';
-import 'fake-indexeddb/auto';
 import { Injector, runInInjectionContext } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Observable, firstValueFrom } from 'rxjs';

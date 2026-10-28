@@ -1,5 +1,4 @@
 import '@angular/compiler';
-import 'fake-indexeddb/auto';
 import {
   afterEach,
   beforeEach,

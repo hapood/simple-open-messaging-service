@@ -11,7 +11,9 @@
     "build:playground": "node scripts/build.mjs playground",
     "verify:native": "node scripts/verify-native-build.mjs",
     "watch": "node scripts/start.mjs web watch",
-    "test": "ng test",
+    "test": "ng test --watch=false",
+    "test:watch": "ng test --watch",
+    "test:browser:install": "playwright install chromium",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:build": "node --test scripts/*.test.mjs",
     "icons:generate": "./scripts/gen-icons.sh",
@@ -50,11 +52,11 @@
     "@angular/cli": "^22.1.4",
     "@angular/compiler-cli": "^22.1.2",
     "@tauri-apps/cli": "^2.11.4",
+    "@vitest/browser-playwright": "^4.1.11",
     "esbuild": "^0.28.2",
-    "fake-indexeddb": "^6.2.5",
-    "jsdom": "^30.0.1",
+    "parse5": "^8.0.1",
+    "playwright": "^1.55.0",
     "typescript": "~6.0.3",
-    "undici": "^8.10.0",
-    "vitest": "^4.0.8"
+    "vitest": "^4.1.11"
   }
 }

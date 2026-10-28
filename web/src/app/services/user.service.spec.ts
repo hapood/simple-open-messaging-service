@@ -1,5 +1,4 @@
 import type { Mock } from 'vitest';
-import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import {

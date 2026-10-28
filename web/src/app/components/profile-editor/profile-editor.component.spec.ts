@@ -40,10 +40,14 @@ describe('ProfileEditorComponent', () => {
         { provide: ToastService, useValue: { warn: vi.fn(), info: vi.fn() } },
       ],
     });
+    // These tests exercise editor state and save behavior, not Transloco's template directive.
+    TestBed.overrideComponent(ProfileEditorComponent, {
+      set: { template: '' },
+    });
     return TestBed.createComponent(ProfileEditorComponent).componentInstance;
   }
 
-  it('renders the account address from the namespace domain', () => {
+  it('derives the account address from the namespace domain', () => {
     const component = createComponent();
 
     expect(component.accountAddress()).toBe('charlie@chat.example.test');

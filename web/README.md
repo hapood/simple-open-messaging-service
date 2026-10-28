@@ -24,7 +24,23 @@ Docker builds use the checked-in generated types and do not install the generato
 
 ## Running unit tests
 
-Run `ng test` to execute the unit tests via [Vitest](https://vitest.dev/).
+Install the pinned frontend dependencies with `npm ci`, then run
+`npm run test:browser:install` once to download Chromium. Linux CI also installs the
+browser's system dependencies with `npm exec -- playwright install --with-deps chromium`.
+
+- `npm test` runs Angular component/service tests through the Angular builder and Vitest
+  Browser Mode in headless Chromium. Use `npm run test:watch` for continuous runs or
+  `npm test -- --include src/app/services/layout.service.spec.ts` for a focused run.
+- `npm run test:unit` runs the explicitly selected pure TypeScript tests in Node.js.
+- `npm run test:build` runs Node.js build-script and static HTML contract tests. Static HTML
+  is parsed with `parse5`; it does not need a simulated browser environment.
+
+Component and storage tests use native browser APIs (including IndexedDB), not jsdom,
+fake-indexeddb, or global DOM polyfills. Mock only
+scenario-specific boundaries within each spec, and restore them after the test. Keep
+layout/scroll/animation regressions in real-browser tests; native-host behavior still
+requires testing in the relevant Tauri client. Failed-test screenshots and attachments
+are written to the repository's ignored `test-results/web-unit/` directory.
 
 ## Running end-to-end tests
 

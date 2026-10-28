@@ -21,7 +21,6 @@ import type {
   NotificationDescriptor,
 } from './notification-descriptor.model';
 
-import 'fake-indexeddb/auto';
 
 describe('UnreadAttentionService browser worker bridge', () => {
   const offer = vi.fn();

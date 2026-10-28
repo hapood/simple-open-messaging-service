@@ -1,7 +1,24 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { JSDOM } from 'jsdom';
+import { parse } from 'parse5';
+
+function elements(node) {
+  return (node.childNodes ?? []).flatMap((child) => [
+    ...(child.tagName ? [child] : []),
+    ...elements(child),
+  ]);
+}
+
+function attribute(node, name) {
+  return node.attrs.find((attr) => attr.name === name)?.value;
+}
+
+function textContent(node) {
+  return node.nodeName === '#text'
+    ? node.value
+    : (node.childNodes ?? []).map(textContent).join('');
+}
 
 const html = readFileSync(
   new URL('../src/index.html', import.meta.url),
@@ -49,24 +66,35 @@ test('playground canonical and project content are available without JavaScript'
     new URL('../src/playground/index.html', import.meta.url),
     'utf8',
   );
-  const { document } = new JSDOM(playground).window;
-  const canonicals = document.querySelectorAll('link[rel="canonical"]');
+  const nodes = elements(parse(playground));
+  const canonicals = nodes.filter(
+    (node) =>
+      node.tagName === 'link' &&
+      attribute(node, 'rel')?.split(/\s+/).includes('canonical'),
+  );
   assert.equal(canonicals.length, 1);
   assert.equal(
-    canonicals[0].href,
+    attribute(canonicals[0], 'href'),
     'https://hapood.github.io/simple-open-messaging-service/',
   );
-  const overview = document.querySelector('.project-overview');
-  assert.ok(overview);
-  assert.equal(overview.closest('app-root'), null);
-  assert.match(
-    overview.querySelector('h1').textContent,
-    /Simple Open Messaging Service/,
+  const overview = nodes.find((node) =>
+    attribute(node, 'class')?.split(/\s+/).includes('project-overview'),
   );
-  assert.ok(overview.querySelectorAll('li').length >= 3);
+  assert.ok(overview);
+  for (let ancestor = overview; ancestor; ancestor = ancestor.parentNode) {
+    assert.notEqual(ancestor.tagName, 'app-root');
+  }
+  const content = elements(overview);
+  const heading = content.find((node) => node.tagName === 'h1');
+  assert.ok(heading);
+  assert.match(textContent(heading), /Simple Open Messaging Service/);
+  assert.ok(content.filter((node) => node.tagName === 'li').length >= 3);
   assert.ok(
-    overview.querySelector(
-      'a[href="https://github.com/hapood/simple-open-messaging-service"]',
+    content.some(
+      (node) =>
+        node.tagName === 'a' &&
+        attribute(node, 'href') ===
+          'https://github.com/hapood/simple-open-messaging-service',
     ),
   );
 });
