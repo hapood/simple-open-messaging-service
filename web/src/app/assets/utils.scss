@@ -114,7 +114,9 @@
   // --soms-safe-top is injected by the native shell (see _tokens.scss).
   box-sizing: border-box;
   padding-top: var(--soms-safe-top, 0px);
-  transition: height 160ms ease-out;
+  // Animate keyboard occlusion, never viewport height. Easing 100dvh during a window resize leaves
+  // the page temporarily taller than the WebView and can introduce a scrollbar across a breakpoint.
+  transition: --auth-keyboard-inset 160ms ease-out;
 
   .form-pane {
     @include neutral-form-controls;

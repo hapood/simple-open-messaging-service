@@ -51,7 +51,8 @@
   background:
     radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--app-brand) 10%, transparent), transparent 42%),
     var(--app-bg);
-  transition: height 160ms ease-out;
+  // Window resizes track the viewport immediately; only keyboard occlusion is animated.
+  transition: --auth-keyboard-inset 160ms ease-out;
 
   // Android shell only: position the unchanged card from native IME geometry. `safe center` keeps an
   // oversized form scrollable without switching to a smaller keyboard-specific visual design.
