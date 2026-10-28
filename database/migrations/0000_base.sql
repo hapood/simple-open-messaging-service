@@ -1698,7 +1698,8 @@ CREATE TABLE public."ProfileNamespaceFeed" (
     "feedId" bigint NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "ProfileNamespaceFeed_feedId_check" CHECK (("feedId" > 0))
+    CONSTRAINT "ProfileNamespaceFeed_feedId_check" CHECK (("feedId" > 0)),
+    CONSTRAINT "ProfileNamespaceFeed_namespace_check" CHECK (("namespaceId" > 0))
 );
 
 
