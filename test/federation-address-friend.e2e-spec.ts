@@ -11,7 +11,6 @@ import {
   identityNamespace,
   peerStateFeed,
   relationshipIntent,
-  userQuotaDailyUsage,
 } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -341,18 +340,12 @@ describe('federated Address friend requests', () => {
       before!.expiresAt!.getTime() - before!.statusChangedAt!.getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
     const requestCount = async () => {
-      const rows = await appA.database
-        .select({
-          count: sql<number>`COALESCE(SUM(${userQuotaDailyUsage.count}), 0)::integer`,
-        })
-        .from(userQuotaDailyUsage)
-        .where(
-          and(
-            eq(userQuotaDailyUsage.userId, aliceId),
-            eq(userQuotaDailyUsage.category, 'requests'),
-          ),
-        );
-      return rows[0].count;
+      const response = await request(appA.baseUrl)
+        .post('/api/v1/user/my-quota')
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({});
+      expect(response.body.code).toBe(BusinessCode.OK);
+      return response.body.data.usage.requests.count as number;
     };
     const usedBeforeRefresh = await requestCount();
     await send('updated request');

@@ -66,6 +66,7 @@ async function fixture(row: ActivePeerByThreadRow | undefined) {
             federation,
             namespaces,
             {} as never,
+            { tick: vi.fn().mockResolvedValue(undefined) } as never,
           ),
       },
     ],
@@ -121,7 +122,10 @@ describe('thread-keyed established relationship revocation', () => {
           f.tx,
           { userId: 1, decision: 'REVOKED', target },
           [],
-          { establishedRelationship: { threadId: 12, epoch: 7 } },
+          {
+            admissionInTx: expect.any(Function),
+            establishedRelationship: { threadId: 12, epoch: 7 },
+          },
         );
       } finally {
         await f.module.close();

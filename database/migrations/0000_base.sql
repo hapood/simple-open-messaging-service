@@ -1124,7 +1124,6 @@ CREATE TABLE public."FileSyncProgress" (
     "originDomain" character varying(63),
     "publisherNamespaceId" integer DEFAULT 0 CONSTRAINT "FileSyncProgress_namespaceId_not_null" NOT NULL,
     "errorKind" character varying(255),
-    "quotaCounted" boolean DEFAULT false NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     payload jsonb
@@ -1328,10 +1327,6 @@ CREATE TABLE public."IdentityNamespace" (
     "resetAt" timestamp(3) with time zone,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "retiredAt" timestamp(3) with time zone,
-    "dailyMsgLimit" integer,
-    "dailyRequestLimit" integer,
-    "dailyFileLimit" integer,
-    "dailyFileBytesLimit" bigint,
     CONSTRAINT "IdentityNamespace_signingKeyCreatedAt_check" CHECK ((id = 0 AND "signingKeyCreatedAt" = 0) OR (id > 0 AND "signingKeyCreatedAt" BETWEEN 1 AND 9007199254740991)),
     CONSTRAINT "IdentityNamespace_active_check" CHECK (((active = false) OR ((id > 0) AND ("retiredAt" IS NULL)))),
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
@@ -1757,48 +1752,6 @@ CREATE TABLE public."ProfileTombstone" (
 
 
 --
--- Name: QuotaDailyAllowance; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."QuotaDailyAllowance" (
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "namespaceId" integer NOT NULL,
-    date date NOT NULL,
-    "extraMsg" integer DEFAULT 0 NOT NULL,
-    "extraFile" integer DEFAULT 0 NOT NULL,
-    "extraFileBytes" bigint DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: QuotaDailyUsage; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."QuotaDailyUsage" (
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "namespaceId" integer NOT NULL,
-    date date NOT NULL,
-    category character varying(15) NOT NULL,
-    count integer DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: QuotaFileByteUsage; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."QuotaFileByteUsage" (
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "namespaceId" integer NOT NULL,
-    date date NOT NULL,
-    bytes bigint DEFAULT 0 NOT NULL
-);
-
-
---
 -- Name: RelationshipIntent; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2131,63 +2084,6 @@ CREATE TABLE public."UserPreference" (
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "UserPreference_revision_check" CHECK ((revision >= 0)),
     CONSTRAINT "UserPreference_value_not_json_null_check" CHECK ((value <> 'null'::jsonb))
-);
-
-
---
--- Name: UserQuotaDailyAllowance; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserQuotaDailyAllowance" (
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "userId" integer NOT NULL,
-    date date NOT NULL,
-    "extraMsg" integer DEFAULT 0 NOT NULL,
-    "extraFile" integer DEFAULT 0 NOT NULL,
-    "extraFileBytes" bigint DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: UserQuotaDailyUsage; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserQuotaDailyUsage" (
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "userId" integer NOT NULL,
-    date date NOT NULL,
-    category character varying(15) NOT NULL,
-    count integer DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: UserQuotaFileByteUsage; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserQuotaFileByteUsage" (
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "userId" integer NOT NULL,
-    date date NOT NULL,
-    bytes bigint DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: UserQuotaPolicy; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserQuotaPolicy" (
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "userId" integer NOT NULL,
-    "dailyMsgLimit" integer,
-    "dailyRequestLimit" integer,
-    "dailyFileLimit" integer,
-    "dailyFileBytesLimit" bigint,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 
@@ -2760,30 +2656,6 @@ ALTER TABLE ONLY public."Profile"
 
 
 --
--- Name: QuotaDailyAllowance QuotaDailyAllowance_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaDailyAllowance"
-    ADD CONSTRAINT "QuotaDailyAllowance_pkey" PRIMARY KEY ("namespaceId", date);
-
-
---
--- Name: QuotaDailyUsage QuotaDailyUsage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaDailyUsage"
-    ADD CONSTRAINT "QuotaDailyUsage_pkey" PRIMARY KEY ("namespaceId", date, category);
-
-
---
--- Name: QuotaFileByteUsage QuotaFileByteUsage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaFileByteUsage"
-    ADD CONSTRAINT "QuotaFileByteUsage_pkey" PRIMARY KEY ("namespaceId", date);
-
-
---
 -- Name: RelationshipIntent RelationshipIntent_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2861,38 +2733,6 @@ ALTER TABLE ONLY public."UploadSession"
 
 ALTER TABLE ONLY public."UserPreference"
     ADD CONSTRAINT "UserPreference_userId_key_pk" PRIMARY KEY ("userId", key);
-
-
---
--- Name: UserQuotaDailyAllowance UserQuotaDailyAllowance_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaDailyAllowance"
-    ADD CONSTRAINT "UserQuotaDailyAllowance_pkey" PRIMARY KEY ("userId", date);
-
-
---
--- Name: UserQuotaDailyUsage UserQuotaDailyUsage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaDailyUsage"
-    ADD CONSTRAINT "UserQuotaDailyUsage_pkey" PRIMARY KEY ("userId", date, category);
-
-
---
--- Name: UserQuotaFileByteUsage UserQuotaFileByteUsage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaFileByteUsage"
-    ADD CONSTRAINT "UserQuotaFileByteUsage_pkey" PRIMARY KEY ("userId", date);
-
-
---
--- Name: UserQuotaPolicy UserQuotaPolicy_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaPolicy"
-    ADD CONSTRAINT "UserQuotaPolicy_pkey" PRIMARY KEY ("userId");
 
 
 --
@@ -3376,20 +3216,6 @@ CREATE UNIQUE INDEX "ProfileNamespaceFeed_feedId_key" ON public."ProfileNamespac
 
 
 --
--- Name: QuotaDailyUsage_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "QuotaDailyUsage_date_idx" ON public."QuotaDailyUsage" USING btree (date);
-
-
---
--- Name: QuotaFileByteUsage_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "QuotaFileByteUsage_date_idx" ON public."QuotaFileByteUsage" USING btree (date);
-
-
---
 -- Name: RelationshipPair_endpointA_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3520,20 +3346,6 @@ CREATE INDEX "UploadSession_status_updatedAt_idx" ON public."UploadSession" USIN
 --
 
 CREATE UNIQUE INDEX "UploadSession_uploadId_key" ON public."UploadSession" USING btree ("uploadId");
-
-
---
--- Name: UserQuotaDailyUsage_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "UserQuotaDailyUsage_date_idx" ON public."UserQuotaDailyUsage" USING btree (date);
-
-
---
--- Name: UserQuotaFileByteUsage_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "UserQuotaFileByteUsage_date_idx" ON public."UserQuotaFileByteUsage" USING btree (date);
 
 
 --
@@ -4006,30 +3818,6 @@ ALTER TABLE ONLY public."Profile"
 
 
 --
--- Name: QuotaDailyAllowance QuotaDailyAllowance_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaDailyAllowance"
-    ADD CONSTRAINT "QuotaDailyAllowance_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
--- Name: QuotaDailyUsage QuotaDailyUsage_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaDailyUsage"
-    ADD CONSTRAINT "QuotaDailyUsage_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
--- Name: QuotaFileByteUsage QuotaFileByteUsage_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaFileByteUsage"
-    ADD CONSTRAINT "QuotaFileByteUsage_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
 -- Name: RelationshipIntent RelationshipIntent_authorNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4140,38 +3928,6 @@ ALTER TABLE ONLY public."UserPreference"
 
 
 --
--- Name: UserQuotaDailyAllowance UserQuotaDailyAllowance_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaDailyAllowance"
-    ADD CONSTRAINT "UserQuotaDailyAllowance_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
-
-
---
--- Name: UserQuotaDailyUsage UserQuotaDailyUsage_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaDailyUsage"
-    ADD CONSTRAINT "UserQuotaDailyUsage_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
-
-
---
--- Name: UserQuotaFileByteUsage UserQuotaFileByteUsage_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaFileByteUsage"
-    ADD CONSTRAINT "UserQuotaFileByteUsage_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
-
-
---
--- Name: UserQuotaPolicy UserQuotaPolicy_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaPolicy"
-    ADD CONSTRAINT "UserQuotaPolicy_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
-
-
---
 -- Name: WebAuthnCredential WebAuthnCredential_adminId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4248,6 +4004,46 @@ $$;
 CREATE TRIGGER "IdentityNamespace_initialize_feed_state"
 AFTER INSERT ON public."IdentityNamespace"
 FOR EACH ROW EXECUTE FUNCTION public.initialize_federation_feed_state();
+
+CREATE TABLE public."FederationQuotaPolicy" (
+    "nsid" integer NOT NULL,
+    "dailyMsgLimit" integer,
+    "dailyRequestLimit" integer,
+    "dailySignalLimit" integer,
+    "dailyFileLimit" integer,
+    "dailyFileBytesLimit" bigint,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationQuotaPolicy_pkey" PRIMARY KEY ("nsid"),
+    CONSTRAINT "FederationQuotaPolicy_nsid_fkey" FOREIGN KEY ("nsid") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE,
+    CONSTRAINT "FederationQuotaPolicy_limits_check" CHECK (
+      ("dailyMsgLimit" IS NULL OR "dailyMsgLimit" >= 0) AND
+      ("dailyRequestLimit" IS NULL OR "dailyRequestLimit" >= 0) AND
+      ("dailySignalLimit" IS NULL OR "dailySignalLimit" >= 0) AND
+      ("dailyFileLimit" IS NULL OR "dailyFileLimit" >= 0) AND
+      ("dailyFileBytesLimit" IS NULL OR "dailyFileBytesLimit" BETWEEN 0 AND 9007199254740991)
+    )
+);
+
+CREATE TABLE public."UserQuotaPolicy" (
+    "account" character varying(31) NOT NULL,
+    "dailyMsgLimit" integer,
+    "dailyRequestLimit" integer,
+    "dailySignalLimit" integer,
+    "dailyFileLimit" integer,
+    "dailyFileBytesLimit" bigint,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "UserQuotaPolicy_pkey" PRIMARY KEY ("account"),
+    CONSTRAINT "UserQuotaPolicy_account_fkey" FOREIGN KEY ("account") REFERENCES public."Account"(account) ON DELETE CASCADE,
+    CONSTRAINT "UserQuotaPolicy_limits_check" CHECK (
+      ("dailyMsgLimit" IS NULL OR "dailyMsgLimit" >= 0) AND
+      ("dailyRequestLimit" IS NULL OR "dailyRequestLimit" >= 0) AND
+      ("dailySignalLimit" IS NULL OR "dailySignalLimit" >= 0) AND
+      ("dailyFileLimit" IS NULL OR "dailyFileLimit" >= 0) AND
+      ("dailyFileBytesLimit" IS NULL OR "dailyFileBytesLimit" BETWEEN 0 AND 9007199254740991)
+    )
+);
 
 --
 -- PostgreSQL database dump complete

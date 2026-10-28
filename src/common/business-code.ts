@@ -135,9 +135,9 @@ export enum BusinessCode {
   CALL_NOT_PARTICIPANT = 70003, // you are neither the caller nor the callee of this call
   CALL_BUSY = 70004, // the callee — or the caller — is already in an active call (one active call per user)
   CALL_INVALID_TRANSITION = 70005, // this call state transition is not allowed (e.g. accept a non-ringing call)
-  CALL_PEER_UNREACHABLE = 70006, // a federated call's ring/setup failed — the peer server was unreachable / busy / rejected.
+  CALL_PEER_UNREACHABLE = 70006, // new-call peer readiness or incoming delivery failed; explicit peer busy uses CALL_BUSY.
   CALL_CANCELLED = 70007, // a federated call was already cancelled; converge pending local state to cancelled.
   CALL_TERMINATED = 70008, // a federated call already reached another terminal outcome; stop dependent frames.
-  // Thrown by the caller's server when the S2S `incoming` POST fails; the `unreachable` terminal
-  // bubble is already written before this surfaces to the caller's client.
+  // For CALL_PEER_UNREACHABLE, the caller's server writes the local `unreachable` terminal
+  // notice before surfacing a peer readiness or incoming-delivery failure to the client.
 }

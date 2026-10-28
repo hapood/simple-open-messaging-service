@@ -365,18 +365,25 @@ export interface FederationRecognizeResult {
 }
 
 // ─── Federated peer daily quotas (POST /admin/quota/nodes) ───
-export type QuotaCategory = 'messages' | 'files' | 'requests';
+export type QuotaDimension =
+  | 'messages'
+  | 'files'
+  | 'requests'
+  | 'signals'
+  | 'fileBytes';
+export type QuotaCountDimension = Exclude<QuotaDimension, 'fileBytes'>;
 
 /** Per-entity override set (null/absent = use the global default). */
 export interface QuotaOverrides {
   dailyMsgLimit?: number | null;
   dailyRequestLimit?: number | null;
+  dailySignalLimit?: number | null;
   dailyFileLimit?: number | null;
   dailyFileBytesLimit?: number | null;
 }
 
 /** Today's usage for one category (count against the effective limit). */
-interface QuotaCategoryUsage {
+interface QuotaCountDimensionUsage {
   count: number;
   limit: number;
 }
@@ -387,7 +394,8 @@ export interface QuotaNode {
   namespaceId: number;
   trustLevel: FederationTrustLevel;
   overrides: QuotaOverrides;
-  usage: Record<QuotaCategory, QuotaCategoryUsage>;
+  usage: Record<QuotaCountDimension, QuotaCountDimensionUsage>;
+  breaker: BreakerStatus;
 }
 
 /** One entity's circuit-breaker snapshot (msg cnt / file cnt / file total size). `fileBytes.bytes` is a
@@ -395,11 +403,14 @@ export interface QuotaNode {
 export interface BreakerStatus {
   entity: string;
   scope: 'peer' | 'user';
+  userId?: number;
   tripped: boolean;
-  trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
+  trippedDims: QuotaDimension[];
   retryAfter: number;
   msg: { count: number; limit: number };
   file: { count: number; limit: number };
+  requests: { count: number; limit: number };
+  signals: { count: number; limit: number };
   fileBytes: { bytes: string; limit: number };
 }
 
@@ -412,6 +423,8 @@ export interface Breakers {
 /** Additive daily quota bump for the "continue" action (bytes, before the backend BigInt conversion). */
 export interface ContinueQuotaInput {
   addMsg?: number;
+  addRequest?: number;
+  addSignal?: number;
   addFile?: number;
   addFileBytes?: number;
 }
@@ -470,10 +483,10 @@ export interface UserDetail {
 
 export interface UserQuotaState {
   overrides: QuotaOverrides;
-  usage: Record<QuotaCategory, QuotaCategoryUsage>;
+  usage: Record<QuotaCountDimension, QuotaCountDimensionUsage>;
   breaker: {
     tripped: boolean;
-    trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
+    trippedDims: QuotaDimension[];
     msg: { count: number; limit: number };
     file: { count: number; limit: number };
     fileBytes: { bytes: string; limit: number };
@@ -664,8 +677,9 @@ export interface AdminSettings {
   userQuotaDefaults: {
     dailyMsgLimit: number;
     dailyRequestLimit: number;
+    dailySignalLimit: number;
     dailyFileLimit: number;
-    dailyFileBytesLimit: string;
+    dailyFileBytesLimit: number;
   };
   federationQuotaDefaults: {
     dailyMsgLimit: number;

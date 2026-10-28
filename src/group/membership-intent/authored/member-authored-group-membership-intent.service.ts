@@ -1,4 +1,5 @@
 import { parseRequestSnapshot } from '../../../../shared/request-snapshot.js';
+import { UserQuotaService } from '../../../quota/user-quota.service.js';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
@@ -79,7 +80,6 @@ export type MemberAuthoredGroupMembershipIntentCommand =
     };
 
 export interface MemberAuthoredGroupMembershipIntentOptions {
-  admissionInTx?: (tx: DatabaseTransaction) => Promise<void>;
   /** Exact-round gate for HTTP decisions: the command may only settle the
    * named open round. Validated under the membership locks held here. */
   requestDecision?: { requestId: bigint; decision: RequestDecision };
@@ -148,6 +148,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     private readonly clientFeed: ClientStateFeedService,
     private readonly relationshipMutations: GroupRelationshipMutationService,
     private readonly federation: FederationStateFeedPusher,
+    private readonly quota: UserQuotaService,
   ) {}
 
   async execute(
@@ -167,7 +168,6 @@ export class MemberAuthoredGroupMembershipIntentService {
       memberUserId: number;
       target: { account: string; namespaceId: number };
       note?: string;
-      admissionInTx?: (tx: DatabaseTransaction) => Promise<void>;
     } & (
       | { decision: 'REQUESTED'; snapshot: RequestSnapshot }
       | { decision: 'ACCEPTED' | 'REVOKED'; snapshot?: never }
@@ -257,11 +257,7 @@ export class MemberAuthoredGroupMembershipIntentService {
               memberUserId: params.memberUserId,
               decision: params.decision,
             };
-      return this.executeInTx(tx, command, clientUpdates, {
-        ...(params.admissionInTx
-          ? { admissionInTx: params.admissionInTx }
-          : {}),
-      });
+      return this.executeInTx(tx, command, clientUpdates, {});
     });
     this.publishApplied(applied, clientUpdates);
     return applied.outcome;
@@ -330,7 +326,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     );
     if ('status' in context)
       return { outcome: context, peers: new Map<number, bigint>() };
-    await options?.admissionInTx?.(tx);
+    await this.quota.tick(params.memberUserId, 'requests', tx);
     return {
       outcome: { status: 'APPLIED' },
       peers: await this.applyInTx(context, clientUpdates),

@@ -184,10 +184,6 @@ export const identityNamespace = pgTable(
     localServiceAvailable: boolean().default(false).notNull(),
     remoteServiceReachable: boolean().default(false).notNull(),
     resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    dailyMsgLimit: integer(),
-    dailyRequestLimit: integer(),
-    dailyFileLimit: integer(),
-    dailyFileBytesLimit: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1541,7 +1537,6 @@ export const fileSyncProgress = pgTable(
     errorKind: varchar({ length: 255 }),
     // Tick-once guard: once this file's file-cnt/file-bytes quota has been charged, admin retry or crash-resume
     // must not re-charge it. Set true after the first successful claim.
-    quotaCounted: boolean().default(false).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2036,7 +2031,11 @@ export const federationFeedState = pgTable(
   {
     namespaceId: integer().primaryKey().notNull(),
     /** Last completed recognition exchange, not the start of the trust epoch. */
-    lastHandshakeAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    lastHandshakeAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
     /** Latest completed outbound Health observation; independent of feed source times. */
     latestHealthCheck: jsonb().$type<{
       namespaceId: number;
@@ -3185,9 +3184,15 @@ export const s2SKeyCache = pgTable(
   ],
 );
 
-export const quotaDailyUsage = pgTable(
-  'QuotaDailyUsage',
+export const federationQuotaPolicy = pgTable(
+  'FederationQuotaPolicy',
   {
+    nsid: integer().primaryKey().notNull(),
+    dailyMsgLimit: integer(),
+    dailyRequestLimit: integer(),
+    dailySignalLimit: integer(),
+    dailyFileLimit: integer(),
+    dailyFileBytesLimit: bigint({ mode: 'bigint' }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -3195,58 +3200,29 @@ export const quotaDailyUsage = pgTable(
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull()
       .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
-    namespaceId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    category: varchar({ length: 15 }).notNull(),
-    count: integer().default(0).notNull(),
   },
   (table) => [
-    index('QuotaDailyUsage_date_idx').using(
-      'btree',
-      table.date.asc().nullsLast().op('date_ops'),
-    ),
     foreignKey({
-      columns: [table.namespaceId],
+      columns: [table.nsid],
       foreignColumns: [identityNamespace.id],
-      name: 'QuotaDailyUsage_namespaceId_fkey',
+      name: 'FederationQuotaPolicy_nsid_fkey',
     }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.namespaceId, table.date, table.category],
-      name: 'QuotaDailyUsage_pkey',
-    }),
+    check(
+      'FederationQuotaPolicy_limits_check',
+      sql`(${table.dailyMsgLimit} IS NULL OR ${table.dailyMsgLimit} >= 0) AND (${table.dailyRequestLimit} IS NULL OR ${table.dailyRequestLimit} >= 0) AND (${table.dailySignalLimit} IS NULL OR ${table.dailySignalLimit} >= 0) AND (${table.dailyFileLimit} IS NULL OR ${table.dailyFileLimit} >= 0) AND (${table.dailyFileBytesLimit} IS NULL OR ${table.dailyFileBytesLimit} BETWEEN 0 AND 9007199254740991)`,
+    ),
   ],
 );
 
 export const userQuotaPolicy = pgTable(
   'UserQuotaPolicy',
   {
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    userId: integer().primaryKey().notNull(),
+    account: varchar({ length: 31 }).primaryKey().notNull(),
     dailyMsgLimit: integer(),
     dailyRequestLimit: integer(),
-    // Quota circuit-breaker file dimensions (daily). All file types consolidate into a single file cnt + file
-    // total size; bundles count +1 file cnt and 0 bytes. null = use the global default.
+    dailySignalLimit: integer(),
     dailyFileLimit: integer(),
     dailyFileBytesLimit: bigint({ mode: 'bigint' }),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull()
-      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'UserQuotaPolicy_userId_fkey',
-    }).onDelete('cascade'),
-  ],
-);
-
-export const userQuotaDailyUsage = pgTable(
-  'UserQuotaDailyUsage',
-  {
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -3254,168 +3230,17 @@ export const userQuotaDailyUsage = pgTable(
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull()
       .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
-    userId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    category: varchar({ length: 15 }).notNull(),
-    count: integer().default(0).notNull(),
   },
   (table) => [
-    index('UserQuotaDailyUsage_date_idx').using(
-      'btree',
-      table.date.asc().nullsLast().op('date_ops'),
+    foreignKey({
+      columns: [table.account],
+      foreignColumns: [account.account],
+      name: 'UserQuotaPolicy_account_fkey',
+    }).onDelete('cascade'),
+    check(
+      'UserQuotaPolicy_limits_check',
+      sql`(${table.dailyMsgLimit} IS NULL OR ${table.dailyMsgLimit} >= 0) AND (${table.dailyRequestLimit} IS NULL OR ${table.dailyRequestLimit} >= 0) AND (${table.dailySignalLimit} IS NULL OR ${table.dailySignalLimit} >= 0) AND (${table.dailyFileLimit} IS NULL OR ${table.dailyFileLimit} >= 0) AND (${table.dailyFileBytesLimit} IS NULL OR ${table.dailyFileBytesLimit} BETWEEN 0 AND 9007199254740991)`,
     ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'UserQuotaDailyUsage_userId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.userId, table.date, table.category],
-      name: 'UserQuotaDailyUsage_pkey',
-    }),
-  ],
-);
-
-/**
- * Daily file-total-size accumulator for a federated peer (bigint — count tables above are integer). One row per
- * (namespaceId, UTC day). The file-cnt dimension reuses QuotaDailyUsage with category 'files'; the byte
- * dimension lives here because byte totals exceed integer range. Drives the per-namespace circuit breaker.
- */
-export const quotaFileByteUsage = pgTable(
-  'QuotaFileByteUsage',
-  {
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull()
-      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
-    namespaceId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    bytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-  },
-  (table) => [
-    index('QuotaFileByteUsage_date_idx').using(
-      'btree',
-      table.date.asc().nullsLast().op('date_ops'),
-    ),
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'QuotaFileByteUsage_namespaceId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.namespaceId, table.date],
-      name: 'QuotaFileByteUsage_pkey',
-    }),
-  ],
-);
-
-/**
- * Daily file-total-size accumulator for a local user (bigint). One row per (userId, UTC day). Drives the per-user
- * circuit breaker. See src/quota/user-quota.service.ts.
- */
-export const userQuotaFileByteUsage = pgTable(
-  'UserQuotaFileByteUsage',
-  {
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull()
-      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
-    userId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    bytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-  },
-  (table) => [
-    index('UserQuotaFileByteUsage_date_idx').using(
-      'btree',
-      table.date.asc().nullsLast().op('date_ops'),
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'UserQuotaFileByteUsage_userId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.userId, table.date],
-      name: 'UserQuotaFileByteUsage_pkey',
-    }),
-  ],
-);
-
-/**
- * Admin "continue / add quota": a per-(namespaceId, UTC-day) ADDITIVE allowance on top of the base limit.
- * The effective breaker limit for today = base (override ?? default) + extra*. Persisted across restarts;
- * auto-resets via the date key.
- */
-export const quotaDailyAllowance = pgTable(
-  'QuotaDailyAllowance',
-  {
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull()
-      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
-    namespaceId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    extraMsg: integer().default(0).notNull(),
-    extraFile: integer().default(0).notNull(),
-    extraFileBytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'QuotaDailyAllowance_namespaceId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.namespaceId, table.date],
-      name: 'QuotaDailyAllowance_pkey',
-    }),
-  ],
-);
-
-/** Per-(userId, UTC-day) additive allowance — local-user counterpart of QuotaDailyAllowance. */
-export const userQuotaDailyAllowance = pgTable(
-  'UserQuotaDailyAllowance',
-  {
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull()
-      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
-    userId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    extraMsg: integer().default(0).notNull(),
-    extraFile: integer().default(0).notNull(),
-    extraFileBytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'UserQuotaDailyAllowance_userId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.userId, table.date],
-      name: 'UserQuotaDailyAllowance_pkey',
-    }),
   ],
 );
 

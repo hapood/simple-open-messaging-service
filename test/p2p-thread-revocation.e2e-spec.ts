@@ -51,6 +51,7 @@ describe('P2P thread-keyed relationship revocation', () => {
       { pushStateFeedNamespaces: vi.fn() },
       namespaces,
       requestCapability,
+      { tick: vi.fn().mockResolvedValue(undefined) } as never,
     );
   });
 

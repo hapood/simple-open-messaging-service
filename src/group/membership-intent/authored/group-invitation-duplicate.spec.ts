@@ -10,6 +10,7 @@ describe('group invitation duplicate validation', () => {
       {} as never,
       {} as never,
       {} as never,
+      { tick: vi.fn().mockResolvedValue(undefined) } as never,
     );
     // Exercise the decision made after the transaction has locked and read
     // the authoritative pair and intent rows, independently of UI hints.
@@ -59,7 +60,9 @@ describe('group invitation duplicate validation', () => {
     const finalize = vi
       .spyOn(service as never, 'finalizeValidationInTx')
       .mockResolvedValue({ status: 'OK' } as never);
-    await validate({ groupIntentExpiresAt: new Date(Date.now() - 60_000).toISOString() });
+    await validate({
+      groupIntentExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
     expect(finalize).toHaveBeenCalledOnce();
   });
 

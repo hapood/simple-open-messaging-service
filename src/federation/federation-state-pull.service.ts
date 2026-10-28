@@ -1,3 +1,4 @@
+import { QuotaService } from '../quota/quota.service.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { eq } from 'drizzle-orm';
@@ -40,6 +41,7 @@ export class FederationStatePullService {
     private readonly profileResolutions: ProfileResolutionCoordinatorService,
     private readonly profileNamespacePull: FederationProfileNamespacePullService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly quota: QuotaService,
   ) {}
 
   async pullStateFeedPage(
@@ -89,6 +91,7 @@ export class FederationStatePullService {
     let observedProfileNamespaceEnd: bigint | undefined;
     await this.stateFeedPull.run(domain, context.namespaceId, {
       fetch: async (after, through) => {
+        await this.quota.assertCanConsumeState(context.namespaceId);
         const page = await this.pullStateFeedPage(
           domain,
           after,
@@ -118,6 +121,16 @@ export class FederationStatePullService {
         changed.set(page, result);
       },
       afterCommit: async (page) => {
+        const requests = page.items.filter(
+          (item) => item.eventType === 'RELATIONSHIP_INTENT',
+        ).length;
+        if (requests > 0)
+          await this.quota.tickLax(
+            context.namespaceId,
+            'requests',
+            undefined,
+            requests,
+          );
         const effect = changed.get(page) ?? {
           clientFeedUpdates: [],
           statePushNamespaces: [],

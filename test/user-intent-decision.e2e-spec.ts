@@ -146,6 +146,7 @@ describe('user intent decision', () => {
       deps.federation,
       deps.namespaces,
       requestCapability,
+      { tick: vi.fn().mockResolvedValue(undefined) } as never,
     );
   });
   afterEach(async () => {

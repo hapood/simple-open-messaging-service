@@ -88,6 +88,7 @@ export class AdminQuotaController {
     await this.quota.setLimits(namespaceId, {
       dailyMsgLimit: dto.dailyMsgLimit,
       dailyRequestLimit: dto.dailyRequestLimit,
+      dailySignalLimit: dto.dailySignalLimit,
       dailyFileLimit: dto.dailyFileLimit,
       dailyFileBytesLimit:
         dto.dailyFileBytesLimit != null
@@ -115,6 +116,8 @@ export class AdminQuotaController {
     const namespaceId = await this.quota.activeNamespaceId(domain);
     const status = await this.quota.addQuota(namespaceId, {
       addMsg: dto.addMsg,
+      addRequest: dto.addRequest,
+      addSignal: dto.addSignal,
       addFile: dto.addFile,
       addFileBytes:
         dto.addFileBytes != null ? BigInt(dto.addFileBytes) : undefined,
@@ -151,6 +154,8 @@ export class AdminQuotaController {
     }
     return this.userQuota.addQuota(userId, {
       addMsg: dto.addMsg,
+      addRequest: dto.addRequest,
+      addSignal: dto.addSignal,
       addFile: dto.addFile,
       addFileBytes:
         dto.addFileBytes != null ? BigInt(dto.addFileBytes) : undefined,

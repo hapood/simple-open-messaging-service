@@ -1,10 +1,15 @@
+import { QuotaUsageCards } from '@/components/admin/quota-usage-cards';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Pencil } from 'lucide-react';
 import { useSetQuotaNodeLimits } from '@/hooks/use-quotas';
 import { useIsSuperAdmin } from '@/hooks/use-me';
-import type { QuotaCategory, QuotaNode, QuotaOverrides } from '@/types/api';
+import type {
+  QuotaCountDimension,
+  QuotaNode,
+  QuotaOverrides,
+} from '@/types/api';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -24,24 +29,32 @@ import {
 } from '@/components/ui/dialog';
 import { formatApiError } from '@/lib/format-error';
 
-// Count dimensions surfaced as usage cards. `signals` is global-only and not shown here.
-const CATEGORIES: QuotaCategory[] = ['messages', 'files', 'requests'];
-type CountKey = 'dailyMsgLimit' | 'dailyFileLimit' | 'dailyRequestLimit';
-const COUNT_FIELDS: { key: CountKey; cat: QuotaCategory }[] = [
+// Count dimensions share the same policy fields in both scopes.
+const CATEGORIES: QuotaCountDimension[] = [
+  'messages',
+  'files',
+  'requests',
+  'signals',
+];
+type CountKey =
+  | 'dailyMsgLimit'
+  | 'dailyFileLimit'
+  | 'dailyRequestLimit'
+  | 'dailySignalLimit';
+const COUNT_FIELDS: { key: CountKey; cat: QuotaCountDimension }[] = [
   { key: 'dailyMsgLimit', cat: 'messages' },
   { key: 'dailyFileLimit', cat: 'files' },
   { key: 'dailyRequestLimit', cat: 'requests' },
+  { key: 'dailySignalLimit', cat: 'signals' },
 ];
-const COUNT_OVERRIDE_BY_CATEGORY: Record<QuotaCategory, CountKey> = {
-  messages: 'dailyMsgLimit',
-  files: 'dailyFileLimit',
-  requests: 'dailyRequestLimit',
-};
 const MB = 1024 * 1024;
 
 export function quotaRisk(node: QuotaNode | undefined): number | undefined {
   if (!node) return undefined;
   return Math.max(
+    node.breaker.fileBytes.limit === 0
+      ? 1
+      : Number(node.breaker.fileBytes.bytes) / node.breaker.fileBytes.limit,
     ...CATEGORIES.map((category) => {
       const usage = node.usage[category];
       if (usage.limit === 0) return 1;
@@ -75,78 +88,11 @@ export function PeerQuotaPanel({ node }: { node: QuotaNode }) {
           ) : null}
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {CATEGORIES.map((category) => {
-              const usage = node.usage[category];
-              const count = usage.count;
-              const limit = usage.limit;
-              const ratio = limit > 0 ? count / limit : 1;
-              const percent = Math.min(100, Math.round(ratio * 100));
-              const override =
-                node.overrides[COUNT_OVERRIDE_BY_CATEGORY[category]];
-              const status =
-                limit === 0
-                  ? 'disabled'
-                  : ratio >= 1
-                    ? 'exhausted'
-                    : ratio >= 0.8
-                      ? 'warning'
-                      : 'healthy';
-              return (
-                <div key={category} className="rounded-md border p-3">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="text-muted-foreground">
-                      {t(`quota.col.${category}`)}
-                    </span>
-                    <span>{t(`quota.status.${status}`)}</span>
-                  </div>
-                  <div
-                    className={
-                      status === 'exhausted' || status === 'disabled'
-                        ? 'mt-1 font-mono text-lg text-destructive'
-                        : status === 'warning'
-                          ? 'mt-1 font-mono text-lg text-amber-600 dark:text-amber-500'
-                          : 'mt-1 font-mono text-lg'
-                    }
-                  >
-                    {limit === 0
-                      ? t('quota.disabled')
-                      : `${count.toLocaleString()} / ${limit.toLocaleString()}`}
-                  </div>
-                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
-                    <div
-                      className={
-                        status === 'exhausted' || status === 'disabled'
-                          ? 'h-full bg-destructive'
-                          : status === 'warning'
-                            ? 'h-full bg-amber-500'
-                            : 'h-full bg-primary'
-                      }
-                      style={{ width: `${limit === 0 ? 100 : percent}%` }}
-                      role="progressbar"
-                      aria-valuemin={0}
-                      aria-valuemax={limit}
-                      aria-valuenow={Math.min(count, limit)}
-                    />
-                  </div>
-                  <div className="mt-2 flex justify-between gap-2 text-xs text-muted-foreground">
-                    <span>
-                      {limit === 0
-                        ? t('quota.noTrafficAccepted')
-                        : t('quota.remaining', {
-                            count: Math.max(0, limit - count).toLocaleString(),
-                          })}
-                    </span>
-                    <span>
-                      {override == null
-                        ? t('quota.source.default')
-                        : t('quota.source.custom')}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <QuotaUsageCards
+            usage={node.usage}
+            fileBytes={node.breaker.fileBytes}
+            overrides={node.overrides}
+          />
           <p className="text-xs text-muted-foreground">
             {t('quota.resetHint')}
           </p>
@@ -172,6 +118,7 @@ function EditQuotaDialog({
     dailyMsgLimit: node.overrides.dailyMsgLimit?.toString() ?? '',
     dailyFileLimit: node.overrides.dailyFileLimit?.toString() ?? '',
     dailyRequestLimit: node.overrides.dailyRequestLimit?.toString() ?? '',
+    dailySignalLimit: node.overrides.dailySignalLimit?.toString() ?? '',
   });
   // File total size override, edited in MB (wire value is bytes).
   const [fileBytesMb, setFileBytesMb] = useState<string>(
@@ -200,6 +147,7 @@ function EditQuotaDialog({
       dailyMsgLimit: parseCount(counts.dailyMsgLimit),
       dailyFileLimit: parseCount(counts.dailyFileLimit),
       dailyRequestLimit: parseCount(counts.dailyRequestLimit),
+      dailySignalLimit: parseCount(counts.dailySignalLimit),
       dailyFileBytesLimit:
         fileBytesMb.trim() === '' ? null : Math.round(Number(fileBytesMb) * MB),
     };

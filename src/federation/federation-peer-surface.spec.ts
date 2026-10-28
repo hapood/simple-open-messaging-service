@@ -819,6 +819,7 @@ function makeStubs() {
     participantService as never,
     quota as never,
     eventEmitter as never,
+    peerLifecycle,
   );
   const namespaces = {
     captureActive: vi.fn(async (domain: string) => ({

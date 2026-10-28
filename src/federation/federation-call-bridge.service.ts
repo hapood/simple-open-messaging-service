@@ -10,12 +10,14 @@ import {
   toS2SCallWireFrame,
 } from '../calls/federated-call-protocol.js';
 import { callTombstoneCache } from '../calls/call-tombstone-cache.js';
+import { CALL_INVITATION_QUOTA_COST } from '../quota/daily-quota-ledger.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import {
   FederationCallDelivery,
   type OutboundCallFrameParams,
 } from './federation-call-delivery.js';
+import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationUserDirectoryService } from './federation-user-directory.service.js';
 
@@ -31,7 +33,13 @@ export class FederationCallBridgeService {
     private readonly participants: AccountThreadStateService,
     private readonly quota: QuotaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly lifecycle: FederationPeerLifecycle,
   ) {}
+
+  /** Gate only new outbound calls; existing lifecycle and terminal delivery remain best-effort. */
+  async checkOutboundReady(peerDomain: string): Promise<void> {
+    await this.lifecycle.checkOutboundReady(peerDomain);
+  }
 
   async sendFrame(
     params: OutboundCallFrameParams,
@@ -157,7 +165,7 @@ export class FederationCallBridgeService {
       );
     }
 
-    await this.quota.peek(namespaceId, 'requests');
+    await this.quota.peek(namespaceId, 'signals', CALL_INVITATION_QUOTA_COST);
     const peerAddress = {
       account: frame.payload.fromAccount,
       domain: peerDomain,

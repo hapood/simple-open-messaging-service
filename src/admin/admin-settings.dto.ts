@@ -1,14 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsInt,
-  IsBoolean,
-  IsString,
-  Matches,
-  Max,
-  MaxLength,
-  Min,
-  ValidateBy,
-} from 'class-validator';
+import { IsInt, IsBoolean, Max, Min, ValidateBy } from 'class-validator';
 
 const isZeroOrRange = (minimum: number, maximum: number) =>
   ValidateBy({
@@ -136,6 +127,12 @@ export class UserQuotaDefaultsDto {
   @IsInt()
   @Min(0)
   @Max(Number.MAX_SAFE_INTEGER)
+  dailySignalLimit!: number;
+
+  @ApiProperty({ minimum: 0 })
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
   dailyMsgLimit!: number;
 
   @ApiProperty({ minimum: 0 })
@@ -150,11 +147,11 @@ export class UserQuotaDefaultsDto {
   @Max(Number.MAX_SAFE_INTEGER)
   dailyFileLimit!: number;
 
-  @ApiProperty({ type: String, pattern: '^\\d+$', example: '1073741824' })
-  @IsString()
-  @MaxLength(16)
-  @Matches(/^\d+$/)
-  dailyFileBytesLimit!: string;
+  @ApiProperty({ minimum: 0 })
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  dailyFileBytesLimit!: number;
 }
 
 export class FederationQuotaDefaultsDto {

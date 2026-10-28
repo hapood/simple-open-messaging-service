@@ -16,7 +16,6 @@ import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';
 import { UserQuotaService } from '../src/quota/user-quota.service';
 import { UserIntentService } from '../src/user/p2p-intent/authored/user-intent.service';
-import { userQuotaDailyUsage } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import type { OutboundFilePayload } from '../src/upload/file-content';
 import { seedAcceptedRelationship } from './seed';
@@ -170,13 +169,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       requestWithAdmission(targetAccounts[1], ''),
     ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
 
-    const usage = await database.db.query.userQuotaDailyUsage.findFirst({
-      where: and(
-        eq(userQuotaDailyUsage.userId, userId),
-        eq(userQuotaDailyUsage.category, 'requests'),
-      ),
-    });
-    expect(usage?.count).toBe(2);
+    expect((await userQuota.getState(userId)).usage.requests.count).toBe(2);
     const rolledBackPair = await database.db.query.relationshipPair.findFirst({
       where: or(
         and(

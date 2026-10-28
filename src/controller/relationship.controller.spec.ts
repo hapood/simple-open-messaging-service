@@ -139,7 +139,7 @@ describe('RelationshipController.revokeRelationship', () => {
 });
 
 describe('RelationshipController.requestRelationship', () => {
-  it('authors an exact local-group application with quota admission', async () => {
+  it('authors an exact local-group application through domain-owned admission', async () => {
     const memberIntents = {
       executeByNamespace: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
@@ -162,7 +162,6 @@ describe('RelationshipController.requestRelationship', () => {
       snapshot: { displayName: 'Local Group', avatar: null },
       decision: 'REQUESTED',
       note: 'hello',
-      admissionInTx: expect.any(Function),
     });
   });
 
@@ -171,7 +170,6 @@ describe('RelationshipController.requestRelationship', () => {
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
     const memberIntents = {
       executeByNamespace: vi.fn().mockImplementation(async (params) => {
-        await params.admissionInTx(admissionTx);
         return { status: 'APPLIED' };
       }),
     };
@@ -194,17 +192,15 @@ describe('RelationshipController.requestRelationship', () => {
       decision: 'REQUESTED',
       note: 'let me in',
       snapshot: { displayName: 'Remote Group', avatar: 'avatar' },
-      admissionInTx: expect.any(Function),
     });
-    expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
+    expect(userQuota.tick).not.toHaveBeenCalled();
   });
 
-  it('runs the local request synchronously with in-transaction quota admission', async () => {
+  it('runs the local request synchronously through domain-owned admission', async () => {
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
     const admissionTx = { admission: true };
     const userIntents = {
       execute: vi.fn().mockImplementation(async (_params, options) => {
-        await options?.admissionInTx?.(admissionTx);
         return { status: 'APPLIED' };
       }),
     };
@@ -218,17 +214,14 @@ describe('RelationshipController.requestRelationship', () => {
         snapshot: { displayName: 'Bob', avatar: null },
       }),
     ).resolves.toEqual({ status: 'OK' });
-    expect(userIntents.execute).toHaveBeenCalledWith(
-      {
-        userId: 7,
-        decision: 'REQUESTED',
-        target: { account: 'bob', namespaceId: 0 },
-        note: 'hello',
-        snapshot: { displayName: 'Bob', avatar: null },
-      },
-      expect.objectContaining({ admissionInTx: expect.any(Function) }),
-    );
-    expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'REQUESTED',
+      target: { account: 'bob', namespaceId: 0 },
+      note: 'hello',
+      snapshot: { displayName: 'Bob', avatar: null },
+    });
+    expect(userQuota.tick).not.toHaveBeenCalled();
   });
 
   it('returns the active thread when the request collapses into acceptance', async () => {
@@ -249,12 +242,11 @@ describe('RelationshipController.requestRelationship', () => {
     ).resolves.toEqual({ status: 'OK', threadId: 33 });
   });
 
-  it('runs the federated request synchronously with in-transaction quota admission', async () => {
+  it('runs the federated request synchronously through domain-owned admission', async () => {
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
     const admissionTx = { admission: true };
     const userIntents = {
       execute: vi.fn().mockImplementation(async (_params, options) => {
-        await options?.admissionInTx?.(admissionTx);
         return { status: 'APPLIED' };
       }),
     };
@@ -271,17 +263,14 @@ describe('RelationshipController.requestRelationship', () => {
         note: 'across servers',
       }),
     ).resolves.toEqual({ status: 'OK' });
-    expect(userIntents.execute).toHaveBeenCalledWith(
-      {
-        userId: 7,
-        decision: 'REQUESTED',
-        target: { account: 'bob', namespaceId: 5 },
-        note: 'across servers',
-        snapshot: { displayName: 'Bob', avatar: null },
-      },
-      expect.objectContaining({ admissionInTx: expect.any(Function) }),
-    );
-    expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'REQUESTED',
+      target: { account: 'bob', namespaceId: 5 },
+      note: 'across servers',
+      snapshot: { displayName: 'Bob', avatar: null },
+    });
+    expect(userQuota.tick).not.toHaveBeenCalled();
   });
 
   it('runs a federated request with an explicit no-avatar snapshot', async () => {
@@ -297,16 +286,13 @@ describe('RelationshipController.requestRelationship', () => {
         snapshot: { displayName: 'Bob', avatar: null },
       }),
     ).resolves.toEqual({ status: 'OK' });
-    expect(userIntents.execute).toHaveBeenCalledWith(
-      {
-        userId: 7,
-        decision: 'REQUESTED',
-        target: { account: 'bob', namespaceId: 5 },
-        note: '',
-        snapshot: { displayName: 'Bob', avatar: null },
-      },
-      expect.objectContaining({ admissionInTx: expect.any(Function) }),
-    );
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'REQUESTED',
+      target: { account: 'bob', namespaceId: 5 },
+      note: '',
+      snapshot: { displayName: 'Bob', avatar: null },
+    });
   });
 
   it('returns an unavailable actor as a business rejection', async () => {
@@ -346,16 +332,13 @@ describe('RelationshipController.requestRelationship', () => {
         note: 'nsid-first',
       }),
     ).resolves.toEqual({ status: 'OK', threadId: 42 });
-    expect(userIntents.execute).toHaveBeenCalledWith(
-      {
-        userId: 7,
-        decision: 'REQUESTED',
-        target: { account: 'bob', namespaceId: 5 },
-        note: 'nsid-first',
-        snapshot: { displayName: 'Bob', avatar: null },
-      },
-      expect.objectContaining({ admissionInTx: expect.any(Function) }),
-    );
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'REQUESTED',
+      target: { account: 'bob', namespaceId: 5 },
+      note: 'nsid-first',
+      snapshot: { displayName: 'Bob', avatar: null },
+    });
   });
 
   it.each([

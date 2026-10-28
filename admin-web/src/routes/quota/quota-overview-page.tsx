@@ -83,7 +83,7 @@ export function QuotaOverviewPage() {
             className="font-mono text-primary underline break-all"
             to={
               item.scope === 'user'
-                ? `/users/${encodeURIComponent(item.entity)}`
+                ? `/users/${item.userId}`
                 : `/federation/${encodeURIComponent(item.entity)}`
             }
           >
@@ -98,14 +98,13 @@ export function QuotaOverviewPage() {
             {item.fileBytes.limit} B
           </p>
           <p>
+            {t('quota.col.requests')}: {item.requests.count} /{' '}
+            {item.requests.limit} · {t('quota.col.signals')}:{' '}
+            {item.signals.count} / {item.signals.limit}
+          </p>
+          <p>
             {t('quotaCenter.limitedDimensions')}:{' '}
-            {item.trippedDims
-              .map((dim) =>
-                t(
-                  `quota.breaker.dim${dim === 'msg' ? 'Msg' : dim === 'file' ? 'File' : 'FileBytes'}`,
-                ),
-              )
-              .join(', ')}
+            {item.trippedDims.map((dim) => t(`quota.col.${dim}`)).join(', ')}
           </p>
           {canManage && (
             <Button variant="outline" onClick={() => setSelected(item)}>

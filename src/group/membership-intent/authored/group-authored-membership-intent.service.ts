@@ -1,3 +1,4 @@
+import { UserQuotaService } from '../../../quota/user-quota.service.js';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import type { AccountSubjectAddress } from '../../../user/account-address.js';
@@ -176,6 +177,7 @@ export class GroupAuthoredMembershipIntentService {
     private readonly peerFeed: PeerStateFeedService,
     private readonly federation: FederationStateFeedPusher,
     private readonly relationshipMutations: GroupRelationshipMutationService,
+    private readonly quota: UserQuotaService,
   ) {}
 
   async execute(
@@ -190,6 +192,7 @@ export class GroupAuthoredMembershipIntentService {
         options?.requestDecision,
       );
       if ('status' in context) return { outcome: context };
+      await this.quota.tick(params.managerUserId, 'requests', tx);
       return {
         outcome: { status: 'APPLIED' as const },
         peers: await this.applyInTx(context, clientUpdates),

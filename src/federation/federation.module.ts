@@ -1,3 +1,4 @@
+import { UserQuotaService } from '../quota/user-quota.service.js';
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { KeypairService } from './keypair.service.js';
@@ -144,6 +145,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
         FederationStateFeedPushService,
         FederationNamespaceService,
         RequestTransactionCapability,
+        UserQuotaService,
       ],
       useFactory: (
         database: DatabaseService,
@@ -152,6 +154,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
         stateFeedPush: FederationStateFeedPushService,
         namespaces: FederationNamespaceService,
         requestCapability: RequestTransactionCapability,
+        quota: UserQuotaService,
       ) =>
         new UserIntentService(
           database,
@@ -160,6 +163,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
           stateFeedPush,
           namespaces,
           requestCapability,
+          quota,
         ),
     },
     {

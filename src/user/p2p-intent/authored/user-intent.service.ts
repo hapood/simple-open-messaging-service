@@ -1,3 +1,4 @@
+import { UserQuotaService } from '../../../quota/user-quota.service.js';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
 import type { RequestTransactionCapability } from '../../../relationship/request/request-transaction.contract.js';
@@ -199,6 +200,7 @@ export class UserIntentService {
     private readonly federation: FederationStateFeedPusher,
     private readonly namespaces: FederationNamespaceService,
     private readonly requestCapability: RequestTransactionCapability,
+    private readonly quota: UserQuotaService,
   ) {}
 
   async decidePersonalRequest(
@@ -264,7 +266,12 @@ export class UserIntentService {
   ): Promise<UserIntentOutcome> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const applied = await this.database.db.transaction((tx) =>
-      this.executeInTx(tx, params, clientUpdates, options),
+      this.executeInTx(tx, params, clientUpdates, {
+        ...options,
+        admissionInTx: options?.expectedAuthorization
+          ? undefined
+          : (runner) => this.quota.tick(params.userId, 'requests', runner),
+      }),
     );
     this.publishIntentEffects(applied, clientUpdates);
     return applied.outcome;
@@ -318,6 +325,8 @@ export class UserIntentService {
         { userId: params.userId, decision: 'REVOKED', target },
         clientUpdates,
         {
+          admissionInTx: (runner) =>
+            this.quota.tick(params.userId, 'requests', runner),
           establishedRelationship: {
             threadId: params.threadId,
             epoch: row.authorizationEpoch,

@@ -152,7 +152,7 @@ export class AdminSettingsController {
   @Post('admin/settings/user-quota-defaults')
   async setUserQuotaDefaults(@Body() body: UserQuotaDefaultsDto) {
     try {
-      return await this.userQuota.setDefaultLimits(body);
+      return await this.userQuota.setDefaultLimits({ ...body });
     } catch (error) {
       throw new BadRequestException(
         error instanceof Error ? error.message : 'invalid quota defaults',

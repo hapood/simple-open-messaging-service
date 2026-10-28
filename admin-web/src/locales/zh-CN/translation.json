@@ -94,7 +94,7 @@
     "remaining": "剩余 {{count}}",
     "itemCaps": "单个媒体大小上限",
     "megabytes": "{{count}} MB",
-    "resetHint": "每日用量在 UTC 00:00 清零；修改上限不会清除今天已经产生的用量。",
+    "resetHint": "用量与临时补额仅保存在当前进程内，UTC 00:00 或服务重启后清零。修改每日限额不清除已用量。",
     "status": {
       "healthy": "正常",
       "warning": "接近上限",
@@ -130,7 +130,9 @@
       "node": "节点",
       "messages": "消息",
       "files": "文件",
-      "requests": "请求"
+      "requests": "关系操作",
+      "signals": "电话额度",
+      "fileBytes": "文件总量"
     },
     "breaker": {
       "bannerTitle": "配额熔断已触发",
@@ -142,14 +144,16 @@
       "dimFile": "文件数",
       "dimFileBytes": "文件总大小",
       "continueTitle": "追加今日额度 — {{entity}}",
-      "continueHint": "追加值叠加到今日额度上。0 = 该维度不追加。",
+      "continueHint": "用量与临时补额仅保存在当前进程内，UTC 00:00 或服务重启后清零。修改每日限额不清除已用量。",
       "addMsg": "追加消息条数",
       "addFile": "追加文件数",
       "addFileBytes": "追加文件总大小 (MB)",
       "needHint": "该维度至少需追加 {{amount}} 才能解除",
       "apply": "应用并恢复",
       "toastResumed": "熔断已解除 — 流量已恢复",
-      "toastStillTripped": "额度已追加；部分维度仍超限"
+      "toastStillTripped": "额度已追加；部分维度仍超限",
+      "addRequest": "追加关系操作额度",
+      "addSignal": "追加电话额度"
     }
   },
   "dashboard": {
@@ -322,7 +326,7 @@
     "title": "个人额度",
     "desc": "仅约束此本地账号；与联邦对端额度相互独立。每日 00:00 UTC 重置。",
     "noActionsAccepted": "不允许此账号使用该能力",
-    "resetHint": "每日用量在 UTC 00:00 清零；修改上限不会清除该账号今天已经产生的用量。",
+    "resetHint": "用量与临时补额仅保存在当前进程内，UTC 00:00 或服务重启后清零。修改每日限额不清除已用量。",
     "source": {
       "default": "账号默认",
       "custom": "个人覆盖"
@@ -657,7 +661,10 @@
       "probeStartedAt": "检测开始时间",
       "duration": "检测耗时",
       "source": "触发来源",
-      "sourceKind": { "automatic": "自动检测", "manual": "管理员检测" },
+      "sourceKind": {
+        "automatic": "自动检测",
+        "manual": "管理员检测"
+      },
       "feedDirection": "入站：本站消费 {{domain}} · 发布方 Namespace #{{namespaceId}}",
       "processed": "本站已处理",
       "processedId": "已处理／扫描至 ID",
@@ -1001,7 +1008,7 @@
       "federationDesc": "未自定义覆盖值的节点共享每日默认值；信令帧仅有全局值。",
       "messages": "消息数",
       "requests": "请求数",
-      "signals": "信令数",
+      "signals": "电话额度（发起 400；信令帧 1）",
       "files": "文件数",
       "fileBytes": "文件字节数",
       "save": "保存默认值",

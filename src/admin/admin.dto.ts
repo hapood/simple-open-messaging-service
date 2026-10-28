@@ -424,7 +424,7 @@ export class AdminFederationIdentityRecoverDto {
 }
 
 /** Per-peer daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
- *  field means "use the global default". Stored on IdentityNamespace. See QuotaService.setLimits. */
+ *  field means "use the global default". Stored in the scope's quota policy table. */
 export class AdminSetQuotaDto {
   @ApiProperty({
     required: false,
@@ -445,6 +445,16 @@ export class AdminSetQuotaDto {
   @IsInt()
   @Min(0)
   dailyRequestLimit?: number | null;
+
+  @ApiPropertyOptional({
+    minimum: 0,
+    description: 'Daily call budget (null = default)',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  dailySignalLimit?: number | null;
 
   @ApiProperty({
     required: false,
@@ -480,6 +490,18 @@ export class AdminContinueQuotaDto {
   @IsInt()
   @Min(0)
   addMsg?: number;
+
+  @ApiPropertyOptional({ minimum: 0 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  addRequest?: number;
+
+  @ApiPropertyOptional({ minimum: 0 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  addSignal?: number;
 
   @ApiProperty({
     required: false,

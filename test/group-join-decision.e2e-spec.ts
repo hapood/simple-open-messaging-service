@@ -178,6 +178,7 @@ describe('group join decision', () => {
       services.peerFeed,
       services.federation,
       services.mutations,
+      { tick: vi.fn().mockResolvedValue(undefined) } as never,
     );
   });
   afterEach(async () => {
@@ -2431,6 +2432,7 @@ describe('group join decision', () => {
         services.clientFeed,
         services.mutations,
         services.federation,
+        { tick: vi.fn().mockResolvedValue(undefined) } as never,
       );
     });
 

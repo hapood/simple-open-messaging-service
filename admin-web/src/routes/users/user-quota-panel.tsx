@@ -1,13 +1,10 @@
+import { QuotaUsageCards } from '@/components/admin/quota-usage-cards';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Pencil, TriangleAlert } from 'lucide-react';
 import { useSetUserQuota, useUserQuota } from '@/hooks/use-user-detail';
-import type {
-  QuotaCategory,
-  QuotaOverrides,
-  UserQuotaState,
-} from '@/types/api';
+import type { QuotaOverrides, UserQuotaState } from '@/types/api';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -28,15 +25,12 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatApiError } from '@/lib/format-error';
 
-const categories: QuotaCategory[] = ['messages', 'files', 'requests'];
 const countFields = [
   ['dailyMsgLimit', 'messages'],
   ['dailyFileLimit', 'files'],
   ['dailyRequestLimit', 'requests'],
+  ['dailySignalLimit', 'signals'],
 ] as const;
-const countOverrideByCategory = Object.fromEntries(
-  countFields.map(([key, category]) => [category, key]),
-) as Record<QuotaCategory, (typeof countFields)[number][0]>;
 const MB = 1024 * 1024;
 
 type QuotaStatus = 'healthy' | 'warning' | 'exhausted' | 'disabled';
@@ -90,75 +84,11 @@ export function UserQuotaPanel({
           ) : null}
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="grid gap-3 sm:grid-cols-3">
-            {categories.map((category) => {
-              const item = state.usage[category];
-              const status = userQuotaStatus(item.count, item.limit);
-              const percent =
-                item.limit === 0
-                  ? 100
-                  : Math.min(100, Math.round((item.count / item.limit) * 100));
-              const override =
-                state.overrides[countOverrideByCategory[category]];
-
-              return (
-                <div key={category} className="rounded-md border p-3">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="text-muted-foreground">
-                      {t(`quota.col.${category}`)}
-                    </span>
-                    <span>{t(`quota.status.${status}`)}</span>
-                  </div>
-                  <div
-                    className={
-                      status === 'exhausted' || status === 'disabled'
-                        ? 'mt-1 font-mono text-lg text-destructive'
-                        : status === 'warning'
-                          ? 'mt-1 font-mono text-lg text-amber-600 dark:text-amber-500'
-                          : 'mt-1 font-mono text-lg'
-                    }
-                  >
-                    {item.limit === 0
-                      ? t('quota.disabled')
-                      : `${item.count.toLocaleString()} / ${item.limit.toLocaleString()}`}
-                  </div>
-                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
-                    <div
-                      className={
-                        status === 'exhausted' || status === 'disabled'
-                          ? 'h-full bg-destructive'
-                          : status === 'warning'
-                            ? 'h-full bg-amber-500'
-                            : 'h-full bg-primary'
-                      }
-                      style={{ width: `${percent}%` }}
-                      role="progressbar"
-                      aria-valuemin={0}
-                      aria-valuemax={item.limit}
-                      aria-valuenow={Math.min(item.count, item.limit)}
-                    />
-                  </div>
-                  <div className="mt-2 flex justify-between gap-2 text-xs text-muted-foreground">
-                    <span>
-                      {item.limit === 0
-                        ? t('userQuota.noActionsAccepted')
-                        : t('quota.remaining', {
-                            count: Math.max(
-                              0,
-                              item.limit - item.count,
-                            ).toLocaleString(),
-                          })}
-                    </span>
-                    <span>
-                      {override == null
-                        ? t('userQuota.source.default')
-                        : t('userQuota.source.custom')}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <QuotaUsageCards
+            usage={state.usage}
+            fileBytes={state.breaker.fileBytes}
+            overrides={state.overrides}
+          />
           <BreakerLine state={state} />
           <p className="text-xs text-muted-foreground">
             {t('userQuota.resetHint')}
@@ -180,7 +110,7 @@ function BreakerLine({ state }: { state: UserQuotaState }) {
   const { t } = useTranslation();
   if (!state.breaker.tripped) return null;
   const dims = state.breaker.trippedDims
-    .map((d) => t(`quota.breaker.dim${d === 'msg' ? 'Msg' : d === 'file' ? 'File' : 'FileBytes'}`))
+    .map((d) => t(`quota.col.${d}`))
     .join(', ');
   return (
     <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -237,9 +167,7 @@ function EditUserQuota({
         ]),
       ),
       dailyFileBytesLimit:
-        fileBytesMb.trim() === ''
-          ? null
-          : Math.round(Number(fileBytesMb) * MB),
+        fileBytesMb.trim() === '' ? null : Math.round(Number(fileBytesMb) * MB),
     } as QuotaOverrides;
     try {
       await mutation.mutateAsync(overrides);

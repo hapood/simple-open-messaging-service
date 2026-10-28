@@ -357,14 +357,7 @@ export class UploadController {
     return typeof value === 'string' && value.length > 0 ? value : undefined;
   }
 
-  /**
-   * Charge the account's daily file quota — file cnt + file total size — at the admission point, BEFORE
-   * CAS persistence, where the real byte size is known. This is where BOTH the staged-send file count
-   * (deferred from POST /send-media) and any plain upload are consumed. Type-agnostic: media family no
-   * longer factors into quota (the old images/largeFiles split is gone). assertCanSend gates the user's
-   * breaker; preCheckFile refuses a claim that would exceed; tickLax + tickFileBytes record it. A quota
-   * failure persists a staged failure (failUpload) and aborts the send, leaving no orphan file on disk.
-   */
+  /** Parse the staged upload address and reject inconsistent routing fields. */
   private uploadPartFields(
     fields: Record<string, string>,
     stagedType: ContentType,

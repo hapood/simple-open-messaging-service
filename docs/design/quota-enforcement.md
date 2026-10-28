@@ -1,118 +1,108 @@
 # Quota enforcement
 
-## Scope and identity
+## Scope and storage
 
-Quota enforcement has two independent scopes:
+Quota policy is durable; daily accounting is intentionally process-local. A restart
+resets usage and temporary grants. Multiple backend processes do not share a daily
+budget; this design is for a single accounting process per server.
 
-- Federation traffic is charged to the active immutable `IdentityNamespace`,
-  not directly to a peer domain. A domain-facing admin operation resolves the
-  current namespace first. Retiring an identity therefore starts fresh limits,
-  counters, allowances, and breaker state; it does not inherit the previous
-  identity's traffic history.
-- Local traffic is charged to the authenticated local account. Foreign and
-  group accounts do not use personal quota tables.
+- `SystemSetting` stores five defaults per scope, with prefixes
+  `quota:federation:` and `quota:localUser:`. Missing values use code defaults.
+- `FederationQuotaPolicy(nsid)` references `IdentityNamespace.id`.
+- `UserQuotaPolicy(account)` references the unique local `Account.account`.
+- Both policy tables contain `dailyRequestLimit`, `dailySignalLimit`,
+  `dailyMsgLimit`, `dailyFileLimit`, and `dailyFileBytesLimit`.
+- An absent policy or a NULL field inherits the scope default. Zero disallows
+  new consumption of that dimension. A positive value overrides the default.
 
-The domain is an administrative lookup key. It is not a quota identity and must
-not be used as a database counter key.
+Identity namespaces do not own quota configuration columns. Retired namespaces
+never transfer their policy or usage to a new identity. There are no durable
+usage, byte-counter, or daily-allowance tables.
 
-## Dimensions and persistence
+## Dimensions
 
-Both scopes use message count, friend/request count, file item count, and total
-file bytes. Federation also has a dedicated signal-frame count. File counts
-and message/request counts use integer daily counters; byte totals use bigint.
-All dates are UTC calendar dates and act as the reset boundary without a cron.
+| Dimension                            | Local default per account/day | Federation default per namespace/day |
+| ------------------------------------ | ----------------------------: | -----------------------------------: |
+| Relationship operations (`requests`) |                            50 |                                1,000 |
+| Call budget (`signals`)              |                        10,000 |                               50,000 |
+| Messages (`messages`)                |                         1,000 |                                5,000 |
+| File items (`files`)                 |                           100 |                                  500 |
+| File bytes (`fileBytes`)             |                       500 MiB |                                5 GiB |
 
-Federation tables are keyed by namespace and date:
+Local relationship operations are charged after domain validation when an authored
+P2P or membership operation is admitted. Automatic convergence is not a new local
+user action. Incoming federation `RELATIONSHIP_INTENT` entries cost one each when
+the item cursor commits, including requested, accepted, and revoked states. Actual
+entries count, not gaps between feed IDs. Replaying an already committed cursor
+does not charge again.
 
-- `QuotaDailyUsage(namespaceId, date, category)` stores count dimensions.
-- `QuotaFileByteUsage(namespaceId, date)` stores the byte dimension.
-- `QuotaDailyAllowance(namespaceId, date)` stores additive admin grants for
-  the current day.
-- `IdentityNamespace` stores optional per-namespace limit overrides.
+Calls charge the initiating local account 400 units, independent of whether the
+callee is local or federated. An inbound federation invitation charges the
+publisher namespace 400 units before ringing. Each admitted new offer, answer,
+or ICE signaling frame costs one unit in the sender's applicable scope. Terminal
+operations (cancel, decline, end) do not consume quota and remain available after
+exhaustion. Duplicate invitations do not charge again. Invitation weights are
+policy units, not an estimate or guarantee of a fixed number of completed calls.
 
-Local tables use the corresponding `userId` key:
-`UserQuotaPolicy`, `UserQuotaDailyUsage`, `UserQuotaFileByteUsage`, and
-`UserQuotaDailyAllowance`. Local defaults are stored in `SystemSetting`; a
-policy or allowance changes the effective limit without rewriting usage.
+## Memory accounting and admission
 
-Every counter increment uses a database atomic upsert with `RETURNING`, rather
-than an in-process counter. An allowance is additive to the base limit for
-that date. The effective limit is the namespace/account override, when set,
-otherwise the configured default, plus that day's allowance.
+The ledger stores UTC day, consumed quantities, and temporary grants. Effective
+limit is `(override ?? scope default) + today's temporary grant`. Remaining usage
+is derived and clamped at zero for display. Policy edits preserve consumed usage.
+UTC rollover lazily clears both consumed quantities and temporary grants.
 
-## Attachment size and transport limits
+Strict admission checks and debits run synchronously after asynchronous policy
+resolution. Calls cannot over-admit between a peek and a debit. File count and
+bytes are checked and debited together. Refused charges consume nothing.
 
-Message attachments of every media family must be strictly smaller than 1 GiB
-(maximum 1,073,741,823 bytes per file, including each individual gallery part).
-This object limit does not grant quota: daily byte and item admission still
-applies, so an account with less remaining daily budget can be refused earlier.
-Avatar format, dimensions, and byte limits remain separate.
+Memory is not part of a SQL transaction. Admission and message-processing charges
+are conservative costs: a later business/database failure does not refund already
+admitted work. They must not be described as transactionally rolled-back SQL
+counters. State-feed relationship charges run after the durable item commit.
 
-Browser and native message uploads use the resumable protocol, with a maximum
-4 MiB binary request body per chunk. Ordinary JSON requests retain the global
-1 MiB body limit. The buffered multipart compatibility transport retains its
-100 MiB per-file parser ceiling; large message attachments must use resumable
-uploads rather than increasing whole-file buffering.
+Message pages use soft limits: admitted/in-flight work completes normally, even
+if concurrent work exhausts the budget. There is no cancellation or quota-driven
+rollback. The stopping threshold is `used >= effective limit`, and overshoot may
+include multiple concurrent in-flight pages.
 
-## Admission semantics
+## Federation pauses
 
-Federation count admission is authoritative at the transaction boundary. A
-read-only peek may reject an already exhausted namespace before an expensive
-operation, but the subsequent atomic tick remains the authority. When a tick
-runs inside a source transaction, an over-limit exception rolls back the
-counter and the source write together, so a rejected operation does not burn a
-count or create a sequence gap.
+Before each state-feed page, either exhausted requests or exhausted messages
+pauses consumption for that namespace. The current page finishes, including its
+individual item transactions. The next page is not fetched. The durable cursor
+and observed target remain intact; no unprocessed item is skipped.
 
-Federated pull pages use the established landing semantics: a committed page
-may cross a count threshold and trip the breaker; later pulls pause until the
-UTC reset or an administrator adds allowance. File byte admission is strict
-before transfer. Quota exhaustion is a business result and does not mark the
-peer's transport health as degraded.
+Lightweight feed-head notifications cannot bypass the next-page gate. A paused
+drain retains its target and schedules a local recheck. Pauses are not peer
+transport failures. Whole-feed suspension also delays revocations, membership
+changes, content heads, and any dependent synchronization until consumption
+resumes. This is an explicit tradeoff, not immediate revocation delivery.
 
-Local message and upload admission uses the account quota service. A local
-user's paused dimensions stop that user's new sends/uploads while leaving
-existing history, reads, calls, and other accounts usable. File claims are
-checked against the persisted byte and item counters at admission; a restart
-cannot bypass the authoritative check.
+Message and reverse-history scheduler quanta check the message budget at entry.
+Already-running pages finish. Request exhaustion alone does not cancel message
+work that was already authorized. Tombstone and group-meta work are not directly
+charged to message quota, although a suspended state feed delays their new heads.
 
-## Breakers and administration
+Paused work is rechecked locally, so policy increases, temporary grants, and UTC
+rollover do not require a new remote push. Restart recovers durable targets and
+pending download tasks with a fresh memory ledger. Downloads retain durable
+resource state, but daily charge deduplication is process-local and UTC-day scoped.
 
-The in-memory breaker is only a fast cache of persisted counters. It is rebuilt
-from today's rows at startup and can self-heal on the next authoritative check.
-It must never be treated as the source of truth. Breaker dimensions are
-independent, so an exhausted file budget does not imply that messages or
-requests are exhausted.
+## Administration and client behavior
 
-Administrators can set base limits for a federation namespace through the
-domain-facing peer route. The route resolves the active identity namespace
-before writing. The `continue` operation adds quota only for the current UTC
-day and can clear a breaker once the effective limits are sufficient; it does
-not alter the base policy. Local users have the corresponding additive
-continue action. Every administrative change is audited according to the
-Admin controller rules.
+User and federation details expose the same five limits and their current
+process-local usage, remaining amount, and default/custom source. The global
+settings page edits all ten defaults. Temporary additions support all five
+dimensions; omitted fields leave that dimension unchanged. Both usage and grants
+are lost on restart, and the UI states this explicitly.
 
-## Concurrency and recovery
+A local user's exhausted dimension restricts the corresponding active operation,
+not client state synchronization, receiving messages, or reading existing history.
+Local quota is charged to the actor, not to an incoming call's recipient.
 
-Counter updates rely on PostgreSQL row-level atomicity and are safe under
-concurrent requests. The quota write participates in the caller's transaction
-where admission must commit or roll back with a message, upload, or federation
-page. Standalone checks use their own transaction. The same operation must not
-charge both a pre-check and its authoritative tick.
+## Attachment limits
 
-The date key supplies lazy daily reset. Old rows are historical usage and may
-be retained or garbage-collected; they are never read as today's usage. A
-namespace deletion cascades its federation counters. A local account deletion
-cascades its personal counters and allowances.
-
-## Verification requirements
-
-- Concurrent increments never lose updates and rejected transactional work
-  leaves no counter burn.
-- A retired federation identity cannot read or consume the previous identity's
-  counters, limits, allowance, or breaker state.
-- UTC date changes select empty/new daily rows without a reset job.
-- File count and byte limits are enforced independently and before transfer.
-- Restart rebuilds breaker state from persisted rows.
-- Local pause affects only the local account's sends/uploads.
-- Additive `continue` changes today's effective limit and leaves the base
-  override unchanged.
+Every message attachment must be strictly smaller than 1 GiB. The object cap is
+independent of daily file count/bytes admission. Resumable chunks remain bounded
+at 4 MiB; ordinary JSON requests retain the global 1 MiB body limit. Avatar
+format and size restrictions remain separate.

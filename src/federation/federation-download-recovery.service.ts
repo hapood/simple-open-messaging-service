@@ -1,3 +1,5 @@
+import { Interval } from '@nestjs/schedule';
+import { QuotaService } from '../quota/quota.service.js';
 import {
   Injectable,
   Logger,
@@ -24,6 +26,7 @@ export class FederationDownloadRecoveryService
     private readonly database: DatabaseService,
     private readonly inboundMediaBatches: FederationInboundMediaBatchService,
     private readonly keypair: KeypairService,
+    private readonly quota: QuotaService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -70,6 +73,39 @@ export class FederationDownloadRecoveryService
         'Failed to scan persisted inbound media downloads for recovery',
         error instanceof Error ? error.stack : String(error),
       );
+    }
+  }
+
+  private scanningPaused = false;
+
+  /** A bounded local recheck resumes paused downloads after policy edits, grants, or UTC reset. */
+  @Interval(30_000)
+  async resumeQuotaPaused(): Promise<void> {
+    if (this.scanningPaused) return;
+    this.scanningPaused = true;
+    try {
+      const rows = await this.database.db
+        .selectDistinct({ nsid: fileSyncProgress.publisherNamespaceId })
+        .from(fileSyncProgress)
+        .where(
+          and(
+            eq(fileSyncProgress.status, 'PENDING'),
+            eq(fileSyncProgress.errorKind, 'QUOTA_PAUSED'),
+          ),
+        );
+      for (const { nsid } of rows) {
+        if (
+          nsid !== null &&
+          !(await this.quota.isExhausted(nsid, ['files', 'fileBytes']))
+        )
+          await this.wakeQuotaPaused(nsid);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `quota-paused download recheck failed: ${String(error)}`,
+      );
+    } finally {
+      this.scanningPaused = false;
     }
   }
 

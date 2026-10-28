@@ -94,7 +94,7 @@
     "remaining": "{{count}} remaining",
     "itemCaps": "Per-item media size limits",
     "megabytes": "{{count}} MB",
-    "resetHint": "Daily usage resets at 00:00 UTC; changing a limit does not clear usage already recorded today.",
+    "resetHint": "Usage and temporary grants are held in this process only and reset at 00:00 UTC or server restart. Editing daily limits does not clear usage.",
     "status": {
       "healthy": "Healthy",
       "warning": "Near limit",
@@ -130,7 +130,9 @@
       "node": "Node",
       "messages": "Messages",
       "files": "Files",
-      "requests": "Requests"
+      "requests": "Relationship operations",
+      "signals": "Call budget",
+      "fileBytes": "File bytes"
     },
     "breaker": {
       "bannerTitle": "Quota circuit breakers tripped",
@@ -142,14 +144,16 @@
       "dimFile": "Files",
       "dimFileBytes": "File total size",
       "continueTitle": "Add today's quota — {{entity}}",
-      "continueHint": "Additions stack on today's limit. 0 = no bump on that dimension.",
+      "continueHint": "Usage and temporary grants are held in this process only and reset at 00:00 UTC or server restart. Editing daily limits does not clear usage.",
       "addMsg": "Additional messages",
       "addFile": "Additional file count",
       "addFileBytes": "Additional file total size (MB)",
       "needHint": "Need ≥ {{amount}} to unblock this dimension",
       "apply": "Apply & resume",
       "toastResumed": "Breaker cleared — traffic resumed",
-      "toastStillTripped": "Quota added; some dimensions still over the limit"
+      "toastStillTripped": "Quota added; some dimensions still over the limit",
+      "addRequest": "Add relationship operations",
+      "addSignal": "Add call budget"
     }
   },
   "dashboard": {
@@ -322,7 +326,7 @@
     "title": "Personal quota",
     "desc": "Applies only to this local account and is independent of federated-peer quotas. Resets daily at 00:00 UTC.",
     "noActionsAccepted": "This account cannot use this capability",
-    "resetHint": "Daily usage resets at 00:00 UTC; changing a limit does not clear usage already recorded for this account today.",
+    "resetHint": "Usage and temporary grants are held in this process only and reset at 00:00 UTC or server restart. Editing daily limits does not clear usage.",
     "source": {
       "default": "Account default",
       "custom": "Personal override"
@@ -656,7 +660,10 @@
       "probeStartedAt": "Check started at",
       "duration": "Duration",
       "source": "Trigger",
-      "sourceKind": { "automatic": "Automatic", "manual": "Administrator" },
+      "sourceKind": {
+        "automatic": "Automatic",
+        "manual": "Administrator"
+      },
       "feedDirection": "Inbound: this server consumes {{domain}} · Publisher namespace #{{namespaceId}}",
       "processed": "Processed locally",
       "processedId": "Processed / scanned through ID",
@@ -1000,7 +1007,7 @@
       "federationDesc": "Daily defaults shared by peers without a custom override. Signal frames are global-only.",
       "messages": "Messages",
       "requests": "Requests",
-      "signals": "Signals",
+      "signals": "Call budget (invitation 400; signaling frame 1)",
       "files": "Files",
       "fileBytes": "File bytes",
       "save": "Save defaults",

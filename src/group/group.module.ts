@@ -1,3 +1,5 @@
+import { QuotaModule } from '../quota/quota.module.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
 import { Module } from '@nestjs/common';
 import { GroupService } from './group.service.js';
 import { RolesGuard } from './roles.guard.js';
@@ -27,6 +29,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
 
 @Module({
   imports: [
+    QuotaModule,
     MessageModule,
     DurableTaskModule,
     RelationshipModule,
@@ -53,6 +56,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         peerFeed: PeerStateFeedService,
         federation: FederationStateFeedPushService,
         relationshipMutations: GroupRelationshipMutationService,
+        quota: UserQuotaService,
       ) =>
         new GroupAuthoredMembershipIntentService(
           database,
@@ -60,6 +64,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
           peerFeed,
           federation,
           relationshipMutations,
+          quota,
         ),
       inject: [
         DatabaseService,
@@ -67,6 +72,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         PeerStateFeedService,
         FederationStateFeedPushService,
         GroupRelationshipMutationService,
+        UserQuotaService,
       ],
     },
     {
@@ -76,18 +82,21 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         clientFeed: ClientStateFeedService,
         relationshipMutations: GroupRelationshipMutationService,
         federation: FederationStateFeedPushService,
+        quota: UserQuotaService,
       ) =>
         new MemberAuthoredGroupMembershipIntentService(
           database,
           clientFeed,
           relationshipMutations,
           federation,
+          quota,
         ),
       inject: [
         DatabaseService,
         ClientStateFeedService,
         GroupRelationshipMutationService,
         FederationStateFeedPushService,
+        UserQuotaService,
       ],
     },
     {

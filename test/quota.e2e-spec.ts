@@ -1,197 +1,120 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { Test } from '@nestjs/testing';
-import type { TestingModule } from '@nestjs/testing';
 import { DatabaseService } from '../src/database/database.service.js';
-import { DatabaseModule } from '../src/database/database.module.js';
-import { QuotaModule } from '../src/quota/quota.module.js';
 import { QuotaService } from '../src/quota/quota.service.js';
 import { UserQuotaService } from '../src/quota/user-quota.service.js';
-import { BusinessCode } from '../src/common/business-code.js';
 
-const PEER = 'quota-peer.local';
-
-describe('Federated peer QuotaService (DB-backed)', () => {
-  let quota: QuotaService;
-  let namespaceId: number;
-  let database: DatabaseService;
-  let mod: TestingModule;
-
+/** Policy survives runtime replacement; usage intentionally does not. */
+describe('symmetric durable quota policies', () => {
+  const database = new DatabaseService();
+  let peers: QuotaService;
+  let users: UserQuotaService;
+  let nsid: number;
+  let userId: number;
   beforeAll(async () => {
-    mod = await Test.createTestingModule({
-      imports: [DatabaseModule, QuotaModule],
-    }).compile();
-    quota = mod.get(QuotaService);
-    database = mod.get(DatabaseService);
-    const created = await database.pool.query<{ id: number }>(
-      'INSERT INTO "IdentityNamespace" (domain, "signingKeyCreatedAt", "rootPublicKey", "identityPinnedAt", active, "trustLevel") VALUES ($1, 1700000000000, $2, NOW(), true, $3) RETURNING id',
-      [PEER, Buffer.alloc(32, 1).toString('base64'), 'available'],
-    );
-    namespaceId = created.rows[0].id;
-  });
-
-  beforeEach(async () => {
-    await database.pool.query('DELETE FROM "QuotaDailyUsage"');
-    await database.pool.query('DELETE FROM "QuotaFileByteUsage"');
-    await database.pool.query(
-      'UPDATE "IdentityNamespace" SET "dailyMsgLimit" = NULL, "dailyRequestLimit" = NULL, "dailyFileLimit" = NULL, "dailyFileBytesLimit" = NULL WHERE id = $1',
-      [namespaceId],
-    );
-  });
-
-  afterAll(async () => {
-    await database.pool.query('DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1', [namespaceId]);
-    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id = $1', [
-      namespaceId,
-    ]);
-    await database.pool.query('DELETE FROM "QuotaDailyUsage"');
-    await database.pool.query('DELETE FROM "QuotaFileByteUsage"');
-    await mod.close();
-  });
-
-  it('increments atomically and rolls the rejected over-limit increment back', async () => {
-    await quota.setLimits(namespaceId, { dailyMsgLimit: 2 });
-    await quota.tick(namespaceId, 'messages');
-    await quota.tick(namespaceId, 'messages');
-    await expect(quota.tick(namespaceId, 'messages')).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
-    });
-    expect((await quota.usageToday(namespaceId)).messages.count).toBe(2);
-  });
-
-  it('peek rejects at the limit without consuming another unit', async () => {
-    await quota.setLimits(namespaceId, { dailyRequestLimit: 1 });
-    await quota.tick(namespaceId, 'requests');
-    await expect(quota.peek(namespaceId, 'requests')).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
-    });
-    expect((await quota.usageToday(namespaceId)).requests.count).toBe(1);
-  });
-
-  it('treats a zero limit as a disabled capability, not an exhausted budget', async () => {
-    await quota.setLimits(namespaceId, { dailyRequestLimit: 0 });
-    await expect(quota.peek(namespaceId, 'requests')).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
-      status: 200,
-      data: { category: 'requests' },
-    });
-    await expect(quota.tick(namespaceId, 'requests')).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
-    });
-    expect((await quota.usageToday(namespaceId)).requests.count).toBe(0);
-  });
-
-  it('enforces the consolidated peer file-byte cap', async () => {
-    await quota.setLimits(namespaceId, { dailyFileBytesLimit: 100n });
-    await expect(
-      quota.preCheckFile(namespaceId, 0, 101n),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
-    });
-    await expect(
-      quota.preCheckFile(namespaceId, 0, 100n),
-    ).resolves.toBeUndefined();
-  });
-
-  it('treats a zero media cap as a disabled capability', async () => {
-    await quota.setLimits(namespaceId, { dailyFileLimit: 0 });
-    await expect(quota.peek(namespaceId, 'files')).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_CAPABILITY_DISABLED,
-      status: 200,
-      data: { category: 'files' },
-    });
-  });
-
-  it('falls back to the global peer default when an override is null', async () => {
-    await quota.setLimits(namespaceId, { dailyMsgLimit: null });
-    expect(
-      (await quota.usageToday(namespaceId)).messages.limit,
-    ).toBeGreaterThan(0);
-  });
-
-  it('lists only peers with active namespaces and shows their usage', async () => {
-    await quota.tick(namespaceId, 'messages');
-    const nodes = await quota.listNodes();
-    expect(nodes).toHaveLength(1);
-    expect(nodes[0]).toMatchObject({
-      domain: PEER,
-      namespaceId,
-      trustLevel: 'available',
-    });
-    expect(nodes[0].usage.messages.count).toBe(1);
-    expect(nodes[0].usage.files.limit).toBeGreaterThan(0);
-
-    await database.pool.query(
-      'UPDATE "IdentityNamespace" SET active = false WHERE id = $1',
-      [namespaceId],
-    );
-    try {
-      expect(await quota.listNodes()).toEqual([]);
-      await expect(quota.activeNamespaceId(PEER)).rejects.toMatchObject({
-        bizCode: BusinessCode.NOT_FOUND,
-      });
-    } finally {
+    await database.onModuleInit();
+    nsid = (
       await database.pool.query(
-        'UPDATE "IdentityNamespace" SET active = true WHERE id = $1',
-        [namespaceId],
-      );
-    }
+        'INSERT INTO "IdentityNamespace" (domain, "signingKeyCreatedAt", "rootPublicKey", "identityPinnedAt") VALUES ($1, 1700000000000, $2, NOW()) RETURNING id',
+        ['quota-policy.test', Buffer.alloc(32, 93).toString('base64')],
+      )
+    ).rows[0].id;
+    userId = (
+      await database.pool.query(
+        'INSERT INTO "Account" (account) VALUES ($1) RETURNING id',
+        ['quota-policy-user'],
+      )
+    ).rows[0].id;
   });
-});
-
-describe('Local-account UserQuotaService (DB-backed)', () => {
-  let quota: UserQuotaService;
-  let database: DatabaseService;
-  let mod: TestingModule;
-  let localUserId: number;
-
-  beforeAll(async () => {
-    mod = await Test.createTestingModule({
-      imports: [DatabaseModule, QuotaModule],
-    }).compile();
-    quota = mod.get(UserQuotaService);
-    database = mod.get(DatabaseService);
-    const local = await database.pool.query<{ id: number }>(
-      'INSERT INTO "Account" (account, "updatedAt") VALUES ($1, NOW()) RETURNING id',
-      ['quota-local'],
-    );
-    localUserId = local.rows[0].id;
-  });
-
   beforeEach(async () => {
-    await database.pool.query('DELETE FROM "UserQuotaDailyUsage"');
-    await database.pool.query('DELETE FROM "UserQuotaFileByteUsage"');
-    await database.pool.query('DELETE FROM "UserQuotaPolicy"');
+    peers = new QuotaService(database);
+    users = new UserQuotaService(database);
+    await peers.setLimits(nsid, {});
+    await users.setPolicy(userId, {});
   });
-
   afterAll(async () => {
-    await database.pool.query('DELETE FROM "Account" WHERE id = $1', [
-      localUserId,
-    ]);
-    await mod.close();
-  });
-
-  it('stores per-user overrides and rolls back a rejected atomic tick', async () => {
-    await quota.setPolicy(localUserId, { dailyMsgLimit: 1 });
-    await database.db.transaction((tx) =>
-      quota.tick(localUserId, 'messages', tx),
+    await database.pool.query('DELETE FROM "Account" WHERE id = $1', [userId]);
+    await database.pool.query(
+      'DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1',
+      [nsid],
     );
-    await expect(
-      database.db.transaction((tx) => quota.tick(localUserId, 'messages', tx)),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
-    expect((await quota.getState(localUserId)).usage.messages).toMatchObject({
+    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id = $1', [
+      nsid,
+    ]);
+    await database.onApplicationShutdown();
+  });
+  it('stores the same five overrides under namespace and account keys', async () => {
+    const policy = {
+      dailyMsgLimit: 2,
+      dailyRequestLimit: 3,
+      dailySignalLimit: 401,
+      dailyFileLimit: 4,
+      dailyFileBytesLimit: 100n,
+    };
+    await peers.setLimits(nsid, policy);
+    await users.setPolicy(userId, policy);
+    expect(
+      (
+        await database.pool.query(
+          'SELECT * FROM "FederationQuotaPolicy" WHERE nsid = $1',
+          [nsid],
+        )
+      ).rows[0],
+    ).toMatchObject({ nsid, dailySignalLimit: 401 });
+    expect(
+      (
+        await database.pool.query(
+          'SELECT * FROM "UserQuotaPolicy" WHERE account = $1',
+          ['quota-policy-user'],
+        )
+      ).rows[0],
+    ).toMatchObject({ account: 'quota-policy-user', dailySignalLimit: 401 });
+    expect(await peers.getOverrides(nsid)).toEqual(
+      await users.getOverrides(userId),
+    );
+  });
+  it('keeps configured limits but resets usage and temporary grants on restart', async () => {
+    await peers.setLimits(nsid, { dailyRequestLimit: 1 });
+    await peers.tick(nsid, 'requests');
+    await peers.addQuota(nsid, { addRequest: 5 });
+    expect((await peers.usageToday(nsid)).requests).toMatchObject({
       count: 1,
+      limit: 6,
+    });
+    const restarted = new QuotaService(database);
+    expect((await restarted.usageToday(nsid)).requests).toEqual({
+      count: 0,
       limit: 1,
+      remaining: 1,
     });
   });
-
-  it('enforces the effective per-user media byte cap', async () => {
-    await quota.setPolicy(localUserId, { dailyFileBytesLimit: 4n });
-    await expect(quota.preCheckFile(localUserId, 0, 5n)).rejects.toMatchObject({
-      bizCode: BusinessCode.QUOTA_EXCEEDED,
-      data: { category: 'files' },
+  it('uses strict synchronous memory admission across concurrent callers', async () => {
+    await users.setPolicy(userId, { dailySignalLimit: 400 });
+    const result = await Promise.allSettled([
+      users.tickStandalone(userId, 'signals', 400),
+      users.tickStandalone(userId, 'signals', 400),
+    ]);
+    expect(result.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect((await users.getState(userId)).usage.signals.count).toBe(400);
+  });
+  it('changes a limit without clearing usage and permits null inheritance', async () => {
+    await users.setPolicy(userId, { dailyRequestLimit: 1 });
+    await users.tickStandalone(userId, 'requests');
+    await users.setPolicy(userId, { dailyRequestLimit: 3 });
+    expect((await users.getState(userId)).usage.requests).toEqual({
+      count: 1,
+      limit: 3,
+      remaining: 2,
     });
-    await expect(
-      quota.preCheckFile(localUserId, 0, 4n),
-    ).resolves.toBeUndefined();
+    await users.setPolicy(userId, { dailyRequestLimit: null });
+    expect((await users.getState(userId)).usage.requests.limit).toBe(50);
+  });
+  it('contains no persisted usage or grant tables', async () => {
+    const tables = await database.pool.query(
+      "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE '%Quota%'",
+    );
+    expect(tables.rows.map((r) => r.tablename).sort()).toEqual([
+      'FederationQuotaPolicy',
+      'UserQuotaPolicy',
+    ]);
   });
 });

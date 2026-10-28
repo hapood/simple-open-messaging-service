@@ -4,6 +4,33 @@ import { callTombstoneCache } from '../calls/call-tombstone-cache.js';
 import { toS2SCallWireFrame } from '../calls/federated-call-protocol.js';
 
 describe('federated call identities', () => {
+  it('checks new-call readiness without gating existing frame delivery', async () => {
+    const error = new Error('degraded');
+    const lifecycle = { checkOutboundReady: vi.fn().mockRejectedValue(error) };
+    const post = vi.fn().mockResolvedValue(undefined);
+    const bridge = new FederationCallBridgeService(
+      { post } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      lifecycle as never,
+    );
+    await expect(bridge.checkOutboundReady('peer.test')).rejects.toBe(error);
+    expect(lifecycle.checkOutboundReady).toHaveBeenCalledWith('peer.test');
+    expect(post).not.toHaveBeenCalled();
+    await bridge.sendFrame(
+      {
+        callSid: '00000000-0000-4000-8000-000000000001',
+        fromLocalUserId: 1,
+        to: { account: 'callee', domain: 'peer.test' },
+        op: 'cancelled',
+      },
+      'peer.test',
+    );
+    expect(post).toHaveBeenCalledOnce();
+    expect(lifecycle.checkOutboundReady).toHaveBeenCalledOnce();
+  });
   it('authorizes an incoming peer address without manufacturing a local account ID', async () => {
     const participants = {
       findP2PThreadBetween: vi.fn().mockResolvedValue(90),
@@ -17,6 +44,7 @@ describe('federated call identities', () => {
       participants as never,
       { peek: vi.fn().mockResolvedValue(undefined) } as never,
       events as never,
+      {} as never,
     );
     const frame = {
       callSid: '00000000-0000-4000-8000-000000000001',

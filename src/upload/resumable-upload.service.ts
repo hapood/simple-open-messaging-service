@@ -146,9 +146,7 @@ export class ResumableUploadService {
         .onConflictDoNothing()
         .returning();
       if (!row) return null;
-      await this.quota.preCheckFile(userId, 1, BigInt(dto.totalBytes), tx);
-      await this.quota.tickLax(userId, 'files', tx);
-      await this.quota.tickFileBytes(userId, BigInt(dto.totalBytes), tx);
+      await this.quota.claimFile(userId, 1, BigInt(dto.totalBytes), tx);
       return row;
     });
     if (!created) {
@@ -243,9 +241,7 @@ export class ResumableUploadService {
           .onConflictDoNothing()
           .returning();
         if (!row) return null;
-        await this.quota.preCheckFile(userId, 1, BigInt(body.length), tx);
-        await this.quota.tickLax(userId, 'files', tx);
-        await this.quota.tickFileBytes(userId, BigInt(body.length), tx);
+        await this.quota.claimFile(userId, 1, BigInt(body.length), tx);
         return row;
       });
       if (!created) {

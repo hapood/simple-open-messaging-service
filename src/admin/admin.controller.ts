@@ -452,6 +452,7 @@ export class AdminController {
     await this.userQuotaService.setPolicy(Number(id), {
       dailyMsgLimit: dto.dailyMsgLimit,
       dailyRequestLimit: dto.dailyRequestLimit,
+      dailySignalLimit: dto.dailySignalLimit,
       dailyFileLimit: dto.dailyFileLimit,
       dailyFileBytesLimit:
         dto.dailyFileBytesLimit != null

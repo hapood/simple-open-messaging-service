@@ -99,8 +99,24 @@ export class FederationInboundFileSync {
       });
       const originDomain = rows[0]?.originDomain;
       const publisherNamespaceId = rows[0]?.publisherNamespaceId;
-      if (publisherNamespaceId && this.quota.isTripped(publisherNamespaceId))
+      if (
+        publisherNamespaceId &&
+        (await this.quota.isExhausted(publisherNamespaceId, [
+          'files',
+          'fileBytes',
+        ]))
+      ) {
+        await this.database.db
+          .update(tables.fileSyncProgress)
+          .set({ errorKind: 'QUOTA_PAUSED', updatedAt: new Date() })
+          .where(
+            and(
+              eq(tables.fileSyncProgress.batchId, batchId),
+              eq(tables.fileSyncProgress.status, 'PENDING'),
+            ),
+          );
         return;
+      }
       if (rows.length > 0) await start?.(batchId);
       const results = await Promise.allSettled(
         rows.map((row) => {
@@ -149,7 +165,6 @@ export class FederationInboundFileSync {
         bytesTotal: true,
         originDomain: true,
         publisherNamespaceId: true,
-        quotaCounted: true,
       },
     });
     const _originDomain = row?.originDomain;
@@ -167,7 +182,6 @@ export class FederationInboundFileSync {
           progressId,
           row?.publisherNamespaceId,
           declaredBytes,
-          row,
         );
         await this.claim(progressId, declaredBytes);
         await this.publishProgress(progressId, 0);
@@ -211,22 +225,20 @@ export class FederationInboundFileSync {
     }
   }
 
+  private readonly chargedFiles = new Map<bigint, number>();
+
   private async chargeQuota(
     progressId: bigint,
     namespaceId: number | undefined,
     declaredBytes: bigint,
-    row: { quotaCounted: boolean } | undefined,
   ): Promise<void> {
-    if (!namespaceId || row?.quotaCounted) return;
-    await this.quota.preCheckFile(namespaceId, 1, declaredBytes);
-    await this.quota.tickLax(namespaceId, 'files');
-    if (declaredBytes > 0n) {
-      await this.quota.tickFileBytes(namespaceId, declaredBytes);
-    }
-    await this.database.db
-      .update(tables.fileSyncProgress)
-      .set({ quotaCounted: true })
-      .where(eq(tables.fileSyncProgress.id, progressId));
+    if (!namespaceId) return;
+    const day = Math.floor(Date.now() / 86400000);
+    if (this.chargedFiles.get(progressId) === day) return;
+    for (const [id, chargedDay] of this.chargedFiles)
+      if (chargedDay !== day) this.chargedFiles.delete(id);
+    await this.quota.claimFile(namespaceId, 1, declaredBytes);
+    this.chargedFiles.set(progressId, day);
   }
 
   private async claim(

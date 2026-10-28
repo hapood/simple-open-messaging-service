@@ -324,11 +324,12 @@ most one `PROCESSING` row for a `(kind, scopeKey)`. Immutable claimed payloads,
 checkpoints, coalescing keys, terminal results, and `SUPERSEDED` state support
 bounded resumable domain work. See [durable task scheduling](../design/durable-task-scheduling.md).
 
-Daily quota tables separate federation namespaces from local accounts and key
-usage by UTC day and category. `QuotaDailyUsage`, `QuotaFileByteUsage`, and
-`QuotaDailyAllowance` have corresponding `UserQuota*` tables; local overrides
-live in `UserQuotaPolicy`, peer overrides on `IdentityNamespace`. Admission uses
-DB-atomic counters; the in-memory breaker is a cache. See [quota enforcement](../design/quota-enforcement.md).
+Quota policy tables are symmetric: `FederationQuotaPolicy(nsid)` and
+`UserQuotaPolicy(account)` store nullable overrides for the same five dimensions.
+`SystemSetting` stores five defaults per scope. Usage and temporary grants exist
+only in process memory, reset at UTC midnight or restart, and have no database
+tables. Identity namespaces contain no quota policy columns. See
+[quota enforcement](../design/quota-enforcement.md).
 
 ## Schema evolution and coordinate safety
 

@@ -62,6 +62,46 @@ function harness(pulledThrough: bigint | null = 0n) {
 }
 
 describe('PeerStateFeedPullService atomic item application', () => {
+  it('finishes the admitted page before the next-page quota gate pauses, then resumes at its cursor', async () => {
+    const { service, epoch } = harness();
+    let exhausted = false;
+    const applied: string[] = [];
+    const item = (id: string) => ({
+      account: '!group',
+      eventType: 'THREAD_CONTENT_HEAD' as const,
+      feedId: id,
+      generatedAt: 0,
+      body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
+    });
+    const callbacks = {
+      fetch: async (after?: bigint) => {
+        if (exhausted) throw new Error('quota paused');
+        return after === 0n
+          ? {
+              ...page('2', true),
+              stateFeedEndId: '3',
+              items: [item('1'), item('2')],
+            }
+          : { ...page('3'), items: [item('3')] };
+      },
+      apply: async (_tx: unknown, p: PeerStateFeedPage) => {
+        applied.push(p.items[0].feedId);
+      },
+      afterCommit: async () => {
+        exhausted = true;
+      },
+    };
+    await expect(service.run('peer.test', 12, callbacks)).rejects.toThrow(
+      'quota paused',
+    );
+    expect(applied).toEqual(['1', '2']);
+    expect(epoch.stateFeedPulledThrough).toBe(2n);
+    exhausted = false;
+    await service.run('peer.test', 12, callbacks);
+    expect(applied).toEqual(['1', '2', '3']);
+    expect(epoch.stateFeedPulledThrough).toBe(3n);
+  });
+
   it('publishes each item only after its state and cursor commit', async () => {
     const { service, order } = harness();
     await service.run('peer.test', 12, {

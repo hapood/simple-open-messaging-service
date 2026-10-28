@@ -25,7 +25,7 @@ describe('FederationStatePullService drain window', () => {
       };
       const effect = {
         clientFeedUpdates: [],
-        statePushDomains: [],
+        statePushNamespaces: [],
         localSystemMessages: [],
         threadRoundWakes: [],
         profileDemands: [demand],
@@ -58,7 +58,7 @@ describe('FederationStatePullService drain window', () => {
               afterCommit: (page: unknown) => Promise<void>;
             },
           ) => {
-            const page = {};
+            const page = { items: [] };
             await callbacks.apply({}, page);
             await callbacks.afterCommit(page);
           },
@@ -69,6 +69,10 @@ describe('FederationStatePullService drain window', () => {
         { resolveDemand } as never,
         {} as never,
         { emit: vi.fn() } as never,
+        {
+          assertCanConsumeState: vi.fn().mockResolvedValue(undefined),
+          tickLax: vi.fn().mockResolvedValue(undefined),
+        } as never,
       );
       try {
         await expect(service.pullStateFromPeer('peer.test')).resolves.toBe(2n);
@@ -131,6 +135,10 @@ describe('FederationStatePullService drain window', () => {
       {} as never,
       {} as never,
       {} as never,
+      {
+        assertCanConsumeState: vi.fn().mockResolvedValue(undefined),
+        tickLax: vi.fn().mockResolvedValue(undefined),
+      } as never,
     );
 
     await expect(service.pullStateFromPeer('peer.test', 5n)).resolves.toBe(5n);
@@ -178,14 +186,14 @@ describe('FederationStatePullService drain window', () => {
       .fn()
       .mockResolvedValueOnce({
         clientFeedUpdates: [{ userId: 3, feedId: 7 }],
-        statePushDomains: [],
+        statePushNamespaces: [],
         localSystemMessages: [],
         threadRoundWakes: [],
         profileDemands: [],
       })
       .mockResolvedValueOnce({
         clientFeedUpdates: [{ userId: 3, feedId: 8 }],
-        statePushDomains: [],
+        statePushNamespaces: [],
         localSystemMessages: [],
         threadRoundWakes: [],
         profileDemands: [],
@@ -219,6 +227,10 @@ describe('FederationStatePullService drain window', () => {
       {} as never,
       {} as never,
       { emit: vi.fn() } as never,
+      {
+        assertCanConsumeState: vi.fn().mockResolvedValue(undefined),
+        tickLax: vi.fn().mockResolvedValue(undefined),
+      } as never,
     );
 
     await service.pullStateFromPeer('peer.test');

@@ -221,8 +221,8 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       await foreignKeyWriter.query('BEGIN');
       await foreignKeyWriter.query(
         `
-        INSERT INTO "UserQuotaDailyUsage" ("userId", date, category, count)
-        VALUES ($1, CURRENT_DATE, 'requests', 1)
+        INSERT INTO "UserQuotaPolicy" (account, "dailyRequestLimit")
+        SELECT account, 50 FROM "Account" WHERE id = $1
       `,
         [f.owner.id],
       );
