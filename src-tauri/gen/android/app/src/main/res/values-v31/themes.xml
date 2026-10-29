@@ -9,7 +9,8 @@
         <item name="android:windowBackground">@color/splash_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowLightStatusBar">@bool/splash_light_system_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/splash_light_system_bars</item>
+        <item name="android:forceDarkAllowed">false</item>
     </style>
 </resources>

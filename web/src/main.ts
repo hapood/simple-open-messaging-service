@@ -1,4 +1,5 @@
 import { runAsActivePage } from './app/services/active-page';
+import { prepareTheme } from './app/services/theme-bootstrap';
 import { installKeyboardInsetBridge } from './app/services/keyboard-inset.service';
 import { installConsoleBuffer } from './app/services/log-buffer';
 import {
@@ -68,6 +69,7 @@ installKeyboardInsetBridge();
 window.SomsShell?.setSplashStage?.('session');
 
 async function startApplication(): Promise<void> {
+  await prepareTheme();
   // Do not evaluate account services or open their databases in a waiting page.
   const [{ bootstrapApplication }, { appConfig }, { AppComponent }] =
     await Promise.all([

@@ -44,7 +44,13 @@ vi.mock('@/hooks/use-admin-users', () => ({
   }),
 }));
 vi.mock('@/hooks/use-public-config', () => ({
-  usePublicConfig: () => ({ data: { loginMode: 1 } }),
+  usePublicConfig: () => ({
+    data: {
+      registrationOpen: false,
+      loginMethods: [{ key: 'password', disabled: false }],
+      defaultLoginMethod: 'password',
+    },
+  }),
 }));
 vi.mock('@/hooks/use-user-mutations', () => ({
   useDisableUser: () => grant,

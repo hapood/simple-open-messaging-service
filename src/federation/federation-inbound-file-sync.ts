@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -62,7 +62,26 @@ export function federationFileSyncKind(type: ContentType): FileSyncKind {
 /** Drives durable inbound file rows and serializes promotion attempts per batch. */
 @Injectable()
 export class FederationInboundFileSync {
+  private readonly logger = new Logger(FederationInboundFileSync.name);
   private readonly batchLocks = new KeyedMutex();
+  private readonly controllers = new Map<string, AbortController>();
+
+  async stopBatch(batchId: string): Promise<void> {
+    this.controllers.get(batchId)?.abort(new Error('stopped by administrator'));
+    await this.batchLocks.runExclusive(batchId, async () => undefined);
+    const rows = await this.database.db.query.fileSyncProgress.findMany({
+      where: eq(tables.fileSyncProgress.batchId, batchId),
+      columns: { id: true, digest: true, status: true },
+    });
+    await Promise.all(
+      rows.map((row) => this.transfers.waitForStoppedDigest(row.digest)),
+    );
+    for (const row of rows) {
+      if (row.status !== 'FAILED') continue;
+      await this.publishFileTerminal(row.id, 'failed');
+      this.progressTargets.delete(row.id.toString());
+    }
+  }
   private readonly progressTargets = new Map<
     string,
     {
@@ -87,6 +106,7 @@ export class FederationInboundFileSync {
       digest: string,
       offset: number,
       declaredBytes: number,
+      signal?: AbortSignal,
     ) => AsyncIterable<Buffer>,
     promote: (batchId: string) => Promise<void>,
     fail: (batchId: string) => Promise<void>,
@@ -119,13 +139,29 @@ export class FederationInboundFileSync {
         return;
       }
       if (rows.length > 0) await start?.(batchId);
-      const results = await Promise.allSettled(
-        rows.map((row) =>
-          this.driveFile(row.id, row.digest, (offset) =>
-            fetchChunksFor(row.digest, offset, Number(row.bytesTotal)),
+      const controller = new AbortController();
+      this.controllers.set(batchId, controller);
+      let results: PromiseSettledResult<void>[];
+      try {
+        results = await Promise.allSettled(
+          rows.map((row) =>
+            this.driveFile(
+              row.id,
+              row.digest,
+              (offset, signal) =>
+                fetchChunksFor(
+                  row.digest,
+                  offset,
+                  Number(row.bytesTotal),
+                  signal,
+                ),
+              controller.signal,
+            ),
           ),
-        ),
-      );
+        );
+      } finally {
+        this.controllers.delete(batchId);
+      }
       const rejected = results.find(
         (result): result is PromiseRejectedResult =>
           result.status === 'rejected',
@@ -148,7 +184,11 @@ export class FederationInboundFileSync {
   private async driveFile(
     progressId: bigint,
     digest: string,
-    fetchChunks: (offset: number) => AsyncIterable<Buffer>,
+    fetchChunks: (
+      offset: number,
+      signal?: AbortSignal,
+    ) => AsyncIterable<Buffer>,
+    signal: AbortSignal,
   ): Promise<void> {
     const row = await this.database.db.query.fileSyncProgress.findFirst({
       where: eq(tables.fileSyncProgress.id, progressId),
@@ -159,6 +199,8 @@ export class FederationInboundFileSync {
       },
     });
     const declaredBytes = row?.bytesTotal ?? 0n;
+    let progressWrite = Promise.resolve();
+    let writing = false;
     try {
       if (!row?.publisherNamespaceId)
         throw new Error('missing media publisher namespace');
@@ -172,17 +214,35 @@ export class FederationInboundFileSync {
         peerDomain: row.originDomain,
         digest,
         declaredBytes: Number(declaredBytes),
-        chunks: (offset) => this.checkedChunks(progressId, fetchChunks(offset)),
+        chunks: (offset, physicalSignal) =>
+          this.checkedChunks(
+            digest,
+            fetchChunks(offset, physicalSignal),
+            physicalSignal,
+          ),
+        signal,
         onProgress: (received) => {
-          if (received - lastWrite >= 256 * 1024) {
+          if (received - lastWrite >= 256 * 1024 && !writing) {
             lastWrite = received;
-            void this.writeProgress(progressId, received);
+            writing = true;
+            progressWrite = this.writeProgress(progressId, received)
+              .catch(() => {
+                this.logger.warn('could not persist inbound download progress');
+              })
+              .finally(() => {
+                writing = false;
+              });
           }
         },
       });
+      await progressWrite;
       const completed = await this.database.db
         .update(tables.fileSyncProgress)
-        .set({ status: 'SUCCEEDED', updatedAt: new Date() })
+        .set({
+          status: 'SUCCEEDED',
+          bytesReceived: declaredBytes,
+          updatedAt: new Date(),
+        })
         .where(
           and(
             eq(tables.fileSyncProgress.id, progressId),
@@ -193,10 +253,12 @@ export class FederationInboundFileSync {
       if (completed.length === 0) throw new FederationDownloadTerminatedError();
       await this.publishFileTerminal(progressId, 'ready');
       await this.publishMessageProgress(progressId, false);
-      this.progressTargets.delete(progressId.toString());
     } catch (error) {
+      await progressWrite;
       await this.handleFailure(progressId, error);
       throw error;
+    } finally {
+      this.progressTargets.delete(progressId.toString());
     }
   }
 
@@ -222,17 +284,21 @@ export class FederationInboundFileSync {
   }
 
   private async *checkedChunks(
-    progressId: bigint,
+    digest: string,
     chunks: AsyncIterable<Buffer>,
+    signal?: AbortSignal,
   ): AsyncGenerator<Buffer> {
     for await (const chunk of chunks) {
-      const current = await this.database.db.query.fileSyncProgress.findFirst({
-        where: eq(tables.fileSyncProgress.id, progressId),
+      signal?.throwIfAborted();
+      // A shared physical writer can outlive its first consumer, but not all durable consumers.
+      const consumer = await this.database.db.query.fileSyncProgress.findFirst({
+        where: and(
+          eq(tables.fileSyncProgress.digest, digest),
+          eq(tables.fileSyncProgress.status, 'DOWNLOADING'),
+        ),
         columns: { status: true },
       });
-      if (current?.status !== 'DOWNLOADING') {
-        throw new FederationDownloadTerminatedError();
-      }
+      if (!consumer) throw new FederationDownloadTerminatedError();
       yield chunk;
     }
   }
@@ -241,11 +307,17 @@ export class FederationInboundFileSync {
     progressId: bigint,
     received: number,
   ): Promise<void> {
-    await this.database.db
+    const updated = await this.database.db
       .update(tables.fileSyncProgress)
       .set({ bytesReceived: BigInt(received), updatedAt: new Date() })
-      .where(eq(tables.fileSyncProgress.id, progressId));
-    await this.publishProgress(progressId, received);
+      .where(
+        and(
+          eq(tables.fileSyncProgress.id, progressId),
+          eq(tables.fileSyncProgress.status, 'DOWNLOADING'),
+        ),
+      )
+      .returning({ id: tables.fileSyncProgress.id });
+    if (updated.length > 0) await this.publishProgress(progressId, received);
   }
 
   private async publishProgress(

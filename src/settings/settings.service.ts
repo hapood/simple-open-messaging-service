@@ -238,6 +238,7 @@ export class SettingsService implements OnModuleInit {
   getVapidKeyStatus() {
     const stat = statSync(this.vapidPath);
     return {
+      filePath: this.vapidPath,
       configured: true,
       valid: this.validateVapid(this.vapid, false).webPushConfigured,
       publicKey: this.vapid.publicKey,
@@ -336,10 +337,12 @@ export class SettingsService implements OnModuleInit {
   /** Firebase descriptor for the admin read view. apiKey is intentionally absent (parallel to the VAPID
    *  descriptor omitting privateKey); the other three fields are shown as proof of which project/app the
    *  on-disk google-services.json configures. */
-  getFirebaseDescriptor(): FirebaseConfigDescriptor {
+  getFirebaseDescriptor(): FirebaseConfigDescriptor & { filePath: string } {
     const cfg = this.getFirebaseConfig();
-    if (!cfg) return { configured: false };
+    const filePath = this.firebaseClientPathOverride ?? FIREBASE_CLIENT_PATH;
+    if (!cfg) return { configured: false, filePath };
     return {
+      filePath,
       configured: true,
       projectId: cfg.projectId,
       appId: cfg.appId,

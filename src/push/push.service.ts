@@ -875,7 +875,12 @@ export class PushService implements OnModuleDestroy {
   /** Read-only metadata for the operator-provided Firebase credential. Never exposes credential content. */
   getFcmCredentialStatus() {
     if (!existsSync(this.fcmCredentialPath)) {
-      return { configured: false, valid: false, reason: 'file not found' };
+      return {
+        filePath: this.fcmCredentialPath,
+        configured: false,
+        valid: false,
+        reason: 'file not found',
+      };
     }
     try {
       const raw = readFileSync(this.fcmCredentialPath, 'utf8');
@@ -887,6 +892,7 @@ export class PushService implements OnModuleDestroy {
         typeof value.private_key === 'string';
       const stat = statSync(this.fcmCredentialPath);
       return {
+        filePath: this.fcmCredentialPath,
         configured: true,
         valid,
         projectId:
@@ -905,6 +911,7 @@ export class PushService implements OnModuleDestroy {
       };
     } catch {
       return {
+        filePath: this.fcmCredentialPath,
         configured: true,
         valid: false,
         reason: 'invalid Firebase service-account JSON',

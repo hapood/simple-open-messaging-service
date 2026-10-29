@@ -2,10 +2,21 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CreateUserDialog } from './create-user-dialog'
 import { ApiError } from '@/lib/api-error'
-import { CODE } from '@/lib/constants'
+import { CODE, type LoginMethod, type LoginMethodOption } from '@/lib/constants'
 
 const create = vi.hoisted(() => ({ mutateAsync: vi.fn() }))
-const publicConfig = vi.hoisted(() => ({ data: { registrationOpen: false, loginMode: 2 } as { registrationOpen: boolean; loginMode: number } | undefined }))
+const publicConfig = vi.hoisted(() => ({
+  data: {
+    registrationOpen: false,
+    loginMethods: [
+      { key: 'qr', disabled: false },
+      { key: 'otp', disabled: false },
+      { key: 'password', disabled: true },
+    ] as LoginMethodOption[],
+    defaultLoginMethod: 'qr' as LoginMethod,
+  } as | { registrationOpen: boolean; loginMethods: LoginMethodOption[]; defaultLoginMethod: LoginMethod }
+    | undefined,
+}))
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }))
 
 vi.mock('react-i18next', async (importOriginal) => ({
@@ -21,7 +32,15 @@ vi.mock('@/hooks/use-public-config', () => ({
 describe('CreateUserDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    publicConfig.data = { registrationOpen: false, loginMode: 2 }
+    publicConfig.data = {
+      registrationOpen: false,
+      loginMethods: [
+        { key: 'qr', disabled: false },
+        { key: 'otp', disabled: false },
+        { key: 'password', disabled: true },
+      ],
+      defaultLoginMethod: 'qr',
+    }
   })
 
   it('shows client-side validation errors without calling the API', async () => {
@@ -54,7 +73,11 @@ describe('CreateUserDialog', () => {
   })
 
   it('requires a password before submitting when password login is enabled', async () => {
-    publicConfig.data = { registrationOpen: false, loginMode: 1 }
+    publicConfig.data = {
+      registrationOpen: false,
+      loginMethods: [{ key: 'password', disabled: false }],
+      defaultLoginMethod: 'password',
+    }
     render(<CreateUserDialog open onClose={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText('createUser.account'), {

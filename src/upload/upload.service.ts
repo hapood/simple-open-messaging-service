@@ -363,14 +363,22 @@ export class UploadService {
     ext: string,
     buf: Buffer,
   ): Promise<{ url: string; digest: string; ext: string; size: number }> {
-    const digest = await saveContentAddressedBuffer(
-      buf,
-      (hash) => this.casShardPath(hash).abs,
-      this.casTmpDir,
-    );
-    await this.mediaAsset.publishReady(digest, BigInt(buf.length));
-    const { url } = this.casShardPath(digest);
-    return { url, digest, ext, size: buf.length };
+    const digest = createHash('sha256').update(buf).digest('hex');
+    return this.withCasDigestLock(digest, async () => {
+      await this.mediaAsset.publishReady(
+        digest,
+        BigInt(buf.length),
+        async () => {
+          await saveContentAddressedBuffer(
+            buf,
+            (hash) => this.casShardPath(hash).abs,
+            this.casTmpDir,
+          );
+        },
+      );
+      const { url } = this.casShardPath(digest);
+      return { url, digest, ext, size: buf.length };
+    });
   }
 
   /**
@@ -457,18 +465,20 @@ export class UploadService {
     tmpPath: string,
     digest: string,
   ): Promise<'landed' | 'dedup'> {
-    const { abs } = this.casShardPath(digest);
-    await mkdirAsync(dirname(abs), { recursive: true });
-    if (existsSync(abs)) return 'dedup';
-    try {
-      await renameAsync(tmpPath, abs);
-      return 'landed';
-    } catch (error) {
-      if (existsSync(abs)) return 'dedup'; // lost the rename race to an identical digest
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-        throw new Error('staged part lost');
-      throw error;
-    }
+    return this.withCasDigestLock(digest, async () => {
+      const { abs } = this.casShardPath(digest);
+      await mkdirAsync(dirname(abs), { recursive: true });
+      if (existsSync(abs)) return 'dedup';
+      try {
+        await renameAsync(tmpPath, abs);
+        return 'landed';
+      } catch (error) {
+        if (existsSync(abs)) return 'dedup';
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+          throw new Error('staged part lost');
+        throw error;
+      }
+    });
   }
 
   /** Store a server-generated WebP in the shared CAS and expose its digest to non-message owners. */
@@ -477,6 +487,31 @@ export class UploadService {
   ): Promise<{ url: string; digest: string; size: number }> {
     const saved = await this.saveCas('webp', buf);
     return { url: saved.url, digest: saved.digest, size: saved.size };
+  }
+
+  /** Serialize maintenance with physical ingest; callers must separately protect database references. */
+  withCasDigestLock<T>(
+    digest: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error('invalid CAS digest');
+    return this.casIngestLocks.runExclusive(digest, operation);
+  }
+
+  async removeCasTemporary(digest: string): Promise<void> {
+    for (const suffix of [
+      '.part',
+      '.resume.json',
+      '.resume.json.tmp',
+      '.complete',
+      '.complete.tmp',
+    ]) {
+      await unlinkAsync(join(this.casTmpDir, `${digest}${suffix}`)).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOENT') throw error;
+        },
+      );
+    }
   }
 
   /** Resolve immutable CAS bytes for an authenticated semantic serving endpoint. */
@@ -499,10 +534,10 @@ export class UploadService {
    *   `<digest>.part`       — the accumulated bytes (resumable across restarts)
    *   `<digest>.resume.json` — the verified-offset sidecar (atomically rewritten per chunk)
    *   `<digest>.complete`    — written AFTER the digest verifies, BEFORE the DB publish + rename
-   * On verification success the order is: drop `.complete` → publishReady (commit the live MediaAsset
-   * row) → atomic rename `.part` → shard. The `.complete` marker therefore means "bytes verified, only
-   * the final landing was interrupted"; GC salvage re-runs publishReady + rename idempotently from the
-   * `.part`, recovering a crash anywhere after the marker. A transport failure retains the `.part` +
+   * On verification success, write `.complete`, then serialize atomic shard landing and asset
+   * publication against reclamation. The marker is removed only after the asset transaction commits;
+   * interrupted publication can be retried from the verified part or already-landed shard.
+   * A transport failure retains the `.part` +
    * `.resume.json` for a later resume; a digest mismatch removes all three (no prefix can be trusted).
    * Per-digest FIFO locking prevents concurrent writers; only a whole-file SHA-256 match is published.
    */
@@ -516,12 +551,14 @@ export class UploadService {
        *  toward quota — the caller charges it before abandoning the file). */
       maxFileBytes: number;
       declaredBytes: number;
+      signal?: AbortSignal;
     },
   ): Promise<{ url: string; digest: string; size: number }> {
     if (!/^[0-9a-f]{64}$/.test(expectedDigest))
       throw new Error('invalid CAS digest');
     FileSizeLimitError.assert(opts.declaredBytes, opts.maxFileBytes);
     return this.casIngestLocks.runExclusive(expectedDigest, async () => {
+      opts.signal?.throwIfAborted();
       const { abs, url } = this.casShardPath(expectedDigest);
       await mkdirAsync(dirname(abs), { recursive: true });
       await mkdirAsync(this.casTmpDir, { recursive: true });
@@ -530,7 +567,14 @@ export class UploadService {
         if (size !== opts.declaredBytes)
           throw new Error('CAS file size mismatch');
         FileSizeLimitError.assert(size, opts.maxFileBytes);
-        await this.mediaAsset.publishReady(expectedDigest, BigInt(size));
+        await this.mediaAsset.publishReady(
+          expectedDigest,
+          BigInt(size),
+          async () => {
+            if ((await statAsync(abs)).size !== size)
+              throw new Error('CAS file changed before publication');
+          },
+        );
         return { url, digest: expectedDigest, size };
       }
 
@@ -622,9 +666,8 @@ export class UploadService {
         await persistOffset();
       }
 
-      // Drop the `.complete` marker (digest verified), then commit the live row and atomically land the
-      // shard. GC salvage re-runs exactly these two steps from the `.part` if this process dies between
-      // them, so a crash after the marker never loses a verified blob.
+      // Keep the verified marker until shard landing and the live row have both committed.
+      // Interrupted publication can be recovered without trusting unverified bytes.
       const markComplete = async () => {
         if (offset !== opts.declaredBytes) {
           await unlinkAsync(part).catch(() => {});
@@ -644,8 +687,14 @@ export class UploadService {
         await renameAsync(completeTmp, complete);
       };
       const finishPublish = async () => {
-        await this.mediaAsset.publishReady(expectedDigest, BigInt(offset));
-        await renameAsync(part, abs);
+        opts.signal?.throwIfAborted();
+        await this.mediaAsset.publishReady(
+          expectedDigest,
+          BigInt(offset),
+          async () => {
+            await renameAsync(part, abs);
+          },
+        );
         await unlinkAsync(complete).catch(() => {});
         await unlinkAsync(resume).catch(() => {});
       };
@@ -672,6 +721,7 @@ export class UploadService {
         for (;;) {
           let partialLost = false;
           for await (const buf of chunksFromOffset(offset)) {
+            opts.signal?.throwIfAborted();
             if (buf.length === 0) continue;
             const actualSize = await statAsync(part)
               .then((value) => value.size)

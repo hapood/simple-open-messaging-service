@@ -41,9 +41,9 @@ export enum BusinessCode {
   REGISTRATION_DISABLED = 10010, // self-registration is closed (admin-provisioned accounts only); POST user/register
   // refuses. Advertised via GET /config registrationOpen=false, so the UI hides the
   // register affordance; this is the defense-in-depth server gate.
-  LOGIN_METHOD_DISABLED = 10011, // the requested login method is disabled under the current loginMode (GET /config).
-  // Returned by the password-login path under APP_OTP_AND_QR, and by OTP/QR under
-  // PASSWORD_ONLY.
+  LOGIN_METHOD_DISABLED = 10011, // the requested login method is absent from the enabled loginMethods list (GET /config).
+  // Returned by the password-login path when password is disabled, and by
+  // OTP/QR when they are disabled.
   OTP_INVALID = 10012, // admin-issued one-time login code does not match / no active code for the account
   OTP_EXPIRED = 10013, // one-time login code is past its expiresAt
   OTP_CONSUMED = 10014, // one-time login code was already used (single-use)

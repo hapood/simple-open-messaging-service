@@ -2,6 +2,7 @@ import {
   CallHandler,
   ExecutionContext,
   InternalServerErrorException,
+  HttpException,
   Injectable,
   Logger,
   NestInterceptor,
@@ -14,6 +15,7 @@ import type { FastifyRequest } from 'fastify';
 import { DatabaseService } from '../database/database.service.js';
 import { adminActionLog } from '../database/schema.js';
 import { ADMIN_AUDIT_KEY, type AdminAuditMetadata } from './audit.decorator.js';
+import { collectAuditData } from './audit-actions.js';
 import type { AdminPrincipal } from './admin-session.js';
 
 type AdminRequest = FastifyRequest & { user?: AdminPrincipal };
@@ -76,11 +78,21 @@ export class AdminAuditInterceptor implements NestInterceptor {
     try {
       const params = req.params as Record<string, unknown> | undefined;
       const body = req.body as Record<string, unknown> | undefined;
+      const bodyFields = meta.options?.targetBody;
       const targetId = meta.options?.targetParam
         ? String(params?.[meta.options.targetParam] ?? '')
-        : meta.options?.targetBody
-          ? String(body?.[meta.options.targetBody] ?? '')
-          : undefined;
+        : bodyFields
+          ? (typeof bodyFields === 'string' ? [bodyFields] : bodyFields)
+              .map((field) => body?.[field])
+              .map((value) =>
+                typeof value === 'string' || typeof value === 'number'
+                  ? String(value)
+                  : '',
+              )
+              .join(':')
+          : meta.options?.targetType === 'admin'
+            ? String(adminId)
+            : undefined;
       const ip = (req.ip ?? '').slice(0, 64);
       const ua = String(req.headers['user-agent'] ?? '').slice(0, 255);
       const [row] = await this.database.db
@@ -93,8 +105,11 @@ export class AdminAuditInterceptor implements NestInterceptor {
           targetId: targetId || undefined,
           ip: ip || null,
           userAgent: ua || null,
-          route: String(req.url ?? '').slice(0, 255),
+          route: String(req.url ?? '')
+            .split('?')[0]
+            .slice(0, 255),
           status: 'STARTED',
+          meta: collectAuditData(meta.action, body),
         })
         .returning({ id: adminActionLog.id });
       if (!row) throw new Error('audit insert returned no row');
@@ -108,6 +123,22 @@ export class AdminAuditInterceptor implements NestInterceptor {
     }
   }
 
+  /** Exception messages can include credentials, SQL, or request values; persist only a safe category. */
+  private safeErrorSummary(error: unknown): string {
+    if (error instanceof HttpException) {
+      const status = error.getStatus();
+      if (
+        typeof status === 'number' &&
+        Number.isInteger(status) &&
+        status >= 400 &&
+        status <= 599
+      ) {
+        return `HTTP ${status}`;
+      }
+    }
+    return 'Operation failed';
+  }
+
   private async finish(
     auditId: bigint,
     status: 'SUCCEEDED' | 'FAILED',
@@ -118,10 +149,7 @@ export class AdminAuditInterceptor implements NestInterceptor {
         .update(adminActionLog)
         .set({
           status,
-          errorMessage:
-            status === 'FAILED'
-              ? (err instanceof Error ? err.message : String(err)).slice(0, 255)
-              : null,
+          errorMessage: status === 'FAILED' ? this.safeErrorSummary(err) : null,
         })
         .where(eq(adminActionLog.id, auditId))
         .returning({ id: adminActionLog.id });

@@ -191,6 +191,20 @@ export const router = createBrowserRouter(
                 })),
             },
             {
+              path: '/audit',
+              lazy: () =>
+                import('@/routes/audit/audit-page').then((m) => ({
+                  Component: m.AuditPage,
+                })),
+            },
+            {
+              path: '/audit/:id',
+              lazy: () =>
+                import('@/routes/audit/audit-detail-page').then((m) => ({
+                  Component: m.AuditDetailPage,
+                })),
+            },
+            {
               path: '/logs',
               element: <LogsLayout />,
               children: [
@@ -239,6 +253,13 @@ export const router = createBrowserRouter(
                     Component: m.DurableTaskPage,
                   }),
                 ),
+            },
+            {
+              path: '/settings/keys',
+              lazy: () =>
+                import('@/routes/settings/server-keys-page').then((m) => ({
+                  Component: m.ServerKeysPage,
+                })),
             },
             {
               path: '/settings',

@@ -44,9 +44,9 @@ export class UserQuotaService extends QuotaRuntime {
     if (cached !== undefined) return cached;
     const row = await (tx ?? this.database.db).query.account.findFirst({
       where: eq(account.id, id),
-      columns: { account: true, kind: true },
+      columns: { account: true },
     });
-    if (!row || row.kind !== 'USER')
+    if (!row || row.account === '$system')
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'local user not found',

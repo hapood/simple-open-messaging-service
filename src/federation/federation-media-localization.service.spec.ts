@@ -226,8 +226,10 @@ describe('FederationMediaLocalizationService', () => {
       yield Buffer.from('data');
     })();
     mediaRanges.fetch.mockReturnValue(chunks);
+    const controller = new AbortController();
     upload.receive.mockImplementation(async (input) => {
-      if (input.digest === missing) expect(input.chunks(32)).toBe(chunks);
+      if (input.digest === missing)
+        expect(input.chunks(32, controller.signal)).toBe(chunks);
     });
 
     await service.localizeForwardAssets({} as never, 'peer.example', {
@@ -255,6 +257,7 @@ describe('FederationMediaLocalizationService', () => {
       23,
       32,
       36,
+      controller.signal,
     );
   });
 });

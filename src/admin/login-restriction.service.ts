@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { BruteForceService } from '../auth/brute-force.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { account } from '../database/schema.js';
@@ -26,7 +26,7 @@ export class LoginRestrictionService {
           .where(
             and(
               eq(account.namespaceId, 0),
-              eq(account.kind, 'USER'),
+              ne(account.account, '$system'),
               inArray(account.account, names),
             ),
           )

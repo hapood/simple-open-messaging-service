@@ -7,6 +7,7 @@ import {
   gt,
   inArray,
   isNull,
+  ne,
   or,
   sql,
 } from 'drizzle-orm';
@@ -62,7 +63,7 @@ export class DashboardService {
       this.database.db
         .select({ value: count() })
         .from(account)
-        .where(and(eq(account.namespaceId, 0), eq(account.kind, 'USER')))
+        .where(and(eq(account.namespaceId, 0), ne(account.account, '$system')))
         .then(([row]) => row.value),
       this.database.db
         .select({ value: count() })
@@ -103,8 +104,8 @@ export class DashboardService {
         .then(([row]) => row.value),
       this.database.db
         .select({
-          active: sql<number>`count(*) filter (where ${pendingMedia.status} in ('PENDING', 'PROCESSING'))::int`,
-          failed: sql<number>`count(*) filter (where ${pendingMedia.status} = 'FAILED' or ${pendingMedia.anyFailed} = true)::int`,
+          active: sql<number>`count(*) filter (where ${pendingMedia.status} in ('pending', 'downloading'))::int`,
+          failed: sql<number>`count(*) filter (where ${pendingMedia.status} = 'failed' or ${pendingMedia.anyFailed} = true)::int`,
         })
         .from(pendingMedia)
         .where(eq(pendingMedia.direction, 'INBOUND'))

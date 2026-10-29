@@ -22,7 +22,6 @@ describe('system account attribution', () => {
     });
     expect(system).toMatchObject({
       account: '$system',
-      kind: 'SYSTEM',
       hashPwd: null,
       defaultProfileRev: 0,
     });
@@ -31,7 +30,6 @@ describe('system account attribution', () => {
       { disabledAt: null },
       { hashPwd: 'a-password-hash' },
       { defaultProfileRev: 1 },
-      { kind: 'USER' },
     ]) {
       await expect(
         database.db

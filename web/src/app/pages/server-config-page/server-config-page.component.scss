@@ -116,6 +116,9 @@
 .cfg-shell {
   width: 100%;
   max-width: 380px;
+  // This is a flex item on the full-page surface; allow it to shrink below
+  // the intrinsic width of its Material fields while preserving outer padding.
+  min-width: 0;
   box-sizing: border-box;
   padding: 32px;
   text-align: center;
@@ -154,6 +157,7 @@
 
 .cfg-field {
   width: 100%;
+  min-width: 0;
 
   // Reserve the validation-error slot so showing an error does not move the controls below it.
   ::ng-deep .mat-mdc-form-field-subscript-wrapper {

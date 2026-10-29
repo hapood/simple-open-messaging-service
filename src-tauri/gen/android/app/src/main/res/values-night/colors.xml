@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="splash_background">#FF11161B</color>
+    <color name="splash_bubble">#FF283139</color>
+    <color name="splash_outline">#FF7E8B95</color>
+    <color name="splash_mark">#FFF8F4EC</color>
+    <color name="splash_accent">#FFF04B3A</color>
+    <color name="splash_text">#FFF0F1F2</color>
+    <color name="splash_text_secondary">#FFA9ADB1</color>
+    <color name="splash_text_status">#FFA9ADB1</color>
+</resources>

@@ -25,15 +25,15 @@ import { usePublicConfig } from '@/hooks/use-public-config'
 const ACCOUNT_REGEX = /^[a-z0-9][a-z0-9._-]{0,29}$/i
 
 /** Create-user dialog (admin-provisioned account). The password field is shown — and required — only
- *  when password login is enabled (loginMode ALL / PASSWORD_ONLY); under APP_OTP_AND_QR the account is
- *  created passwordless and bootstrapped via the one-time code issued next. The loginMode is read from the
- *  public GET /config so the dialog stays correct for any mode without a hardcode. */
+ *  when password login is enabled (GET /config loginMethods includes password); otherwise the account is
+ *  created passwordless and bootstrapped via the one-time code issued next. The methods list is read from
+ *  the public GET /config so the dialog stays correct for any policy without a hardcode. */
 export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useTranslation()
   const create = useCreateUser()
   const { data: config } = usePublicConfig()
   const configReady = config !== undefined
-  const passwordEnabled = config ? isPasswordLoginEnabled(config.loginMode) : false
+  const passwordEnabled = config ? isPasswordLoginEnabled(config.loginMethods) : false
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 

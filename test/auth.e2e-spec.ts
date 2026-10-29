@@ -16,7 +16,7 @@ import { truncateTablesForTest } from './support/truncate';
  *
  * The login-method flows themselves (OTP replace, QR two-step) live in otp-login.e2e-spec.ts /
  * qr-login.e2e-spec.ts. This spec seeds sessions DIRECTLY (registration is closed and password login is
- * disabled under APP_OTP_AND_QR) and pins: the device list + isCurrent flag, single-session revoke +
+ * disabled — loginMethods = ['otp', 'qr']) and pins: the device list + isCurrent flag, single-session revoke +
  * ownership check, logout-all revocation (and the KV-cache-lag reality it depends on), and the two
  * policy gates for self-registration and password login.
  */
@@ -248,8 +248,8 @@ describe('Session management + login-policy e2e', () => {
     expect(exists).toBeUndefined();
   });
 
-  it('rejects password login with LOGIN_METHOD_DISABLED under APP_OTP_AND_QR', async () => {
-    // Seed a user WITH a password so the only thing that can fail is the mode gate (not PASSWORD_NOT_SET).
+  it('rejects password login with LOGIN_METHOD_DISABLED when password is not in loginMethods', async () => {
+    // Seed a user WITH a password so the only thing that can fail is the methods gate (not PASSWORD_NOT_SET).
     await seedUser(app, 'pwuser', { password: 'Pass1234' });
     const r = await request(app.getHttpServer())
       .post('/api/v1/auth/login')

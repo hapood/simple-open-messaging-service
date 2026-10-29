@@ -40,6 +40,7 @@ export class FederationMediaRangeClient {
     sourceSeq: number,
     startOffset: number,
     declaredBytes: number,
+    signal?: AbortSignal,
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.transportConfig.get().mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
@@ -55,6 +56,7 @@ export class FederationMediaRangeClient {
     let markedAlive = false;
 
     while (total === null || offset < total) {
+      signal?.throwIfAborted();
       const requestedEnd =
         total === null
           ? offset + chunkBytes - 1
@@ -64,7 +66,13 @@ export class FederationMediaRangeClient {
         let unit: FederationMediaRangeUnit | undefined;
         let buffer: Buffer;
         try {
-          unit = await this.requestUnit(url, peerDomain, offset, requestedEnd);
+          unit = await this.requestUnit(
+            url,
+            peerDomain,
+            offset,
+            requestedEnd,
+            signal,
+          );
           if (unit.total !== declaredBytes) {
             throw new Error('media declared size does not match Content-Range');
           }
@@ -92,6 +100,7 @@ export class FederationMediaRangeClient {
             throw new Error(`unit digest mismatch at offset ${offset}`);
           }
         } catch (error) {
+          signal?.throwIfAborted();
           // Retry transport failures before headers as well as body/verification
           // failures, but do not repeat permanent peer rejections.
           if (error instanceof CasOversizeError) throw error;
@@ -125,6 +134,7 @@ export class FederationMediaRangeClient {
     peerDomain: string,
     start: number,
     end: number,
+    signal?: AbortSignal,
   ): Promise<FederationMediaRangeUnit> {
     const operationStartedAt = new Date();
     const headers = await this.signature.signOutbound({
@@ -137,8 +147,10 @@ export class FederationMediaRangeClient {
       response = await this.discovery.request(url, {
         method: 'GET',
         headers: { ...headers, range: `bytes=${start}-${end}` },
+        signal,
       });
     } catch (error) {
+      signal?.throwIfAborted();
       await this.recognition.markTransportDegraded(
         peerDomain,
         `GET media network/timeout: ${(error as Error).message}`,

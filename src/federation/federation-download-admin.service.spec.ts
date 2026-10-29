@@ -2,110 +2,74 @@ import { describe, expect, it, vi } from 'vitest';
 import * as tables from '../database/schema.js';
 import { FederationDownloadAdminService } from './federation-download-admin.service.js';
 
-describe('FederationDownloadAdminService', () => {
-  it('delegates retry to the inbound download lifecycle', async () => {
-    const batches = {
-      retryInboundBatch: vi.fn().mockResolvedValue({
-        batchId: 'batch-a',
-        resetFiles: 2,
-      }),
-    };
-    const service = new FederationDownloadAdminService(
-      { db: {} } as never,
-      batches as never,
-    );
+function service(status: string | null, dependent = false) {
+  const execute = vi
+    .fn()
+    .mockResolvedValueOnce({ rows: status ? [{ status }] : [] })
+    .mockResolvedValueOnce({ rows: dependent ? [{}] : [] });
+  const returning = vi.fn().mockResolvedValue([{ digest: 'a'.repeat(64) }]);
+  const remove = vi
+    .fn()
+    .mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) });
+  const tx = { execute, delete: remove };
+  const database = {
+    db: {
+      transaction: vi.fn(async (work: (tx: unknown) => unknown) => work(tx)),
+    },
+  };
+  const lifecycle = {
+    retryInboundBatch: vi.fn().mockResolvedValue({ resetFiles: 2 }),
+    stopInboundBatch: vi.fn().mockResolvedValue(undefined),
+  };
+  return {
+    subject: new FederationDownloadAdminService(
+      database as never,
+      lifecycle as never,
+    ),
+    remove,
+    lifecycle,
+  };
+}
 
-    await expect(service.retry('batch-a')).resolves.toEqual({
-      batchId: 'batch-a',
-      resetFiles: 2,
-    });
-    expect(batches.retryInboundBatch).toHaveBeenCalledWith('batch-a');
+describe('FederationDownloadAdminService', () => {
+  it('delegates stop and retry to the domain lifecycle', async () => {
+    const { subject, lifecycle } = service('failed');
+    await subject.stop('batch');
+    await expect(subject.retry('batch')).resolves.toEqual({ resetFiles: 2 });
+    expect(lifecycle.stopInboundBatch).toHaveBeenCalledWith('batch');
+    expect(lifecycle.retryInboundBatch).toHaveBeenCalledWith('batch');
   });
 
-  it('removes an inbound batch and its transitive staged dependencies', async () => {
-    const execute = vi
-      .fn()
-      .mockResolvedValueOnce({ rows: [{ status: 'failed' }] })
-      .mockResolvedValueOnce({
-        rows: [{ batchId: 'batch-a' }, { batchId: 'batch-b' }],
-      });
-    const fileReturning = vi.fn().mockResolvedValue([{ id: 1n }, { id: 2n }]);
-    const batchReturning = vi.fn().mockResolvedValue([{ id: 3n }, { id: 4n }]);
-    const remove = vi.fn((table: unknown) => ({
-      where: vi.fn().mockReturnValue({
-        returning:
-          table === tables.fileSyncProgress ? fileReturning : batchReturning,
-      }),
-    }));
-    const tx = { execute, delete: remove };
-    const database = {
-      db: {
-        transaction: vi.fn(async (work: (client: typeof tx) => unknown) =>
-          work(tx),
-        ),
-      },
-    };
-    const service = new FederationDownloadAdminService(
-      database as never,
-      {} as never,
-    );
-
-    await expect(service.clean('batch-a')).resolves.toEqual({
+  it('physically removes stopped task rows and returns digests for shared-safe cleanup', async () => {
+    const { subject, remove } = service('failed');
+    await expect(subject.clean('batch')).resolves.toEqual({
       clearedBatch: true,
-      clearedDependents: 1,
-      fileRows: 2,
+      temporaryDigests: ['a'.repeat(64)],
     });
     expect(remove).toHaveBeenNthCalledWith(1, tables.fileSyncProgress);
     expect(remove).toHaveBeenNthCalledWith(2, tables.pendingMedia);
   });
 
-  it('does not delete anything when the requested inbound batch is absent', async () => {
-    const tx = {
-      execute: vi.fn().mockResolvedValue({ rows: [] }),
-      delete: vi.fn(),
-    };
-    const database = {
-      db: {
-        transaction: vi.fn(async (work: (client: typeof tx) => unknown) =>
-          work(tx),
-        ),
-      },
-    };
-    const service = new FederationDownloadAdminService(
-      database as never,
-      {} as never,
-    );
-
-    await expect(service.clean('missing')).resolves.toEqual({
+  it('is idempotent for a missing batch', async () => {
+    const { subject, remove } = service(null);
+    await expect(subject.clean('batch')).resolves.toEqual({
       clearedBatch: false,
-      clearedDependents: 0,
-      fileRows: 0,
+      temporaryDigests: [],
     });
-    expect(tx.delete).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 
-  it('rejects cleaning an active download', async () => {
-    const tx = {
-      execute: vi.fn().mockResolvedValue({
-        rows: [{ status: 'downloading' }],
-      }),
-      delete: vi.fn(),
-    };
-    const database = {
-      db: {
-        transaction: vi.fn(async (work: (client: typeof tx) => unknown) =>
-          work(tx),
-        ),
-      },
-    };
-    const service = new FederationDownloadAdminService(
-      database as never,
-      {} as never,
-    );
+  it('requires stop before delete', async () => {
+    const { subject, remove } = service('downloading');
+    await expect(subject.clean('batch')).rejects.toThrow('stop the download');
+    expect(remove).not.toHaveBeenCalled();
+  });
 
-    await expect(service.clean('batch-a')).rejects.toThrow(
-      'an active federation download cannot be cleaned',
+  it('does not silently delete active dependent tasks', async () => {
+    const { subject, remove } = service('failed', true);
+    await expect(subject.clean('batch')).rejects.toThrow(
+      'stop dependent downloads',
     );
-    expect(tx.delete).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 });

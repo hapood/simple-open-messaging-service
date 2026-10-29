@@ -81,7 +81,7 @@ export async function resetE2EWorkerDatabase(
       );
       await client.query('INSERT INTO "ProfileNamespaceFeedHead" (id, "endId") VALUES (0, 0)');
       await client.query(
-        'INSERT INTO "Account" (account, kind, "disabledAt") VALUES (\'$system\', \'SYSTEM\', CURRENT_TIMESTAMP)',
+        'INSERT INTO "Account" (account, "disabledAt") VALUES (\'$system\', CURRENT_TIMESTAMP)',
       );
       await client.query(
         'INSERT INTO "ProfileNamespaceChangeFeedHead" ("id", "endId") VALUES (0, 0) ON CONFLICT ("id") DO NOTHING',

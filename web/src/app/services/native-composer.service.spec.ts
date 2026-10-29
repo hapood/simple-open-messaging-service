@@ -136,6 +136,7 @@ describe('NativeComposerService global geometry', () => {
   it('keeps split emoji geometry cached across a temporary hide', () => {
     const service = TestBed.inject(NativeComposerService);
     service.show(context);
+    expect(service.active()).toBe(true);
     inset.set(320);
     window.__SOMS_COMPOSER_EVENT__?.({
       version: 1,
@@ -153,6 +154,7 @@ describe('NativeComposerService global geometry', () => {
 
     service.hide(context.contextId);
     flush();
+    expect(service.active()).toBe(false);
     expect(css('--soms-composer-height')).toBe('64px');
     expect(css('--soms-keyboard-height')).toBe('288px');
     expect(service.composerHeight()).toBe(64);
@@ -163,5 +165,10 @@ describe('NativeComposerService global geometry', () => {
     expect(css('--soms-keyboard-height')).toBe('0px');
     expect(service.composerHeight()).toBe(0);
     expect(service.keyboardHeight()).toBe(0);
+
+    service.show(context);
+    expect(service.active()).toBe(true);
+    service.hideActive();
+    expect(service.active()).toBe(false);
   });
 });

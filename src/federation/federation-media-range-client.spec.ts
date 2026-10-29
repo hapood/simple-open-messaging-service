@@ -54,6 +54,41 @@ async function collect(stream: AsyncGenerator<Buffer>) {
 }
 
 describe('federation media range retries', () => {
+  it('aborts an in-flight request without retrying or degrading the peer', async () => {
+    const { request, client, degraded } = setup();
+    const controller = new AbortController();
+    request.mockImplementation(
+      (_url: unknown, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          expect(init.signal).toBe(controller.signal);
+          init.signal!.addEventListener(
+            'abort',
+            () => reject(init.signal!.reason),
+            { once: true },
+          );
+        }),
+    );
+    const transfer = collect(
+      client.fetch(
+        'peer.example',
+        'digest',
+        'a',
+        'peer.example',
+        'b',
+        1,
+        0,
+        4,
+        controller.signal,
+      ),
+    );
+    const rejected = expect(transfer).rejects.toThrow('operator stopped');
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    controller.abort(new Error('operator stopped'));
+    await rejected;
+    expect(request).toHaveBeenCalledOnce();
+    expect(degraded).not.toHaveBeenCalled();
+  });
+
   it('rejects a header total different from the admitted descriptor without reading its body', async () => {
     const { request, client, degraded } = setup(0);
     const cancel = vi.fn();

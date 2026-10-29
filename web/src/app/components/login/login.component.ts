@@ -6,13 +6,18 @@ import {
   EventEmitter,
   inject,
   ChangeDetectionStrategy,
+  WritableSignal,
 } from '@angular/core';
 import { finalize } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { AuthService } from '../../services/auth.service';
-import { ConfigService, LoginMethod } from '../../services/config.service';
+import {
+  ConfigService,
+  LoginMethod,
+  LoginMethodOption,
+} from '../../services/config.service';
 import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
 import {
@@ -26,6 +31,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { QrStageComponent } from '../qr-stage/qr-stage.component';
+import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
 
 @Component({
   selector: 'app-login',
@@ -40,6 +46,7 @@ import { QrStageComponent } from '../qr-stage/qr-stage.component';
     MatInputModule,
     MatProgressBarModule,
     QrStageComponent,
+    BrandLogoComponent,
   ],
   templateUrl: './login.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -55,33 +62,24 @@ export class LoginComponent {
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
   private readonly activatedRoute = inject(ActivatedRoute, { optional: true });
-  /** Public site config — hides the register link when registration is closed. Pre-fetched on construct so
-   *  the link's visibility settles as soon as /config resolves (idempotent across all login components). */
+  /** Public site config — tab order, disabled state, default method and the register-link visibility all
+   *  come from it (pre-fetched on construct; idempotent across all login components). */
   readonly config = inject(ConfigService);
 
-  readonly activeMethod = signal<LoginMethod>('password');
+  /** Ordered options straight from the public config — drives tab order and each tab's disabled state. */
+  readonly methodOptions = computed<LoginMethodOption[]>(
+    () => this.config.loginMethods() ?? [],
+  );
 
-  readonly canPassword = computed(() =>
-    this.config.methodsForPlatform().includes('password'),
-  );
-  readonly canOtp = computed(() =>
-    this.config.methodsForPlatform().includes('otp'),
-  );
-  readonly canQr = computed(() =>
-    this.config.methodsForPlatform().includes('qr'),
-  );
+  /** The active login method. Initialized from the `?mode=` query param (when that method is usable) or
+   *  the server-advertised default; re-picked if a config reload changes the policy under our feet. */
+  readonly activeMethod: WritableSignal<LoginMethod>;
 
   readonly selectedTabIndex = computed(() => {
-    switch (this.activeMethod()) {
-      case 'password':
-        return 0;
-      case 'otp':
-        return 1;
-      case 'qr':
-        return 2;
-      default:
-        return 0;
-    }
+    const index = this.methodOptions().findIndex(
+      (m) => m.key === this.activeMethod(),
+    );
+    return index >= 0 ? index : 0;
   });
 
   account = signal('');
@@ -109,37 +107,55 @@ export class LoginComponent {
     const routeMode = this.activatedRoute?.snapshot?.queryParamMap?.get(
       'mode',
     ) as LoginMethod | null;
-    if (routeMode === 'otp' || routeMode === 'qr' || routeMode === 'password') {
-      this.activeMethod.set(routeMode);
-    }
+    this.activeMethod = signal<LoginMethod>(this.pickInitialMethod(routeMode));
 
     void this.config.ensureLoaded().then(() => {
       if (!this.isMethodEnabled(this.activeMethod())) {
-        if (this.canPassword()) this.activeMethod.set('password');
-        else if (this.canOtp()) this.activeMethod.set('otp');
-        else if (this.canQr()) this.activeMethod.set('qr');
+        this.activeMethod.set(this.pickInitialMethod(null));
       }
     });
   }
 
+  /** Query param wins when its method is enabled; otherwise the advertised default; otherwise the first
+   *  enabled entry. Only reachable with an empty policy before the first load settles (the login page
+   *  gates rendering on the config being ready), in which case any placeholder is fine — the
+   *  ensureLoaded continuation above re-picks once the real policy arrives. */
+  private pickInitialMethod(routeMode: LoginMethod | null): LoginMethod {
+    if (routeMode && this.isMethodEnabled(routeMode)) {
+      return routeMode;
+    }
+    const def = this.config.defaultLoginMethod();
+    if (def && this.isMethodEnabled(def)) {
+      return def;
+    }
+    const firstEnabled = this.methodOptions().find((m) => !m.disabled);
+    if (firstEnabled) {
+      return firstEnabled.key;
+    }
+    return routeMode ?? 'password';
+  }
+
   isMethodEnabled(method: LoginMethod): boolean {
-    switch (method) {
-      case 'password':
-        return this.canPassword();
-      case 'otp':
-        return this.canOtp();
+    const item = this.methodOptions().find((m) => m.key === method);
+    return item !== undefined && !item.disabled;
+  }
+
+  /** Transloco key for a tab label — the template loops over the data-driven option list. */
+  tabLabelKey(key: LoginMethod): string {
+    switch (key) {
       case 'qr':
-        return this.canQr();
+        return 'auth.tabQr';
+      case 'otp':
+        return 'auth.tabOtp';
       default:
-        return false;
+        return 'auth.tabPassword';
     }
   }
 
   onTabChange(index: number) {
-    const methods: LoginMethod[] = ['password', 'otp', 'qr'];
-    const target = methods[index];
-    if (target && this.isMethodEnabled(target)) {
-      this.setMethod(target);
+    const item = this.methodOptions()[index];
+    if (item && !item.disabled) {
+      this.setMethod(item.key);
     }
   }
 

@@ -43,6 +43,7 @@ describe('durable task enqueue', () => {
         scopeType: 'GROUP',
         scopeKey: 'checkpoint-test',
         taskType: 'FAN_OUT_THREAD_CONTENT',
+        actorUserId: 1,
         status: 'PENDING',
         payload: {},
         createdAt: startedAt,
@@ -147,6 +148,7 @@ describe('durable task enqueue', () => {
         address: { profileNamespaceId: 0, account: 'group-1' },
       },
       taskType: 'GROUP_MUTATION',
+      actorUserId: 11,
       payload: {},
     });
     const mutationRow = await database.db.query.durableTask.findFirst({
@@ -161,6 +163,7 @@ describe('durable task enqueue', () => {
         scopeType: 'GROUP',
         scopeKey: mutationRow!.scopeKey,
         taskType: 'FAN_OUT_THREAD_CONTENT',
+        actorUserId: 11,
         payload: {},
       })
       .returning({ taskId: durableTask.id });
@@ -183,6 +186,7 @@ describe('durable task enqueue', () => {
       scopeType: 'USER_PAIR' as const,
       scopeKey: 'pair-scope',
       taskType: 'SET_FRIEND_INTENT',
+      actorUserId: 11,
       coalescingKey: 'friend-intent:alice-to-bob',
       payload: {},
     };
@@ -226,16 +230,19 @@ describe('durable task enqueue', () => {
     const first = await queue.enqueueTask({
       scope: groupScope,
       taskType: 'GROUP_MUTATION',
+      actorUserId: 11,
       payload: { ordinal: 1 },
     });
     const second = await queue.enqueueTask({
       scope: groupScope,
       taskType: 'GROUP_MUTATION',
+      actorUserId: 11,
       payload: { ordinal: 2 },
     });
     const unrelated = await queue.enqueueTask({
       scope: otherScope,
       taskType: 'GROUP_MUTATION',
+      actorUserId: 11,
       payload: { ordinal: 3 },
     });
 
@@ -259,6 +266,7 @@ describe('durable task enqueue', () => {
     const third = await queue.enqueueTask({
       scope: groupScope,
       taskType: 'GROUP_MUTATION',
+      actorUserId: 11,
       payload: { ordinal: 4 },
     });
     const eligibleAfterFailure = await eligibleIds('GROUP_MUTATION');

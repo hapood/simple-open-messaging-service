@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   appendFile,
   mkdir,
@@ -744,64 +744,98 @@ export class ResumableUploadService {
     return committed;
   }
 
-  async listForAdmin() {
-    const rows = await this.database.db
-      .select()
-      .from(uploadSession)
-      .where(inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']))
-      .orderBy(desc(uploadSession.createdAt))
-      .limit(200);
-    return Promise.all(
-      rows.map(async (row) => ({
-        ...(await this.viewOf(row)),
-        creatorId: row.creatorId,
-        contentType: row.contentType,
-        updatedAt: row.updatedAt,
-      })),
+  async listForAdmin(query: { skip?: number; take?: number; userId?: number }) {
+    const where = and(
+      inArray(uploadSession.status, ['UPLOADING', 'COMPLETING', 'ABORTED']),
+      query.userId === undefined
+        ? undefined
+        : eq(uploadSession.creatorId, query.userId),
     );
+    const [rows, [aggregate]] = await Promise.all([
+      this.database.db
+        .select({
+          uploadId: uploadSession.uploadId,
+          creatorId: uploadSession.creatorId,
+          digest: uploadSession.digest,
+          bytes: uploadSession.totalBytes,
+          status: uploadSession.status,
+          tmpKey: uploadSession.tmpKey,
+        })
+        .from(uploadSession)
+        .where(where)
+        .orderBy(desc(uploadSession.id))
+        .offset(query.skip ?? 0)
+        .limit(query.take ?? 50),
+      this.database.db
+        .select({
+          total: count(),
+          bytes: sql<string>`coalesce(sum(${uploadSession.totalBytes}), 0)::text`,
+        })
+        .from(uploadSession)
+        .where(where),
+    ]);
+    return {
+      ...aggregate,
+      list: await Promise.all(
+        rows.map(async (row) => ({
+          uploadId: row.uploadId,
+          userId: row.creatorId,
+          digest: row.digest,
+          bytes: row.bytes.toString(),
+          status: row.status,
+          bytesReceived: (
+            await this.readSidecarOffset({
+              tmpKey: row.tmpKey,
+              totalBytes: row.bytes,
+            } as typeof uploadSession.$inferSelect)
+          ).toString(),
+        })),
+      ),
+    };
   }
 
-  async abortForAdmin(
-    uploadId: string,
-    reason = 'terminated by administrator',
-  ) {
-    return this.exclusive(uploadId, async () => {
-      const session = await this.database.db.query.uploadSession.findFirst({
-        where: eq(uploadSession.uploadId, uploadId),
-      });
-      if (!session) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'upload not found',
-          404,
-        );
-      }
-      if (session.status === 'COMPLETED') {
-        return this.invalid('completed upload cannot be aborted');
-      }
-      const [aborted] = await this.database.db
-        .update(uploadSession)
-        .set({
-          status: 'ABORTED',
-          errorReason: reason.slice(0, 255),
-          abortedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(uploadSession.id, session.id),
-            inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']),
-          ),
-        )
-        .returning();
-      await this.discardStaging(session.tmpKey);
-      await this.messages.failStaged(
-        session.creatorId,
-        session.clientMessageId,
-        reason,
-      );
-      return this.viewOf(aborted ?? session);
+  /** Stop a complete staged batch: partial cancellation cannot leave an uncommittable sibling set. */
+  async stopForAdmin(uploadId: string) {
+    const session = await this.database.db.query.uploadSession.findFirst({
+      where: eq(uploadSession.uploadId, uploadId),
     });
+    if (!session) return { removed: 0 };
+    await this.cancelBatch(session.creatorId, session.clientMessageId);
+    const rows = await this.database.db
+      .select({
+        uploadId: uploadSession.uploadId,
+        tmpKey: uploadSession.tmpKey,
+      })
+      .from(uploadSession)
+      .where(
+        and(
+          eq(uploadSession.clientMessageId, session.clientMessageId),
+          eq(uploadSession.status, 'ABORTED'),
+        ),
+      );
+    for (const row of rows) {
+      await this.exclusive(row.uploadId, async () => {
+        // Only ENOENT is success. Keep the row on an IO failure so cleanup remains retryable.
+        for (const path of [
+          this.partPath(row.tmpKey),
+          this.sidecarPath(row.tmpKey),
+          `${this.sidecarPath(row.tmpKey)}.tmp`,
+        ]) {
+          await unlink(path).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+          });
+        }
+        await this.database.db
+          .delete(uploadSession)
+          .where(
+            and(
+              eq(uploadSession.uploadId, row.uploadId),
+              eq(uploadSession.status, 'ABORTED'),
+            ),
+          );
+      });
+    }
+    return { removed: rows.length };
   }
 
   private async owned(userId: number, uploadId: string) {

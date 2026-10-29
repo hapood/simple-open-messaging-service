@@ -18,6 +18,9 @@ describe('LoginComponent cancellation', () => {
           provide: ConfigService,
           useValue: {
             ensureLoaded: () => Promise.resolve(),
+            loginMethods: signal([{ key: 'password', disabled: false }]),
+            defaultLoginMethod: signal('password'),
+            registrationOpen: signal(false),
             methodsForPlatform: signal(['password']),
           },
         },
@@ -54,6 +57,9 @@ describe('LoginComponent cancellation', () => {
           provide: ConfigService,
           useValue: {
             ensureLoaded: () => Promise.resolve(),
+            loginMethods: signal([{ key: 'otp', disabled: false }]),
+            defaultLoginMethod: signal('otp'),
+            registrationOpen: signal(false),
             methodsForPlatform: signal(['otp']),
           },
         },

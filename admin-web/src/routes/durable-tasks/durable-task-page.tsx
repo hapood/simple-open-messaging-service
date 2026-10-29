@@ -144,7 +144,16 @@ export function DurableTaskPage() {
                     </div>
                   </TableCell>
                   <TableCell className="align-top font-mono text-xs">
-                    {task.actorUserId ? `#${task.actorUserId}` : '—'}
+                    {task.actorAccount === '$system' ? (
+                      <span
+                        className="text-muted-foreground"
+                        title={t('durableTasks.systemActor')}
+                      >
+                        $system
+                      </span>
+                    ) : (
+                      `#${task.actorUserId}`
+                    )}
                   </TableCell>
                   <TableCell className="align-top text-xs">
                     <div>

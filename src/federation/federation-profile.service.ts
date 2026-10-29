@@ -180,7 +180,8 @@ export class FederationProfileService {
         eq(tables.account.namespaceId, 0),
       ),
     });
-    if (!user || user.namespaceId !== 0 || user.kind === 'SYSTEM') return null;
+    if (!user || user.namespaceId !== 0 || user.account === '$system')
+      return null;
     if (user.defaultProfileRev === 0) return this.noProfile(user.account);
     return this.getStoredProfile(
       0,
@@ -308,7 +309,7 @@ export class FederationProfileService {
       FROM "Profile" profile
       JOIN "Account" owner ON owner.account = profile.account
         AND owner."namespaceId" = 0
-        AND owner.kind = 'USER' AND owner.availability = 'AVAILABLE'
+        AND owner.account <> '$system' AND owner.availability = 'AVAILABLE'
       WHERE profile.account = ${owner}
         AND profile."publisherNamespaceId" = 0
         AND profile."profileNamespaceId" = ${profileNamespaceId}

@@ -224,7 +224,7 @@ export class UserManageService {
    *  profile rev 0 (no Profile row): the display name is the user's own first profile edit, never
    *  admin-authored. The password is optional: provided → hashed + stored; omitted → the account is
    *  created with NO password (an OTP/QR-only account, bootstrapped by the one-time code the admin
-   *  issues next). Whether a password is allowed/required is a loginMode policy enforced by the
+   *  issues next). Whether a password is allowed/required is a loginMethods policy enforced by the
    *  controller; this service persists exactly what it's given. Returns the new {id, account}; throws
    *  ALREADY_EXISTS on a duplicate account. */
   async createUser(params: {

@@ -122,6 +122,7 @@
     @include neutral-form-controls;
     // Anchor for <app-auth-toolbar>'s absolute top-right placement.
     position: relative;
+    min-width: 0;
     display: flex;
     flex-direction: column; // stack the form card + the Tauri-only "server settings" link vertically
     align-items: center;
@@ -142,7 +143,14 @@
   }
 
   @media (max-width: 899px) {
-    grid-template-columns: 1fr;
+    // A bare 1fr retains the content's automatic minimum and can overflow
+    // the viewport when Material controls contribute a wide intrinsic size.
+    grid-template-columns: minmax(0, 1fr);
+
+    .form-pane {
+      padding-inline: 16px;
+    }
+
     // .form-pane needs no min-height: the grid stretches the single row to fill the auth-shell's 100dvh
     // content area (verified live). The old `min-height: 100dvh` sized the content-box and, with the
     // 32px padding, gave 1088px → 64px overflow on a 1024px viewport. Stretch + border-box adapts to

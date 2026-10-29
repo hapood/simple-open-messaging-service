@@ -26,6 +26,7 @@ describe('task admission primitives', () => {
     scopeType: 'THREAD' as const,
     scopeKey: 'test',
     taskType: 'FAN_OUT_THREAD_CONTENT',
+    actorUserId: 1,
     payload: { threadId: 1 },
   };
 

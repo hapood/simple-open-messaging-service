@@ -33,6 +33,8 @@ describe('DashboardPage permissions', () => {
       expect(
         screen.getByRole('link', { name: /dashboard.tile.totalUsers/ }),
       ).toHaveAttribute('href', '/users');
+      expect(screen.getByRole('link', { name: 'dashboard.recentActions.viewAll' }))
+        .toHaveAttribute('href', '/audit');
     },
   );
 });

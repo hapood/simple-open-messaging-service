@@ -29,6 +29,7 @@ vi.mock('@/hooks/use-sessions', () => ({
 }));
 vi.mock('@/hooks/use-me', () => ({
   useIsAdminPlus: () => state.canManage,
+  useIsSuperAdmin: () => false,
   useMe: () => ({
     data: {
       account: 'admin',
@@ -40,7 +41,11 @@ vi.mock('@/hooks/use-me', () => ({
 }));
 vi.mock('@/hooks/use-public-config', () => ({
   usePublicConfig: () => ({
-    data: { registrationOpen: false, loginMode: 1 },
+    data: {
+      registrationOpen: false,
+      loginMethods: [{ key: 'password', disabled: false }],
+      defaultLoginMethod: 'password',
+    },
   }),
 }));
 vi.mock('@/hooks/use-user-detail', () => ({

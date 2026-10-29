@@ -8,6 +8,7 @@ import {
 } from '../../../durable-task/task-admission.js';
 import type { DurableTask } from '../../../durable-task/durable-task.types.js';
 import { businessAccountScopeKey } from '../../../common/locks/account-business-lock.js';
+import { systemAccountIdInTx } from '../../../user/system-account.js';
 
 export function groupMembershipProjectionFanoutKey(threadId: number): string {
   return JSON.stringify([DurableTaskType.FAN_OUT_GROUP_PROJECTION, threadId]);
@@ -53,7 +54,7 @@ export async function admitGroupMembershipProjectionFanoutInTx(
     scopeType: 'GROUP',
     scopeKey,
     taskType: DurableTaskType.FAN_OUT_GROUP_PROJECTION,
-    actorUserId: null,
+    actorUserId: await systemAccountIdInTx(tx),
     payload: { threadId: input.threadId },
     checkpoint: { afterManagerId: '0' },
     coalescingKey,

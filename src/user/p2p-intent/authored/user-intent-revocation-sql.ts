@@ -108,9 +108,10 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       RETURNING d.id
     ), thread_fanout_insert AS (
       INSERT INTO "DurableTask"
-        (kind, "scopeType", "scopeKey", "taskType", payload, "coalescingKey", status)
+        (kind, "scopeType", "scopeKey", "taskType", "actorUserId", payload, "coalescingKey", status)
       SELECT 'PROJECTION'::"DurableTaskKind", 'THREAD'::"DurableTaskScopeType", ${threadScope},
         'FAN_OUT_THREAD_CONTENT',
+        (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${input.threadId}::integer,
           'messageEndSeq', (SELECT seq FROM system_message),
           'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc)),
@@ -119,10 +120,11 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       RETURNING id
     ), departure_task AS (
       INSERT INTO "DurableTask"
-        (kind, "scopeType", "scopeKey", "taskType", payload, status)
+        (kind, "scopeType", "scopeKey", "taskType", "actorUserId", payload, status)
       SELECT 'PROJECTION'::"DurableTaskKind", 'THREAD'::"DurableTaskScopeType",
         ('["ACCOUNT_THREAD_FANOUT",' || ${input.threadId}::text || ',' || a.id::text || ']')::text,
         'FAN_OUT_ACCOUNT_THREAD_CONTENT',
+        (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${input.threadId}::integer,
           'messageEndSeq', (SELECT seq FROM system_message),
           'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc),

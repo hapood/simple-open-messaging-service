@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { auditActionLabel } from '@/routes/audit/audit-action-label';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -435,7 +436,7 @@ export function DashboardPage() {
               </CardDescription>
             </div>
             <Link
-              to="/logs"
+              to="/audit"
               className={cn(
                 buttonVariants({ variant: 'ghost', size: 'sm' }),
                 'gap-1 text-xs text-muted-foreground hover:text-foreground',
@@ -472,7 +473,9 @@ export function DashboardPage() {
                         <XCircle className="size-4 shrink-0 text-destructive" />
                       </span>
                     )}
-                    <span className="font-mono text-xs">{a.action}</span>
+                    <Link to={`/audit/${a.id}`} className="text-xs hover:underline" title={a.action}>
+                      {auditActionLabel(t, a.action)}
+                    </Link>
                     {(a.targetLabel ?? a.targetId) ? (
                       <span className="truncate font-mono text-xs text-muted-foreground">
                         {a.targetLabel ?? a.targetId}

@@ -15,7 +15,7 @@ import {
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard.js';
-import { PasswordLoginEnabledGuard } from '../auth/password-login-enabled.guard.js';
+import { loginMethodEnabledGuard } from '../auth/login-method-enabled.guard.js';
 import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import {
@@ -60,7 +60,7 @@ export class AuthController {
 
   @Public()
   @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.passwordLogin)
-  @UseGuards(RateLimitGuard, PasswordLoginEnabledGuard, LocalAuthGuard)
+  @UseGuards(RateLimitGuard, loginMethodEnabledGuard('password'), LocalAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/login')
   @ApiOperation({

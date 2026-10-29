@@ -1,5 +1,14 @@
 @use "../../assets/utils.scss" as *;
 
+// Constrain the flex item itself so intrinsic Material control widths cannot
+// make the card wider than the auth pane on narrow screens.
+:host {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  min-width: 0;
+}
+
 .login-card {
   @include auth-card;
   position: relative;
@@ -28,6 +37,28 @@
   font-weight: 600;
   line-height: 32px;
   text-align: center;
+  display: flex;
+  justify-content: center;
+}
+
+.login-title-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.login-title-logo {
+  display: none;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+}
+
+// Match the auth shell's single-column breakpoint; the split layout owns its own brand panel.
+@media (max-width: 899px) {
+  .login-title-logo {
+    display: block;
+  }
 }
 
 .auth-tabs-slot {

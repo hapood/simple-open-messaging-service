@@ -1,11 +1,12 @@
 // Pre-paint bootstrap, loaded synchronously from <head> BEFORE the stylesheet and Angular boot, so the
-// very first frame follows the OS theme + browser language with no flash (FOUC). Persisted preferences live
-// in async IndexedDB/SQLite and are applied by Angular immediately after bootstrap.
+// system fallback follows the OS theme + browser language. Application content stays hidden until
+// prepareTheme reads async IndexedDB/SQLite preferences and resolves the theme BEFORE Angular starts.
 // 'self' script (not inline) so the somsapp:// CSP `script-src 'self'` admits it without a nonce or
 // 'unsafe-inline' — an inline <script> here is blocked by that policy. Classic (no defer/type=module) so
 // it executes during head parsing, before <body> paints. Angular's ThemeService / LanguageService
 // re-assert and own these attributes at runtime after boot.
 (function () {
+  document.documentElement.setAttribute('data-theme-pending', '');
   var dark = window.matchMedia &&
     window.matchMedia('(prefers-color-scheme: dark)').matches;
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');

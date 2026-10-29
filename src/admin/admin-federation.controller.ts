@@ -133,6 +133,7 @@ export class AdminFederationController {
   @Roles(AdminRole.SUPER_ADMIN)
   @Audit('federation.local_root_unpublish', {
     targetType: 'localFederationRoot',
+    targetParam: 'id',
   })
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/local-root-epochs/:id/unpublish')
@@ -147,7 +148,10 @@ export class AdminFederationController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
-  @Audit('federation.identity_review_approve', { targetType: 'identityReview' })
+  @Audit('federation.identity_review_approve', {
+    targetType: 'identityReview',
+    targetParam: 'id',
+  })
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/identity-reviews/:id/approve')
   @ApiOperation({
@@ -166,7 +170,10 @@ export class AdminFederationController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
-  @Audit('federation.identity_review_reject', { targetType: 'identityReview' })
+  @Audit('federation.identity_review_reject', {
+    targetType: 'identityReview',
+    targetParam: 'id',
+  })
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/identity-reviews/:id/reject')
   @ApiOperation({

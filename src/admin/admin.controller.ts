@@ -40,10 +40,7 @@ import {
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import {
-  PUBLIC_CONFIG,
-  isPasswordLoginEnabled,
-} from '../config/public-config.js';
+import { isLoginMethodEnabled } from '../config/public-config.js';
 import { AuthService } from '../auth/auth.service.js';
 import { OtpLoginService } from '../auth/otp-login.service.js';
 import { BruteForceService } from '../auth/brute-force.service.js';
@@ -252,9 +249,9 @@ export class AdminController {
   @Post('admin/users/create')
   @ApiOperation({ summary: 'Create a user account (admin-provisioned)' })
   async createUser(@Body() dto: AdminCreateUserDto) {
-    // loginMode policy: a password is required iff password login is the active method (ALL / PASSWORD_ONLY).
-    // In APP_OTP_AND_QR the account has no password — it bootstraps via the one-time code issued next.
-    if (isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode) && !dto.password) {
+    // loginMethods policy: a password is required iff `password` is an enabled login method.
+    // Without it the account has no password — it bootstraps via the one-time code issued next.
+    if (isLoginMethodEnabled('password') && !dto.password) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'password is required',
@@ -344,7 +341,7 @@ export class AdminController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('push.test', { targetType: 'user_session', targetParam: 'id' })
+  @Audit('push.test', { targetType: 'user_session', targetBody: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/test')
   @ApiOperation({
@@ -477,7 +474,7 @@ export class AdminController {
   async generateInitialPassword(@Param('id') id: string) {
     // The admin can never choose or change a user's password — only (re-)initialize it (server-generated).
     // Refuse outright when password login isn't enabled: no point minting a password that can't be used.
-    if (!isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode)) {
+    if (!isLoginMethodEnabled('password')) {
       throw new BusinessException(
         BusinessCode.LOGIN_METHOD_DISABLED,
         'password login is disabled',

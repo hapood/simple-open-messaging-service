@@ -151,9 +151,10 @@ export function groupMembershipRevocationSql(
       federation: false,
     })}, departure_task AS (
       INSERT INTO "DurableTask"
-        (kind, "scopeType", "scopeKey", "taskType", payload, "coalescingKey", status)
+        (kind, "scopeType", "scopeKey", "taskType", "actorUserId", payload, "coalescingKey", status)
       SELECT 'PROJECTION'::"DurableTaskKind", 'THREAD'::"DurableTaskScopeType", ${accountScope},
         'FAN_OUT_ACCOUNT_THREAD_CONTENT',
+        (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${input.threadId}::integer,
           'messageEndSeq', (SELECT seq FROM system_message),
           'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc),

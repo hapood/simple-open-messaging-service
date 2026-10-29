@@ -20,7 +20,7 @@ import { AuthService } from './auth.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { ToastService } from './toast.service';
 import { Observable, of } from 'rxjs';
-import { ConfigService, LoginMode } from './config.service';
+import { ConfigService } from './config.service';
 
 describe('ConfigService HTTP ownership', () => {
   let service: ConfigService;
@@ -64,11 +64,65 @@ describe('ConfigService HTTP ownership', () => {
     TestBed.inject(SessionLifecycleService).invalidateSession();
     request.flush({
       code: 0,
-      data: { registrationOpen: false, loginMode: LoginMode.APP_OTP_AND_QR },
+      data: {
+        registrationOpen: false,
+        loginMethods: [
+          { key: 'qr', disabled: false },
+          { key: 'otp', disabled: false },
+        ],
+        defaultLoginMethod: 'otp',
+      },
     });
     await first;
     expect(service.loaded()).toBe(true);
-    expect(service.methodsForPlatform()).toEqual(['otp', 'qr']);
+    expect(service.methodsForPlatform()).toEqual(['qr', 'otp']);
+    expect(service.defaultLoginMethod()).toBe('otp');
+  });
+
+  it('preserves advertised order, drops junk, and falls back when the default is disabled', async () => {
+    const load = service.ensureLoaded();
+    http
+      .expectOne('/api/v1/config')
+      .flush({
+        code: 0,
+        data: {
+          registrationOpen: false,
+          loginMethods: [
+            { key: 'password', disabled: true },
+            { key: 'bogus', disabled: false },
+            { key: 'qr', disabled: false },
+            { key: 'qr', disabled: true }, // duplicate: first occurrence wins
+          ],
+          defaultLoginMethod: 'password', // disabled → fallback to first enabled
+        },
+      });
+    await load;
+    expect(service.loginMethods()).toEqual([
+      { key: 'password', disabled: true },
+      { key: 'qr', disabled: false },
+    ]);
+    expect(service.defaultLoginMethod()).toBe('qr');
+    expect(service.methodsForPlatform()).toEqual(['qr']);
+  });
+
+  it('treats a policy with zero enabled methods as a config failure', async () => {
+    const load = service.ensureLoaded();
+    http.expectOne('/api/v1/config').flush({
+      code: 0,
+      data: {
+        registrationOpen: false,
+        loginMethods: [
+          { key: 'password', disabled: true },
+          { key: 'otp', disabled: true },
+          { key: 'qr', disabled: true },
+        ],
+        defaultLoginMethod: 'qr',
+      },
+    });
+    await load;
+    expect(service.loaded()).toBe(true);
+    expect(service.loginMethods()).toBeNull();
+    expect(service.defaultLoginMethod()).toBeNull();
   });
 
   it('cancels an obsolete server load and publishes only the replacement', async () => {
@@ -79,10 +133,14 @@ describe('ConfigService HTTP ownership', () => {
     const newRequest = http.expectOne('/api/v1/config');
     await oldLoad;
     expect(service.loaded()).toBe(false);
-    expect(service.loginMode()).toBeNull();
+    expect(service.loginMethods()).toBeNull();
     newRequest.flush({
       code: 0,
-      data: { registrationOpen: true, loginMode: LoginMode.PASSWORD_ONLY },
+      data: {
+        registrationOpen: true,
+        loginMethods: [{ key: 'password', disabled: false }],
+        defaultLoginMethod: 'password',
+      },
     });
     await newLoad;
     expect(service.loaded()).toBe(true);
@@ -105,7 +163,15 @@ describe('ConfigService connection cancellation', () => {
           of({
             code: 0,
             message: 'ok',
-            data: { registrationOpen: true, loginMode: LoginMode.ALL },
+            data: {
+              registrationOpen: true,
+              loginMethods: [
+                { key: 'password', disabled: false },
+                { key: 'otp', disabled: false },
+                { key: 'qr', disabled: false },
+              ],
+              defaultLoginMethod: 'qr',
+            },
           }),
         ),
     } as Pick<HttpClient, 'get'>;
@@ -119,7 +185,7 @@ describe('ConfigService connection cancellation', () => {
     expect(requestCancelled).toBe(true);
     expect(service.loaded()).toBe(true);
     expect(service.cancelled()).toBe(true);
-    expect(service.loginMode()).toBeNull();
+    expect(service.loginMethods()).toBeNull();
 
     await service.ensureLoaded();
     expect(http.get).toHaveBeenCalledTimes(1);
@@ -128,6 +194,11 @@ describe('ConfigService connection cancellation', () => {
 
     expect(http.get).toHaveBeenCalledTimes(2);
     expect(service.cancelled()).toBe(false);
-    expect(service.loginMode()).toBe(LoginMode.ALL);
+    expect(service.loginMethods()).toEqual([
+      { key: 'password', disabled: false },
+      { key: 'otp', disabled: false },
+      { key: 'qr', disabled: false },
+    ]);
+    expect(service.defaultLoginMethod()).toBe('qr');
   });
 });

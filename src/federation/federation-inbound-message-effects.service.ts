@@ -45,7 +45,7 @@ export class FederationInboundMessageEffectsService {
       if (effect.kind === 'pending') {
         void this.runFileSyncBatch(
           effect.batchId,
-          (digest, offset, declaredBytes) =>
+          (digest, offset, declaredBytes, signal) =>
             this.fetchMediaChunks(
               domain,
               digest,
@@ -55,6 +55,7 @@ export class FederationInboundMessageEffectsService {
               effect.originSeq,
               offset,
               declaredBytes,
+              signal,
             ),
         ).catch(() => undefined);
         if (this.profileResolutions && effect.profileDemand) {
@@ -134,6 +135,7 @@ export class FederationInboundMessageEffectsService {
       digest: string,
       offset: number,
       declaredBytes: number,
+      signal?: AbortSignal,
     ) => AsyncIterable<Buffer>,
   ): Promise<void> {
     await this.inboundMediaBatches.runFileSyncBatch(batchId, fetchChunksFor);
@@ -166,6 +168,7 @@ export class FederationInboundMessageEffectsService {
     sourceSeq: number,
     startOffset: number,
     declaredBytes: number,
+    signal?: AbortSignal,
   ): AsyncGenerator<Buffer> {
     yield* this.mediaRangeClient.fetch(
       peerDomain,
@@ -176,6 +179,7 @@ export class FederationInboundMessageEffectsService {
       sourceSeq,
       startOffset,
       declaredBytes,
+      signal,
     );
   }
 }

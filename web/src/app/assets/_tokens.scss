@@ -223,7 +223,7 @@ $app-gray-900: #111827;
     var(--soms-composer-height) + var(--soms-safe-bottom)
   );
   // CDK anchors browser snackbars to its fixed overlay viewport, which follows the visible bottom when
-  // the mobile keyboard opens. Only the native sibling composer needs to override this with full occupation.
+  // the mobile keyboard opens. SnackbarGeometryService overrides this for Android native surfaces.
   --soms-snackbar-bottom-offset: calc(
     var(--soms-composer-height) + var(--soms-safe-bottom)
   );

@@ -7,10 +7,11 @@
        updates this to match the resolved theme, so the browser chrome blends from the very first
        frame — placed before the script so the script can find it via querySelector. -->
     <meta name="theme-color" content="#f3f3f1" />
-    <!-- Pre-paint FOUC bootstrap (persisted theme + language). Loaded as an EXTERNAL 'self' script so the
+    <!-- Pre-paint system-theme and language fallback. Application content stays hidden until the
+       database-first theme is applied before Angular starts. Loaded as an EXTERNAL 'self' script so the
        somsapp:// CSP `script-src 'self'` admits it without a nonce — an inline <script> would be blocked.
        Synchronous (classic, no defer) so it runs during head parsing, before <body> paints. ThemeService /
-       LanguageService re-assert and own these attributes at runtime after boot. Referenced by RELATIVE path
+       LanguageService own runtime updates after boot. Referenced by RELATIVE path
        so it resolves against <base href>, which the Pages build rewrites to the deploy sub-path. -->
     <script src="boot.js"></script>
     <title>SOMS — Self-Hosted, Federated Chat Platform</title>

@@ -6,11 +6,14 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuthGuard } from './admin-auth.guard.js';
-import { AdminAuditQueryDto } from './admin.dto.js';
-import { and, count, desc, eq, like } from 'drizzle-orm';
+import { AdminAuditQueryDto, AdminAuditDetailDto } from './admin.dto.js';
+import { AUDIT_ACTIONS } from './audit-actions.js';
+import { and, count, desc, eq, like, gte, lt } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { adminActionLog } from '../database/schema.js';
 import { AuditTargetLabelService } from './audit-target-label.service.js';
@@ -41,8 +44,26 @@ export class AuditController {
       'Admin action audit log (paginated + filter by action/adminId/status)',
   })
   async list(@Body() dto: AdminAuditQueryDto) {
+    const from = dto.from ? new Date(dto.from) : undefined;
+    const to = dto.to ? new Date(dto.to) : undefined;
+    if (
+      (from && Number.isNaN(from.getTime())) ||
+      (to && Number.isNaN(to.getTime()))
+    ) {
+      throw new BadRequestException('Invalid time bound');
+    }
+    if (from && to && from >= to) {
+      throw new BadRequestException('Start time must precede end time');
+    }
     const where = and(
-      dto.action ? like(adminActionLog.action, `%${dto.action}%`) : undefined,
+      from ? gte(adminActionLog.createdAt, from) : undefined,
+      to ? lt(adminActionLog.createdAt, to) : undefined,
+      dto.action
+        ? like(
+            adminActionLog.action,
+            `%${dto.action.replace(/[\\%_]/g, '\\$&')}%`,
+          )
+        : undefined,
       dto.adminId ? eq(adminActionLog.adminId, dto.adminId) : undefined,
       dto.status ? eq(adminActionLog.status, dto.status) : undefined,
     );
@@ -64,7 +85,7 @@ export class AuditController {
         })
         .from(adminActionLog)
         .where(where)
-        .orderBy(desc(adminActionLog.createdAt))
+        .orderBy(desc(adminActionLog.createdAt), desc(adminActionLog.id))
         .offset(dto.skip ?? 0)
         .limit(dto.take ?? 50),
       this.database.db
@@ -84,5 +105,39 @@ export class AuditController {
           : null,
     }));
     return { list, total };
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/audit/actions')
+  @ApiOperation({ summary: 'Registered admin audit actions' })
+  actions() {
+    return { actions: Object.keys(AUDIT_ACTIONS) };
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/audit/detail')
+  @ApiOperation({
+    summary: 'Admin audit record including allowlisted operation data',
+  })
+  async detail(@Body() dto: AdminAuditDetailDto) {
+    const id = BigInt(dto.id);
+    if (id > 9223372036854775807n)
+      throw new BadRequestException('Invalid audit ID');
+    const [row] = await this.database.db
+      .select()
+      .from(adminActionLog)
+      .where(eq(adminActionLog.id, id))
+      .limit(1);
+    if (!row) throw new NotFoundException('Audit record not found');
+    const labels = await this.labels.resolve([row]);
+    return {
+      ...row,
+      targetLabel:
+        row.targetType && row.targetId
+          ? (labels.get(`${row.targetType}:${row.targetId}`) ?? null)
+          : null,
+    };
   }
 }

@@ -35,6 +35,7 @@ import { QuotaService } from '../quota/quota.service.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { FederationTransportConfigService } from '../federation/federation-transport-config.service.js';
 import { DiscoveryService } from '../federation/discovery.service.js';
+import { configDirectory } from '../common/data-directory.js';
 
 /**
  * Admin runtime settings and read-only server-key inventory. Application-owned keys are generated in
@@ -82,6 +83,7 @@ export class AdminSettingsController {
     ]);
     return {
       vapid,
+      configurationDirectory: configDirectory(),
       firebase: this.settings.getFirebaseDescriptor(),
       fcmConfigured: this.pushService.fcmConfigured,
       somsDomain: this.settings.somsDomain,
@@ -212,6 +214,7 @@ export class AdminSettingsController {
       {
         id: 'federation-root',
         kind: 'asymmetric',
+        databaseTable: 'LocalFederationRoot',
         ...federation,
         publicKey: federation.available
           ? this.keypair.getRootPublicKeyB64()
@@ -220,6 +223,7 @@ export class AdminSettingsController {
       {
         id: 'federation-signing',
         kind: 'asymmetric',
+        databaseTable: 'LocalFederationSigningKey',
         ...federation,
         keyId: federation.available ? this.keypair.getKeyId() : undefined,
         publicKey: federation.available

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 9–11 draw this before the Activity or WebView exists. Keep the icon canvas
+     identical to the Android 12+ system splash and the native continuation. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_background" />
+    <item
+        android:width="288dp"
+        android:height="288dp"
+        android:gravity="center"
+        android:drawable="@drawable/splash_logo" />
+</layer-list>

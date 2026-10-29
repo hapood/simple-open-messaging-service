@@ -211,6 +211,8 @@ declare global {
      *  main.ts before bootstrap for a FOUC-free first paint. IME exposure is atomic: a snapshot seeds state,
      *  one command requests visibility, and runtime geometry arrives through {@link __SOMS_IME_EVENT__}. */
     SomsShell?: {
+      /** Render the database-first resolved launch theme; the adapter only owns the transition. */
+      setSplashTheme?: (dark: boolean) => void;
       getSafeInsets: () => string;
       /** Update the native-localized launch label using a small, allow-listed stage key. */
       setSplashStage?: (stage: 'session' | 'config' | 'interface') => void;

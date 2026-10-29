@@ -9,11 +9,10 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { DashboardService } from './dashboard.service.js';
-import { MediaStorageStatsService } from './media-storage-stats.service.js';
 
 /**
  * Read-only admin endpoints open to every admin role (no @Roles) — VIEWER included. Today: the
- * dashboard overview + the read-only media storage breakdown.
+ * dashboard overview.
  *
  * Handlers return raw data; the global SerializeInterceptor wraps the ApiResult envelope.
  */
@@ -22,10 +21,7 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
 @Public()
 @Controller()
 export class DashboardController {
-  constructor(
-    private readonly dashboard: DashboardService,
-    private readonly mediaStorage: MediaStorageStatsService,
-  ) {}
+  constructor(private readonly dashboard: DashboardService) {}
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -38,13 +34,4 @@ export class DashboardController {
     return this.dashboard.summary();
   }
 
-  @UseGuards(AdminAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/media/stats')
-  @ApiOperation({
-    summary: 'Read-only media storage totals from the database and CAS',
-  })
-  async mediaStats() {
-    return this.mediaStorage.read();
-  }
 }

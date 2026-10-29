@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { ArrowLeft } from 'lucide-react';
 import { useUserDetail } from '@/hooks/use-user-detail';
-import { useIsAdminPlus, useMe } from '@/hooks/use-me';
+import { useIsAdminPlus, useIsSuperAdmin, useMe } from '@/hooks/use-me';
 import { usePublicConfig } from '@/hooks/use-public-config';
 import { isPasswordLoginEnabled } from '@/lib/constants';
 import {
@@ -33,6 +33,7 @@ import { LoginCodesSection } from './login-codes-section';
 import { UserQuotaPanel } from './user-quota-panel';
 import { SessionTable } from '@/routes/sessions/session-table';
 import { UserAccessStatus } from './user-access-status';
+import { UserMediaPanel } from '@/routes/media/user-media-panel';
 
 function Field({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -52,11 +53,12 @@ export function UserDetailPage() {
   const userId = id ? Number(id) : null;
   const { data, isLoading, error } = useUserDetail(userId);
   const canManage = useIsAdminPlus();
+  const canManageFiles = useIsSuperAdmin();
   const { data: publicConfig } = usePublicConfig();
-  // Password bootstrap only exists when the deployment's loginMode includes password login; the
+  // Password bootstrap only exists when the deployment's loginMethods includes password; the
   // backend refuses LOGIN_METHOD_DISABLED otherwise, so the affordance disables instead of erroring.
   const passwordLoginEnabled = publicConfig
-    ? isPasswordLoginEnabled(publicConfig.loginMode)
+    ? isPasswordLoginEnabled(publicConfig.loginMethods)
     : false;
   const disable = useDisableUser();
   const enable = useEnableUser();
@@ -262,6 +264,8 @@ export function UserDetailPage() {
           {u.namespaceId === 0 && userId !== null ? (
             <UserQuotaPanel userId={userId} canManage={canManage} />
           ) : null}
+
+          {canManageFiles && userId !== null ? <UserMediaPanel key={userId} userId={userId} /> : null}
 
           <Card>
             <CardHeader>

@@ -32,6 +32,7 @@ import { ConfigService } from './services/config.service';
 import { NativeShareService } from './services/native-share.service';
 import { MsgService } from './services/message.service';
 import { ToastService } from './services/toast.service';
+import { SnackbarGeometryService } from './services/snackbar-geometry.service';
 import { TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { uuid } from './lib/uuid';
@@ -57,6 +58,7 @@ export class AppComponent {
   protected readonly serverConfigDialog = inject(ServerConfigDialogService);
   // Eagerly instantiate so their effects + listeners are live for the whole session.
   private readonly composerGeometry = inject(ComposerGeometryService);
+  private readonly snackbarGeometry = inject(SnackbarGeometryService);
   // Register the Android ACTION_SEND pull hook before any recipient UI exists. Payloads remain native-owned
   // until the future forwarding flow explicitly acknowledges them.
   private readonly nativeShare = inject(NativeShareService);

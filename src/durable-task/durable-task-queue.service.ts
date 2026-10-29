@@ -35,7 +35,8 @@ type DurableTaskScope =
 export interface EnqueueDurableTaskInput {
   scope: DurableTaskScope;
   taskType: string;
-  actorUserId?: number;
+  /** Always required: pass the commanding user or the $system account id. */
+  actorUserId: number;
   payload: Record<string, unknown>;
 }
 
@@ -171,7 +172,7 @@ export class DurableTaskQueueService {
   ): Promise<{
     id: bigint;
     taskType: string;
-    actorUserId: number | null;
+    actorUserId: number;
     payload: Record<string, unknown>;
   } | null> {
     const [task] = await tx
@@ -262,10 +263,7 @@ function validateTaskType(taskType: string): string {
   return taskType;
 }
 
-function validateActorUserId(actorUserId: number | undefined): number | null {
-  if (actorUserId === undefined) {
-    return null;
-  }
+function validateActorUserId(actorUserId: number): number {
   if (!Number.isSafeInteger(actorUserId) || actorUserId <= 0) {
     throw new TypeError(
       'durable task actor user ID must be a positive integer',

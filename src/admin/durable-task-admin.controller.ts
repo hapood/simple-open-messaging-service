@@ -7,10 +7,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { and, count, desc, eq, ilike, or } from 'drizzle-orm';
+import { and, count, desc, eq, getTableColumns, ilike, or } from 'drizzle-orm';
 import { Public } from '../common/public.decorator.js';
 import { DatabaseService } from '../database/database.service.js';
-import { durableTask } from '../database/schema.js';
+import { account, durableTask } from '../database/schema.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminDurableTaskQueryDto } from './admin.dto.js';
 
@@ -39,10 +39,15 @@ export class DurableTaskAdminController {
           )
         : undefined,
     );
+    // Annotate the actor's account name so the console can label system-driven
+    // rows with the reserved $system identity: actorUserId is mandatory, and the
+    // $system singleton owns system-derived projection work and system-initiated
+    // mutations. Those rows render as $system; user actors render as #id.
     const [list, total] = await Promise.all([
       this.database.db
-        .select()
+        .select({ ...getTableColumns(durableTask), actorAccount: account.account })
         .from(durableTask)
+        .leftJoin(account, eq(durableTask.actorUserId, account.id))
         .where(where)
         .orderBy(desc(durableTask.id))
         .offset(dto.skip ?? 0)

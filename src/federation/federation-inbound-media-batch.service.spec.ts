@@ -38,6 +38,7 @@ function serviceWith(overrides?: {
         },
       },
       select,
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
       update,
       delete: remove,
       transaction: vi.fn(),
@@ -143,9 +144,13 @@ describe('FederationInboundMediaBatchService', () => {
       digest: string,
       offset: number,
       declaredBytes: number,
+      signal?: AbortSignal,
     ) => AsyncIterable<Buffer>;
 
-    expect(fetchChunks('a'.repeat(64), 128, 256)).toBe(chunks);
+    const controller = new AbortController();
+    expect(fetchChunks('a'.repeat(64), 128, 256, controller.signal)).toBe(
+      chunks,
+    );
     expect(mediaRanges.fetch).toHaveBeenCalledWith(
       'origin.example',
       'a'.repeat(64),
@@ -155,6 +160,7 @@ describe('FederationInboundMediaBatchService', () => {
       91,
       128,
       256,
+      controller.signal,
     );
   });
 
@@ -206,7 +212,7 @@ describe('FederationInboundMediaBatchService', () => {
     expect(sse.completeMediaFileDownloadProgress).not.toHaveBeenCalled();
   });
 
-  it('retains a failed inbound task with its error after removing spent progress', async () => {
+  it('retains failed progress and its authorization route for administrative retry', async () => {
     const batch = {
       id: 11n,
       batchId: 'batch-a',
@@ -247,7 +253,7 @@ describe('FederationInboundMediaBatchService', () => {
 
     await service.runFileSyncBatch('batch-a', vi.fn());
 
-    expect(database.db.delete).toHaveBeenCalledOnce();
+    expect(database.db.delete).not.toHaveBeenCalled();
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'failed',

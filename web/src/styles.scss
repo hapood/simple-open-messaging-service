@@ -405,8 +405,9 @@ $dark-theme: mat.define-theme(
 /* === Snackbar: lift the bottom-centered toast clear of the chat's bottom occupation. ===
  * Every MatSnackBar renders in the global CDK overlay (outside any component's view encapsulation), so the
  * lift can't live in component SCSS. Browser CDK overlays already follow the visible viewport bottom, so
- * their offset contains composer + safe area only; NativeComposerService overrides the shared offset with
- * composer + native keyboard surface + safe area. The +8px preserves Material's default visual gap. */
+ * their offset contains composer + safe area only. SnackbarGeometryService owns the Android offset:
+ * active composer + its keyboard surface, or the global IME on other pages, plus safe area. Already-resized
+ * viewport pixels are excluded to avoid double compensation. The +8px preserves Material's visual gap. */
 .soms-snack-bar.mat-mdc-snack-bar-container {
   margin-bottom: calc(
     var(--soms-snackbar-bottom-offset, var(--soms-safe-bottom, 0px)) + 8px
@@ -561,6 +562,11 @@ body {
   padding: 32px;
   line-height: 24px;
   text-align: center;
+}
+
+// Database theme resolution completes before application content is allowed to paint.
+html[data-theme-pending] app-root {
+  visibility: hidden;
 }
 
 .app-splash {

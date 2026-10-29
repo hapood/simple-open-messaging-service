@@ -398,7 +398,6 @@ export const account = pgTable(
   {
     id: serial().primaryKey().notNull(),
     account: varchar({ length: 31 }).notNull(),
-    kind: varchar({ length: 16 }).default('USER').notNull(),
     namespaceId: integer().default(0).notNull(),
     defaultProfileRev: integer().default(0).notNull(),
     availability: varchar({ length: 16 }).default('AVAILABLE').notNull(),
@@ -420,8 +419,8 @@ export const account = pgTable(
   (table) => [
     check('Account_namespace_check', sql`${table.namespaceId} = 0`),
     check(
-      'Account_kind_check',
-      sql`(${table.kind} = 'USER' AND ${table.account} <> '$system') OR (${table.kind} = 'SYSTEM' AND ${table.account} = '$system' AND ${table.hashPwd} IS NULL AND ${table.disabledAt} IS NOT NULL AND ${table.defaultProfileRev} = 0)`,
+      'Account_system_identity_check',
+      sql`(${table.account} <> '$system') OR (${table.account} = '$system' AND ${table.hashPwd} IS NULL AND ${table.disabledAt} IS NOT NULL AND ${table.defaultProfileRev} = 0)`,
     ),
     check('Account_threadFeedEndId_check', sql`${table.threadFeedEndId} >= 0`),
     check(
@@ -485,7 +484,8 @@ export const durableTask = pgTable(
     scopeType: durableTaskScopeType().notNull(),
     scopeKey: varchar({ length: 512 }).notNull(),
     taskType: varchar({ length: 64 }).notNull(),
-    actorUserId: integer(),
+    /** Account on whose authority the task runs: the commanding user or the reserved $system identity. */
+    actorUserId: integer().notNull(),
     payload: jsonb().$type<Record<string, unknown>>().notNull(),
     checkpoint: jsonb()
       .$type<Record<string, unknown>>()
@@ -523,7 +523,7 @@ export const durableTask = pgTable(
     ),
     check(
       'DurableTask_actor_user_id_check',
-      sql`${table.actorUserId} IS NULL OR ${table.actorUserId} > 0`,
+      sql`${table.actorUserId} > 0`,
     ),
     check(
       'DurableTask_payload_check',

@@ -152,6 +152,10 @@ export class NativeComposerService {
     total: number;
   } | null>(null);
 
+  private readonly activeState = signal(false);
+  /** Whether the native composer currently owns a visible chat surface. Cached geometry may outlive it. */
+  readonly active = this.activeState.asReadonly();
+
   private activeContextId: number | null = null;
   private readonly keyboardInset = inject(KeyboardInsetService);
   private readonly keyboardLayoutOwner = {};
@@ -190,10 +194,6 @@ export class NativeComposerService {
           '--soms-content-bottom-reserve',
           'var(--soms-bottom-occupation)',
         );
-        document.documentElement.style.setProperty(
-          '--soms-snackbar-bottom-offset',
-          'var(--soms-bottom-occupation)',
-        );
         // The split geometry still owns the complete native bottom occupation. Suppress the separate
         // Angular IME transform while the native composer owns the chat so it cannot double-compensate.
         this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, 0);
@@ -214,6 +214,7 @@ export class NativeComposerService {
   show(context: NativeComposerContext): void {
     if (!this.supported) return;
     this.activeContextId = context.contextId;
+    this.activeState.set(true);
     window.SomsShell!.showComposer!(JSON.stringify(context));
   }
 
@@ -255,6 +256,7 @@ export class NativeComposerService {
     // Clear ownership before calling native: hideComposer emits a zero-height geometry event
     // synchronously on some WebViews. Reject that event so temporary hides keep the last real measurement.
     this.activeContextId = null;
+    this.activeState.set(false);
     window.SomsShell!.hideComposer?.(contextId);
     this.keyboardInset.setLayoutOverride(this.keyboardLayoutOwner, null);
     this.event.set(null);

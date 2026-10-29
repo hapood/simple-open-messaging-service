@@ -68,9 +68,9 @@ export function UsersPage() {
   const canManageUser = (u: User) =>
     canManage && u.namespaceId === 0 && !u.adminRole;
   const { data: publicConfig } = usePublicConfig();
-  // Same gate as the detail page: password bootstrap exists only under a password loginMode.
+  // Same gate as the detail page: password bootstrap exists only when password login is enabled.
   const passwordLoginEnabled = publicConfig
-    ? isPasswordLoginEnabled(publicConfig.loginMode)
+    ? isPasswordLoginEnabled(publicConfig.loginMethods)
     : false;
   const [sessionsUser, setSessionsUser] = useState<User | null>(null);
   const [createOpen, setCreateOpen] = useState(false);

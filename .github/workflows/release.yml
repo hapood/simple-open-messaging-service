@@ -107,8 +107,114 @@ jobs:
             src-tauri/dist/android/*.apk
             src-tauri/dist/android/SHA256SUMS
           if-no-files-found: error
+  linux:
+    needs: prepare
+    # Pinned to 22.04 — NOT ubuntu-latest: the bundles link against the runner's glibc (2.35) and
+    # WebKitGTK 4.1, which is the oldest supported baseline. A 24.04 build (glibc 2.39) refuses to
+    # start on 22.04-era hosts.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify release version
+        run: |
+          node scripts/check-version-sync.mjs
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION"
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend and Tauri tooling
+        run: |
+          npm ci --prefix web
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build AppImage and deb bundles
+        run: make -C src-tauri linux
+      - name: Checksum Linux artifacts
+        run: |
+          cd src-tauri/dist/linux
+          sha256sum SOMS-* > SHA256SUMS.linux
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: soms-linux-release
+          path: |
+            src-tauri/dist/linux/SOMS-*
+            src-tauri/dist/linux/SHA256SUMS.linux
+          if-no-files-found: error
+  macos:
+    needs: prepare
+    # Ad-hoc signed by default (the committed signingIdentity "-") — identical to a local
+    # personal build. For signed + notarized public distribution, configure the APPLE_* repo
+    # secrets; the build step passes them through to Tauri verbatim (empties are unset so the
+    # ad-hoc fallback keeps working when secrets are absent).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify release version
+        run: |
+          node scripts/check-version-sync.mjs
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend and Tauri tooling
+        run: |
+          npm ci --prefix web
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build universal macOS bundles
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # An unset secret arrives as an EMPTY string, and an empty APPLE_SIGNING_IDENTITY would
+          # override the committed ad-hoc identity and fail codesign — drop empties first.
+          for v in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          make -C src-tauri macos
+      - name: Checksum macOS artifacts
+        run: |
+          cd src-tauri/dist/macos
+          shasum -a 256 SOMS-*.dmg > SHA256SUMS.macos
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: soms-macos-release
+          path: |
+            src-tauri/dist/macos/SOMS-*.dmg
+            src-tauri/dist/macos/SHA256SUMS.macos
+          if-no-files-found: error
   publish:
-    needs: [prepare, android]
+    needs: [prepare, android, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -121,6 +227,16 @@ jobs:
         with:
           name: soms-android-release
           path: release-assets
+      - name: Download Linux release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: soms-linux-release
+          path: release-assets/linux
+      - name: Download macOS release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: soms-macos-release
+          path: release-assets/macos
       - name: Extract release notes from changelog
         run: |
           node --input-type=module <<'NODE'
@@ -151,11 +267,20 @@ jobs:
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
-            gh release upload "$RELEASE_TAG" release-assets/*.apk release-assets/SHA256SUMS --clobber
+            gh release upload "$RELEASE_TAG" \
+              release-assets/*.apk release-assets/SHA256SUMS \
+              release-assets/linux/SOMS-*.AppImage release-assets/linux/SOMS-*.deb \
+              release-assets/linux/SHA256SUMS.linux \
+              release-assets/macos/SOMS-*.dmg release-assets/macos/SHA256SUMS.macos --clobber
           else
             RELEASE_FLAGS=()
             if [[ "$RELEASE_TAG" == *-* ]]; then
               RELEASE_FLAGS+=(--prerelease --latest=false)
             fi
-            gh release create "$RELEASE_TAG" release-assets/*.apk release-assets/SHA256SUMS --verify-tag --notes-file "$RUNNER_TEMP/release-notes.md" "${RELEASE_FLAGS[@]}"
+            gh release create "$RELEASE_TAG" \
+              release-assets/*.apk release-assets/SHA256SUMS \
+              release-assets/linux/SOMS-*.AppImage release-assets/linux/SOMS-*.deb \
+              release-assets/linux/SHA256SUMS.linux \
+              release-assets/macos/SOMS-*.dmg release-assets/macos/SHA256SUMS.macos \
+              --verify-tag --notes-file "$RUNNER_TEMP/release-notes.md" "${RELEASE_FLAGS[@]}"
           fi

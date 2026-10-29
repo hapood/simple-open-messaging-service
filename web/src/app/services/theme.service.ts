@@ -1,22 +1,27 @@
-import { computed, effect, inject, Injectable, OnDestroy, signal } from '@angular/core';
+import {
+  computed,
+  effect,
+  inject,
+  Injectable,
+  OnDestroy,
+  signal,
+} from '@angular/core';
 import { PreferenceStore } from './preference-store.service';
 
-/** User-facing preference. `'system'` follows the OS `prefers-color-scheme`. */
-export type ThemeMode = 'system' | 'light' | 'dark';
-/** The concrete theme actually painted. */
-export type EffectiveTheme = 'light' | 'dark';
+import {
+  EffectiveTheme,
+  initialThemeMode,
+  META_THEME_COLOR,
+  resolveTheme,
+  ThemeMode,
+} from './theme-bootstrap';
+export type { EffectiveTheme, ThemeMode } from './theme-bootstrap';
 
 const THEME_KEY = 'theme';
 const DARK_QUERY = '(prefers-color-scheme: dark)';
 
 /** Quick-toggle cycle order for the single-button affordance (icon rail, nav drawer, auth toolbar). */
 const THEME_CYCLE: readonly ThemeMode[] = ['system', 'light', 'dark'];
-
-/** `<meta name="theme-color">`: soft graphite canvas in light, ink canvas in dark. */
-const META_THEME_COLOR: Record<EffectiveTheme, string> = {
-  light: '#f3f3f1',
-  dark: '#11161b',
-};
 
 /**
  * App-wide light/dark theme controller.
@@ -27,10 +32,9 @@ const META_THEME_COLOR: Record<EffectiveTheme, string> = {
  * may override via {@link cycleMode}, and the choice persists device-level via
  * {@link PreferenceStore}.
  *
- * A no-FOUC inline script in `index.html` paints the very first frame using the
- * same resolution; this service then owns runtime updates (mode change or OS
- * preference change) and keeps `<html data-theme>` + `<meta name="theme-color">`
- * in sync via an `effect`.
+ * The synchronous boot script supplies a system-theme fallback. Before Angular starts,
+ * prepareTheme restores the database preference and applies the resolved theme. This service
+ * starts with that same mode and owns subsequent preference and OS updates.
  *
  * `providedIn: 'root'`; eagerly instantiated by injecting it into `AppComponent`
  * so the effect + media-query listener are guaranteed live for the session.
@@ -38,20 +42,20 @@ const META_THEME_COLOR: Record<EffectiveTheme, string> = {
 @Injectable({ providedIn: 'root' })
 export class ThemeService implements OnDestroy {
   private readonly preferences = inject(PreferenceStore);
-  private writeRevision = 0;
   private readonly mq: MediaQueryList | null =
-    typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(DARK_QUERY) : null;
+    typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia(DARK_QUERY)
+      : null;
 
   /** User's preference, restored from storage (default `'system'`). */
-  readonly mode = signal<ThemeMode>('system');
+  readonly mode = signal<ThemeMode>(initialThemeMode());
 
   /** Live OS preference; only consulted while `mode() === 'system'`. */
   private readonly systemDark = signal<boolean>(!!this.mq?.matches);
 
   /** Concrete theme to paint. */
   readonly effective = computed<EffectiveTheme>(() => {
-    const m = this.mode();
-    return m === 'system' ? (this.systemDark() ? 'dark' : 'light') : m;
+    return resolveTheme(this.mode(), this.systemDark());
   });
 
   constructor() {
@@ -63,9 +67,9 @@ export class ThemeService implements OnDestroy {
       document.documentElement.setAttribute('data-theme', t);
       const meta = document.querySelector('meta[name="theme-color"]');
       meta?.setAttribute('content', META_THEME_COLOR[t]);
+      window.SomsShell?.setSplashTheme?.(t === 'dark');
       window.SomsShell?.setSystemBarTheme?.(t === 'dark');
     });
-    void this.restore();
   }
 
   ngOnDestroy(): void {
@@ -85,7 +89,6 @@ export class ThemeService implements OnDestroy {
   }
 
   setMode(m: ThemeMode): void {
-    this.writeRevision++;
     this.mode.set(m);
     void this.preferences.set('global', THEME_KEY, m).catch(() => {});
   }
@@ -93,11 +96,4 @@ export class ThemeService implements OnDestroy {
   private readonly onSystemChange = (e: MediaQueryListEvent): void => {
     this.systemDark.set(e.matches);
   };
-
-  private async restore(): Promise<void> {
-    const revision = this.writeRevision;
-    const value = await this.preferences.get<ThemeMode>('global', THEME_KEY);
-    if (revision !== this.writeRevision) return;
-    if (value === 'system' || value === 'light' || value === 'dark') this.mode.set(value);
-  }
 }

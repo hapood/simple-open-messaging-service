@@ -76,10 +76,20 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
     });
   });
 
-  it('is unconfigured (null) when the file is missing', async () => {
+  it('is unconfigured and reports the expected path when the file is missing', async () => {
     const s = await boot();
     expect(s.getFirebaseConfig()).toBeNull();
     expect(s.firebaseClientConfigured).toBe(false);
+    expect(s.getFirebaseDescriptor()).toEqual({
+      configured: false,
+      filePath: join(dir, 'google-services.json'),
+    });
+    expect(s.getVapidKeyStatus()).toMatchObject({
+      configured: true,
+      valid: true,
+      filePath: join(dir, 'vapid-key.json'),
+    });
+    expect(s.getVapidKeyStatus()).not.toHaveProperty('privateKey');
   });
 
   it('defaults federation chunk digests off when the setting is absent', async () => {

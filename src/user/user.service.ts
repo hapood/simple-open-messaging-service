@@ -81,7 +81,7 @@ export class UserService {
         account: accountTable.account,
         namespaceId: accountTable.namespaceId,
         profileRev: accountTable.defaultProfileRev,
-        isGroup: sql<boolean>`${accountTable.kind} = 'GROUP'`,
+        isGroup: sql<boolean>`${accountTable.account} LIKE '!%'`,
         isDeleted: sql<boolean>`${accountTable.availability} = 'REMOVED'`,
       })
       .from(accountTable)

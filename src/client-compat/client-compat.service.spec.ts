@@ -55,12 +55,13 @@ describe('ClientCompatService.compat', () => {
     expect(r.apiVersion).toBe(1);
   });
 
-  it('folds in the public login policy (registrationOpen + loginMode) from PUBLIC_CONFIG', () => {
+  it('folds in the public login policy (registrationOpen + loginMethods + default) from PUBLIC_CONFIG', () => {
     process.env.SOMS_DOMAIN = 'soms.example.com';
     delete process.env.SOMS_LAN_DOMAIN;
     const r = svc.compat();
     expect(r.registrationOpen).toBe(PUBLIC_CONFIG.registrationOpen);
-    expect(r.loginMode).toBe(PUBLIC_CONFIG.loginMode);
+    expect(r.loginMethods).toBe(PUBLIC_CONFIG.loginMethods);
+    expect(r.defaultLoginMethod).toBe(PUBLIC_CONFIG.defaultLoginMethod);
   });
 
   it('carries no compatibility-decision fields — the shell owns that decision', () => {

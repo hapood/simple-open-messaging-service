@@ -44,7 +44,7 @@ android {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "com.soms.client"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        minSdk = 24
+        minSdk = 28
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")

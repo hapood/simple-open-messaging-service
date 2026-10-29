@@ -3,6 +3,7 @@ import {
   IsArray,
   IsIn,
   IsInt,
+  IsISO8601,
   IsNotEmpty,
   IsNumber,
   IsObject,
@@ -179,9 +180,9 @@ export class AdminListUsersDto {
 }
 
 /** Admin create-user input. The admin provisions an account the user later signs into via whichever login
- *  method is enabled. `password` is required only when password login is enabled (loginMode ALL /
- *  PASSWORD_ONLY); for an OTP/QR-only account (loginMode APP_OTP_AND_QR) it is omitted and the account is
- *  created with NO password, bootstrapped instead by the one-time code the admin issues next. */
+ *  method is enabled. `password` is required only when `password` is among the enabled login methods
+ * (GET /config `loginMethods`); otherwise it is omitted and the account is created with NO password,
+ * bootstrapped instead by the one-time code the admin issues next. */
 export class AdminCreateUserDto {
   @ApiProperty({
     example: 'alice',
@@ -199,7 +200,7 @@ export class AdminCreateUserDto {
     required: false,
     example: 'P@ssw0rd',
     description:
-      'Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.',
+      'Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (GET /config loginMethods includes password); omitted otherwise.',
   })
   @IsOptional()
   @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
@@ -561,13 +562,26 @@ export class AdminAuditQueryDto {
   })
   @IsOptional()
   @IsString()
+  @MaxLength(64)
   action?: string;
 
   @ApiPropertyOptional({ description: 'Scope to one actor' })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
+  @Min(1)
+  @Max(2147483647)
   adminId?: number;
+
+  @ApiPropertyOptional({ description: 'Inclusive ISO 8601 start time' })
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Exclusive ISO 8601 end time' })
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  to?: string;
 
   @ApiPropertyOptional({
     enum: ['STARTED', 'SUCCEEDED', 'FAILED'],
@@ -576,6 +590,13 @@ export class AdminAuditQueryDto {
   @IsOptional()
   @IsIn(['STARTED', 'SUCCEEDED', 'FAILED'])
   status?: 'STARTED' | 'SUCCEEDED' | 'FAILED';
+}
+
+export class AdminAuditDetailDto {
+  @ApiProperty({ description: 'Audit record ID as a decimal string' })
+  @IsString()
+  @Matches(/^[1-9]\d{0,18}$/)
+  id!: string;
 }
 
 /** Durable-task history query. Search covers task type and scope key; status is exact. */

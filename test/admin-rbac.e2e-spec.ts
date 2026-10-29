@@ -857,6 +857,88 @@ describe('Admin RBAC + revocation + audit', () => {
     });
   });
 
+  it('allows VIEWER audit summaries and details with time filters and stable pagination', async () => {
+    const viewer = await seedAdmin('audit-viewer', AdminRole.VIEWER);
+    const actor = await seedAdmin('audit-actor', AdminRole.ADMIN);
+    const createdAt = new Date('2026-06-01T12:00:00Z');
+    const records = await database.db
+      .insert(adminActionLog)
+      .values([
+        {
+          adminId: actor.adminId,
+          adminRole: AdminRole.ADMIN,
+          action: 'user.quota.set',
+          status: 'SUCCEEDED',
+          createdAt,
+          meta: { dailyMsgLimit: 10 },
+        },
+        {
+          adminId: actor.adminId,
+          adminRole: AdminRole.ADMIN,
+          action: 'user.disable',
+          status: 'SUCCEEDED',
+          createdAt,
+          meta: {},
+        },
+        {
+          adminId: actor.adminId,
+          adminRole: AdminRole.ADMIN,
+          action: 'user.enable',
+          status: 'STARTED',
+          createdAt: new Date('2026-06-02T00:00:00Z'),
+          meta: {},
+        },
+      ])
+      .returning();
+    const filter = {
+      from: '2026-06-01T12:00:00Z',
+      to: '2026-06-02T00:00:00Z',
+      adminId: actor.adminId,
+      status: 'SUCCEEDED',
+      action: 'user.',
+      take: 1,
+    };
+    const first = await post(viewer.cookie, 'admin/audit', filter);
+    expect(first.body.code).toBe(BusinessCode.OK);
+    expect(first.body.data.total).toBe(2);
+    expect(first.body.data.list[0].id).toBe(String(records[1].id));
+    expect(first.body.data.list[0]).not.toHaveProperty('meta');
+    const second = await post(viewer.cookie, 'admin/audit', {
+      ...filter,
+      skip: 1,
+    });
+    expect(second.body.data.list[0].id).toBe(String(records[0].id));
+    const detail = await post(viewer.cookie, 'admin/audit/detail', {
+      id: String(records[0].id),
+    });
+    expect(detail.body.code).toBe(BusinessCode.OK);
+    expect(detail.body.data.meta).toEqual({ dailyMsgLimit: 10 });
+    expect(detail.body.data.createdAt).toBe(createdAt.getTime());
+    const literal = await post(viewer.cookie, 'admin/audit', {
+      action: 'user_%',
+    });
+    expect(literal.body.data.total).toBe(0);
+    const catalog = await post(viewer.cookie, 'admin/audit/actions');
+    expect(catalog.body.data.actions).toContain('user.quota.set');
+    const missing = await post(viewer.cookie, 'admin/audit/detail', {
+      id: '9223372036854775807',
+    });
+    expect(missing.status).toBe(404);
+    const overflow = await post(viewer.cookie, 'admin/audit/detail', {
+      id: '9223372036854775808',
+    });
+    expect(overflow.status).toBe(400);
+    for (const path of [
+      'admin/audit',
+      'admin/audit/detail',
+      'admin/audit/actions',
+    ]) {
+      expect((await post('', path, { id: String(records[0].id) })).status).toBe(
+        401,
+      );
+    }
+  });
+
   // ── 3. Audit ──────────────────────────────────────────────────────────────────
   it('marks an AdminActionLog row SUCCEEDED for an executed mutation', async () => {
     const actor = await seedAdmin('auditor', AdminRole.SUPER_ADMIN);
@@ -882,5 +964,6 @@ describe('Admin RBAC + revocation + audit', () => {
     expect(log).toBeDefined();
     expect(log?.status).toBe('SUCCEEDED');
     expect(log?.adminRole).toBe(AdminRole.SUPER_ADMIN);
+    expect(log?.meta).toEqual({});
   });
 });

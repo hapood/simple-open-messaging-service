@@ -564,7 +564,9 @@ interface DurableTaskEntry {
   scopeType: 'USER_PAIR' | 'GROUP';
   scopeKey: string;
   taskType: string;
-  actorUserId: number | null;
+  /** Account on whose authority the task runs; '$system' marks the reserved system identity. */
+  actorUserId: number;
+  actorAccount: string | null;
   payload: Record<string, unknown>;
   checkpoint: Record<string, unknown>;
   coalescingKey: string | null;
@@ -579,18 +581,6 @@ interface DurableTaskEntry {
 export interface DurableTaskListResult {
   list: DurableTaskEntry[];
   total: number;
-}
-
-// ── Media storage (POST /admin/media/stats) ──────────────────────────────────
-// BigInt byte sums are serialized to strings by the global interceptor.
-export interface MediaStats {
-  db: {
-    bytes: string;
-    assetCount: number;
-    live: number;
-    deleted: number;
-  };
-  onDisk: { files: number; bytes: string };
 }
 
 // ── Groups/threads (POST /admin/groups) ──────────────────────────────────────
@@ -627,7 +617,9 @@ export interface ServerKeyStatus {
     | 'two-factor'
     | 'firebase-service-account';
   kind: 'asymmetric' | 'symmetric' | 'external';
-  configured: boolean;
+  filePath?: string;
+  databaseTable?: string;
+  configured?: boolean;
   valid?: boolean;
   available?: boolean;
   reason?: string;
@@ -645,6 +637,7 @@ export interface ServerKeyStatus {
  *  needed for the admin display — parallel to the VAPID descriptor omitting privateKey).
  *  projectId/appId/gcmSenderId are shown as proof of which Firebase project is configured. */
 interface FirebaseConfigDescriptor {
+  filePath?: string;
   configured: boolean;
   projectId?: string;
   appId?: string;
@@ -653,6 +646,7 @@ interface FirebaseConfigDescriptor {
 
 /** Response of /admin/settings — the Settings page's read model. */
 export interface AdminSettings {
+  configurationDirectory?: string;
   vapid: VapidDescriptor;
   firebase: FirebaseConfigDescriptor;
   /** FCM SEND transport configured (data/firebase-service-account.json loaded server-side). */

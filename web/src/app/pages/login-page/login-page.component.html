@@ -8,8 +8,8 @@
         (bridging the index.html app-splash so the window never paints a blank or partial frame) AND while
         the page is the wrong destination and about to redirect — i.e. password is disabled and the backend
         is fine, so the constructor bounces to otp/qr. Critically, NOTHING else renders here (no form, no
-        origin-banner, no method-switcher) until `ready()`, so under APP_OTP_AND_QR the login content can't
-        flash for a frame on the way out. Mirrors the app-splash (brand mark + 40px spinner) for one
+        origin-banner, no method-switcher) until `ready()`, so when password is disabled the login content
+        can't flash for a frame on the way out. Mirrors the app-splash (brand mark + 40px spinner) for one
         continuous loading feel; the toolbar stays available so theme/language are reachable immediately. -->
       <div class="auth-loading" role="status" aria-live="polite">
         <app-brand-logo class="form-brand" [size]="52" [wordmark]="false" />
@@ -28,10 +28,6 @@
         }
       </div>
     } @else {
-      <!-- Compact brand shown only where the side <app-auth-brand> panel is hidden (below the split
-        breakpoint), so every auth state keeps brand identity on the narrow Tauri shell / Android WebView.
-        Desktop owns the full panel; showing both there would be redundant. -->
-      <app-brand-logo class="form-brand" [size]="52" [wordmark]="false" />
       @if (isTauri() && configuredOrigins().length) {
         <div class="origin-list" role="status">
           @for (server of configuredOrigins(); track server.origin) {

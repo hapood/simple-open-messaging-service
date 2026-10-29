@@ -179,6 +179,9 @@ export function SettingsPage() {
           {t('settings.title')}
         </h1>
         <p className="text-sm text-muted-foreground">{t('settings.desc')}</p>
+        <Link className="mt-2 inline-block text-sm leading-[20px] underline" to="/settings/keys">
+          {t('credentials.title')}
+        </Link>
       </div>
 
       <div className="pt-2">

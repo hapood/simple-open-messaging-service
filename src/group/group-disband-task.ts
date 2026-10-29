@@ -11,9 +11,6 @@ export function readDisbandGroupTask(task: DurableTask): {
   threadId: number;
 } {
   assertGroupTask(task);
-  if (task.actorUserId === null) {
-    throw new Error('disband task has no actor');
-  }
   const threadId = readPositiveInteger(task.payload.threadId, 'thread ID');
   return {
     actorUserId: task.actorUserId,

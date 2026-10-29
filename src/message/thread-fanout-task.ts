@@ -10,6 +10,7 @@ import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
 } from '../common/locks/thread-content-lock.js';
+import { systemAccountIdInTx } from '../user/system-account.js';
 
 export interface ThreadFanoutTarget {
   threadId: number;
@@ -146,6 +147,7 @@ export async function enqueueThreadFanoutInTx(
     scopeType: 'THREAD',
     scopeKey,
     taskType,
+    actorUserId: await systemAccountIdInTx(tx),
     payload: { ...target },
     coalescingKey: scopeKey,
   });

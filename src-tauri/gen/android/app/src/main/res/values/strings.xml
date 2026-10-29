@@ -4,6 +4,7 @@
     <string name="notif_private_body">You have new messages</string>
     <string name="app_name">"SOMS"</string>
     <string name="main_activity_title">"SOMS"</string>
+    <string name="splash_tagline">Open chat. Simple and instant.</string>
     <string name="splash_preparing">Preparing</string>
     <string name="splash_restoring_session">Restoring session</string>
     <string name="splash_loading_config">Loading configuration</string>

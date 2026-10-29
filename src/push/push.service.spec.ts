@@ -56,6 +56,16 @@ describe('PushService — identity-only payloads', () => {
     svc['hasUnreadForMessagePush'] = vi.fn().mockResolvedValue(true);
   });
 
+  it('reports the expected FCM credential path even when no file exists', () => {
+    expect(svc.getFcmCredentialStatus()).toEqual({
+      filePath: '/definitely-not-present/soms-firebase-service-account.json',
+      configured: false,
+      valid: false,
+      reason: 'file not found',
+    });
+    expect(svc.fcmConfigured).toBe(false);
+  });
+
   it('holds independent device wakes for five seconds and coalesces the newest head', async () => {
     vi.useFakeTimers();
     try {

@@ -88,12 +88,12 @@ export class LoginPageComponent {
       }),
   );
 
-  /** True once `/config` has settled (loaded) WITHOUT a `loginMode` — the backend is unreachable or
-   *  returned no config. `ensureLoaded` catches the fetch failure silently (so route guards can await it),
-   *  so without this the user sees an empty page with no clue why; this surfaces a visible error + a
-   *  reconfigure action. */
+  /** True once `/config` has settled WITHOUT a usable methods list — the backend is unreachable, returned
+   *  no config, or advertised zero/malformed methods. `ensureLoaded` catches the fetch failure silently
+   * (so route guards can await it), so without this the user sees an empty page with no clue why; this
+   *  surfaces a visible error + a reconfigure action. */
   readonly configFailed = computed(
-    () => this.config.loaded() && this.config.loginMode() === null,
+    () => this.config.loaded() && this.config.loginMethods() === null,
   );
   readonly connectionCancelled = this.config.cancelled;
   readonly availableMethods = computed(() => this.config.methodsForPlatform());

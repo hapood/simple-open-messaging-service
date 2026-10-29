@@ -1,79 +1,88 @@
 import { request } from '@/api/client';
-import type { MediaStats } from '@/types/api';
 
-export function getMediaStats(): Promise<MediaStats> {
-  return request<MediaStats>('/admin/media/stats');
+export interface MediaUser {
+  account: string;
+  namespaceId: number;
 }
-
-export interface ResumableUploadSession {
-  uploadId: string;
-  clientMessageId: string;
-  creatorId: number;
-  contentType: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
-  originalName: string;
-  mimeType: string;
-  totalBytes: number;
-  offset: number;
-  chunkSize: number;
-  status: 'UPLOADING' | 'COMPLETING';
-  updatedAt: number;
+export interface Page<T> {
+  list: T[];
+  total: number;
 }
-
-interface FederationDownloadFile {
-  id: string;
+export interface MediaQuery {
+  skip: number;
+  take: number;
+  userId?: number;
+}
+export interface FileQuery extends MediaQuery {
+  digest?: string;
+  status?: 'available' | 'reclaimed';
+}
+export interface MediaFile {
   digest: string;
-  kind: string;
-  status: string;
-  bytesTotal: string;
+  bytes: string;
+  status: 'available' | 'reclaimed' | 'temporary';
+  users: MediaUser[];
+  userCount: number;
+}
+export interface MediaUpload {
+  uploadId: string;
+  userId: number;
+  digest: string | null;
+  bytes: string;
   bytesReceived: string;
-  errorKind: string | null;
-  updatedAt: string;
+  status: 'UPLOADING' | 'COMPLETING' | 'ABORTED';
 }
-
-export interface FederationDownloadBatch {
+export interface DownloadBatch {
   batchId: string;
-  threadId: number;
-  messageSeq: number;
-  creator: { account: string; domain: string };
-  originSeq: number | null;
-  contentType: string;
-  status: string;
-  fileCnt: number;
-  anyFailed: boolean;
-  failReason: string | null;
-  originDomain: string | null;
-  updatedAt: string;
-  files: FederationDownloadFile[];
+  status: 'pending' | 'downloading' | 'failed' | 'ready';
+  users: MediaUser[];
+  totalFiles: number;
+  completedFiles: number | null;
+  bytesTotal: string | null;
+  bytesReceived: string | null;
+  files: {
+    digest: string;
+    status: string;
+    bytesTotal: string;
+    bytesReceived: string;
+  }[];
+}
+export interface DownloaderSnapshot
+  extends Page<{
+    digest: string;
+    status: 'queued' | 'active';
+    bytesReceived: string;
+    bytesTotal: string | null;
+    users: MediaUser[];
+    userCount: number;
+  }> {
+  instanceId: string;
+  observedAt: string;
+  limits: { global: number; perPeer: number };
+  active: number;
+  queued: number;
 }
 
-export function listFederationDownloads(): Promise<{
-  batches: FederationDownloadBatch[];
-}> {
-  return request('/admin/media/downloads');
-}
-
-export function retryFederationDownload(batchId: string) {
-  return request<{ batchId: string; resetFiles: number }>(
-    `/admin/media/downloads/${batchId}/retry`,
+export const listMediaFiles = (query: FileQuery, temporary = false) =>
+  request<Page<MediaFile> & { bytes: string }>(
+    temporary ? '/admin/media/temporary' : '/admin/media/files',
+    query,
   );
-}
-
-export function cleanFederationDownload(batchId: string) {
-  return request<{
-    clearedBatch: boolean;
-    clearedDependents: number;
-    fileRows: number;
-  }>(`/admin/media/downloads/${batchId}/clean`);
-}
-
-export function listResumableUploads(): Promise<ResumableUploadSession[]> {
-  return request<ResumableUploadSession[]>('/admin/media/uploads');
-}
-
-export function abortResumableUpload(
-  uploadId: string,
-): Promise<{ uploadId: string; status: 'ABORTED' }> {
-  return request<{ uploadId: string; status: 'ABORTED' }>(
-    `/admin/media/uploads/${uploadId}/abort`,
-  );
-}
+export const listMediaUploads = (query: MediaQuery) =>
+  request<Page<MediaUpload> & { bytes: string }>('/admin/media/uploads', query);
+export const listMediaDownloads = (query: MediaQuery & { status?: string }) =>
+  request<Page<DownloadBatch>>('/admin/media/downloads', query);
+export const stopMediaUpload = (id: string) =>
+  request(`/admin/media/uploads/${id}/stop`);
+export const stopMediaDownload = (id: string) =>
+  request(`/admin/media/downloads/${id}/stop`);
+export const retryMediaDownload = (id: string) =>
+  request(`/admin/media/downloads/${id}/retry`);
+export const cleanMediaDownload = (id: string) =>
+  request(`/admin/media/downloads/${id}/clean`);
+export const stopPhysicalDownload = (digest: string) =>
+  request('/admin/media/downloader/stop', { digest });
+export const cleanMediaTemporary = (digest: string) =>
+  request('/admin/media/temporary/clean', { digest });
+export const reclaimMediaFile = (digest: string) =>
+  request('/admin/media/files/reclaim', { digest });

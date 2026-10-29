@@ -66,3 +66,59 @@ jobs:
           cargo install tauri-cli --version 2.11.4 --locked
       - name: Build arm64 debug APK
         run: make -C src-tauri apk-debug ABI=aarch64
+
+  linux:
+    # Same pinned runner as the release workflow's Linux job: the bundles link against the
+    # runner's glibc + WebKitGTK, and 22.04 is the oldest supported baseline. Validates the
+    # Linux-only cfg paths (notify-rust/zbus notifications, keyring) plus the AppImage/deb
+    # bundling on every push/PR instead of only at release time.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend and Tauri tooling
+        run: |
+          npm ci --prefix web
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build Linux desktop bundles
+        run: make -C src-tauri linux
+
+  macos:
+    # Validates the macOS-only cfg paths (macos_notifications.m, Dock badge) and the universal
+    # .app/.dmg bundling. Ad-hoc signed (the committed signingIdentity "-") — no Apple cert.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend and Tauri tooling
+        run: |
+          npm ci --prefix web
+          cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build universal macOS bundles
+        run: make -C src-tauri macos

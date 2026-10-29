@@ -297,6 +297,16 @@ describe('UploadService.landStagedPart — idempotent CAS landing', () => {
 
 describe('UploadService.saveCasFromStream — persistent resume', () => {
   let root: string | undefined;
+  const publication = () =>
+    vi.fn(
+      async (
+        _digest: string,
+        _bytes: bigint,
+        publish?: () => Promise<void>,
+      ) => {
+        await publish?.();
+      },
+    );
   afterEach(async () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = undefined;
@@ -347,7 +357,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
 
   it('rechecks the declared size and object limit on an existing CAS file', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-cached-'));
-    const mediaAsset = { publishReady: vi.fn() };
+    const mediaAsset = { publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -381,9 +391,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
 
   it('retains a completed prefix after transport failure and resumes at its offset', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = {
-      publishReady: vi.fn().mockResolvedValue(undefined),
-    };
+    const mediaAsset = { publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -429,12 +437,13 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     expect(mediaAsset.publishReady).toHaveBeenCalledWith(
       digest,
       BigInt(body.length),
+      expect.any(Function),
     );
   });
 
   it('keeps only the continuous verified blocks before the first corrupt resume block', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+    const mediaAsset = { publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -483,7 +492,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
 
   it('automatically restarts from zero when a live partial disappears', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+    const mediaAsset = { publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,

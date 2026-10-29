@@ -34,6 +34,7 @@ export function resolveFileSecret(filename: string): string {
 }
 
 export interface ManagedSecretStatus {
+  filePath: string;
   configured: boolean;
   valid: boolean;
   fingerprint?: string;
@@ -44,11 +45,13 @@ export interface ManagedSecretStatus {
 /** Read-only metadata for Admin. Secret material never leaves this module. */
 export function getManagedSecretStatus(filename: string): ManagedSecretStatus {
   const path = configDirectory(filename);
-  if (!existsSync(path)) return { configured: false, valid: false };
+  if (!existsSync(path))
+    return { filePath: path, configured: false, valid: false };
   try {
     const material = readFileSync(path, 'utf8').trim();
     const stat = statSync(path);
     return {
+      filePath: path,
       configured: true,
       valid: material.length > 0,
       fingerprint: createHash('sha256')
@@ -59,7 +62,7 @@ export function getManagedSecretStatus(filename: string): ManagedSecretStatus {
       permissionsSecure: (stat.mode & 0o077) === 0,
     };
   } catch {
-    return { configured: true, valid: false };
+    return { filePath: path, configured: true, valid: false };
   }
 }
 

@@ -589,7 +589,6 @@ $$;
 CREATE TABLE public."Account" (
     id integer NOT NULL,
     account character varying(31) NOT NULL,
-    kind character varying(16) DEFAULT 'USER'::character varying NOT NULL,
     "namespaceId" integer DEFAULT 0 NOT NULL,
     "defaultProfileRev" integer DEFAULT 0 NOT NULL,
     availability character varying(16) DEFAULT 'AVAILABLE'::character varying NOT NULL,
@@ -608,7 +607,7 @@ CREATE TABLE public."Account" (
     CONSTRAINT "Account_clientStateFeedEndId_check" CHECK (("clientStateFeedEndId" >= 0)),
     CONSTRAINT "Account_defaultProfileRev_check" CHECK (("defaultProfileRev" >= 0)),
     CONSTRAINT "Account_namespace_check" CHECK (("namespaceId" = 0)),
-    CONSTRAINT "Account_kind_check" CHECK (((((kind)::text = 'USER'::text) AND ((account)::text <> '$system'::text)) OR (((kind)::text = 'SYSTEM'::text) AND ((account)::text = '$system'::text) AND ("hashPwd" IS NULL) AND ("disabledAt" IS NOT NULL) AND ("defaultProfileRev" = 0)))),
+    CONSTRAINT "Account_system_identity_check" CHECK ((((account)::text <> '$system'::text) OR (((account)::text = '$system'::text) AND ("hashPwd" IS NULL) AND ("disabledAt" IS NOT NULL) AND ("defaultProfileRev" = 0)))),
     CONSTRAINT "Account_threadFeedEndId_check" CHECK (("threadFeedEndId" >= 0))
 );
 
@@ -880,7 +879,7 @@ CREATE TABLE public."DurableTask" (
     "scopeType" public."DurableTaskScopeType" NOT NULL,
     "scopeKey" character varying(512) NOT NULL,
     "taskType" character varying(64) NOT NULL,
-    "actorUserId" integer,
+    "actorUserId" integer NOT NULL,
     payload jsonb NOT NULL,
     checkpoint jsonb DEFAULT '{}'::jsonb NOT NULL,
     "coalescingKey" character varying(512),
@@ -890,7 +889,7 @@ CREATE TABLE public."DurableTask" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "startedAt" timestamp(3) with time zone,
     "completedAt" timestamp(3) with time zone,
-    CONSTRAINT "DurableTask_actor_user_id_check" CHECK ((("actorUserId" IS NULL) OR ("actorUserId" > 0))),
+    CONSTRAINT "DurableTask_actor_user_id_check" CHECK (("actorUserId" > 0)),
     CONSTRAINT "DurableTask_checkpoint_check" CHECK ((jsonb_typeof(checkpoint) = 'object'::text)),
     CONSTRAINT "DurableTask_coalescing_key_check" CHECK ((("coalescingKey" IS NULL) OR (length(("coalescingKey")::text) > 0))),
     CONSTRAINT "DurableTask_error_check" CHECK ((("lastError" IS NULL) OR (status = 'FAILED'::public."DurableTaskStatus"))),
@@ -4057,7 +4056,12 @@ CREATE TABLE public."UserQuotaPolicy" (
 
 -- Required local identities and feed head sentinels.
 -- Namespace 0 is initialized with SOMS_DOMAIN by KeypairService on first boot.
--- The system account is initialized with SOMS_DOMAIN by systemAccountIdInTx.
+-- The reserved $system identity is seeded here: every durable task names an
+-- actor, and system-derived work runs on this account's authority. Lookups go
+-- through the unique key on the account name.
 
 INSERT INTO public."ProfileNamespaceFeedHead" (id, "endId") VALUES (0, 0);
 INSERT INTO public."ProfileNamespaceChangeFeedHead" ("id", "endId") VALUES (0, 0);
+
+INSERT INTO public."Account" (account, "namespaceId", "disabledAt")
+VALUES ('$system', 0, CURRENT_TIMESTAMP);

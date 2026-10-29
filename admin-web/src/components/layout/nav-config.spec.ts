@@ -14,6 +14,12 @@ describe('matchNav', () => {
     expect(matchNav('/users/42')?.item.key).toBe('users');
   });
 
+  it('keeps audit and detail under Security, separate from runtime logs', () => {
+    expect(matchNav('/audit')?.item.key).toBe('audit');
+    expect(matchNav('/audit/42')?.item.key).toBe('audit');
+    expect(matchNav('/audit/42')?.group.labelKey).toBe('nav.group.security');
+  });
+
   it('matches the enabled Logs hub and its child routes', () => {
     expect(matchNav('/logs')?.item.key).toBe('logs');
     expect(matchNav('/logs/history')?.item.key).toBe('logs');
@@ -81,9 +87,9 @@ describe('NAV_GROUPS shape', () => {
     expect(NAV_GROUPS[0].items.map((item) => item.key)).toEqual(['dashboard']);
     expect(matchNav('/dashboard/unknown')).toBeNull();
   });
-  it('has exactly 17 primary items and only My Account in the footer', () => {
+  it('has exactly 18 primary items and only My Account in the footer', () => {
     const primary = NAV_GROUPS.filter((g) => !g.footer).flatMap((g) => g.items);
-    expect(primary).toHaveLength(17);
+    expect(primary).toHaveLength(18);
     const footer = NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items);
     expect(footer.map((i) => i.key)).toEqual(['security']);
   });

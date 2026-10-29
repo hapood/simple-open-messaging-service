@@ -31,6 +31,7 @@ type NavKey =
   | 'localInformation'
   | 'quota'
   | 'logs'
+  | 'audit'
   | 'media'
   | 'settings'
   | 'security'
@@ -84,6 +85,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/sessions', key: 'sessions', icon: Monitor },
       { to: '/bans', key: 'bans', icon: ShieldBan },
+      { to: '/audit', key: 'audit', icon: ScrollText },
     ],
   },
   {

@@ -4968,7 +4968,7 @@ export interface components {
              */
             account: string;
             /**
-             * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.
+             * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (GET /config loginMethods includes password); omitted otherwise.
              * @example P@ssw0rd
              */
             password?: string;

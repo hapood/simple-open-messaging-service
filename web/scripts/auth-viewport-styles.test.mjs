@@ -18,6 +18,20 @@ for (const [surface, path] of [
   });
 }
 
+test('auth grid and login host shrink within narrow viewports', () => {
+  const shell = readFileSync(new URL('../src/app/assets/utils.scss', import.meta.url), 'utf8');
+  const login = readFileSync(new URL('../src/app/components/login/login.component.scss', import.meta.url), 'utf8');
+  assert.match(shell, /@media \(max-width: 899px\)\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(shell, /\.form-pane\s*\{[^}]*min-width: 0/);
+  assert.match(login, /:host\s*\{[^}]*width: 100%;[^}]*max-width: 400px;[^}]*min-width: 0;/);
+});
+
+test('server card and fields may shrink below their intrinsic widths', () => {
+  const styles = readFileSync(new URL('../src/app/pages/server-config-page/server-config-page.component.scss', import.meta.url), 'utf8');
+  assert.match(styles, /\.cfg-shell\s*\{[^}]*width: 100%;[^}]*max-width: 380px;[^}]*min-width: 0;/);
+  assert.match(styles, /\.cfg-field\s*\{[^}]*width: 100%;[^}]*min-width: 0;/);
+});
+
 test('keyboard occlusion is registered globally as an interpolatable inherited length', () => {
   const styles = readFileSync(new URL('../src/styles.scss', import.meta.url), 'utf8');
   const [, registration] = styles.match(/@property\s+--auth-keyboard-inset\s*\{([^}]+)\}/) ?? [];

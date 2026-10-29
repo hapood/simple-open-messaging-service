@@ -52,7 +52,8 @@ import { FederationModule } from '../federation/federation.module.js';
 import { QuotaModule } from '../quota/quota.module.js';
 import { MessageReportAdminController } from './message-report-admin.controller.js';
 import { DurableTaskAdminController } from './durable-task-admin.controller.js';
-import { MediaStorageStatsService } from './media-storage-stats.service.js';
+import { MediaCatalogService } from '../media/media-catalog.service.js';
+import { MediaMaintenanceService } from '../media/media-maintenance.service.js';
 
 @Module({
   imports: [
@@ -115,7 +116,8 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     AuditTargetLabelService,
     AdminManageService,
     GroupManageService,
-    MediaStorageStatsService,
+    MediaCatalogService,
+    MediaMaintenanceService,
     // Self-seeds the bootstrap admin (account=admin) on every app start via OnApplicationBootstrap;
     // idempotent, decoupled from the deploy orchestrator. See admin-bootstrap.service.ts.
     AdminBootstrapService,

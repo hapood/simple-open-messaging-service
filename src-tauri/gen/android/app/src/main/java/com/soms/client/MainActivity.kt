@@ -14,6 +14,7 @@ import android.media.MediaRecorder
 import android.provider.Settings
 import android.provider.MediaStore
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.graphics.Typeface
 import android.view.Gravity
 import android.view.View
@@ -21,6 +22,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.util.TypedValue
 import com.google.android.gms.common.ConnectionResult
@@ -82,6 +84,10 @@ import java.util.concurrent.TimeUnit
 class MainActivity : TauriActivity() {
     private var launchOverlay: View? = null
     private var launchStatus: TextView? = null
+    private var launchBrand: View? = null
+    private var launchThemeDark: Boolean? = null
+    private var outgoingLaunchOverlay: View? = null
+    private var launchDeadlineMs = 0L
     private var pendingSystemBarDark: Boolean? = null
     private val launchTimeout = Runnable { dismissLaunchOverlay() }
     private var currentPipParams: PictureInPictureParams? = null
@@ -295,15 +301,33 @@ class MainActivity : TauriActivity() {
     /**
      * Native continuation of Android's system splash. It uses the same solid brand background and logo,
      * but can remain above the WebView while Angular restores the session, resolves its first route, and
-     * paints stable content. The small lower-left label is deliberately secondary to the centered mark.
+     * paints stable content. Brand text fades in below the stationary mark without delaying readiness.
+     * The small lower-left label is deliberately secondary to the centered mark.
      */
-    private fun installLaunchOverlay() {
+    private fun installLaunchOverlay(
+        dark: Boolean = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+            Configuration.UI_MODE_NIGHT_YES,
+    ) {
         val decor = window.decorView as? ViewGroup ?: return
+        val previous = launchOverlay
+        val previousStatus = launchStatus?.text
+        previous?.animate()?.cancel()
+        previous?.removeCallbacks(launchTimeout)
+        launchBrand?.animate()?.cancel()
+        removeOutgoingLaunchOverlay()
+        // This is a rendering context, not a second preference resolver. The first call follows the
+        // system; subsequent calls receive the shared database-first decision from the Web host.
+        val palette = createConfigurationContext(Configuration(resources.configuration).apply {
+            uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                (if (dark) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO)
+        })
+        fun color(id: Int) = ContextCompat.getColor(palette, id)
         val density = resources.displayMetrics.density
         fun dp(value: Int) = Math.round(value * density)
 
         val overlay = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(233, 225, 213))
+            setBackgroundColor(color(R.color.splash_background))
+            alpha = if (previous == null) 1f else 0f
             isClickable = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             elevation = dp(16).toFloat()
@@ -311,20 +335,56 @@ class MainActivity : TauriActivity() {
         val logo = ImageView(this).apply {
             // VectorDrawable: unlike the 108dp adaptive-launcher PNG, this remains sharp on the
             // platform-standard 288dp transparent splash canvas at every display density.
-            setImageResource(R.drawable.splash_logo)
+            setImageDrawable(ContextCompat.getDrawable(palette, R.drawable.splash_logo))
             scaleType = ImageView.ScaleType.FIT_CENTER
             contentDescription = null
         }
-        overlay.addView(
-            logo,
-            // Match Android 12+'s transparent splash-icon canvas. The mark deliberately occupies
-            // about half of this canvas, yielding a ~144dp visible bubble inside the 192dp safe zone.
-            FrameLayout.LayoutParams(dp(288), dp(288), Gravity.CENTER),
-        )
+        // Center the icon canvas independently of text, so neither localization nor font scaling
+        // shifts the mark during the system-to-Activity handoff. Text may extend below the canvas.
+        val brandCanvas = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+        }
+        brandCanvas.addView(logo, FrameLayout.LayoutParams(dp(288), dp(288), Gravity.CENTER))
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), 0, dp(24), 0)
+            alpha = if (previous == null) 0f else 1f
+        }
+        brand.addView(TextView(this).apply {
+            setText(R.string.app_name)
+            setTextColor(color(R.color.splash_text))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
+            setTypeface(typeface, Typeface.BOLD)
+            letterSpacing = 0.06f
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+        })
+        brand.addView(TextView(this).apply {
+            setText(R.string.splash_tagline)
+            setTextColor(color(R.color.splash_text_secondary))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(10) })
+        brandCanvas.addView(brand, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+        ).apply { topMargin = dp(234) })
+        overlay.addView(brandCanvas, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(288),
+            Gravity.CENTER,
+        ))
 
         val status = TextView(this).apply {
-            setText(R.string.splash_preparing)
-            setTextColor(Color.argb(170, 25, 33, 42))
+            text = previousStatus ?: getString(R.string.splash_preparing)
+            setTextColor(color(R.color.splash_text_status))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setTypeface(typeface, Typeface.NORMAL)
             letterSpacing = 0.04f
@@ -350,9 +410,42 @@ class MainActivity : TauriActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
             ),
         )
+        // The starting window has already captured its drawable. Do not leave a second mark behind
+        // the WebView when the continuation fades out.
+        window.setBackgroundDrawable(ColorDrawable(color(R.color.splash_background)))
         launchOverlay = overlay
         launchStatus = status
-        overlay.postDelayed(launchTimeout, LAUNCH_TIMEOUT_MS)
+        launchBrand = brand
+        launchThemeDark = dark
+        val controller = WindowInsetsControllerCompat(window, decor)
+        controller.isAppearanceLightStatusBars = !dark
+        controller.isAppearanceLightNavigationBars = !dark
+        if (previous == null) {
+            launchDeadlineMs = android.os.SystemClock.uptimeMillis() + LAUNCH_TIMEOUT_MS
+        } else {
+            outgoingLaunchOverlay = previous
+            overlay.animate().alpha(1f).setDuration(LAUNCH_THEME_FADE_MS).withEndAction {
+                removeOutgoingLaunchOverlay()
+            }.start()
+        }
+        // Theme changes do not extend the existing startup safety deadline.
+        overlay.postDelayed(launchTimeout,
+            (launchDeadlineMs - android.os.SystemClock.uptimeMillis()).coerceAtLeast(0L))
+    }
+
+    private fun removeOutgoingLaunchOverlay() {
+        outgoingLaunchOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        outgoingLaunchOverlay = null
+    }
+
+    private fun applyLaunchTheme(dark: Boolean) {
+        if (launchOverlay == null) return
+        if (launchThemeDark != dark) {
+            installLaunchOverlay(dark)
+        } else if (launchBrand?.alpha == 0f) {
+            // Same palette: the system mark is replaced directly, only brand text fades in.
+            launchBrand?.animate()?.alpha(1f)?.setDuration(LAUNCH_BRAND_FADE_MS)?.start()
+        }
     }
 
     private fun updateLaunchStage(stage: String) {
@@ -377,6 +470,10 @@ class MainActivity : TauriActivity() {
 
     private fun dismissLaunchOverlay() {
         val overlay = launchOverlay ?: return
+        overlay.animate().cancel()
+        removeOutgoingLaunchOverlay()
+        launchBrand?.animate()?.cancel()
+        launchBrand = null
         launchOverlay = null
         launchStatus = null
         overlay.removeCallbacks(launchTimeout)
@@ -1168,6 +1265,10 @@ class MainActivity : TauriActivity() {
 
     override fun onDestroy() {
         launchOverlay?.removeCallbacks(launchTimeout)
+        launchOverlay?.animate()?.cancel()
+        removeOutgoingLaunchOverlay()
+        launchBrand?.animate()?.cancel()
+        launchBrand = null
         launchOverlay = null
         launchStatus = null
         finishNativeVoiceRecording(cancel = true)
@@ -1920,6 +2021,15 @@ class MainActivity : TauriActivity() {
             a.runOnUiThread { a.dismissLaunchOverlay() }
         }
 
+        /** Render the shared resolved theme without independently reading or caching preferences. */
+        @JavascriptInterface
+        fun setSplashTheme(dark: Boolean) {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread {
+                if (!a.isDestroyed) a.applyLaunchTheme(dark)
+            }
+        }
+
         /** Keep transparent edge-to-edge system-bar icons legible when the web theme overrides the OS. */
         @JavascriptInterface
         fun setSystemBarTheme(dark: Boolean) {
@@ -2179,6 +2289,8 @@ class MainActivity : TauriActivity() {
         private const val PIP_REQ_MUTE = 7101
         private const val PIP_REQ_END = 7102
         private const val PIP_ENTER_CONFIRM_MS = 750L
+        private const val LAUNCH_THEME_FADE_MS = 200L
+        private const val LAUNCH_BRAND_FADE_MS = 200L
         private const val LAUNCH_FADE_MS = 180L
         private const val LAUNCH_TIMEOUT_MS = 8_000L
         private const val NOTIF_SYNC_WORK = "soms-notif-sync"

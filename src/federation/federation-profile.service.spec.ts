@@ -121,7 +121,6 @@ describe('FederationProfileService localization', () => {
       account: 'alice',
       namespaceId: 0,
       defaultProfileRev: 0,
-      kind: 'USER',
     } as never);
     await expect(
       subject.getLocalAccountProfile({ account: 'alice', domain: 'local' }),
@@ -162,7 +161,6 @@ describe('FederationProfileService localization', () => {
       account: '$system',
       namespaceId: 0,
       defaultProfileRev: 0,
-      kind: 'SYSTEM',
     } as never);
     await expect(
       subject.getLocalAccountProfile({ account: '$system', domain: 'local' }),
