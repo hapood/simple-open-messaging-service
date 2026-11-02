@@ -44,6 +44,14 @@ for (const fullWindow of [false, true]) {
       .getByRole('button', { name: 'Confirm', exact: true })
       .click();
     await expect(announcement).toHaveCount(0);
+    // Off-screen overlays must not turn the shell into a scroll container.
+    // Focus/scrollIntoView can otherwise shift every panel without changing its transform.
+    await shell.evaluate((element) => {
+      element.scrollLeft = 276;
+    });
+    await expect
+      .poll(() => shell.evaluate((element) => element.scrollLeft))
+      .toBe(0);
     await expectShellBounds(chat);
     const header = chat.locator('.pane-layer.pane-fg .msg-header');
     const more = header.getByRole('button', {

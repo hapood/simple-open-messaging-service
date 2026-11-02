@@ -11,7 +11,9 @@
   box-sizing: border-box;
   width: 100%;
   height: 100%;
-  overflow: hidden;
+  // Off-screen overlays are clipped, not scrollable. overflow:hidden still allows
+  // focus/scrollIntoView to move the shell and displace every absolute panel.
+  overflow: clip;
   background: var(--app-bg);
   /* NOTE: the gesture-bar inset is NOT applied here. Each bottom surface owns its own
      --soms-safe-bottom so its background extends seamlessly under the Android gesture / navigation bar
