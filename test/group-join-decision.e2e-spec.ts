@@ -13,6 +13,7 @@ import { GroupMembershipProjectionFanoutService } from '../src/group/membership-
 import { mintGroupMemberPairInTx } from '../src/group/membership-intent/shared/group-member-pair-mint.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import { insertPendingTaskInTx } from '../src/durable-task/task-admission.js';
+import { systemAccountIdInTx } from '../src/user/system-account.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import {
   afterAll,
@@ -965,6 +966,7 @@ describe('group join decision', () => {
         scopeType: 'THREAD',
         scopeKey: scope,
         taskType: 'FAN_OUT_THREAD_CONTENT',
+        actorUserId: await systemAccountIdInTx(tx),
         payload: {
           threadId: f.group.threadId,
           messageEndSeq: 0,
@@ -1287,6 +1289,7 @@ describe('group join decision', () => {
         scopeType: 'THREAD',
         scopeKey: scope,
         taskType: 'FAN_OUT_THREAD_CONTENT',
+        actorUserId: await systemAccountIdInTx(tx),
         payload: {
           threadId: f.group.threadId,
           messageEndSeq: 0,

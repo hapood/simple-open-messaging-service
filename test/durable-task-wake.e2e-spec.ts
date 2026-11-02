@@ -10,6 +10,7 @@ import { DurableTaskStoreService } from '../src/durable-task/durable-task-store.
 import { DurableTaskWakeService } from '../src/durable-task/durable-task-wake.service.js';
 import type { DurableTask } from '../src/durable-task/durable-task.types.js';
 import { truncateTablesForTest } from './support/truncate';
+import { systemAccountIdInTx } from '../src/user/system-account.js';
 
 function deferred() {
   let resolve!: () => void;
@@ -25,6 +26,7 @@ describe('durable task committed wake and drain', () => {
   let store: DurableTaskStoreService;
   let scheduler: DurableTaskSchedulerService;
   let listener: DurableTaskWakeService;
+  let actorUserId: number;
   const execute = vi.fn<(task: DurableTask) => Promise<void>>();
   const input = (payload: Record<string, unknown> = {}) => ({
     scope: {
@@ -32,6 +34,7 @@ describe('durable task committed wake and drain', () => {
       address: { profileNamespaceId: 0, account: '!wake-test' },
     },
     taskType: 'TEST_COMMAND',
+    actorUserId,
     payload,
   });
   const status = async (id: bigint) =>
@@ -55,6 +58,7 @@ describe('durable task committed wake and drain', () => {
       database.pool,
       'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE',
     );
+    actorUserId = await database.db.transaction(systemAccountIdInTx);
     store = new DurableTaskStoreService(database);
     queue = new DurableTaskQueueService(database);
     const dispatcher = new DurableTaskDispatcherService();

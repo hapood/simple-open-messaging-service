@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { Client } from 'pg';
+import { RESTORE_SYSTEM_ACCOUNT_SQL } from './support/database-baseline.js';
 
 export function databaseUrl(baseUrl: string, database: string): string {
   const url = new URL(baseUrl);
@@ -79,10 +80,10 @@ export async function resetE2EWorkerDatabase(
           'ON CONFLICT (id) DO NOTHING',
         [process.env.SOMS_DOMAIN ?? 'e2e-local.test'],
       );
-      await client.query('INSERT INTO "ProfileNamespaceFeedHead" (id, "endId") VALUES (0, 0)');
       await client.query(
-        'INSERT INTO "Account" (account, "disabledAt") VALUES (\'$system\', CURRENT_TIMESTAMP)',
+        'INSERT INTO "ProfileNamespaceFeedHead" (id, "endId") VALUES (0, 0)',
       );
+      await client.query(RESTORE_SYSTEM_ACCOUNT_SQL);
       await client.query(
         'INSERT INTO "ProfileNamespaceChangeFeedHead" ("id", "endId") VALUES (0, 0) ON CONFLICT ("id") DO NOTHING',
       );

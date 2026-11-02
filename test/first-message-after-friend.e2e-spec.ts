@@ -1,12 +1,4 @@
-import {
-  describe,
-  it,
-  expect,
-  beforeAll,
-  afterAll,
-  beforeEach,
-  vi,
-} from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { localIdentityDomain } from './support/local-domain.js';
 import request from 'supertest';
@@ -50,7 +42,16 @@ describe('First message after friend-add is delivered (single instance)', () => 
   let database: DatabaseService;
   let baseUrl: string;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
+    const resetDatabase = new DatabaseService();
+    try {
+      await truncateTablesForTest(
+        resetDatabase.pool,
+        'TRUNCATE TABLE "DurableTask", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+      );
+    } finally {
+      await resetDatabase.onApplicationShutdown();
+    }
     ({ app, database } = await createTestApp());
     // Resolve the OS-assigned port so the helpers can reach the app over real HTTP/SSE (mirrors the
     // federation subprocess harness, which reaches apps at http://127.0.0.1:<port>).
@@ -61,16 +62,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
     baseUrl = `http://127.0.0.1:${port}`;
   });
 
-  beforeEach(async () => {
-    // Truncating User CASCADE-clears threads, messages, invites, etc. — a fresh graph per test.
-    await truncateTablesForTest(
-      database.pool,
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
-    );
-  });
-
-  afterAll(async () => {
-    await app.close();
+  afterEach(async () => {
+    // Await application shutdown (including claimed durable work) before the
+    // next test can reset its database. Never truncate a running predecessor.
+    await app?.close();
   });
 
   it('delivers the FIRST message on a brand-new (empty) P2P thread to the receiver over SSE and persists it', async () => {

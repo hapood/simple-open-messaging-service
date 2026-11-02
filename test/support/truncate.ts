@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import { RESTORE_SYSTEM_ACCOUNT_SQL } from './database-baseline.js';
 
 const DRAIN_POLL_MS = 25;
 const DRAIN_TIMEOUT_MS = 15_000;
@@ -33,17 +34,24 @@ export async function truncateTablesForTest(
   }
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const client = await pool.connect();
     try {
-      await pool.query(`BEGIN; ${LOCK_TIMEOUT_SQL}; ${statement}; COMMIT`);
+      await client.query('BEGIN');
+      await client.query(LOCK_TIMEOUT_SQL);
+      await client.query(statement);
+      await client.query(RESTORE_SYSTEM_ACCOUNT_SQL);
+      await client.query('COMMIT');
       return;
     } catch (error) {
+      await client.query('ROLLBACK');
       lastError = error;
       const code = (error as { code?: string }).code;
       if (!RETRYABLE_CODES.has(code ?? '') || attempt === MAX_ATTEMPTS)
         throw error;
-      await pool.query('ROLLBACK').catch(() => undefined);
-      await sleep(RETRY_BACKOFF_MS);
+    } finally {
+      client.release();
     }
+    await sleep(RETRY_BACKOFF_MS);
   }
   throw lastError;
 }

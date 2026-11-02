@@ -3,7 +3,8 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
+import { truncateTablesForTest } from './support/truncate.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
@@ -61,8 +62,9 @@ describe('Privacy-safe media administration', () => {
     if (root) await rm(root, { recursive: true, force: true });
   });
   beforeEach(async () => {
-    await database.db.execute(
-      sql`TRUNCATE "MessageThread", "UploadSession", "FileSyncProgress", "MediaAsset", "Account" RESTART IDENTITY CASCADE`,
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE "MessageThread", "UploadSession", "FileSyncProgress", "MediaAsset", "Account" RESTART IDENTITY CASCADE',
     );
     await rm(root, { recursive: true, force: true });
     await mkdir(upload.casTmpDir, { recursive: true });
