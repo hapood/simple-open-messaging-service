@@ -2,8 +2,53 @@
 
 ## Unreleased
 
-- Move to SOMFP 1.0.0-draft.2 (in progress; not backward compatible).
-  See the [protocol changelog](./spec/CHANGELOG.md).
+## 0.1.0-alpha.2
+
+### Clients
+
+- Add macOS and Linux alpha clients, desktop notifications, and a macOS Dock unread badge.
+- Fix Android startup hangs and native login restoration by making Rust the single
+  owner of credential activation and session transitions.
+- Fix native profile and avatar updates, account cache initialization, and namespace
+  catch-up when an empty page is already current.
+- Preserve conversation drafts and composer state across message-window jumps and
+  initial-load retries. Cancel abandoned window requests without cancelling
+  account-level uploads or already-admitted database commits.
+- Improve synchronous cached-history pagination, message navigation, contact lookup,
+  mentions, responsive layouts, and playground regression coverage.
+- Rework login methods with a Material 3 segmented selector and runtime language updates.
+- Improve native calls, SSE reconnection, Android launch presentation, and retryable
+  voice-upload handling.
+
+### Server and deployment
+
+- Expand administrator user, session, media, and federation diagnostic tools.
+- Unify daily quotas and add configurable per-file size limits.
+- Add TLS-ALPN-01 certificate challenges for standard-port deployments through
+  `CADDY_CERT_MODE`, alongside the existing certificate modes.
+- Generate Caddy configuration in TypeScript at supervisor bootstrap, with golden
+  configuration checks and real routing tests.
+- When a separate Web domain is configured, serve federation only on the identity
+  domain and application routes only on the Web/LAN domains. Deployments without
+  a separate Web domain keep the combined surface.
+- Extend CI coverage for native IPC permissions, Rust and Android contracts,
+  PostgreSQL integration, deployment tooling, and browser lifecycle behavior.
+- Update federation to SOMFP 1.0.0-draft.2; see the [protocol changelog](spec/CHANGELOG.md).
+
+### Compatibility and upgrade
+
+- SOMFP draft.2 is incompatible with draft.1. Upgrade peers together and use matching
+  alpha.2 clients and servers.
+- Discovery moves from `/.well-known/somfp` to `/somfp/discovery`; federation APIs
+  move from `/s2s/v1/*` to `/somfp/v1/*`. The old routes have no compatibility aliases.
+  Update custom reverse proxies and monitoring probes before switching traffic.
+- With a separate Web domain, clients must use the application domain rather than
+  the federation-only identity domain. DNS SRV changes the connection destination,
+  not the identity domain used for TLS validation, SNI, or HTTP authority.
+- Alpha.1 databases cannot be upgraded in place. Back up needed data and use a fresh
+  test database; do not bypass migration checksum checks.
+- See the [deployment guide](docs/deployment/deployment.md) for certificate modes,
+  domain configuration, and routing requirements.
 
 ## 0.1.0-alpha.1
 
