@@ -10,7 +10,7 @@ import {
  * date-format unit tests: day-change detection + label grading.
  *
  * sameDay / shouldShowDateSeparator only compare their timestamp args (no dependency on "now") → stable.
- * formatDateSeparator grades relative to dayjs() = now → construct scenarios as offsets from now.
+ * formatDateSeparator grades relative to a fixed local noon, independent of the wall clock.
  *
  * A fake translator resolves the English "Today"/"Yesterday" keys (dayjs runs with the default 'en' locale
  * here, so weekday and month/day names are English too), keeping the assertions locale-independent.
@@ -29,7 +29,12 @@ const en: DateTranslator = {
  * LanguageService. Pin it back to 'en' before each test so the weekday / MMM D assertions are stable and
  * independent of test execution order.
  */
-beforeEach(() => dayjs.locale('en'));
+beforeEach(() => {
+  dayjs.locale('en');
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(2026, 6, 15, 12));
+});
+afterEach(() => vi.useRealTimers());
 
 describe('date-format', () => {
   describe('sameDay', () => {
@@ -92,7 +97,18 @@ describe('date-format', () => {
       expect(formatDateSeparator(Date.now(), en)).toBe('Today');
     });
     it('yesterday', () => {
-      expect(formatDateSeparator(Date.now() - day, en)).toBe('Yesterday');
+      expect(
+        formatDateSeparator(dayjs().subtract(1, 'day').valueOf(), en),
+      ).toBe('Yesterday');
+    });
+    it('uses calendar yesterday across a daylight-saving transition', () => {
+      vi.setSystemTime(new Date(2026, 10, 1, 23, 30));
+      expect(
+        formatDateSeparator(new Date(2026, 9, 31, 23, 30).getTime(), en),
+      ).toBe('Yesterday');
+      expect(
+        formatDateSeparator(new Date(2026, 10, 1, 0, 30).getTime(), en),
+      ).toBe('Today');
     });
     it('within this week (3 days ago) → weekday name', () => {
       expect(formatDateSeparator(Date.now() - 3 * day, en)).toMatch(
