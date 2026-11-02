@@ -178,6 +178,12 @@ define do_build
 	@echo "✓ $(DIST_DIR)/:"; ls -lh $(DIST_DIR)/*.apk 2>/dev/null | awk '{print "    "$$5"  "$$NF}'
 endef
 
+.PHONY: check-ipc-permissions
+check-ipc-permissions:
+	@cd "$(ROOT)" && npm run test:native-contracts
+
+apk apk-debug apk-e2e-debug linux macos: check-ipc-permissions
+
 apk:  ## build per-ABI + universal RELEASE APKs into dist/android/. ABI=aarch64 → one fast variant.
 	$(call do_build,release)
 

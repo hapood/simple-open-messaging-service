@@ -26,6 +26,8 @@
     "check:cycles": "npm run check --prefix tools/cycle-check",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:native-contracts": "node --test src-tauri/permissions/*.spec.mjs",
+    "test:tooling": "node --test \"scripts/*.test.mjs\" \"dev/federation-lab/**/*.spec.mjs\" \"test/deployment/*.test.mjs\" \"docker/*.test.mjs\" \"tools/federation-conformance/*.test.mjs\"",
     "test:cov": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:browser": "playwright test --config test/browser-e2e/playwright.config.ts",

@@ -27,6 +27,9 @@ jobs:
             admin-web/package-lock.json
             tools/cycle-check/package-lock.json
 
+      - name: Check native IPC permissions
+        run: npm run test:native-contracts
+
       - name: Install dependencies
         run: |
           npm ci
@@ -52,14 +55,33 @@ jobs:
 
       - name: Build and test server
         run: |
-          node --test scripts/android-version.test.mjs
           node scripts/check-version-sync.mjs --base-ref origin/main
           npm run build
           npm test
           npm run federation:conformance
 
       - name: Install browser for web component tests
-        run: npm exec --prefix web -- playwright install --with-deps chromium
+        run: |
+          npm exec --prefix web -- playwright install --with-deps chromium
+          npm run test:browser:install
+
+      - name: Install Caddy for routing tests
+        run: |
+          docker pull caddy:2.11
+          container=$(docker create caddy:2.11)
+          trap 'docker rm "$container"' EXIT
+          docker cp "$container:/usr/bin/caddy" "$RUNNER_TEMP/caddy"
+          chmod +x "$RUNNER_TEMP/caddy"
+          "$RUNNER_TEMP/caddy" version
+
+      - name: Test repository tooling and automation helpers
+        env:
+          SOMFP_SPEC_DIR: ${{ github.workspace }}/spec
+          CADDY_BIN: ${{ runner.temp }}/caddy
+        run: |
+          npm run test:tooling
+          npm run test:browser:unit
+          npm run test:cross-platform:unit
 
       - name: Build and test web client
         run: |
@@ -76,10 +98,69 @@ jobs:
           path: test-results/web-unit/
           if-no-files-found: ignore
 
-      - name: Validate deployment image references and Compose output
-        run: node --test test/deployment/*.test.mjs docker/nas-compose.test.mjs
-
       - name: Build and test administration console
         run: |
           npm run build --prefix admin-web
           npm test --prefix admin-web
+
+  backend-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: soms_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d soms_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable service credentials, never a deployed database. The suite creates per-run databases.
+      DATABASE_URL: postgresql://postgres:ci-only-password@localhost:5432/soms_ci
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Build and run PostgreSQL integration tests
+        run: |
+          npm run build
+          npm run test:e2e
+
+  playground-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - run: |
+          npm ci
+          npm ci --prefix web
+          npm exec -- playwright install --with-deps chromium
+      - name: Run Playground browser scenarios
+        run: npm run test:playground
+      - name: Upload failed browser test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playground-e2e-failures
+          path: test-results/browser-e2e/
+          if-no-files-found: ignore

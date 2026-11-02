@@ -64,6 +64,16 @@ jobs:
         run: |
           npm ci --prefix web
           cargo install tauri-cli --version 2.11.4 --locked
+      - name: Run Android JVM tests
+        working-directory: src-tauri/gen/android
+        run: ./gradlew :app:testUniversalDebugUnitTest --no-daemon
+      - name: Upload Android JVM test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-unit-test-failures
+          path: src-tauri/gen/android/app/build/reports/tests/
+          if-no-files-found: ignore
       - name: Build arm64 debug APK
         run: make -C src-tauri apk-debug ABI=aarch64
 
@@ -98,6 +108,8 @@ jobs:
           cargo install tauri-cli --version 2.11.4 --locked
       - name: Build Linux desktop bundles
         run: make -C src-tauri linux
+      - name: Test shared Rust runtime on Linux
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
 
   macos:
     # Validates the macOS-only cfg paths (macos_notifications.m, Dock badge) and the universal
@@ -122,3 +134,5 @@ jobs:
           cargo install tauri-cli --version 2.11.4 --locked
       - name: Build universal macOS bundles
         run: make -C src-tauri macos
+      - name: Test shared Rust runtime on macOS
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
