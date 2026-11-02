@@ -37,6 +37,13 @@ for (const fullWindow of [false, true]) {
     expect((await shell.boundingBox())!.y).toBe(fullWindow ? 0 : 56);
     await page.getByRole('button', { name: /^Playground Team, chat/ }).click();
     const chat = shell.locator('.chat-slot');
+    // The seeded group has an unread announcement that must be acknowledged before navigation.
+    const announcement = chat.locator('app-group-announcement');
+    await expect(announcement).toBeVisible();
+    await announcement
+      .getByRole('button', { name: 'Confirm', exact: true })
+      .click();
+    await expect(announcement).toHaveCount(0);
     await expectShellBounds(chat);
     const header = chat.locator('.pane-layer.pane-fg .msg-header');
     const more = header.getByRole('button', {

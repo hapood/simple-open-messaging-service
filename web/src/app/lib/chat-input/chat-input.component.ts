@@ -1,4 +1,9 @@
+import type {
+  ChatSurfaceBinding,
+  ChatSurfaceLifecycle,
+} from '../../components/message-thread/chat-surface-lifecycle';
 import {
+  untracked,
   Component,
   ChangeDetectionStrategy,
   ViewEncapsulation,
@@ -25,7 +30,8 @@ import {
 } from '../../components/icon/icon.component';
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
 import { EMOJI_CATEGORIES } from './emoji-data';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, finalize, Subscription } from 'rxjs';
+import { microphoneStream } from './microphone-stream';
 import { KeyboardInsetService } from '../../services/keyboard-inset.service';
 import {
   NativeUploadService,
@@ -37,7 +43,11 @@ import {
   LinkCardGenerationService,
   type LinkCardContent,
 } from '../../services/link-card-generation.service';
-import { PopupType, RouteService } from '../../services/route.service';
+import {
+  PopupType,
+  RouteService,
+  type DlgRef,
+} from '../../services/route.service';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { assetUrl } from '../../services/runtime';
 import { ToastService } from '../../services/toast.service';
@@ -94,7 +104,7 @@ function pickRecorderMime(): string {
   return '';
 }
 
-/** Hard cap on a single voice clip (seconds). On reach, recording auto-stops and sends. */
+/** Hard cap on a single voice clip; release still decides send versus discard. */
 const MAX_RECORD_SECS = 60;
 /**
  * Reusable chat composer (WhatsApp-style capsule + round send key), shared by the chatbox playground and the
@@ -143,6 +153,12 @@ export class ChatInputComponent implements OnDestroy {
   readonly placeholder = input('');
   /** Browser composer drafts are partitioned by conversation. Omit in the playground. */
   readonly threadId = input<number>();
+  readonly enabled = input(true);
+  readonly lifecycle = input<ChatSurfaceLifecycle>();
+  readonly interactive = signal(false);
+  private boundContext?: ChatSurfaceBinding;
+  private imagePickerBinding?: ChatSurfaceBinding;
+  private filePickerBinding?: ChatSurfaceBinding;
   /** Reserved compact presentation: constrains only the editor height to one line. Current chatbox dialogs
    *  hide the composer; keep this input for a future interaction mode without changing its width. */
   readonly compact = input(false);
@@ -225,34 +241,74 @@ export class ChatInputComponent implements OnDestroy {
 
   constructor() {
     void this.restoreRecents();
-    effect(() => {
-      const threadId = this.threadId();
-      const editor = this.editor();
-      this.composerDrafts.drafts();
-      if (!threadId || !editor || this.restoredThreadId === threadId) return;
-      this.restoredThreadId = threadId;
-      const draft = this.composerDrafts.get(threadId);
-      if (!draft) return;
-      this.generationTriggered = Boolean(draft.generationTriggered);
-      editor.setHtml(draft.html);
-      this.draftHtml.set(draft.html);
-      this.pendingLinkUrl = draft.linkUrl ?? null;
-      this.detectedLink.set(this.pendingLinkUrl);
-      if (
-        draft.generationId &&
-        draft.generationExpiresAt &&
-        draft.generationExpiresAt > Date.now()
-      ) {
-        this.generationId.set(draft.generationId);
-        this.generations.resume({
-          generationId: draft.generationId,
-          status: 'pending',
-          expiresAt: draft.generationExpiresAt,
-        });
-      } else if (draft.linkUrl && draft.generationTriggered) {
-        void this.startGeneration(draft.plainText, draft.linkUrl, true);
-      }
+    effect((onCleanup) => {
+      const lifecycle = this.lifecycle();
+      if (!lifecycle) return;
+      const subscription = lifecycle.state$.subscribe((state) =>
+        untracked(() => {
+          this.interactive.set(
+            state.phase === 'bound' && state.foreground && this.enabled(),
+          );
+          this.synchronizeBinding(
+            state.phase === 'bound' && this.enabled()
+              ? state.binding
+              : undefined,
+            this.editor(),
+          );
+        }),
+      );
+      onCleanup(() => subscription.unsubscribe());
     });
+    effect(() => {
+      const lifecycle = this.lifecycle();
+      const enabled = this.enabled();
+      const editor = this.editor();
+      untracked(() => {
+        const state = lifecycle?.state();
+        this.interactive.set(
+          state?.phase === 'bound' && state.foreground && enabled,
+        );
+        this.synchronizeBinding(
+          enabled ? lifecycle?.binding : undefined,
+          editor,
+        );
+      });
+    });
+  }
+
+  private synchronizeBinding(
+    binding: ChatSurfaceBinding | undefined,
+    editor: ReturnType<ChatInputComponent['editor']>,
+  ): void {
+    const threadId = binding?.threadId;
+    if (this.boundContext !== binding) {
+      this.unbind();
+      if (binding?.signal.aborted) return;
+      this.boundContext = binding;
+    }
+    if (!threadId || !editor || this.restoredThreadId === threadId) return;
+    this.restoredThreadId = threadId;
+    const draft = this.composerDrafts.get(threadId);
+    if (!draft) return;
+    this.generationTriggered = Boolean(draft.generationTriggered);
+    editor.setHtml(draft.html);
+    this.draftHtml.set(draft.html);
+    this.pendingLinkUrl = draft.linkUrl ?? null;
+    this.detectedLink.set(this.pendingLinkUrl);
+    if (
+      draft.generationId &&
+      draft.generationExpiresAt &&
+      draft.generationExpiresAt > Date.now()
+    ) {
+      this.generationId.set(draft.generationId);
+      this.generations.resume({
+        generationId: draft.generationId,
+        status: 'pending',
+        expiresAt: draft.generationExpiresAt,
+      });
+    } else if (draft.linkUrl && draft.generationTriggered) {
+      void this.startGeneration(draft.plainText, draft.linkUrl, true);
+    }
   }
   /** Delegated click on the prerendered grids wrapper: read the glyph from the clicked button's `data-emoji`
    *  and insert it. One handler for every category's buttons — far cheaper than a `(click)` binding + directive
@@ -307,41 +363,39 @@ export class ChatInputComponent implements OnDestroy {
     this.detectedLink.set(url);
   }
 
-  private async startGeneration(
+  private generationRequest?: Subscription;
+
+  private startGeneration(
     text: string,
     url: string,
     triggered: boolean,
     requestedGenerationId?: string,
-  ): Promise<void> {
+  ): void {
+    this.generationRequest?.unsubscribe();
     this.generationStarting.set(true);
     this.generationStartFailed.set(false);
     if (triggered) this.generationTriggered = true;
-    try {
-      const state = await this.generations.begin(
-        url,
-        text,
-        requestedGenerationId,
-      );
-      if (url !== this.detectedLink()) {
-        this.generations.forget(state.generationId);
-        return;
-      }
-      if (
-        requestedGenerationId &&
-        requestedGenerationId !== state.generationId
-      ) {
-        this.generations.forget(requestedGenerationId);
-      }
-      this.generationId.set(state.generationId);
-      this.generationTriggered = true;
-      if (this.openWhenStarted) this.openGenerationDialog();
-    } catch {
-      // A start failure uses the same retryable failed affordance as a generation failure.
-      this.generationStartFailed.set(true);
-    } finally {
-      this.generationStarting.set(false);
-      this.openWhenStarted = false;
-    }
+    this.generationRequest = this.generations
+      .begin$(url, text, requestedGenerationId)
+      .pipe(
+        finalize(() => {
+          this.generationStarting.set(false);
+          this.openWhenStarted = false;
+        }),
+      )
+      .subscribe({
+        next: (state) => {
+          if (
+            requestedGenerationId &&
+            requestedGenerationId !== state.generationId
+          )
+            this.generations.forget(requestedGenerationId);
+          this.generationId.set(state.generationId);
+          this.generationTriggered = true;
+          if (this.openWhenStarted) this.openGenerationDialog();
+        },
+        error: () => this.generationStartFailed.set(true),
+      });
   }
 
   onLinkClick(): void {
@@ -377,10 +431,18 @@ export class ChatInputComponent implements OnDestroy {
     if (target?.closest('.ci-input')) this.route.closeDlg();
   }
 
+  private generationDialog?: DlgRef;
+
+  private closeGenerationDialog(): void {
+    const dialog = this.generationDialog;
+    this.generationDialog = undefined;
+    if (dialog) this.route.closeDialogAndAbove(dialog);
+  }
+
   private openGenerationDialog(): void {
     const generationId = this.generationId();
-    if (!generationId) return;
-    this.route.popupDlg(
+    if (!generationId || this.generationDialog) return;
+    this.generationDialog = this.route.popupDlg(
       PopupType.LINK_CARD_GENERATION,
       {
         generationId,
@@ -388,6 +450,7 @@ export class ChatInputComponent implements OnDestroy {
         originalText: this.editor()?.getText() ?? '',
       },
       (result) => {
+        this.generationDialog = undefined;
         if (result?.kind === 'retry') {
           const url = this.detectedLink();
           if (!url) return;
@@ -415,7 +478,7 @@ export class ChatInputComponent implements OnDestroy {
   /** Commit the open composer's local state when its chat is being left. Keeping this explicit is
    *  important on desktop, where the A/B chat panes remain mounted after a switch. */
   saveDraft(): void {
-    const threadId = this.threadId();
+    const threadId = this.boundContext?.threadId;
     const editor = this.editor();
     if (!threadId || !editor) return;
     const generation = this.linkGeneration();
@@ -433,6 +496,9 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   private resetGeneration(): void {
+    this.closeGenerationDialog();
+    this.generationRequest?.unsubscribe();
+    this.generationRequest = undefined;
     const id = this.generationId();
     if (id) this.generations.forget(id);
     this.generationId.set(null);
@@ -518,6 +584,7 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   private sendText(): void {
+    if (!this.boundContext || this.boundContext.signal.aborted) return;
     const editor = this.editor();
     if (!editor) return;
     const displayText = editor.getText().trim();
@@ -537,20 +604,34 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   onAttachClick(): void {
+    const binding = this.boundContext;
+    if (!binding || binding.signal.aborted) return;
     if (this.nativeUploads.supported()) {
       void this.nativeUploads.pick('image').then(
         (files) => {
+          if (binding.signal.aborted) return;
           if (files.length) this.send.emit({ kind: 'native-files', files });
         },
-        () => this.toast.warn(this.transloco.translate('transfer.pickFailed')),
+        () => {
+          if (!binding.signal.aborted)
+            this.toast.warn(this.transloco.translate('transfer.pickFailed'));
+        },
       );
       return;
     }
+    this.imagePickerBinding = binding;
     this.attachInput()?.nativeElement.click();
   }
   onAttachChange(e: Event): void {
     const input = e.target as HTMLInputElement;
-    if (input.files && input.files.length > 0)
+    // The opening scope's validity is the only gate: unbind aborts it before a
+    // successor can bind, so no identity comparison is needed.
+    if (
+      this.imagePickerBinding &&
+      !this.imagePickerBinding.signal.aborted &&
+      input.files &&
+      input.files.length > 0
+    )
       this.send.emit({
         kind: 'image',
         files: Array.from(input.files),
@@ -559,20 +640,32 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   onFileClick(): void {
+    const binding = this.boundContext;
+    if (!binding || binding.signal.aborted) return;
     if (this.nativeUploads.supported()) {
       void this.nativeUploads.pick('file').then(
         (files) => {
+          if (binding.signal.aborted) return;
           if (files.length) this.send.emit({ kind: 'native-files', files });
         },
-        () => this.toast.warn(this.transloco.translate('transfer.pickFailed')),
+        () => {
+          if (!binding.signal.aborted)
+            this.toast.warn(this.transloco.translate('transfer.pickFailed'));
+        },
       );
       return;
     }
+    this.filePickerBinding = binding;
     this.fileInput()?.nativeElement.click();
   }
   onFileChange(e: Event): void {
     const input = e.target as HTMLInputElement;
-    if (input.files && input.files.length > 0)
+    if (
+      this.filePickerBinding &&
+      !this.filePickerBinding.signal.aborted &&
+      input.files &&
+      input.files.length > 0
+    )
       this.send.emit({
         kind: 'file',
         files: Array.from(input.files),
@@ -659,26 +752,16 @@ export class ChatInputComponent implements OnDestroy {
 
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
-  private stream: MediaStream | null = null;
+  private microphone?: Subscription;
   private mimeForRecording = '';
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private waveFrame?: number;
   private recordStartedAt = 0;
-  private pendingCancel = false;
   /** The 60s cap stops MediaRecorder, but the gesture stays live until pointerup decides send vs discard. */
   private captureStoppedAtCap = false;
   private recorderStopSettled = false;
   private finishRequested = false;
-  /** Generation counter for the in-flight press — bumped on every pointerdown/up/cancel/destroy. beginRecording
-   *  is async (blocked on the getUserMedia permission prompt, which can take seconds); it captures the session
-   *  at start and re-checks it after every await, so a press that ended (or a component that died) while the
-   *  prompt was up is detected and the mic is released without starting a stray recorder. A boolean "aborted"
-   *  flag could not cover the sub-millisecond window between the post-await check and MediaRecorder.start(). */
-  private recordSession = 0;
-  /** True once ngOnDestroy ran — beginRecording checks it so a permission prompt resolved after teardown
-   *  (thread switch mid-grant) never starts a recorder on a dead view. */
-  private destroyed = false;
   private tickTimer?: ReturnType<typeof setInterval>;
   private capTimer?: ReturnType<typeof setTimeout>;
   private errorTimer?: ReturnType<typeof setTimeout>;
@@ -723,13 +806,13 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   private startRecording(): void {
-    this.recordSession++; // a fresh press invalidates any in-flight beginRecording
+    this.stopRecording(true);
     this.recordCancelled.set(false);
     this.recordError.set('');
-    void this.beginRecording(this.recordSession);
+    this.beginRecording();
   }
 
-  private async beginRecording(session: number): Promise<void> {
+  private beginRecording(): void {
     const mime = pickRecorderMime();
     if (
       !mime ||
@@ -739,23 +822,22 @@ export class ChatInputComponent implements OnDestroy {
       this.flashRecordError('chat.recordMicUnsupported');
       return;
     }
-    let stream: MediaStream;
+    this.microphone = microphoneStream().subscribe({
+      next: (stream) => this.beginCapture(stream, mime),
+      error: () => this.flashRecordError('chat.recordMicDenied'),
+    });
+  }
+
+  private beginCapture(stream: MediaStream, mime: string): void {
+    let rec: MediaRecorder;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      rec = new MediaRecorder(stream, { mimeType: mime });
     } catch {
-      this.flashRecordError('chat.recordMicDenied');
+      this.stopRecording(true);
+      this.flashRecordError('chat.recordMicUnsupported');
       return;
     }
-    // The gesture ended (released/cancelled) or the component was destroyed while the permission prompt was
-    // up — release the mic and bail. The session counter (bumped on every gesture end) is the race-free
-    // signal that THIS press is still the live one.
-    if (this.recordSession !== session || this.destroyed) {
-      stream.getTracks().forEach((t) => t.stop());
-      return;
-    }
-    this.stream = stream;
     this.mimeForRecording = mime;
-    const rec = new MediaRecorder(stream, { mimeType: mime });
     this.chunks = [];
     rec.ondataavailable = (ev) => {
       if (ev.data.size > 0) this.chunks.push(ev.data);
@@ -774,20 +856,10 @@ export class ChatInputComponent implements OnDestroy {
     try {
       rec.start();
     } catch {
-      // start() can throw if the stream was stopped concurrently — bail without emitting.
-      this.recorder = null;
-      this.recording.set(false);
-      stream.getTracks().forEach((t) => t.stop());
-      this.stream = null;
+      this.stopRecording(true);
       return;
     }
     this.startWaveform(stream);
-    // Close the remaining race: the gesture may have ended in the window between the post-await check above
-    // and rec.start(). If so, stop+discard now rather than running unattended until the 60s cap.
-    if (this.recordSession !== session || this.destroyed) {
-      void this.stopRecording(true);
-      return;
-    }
     this.tickTimer = setInterval(() => {
       this.recordSecs.set(
         Math.min(
@@ -810,8 +882,8 @@ export class ChatInputComponent implements OnDestroy {
     clearInterval(this.tickTimer);
     this.recordSecs.set(MAX_RECORD_SECS);
     this.captureStoppedAtCap = true;
-    this.stream?.getTracks().forEach((t) => t.stop());
-    this.stream = null;
+    this.microphone?.unsubscribe();
+    this.microphone = undefined;
     if (rec.state !== 'inactive') rec.stop();
   }
 
@@ -834,9 +906,9 @@ export class ChatInputComponent implements OnDestroy {
     if (this.recordPressStartedWithDraft) this.suppressNextPointerClick();
     this.recordPressStartedWithDraft = false;
     if (!this.recording()) {
-      this.recordSession++;
+      this.stopRecording(true);
       return;
-    } // ended before start → invalidate the in-flight begin
+    }
     const cancel = this.isInsideRecordCancelTarget(event);
     this.recordCancelled.set(cancel);
     void this.stopRecording(cancel);
@@ -848,11 +920,7 @@ export class ChatInputComponent implements OnDestroy {
     this.recordHoldPending = false;
     if (this.recordPressStartedWithDraft) this.suppressNextPointerClick();
     this.recordPressStartedWithDraft = false;
-    if (!this.recording()) {
-      this.recordSession++;
-      return;
-    } // ended before start → invalidate the in-flight begin
-    void this.stopRecording(true);
+    this.stopRecording(true);
   }
 
   private suppressNextPointerClick(): void {
@@ -878,16 +946,35 @@ export class ChatInputComponent implements OnDestroy {
   }
 
   private stopRecording(cancel: boolean): void {
-    const rec = this.recorder;
-    if (!rec) return;
+    clearTimeout(this.recordHoldTimer);
+    this.recordHoldPending = false;
+    this.recordPressStartedWithDraft = false;
     clearTimeout(this.capTimer);
     clearInterval(this.tickTimer);
-    this.pendingCancel = cancel;
-    this.finishRequested = true;
-    this.stream?.getTracks().forEach((t) => t.stop());
-    this.stream = null;
     this.recording.set(false);
     this.stopWaveform();
+    const rec = this.recorder;
+    if (cancel) {
+      // Detach before stop: its queued final data/stop events must not reach a
+      // successor recording or submit a clip after unbind.
+      this.recorder = null;
+      if (rec) {
+        rec.ondataavailable = null;
+        rec.onstop = null;
+      }
+      this.chunks = [];
+      this.finishRequested = false;
+      this.captureStoppedAtCap = false;
+      this.recorderStopSettled = false;
+    }
+    this.microphone?.unsubscribe();
+    this.microphone = undefined;
+    if (!rec) return;
+    if (cancel) {
+      if (rec.state !== 'inactive') rec.stop();
+      return;
+    }
+    this.finishRequested = true;
     if (rec.state !== 'inactive') {
       rec.stop(); // fires onstop → finalizeRecording
     } else if (this.recorderStopSettled) {
@@ -898,10 +985,10 @@ export class ChatInputComponent implements OnDestroy {
   /** MediaRecorder.stop() resolved → build the Blob and emit (or discard on cancel / too-short). */
   private finalizeRecording(): void {
     if (!this.recorder) return;
+    this.recorder.ondataavailable = null;
+    this.recorder.onstop = null;
     this.recorder = null;
     this.finishRequested = false;
-    const cancel = this.pendingCancel;
-    this.pendingCancel = false;
     const durationMs = this.captureStoppedAtCap
       ? MAX_RECORD_SECS * 1000
       : Date.now() - this.recordStartedAt;
@@ -909,7 +996,6 @@ export class ChatInputComponent implements OnDestroy {
     const chunks = this.chunks;
     this.chunks = [];
     const mime = this.mimeForRecording;
-    if (cancel) return;
     if (isVoiceRecordingTooShort(durationMs)) {
       this.flashRecordError('chat.recordTooShort');
       return;
@@ -970,21 +1056,37 @@ export class ChatInputComponent implements OnDestroy {
     this.recordWave.set(Array(28).fill(0.08));
   }
 
-  ngOnDestroy(): void {
-    // Component teardown is the final fallback for route/webview destruction. Normal chat switches call
-    // saveDraft() from MessageThreadComponent.teardownKernel() because desktop panes stay mounted.
+  /** Release conversation work without destroying the editor infrastructure. */
+  unbind(): void {
     this.saveDraft();
-    this.destroyed = true;
-    this.recordSession++; // invalidate any in-flight beginRecording (permission prompt resolved post-teardown)
-    // Stop an in-flight recording if the component is torn down mid-press (thread switch, route leave, etc.).
-    if (this.recorder) this.stopRecording(true);
-    this.stopWaveform();
-    clearTimeout(this.capTimer);
-    clearInterval(this.tickTimer);
+    this.closeGenerationDialog();
+    this.imagePickerBinding = undefined;
+    this.filePickerBinding = undefined;
+    this.boundContext = undefined;
+    this.restoredThreadId = undefined;
+    this.stopRecording(true);
     clearTimeout(this.errorTimer);
     clearTimeout(this.linkTimer);
+    this.generationRequest?.unsubscribe();
+    this.generationRequest = undefined;
+    clearTimeout(this.recordHoldTimer);
+    clearTimeout(this.suppressSendResetTimer);
     const generationId = this.generationId();
     if (generationId) this.generations.pause(generationId);
+    this.generationId.set(null);
+    this.generationStarting.set(false);
+    this.generationStartFailed.set(false);
+    this.generationTriggered = false;
+    this.closeEmoji();
+    this.closeAttach();
+    this.editor()?.clear();
+    this.draftHtml.set('');
+    this.pendingLinkUrl = null;
+    this.detectedLink.set(null);
+  }
+
+  ngOnDestroy(): void {
+    this.unbind();
   }
 
   /** Move-to-front, dedup, cap at {@link RECENTS_MAX}; persist. */

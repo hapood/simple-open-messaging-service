@@ -7,7 +7,9 @@ import {
   input,
   signal,
   ChangeDetectionStrategy,
+  OnDestroy,
 } from '@angular/core';
+import { finalize, Subscription } from 'rxjs';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
 import {
@@ -92,7 +94,7 @@ export interface ForwardDialogResult {
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forward-dialog.component.scss',
 })
-export class ForwardDialogComponent {
+export class ForwardDialogComponent implements OnDestroy {
   readonly AppIconType = AppIconType;
   readonly UserAvatarType = UserAvatarType;
   readonly messages = input<readonly ForwardMessageItem[]>([]);
@@ -294,24 +296,26 @@ export class ForwardDialogComponent {
     this.selectedForwardMode.set(mode);
   }
 
-  private async beginGeneration(
-    url: string,
-    generationId?: string,
-  ): Promise<void> {
+  private generationRequest?: Subscription;
+
+  private beginGeneration(url: string, generationId?: string): void {
     this.shareMode.set('link');
     this.generationStarting.set(true);
-    try {
-      const state = await this.generations.begin(
-        url,
-        this.sharedText(),
-        generationId,
-      );
-      this.generationId.set(state.generationId);
-    } catch {
-      if (!generationId) this.generationId.set(null);
-    } finally {
-      this.generationStarting.set(false);
-    }
+    this.generationRequest?.unsubscribe();
+    this.generationRequest = this.generations
+      .begin$(url, this.sharedText(), generationId)
+      .pipe(finalize(() => this.generationStarting.set(false)))
+      .subscribe({
+        next: (state) => this.generationId.set(state.generationId),
+        error: () => {
+          if (!generationId) this.generationId.set(null);
+        },
+      });
+  }
+
+  ngOnDestroy(): void {
+    this.generationRequest?.unsubscribe();
+    this.generationRequest = undefined;
   }
 
   private previewLinkMessage(content: LinkCardContent): ChatMsgData {

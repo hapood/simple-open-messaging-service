@@ -1,4 +1,5 @@
 import {
+  afterRenderEffect,
   Component,
   computed,
   effect,
@@ -37,14 +38,10 @@ type SlotKey = 'A' | 'B';
  * so its kernel keeps measuring layout correctly — `display:none` would zero `offsetHeight`/`scrollHeight`
  * and break the kernel, which measures layout not paint).
  *
- * A switch never races a kernel init: the target thread is bound to the BACKGROUND instance, whose own
- * constructor effect runs `teardown() + initScroller()` (reset) while hidden; when its kernel emits `ready`,
- * the pane is promoted to foreground and the old foreground's kernel is IDLED (`teardownKernel`: teardown +
- * reset `currentTrdId`; the COMPONENT STAYS MOUNTED — panes are never destroyed on a switch, only reset)
- * after the cross-fade — bounding memory + SSE to one warm pane. Re-selecting a thread already bound to a
- * (possibly idled) pane cannot rely on that input-keyed init effect (its `userMsgTrd` is unchanged, so it
- * won't re-fire), so the coordinator drives the pane's `reset()` explicitly: warm → `ready` now (instant
- * fast-flip-back); cold → reinit → `ready`.
+ * The host explicitly binds the incoming surface after Angular has applied its inputs.
+ * Readiness promotes it; a scope-abort-checked delayed unbind returns the outgoing
+ * surface to prepared infrastructure without reconstructing its kernel. Live metadata
+ * cannot bind an unbound surface. A warm resident acknowledges reselection without loading.
  *
  * VISUALS ARE PURE CSS, not imperative WAAPI. The foreground slot is a signal (`fgSlot`) flipped
  * SYNCHRONOUSLY in `promote()`; each layer wears `.pane-fg` or defaults to background, and CSS `transition`
@@ -316,7 +313,12 @@ export class ChatPaneComponent implements OnDestroy {
   });
 
   /** The in-flight switch: which background pane is being awaited + the target thread it must report. */
-  private pending?: { targetId: number; bgKey: SlotKey; startedAt: number };
+  private pending?: {
+    targetId: number;
+    bgKey: SlotKey;
+    startedAt: number;
+    dispatched?: boolean;
+  };
   /** Idles a backgrounded slot's kernel once the cross-fade has finished (one-shot; re-armed per promote). */
   private teardownTimer?: ReturnType<typeof setTimeout>;
   /** Active circular-reveal animation per layer (incoming only; the outgoing pane fades purely in CSS, so it
@@ -328,8 +330,25 @@ export class ChatPaneComponent implements OnDestroy {
   private readonly reducedMotion = prefersReducedMotion();
 
   constructor() {
-    // The switch coordinator: read the target + the current foreground's item, hand the target to the
-    // background pane to reset (hidden), await ready, then promote.
+    afterRenderEffect(() => {
+      const target = this.openThreadId();
+      const a = this.threadA();
+      const b = this.threadB();
+      const itemA = this.itemA();
+      const itemB = this.itemB();
+      untracked(() => {
+        if (target === undefined) return;
+        const pending = this.pending;
+        if (!pending || pending.dispatched || pending.targetId !== target)
+          return;
+        const pane = pending.bgKey === 'A' ? a : b;
+        const item = pending.bgKey === 'A' ? itemA : itemB;
+        if (!pane || item?.threadId !== target) return;
+        pending.dispatched = true;
+        pane.bind();
+      });
+    });
+    // Navigation chooses a slot; afterRenderEffect dispatches its explicit binding command.
     effect(() => {
       const target = this.openThreadId();
       const fgKey = this.fgSlot();
@@ -337,31 +356,25 @@ export class ChatPaneComponent implements OnDestroy {
 
       if (target === undefined) {
         this.nativeComposer.hideActive();
-        // CLOSE: cancel any in-flight swap and IDLE the foreground kernel (teardown + reset currentTrdId),
-        // keeping the component mounted. The pane-empty overlay (gated on !active()) covers it. On mobile
-        // this runs AFTER the leave-slide (onSlideDone → convList.close), so the pane keeps its content
-        // through the slide; on desktop there is no slide.
+        // Close both bindings, including a hidden surface still loading. Retain their
+        // component/kernel infrastructure behind the empty overlay.
         this.clearPending();
         this.clearTeardown();
-        untracked(() =>
-          (fgKey === 'A' ? this.threadA() : this.threadB())?.teardownKernel(),
-        );
+        untracked(() => {
+          this.threadA()?.unbind();
+          this.threadB()?.unbind();
+        });
         return;
       }
       if (fgTid === target) {
-        // Foreground already bound to target. Two cases, told apart by the pane's warmth: (a) the common
-        // one — the pane just became foreground via promote, or the user re-clicked the open thread — it is
-        // WARM, so there is nothing to do; (b) the pane is COLD (a close idled its kernel, then the same
-        // thread was re-opened) — drive `reset()` to re-initialize in place. Without the warmth guard, every
-        // promote (which flips fgSlot and re-triggers this effect) would spuriously reset an already-warm
-        // foreground pane on every switch. The pane stays foreground in both cases.
+        // A presented foreground needs no command; reopening an unbound resident
+        // requires explicit binding even though its input thread ID is unchanged.
         const fg = untracked(
           fgKey === 'A' ? () => this.threadA() : () => this.threadB(),
         );
         this.clearPending();
         if (fg && !untracked(() => fg.isWarm())) {
           this.armPending(target, fgKey);
-          untracked(() => fg.reset());
         }
         return;
       }
@@ -371,22 +384,14 @@ export class ChatPaneComponent implements OnDestroy {
       this.nativeComposer.hideActive();
 
       const bgKey: SlotKey = fgKey === 'A' ? 'B' : 'A';
-      // Is the target already bound to the BACKGROUND pane? Read UNTRACKED: the fresh-bind `slot.set` below
-      // writes the bg slot, and if this read tracked it, the effect would re-run, hit this branch on the
-      // next pass, and double-drive `reset()` on a pane whose init effect is already firing.
+      // Read the other slot untracked: assigning it below must not redispatch the
+      // same navigation command on a subsequent effect run.
       const bgTid = untracked(
         bgKey === 'A' ? () => this.slotA() : () => this.slotB(),
       );
       if (bgTid === target) {
-        // Background resident (warm mid-dissolve, or cold after the post-promote idle): the slot already
-        // holds target, so a `slot.set` would be a signal no-op and the pane's input-keyed init effect
-        // would NOT re-fire — `ready` would never emit and the switch would strand. Drive `reset()`
-        // explicitly (warm → ready now, preserving the instant fast-flip-back; cold → reinit → ready); the
-        // emitted `ready` (onReady) promotes it with the cross-fade.
+        // Resident selection still needs an explicit bind/ready handshake.
         this.armPending(target, bgKey);
-        untracked(() =>
-          (bgKey === 'A' ? this.threadA() : this.threadB())?.reset(),
-        );
         return;
       }
 
@@ -396,11 +401,8 @@ export class ChatPaneComponent implements OnDestroy {
       // the requested thread or trigger another cache load.
       if (!item) return;
 
-      // Fresh bind: assign target to the background slot. The slot value (and thus the bound
-      // ConversationItem) changes, so the always-mounted pane's input-keyed init effect re-fires — it tears
-      // down + re-inits (reset) while hidden, then emits `ready` (onReady) → promote. The slot stores the
-      // threadId; itemA/itemB derive the live ConversationItem from the conv list, so per-user meta
-      // (mute/pin/block/clear) flows in without a re-switch.
+      // Fresh binding is dispatched after render, once the child has the new inputs.
+      // The slot keeps a thread ID so metadata projection remains live independently.
       this.armPending(target, bgKey);
       (bgKey === 'A' ? this.slotA : this.slotB).set(target);
     });
@@ -505,20 +507,22 @@ export class ChatPaneComponent implements OnDestroy {
     }
   }
 
-  /** Idle a backgrounded slot's kernel after the cross-fade. Once the outgoing pane has fully dissolved,
-   *  call `teardownKernel()` on it (teardown + reset `currentTrdId`): the COMPONENT STAYS MOUNTED, only its
-   *  kernel + SSE are released, bounding memory + SSE to the one warm foreground pane. The slot keeps its
-   *  threadId (so the pane re-binds instantly on a later re-selection via `reset()`); only `currentTrdId`
-   *  is cleared, which is what marks the kernel cold. Idempotent: re-armed per promote, and the callback
-   *  only idles the slot if it is STILL background by the time it fires (a later promote — including the
-   *  warm-resident fast-flip-back — may have re-foregrounded it). */
+  /** Unbind only the outgoing binding, never a successor or pending incoming surface. */
   private scheduleKernelTeardown(slot: SlotKey): void {
     this.clearTeardown();
+    const pane = slot === 'A' ? this.threadA() : this.threadB();
+    // The captured scope is valid exactly while it has not been aborted: if a
+    // successor bound the pane meanwhile, the captured signal is already aborted.
+    const captured = pane?.lifecycle.binding;
+    if (!captured) return;
     this.teardownTimer = setTimeout(() => {
       this.teardownTimer = undefined;
-      if (this.fgSlot() !== slot) {
-        (slot === 'A' ? this.threadA() : this.threadB())?.teardownKernel();
-      }
+      if (
+        this.fgSlot() !== slot &&
+        this.pending?.bgKey !== slot &&
+        !captured.signal.aborted
+      )
+        pane?.unbind();
     }, ENTER_MS + 60);
   }
 }

@@ -28,6 +28,11 @@ import {
   type Subscriber,
   type Subscription,
 } from 'rxjs';
+import {
+  CancellationScope,
+  awaitAbortable,
+  firstValueFromAbortable,
+} from '../../lib/async/cancellation-scope';
 import dayjs from 'dayjs';
 import {
   MessageRepository,
@@ -110,6 +115,9 @@ export interface HttpItemSourceLiveOpts {
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
+  private readonly lifetime = new CancellationScope();
+  private bindingSignal?: AbortSignal;
+  private detachBindingAbort?: () => void;
   private readonly deletedQuoteSeqs = new Set<number>();
   private readonly repliesByQuote = new Map<number, Set<number>>();
   private deletedSub?: Subscription;
@@ -239,6 +247,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   resumeLiveUpdates(latestSeq?: number): void {
+    if (this.lifetime.signal.aborted) return;
     if (this.sseSub) return;
     this.livePaused = false;
     this.sseSub = this.repo.liveSignal$
@@ -292,10 +301,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     let quote = entry.quote;
     const anchor = quote.anchor;
     if (anchor?.kind === 'origin') {
-      const target = await this.repo.getMessageByOrigin(
-        this.conv.threadId,
-        anchor.namespaceId,
-        anchor.originSeq,
+      const target = await this.wait(
+        this.repo.getMessageByOrigin(
+          this.conv.threadId,
+          anchor.namespaceId,
+          anchor.originSeq,
+        ),
       );
       if (target)
         quote = {
@@ -313,9 +324,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       const replies = this.repliesByQuote.get(seq) ?? new Set<number>();
       replies.add(replySeq);
       this.repliesByQuote.set(seq, replies);
-      const deleted = await this.repo.getDeletedMessageSeqs(
-        this.conv.threadId,
-        [seq],
+      const deleted = await this.wait(
+        this.repo.getDeletedMessageSeqs(this.conv.threadId, [seq]),
       );
       if (deleted.length || this.deletedQuoteSeqs.has(seq))
         // Coordinate-only quote: the tombstone row stays jumpable via the
@@ -330,8 +340,24 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.onQuoteUpdated(replySeq, quote);
   }
 
-  resolveHistoryAnchor(anchor: HistoryAnchor): Promise<number | null> {
-    return this.repo.resolveHistoryAnchor(this.conv.threadId, anchor);
+  async resolveHistoryAnchor(
+    anchor: HistoryAnchor,
+    signal?: AbortSignal,
+  ): Promise<number | null> {
+    const request = new CancellationScope(this.lifetime.signal, signal);
+    try {
+      request.signal.throwIfAborted();
+      return await awaitAbortable(
+        this.repo.resolveHistoryAnchor(
+          this.conv.threadId,
+          anchor,
+          request.signal,
+        ),
+        request.signal,
+      );
+    } finally {
+      request.dispose();
+    }
   }
 
   async init(
@@ -340,12 +366,20 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     newerCount: number,
     _opts?: CbSourceInitOpts,
   ): Promise<CbItem<ChatItemData>[]> {
+    if (_opts?.signal && this.bindingSignal !== _opts.signal) {
+      this.detachBindingAbort?.();
+      const signal = _opts.signal;
+      this.bindingSignal = signal;
+      const abort = () => this.destroy();
+      signal.addEventListener('abort', abort, { once: true });
+      this.detachBindingAbort = () =>
+        signal.removeEventListener('abort', abort);
+      if (signal.aborted) abort();
+    }
+    this.lifetime.signal.throwIfAborted();
     const result = await this.queryHistory(
       anchorId === -1
-        ? {
-            kind: 'latest',
-            count: Math.min(olderCount, MAX_PAGE),
-          }
+        ? { kind: 'latest', count: Math.min(olderCount, MAX_PAGE) }
         : {
             kind: 'around',
             anchor: anchorId,
@@ -354,8 +388,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           },
     );
     if (result.failed) throw new MessagePageLoadError();
-    await this.restoreMediaStages();
-    const items = await this.historyItemsToCb(result.items);
+    await this.wait(this.restoreMediaStages());
+    const items = await this.wait(this.historyItemsToCb(result.items));
     this.noOlder = !result.hasOlder;
     this.noNewer = !result.hasNewer;
     this.applyBoundaries(items);
@@ -387,6 +421,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     cursorId: number,
     count: number,
   ): Promise<CbItem<ChatItemData>[]> {
+    if (this.lifetime.signal.aborted) return [];
     if (this.noOlder) return [];
     const take = Math.min(count, MAX_PAGE);
     const result = await this.queryHistory({
@@ -395,7 +430,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       count: take,
     });
     if (result.failed) throw new MessagePageLoadError();
-    const items = await this.historyItemsToCb(result.items);
+    const items = await this.wait(this.historyItemsToCb(result.items));
     this.noOlder = !result.hasOlder;
     if (this.noOlder && items.length > 0)
       items[0] = { ...items[0], boundary: 'oldest' };
@@ -416,7 +451,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       count: take,
     });
     if (result.failed) throw new MessagePageLoadError();
-    const items = await this.historyItemsToCb(result.items);
+    const items = await this.wait(this.historyItemsToCb(result.items));
     this.noNewer = !result.hasNewer;
     if (this.noNewer && items.length > 0)
       items[items.length - 1] = {
@@ -436,6 +471,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   requestNewer(cursorId: number, count: number): CbDemand<ChatItemData> {
     return new Observable((subscriber) => {
+      if (this.lifetime.signal.aborted) {
+        subscriber.complete();
+        return;
+      }
       const waiter = { cursorId, count, subscriber };
       this.newerWaiters.add(waiter);
       this.requestNewerPump();
@@ -447,6 +486,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private async pumpNewerWaiters(): Promise<void> {
     if (
+      this.lifetime.signal.aborted ||
       this.pumpingNewer ||
       this.initializingDb ||
       this.livePaused ||
@@ -484,6 +524,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   private requestNewerPump(): void {
+    if (this.lifetime.signal.aborted) return;
     this.newerPumpVersion++;
     if (!this.initializingDb && !this.livePaused) void this.pumpNewerWaiters();
   }
@@ -527,14 +568,17 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   private async restoreMediaStages(): Promise<void> {
+    this.lifetime.signal.throwIfAborted();
     let response;
     try {
-      response = await firstValueFrom(
+      response = await firstValueFromAbortable(
         this.messages.queryMediaStages(this.conv.threadId),
+        this.lifetime.signal,
       );
     } catch {
       return;
     }
+    this.lifetime.signal.throwIfAborted();
     if (response.code !== 0 || !Array.isArray(response.data)) return;
     const profile = this.userService.sessionProfile();
     if (!profile) return;
@@ -698,9 +742,17 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   destroy(): void {
+    if (this.lifetime.signal.aborted) return;
+    this.detachBindingAbort?.();
+    this.detachBindingAbort = undefined;
+    this.bindingSignal = undefined;
+    this.lifetime.cancel();
+    this.livePaused = true;
     this.quoteDbSub?.unsubscribe();
+    this.quoteDbSub = undefined;
     this.mountedQuotes.clear();
     this.deletedSub?.unsubscribe();
+    this.deletedSub = undefined;
     this.sseSub?.unsubscribe();
     this.sseSub = undefined;
     this.mediaStatusSub?.unsubscribe();
@@ -711,6 +763,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.newerWaiters.clear();
     this.gapIdByKey.clear();
     this.gapById.clear();
+    this.profiles.clear();
+    this.profilesBySeq.clear();
+    this.seqsByCreator.clear();
+    this.repliesByQuote.clear();
+    this.deletedQuoteSeqs.clear();
   }
 
   /**
@@ -727,6 +784,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     liveLatestSeq: number | undefined,
     persistedLatestSeq: number = 0,
   ): void {
+    if (this.lifetime.signal.aborted) return;
     this.initializingDb = false;
     const targetSeq = Math.max(liveLatestSeq ?? 0, persistedLatestSeq);
     if (targetSeq > 0 && targetSeq > this.loadedSeq) {
@@ -739,15 +797,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   // ---------- rawToItems (shape every queried message + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
 
   private async rawToItems(msgs: Message[]): Promise<CbItem<ChatItemData>[]> {
+    this.lifetime.signal.throwIfAborted();
     const quoteSeqs = new Set<number>();
     const quotes = new Map<number, ChatMsgData['quote']>();
     for (const message of msgs) {
       const reference = parseClientMessageQuote(message.content);
       if (!reference) continue;
-      const target = await this.repo.getMessageByOrigin(
-        this.conv.threadId,
-        reference.namespaceId,
-        reference.originSeq,
+      const target = await this.wait(
+        this.repo.getMessageByOrigin(
+          this.conv.threadId,
+          reference.namespaceId,
+          reference.originSeq,
+        ),
       );
       const anchor: HistoryAnchor = { kind: 'origin', ...reference };
       quotes.set(message.seq, {
@@ -773,11 +834,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       if (item.data.quote?.seq !== undefined)
         quoteSeqs.add(item.data.quote.seq);
     }
-    await this.ensureProfiles(msgs);
+    await this.wait(this.ensureProfiles(msgs));
     if (quoteSeqs.size) {
-      for (const seq of await this.repo.getDeletedMessageSeqs(
-        this.conv.threadId,
-        [...quoteSeqs],
+      for (const seq of await this.wait(
+        this.repo.getDeletedMessageSeqs(this.conv.threadId, [...quoteSeqs]),
       )) {
         this.deletedQuoteSeqs.add(seq);
       }
@@ -873,7 +933,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       (slot): slot is Message => !isRenderableMessageTomb(slot),
     );
     const shaped = new Map(
-      (await this.rawToItems(messages)).map((item) => [item.id, item]),
+      (await this.wait(this.rawToItems(messages))).map((item) => [
+        item.id,
+        item,
+      ]),
     );
     for (const slot of slots) {
       if (!isRenderableMessageTomb(slot)) continue;
@@ -944,12 +1007,29 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     };
   }
 
+  private async wait<T>(work: Promise<T>): Promise<T> {
+    const result = await awaitAbortable(work, this.lifetime.signal);
+    this.lifetime.signal.throwIfAborted();
+    return result;
+  }
+
   private queryHistory(
     demand: NativeMessageHistoryDemand,
   ): Promise<NativeMessageHistoryResult> {
-    return isTauri()
-      ? this.repo.queryNativeMessageHistory(this.conv.threadId, demand)
-      : this.repo.queryBrowserMessageHistory(this.conv.threadId, demand);
+    this.lifetime.signal.throwIfAborted();
+    return this.wait(
+      isTauri()
+        ? this.repo.queryNativeMessageHistory(
+            this.conv.threadId,
+            demand,
+            this.lifetime.signal,
+          )
+        : this.repo.queryBrowserMessageHistory(
+            this.conv.threadId,
+            demand,
+            this.lifetime.signal,
+          ),
+    );
   }
 
   private applyBoundaries(items: CbItem<ChatItemData>[]): void {
@@ -1076,6 +1156,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   /** Resolve each author at the revision selected by that message. */
   private async ensureProfiles(msgs: Message[]): Promise<void> {
+    this.lifetime.signal.throwIfAborted();
     await Promise.all(
       msgs.map(async (message) => {
         if (message.contentType === 'SYSTEM') return;
@@ -1091,10 +1172,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         // evidenced form in the background.
         const demand = messageAuthorProfileDemand(message);
         const cached = await (this.profileRepo && demand
-          ? firstValueFrom(
+          ? firstValueFromAbortable(
               this.profileRepo.resolve(unevidencedProfileDemand(demand)),
+              this.lifetime.signal,
             ).catch(() => undefined)
           : Promise.resolve(undefined));
+        this.lifetime.signal.throwIfAborted();
         const presentation = {
           name: cached?.name ?? identity.account,
           account: identity.account,
@@ -1117,9 +1200,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 }
 
 function sourceDemand<T>(work: () => Promise<CbDemandResult<T>>): CbDemand<T> {
-  // Unsubscribe detaches the viewport observer; it deliberately does not abort the shared cache-fill HTTP operation.
-  // A later demand may reuse the repository result. Introduce AbortSignal only if repository requests become
-  // per-consumer rather than cache-populating work.
+  // Individual viewport unsubscription detaches its result; destroying the source
+  // cancels its whole history lane, including HTTP and further pagination.
   return new Observable((subscriber) => {
     void work()
       .catch((error): CbDemandResult<T> => ({ kind: 'error', error }))

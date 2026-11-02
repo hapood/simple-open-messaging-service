@@ -59,6 +59,108 @@ describe('LinkCardGenerationService', () => {
     request.flush({ code: 0, message: 'ok', data: {} });
   });
 
+  it('cancels a pending start on unsubscribe without publishing state', () => {
+    const next = vi.fn();
+    const subscription = service.begin$('https://example.com').subscribe(next);
+    const request = http.expectOne('/api/v1/link-preview/generations');
+    subscription.unsubscribe();
+    expect(request.cancelled).toBe(true);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it.each(['pause', 'forget'] as const)(
+    '%s cancels in-flight polling without restarting it',
+    async (action) => {
+      vi.useFakeTimers();
+      try {
+        service.resume({
+          generationId: 'cancel-me',
+          status: 'pending',
+          expiresAt: Date.now() + 60000,
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        const request = http.expectOne(
+          '/api/v1/link-preview/generations/cancel-me',
+        );
+        service[action]('cancel-me');
+        expect(request.cancelled).toBe(true);
+        if (action === 'forget')
+          expect(service.snapshot('cancel-me')).toBeUndefined();
+        else
+          expect(service.snapshot('cancel-me')).toMatchObject({
+            status: 'pending',
+            polling: false,
+          });
+        await vi.advanceTimersByTimeAsync(30000);
+        http.expectNone('/api/v1/link-preview/generations/cancel-me');
+        service.resume({
+          generationId: 'cancel-me',
+          status: 'pending',
+          expiresAt: Date.now() + 60000,
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        http.expectOne('/api/v1/link-preview/generations/cancel-me').flush({
+          data: {
+            generationId: 'cancel-me',
+            status: 'succeeded',
+            expiresAt: Date.now() + 60000,
+          },
+        });
+        expect(service.snapshot('cancel-me')).toMatchObject({
+          status: 'succeeded',
+          polling: false,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('does not create parallel polling when resumed during an in-flight request', async () => {
+    vi.useFakeTimers();
+    try {
+      const generation = {
+        generationId: 'single',
+        status: 'pending' as const,
+        expiresAt: Date.now() + 60000,
+      };
+      service.resume(generation);
+      await vi.advanceTimersByTimeAsync(0);
+      const request = http.expectOne('/api/v1/link-preview/generations/single');
+      service.resume(generation);
+      await vi.advanceTimersByTimeAsync(1000);
+      http.expectNone('/api/v1/link-preview/generations/single');
+      request.flush({ data: generation });
+      await vi.advanceTimersByTimeAsync(600);
+      const next = http.expectOne('/api/v1/link-preview/generations/single');
+      service.pause('single');
+      expect(next.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pauses the scheduled next poll before another HTTP request starts', async () => {
+    vi.useFakeTimers();
+    try {
+      const generation = {
+        generationId: 'scheduled',
+        status: 'pending' as const,
+        expiresAt: Date.now() + 60000,
+      };
+      service.resume(generation);
+      await vi.advanceTimersByTimeAsync(0);
+      http
+        .expectOne('/api/v1/link-preview/generations/scheduled')
+        .flush({ data: generation });
+      service.pause('scheduled');
+      await vi.advanceTimersByTimeAsync(30000);
+      http.expectNone('/api/v1/link-preview/generations/scheduled');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stops after a polling error until the user explicitly retries', async () => {
     service.resume({
       generationId: 'generation-1',

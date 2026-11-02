@@ -1,5 +1,9 @@
 import { Injectable, inject, effect } from '@angular/core';
 import { Subject, firstValueFrom } from 'rxjs';
+import {
+  CancellationScope,
+  firstValueFromAbortable,
+} from '../lib/async/cancellation-scope';
 import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
 import {
@@ -11,7 +15,8 @@ import {
 import { UserService } from './user.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { Message, MediaStatus, type MessageQueryRow } from './model';
-import { isTauri, tauriInvoke } from './runtime';
+import { isTauri } from './runtime';
+import { nativeHistoryRequest } from './native-history';
 import { historyAnchorRequest, type HistoryAnchor } from './history-anchor';
 
 export interface MessageHistoryTarget {
@@ -148,6 +153,7 @@ export class MessageRepository {
   async queryNativeMessageHistory(
     threadId: number,
     demand: NativeMessageHistoryDemand,
+    signal?: AbortSignal,
   ): Promise<NativeMessageHistoryResult> {
     const scope = this.sessionLifecycle.capture();
     if (!isTauri())
@@ -155,14 +161,8 @@ export class MessageRepository {
     const userId = this.userService.sessionUserId();
     if (userId === null)
       throw new Error('native message history requested without a session');
-    const result = await tauriInvoke<NativeMessageHistoryResult>(
-      'native_message_history_get',
-      {
-        userId,
-        threadId,
-        demand,
-      },
-    );
+    const result = await nativeHistoryRequest(userId, threadId, demand, signal);
+    signal?.throwIfAborted();
     if (!this.sessionLifecycle.isCurrent(scope))
       throw new Error('account session expired during native history query');
     if (this.userService.sessionUserId() === userId)
@@ -175,17 +175,24 @@ export class MessageRepository {
   async queryBrowserMessageHistory(
     threadId: number,
     demand: NativeMessageHistoryDemand,
+    signal?: AbortSignal,
   ): Promise<NativeMessageHistoryResult> {
     if (isTauri())
       throw new Error('browser message history requested inside Tauri');
     const lowerHint = 0;
-    const lifetime = this.webdb.captureMessageLifetime();
+    const scope = new CancellationScope(
+      this.webdb.captureMessageLifetime(),
+      signal,
+    );
+    const lifetime = scope.signal;
     try {
+      lifetime.throwIfAborted();
       switch (demand.kind) {
         case 'latest': {
           const [lower, upper] = await this.initialMessageBounds(
             threadId,
             lowerHint,
+            lifetime,
           );
           const page = await this.walkBrowserMessageHistory(
             threadId,
@@ -208,6 +215,7 @@ export class MessageRepository {
           const [lower, upper] = await this.initialMessageBounds(
             threadId,
             lowerHint,
+            lifetime,
           );
           const older = await this.walkBrowserMessageHistory(
             threadId,
@@ -270,7 +278,10 @@ export class MessageRepository {
           );
           let upper = Math.max(persistedHead ?? -1, liveHead);
           if (upper < 0) {
-            const bounds = await this.bootstrapMessageBounds(threadId);
+            const bounds = await this.bootstrapMessageBounds(
+              threadId,
+              lifetime,
+            );
             lower = Math.max(lower, bounds[0]);
             upper = bounds[1];
           }
@@ -293,15 +304,20 @@ export class MessageRepository {
         }
       }
     } catch {
+      lifetime.throwIfAborted();
       return { items: [], hasOlder: true, hasNewer: true, failed: true };
+    } finally {
+      scope.dispose();
     }
   }
 
   private async initialMessageBounds(
     threadId: number,
     lowerHint: number,
+    lifetime: AbortSignal,
   ): Promise<[number, number]> {
     const persistedHead = await this.webdb.getMessageHead(threadId);
+    lifetime.throwIfAborted();
     const liveHead = Math.max(
       this.maxSeenSeq.get(threadId) ?? -1,
       this.newerTruncateSeq.get(threadId) ?? -1,
@@ -309,15 +325,18 @@ export class MessageRepository {
     const knownHead = Math.max(persistedHead ?? -1, liveHead);
     return knownHead >= 0
       ? [lowerHint, knownHead]
-      : this.bootstrapMessageBounds(threadId);
+      : this.bootstrapMessageBounds(threadId, lifetime);
   }
 
   private async bootstrapMessageBounds(
     threadId: number,
+    lifetime: AbortSignal,
   ): Promise<[number, number]> {
-    const response = await firstValueFrom(
+    const response = await firstValueFromAbortable(
       this.msg.queryMessageHistoryPage({ threadId }),
+      lifetime,
     );
+    lifetime.throwIfAborted();
     if (response.code !== 30006 || !this.isHistoryCursor(response.data))
       throw new Error('message bootstrap did not return cursor bounds');
     if (
@@ -338,6 +357,7 @@ export class MessageRepository {
     knownNewestSeq: number | undefined,
     lifetime: AbortSignal,
   ): Promise<DirectionalHistoryWalk> {
+    lifetime.throwIfAborted();
     if (!Number.isSafeInteger(count) || count < 0 || count > 200)
       throw new Error('message history item count is outside 0..200');
     let cursor = initialCursor;
@@ -349,6 +369,7 @@ export class MessageRepository {
     let remaining = count;
 
     for (let step = 0; step < 1024; step++) {
+      lifetime.throwIfAborted();
       const atBoundary =
         direction === 'older' ? cursor <= lower + 1 : cursor >= upper;
       if (atBoundary || remaining === 0) return { items, hasMore: !atBoundary };
@@ -368,6 +389,7 @@ export class MessageRepository {
             boundary,
             remaining,
           );
+          lifetime.throwIfAborted();
           for (const message of cached) {
             cursor = message.seq;
             items.push({ kind: 'message', message });
@@ -408,6 +430,7 @@ export class MessageRepository {
         optimisticBoundary,
         remaining,
       );
+      lifetime.throwIfAborted();
       const provisional =
         optimistic.length === remaining
           ? (optimistic.at(-1)?.seq ?? optimisticBoundary)
@@ -439,11 +462,11 @@ export class MessageRepository {
         through,
         ...(direction === 'older' ? { before: cursor } : { after: cursor }),
       };
-      const response = await firstValueFrom(
+      const response = await firstValueFromAbortable(
         this.msg.queryMessageHistoryPage(request),
+        lifetime,
       );
-      if (lifetime.aborted)
-        throw new Error('message cache lifetime expired during history fill');
+      lifetime.throwIfAborted();
       if (response.code === 30006 && this.isHistoryCursor(response.data)) {
         if (
           response.data.resumeAfter < 0 ||
@@ -488,6 +511,7 @@ export class MessageRepository {
       );
       ranges = committed.ranges;
       this.slotsChanged.next(threadId);
+      lifetime.throwIfAborted();
       if (!scan) return { items, hasMore: false };
       const direct = this.projectCommittedHistoryPage(
         direction,
@@ -702,15 +726,19 @@ export class MessageRepository {
   async resolveHistoryAnchor(
     threadId: number,
     anchor: HistoryAnchor,
+    signal?: AbortSignal,
   ): Promise<number | null> {
+    signal?.throwIfAborted();
     const scope = this.sessionLifecycle.capture();
-    const response = await firstValueFrom(
-      this.msg.queryMessageHistoryPage({
-        threadId,
-        take: 1,
-        ...historyAnchorRequest(anchor),
-      }),
-    );
+    const request = this.msg.queryMessageHistoryPage({
+      threadId,
+      take: 1,
+      ...historyAnchorRequest(anchor),
+    });
+    const response = await (signal
+      ? firstValueFromAbortable(request, signal)
+      : firstValueFrom(request));
+    signal?.throwIfAborted();
     if (response.code !== 0 || !response.data || !('messages' in response.data))
       throw new Error('history anchor resolution failed');
     if (!this.sessionLifecycle.isCurrent(scope))
@@ -728,6 +756,7 @@ export class MessageRepository {
     if (!this.sessionLifecycle.isCurrent(scope))
       throw new Error('account session expired during anchor commit');
     this.slotsChanged.next(threadId);
+    signal?.throwIfAborted();
     return seq;
   }
 

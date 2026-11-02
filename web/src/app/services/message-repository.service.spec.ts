@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { Subject, of } from 'rxjs';
+import { Observable, Subject, of } from 'rxjs';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
@@ -172,6 +172,38 @@ describe('MessageRepository', () => {
     expect(put).not.toHaveBeenCalled();
   });
 
+  it('cancels anchor HTTP without ending a sibling lookup or committing cache data', async () => {
+    const requests: Array<{ closed: boolean }> = [];
+    queryMessageHistoryPageSpy.mockImplementation(
+      () =>
+        new Observable(() => {
+          const entry = { closed: false };
+          requests.push(entry);
+          return () => {
+            entry.closed = true;
+          };
+        }),
+    );
+    const put = vi.spyOn(webdb, 'putCachedMessages');
+    const first = new AbortController();
+    const second = new AbortController();
+    const anchor = { kind: 'origin' as const, namespaceId: 3, originSeq: 4 };
+    const pending = repo.resolveHistoryAnchor(42, anchor, first.signal);
+    const sibling = repo.resolveHistoryAnchor(42, anchor, second.signal);
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    const siblingRejected = expect(sibling).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    first.abort();
+    expect(requests.map((request) => request.closed)).toEqual([true, false]);
+    await rejected;
+    expect(put).not.toHaveBeenCalled();
+    second.abort();
+    await siblingRejected;
+  });
+
   it('rejects anchor slots from another thread before caching', async () => {
     queryMessageHistoryPageSpy.mockReturnValueOnce(
       of({
@@ -190,6 +222,54 @@ describe('MessageRepository', () => {
     ).rejects.toThrow('different thread');
     expect(await webdb.getMessage(99, 104)).toBeUndefined();
   });
+
+  it.each(['bootstrap', 'page'] as const)(
+    'cancels owned HTTP at %s without cancelling another consumer',
+    async (phase) => {
+      const requests: Array<{ closed: boolean }> = [];
+      queryMessageHistoryPageSpy.mockImplementation((request) => {
+        if (phase === 'page' && request.before === undefined)
+          return of({
+            code: 30006,
+            data: { resumeAfter: 0, resumeBefore: 11 },
+          });
+        return new Observable(() => {
+          const entry = { closed: false };
+          requests.push(entry);
+          return () => {
+            entry.closed = true;
+          };
+        });
+      });
+      const first = new AbortController();
+      const second = new AbortController();
+      const one = repo.queryBrowserMessageHistory(
+        42,
+        { kind: 'latest', count: 10 },
+        first.signal,
+      );
+      const oneRejected = expect(one).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      const two = repo.queryBrowserMessageHistory(
+        42,
+        { kind: 'latest', count: 10 },
+        second.signal,
+      );
+      const twoRejected = expect(two).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      first.abort();
+      await oneRejected;
+      expect(requests.map((entry) => entry.closed)).toEqual([true, false]);
+      expect(webdb.captureMessageLifetime().aborted).toBe(false);
+      second.abort();
+      await twoRejected;
+      expect(requests[1].closed).toBe(true);
+    },
+  );
 
   it('stops cursor recovery when the server returns unchanged bounds', async () => {
     queryMessageHistoryPageSpy.mockReturnValue(

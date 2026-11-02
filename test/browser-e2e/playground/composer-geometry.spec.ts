@@ -62,6 +62,22 @@ for (const width of [1440, 1000]) {
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
+    // Liam is blocked in the seed. Geometry needs two active message kernels; unblock
+    // through the UI rather than changing the blocked-conversation fixture contract.
+    await page.getByRole('button', { name: /^Liam, chat/ }).click();
+    const activePane = page.locator('.pane-layer.pane-fg');
+    await expect(activePane.locator('.msg-blocked-banner')).toBeVisible();
+    await activePane
+      .getByRole('button', { name: 'More options', exact: true })
+      .click();
+    const profile = page.locator('app-peer-profile');
+    const block = profile.locator('.block-card').getByRole('switch');
+    await expect(block).toBeChecked();
+    await block.click();
+    await expect(block).not.toBeChecked();
+    await expect(activePane.locator('.cb-tail-cap--gap')).toBeAttached();
+    await profile.locator('.page-header__back').click();
+    await expect(profile).toHaveCount(0);
     await page.evaluate(() => {
       const probe: ComposerProbe = { frames: 0, overlaps: [], raf: 0 };
       (window as ProbeWindow).composerProbe = probe;

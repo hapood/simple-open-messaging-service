@@ -51,6 +51,7 @@ import {
   standalone: true,
 })
 class StubThreadComponent {
+  readonly lifecycle = { binding: undefined };
   readonly threadId = input<number>();
   readonly userMsgTrd = input<ConversationItem>();
   readonly nativeComposerActive = input(false);
@@ -58,11 +59,11 @@ class StubThreadComponent {
   /** A child-internal signal read by reset. The host must not accidentally subscribe to it merely because
    *  it invokes reset from its coordinator effect (the real reset reads several input/view signals). */
   readonly resetDependency = signal(0);
-  readonly reset = vi
+  readonly bind = vi
     .fn()
-    .mockName('reset')
+    .mockName('bind')
     .mockImplementation(() => void this.resetDependency());
-  readonly teardownKernel = vi.fn().mockName('teardownKernel');
+  readonly unbind = vi.fn().mockName('unbind');
   /** Defaults to WARM (the common post-promote / resident case); a test flips it false to simulate a close
    *  having idled the kernel, so the fg-resident branch's cold path can be exercised. */
   readonly isWarm = vi.fn().mockName('isWarm').mockReturnValue(true);
@@ -192,7 +193,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
 
     await open(undefined);
 
-    expect(pane1.teardownKernel).toHaveBeenCalledTimes(1);
+    expect(pane1.unbind).toHaveBeenCalledTimes(1);
     expect(pane(1)).toBe(pane1); // SAME instance — not destroyed / recreated
   });
 
@@ -266,7 +267,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
     await open(1);
     const pane1 = pane(1);
     expect(pane1, 'bg pane mounted for the new thread').toBeTruthy();
-    expect(pane1!.reset).not.toHaveBeenCalled();
+    expect(pane1!.bind).toHaveBeenCalledTimes(1);
     await ready(1);
     expect(comp.fgSlot()).toBe('B');
   });
@@ -276,7 +277,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
     await ready(1); // slot B, fg B
     await open(2); // alternates → slot A
     expect(pane(2)).toBeTruthy();
-    expect(pane(2)!.reset).not.toHaveBeenCalled(); // 2 was not resident → fresh bind
+    expect(pane(2)!.bind).toHaveBeenCalledTimes(1); // explicit fresh binding
     await ready(2);
     expect(comp.fgSlot()).toBe('A');
   });
@@ -292,7 +293,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
     expect(pane1, 'demoted pane stays mounted — never destroyed').toBeTruthy();
 
     await open(1); // 1 is RESIDENT in the bg slot → must reset, not strand
-    expect(pane1.reset).toHaveBeenCalledTimes(1);
+    expect(pane1.bind).toHaveBeenCalledTimes(2);
     expect(pane(1)).toBe(pane1); // SAME instance — reset in place, not remounted
 
     await ready(1);
@@ -307,13 +308,13 @@ describe('ChatPaneComponent A/B coordinator', () => {
     const pane1 = pane(1)!;
 
     await open(1);
-    expect(pane1.reset).toHaveBeenCalledTimes(1);
+    expect(pane1.bind).toHaveBeenCalledTimes(2);
 
     // The real scroller init updates child signals after reset. If the command escaped untracked(), this
     // write becomes a dependency of the host effect and starts the pane:init/scroller:init reset loop.
     pane1.resetDependency.update((value) => value + 1);
     await settle();
-    expect(pane1.reset).toHaveBeenCalledTimes(1);
+    expect(pane1.bind).toHaveBeenCalledTimes(2);
   });
 
   it('re-selecting the open WARM foreground thread is a no-op (no reset, no cross-fade)', async () => {
@@ -322,7 +323,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
     const pane1 = pane(1)!;
 
     await open(1); // fgTid === target AND warm → nothing to do
-    expect(pane1.reset).not.toHaveBeenCalled();
+    expect(pane1.bind).toHaveBeenCalledTimes(1);
     expect(comp.fgSlot()).toBe('B'); // still foreground
   });
 
@@ -331,11 +332,11 @@ describe('ChatPaneComponent A/B coordinator', () => {
     await ready(1);
     const pane1 = pane(1)!;
     await open(undefined); // close → teardownKernel pane1 (kernel idled → cold)
-    expect(pane1.teardownKernel).toHaveBeenCalledTimes(1);
+    expect(pane1.unbind).toHaveBeenCalledTimes(1);
     pane1.isWarm.mockReturnValue(false); // simulate the idled (cold) kernel
 
     await open(1); // fg still bound to 1, now cold → reset re-initializes
-    expect(pane1.reset).toHaveBeenCalledTimes(1);
+    expect(pane1.bind).toHaveBeenCalledTimes(2);
     expect(pane(1)).toBe(pane1); // not destroyed
   });
 

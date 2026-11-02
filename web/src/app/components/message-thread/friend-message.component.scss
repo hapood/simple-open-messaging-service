@@ -88,9 +88,7 @@
 // viewport edge or system gesture area. Feed the spacing through the measured tail cap so the virtual-scroll
 // height model includes the complete base gap plus safe-area inset.
 .msg-container--friendship-ended {
-  --soms-content-bottom-reserve: calc(
-    16px + var(--soms-safe-bottom, 0px)
-  );
+  --soms-content-bottom-reserve: calc(16px + var(--soms-safe-bottom, 0px));
 }
 
 // Scroll viewport (kernel B manual compensation: overflow-anchor:none exclusively,
@@ -147,6 +145,11 @@ app-chat-input {
   inset-inline: 0;
   bottom: 0;
   z-index: 4;
+}
+
+// An unbound editor retains its instance but contributes no layout or interaction.
+app-chat-input.msg-composer--unbound {
+  display: none;
 }
 
 // A chatbox dialog visually replaces the composer, but both its DOM and measured geometry stay mounted until
@@ -723,6 +726,60 @@ app-chat-input.msg-composer--dialog-hidden {
   // Gentle reveal so the card doesn't pop in once loading clears. Opacity-only (exempt from the integer-px
   // height rule; the overlay is outside the kernel's measured model regardless). Honors reduced-motion.
   animation: msg-empty-fade 180ms ease-out;
+}
+
+.msg-window-loading,
+.msg-window-result {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: 24px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  line-height: 24px;
+}
+.msg-window-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  p {
+    margin: 0;
+  }
+}
+.msg-window-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.msg-window-status {
+  display: block;
+  margin-bottom: 24px;
+}
+.msg-window-skeleton {
+  height: 64px;
+  width: 64%;
+  max-width: 360px;
+  margin-bottom: 16px;
+  border-radius: 16px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  animation: msg-window-pulse 1200ms ease-in-out infinite alternate;
+  &:nth-child(odd) {
+    margin-left: auto;
+  }
+}
+@keyframes msg-window-pulse {
+  to {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg-window-skeleton {
+    animation: none;
+  }
 }
 
 .msg-load-failed-overlay {

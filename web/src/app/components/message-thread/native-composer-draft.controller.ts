@@ -1,6 +1,25 @@
 import { signal } from '@angular/core';
-import type { ComposerDraftService } from '../../services/composer-draft.service';
-import type { LinkCardGenerationService } from '../../services/link-card-generation.service';
+import { type Observable, Subscription } from 'rxjs';
+import type { AccountComposerDraft } from '../../../../../shared/account-state';
+import type {
+  LinkCardGeneration,
+  LinkGenerationView,
+} from '../../services/link-card-generation.service';
+
+/** The draft persistence operations this controller needs. */
+export interface ComposerDraftStore {
+  get(threadId: number): AccountComposerDraft | undefined;
+  save(draft: AccountComposerDraft): void;
+}
+
+/** The link-generation operations this controller needs. */
+export interface LinkGenerationClient {
+  begin$(url: string, text: string): Observable<LinkGenerationView>;
+  resume(generation: LinkCardGeneration): void;
+  forget(generationId: string): void;
+  pause(generationId: string): void;
+  snapshot(generationId: string): LinkGenerationView | undefined;
+}
 
 /** Owns native-composer draft persistence and link-generation lifecycle. */
 export class NativeComposerDraftController {
@@ -8,17 +27,16 @@ export class NativeComposerDraftController {
   private linkUrl: string | null = null;
   private generationId: string | null = null;
   private generationStarting = false;
-  private generationRevision = 0;
+  private generationRequest?: Subscription;
 
   constructor(
-    private readonly drafts: ComposerDraftService,
-    private readonly generations: LinkCardGenerationService,
+    private readonly drafts: ComposerDraftStore,
+    private readonly generations: LinkGenerationClient,
   ) {}
 
   open(threadId: number): string {
+    this.reset();
     const saved = this.drafts.get(threadId);
-    this.generationRevision++;
-    this.generationStarting = false;
     this.text.set(saved?.plainText ?? '');
     this.linkUrl = saved?.linkUrl ?? null;
     this.generationId = saved?.generationId ?? null;
@@ -50,30 +68,25 @@ export class NativeComposerDraftController {
       (!url || this.generationStarting || this.generationId)
     )
       return;
-    const revision = ++this.generationRevision;
+    this.stopGenerationRequest();
     if (this.generationId) this.generations.forget(this.generationId);
     this.linkUrl = url;
     this.generationId = null;
     this.generationStarting = Boolean(url);
     if (!url) return;
-    void this.generations
-      .begin(url, text)
-      .then((generation) => {
-        if (revision !== this.generationRevision || url !== this.linkUrl) {
-          this.generations.forget(generation.generationId);
-          return;
-        }
+    this.generationRequest = this.generations.begin$(url, text).subscribe({
+      next: (generation) => {
         this.generationId = generation.generationId;
         this.generationStarting = false;
-      })
-      .catch(() => {
-        if (revision === this.generationRevision)
-          this.generationStarting = false;
-      });
+      },
+      error: () => {
+        this.generationStarting = false;
+      },
+    });
   }
 
   clearLink(): void {
-    this.generationRevision++;
+    this.stopGenerationRequest();
     if (this.generationId) this.generations.forget(this.generationId);
     this.linkUrl = null;
     this.generationId = null;
@@ -96,7 +109,17 @@ export class NativeComposerDraftController {
     });
   }
 
+  private stopGenerationRequest(): void {
+    this.generationRequest?.unsubscribe();
+    this.generationRequest = undefined;
+  }
+
   reset(): void {
+    this.stopGenerationRequest();
+    if (this.generationId) this.generations.pause(this.generationId);
+    this.generationId = null;
+    this.linkUrl = null;
+    this.generationStarting = false;
     this.text.set('');
   }
 }

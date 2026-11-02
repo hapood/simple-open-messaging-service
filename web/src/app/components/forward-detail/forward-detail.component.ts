@@ -15,13 +15,14 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import dayjs from 'dayjs';
-import { firstValueFrom } from 'rxjs';
+import { defer, firstValueFrom, Subscription } from 'rxjs';
 import { MsgService } from '../../services/message.service';
 import { messageCreatorKey } from '../../services/model';
 import { RouteService } from '../../services/route.service';
 import {
   ChatBoxScroller,
   type CbElement,
+  type CbInitOpts,
   type CbItem,
 } from '../../lib/chat-box/chat-box-scroller';
 import type {
@@ -96,6 +97,10 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   private readonly gallery = inject(GalleryViewerService);
   private readonly fileDetail = inject(FileDetailService);
   private scroller?: ChatBoxScroller<ChatItemData>;
+  private snapshotInitialization?: Subscription;
+  private snapshotSource?: ForwardSnapshotSource;
+  private snapshotItems: CbItem<ChatItemData>[] = [];
+  private finishWindowJump?: (found: boolean) => void;
 
   readonly bundleMap = computed(() => {
     const closure = this.closure();
@@ -126,8 +131,9 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   }
 
   async load(): Promise<void> {
-    this.scroller?.destroy();
-    this.scroller = undefined;
+    // Reuse the kernel: unbind clears the previous bundle's items and source
+    // without destroying the prepared viewport infrastructure.
+    this.scroller?.unbind();
     this.loading.set(true);
     this.failed.set(false);
     try {
@@ -171,7 +177,21 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.closeSnapshotWindow();
     this.scroller?.destroy();
+    this.scroller = undefined;
+    this.snapshotItems = [];
+  }
+
+  private closeSnapshotWindow(): void {
+    this.snapshotInitialization?.unsubscribe();
+    this.snapshotInitialization = undefined;
+    const finish = this.finishWindowJump;
+    this.finishWindowJump = undefined;
+    finish?.(false);
+    this.scroller?.unbind();
+    // The kernel owns destruction of its bound source.
+    this.snapshotSource = undefined;
   }
 
   private mount(
@@ -182,21 +202,47 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     // Nested forwarded records swap content inside the same routed dialog, so RootPopup sees no dialog
     // change. Release document-owned text selection here as well before replacing the selected nodes.
     document.getSelection()?.removeAllRanges();
-    this.scroller?.destroy();
-    content.replaceChildren();
-    const source = new ForwardSnapshotSource(this.toItems(bundle));
-    this.scroller = new ChatBoxScroller<ChatItemData>({
-      viewport,
-      content,
-      source,
-      hooks: {
-        createItem: (item, prev) => this.createItem(item, prev),
-        mergeItems: (items) => mergeAlbumItemsAtBoundary(items, null),
-        absorbTail: (target, incoming) => absorbAlbumTail(target, incoming),
-      },
-      config: { initBatch: 100 },
+    if (!this.scroller) {
+      this.scroller = new ChatBoxScroller<ChatItemData>({
+        viewport,
+        content,
+        hooks: {
+          createItem: (item, prev) => this.createItem(item, prev),
+          mergeItems: (items) => mergeAlbumItemsAtBoundary(items, null),
+          absorbTail: (target, incoming) => absorbAlbumTail(target, incoming),
+        },
+        config: { initBatch: 100 },
+        onWindowJump: (options) => this.openSnapshotWindow(options),
+      });
+    }
+    this.snapshotItems = this.toItems(bundle);
+    void this.openSnapshotWindow({});
+  }
+
+  private openSnapshotWindow(options: CbInitOpts): Promise<boolean> {
+    const kernel = this.scroller;
+    if (!kernel) return Promise.resolve(false);
+    this.closeSnapshotWindow();
+    this.snapshotSource = new ForwardSnapshotSource(this.snapshotItems);
+    kernel.bind(this.snapshotSource);
+    return new Promise<boolean>((resolve) => {
+      this.finishWindowJump = resolve;
+      this.snapshotInitialization = defer(() => kernel.init(options)).subscribe(
+        {
+          next: () => {
+            this.finishWindowJump = undefined;
+            resolve(
+              options.startMsgId == null ||
+                kernel.getMountedGeometry(options.startMsgId) !== null,
+            );
+          },
+          error: () => {
+            this.finishWindowJump = undefined;
+            resolve(false);
+          },
+        },
+      );
     });
-    void this.scroller.init();
   }
 
   private createItem(

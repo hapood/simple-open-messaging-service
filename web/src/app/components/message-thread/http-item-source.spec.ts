@@ -21,7 +21,7 @@ import {
  * — here the repo is a simple canned data source so this spec stays focused on the source's shaping,
  * boundary, remounting, and optimistic-pending reconcile.
  */
-import { firstValueFrom, Subject, of, throwError } from 'rxjs';
+import { Observable, firstValueFrom, Subject, of, throwError } from 'rxjs';
 import { HttpItemSource } from './http-item-source';
 import { StableReadTracker } from './stable-read-tracker';
 import { MessageRepository } from '../../services/message-repository.service';
@@ -282,6 +282,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         },
       );
     const repo = {
+      resolveHistoryAnchor: vi.fn(),
       queryMessages,
       slotsChanged$,
       getMessageByOrigin,
@@ -381,21 +382,26 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     } as unknown as ProfileRepository;
     const activeProfileRepo = resolutionRepo ?? profileRepo;
     const newerAvailable = vi.fn().mockName('onNewerAvailable');
-    const src = new HttpItemSource(
-      groupRoster ? groupConv(tid) : conv(tid),
-      repo,
-      userService,
-      outbox,
-      {
-        onQuoteDeleted,
-        onQuoteUpdated,
-        onNewerAvailable: newerAvailable,
-      },
-      messages as never,
-      activeProfileRepo,
-    );
+    const onMediaStatus = vi.fn();
+    const createSource = () =>
+      new HttpItemSource(
+        groupRoster ? groupConv(tid) : conv(tid),
+        repo,
+        userService,
+        outbox,
+        {
+          onQuoteDeleted,
+          onQuoteUpdated,
+          onNewerAvailable: newerAvailable,
+          onMediaStatus,
+        },
+        messages as never,
+        activeProfileRepo,
+      );
+    const src = createSource();
     return {
       src,
+      createSource,
       deletedLive$,
       getDeletedMessageSeqs,
       onQuoteDeleted,
@@ -406,12 +412,194 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       liveSignal$,
       reconnectSignal$,
       mediaStatusLive$,
+      onMediaStatus,
       newerAvailable,
       outbox,
       queryUserInfo,
       messages,
     };
   }
+
+  it('destroy releases live notifications without cancelling other repository consumers', async () => {
+    const {
+      src,
+      liveSignal$,
+      reconnectSignal$,
+      mediaStatusLive$,
+      deletedLive$,
+      slotsChanged$,
+      newerAvailable,
+      onMediaStatus,
+      onQuoteDeleted,
+      onQuoteUpdated,
+    } = setup({ code: 0, message: 'ok', data: [] });
+    const siblingMedia = vi.fn();
+    const sibling = mediaStatusLive$.subscribe(siblingMedia);
+    await src.init(-1, 10, 0);
+    src.finishLocalInit(undefined);
+    mediaStatusLive$.next({
+      threadId: 42,
+      seq: 1,
+      status: 'ready' as MediaStatus,
+    });
+    expect(onMediaStatus).toHaveBeenCalledOnce();
+    onMediaStatus.mockClear();
+    newerAvailable.mockClear();
+    src.destroy();
+    src.destroy();
+    expect(deletedLive$.observed).toBe(false);
+    expect(slotsChanged$.observed).toBe(false);
+    liveSignal$.next({ threadId: 42, seq: 20 });
+    reconnectSignal$.next();
+    mediaStatusLive$.next({
+      threadId: 42,
+      seq: 1,
+      status: 'ready' as MediaStatus,
+    });
+    deletedLive$.next({
+      threadId: 42,
+      deletions: [{ seq: 1, type: 'USER_RETRACTION' }],
+    });
+    slotsChanged$.next(42);
+    src.resumeLiveUpdates(20);
+    src.finishLocalInit(20);
+    await Promise.resolve();
+    expect(newerAvailable).not.toHaveBeenCalled();
+    expect(onMediaStatus).not.toHaveBeenCalled();
+    expect(onQuoteDeleted).not.toHaveBeenCalled();
+    expect(onQuoteUpdated).not.toHaveBeenCalled();
+    expect(siblingMedia).toHaveBeenCalledTimes(2);
+    sibling.unsubscribe();
+  });
+
+  it('cancelling anchor resolution leaves the source live for another lookup', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+    let captured!: AbortSignal;
+    vi.spyOn(repo, 'resolveHistoryAnchor')
+      .mockImplementationOnce((_thread, _anchor, signal) => {
+        captured = signal!;
+        return new Promise(() => {});
+      })
+      .mockResolvedValueOnce(44);
+    const request = new AbortController();
+    const anchor = { kind: 'origin' as const, namespaceId: 1, originSeq: 2 };
+    const pending = src.resolveHistoryAnchor(anchor, request.signal);
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    request.abort();
+    expect(captured.aborted).toBe(true);
+    await rejected;
+    expect(await src.resolveHistoryAnchor(anchor)).toBe(44);
+    src.destroy();
+  });
+
+  it('destroy cancels only one source while a same-thread sibling history load finishes', async () => {
+    const { src, createSource, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+    });
+    const sibling = createSource();
+    type Page = Awaited<
+      ReturnType<MessageRepository['queryBrowserMessageHistory']>
+    >;
+    const requests: Array<{ signal: AbortSignal; resolve(page: Page): void }> =
+      [];
+    vi.spyOn(repo, 'queryBrowserMessageHistory').mockImplementation(
+      (_id, _demand, signal) => {
+        if (!signal)
+          throw new Error('source must supply a cancellation signal');
+        return new Promise<Page>((resolve) => {
+          requests.push({ signal, resolve });
+        });
+      },
+    );
+    const first = src.init(-1, 10, 0);
+    const rejected = expect(first).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    const second = sibling.init(-1, 10, 0);
+    expect(requests).toHaveLength(2);
+    src.destroy();
+    src.destroy();
+    await rejected;
+    expect(requests[0].signal.aborted).toBe(true);
+    expect(requests[1].signal.aborted).toBe(false);
+    const page: Page = {
+      items: [],
+      hasOlder: false,
+      hasNewer: false,
+      failed: false,
+    };
+    requests[1].resolve(page);
+    expect(await second).toEqual([]);
+    requests[0].resolve(page);
+    await Promise.resolve();
+    expect(requests[1].signal.aborted).toBe(false);
+    sibling.destroy();
+    expect(requests[1].signal.aborted).toBe(true);
+  });
+
+  it('destroy cancels history ownership and does not proceed to media restoration', async () => {
+    const { src, repo, messages } = setup({ code: 0, message: 'ok', data: [] });
+    let signal: AbortSignal | undefined;
+    let complete!: (value: never) => void;
+    vi.spyOn(repo, 'queryBrowserMessageHistory').mockImplementation(
+      (_id, _demand, lifetime) => {
+        signal = lifetime;
+        return new Promise((resolve) => {
+          complete = resolve;
+        });
+      },
+    );
+    const pending = src.init(-1, 10, 0);
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    src.destroy();
+    await rejected;
+    expect(signal?.aborted).toBe(true);
+    complete({
+      items: [],
+      hasOlder: false,
+      hasNewer: false,
+      failed: false,
+    } as never);
+    await Promise.resolve();
+    expect(messages.queryMediaStages).not.toHaveBeenCalled();
+  });
+
+  it('binding abort cancels media HTTP and cannot restart source subscriptions', async () => {
+    const { src, messages, liveSignal$, newerAvailable } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+    });
+    const subscribed = vi.fn();
+    const unsubscribed = vi.fn();
+    messages.queryMediaStages.mockReturnValue(
+      new Observable(() => {
+        subscribed();
+        return unsubscribed;
+      }),
+    );
+    const binding = new AbortController();
+    const pending = src.init(-1, 10, 0, { signal: binding.signal });
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await vi.waitFor(() => expect(subscribed).toHaveBeenCalledOnce());
+    binding.abort();
+    await rejected;
+    expect(unsubscribed).toHaveBeenCalledOnce();
+    src.resumeLiveUpdates();
+    src.finishLocalInit(10);
+    liveSignal$.next({ threadId: 42, seq: 10 });
+    expect(newerAvailable).not.toHaveBeenCalled();
+    src.destroy();
+    expect(unsubscribed).toHaveBeenCalledOnce();
+  });
 
   it('resolves group message authors through the message profile demand', async () => {
     const resolve = vi.fn().mockImplementation(() =>
@@ -884,7 +1072,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.finishLocalInit(undefined, 0);
     await Promise.resolve();
     expect(newerAvailable).not.toHaveBeenCalled();
-    expect(vi.mocked(repo.queryMessages as Mock).mock.calls.length).toBe(before);
+    expect(vi.mocked(repo.queryMessages as Mock).mock.calls.length).toBe(
+      before,
+    );
   });
 
   it('signals a backend fill when durable thread metadata leads an empty local messages cache', async () => {
@@ -1089,6 +1279,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(queryHistory.mock.lastCall).toEqual([
       42,
       { kind: 'older', before: 10, count: 50 },
+      expect.any(AbortSignal),
     ]);
   });
 
@@ -1596,6 +1787,30 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     };
   }
 
+  it('destroy stops quote shaping before deletion lookup or profile work resumes', async () => {
+    const { src, getMessageByOrigin, getDeletedMessageSeqs } = setup({
+      code: 0,
+      message: 'ok',
+      data: [quotedReply()],
+    });
+    let complete!: (value: unknown) => void;
+    getMessageByOrigin.mockReturnValue(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const pending = src.init(-1, 10, 0);
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await vi.waitFor(() => expect(getMessageByOrigin).toHaveBeenCalled());
+    src.destroy();
+    await rejected;
+    complete(row(44, 1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getDeletedMessageSeqs).not.toHaveBeenCalled();
+  });
+
   it('suppresses cached previews when the local target is a tombstone', async () => {
     const { src, getDeletedMessageSeqs } = setup({
       code: 0,
@@ -1792,12 +2007,16 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
       expect(items.map((item) => item.id)).toEqual([40, 41]);
       expect(queryNative).toHaveBeenCalledTimes(1);
-      expect(queryNative).toHaveBeenCalledWith(42, {
-        kind: 'around',
-        anchor: 40,
-        olderCount: 20,
-        newerCount: 10,
-      });
+      expect(queryNative).toHaveBeenCalledWith(
+        42,
+        {
+          kind: 'around',
+          anchor: 40,
+          olderCount: 20,
+          newerCount: 10,
+        },
+        expect.any(AbortSignal),
+      );
       expect(repo.queryMessages).not.toHaveBeenCalled();
     });
 
@@ -1844,16 +2063,26 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       });
       expect(older.map((item) => item.id)).toEqual([20]);
       expect(newer.map((item) => item.id)).toEqual([31]);
-      expect(queryNative).toHaveBeenNthCalledWith(2, 42, {
-        kind: 'older',
-        before: 21,
-        count: 50,
-      });
-      expect(queryNative).toHaveBeenNthCalledWith(3, 42, {
-        kind: 'newer',
-        after: 30,
-        count: 50,
-      });
+      expect(queryNative).toHaveBeenNthCalledWith(
+        2,
+        42,
+        {
+          kind: 'older',
+          before: 21,
+          count: 50,
+        },
+        expect.any(AbortSignal),
+      );
+      expect(queryNative).toHaveBeenNthCalledWith(
+        3,
+        42,
+        {
+          kind: 'newer',
+          after: 30,
+          count: 50,
+        },
+        expect.any(AbortSignal),
+      );
     });
   });
 });

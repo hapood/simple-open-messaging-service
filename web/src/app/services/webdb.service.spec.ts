@@ -1176,6 +1176,54 @@ describe('WebdbService', () => {
       expect(await webdb.getMessageRanges(7)).toEqual([]);
     });
 
+    it('finishes an admitted page atomically after its caller cancels, while rejecting later admission', async () => {
+      await webdb.openForUser('1');
+      const liveDb = await webdb.messageDb();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let admitted!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        admitted = resolve;
+      });
+      const messageDb = vi
+        .spyOn(webdb, 'messageDb')
+        .mockImplementationOnce(async () => {
+          admitted();
+          await held;
+          return liveDb;
+        });
+      const lifetime = new AbortController();
+      const input = {
+        threadId: 7,
+        scan: { left: 0, right: 1 },
+        messages: [
+          { threadId: 7, seq: 1, content: '', isDeleted: false } as Message,
+        ],
+        gaps: [],
+        knownNewestSeq: 1,
+      };
+      const pending = webdb.commitBrowserMessagePage(input, lifetime.signal);
+      await entered;
+      lifetime.abort();
+      const rejected = expect(
+        webdb.commitBrowserMessagePage(input, lifetime.signal),
+      ).rejects.toThrow('message cache lifetime expired');
+      release();
+      await pending;
+      await rejected;
+      expect(messageDb).toHaveBeenCalledOnce();
+      messageDb.mockRestore();
+      expect(await webdb.getMessage(7, 1)).toEqual(
+        expect.objectContaining({ seq: 1 }),
+      );
+      expect(await webdb.getMessageRanges(7)).toEqual([
+        { threadId: 7, left: 0, right: 1, state: 'LOCAL_COVERED' },
+      ]);
+      expect(await webdb.getMessageHead(7)).toBe(1);
+    });
+
     it('serializes complete page commits for one thread before opening either transaction', async () => {
       await webdb.openForUser('1');
       const liveDb = await webdb.messageDb();

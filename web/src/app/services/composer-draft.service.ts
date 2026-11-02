@@ -4,14 +4,12 @@ import { isAndroidNative, isTauri } from './runtime';
 
 import type { AccountComposerDraft } from '../../../../shared/account-state';
 
-export type ComposerDraft = AccountComposerDraft;
-
 @Injectable({ providedIn: 'root' })
 export class ComposerDraftService {
   private readonly webdb = inject(WebdbService);
-  private readonly draftsState = signal<ReadonlyMap<number, ComposerDraft>>(
-    new Map(),
-  );
+  private readonly draftsState = signal<
+    ReadonlyMap<number, AccountComposerDraft>
+  >(new Map());
   private hydrated = false;
   private writeRevision = 0;
   private persistTail: Promise<void> = Promise.resolve();
@@ -23,7 +21,11 @@ export class ComposerDraftService {
 
   constructor() {
     effect(() => {
-      if ((!isTauri() || isAndroidNative()) && this.webdb.ready() && !this.hydrated) {
+      if (
+        (!isTauri() || isAndroidNative()) &&
+        this.webdb.ready() &&
+        !this.hydrated
+      ) {
         this.hydrated = true;
         void this.restore();
       }
@@ -34,11 +36,11 @@ export class ComposerDraftService {
     });
   }
 
-  get(threadId: number): ComposerDraft | undefined {
+  get(threadId: number): AccountComposerDraft | undefined {
     return this.draftsState().get(threadId);
   }
 
-  save(draft: ComposerDraft): void {
+  save(draft: AccountComposerDraft): void {
     if (isTauri() && !isAndroidNative()) return;
     this.writeRevision++;
     const next = new Map(this.draftsState());
@@ -67,7 +69,7 @@ export class ComposerDraftService {
       !Array.isArray(value)
     )
       return;
-    const drafts = new Map<number, ComposerDraft>();
+    const drafts = new Map<number, AccountComposerDraft>();
     for (const item of value) {
       if (!isComposerDraft(item) || !item.plainText.trim()) continue;
       drafts.set(item.threadId, item);
@@ -75,7 +77,9 @@ export class ComposerDraftService {
     this.draftsState.set(drafts);
   }
 
-  private persist(drafts: ReadonlyMap<number, ComposerDraft>): Promise<void> {
+  private persist(
+    drafts: ReadonlyMap<number, AccountComposerDraft>,
+  ): Promise<void> {
     const value = Array.from(drafts.values());
     // Native input can publish on every keystroke. Serialize writes so a slow
     // earlier snapshot cannot overwrite a later edit or a successful send.
@@ -86,9 +90,9 @@ export class ComposerDraftService {
   }
 }
 
-function isComposerDraft(value: unknown): value is ComposerDraft {
+function isComposerDraft(value: unknown): value is AccountComposerDraft {
   if (!value || typeof value !== 'object') return false;
-  const item = value as Partial<ComposerDraft>;
+  const item = value as Partial<AccountComposerDraft>;
   return (
     typeof item.threadId === 'number' &&
     typeof item.html === 'string' &&

@@ -39,7 +39,10 @@ export interface MessageThreadLiveCallbacks {
 /** The complete source contract consumed by the production thread shell. */
 export interface MessageThreadSource extends CbSource<ChatItemData> {
   /** Optional for alternate offline/demo sources; production resolves through the repository. */
-  resolveHistoryAnchor?(anchor: HistoryAnchor): Promise<number | null>;
+  resolveHistoryAnchor?(
+    anchor: HistoryAnchor,
+    signal?: AbortSignal,
+  ): Promise<number | null>;
   mountQuote?(
     replySeq: number,
     quote: NonNullable<
@@ -177,11 +180,11 @@ export abstract class MessageThreadAdapter {
 
   abstract cancelUploadBatch(
     clientMessageId: string,
-  ): Observable<StandardResponse<{ clientMessageId: string; cancelled: number }>>;
-
-  abstract sendCompletedUploadBatch(
-    clientMessageId: string,
   ): Observable<
+    StandardResponse<{ clientMessageId: string; cancelled: number }>
+  >;
+
+  abstract sendCompletedUploadBatch(clientMessageId: string): Observable<
     StandardResponse<{
       clientMessageId: string;
       sent: boolean;
