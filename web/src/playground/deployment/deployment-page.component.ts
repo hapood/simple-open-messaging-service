@@ -210,6 +210,42 @@ export function shellQuote(value: string): string {
 
                 @if (config().mode === 'public') {
                   <div class="ports-summary">{{ t().publicPorts }}</div>
+
+                  <div class="field-row">
+                    <mat-button-toggle-group
+                      [value]="config().certMode"
+                      (change)="setCertMode($event.value)"
+                      aria-label="Certificate mode"
+                    >
+                      <mat-button-toggle value="alpn">{{
+                        t().certModeAlpn
+                      }}</mat-button-toggle>
+                      <mat-button-toggle value="dns">{{
+                        t().certModeDns
+                      }}</mat-button-toggle>
+                    </mat-button-toggle-group>
+                    <button
+                      mat-icon-button
+                      type="button"
+                      class="row-help-btn"
+                      [matTooltip]="
+                        config().certMode === 'alpn'
+                          ? t().certModeAlpnHint
+                          : t().certModeDnsHint
+                      "
+                      [attr.aria-label]="
+                        config().certMode === 'alpn'
+                          ? t().certModeAlpnHint
+                          : t().certModeDnsHint
+                      "
+                    >
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
                 } @else {
                   <div class="input-row-with-help">
                     <mat-form-field appearance="outline" class="flex-field">
@@ -239,6 +275,219 @@ export function shellQuote(value: string): string {
                       />
                     </button>
                   </div>
+
+                  <div class="note-text">{{ t().certModeLockedDns }}</div>
+                }
+
+                @if (config().certMode === 'alpn') {
+                  <div class="input-row-with-help">
+                    <mat-form-field appearance="outline" class="flex-field">
+                      <mat-label>{{ t().acmeEmail }}</mat-label>
+                      <input
+                        matInput
+                        name="acmeEmail"
+                        type="email"
+                        [placeholder]="t().acmeEmailPlaceholder"
+                        [ngModel]="config().acmeEmail"
+                        (ngModelChange)="update('acmeEmail', $event)"
+                        spellcheck="false"
+                      />
+                    </mat-form-field>
+                    <button
+                      mat-icon-button
+                      type="button"
+                      class="row-help-btn"
+                      [matTooltip]="t().acmeEmailHint"
+                      [attr.aria-label]="t().acmeEmailHint"
+                    >
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
+                } @else {
+                  <div class="input-row-with-help">
+                    <mat-form-field appearance="outline" class="flex-field">
+                      <mat-label>{{ t().dnsProvider }}</mat-label>
+                      <mat-select
+                        name="dnsProvider"
+                        required
+                        [ngModel]="config().dnsProvider"
+                        (ngModelChange)="update('dnsProvider', $event)"
+                      >
+                        <mat-option value="cloudflare">{{
+                          t().providerCloudflare
+                        }}</mat-option>
+                        <mat-option value="alidns">{{
+                          t().providerAlidns
+                        }}</mat-option>
+                        <mat-option value="tencentcloud">{{
+                          t().providerTencentcloud
+                        }}</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+                    <button
+                      mat-icon-button
+                      type="button"
+                      class="row-help-btn"
+                      [matTooltip]="t().dnsProviderHint"
+                      [attr.aria-label]="t().dnsProviderHint"
+                    >
+                      <app-icon
+                        [type]="AppIconType.INFO"
+                        [style]="helpIconStyle"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </div>
+
+                  @if (config().dnsProvider === 'cloudflare') {
+                    <div class="input-row-with-help">
+                      <mat-form-field appearance="outline" class="flex-field">
+                        <mat-label>{{ t().dnsToken }}</mat-label>
+                        <input
+                          matInput
+                          name="dnsToken"
+                          required
+                          type="text"
+                          autocomplete="new-password"
+                          [ngModel]="config().dnsToken"
+                          (ngModelChange)="update('dnsToken', $event)"
+                        />
+                      </mat-form-field>
+                      <button
+                        mat-icon-button
+                        type="button"
+                        class="row-help-btn"
+                        [matTooltip]="t().dnsTokenHint"
+                        [attr.aria-label]="t().dnsTokenHint"
+                      >
+                        <app-icon
+                          [type]="AppIconType.INFO"
+                          [style]="helpIconStyle"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </div>
+                  }
+
+                  @if (config().dnsProvider === 'alidns') {
+                    <div class="input-row-with-help">
+                      <mat-form-field appearance="outline" class="flex-field">
+                        <mat-label>{{ t().aliyunKeyId }}</mat-label>
+                        <input
+                          matInput
+                          name="aliyunKeyId"
+                          required
+                          type="text"
+                          autocomplete="new-password"
+                          [ngModel]="config().aliyunKeyId"
+                          (ngModelChange)="update('aliyunKeyId', $event)"
+                        />
+                      </mat-form-field>
+                      <button
+                        mat-icon-button
+                        type="button"
+                        class="row-help-btn"
+                        [matTooltip]="t().aliyunKeyIdHint"
+                        [attr.aria-label]="t().aliyunKeyIdHint"
+                      >
+                        <app-icon
+                          [type]="AppIconType.INFO"
+                          [style]="helpIconStyle"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </div>
+
+                    <div class="input-row-with-help">
+                      <mat-form-field appearance="outline" class="flex-field">
+                        <mat-label>{{ t().aliyunKeySecret }}</mat-label>
+                        <input
+                          matInput
+                          name="aliyunKeySecret"
+                          required
+                          type="text"
+                          autocomplete="new-password"
+                          [ngModel]="config().aliyunKeySecret"
+                          (ngModelChange)="update('aliyunKeySecret', $event)"
+                        />
+                      </mat-form-field>
+                      <button
+                        mat-icon-button
+                        type="button"
+                        class="row-help-btn"
+                        [matTooltip]="t().aliyunKeySecretHint"
+                        [attr.aria-label]="t().aliyunKeySecretHint"
+                      >
+                        <app-icon
+                          [type]="AppIconType.INFO"
+                          [style]="helpIconStyle"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </div>
+                  }
+
+                  @if (config().dnsProvider === 'tencentcloud') {
+                    <div class="input-row-with-help">
+                      <mat-form-field appearance="outline" class="flex-field">
+                        <mat-label>{{ t().tencentSecretId }}</mat-label>
+                        <input
+                          matInput
+                          name="tencentSecretId"
+                          required
+                          type="text"
+                          autocomplete="new-password"
+                          [ngModel]="config().tencentSecretId"
+                          (ngModelChange)="update('tencentSecretId', $event)"
+                        />
+                      </mat-form-field>
+                      <button
+                        mat-icon-button
+                        type="button"
+                        class="row-help-btn"
+                        [matTooltip]="t().tencentSecretIdHint"
+                        [attr.aria-label]="t().tencentSecretIdHint"
+                      >
+                        <app-icon
+                          [type]="AppIconType.INFO"
+                          [style]="helpIconStyle"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </div>
+
+                    <div class="input-row-with-help">
+                      <mat-form-field appearance="outline" class="flex-field">
+                        <mat-label>{{ t().tencentSecretKey }}</mat-label>
+                        <input
+                          matInput
+                          name="tencentSecretKey"
+                          required
+                          type="text"
+                          autocomplete="new-password"
+                          [ngModel]="config().tencentSecretKey"
+                          (ngModelChange)="update('tencentSecretKey', $event)"
+                        />
+                      </mat-form-field>
+                      <button
+                        mat-icon-button
+                        type="button"
+                        class="row-help-btn"
+                        [matTooltip]="t().tencentSecretKeyHint"
+                        [attr.aria-label]="t().tencentSecretKeyHint"
+                      >
+                        <app-icon
+                          [type]="AppIconType.INFO"
+                          [style]="helpIconStyle"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </div>
+                  }
                 }
 
                 <mat-expansion-panel class="sub-expansion-panel">
@@ -424,6 +673,7 @@ export function shellQuote(value: string): string {
                           <input
                             matInput
                             name="lanDomain"
+                            [disabled]="config().certMode === 'alpn'"
                             [placeholder]="'soms-lan.example.com'"
                             [ngModel]="config().lanDomain"
                             (ngModelChange)="update('lanDomain', $event)"
@@ -434,8 +684,16 @@ export function shellQuote(value: string): string {
                           mat-icon-button
                           type="button"
                           class="row-help-btn"
-                          [matTooltip]="t().lanDomainHint"
-                          [attr.aria-label]="t().lanDomainHint"
+                          [matTooltip]="
+                            config().certMode === 'alpn'
+                              ? t().lanDomainDisabledHint
+                              : t().lanDomainHint
+                          "
+                          [attr.aria-label]="
+                            config().certMode === 'alpn'
+                              ? t().lanDomainDisabledHint
+                              : t().lanDomainHint
+                          "
                         >
                           <app-icon
                             [type]="AppIconType.INFO"
@@ -450,200 +708,7 @@ export function shellQuote(value: string): string {
               </mat-card-content>
             </mat-card>
 
-            <!-- Section 03: DNS & Certificates -->
-            <mat-card class="section-card" appearance="outlined">
-              <mat-card-header>
-                <div mat-card-avatar class="section-avatar">
-                  <span class="step-num">3</span>
-                </div>
-                <mat-card-title>{{ t().dnsAndCert }}</mat-card-title>
-              </mat-card-header>
-
-              <mat-card-content>
-                <div class="input-row-with-help">
-                  <mat-form-field appearance="outline" class="flex-field">
-                    <mat-label>{{ t().dnsProvider }}</mat-label>
-                    <mat-select
-                      name="dnsProvider"
-                      required
-                      [ngModel]="config().dnsProvider"
-                      (ngModelChange)="update('dnsProvider', $event)"
-                    >
-                      <mat-option value="cloudflare">{{
-                        t().providerCloudflare
-                      }}</mat-option>
-                      <mat-option value="alidns">{{
-                        t().providerAlidns
-                      }}</mat-option>
-                      <mat-option value="tencentcloud">{{
-                        t().providerTencentcloud
-                      }}</mat-option>
-                    </mat-select>
-                  </mat-form-field>
-                  <button
-                    mat-icon-button
-                    type="button"
-                    class="row-help-btn"
-                    [matTooltip]="t().dnsProviderHint"
-                    [attr.aria-label]="t().dnsProviderHint"
-                  >
-                    <app-icon
-                      [type]="AppIconType.INFO"
-                      [style]="helpIconStyle"
-                      aria-hidden="true"
-                    />
-                  </button>
-                </div>
-
-                @if (config().dnsProvider === 'cloudflare') {
-                  <div class="input-row-with-help">
-                    <mat-form-field appearance="outline" class="flex-field">
-                      <mat-label>{{ t().dnsToken }}</mat-label>
-                      <input
-                        matInput
-                        name="dnsToken"
-                        required
-                        type="text"
-                        autocomplete="new-password"
-                        [ngModel]="config().dnsToken"
-                        (ngModelChange)="update('dnsToken', $event)"
-                      />
-                    </mat-form-field>
-                    <button
-                      mat-icon-button
-                      type="button"
-                      class="row-help-btn"
-                      [matTooltip]="t().dnsTokenHint"
-                      [attr.aria-label]="t().dnsTokenHint"
-                    >
-                      <app-icon
-                        [type]="AppIconType.INFO"
-                        [style]="helpIconStyle"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </div>
-                }
-
-                @if (config().dnsProvider === 'alidns') {
-                  <div class="input-row-with-help">
-                    <mat-form-field appearance="outline" class="flex-field">
-                      <mat-label>{{ t().aliyunKeyId }}</mat-label>
-                      <input
-                        matInput
-                        name="aliyunKeyId"
-                        required
-                        type="text"
-                        autocomplete="new-password"
-                        [ngModel]="config().aliyunKeyId"
-                        (ngModelChange)="update('aliyunKeyId', $event)"
-                      />
-                    </mat-form-field>
-                    <button
-                      mat-icon-button
-                      type="button"
-                      class="row-help-btn"
-                      [matTooltip]="t().aliyunKeyIdHint"
-                      [attr.aria-label]="t().aliyunKeyIdHint"
-                    >
-                      <app-icon
-                        [type]="AppIconType.INFO"
-                        [style]="helpIconStyle"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </div>
-
-                  <div class="input-row-with-help">
-                    <mat-form-field appearance="outline" class="flex-field">
-                      <mat-label>{{ t().aliyunKeySecret }}</mat-label>
-                      <input
-                        matInput
-                        name="aliyunKeySecret"
-                        required
-                        type="text"
-                        autocomplete="new-password"
-                        [ngModel]="config().aliyunKeySecret"
-                        (ngModelChange)="update('aliyunKeySecret', $event)"
-                      />
-                    </mat-form-field>
-                    <button
-                      mat-icon-button
-                      type="button"
-                      class="row-help-btn"
-                      [matTooltip]="t().aliyunKeySecretHint"
-                      [attr.aria-label]="t().aliyunKeySecretHint"
-                    >
-                      <app-icon
-                        [type]="AppIconType.INFO"
-                        [style]="helpIconStyle"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </div>
-                }
-
-                @if (config().dnsProvider === 'tencentcloud') {
-                  <div class="input-row-with-help">
-                    <mat-form-field appearance="outline" class="flex-field">
-                      <mat-label>{{ t().tencentSecretId }}</mat-label>
-                      <input
-                        matInput
-                        name="tencentSecretId"
-                        required
-                        type="text"
-                        autocomplete="new-password"
-                        [ngModel]="config().tencentSecretId"
-                        (ngModelChange)="update('tencentSecretId', $event)"
-                      />
-                    </mat-form-field>
-                    <button
-                      mat-icon-button
-                      type="button"
-                      class="row-help-btn"
-                      [matTooltip]="t().tencentSecretIdHint"
-                      [attr.aria-label]="t().tencentSecretIdHint"
-                    >
-                      <app-icon
-                        [type]="AppIconType.INFO"
-                        [style]="helpIconStyle"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </div>
-
-                  <div class="input-row-with-help">
-                    <mat-form-field appearance="outline" class="flex-field">
-                      <mat-label>{{ t().tencentSecretKey }}</mat-label>
-                      <input
-                        matInput
-                        name="tencentSecretKey"
-                        required
-                        type="text"
-                        autocomplete="new-password"
-                        [ngModel]="config().tencentSecretKey"
-                        (ngModelChange)="update('tencentSecretKey', $event)"
-                      />
-                    </mat-form-field>
-                    <button
-                      mat-icon-button
-                      type="button"
-                      class="row-help-btn"
-                      [matTooltip]="t().tencentSecretKeyHint"
-                      [attr.aria-label]="t().tencentSecretKeyHint"
-                    >
-                      <app-icon
-                        [type]="AppIconType.INFO"
-                        [style]="helpIconStyle"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </div>
-                }
-              </mat-card-content>
-            </mat-card>
-
-            <!-- Section 04: Advanced (Material Expansion Panel) -->
+            <!-- Section 03: Advanced (Material Expansion Panel) -->
             <mat-accordion class="advanced-accordion">
               <mat-expansion-panel
                 class="section-card advanced-panel"
@@ -653,7 +718,7 @@ export function shellQuote(value: string): string {
                 <mat-expansion-panel-header>
                   <mat-panel-title>
                     <div mat-card-avatar class="section-avatar">
-                      <span class="step-num">4</span>
+                      <span class="step-num">3</span>
                     </div>
                     <span>{{ t().advanced }}</span>
                   </mat-panel-title>
@@ -1593,7 +1658,7 @@ export class DeploymentPageComponent {
   }
 
   focusIssue(key: string, domainPanel?: any, advancedPanel?: any) {
-    if (['webDomain', 'lanDomain'].includes(key)) {
+    if (['webDomain', 'lanDomain', 'lanDomainRequiresDns'].includes(key)) {
       domainPanel?.open();
     }
     if (
@@ -1609,7 +1674,12 @@ export class DeploymentPageComponent {
     ) {
       advancedPanel?.open();
     }
-    const targetId = key === 'publicPort' ? 'port' : key;
+    const targetId =
+      key === 'publicPort'
+        ? 'port'
+        : key === 'lanDomainRequiresDns'
+          ? 'lanDomain'
+          : key;
     // Find input or select by name/id
     const target =
       document.getElementById(targetId) ||
@@ -1627,6 +1697,16 @@ export class DeploymentPageComponent {
 
   setMode(mode: DeploymentConfig['mode']) {
     this.config.update((c) => this.modeState.switch(c, mode));
+  }
+
+  // Switching to ALPN keeps the LAN-domain field disabled, so clear it here; otherwise the
+  // lanDomainRequiresDns issue would block export with no editable field to resolve it.
+  setCertMode(certMode: DeploymentConfig['certMode']) {
+    this.config.update((c) => ({
+      ...c,
+      certMode,
+      ...(certMode === 'alpn' ? { lanDomain: '' } : {}),
+    }));
   }
 
   update<K extends keyof DeploymentConfig>(key: K, value: DeploymentConfig[K]) {

@@ -3,6 +3,10 @@ import { DEFAULT_EDGE_PORT } from '../../../../shared/deployment-ports';
 export interface DeploymentConfig {
   /** Public mode fixes web ports at 80/443 and federation at 7667. */
   mode: 'public' | 'nas';
+  /** Certificate challenge mode: alpn (direct 443) or dns (DNS-01). */
+  certMode: 'alpn' | 'dns';
+  /** Optional ACME notification email for expiry notices. */
+  acmeEmail: string;
   /** Federation port, or the single published port in the single-port family. */
   port: number;
   domain: string;
@@ -30,6 +34,8 @@ export interface DeploymentConfig {
 
 export const initialDeployment: DeploymentConfig = {
   mode: 'nas',
+  certMode: 'dns',
+  acmeEmail: '',
   port: DEFAULT_EDGE_PORT,
   domain: '',
   webDomain: '',
@@ -57,10 +63,11 @@ export const initialDeployment: DeploymentConfig = {
 /** Per-shape defaults applied when the deployment shape changes. */
 export function defaultsForMode(
   mode: DeploymentConfig['mode'],
-): Pick<DeploymentConfig, 'port' | 'adminAccess'> {
+): Pick<DeploymentConfig, 'port' | 'adminAccess' | 'certMode'> {
   return {
     port: DEFAULT_EDGE_PORT,
     adminAccess: mode === 'public' ? 'public' : 'lan',
+    certMode: mode === 'public' ? 'alpn' : 'dns',
   };
 }
 
@@ -78,8 +85,16 @@ export class DeploymentModeState {
     this.settings[current.mode] = {
       port: current.port,
       adminAccess: current.adminAccess,
+      certMode: current.certMode,
     };
-    return { ...current, mode, ...this.settings[mode] };
+    const next = { ...current, mode, ...this.settings[mode] };
+    if (next.mode === 'nas') {
+      next.certMode = 'dns';
+    }
+    if (next.certMode === 'alpn') {
+      next.lanDomain = '';
+    }
+    return next;
   }
 }
 
@@ -155,9 +170,20 @@ export function deploymentIssues(c: DeploymentConfig): string[] {
       issues.push('remoteCaPath');
   }
   if (!c.adminPassword.trim()) issues.push('adminPassword');
-  const provider = dnsProviders[c.dnsProvider];
-  if (!provider) issues.push('dnsProvider');
-  else for (const key of provider.fields) if (!c[key].trim()) issues.push(key);
+  if (c.certMode === 'alpn') {
+    if (c.mode !== 'public') issues.push('certMode');
+    if (c.lanDomain.trim()) issues.push('lanDomainRequiresDns');
+    if (
+      c.acmeEmail.trim() &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c.acmeEmail.trim())
+    ) {
+      issues.push('acmeEmail');
+    }
+  } else {
+    const provider = dnsProviders[c.dnsProvider];
+    if (!provider) issues.push('dnsProvider');
+    else for (const key of provider.fields) if (!c[key].trim()) issues.push(key);
+  }
 
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$/.test(c.image)) issues.push('image');
   return issues;
@@ -191,9 +217,11 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
         ] as [string, string, string][])
       : []),
     ['admin_password', 'admin-password', scalar(c.adminPassword.trim())],
-    ...dnsProviders[c.dnsProvider].fields.map(
-      (field): [string, string, string] => [field, field, scalar(c[field])],
-    ),
+    ...(c.certMode === 'dns'
+      ? dnsProviders[c.dnsProvider].fields.map(
+          (field): [string, string, string] => [field, field, scalar(c[field])],
+        )
+      : []),
     ['admin_access', 'admin-access', scalar(c.adminAccess)],
     ['webauthn_origins', 'webauthn-origins', scalar(origins)],
   ];
@@ -212,17 +240,25 @@ export function generateCompose(template: string, c: DeploymentConfig): string {
       throw new Error(`NAS template changed: ${pattern.source}`);
     body = body.replace(new RegExp(pattern.source, 'gm'), value);
   };
-  const provider = dnsProviders[c.dnsProvider];
-  replace(
-    /^      CADDY_DNS_DIRECTIVE:.*$/,
-    `      CADDY_DNS_DIRECTIVE: ${scalar(provider.directive)}`,
-  );
-  replace(
-    /^      CLOUDFLARE_API_TOKEN:.*$/,
-    provider.fields
-      .map((field, i) => `      ${provider.env[i]}: *${field}`)
-      .join('\n'),
-  );
+  if (c.certMode === 'alpn') {
+    replace(
+      /^      CADDY_DNS_DIRECTIVE:.*$/,
+      `      CADDY_CERT_MODE: 'alpn'${c.acmeEmail.trim() ? `\n      ACME_EMAIL: ${scalar(c.acmeEmail.trim())}` : ''}`,
+    );
+    replace(/^      CLOUDFLARE_API_TOKEN:.*$\n?/m, '');
+  } else {
+    const provider = dnsProviders[c.dnsProvider];
+    replace(
+      /^      CADDY_DNS_DIRECTIVE:.*$/,
+      `      CADDY_CERT_MODE: 'dns'\n      CADDY_DNS_DIRECTIVE: ${scalar(provider.directive)}`,
+    );
+    replace(
+      /^      CLOUDFLARE_API_TOKEN:.*$/,
+      provider.fields
+        .map((field, i) => `      ${provider.env[i]}: *${field}`)
+        .join('\n'),
+    );
+  }
   replace(/^  PGDATABASE:.*$/, '  PGDATABASE: *database-name');
   replace(/^  PGUSER:.*$/, '  PGUSER: *database-user');
   replace(/^  PGPASSWORD:.*$/, '  PGPASSWORD: *database-password');
