@@ -46,6 +46,14 @@ for (const width of [1440, 390]) {
     });
     await expect(profileButton.locator('img')).toBeVisible();
     await page.getByRole('button', { name: /^Playground Team, chat/ }).click();
+    const announcement = page.locator(
+      '.pane-layer.pane-fg app-group-announcement',
+    );
+    await expect(announcement).toBeVisible();
+    await announcement
+      .getByRole('button', { name: 'Confirm', exact: true })
+      .click();
+    await expect(announcement).toHaveCount(0);
     await page
       .locator('.pane-layer.pane-fg .msg-header')
       .getByRole('button', { name: 'More options', exact: true })

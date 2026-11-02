@@ -5,9 +5,17 @@ const groupInfo = (page: Page) => page.locator('app-group-info').last();
 const requests = (page: Page) => page.locator('app-friend-requests');
 async function openGroup(page: Page) {
   await page.getByRole('button', { name: /^Playground Team, chat/ }).click();
+  const announcement = page.locator(
+    '.pane-layer.pane-fg app-group-announcement',
+  );
+  await expect(announcement).toBeVisible();
+  await announcement
+    .getByRole('button', { name: 'Confirm', exact: true })
+    .click();
+  await expect(announcement).toHaveCount(0);
   await page
     .locator('.pane-layer.pane-fg .msg-header')
-    .getByRole('button')
+    .getByRole('button', { name: 'More options', exact: true })
     .click();
   await expect(groupInfo(page).locator('.member-overview-row')).toBeVisible();
 }
@@ -65,7 +73,32 @@ test('friend requests: accept, reject, search, send and withdraw retain the new 
 test('group requests: invite, revoke, accept and reject update candidates and roster', async ({
   page,
 }) => {
+  // Invitations require an active, unblocked friendship. Maya starts as an incoming request.
+  await page
+    .getByRole('button', { name: 'Friend requests', exact: true })
+    .click();
+  const friends = requests(page);
+  const maya = friends
+    .locator('app-friend-request-card')
+    .filter({ hasText: 'Maya' });
+  await maya.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(
+    maya.getByRole('button', { name: 'Approved', exact: true }),
+  ).toBeDisabled();
+  await friends.locator('.page-header__back').click();
   await openGroup(page);
+  // Maya is already in the seeded roster; remove her before exercising a fresh invitation.
+  await groupInfo(page).locator('.member-overview-row').click();
+  const member = groupInfo(page).locator('.member').filter({ hasText: 'Maya' });
+  await member.locator('.more-btn').click();
+  await page.getByRole('menuitem').nth(1).click();
+  await page.locator('app-confirm-dialog').getByRole('button').last().click();
+  await expect(member).toHaveCount(0);
+  await groupInfo(page).locator('.member-manager .page-header__back').click();
+  await page
+    .locator('.pane-layer.pane-fg .msg-header')
+    .getByRole('button', { name: 'More options', exact: true })
+    .click();
   await groupInfo(page).locator('.invite-friends-row').click();
   const workspace = page.locator('app-group-join-requests');
   await expect(workspace.getByRole('tab').nth(1)).toHaveAttribute(
@@ -79,23 +112,30 @@ test('group requests: invite, revoke, accept and reject update candidates and ro
   await jack.locator('.request-actions button').first().click();
   await expect(jack.locator('.request-status')).toBeVisible();
   await workspace.getByRole('tab').nth(2).click();
-  const liam = workspace.locator('.candidate-row').filter({ hasText: 'Liam' });
-  await liam.locator('button').click();
-  await expect(liam.locator('button')).toBeDisabled();
+  const lookup = workspace.getByRole('tabpanel', { name: 'Invite members' });
+  await lookup
+    .getByRole('textbox', { name: 'Exact account or account@domain' })
+    .fill('maya');
+  await lookup.getByRole('button', { name: 'Search', exact: true }).click();
+  const candidate = workspace
+    .locator('.candidate-row')
+    .filter({ hasText: 'Maya' });
+  await candidate.locator('button').click();
+  await expect(candidate.locator('button')).toBeDisabled();
   // Material paginates this narrow tab header; use its visible keyboard navigation.
   await workspace.getByRole('tab').nth(2).focus();
   await page.keyboard.press('Home');
   await page.keyboard.press('Enter');
   const invitation = workspace
     .locator('.request-row')
-    .filter({ hasText: 'Liam' });
+    .filter({ hasText: 'Maya' });
   await invitation.locator('button').click();
   await expect(invitation.locator('.request-status')).toBeVisible();
   await workspace.getByRole('tab').nth(2).click();
-  await expect(liam.locator('button')).toBeEnabled();
+  await expect(candidate.locator('button')).toBeEnabled();
   await workspace.locator('.page-header__back').click();
   await expect(groupInfo(page).locator('.member-overview-row')).toContainText(
-    '6 members',
+    '5 members',
   );
   await groupInfo(page).locator('.member-overview-row').click();
   await expect(
@@ -178,7 +218,7 @@ test('new group creates an owner-only roster and dissolution retains read-only h
   await expect(groupInfo(page).locator('.group-actions')).toHaveCount(0);
   await expect(
     page.locator('.pane-layer.pane-fg .msg-blocked-banner'),
-  ).toContainText('dissolved');
+  ).toContainText('This group conversation is read-only.');
 });
 
 test('member management updates roles, removal, transfer and leave', async ({
@@ -207,7 +247,7 @@ test('member management updates roles, removal, transfer and leave', async ({
   await roster.locator('.page-header__back').click();
   await page
     .locator('.pane-layer.pane-fg .msg-header')
-    .getByRole('button')
+    .getByRole('button', { name: 'More options', exact: true })
     .click();
   await expect(groupInfo(page).locator('.group-actions button')).toHaveCount(1);
   await groupInfo(page).locator('.group-actions button').click();
@@ -225,7 +265,7 @@ test('accepting a group invitation adds a group, and unfriend keeps a read-only 
     .click();
   const bookClub = requests(page)
     .locator('app-friend-request-card')
-    .filter({ hasText: '!bookclub' });
+    .filter({ hasText: 'Book Club' });
   await bookClub
     .getByRole('button', { name: 'Join group', exact: true })
     .click();
@@ -249,9 +289,13 @@ test('accepting a group invitation adds a group, and unfriend keeps a read-only 
   await expect(
     page.getByRole('button', { name: /^Alice, chat/ }),
   ).toBeVisible();
-  await expect(page.locator('.pane-layer.pane-fg app-chat-input')).toHaveCount(
-    0,
-  );
+  // Read-only presentation retains prepared editor infrastructure, but it must be
+  // hidden and non-interactive rather than bound to a sending context.
+  const retainedComposer = page.locator('.pane-layer.pane-fg app-chat-input');
+  await expect(retainedComposer).toHaveCount(1);
+  await expect(retainedComposer).toBeHidden();
+  await expect(retainedComposer).toHaveAttribute('inert', '');
+  await expect(retainedComposer).toHaveClass(/msg-composer--unbound/);
   await expect(page.locator('.pane-layer.pane-fg .msg-header')).toContainText(
     'Alice',
   );

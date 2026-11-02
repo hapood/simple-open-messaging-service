@@ -4,6 +4,7 @@ import { PlaygroundSocialState } from './playground-social-state';
 import { PlaygroundUserService } from './playground-user.mock';
 import { PlaygroundGroupService } from './playground-group.mock';
 import { PlaygroundMemberProfiles } from './playground-profile.mock';
+import { BusinessCode } from '../app/services/biz-code';
 import { currentGroupAnnouncement } from '../app/services/group-announcement';
 import { parseIncomingRequestHead } from '../../../shared/relationship-request';
 
@@ -100,7 +101,10 @@ describe('playground social contracts', () => {
     ).toBe('emma');
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emm' }))).code,
-    ).not.toBe(0);
+    ).toBe(BusinessCode.NOT_FOUND);
+    expect(
+      (await firstValueFrom(users.resolveUser({ account: 'liam' }))).code,
+    ).toBe(BusinessCode.NOT_FOUND);
     expect(
       (
         await firstValueFrom(

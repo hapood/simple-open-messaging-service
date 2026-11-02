@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { Subject, firstValueFrom, take } from 'rxjs';
+import { Subject, firstValueFrom, take, type Observable } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import { ProfileNamespaceRepository } from './profile-namespace-store.service';
 import {
@@ -15,6 +15,37 @@ import type {
 
 function pairKey(pair: ProfileNamespacePairKey): string {
   return `${pair.publisherNamespaceId}:${pair.profileNamespaceId}`;
+}
+
+/** Push-based observation of one observable's emissions. `at(index)`
+ *  resolves exactly when that emission arrives (or immediately if it has
+ *  already happened), so tests await the event itself instead of polling
+ *  with timers — a stalled renderer can delay the await but never turn a
+ *  landed event into a failure, and a missing event surfaces as a test
+ *  timeout rather than a race-dependent assertion miss. */
+function emissionLog<T>(source: Observable<T>) {
+  const values: T[] = [];
+  const waiters: Array<{ index: number; resolve: (value: T) => void }> = [];
+  const subscription = source.subscribe((value) => {
+    values.push(value);
+    for (let i = waiters.length - 1; i >= 0; i -= 1) {
+      if (waiters[i].index < values.length) {
+        waiters[i].resolve(values[waiters[i].index]);
+        waiters.splice(i, 1);
+      }
+    }
+  });
+  return {
+    values,
+    /** Await the emission with the given absolute index. */
+    at(index: number): Promise<T> {
+      return new Promise<T>((resolve) => {
+        if (index < values.length) resolve(values[index]);
+        else waiters.push({ index, resolve });
+      });
+    },
+    unsubscribe: () => subscription.unsubscribe(),
+  };
 }
 
 function createFakeWebdb() {
@@ -261,18 +292,23 @@ describe('ProfileNamespaceRepository', () => {
   });
 
   it('re-emits an updated binding on wake', async () => {
-    const { repo, webdb, engine } = setUp();
+    const { repo, webdb } = setUp();
     seedRow(webdb, PAIR_A, { domain: 'before.test', expired: false });
-    const emissions: ProfileNamespaceBinding[] = [];
-    repo.resolve(PAIR_A).subscribe((b) => emissions.push(b));
-    await vi.waitFor(() => expect(emissions.length).toBe(1));
+    const log = emissionLog(repo.resolve(PAIR_A));
+    // Await the emissions themselves: the wake re-run is a microtask chain
+    // against the synchronous fake webdb, so no timer or poll is involved.
+    expect(await log.at(0)).toMatchObject({
+      domain: 'before.test',
+      expired: false,
+    });
     seedRow(webdb, PAIR_A, { domain: 'after.test', expired: false });
     webdb.emitWake([PAIR_A]);
-    await vi.waitFor(() => expect(emissions.length).toBe(2));
-    expect(emissions[1]).toMatchObject({
+    expect(await log.at(1)).toMatchObject({
       domain: 'after.test',
       expired: false,
     });
+    expect(log.values).toHaveLength(2);
+    log.unsubscribe();
   });
 
   it('guards cache writes on both coordinates', async () => {

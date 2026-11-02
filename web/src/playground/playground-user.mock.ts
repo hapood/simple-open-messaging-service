@@ -1,5 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { defer, of, map } from 'rxjs';
+import { BusinessCode } from '../app/services/biz-code';
 import { playgroundAvatarUpload } from './playground-avatar-upload';
 import { unicodeCodePointLength } from '../app/lib/unicode-text';
 import type {
@@ -103,7 +104,7 @@ export class PlaygroundUserService
       return of(
         user
           ? { code: 0, message: 'ok', data: { ...user } }
-          : { code: 404, message: 'User not found' },
+          : { code: BusinessCode.NOT_FOUND, message: 'User not found' },
       );
     });
   }
