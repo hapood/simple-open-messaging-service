@@ -19,6 +19,9 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
+// Test identity must not depend on a developer's untracked deployment config.
+process.env.SOMS_DOMAIN ??= 'e2e-local.test';
+
 const poolId = process.env.VITEST_POOL_ID ?? '0';
 const runId = e2eRunId();
 const forkDb = e2eWorkerDatabaseName(poolId);

@@ -48,6 +48,9 @@
 # MAKE_DIR = the directory holding this file (.../src-tauri/), ROOT = the repo root.
 MAKE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ROOT     := $(abspath $(MAKE_DIR)..)
+# Do not let Tauri discover a vendored plugin's package.json as the frontend.
+export TAURI_APP_PATH := $(abspath $(MAKE_DIR))
+export TAURI_FRONTEND_PATH := $(ROOT)
 
 # LOCAL host toolchain (the build runs natively — no container). ANDROID_HOME is the SDK root; override
 # if yours lives elsewhere. The NDK is auto-detected under $ANDROID_HOME/ndk/<ver> (override

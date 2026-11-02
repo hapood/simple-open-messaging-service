@@ -64,6 +64,8 @@ jobs:
         run: |
           npm ci --prefix web
           cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build arm64 debug APK
+        run: make -C src-tauri apk-debug ABI=aarch64
       - name: Run Android JVM tests
         working-directory: src-tauri/gen/android
         run: ./gradlew :app:testUniversalDebugUnitTest --no-daemon
@@ -74,8 +76,6 @@ jobs:
           name: android-unit-test-failures
           path: src-tauri/gen/android/app/build/reports/tests/
           if-no-files-found: ignore
-      - name: Build arm64 debug APK
-        run: make -C src-tauri apk-debug ABI=aarch64
 
   linux:
     # Same pinned runner as the release workflow's Linux job: the bundles link against the
