@@ -169,7 +169,7 @@ export class FederationNamespaceAdminService {
         detail: `discovery failed: ${(error as Error).message}`,
       };
     }
-    const url = new URL(`${base}/s2s/v1/verify`);
+    const url = new URL(`${base}/somfp/v1/verify`);
     const release = await this.discovery.acquireRequestSlot(review.nextDomain);
     try {
       const headers = await this.signature.signOutbound({

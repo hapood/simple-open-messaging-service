@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:discovery",
-  "title": "GET /.well-known/somfp response for a v1-capable node",
+  "title": "GET /somfp/discovery response for a v1-capable node",
   "type": "object",
   "required": ["protocolVersions", "roots", "keys", "signingKeyCreatedAt"],
   "properties": {

@@ -39,8 +39,8 @@ the scripts invoke the host Docker CLI through `host-spawn` and forward these va
 
 Tag pushes (`v*`) trigger the container image workflow, which builds `linux/amd64` and `linux/arm64`
 images and publishes them to `ghcr.io/hapood/simple-open-messaging-service` under the tag name.
-The Compose generator and NAS template target `v0.1.0-alpha.0`; the public template uses `latest`.
-Publish the version tag
+The Compose generator and both deployment templates default to `latest`; select an explicit
+version tag such as `v0.1.0-alpha.2` to pin a release. Publish the version tag
 from `main` after the release pull request is approved and squash-merged; the image is available
 after the tag workflow succeeds. Every version release, including alpha, updates `latest`.
 Development branch builds only update `dev` and commit tags.

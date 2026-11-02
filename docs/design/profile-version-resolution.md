@@ -347,10 +347,10 @@ or reconstruct evidence.
 The signed federation profile reads are:
 
 ```text
-GET /s2s/v1/accounts/:account
-GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
-GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
-GET /s2s/v1/account-profiles/:namespaceId/:account/:account/:profileRev
+GET /somfp/v1/accounts/:account
+GET /somfp/v1/account-profiles/:namespaceId/:account/:profileRev
+GET /somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
+GET /somfp/v1/account-profiles/:namespaceId/:account/:account/:profileRev
 ```
 
 These are the only profile-read operations on the federation surface. Respect

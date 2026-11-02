@@ -606,7 +606,7 @@ export class FederationProfileService {
       ),
     ).toString('base64');
     const profile = await this.peerHttp.get<unknown>(
-      `/s2s/v1/accounts/${encodeFederationResourceComponent(
+      `/somfp/v1/accounts/${encodeFederationResourceComponent(
         address.account,
       )}?publicKey=${encodeURIComponent(rootPublicKey)}` +
         `&challenge=${encodeURIComponent(sealed)}`,
@@ -737,7 +737,7 @@ export class FederationProfileService {
     expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     return this.fetchExactProfile(
-      `/s2s/v1/account-profiles/${expectedProfileNamespaceId}` +
+      `/somfp/v1/account-profiles/${expectedProfileNamespaceId}` +
         `/${encodeFederationResourceComponent(account)}/${rev}`,
       account,
       rev,
@@ -754,7 +754,7 @@ export class FederationProfileService {
     expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     return this.fetchExactProfile(
-      `/s2s/v1/group-member-profiles/${encodeFederationResourceComponent(groupAccount)}` +
+      `/somfp/v1/group-member-profiles/${encodeFederationResourceComponent(groupAccount)}` +
         `/${expectedProfileNamespaceId}` +
         `/${encodeFederationResourceComponent(memberAccount)}/${rev}`,
       memberAccount,

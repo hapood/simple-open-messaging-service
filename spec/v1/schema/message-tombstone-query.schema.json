@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:message-tombstone-query",
-  "title": "GET /s2s/v1/message-tombstones response data",
+  "title": "GET /somfp/v1/message-tombstones response data",
   "$defs": {
     "tombstone": {
       "type": "object",

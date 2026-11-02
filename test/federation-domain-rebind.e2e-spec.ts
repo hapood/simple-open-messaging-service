@@ -192,7 +192,7 @@ describe('peer domain re-binding after a completed handshake', () => {
     });
     const before = await readKeyState();
     const oldDocument = (await fetch(
-      `http://127.0.0.1:${appB.port}/.well-known/somfp`,
+      `http://127.0.0.1:${appB.port}/somfp/discovery`,
     ).then((response) => response.json())) as { keys: SigningKeyCertificate[] };
     await appB.restart({ domain: FED_DOMAIN_B_NEW });
     expect(await readKeyState()).toEqual(before);
@@ -201,11 +201,13 @@ describe('peer domain re-binding after a completed handshake', () => {
         where: eq(identityNamespace.id, 0),
       }),
     ).toMatchObject({ domain: FED_DOMAIN_B_NEW });
+    // Namespace 0 is the publisher itself: discovery/recognition own its
+    // remote binding; only the local client change feed publishes (0, 0).
     expect(
       await appB.database.query.profileNamespaceFeed.findFirst({
         where: eq(profileNamespaceFeed.namespaceId, 0),
       }),
-    ).toBeDefined();
+    ).toBeUndefined();
     expect(
       await appB.database.query.profileNamespaceChangeFeed.findFirst({
         where: and(
@@ -216,7 +218,7 @@ describe('peer domain re-binding after a completed handshake', () => {
     ).toBeDefined();
 
     const response = await fetch(
-      `http://127.0.0.1:${appB.port}/.well-known/somfp`,
+      `http://127.0.0.1:${appB.port}/somfp/discovery`,
       { headers: { accept: 'application/json' } },
     );
     expect(response.status).toBe(200);

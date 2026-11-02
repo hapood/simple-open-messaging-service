@@ -117,7 +117,7 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
       const range = req.headers['range'];
       const isGetFileFirstRange =
         typeof req.url === 'string' &&
-        req.url.includes('/s2s/v1/media/') &&
+        req.url.includes('/somfp/v1/media/') &&
         typeof range === 'string' &&
         range.startsWith('bytes=0-');
       if (isGetFileFirstRange) firstRangeCount++;
@@ -126,16 +126,16 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         req.url ?? '/',
         'http://federation-proxy.invalid',
       );
-      const isMessageFeed = requestUrl.pathname === '/s2s/v1/messages';
+      const isMessageFeed = requestUrl.pathname === '/somfp/v1/messages';
       const isTombstoneFeed =
-        requestUrl.pathname === '/s2s/v1/message-tombstones';
+        requestUrl.pathname === '/somfp/v1/message-tombstones';
       const isReverseMessageQuery =
         isMessageFeed && requestUrl.searchParams.has('before');
       // The first compact-feed request intentionally has no `after` query
       // parameter. Match the route by pathname so bootstrap and resumed pulls
       // are both eligible for state-feed fault injection.
-      const isStateFeed = requestUrl.pathname === '/s2s/v1/state-feed';
-      const isRecognize = requestUrl.pathname === '/s2s/v1/recognize';
+      const isStateFeed = requestUrl.pathname === '/somfp/v1/state-feed';
+      const isRecognize = requestUrl.pathname === '/somfp/v1/recognize';
       if (shouldTruncate) truncateNextGetFile = false; // consume the one-shot
       if (requestUrl.pathname === serviceUnavailablePath) {
         serviceUnavailablePath = null;
@@ -164,7 +164,7 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         // intentionally held by this proxy. `destroyed` therefore does not mean that the client cancelled
         // the exchange; `aborted` is the signal that makes a queued relay unsafe to resume.
         if (req.aborted) return;
-        const fixtureDigest = /^\/s2s\/v1\/media\/([a-f0-9]{64})(?:\?|$)/.exec(
+        const fixtureDigest = /^\/somfp\/v1\/media\/([a-f0-9]{64})(?:\?|$)/.exec(
           req.url ?? '/',
         )?.[1];
         const fixture = fixtureDigest

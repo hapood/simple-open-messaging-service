@@ -50,11 +50,11 @@ import {
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
  * Active namespace trust + request integrity + captures req.rawBody, then sets req.peer.
  *
- * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationCallBridgeService.handleFrame.
- * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.
- * - POST /s2s/v1/feed-heads — an ephemeral merged state-feed / profile-namespace-feed wake-up hint.
- * - GET  /s2s/v1/profile-namespace-feed — the shared compacted identity-binding change feed.
- * - GET  /s2s/v1/profile-namespaces/:nsid — current bindings of one namespace id in this server's space.
+ * - POST /somfp/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationCallBridgeService.handleFrame.
+ * - GET  /somfp/v1/state-feed — compacted profile/relationship/group state for the signed peer.
+ * - POST /somfp/v1/feed-heads — an ephemeral merged state-feed / profile-namespace-feed wake-up hint.
+ * - GET  /somfp/v1/profile-namespace-feed — the shared compacted identity-binding change feed.
+ * - GET  /somfp/v1/profile-namespaces/:nsid — current bindings of one namespace id in this server's space.
  *
  * Response shape: success bodies are enveloped by the global SerializeInterceptor as
  * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
@@ -475,7 +475,7 @@ export class S2sController {
   @Get('accounts/:account')
   async getAccountProfile(@Req() req: FastifyRequest) {
     const parsed = parseFederationResourceRequest(req, {
-      pathPrefix: '/s2s/v1/accounts/',
+      pathPrefix: '/somfp/v1/accounts/',
       pathName: 'account',
       query: [{ name: 'publicKey' }, { name: 'challenge' }],
     });
@@ -524,7 +524,7 @@ export class S2sController {
 
   @Get('account-profiles/:namespaceId/:account/:profileRev')
   async getExactAccountProfile(@Req() req: FastifyRequest) {
-    const path = parseFederationResourcePath(req, '/s2s/v1/account-profiles/', [
+    const path = parseFederationResourcePath(req, '/somfp/v1/account-profiles/', [
       'namespaceId',
       'account',
       'profileRev',
@@ -561,7 +561,7 @@ export class S2sController {
   async getGroupMemberProfile(@Req() req: FastifyRequest) {
     const path = parseFederationResourcePath(
       req,
-      '/s2s/v1/group-member-profiles/',
+      '/somfp/v1/group-member-profiles/',
       ['groupAccount', 'namespaceId', 'memberAccount', 'profileRev'],
     );
     const groupAccount = requireAccount(path.groupAccount, 'groupAccount');
@@ -737,7 +737,7 @@ export class S2sController {
     return { type: 'GROUP' as const, account: normalizedAccount };
   }
 
-  /** Parse and validate the `queries` array of a `POST /s2s/v1/message-provenance` request. Each
+  /** Parse and validate the `queries` array of a `POST /somfp/v1/message-provenance` request. Each
    *  query is a closed object with a `thread` (P2P `{account, peerAccount}` or GROUP `{account}`),
    *  a positive `seq`, and a 64-character lowercase hex `payloadDigest`. */
   private parseProvenanceQueries(raw: unknown[]): {
@@ -844,7 +844,7 @@ export class S2sController {
     );
   }
 
-  /** GET /s2s/v1/media/:digest — stream a chat-media asset by sha256 digest,
+  /** GET /somfp/v1/media/:digest — stream a chat-media asset by sha256 digest,
    *  with HTTP Range/206 support so the receiver fetches large files in resumable chunks (no whole-file
    *  buffer, no whole-transfer timeout). The receiver already knows the extension from the message
    *  content URL and re-serves same-origin via @fastify/static (ext→mime), so the S2S Content-Type is
@@ -855,7 +855,7 @@ export class S2sController {
   @Get('media/:digest')
   async getFile(@Req() req: FastifyRequest, @Res() reply: FastifyReply) {
     const parsed = parseFederationResourceRequest(req, {
-      pathPrefix: '/s2s/v1/media/',
+      pathPrefix: '/somfp/v1/media/',
       pathName: 'digest',
       query: [
         { name: 'fromAccount' },
@@ -956,7 +956,7 @@ export class S2sController {
   @Get('forward-bundles/:bundleId')
   async getForwardBundle(@Req() req: FastifyRequest) {
     const parsed = parseFederationResourceRequest(req, {
-      pathPrefix: '/s2s/v1/forward-bundles/',
+      pathPrefix: '/somfp/v1/forward-bundles/',
       pathName: 'bundleId',
     });
     const bundleId = requireBundleId(parsed.pathValue);

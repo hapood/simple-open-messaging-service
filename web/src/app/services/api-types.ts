@@ -1478,7 +1478,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/.well-known/somfp": {
+    "/somfp/discovery": {
         parameters: {
             query?: never;
             header?: never;
@@ -1494,7 +1494,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/group-meta": {
+    "/somfp/v1/group-meta": {
         parameters: {
             query?: never;
             header?: never;
@@ -1510,7 +1510,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/feed-heads": {
+    "/somfp/v1/feed-heads": {
         parameters: {
             query?: never;
             header?: never;
@@ -1526,7 +1526,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/profile-namespace-feed": {
+    "/somfp/v1/profile-namespace-feed": {
         parameters: {
             query?: never;
             header?: never;
@@ -1542,7 +1542,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/profile-namespaces/{nsid}": {
+    "/somfp/v1/profile-namespaces/{nsid}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1558,7 +1558,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/message-tombstones": {
+    "/somfp/v1/message-tombstones": {
         parameters: {
             query?: never;
             header?: never;
@@ -1574,7 +1574,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/messages": {
+    "/somfp/v1/messages": {
         parameters: {
             query?: never;
             header?: never;
@@ -1590,7 +1590,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/message-provenance": {
+    "/somfp/v1/message-provenance": {
         parameters: {
             query?: never;
             header?: never;
@@ -1606,7 +1606,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/state-feed": {
+    "/somfp/v1/state-feed": {
         parameters: {
             query?: never;
             header?: never;
@@ -1622,7 +1622,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/call": {
+    "/somfp/v1/call": {
         parameters: {
             query?: never;
             header?: never;
@@ -1638,7 +1638,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/accounts/{account}": {
+    "/somfp/v1/accounts/{account}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1654,7 +1654,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/account-profiles/{namespaceId}/{account}/{profileRev}": {
+    "/somfp/v1/account-profiles/{namespaceId}/{account}/{profileRev}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1670,7 +1670,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/group-member-profiles/{groupAccount}/{namespaceId}/{memberAccount}/{profileRev}": {
+    "/somfp/v1/group-member-profiles/{groupAccount}/{namespaceId}/{memberAccount}/{profileRev}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1686,7 +1686,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/media/{digest}": {
+    "/somfp/v1/media/{digest}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1702,7 +1702,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/forward-bundles/{bundleId}": {
+    "/somfp/v1/forward-bundles/{bundleId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1718,7 +1718,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/verify": {
+    "/somfp/v1/verify": {
         parameters: {
             query?: never;
             header?: never;
@@ -1734,7 +1734,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/recognize": {
+    "/somfp/v1/recognize": {
         parameters: {
             query?: never;
             header?: never;
@@ -1750,7 +1750,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/health": {
+    "/somfp/v1/health": {
         parameters: {
             query?: never;
             header?: never;

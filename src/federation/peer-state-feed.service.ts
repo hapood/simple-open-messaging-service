@@ -20,7 +20,7 @@ import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 
 export type PeerStateEventType = (typeof peerStateEventType.enumValues)[number];
-/** The `/s2s/v1` route is the schema version; bodies contain business state only. */
+/** The `/somfp/v1` route is the schema version; bodies contain business state only. */
 type PeerStateBody = Record<string, unknown>;
 
 interface PeerStateFeedWriteBase {

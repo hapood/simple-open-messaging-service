@@ -43,7 +43,7 @@ for both callers; diagnostics no longer fan out into separate per-address probes
 resolved addresses and the actual connected address, port, and certificate.
 
 The HTTPS request uses the identity domain for Host, SNI, certificate verification, and discovery
-document validation. The path is always `/.well-known/somfp`. TLS reachability is separate from
+document validation. The path is always `/somfp/discovery`. TLS reachability is separate from
 protocol validation: 404/410 is a failed discovery document, not a failed TLS handshake, just as in
 real federation discovery. Both callers enforce JSON Content-Type, the 256 KiB streaming body cap,
 and document/signature validity. Responses are cancelled on error; redirects are never followed.

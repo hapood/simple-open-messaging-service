@@ -109,7 +109,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
  * AccountThreadStateService (relationship reads + raw roster mutators), SseService (GatewayModule),
  * + UploadModule (avatar wire helpers). DatabaseService is provided globally by DatabaseModule.
  *
- * Two S2S controllers share the `s2s/v1` prefix: S2sController (unified invite + roster + signed GETs,
+ * Two S2S controllers share the `somfp/v1` prefix: S2sController (unified invite + roster + signed GETs,
  * allow-list-gated via S2sSignatureGuard) and S2sRecognitionController (bidirectional Recognize + Health).
  */
 @Module({

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:forward-bundle",
-  "title": "GET /s2s/v1/forward-bundles/:bundleId response data",
+  "title": "GET /somfp/v1/forward-bundles/:bundleId response data",
   "$defs": {
     "bundleId": {
       "type": "string",

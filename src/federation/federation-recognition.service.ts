@@ -485,7 +485,7 @@ export class FederationRecognitionService {
       await degrade(`Health discovery: ${(error as Error).message}`);
       throw error;
     }
-    const url = new URL(`${base}/s2s/v1/health`);
+    const url = new URL(`${base}/somfp/v1/health`);
     const body = '';
     const release = await this.discovery.acquireRequestSlot(domain);
     try {
@@ -1530,7 +1530,7 @@ export class FederationRecognitionService {
     const context = await this.prepareOutbound(domain, doc);
     await this.discovery.cacheDocument(domain, context.namespaceId, doc);
     const base = await this.discovery.resolveBase(domain);
-    const url = new URL(`${base}/s2s/v1/recognize`);
+    const url = new URL(`${base}/somfp/v1/recognize`);
     const body = context.namespaceId
       ? JSON.stringify({ namespaceId: context.namespaceId })
       : '{}';

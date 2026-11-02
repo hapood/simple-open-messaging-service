@@ -228,11 +228,11 @@ describe('federation durable missed transport (two nodes)', () => {
           .filter(
             (entry) =>
               entry.method === 'GET' &&
-              entry.path.startsWith('/s2s/v1/') &&
-              !entry.path.startsWith('/s2s/v1/health'),
+              entry.path.startsWith('/somfp/v1/') &&
+              !entry.path.startsWith('/somfp/v1/health'),
           );
         expect(signedGets[0]).toMatchObject({
-          path: expect.stringMatching(/^\/s2s\/v1\/state-feed\?/),
+          path: expect.stringMatching(/^\/somfp\/v1\/state-feed\?/),
           status: 200,
         });
         const dataGets = signedGets;
@@ -243,7 +243,7 @@ describe('federation durable missed transport (two nodes)', () => {
         expect(
           dataGets.some(
             (entry) =>
-              entry.path.startsWith('/s2s/v1/messages?') &&
+              entry.path.startsWith('/somfp/v1/messages?') &&
               entry.status === 200,
           ),
         ).toBe(true);

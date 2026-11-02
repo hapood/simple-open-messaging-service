@@ -83,7 +83,7 @@ export class FederationAdminMessageProvenanceService {
       row.publisherNamespaceId,
     );
     const response = await this.peerHttp.postJson<ProvenanceResponse>(
-      '/s2s/v1/message-provenance',
+      '/somfp/v1/message-provenance',
       JSON.stringify({
         queries: [
           {

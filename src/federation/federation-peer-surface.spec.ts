@@ -327,7 +327,7 @@ describe('FederationProfileService resource path', () => {
     const { profiles, peerHttp, pinnedRoot } = makeStubs();
     const getSigned = vi.fn().mockImplementation(async (path: string) => {
       const url = new URL(`https://peer.test${path}`);
-      expect(url.pathname).toBe('/s2s/v1/accounts/%21group');
+      expect(url.pathname).toBe('/somfp/v1/accounts/%21group');
       expect(url.searchParams.get('publicKey')).toBe(pinnedRoot);
       expect(url.searchParams.get('challenge')).toMatch(/^[A-Za-z0-9+/=]+$/);
       return {

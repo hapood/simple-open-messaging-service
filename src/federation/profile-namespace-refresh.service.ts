@@ -246,7 +246,7 @@ export class ProfileNamespaceRefreshService {
     try {
       const answer = await this.trustedPeers.run(context.domain, () =>
         this.peerHttp.get<ProfileNamespaceBindings>(
-          `/s2s/v1/profile-namespaces/${nsid}`,
+          `/somfp/v1/profile-namespaces/${nsid}`,
           context.domain,
           64 * 1024,
         ),

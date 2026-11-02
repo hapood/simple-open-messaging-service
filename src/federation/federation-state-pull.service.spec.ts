@@ -144,7 +144,7 @@ describe('FederationStatePullService drain window', () => {
     await expect(service.pullStateFromPeer('peer.test', 5n)).resolves.toBe(5n);
 
     expect(peerHttp.get).toHaveBeenCalledWith(
-      '/s2s/v1/state-feed?after=2&take=100&through=5',
+      '/somfp/v1/state-feed?after=2&take=100&through=5',
       'peer.test',
       16 * 1024 * 1024,
     );

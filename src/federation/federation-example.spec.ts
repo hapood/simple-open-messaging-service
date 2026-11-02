@@ -11,7 +11,12 @@ const publicKey = Buffer.from(
 );
 
 describe('published request and message examples', () => {
-  for (const chapter of ['transport-security.md', 'calls.md', 'resources.md']) {
+  for (const chapter of [
+    'transport-security.md',
+    'calls.md',
+    'resources.md',
+    'recognition.md',
+  ]) {
     it(`reproduces every signed request in ${chapter}`, () => {
       const blocks = [...read(chapter).matchAll(/```http\n([\s\S]*?)```/g)]
         .map((match) => match[1].trimEnd())
@@ -30,7 +35,17 @@ describe('published request and message examples', () => {
             ];
           }),
         );
-        expect(headers['s2s-root-key']).toBe(publicKey.toString('base64'));
+        const certificates = [
+          ...read(chapter).matchAll(/```json\n([\s\S]*?)```/g),
+        ].flatMap((match) => JSON.parse(match[1]).keys ?? []);
+        const keyId = /keyid="([^"]+)"/.exec(headers['signature-input'])?.[1];
+        const certificate = certificates.find((key) => key.keyId === keyId);
+        const signingPublicKey = certificate
+          ? Buffer.from(certificate.ed25519, 'base64')
+          : publicKey;
+        expect(headers['s2s-root-key']).toBe(
+          certificate?.root ?? publicKey.toString('base64'),
+        );
         expect(headers['content-digest']).toBe(
           `sha-256=:${createHash('sha256').update(body).digest('base64')}:`,
         );
@@ -50,10 +65,10 @@ describe('published request and message examples', () => {
           ed25519.verify(
             Buffer.from(headers.signature.slice(6, -1), 'base64'),
             Buffer.from(base),
-            publicKey,
+            signingPublicKey,
           ),
         ).toBe(true);
-        if (path === '/s2s/v1/feed-heads') {
+        if (path === '/somfp/v1/feed-heads') {
           expect(Object.keys(JSON.parse(body)).sort()).toEqual([
             'generatedAt',
             'profileNamespaceFeedEndId',

@@ -13,7 +13,7 @@ normative text prevails and the release package must be corrected.
 ## Files
 
 - `common.schema.json`: shared Federation types for identity, time, cursors, digests, and addresses.
-- `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/somfp`.
+- `discovery.schema.json`: cross-version bootstrap and key discovery at `/somfp/discovery`.
 - `identity.schema.json`: closed JSON shapes for Recognize, Health, and feed-head hints.
 - `state-feed.schema.json`: compacted relationship/profile-reference and thread-content head items carrying Group Meta coordinates where applicable.
 - `profile-namespace-feed.schema.json`: compacted identity-change items of the Profile Namespace Feed.
@@ -43,7 +43,7 @@ operation.
 - `http-manifest.json`: the complete operation surface and its authentication, status, media-type, and schema mappings.
 - `vectors/valid.json` and `vectors/invalid.json`: positive and negative JSON vectors.
 - `vectors/http-message-signature.json`: a general fixed Ed25519 HTTP Message Signature vector.
-- `vectors/call-http-message-signature.json`: a completely signed `/s2s/v1/call` vector.
+- `vectors/call-http-message-signature.json`: a completely signed `/somfp/v1/call` vector.
 - `vectors/feed-query-semantics.json`: structured state-machine assertions for state-first processing, fixed `through`, relationship restoration, current Group Meta group/member profile authorization, exact-message profile authorization, rejoin convergence, skip-mode reverse recovery, deferred queries, and unknown-thread recovery.
 
 ## Validation

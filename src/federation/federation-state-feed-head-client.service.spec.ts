@@ -21,7 +21,7 @@ describe('FederationStateFeedHeadClient', () => {
     await client.send('peer.test');
     expect(execute).toHaveBeenCalledOnce();
     expect(post).toHaveBeenCalledWith(
-      '/s2s/v1/feed-heads',
+      '/somfp/v1/feed-heads',
       JSON.stringify(snapshot),
       'peer.test',
     );

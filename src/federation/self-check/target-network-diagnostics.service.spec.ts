@@ -104,7 +104,7 @@ describe('target diagnostics adapter', () => {
       expect.any(Object),
     );
     expect(mocks.request).toHaveBeenCalledWith(
-      'https://example.com:7668/.well-known/somfp',
+      'https://example.com:7668/somfp/discovery',
       expect.any(Object),
       expect.objectContaining({
         headers: { accept: 'application/json' },

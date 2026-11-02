@@ -1159,7 +1159,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // Keep the source conversation local to appA. The remote node cannot see these messages or their
     // assets until the HISTORY carrier reaches it, so a successful assertion below necessarily travels
-    // through GET /s2s/v1/forward-bundles/:id + signed Range media downloads.
+    // through GET /somfp/v1/forward-bundles/:id + signed Range media downloads.
     const sourcePeerAccount = `forwardpeer${randomUUID().slice(0, 8)}`;
     const sourcePeer = await registerAndLogin(
       appA,
@@ -4441,11 +4441,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     const headers = await evilSig.signOutbound({
       method: 'POST',
-      url: new URL(`http://${authority}/s2s/v1/feed-heads`),
+      url: new URL(`http://${authority}/somfp/v1/feed-heads`),
       body,
     });
 
-    const res = await fetch(`http://${authority}/s2s/v1/feed-heads`, {
+    const res = await fetch(`http://${authority}/somfp/v1/feed-heads`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body,
@@ -4476,7 +4476,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(before?.trustLevel).toBe('available');
     proxy.blockServiceUnavailable(true);
-    proxy.armServiceUnavailable('/s2s/v1/accounts/unreachable');
+    proxy.armServiceUnavailable('/somfp/v1/accounts/unreachable');
     try {
       const failing = resolveFederatedCard(appB, tokenB, 'unreachable', DOM_A);
       await vi.waitFor(
@@ -4532,7 +4532,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // Health succeeds first. Only the following profile request gets a one-shot 503, so resolution
     // fails immediately instead of waiting for its Health-recovery deadline.
-    proxy.armServiceUnavailable('/s2s/v1/accounts/unreachable');
+    proxy.armServiceUnavailable('/somfp/v1/accounts/unreachable');
     const res = await resolveFederatedCard(appB, tokenB, 'unreachable', DOM_A);
     expect(res).toEqual({ event: 'failed', data: { reason: 'UNREACHABLE' } });
 

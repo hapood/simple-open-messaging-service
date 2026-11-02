@@ -117,7 +117,7 @@ describe('NetworkPage', () => {
       expect(mocks.diagnose.mock.calls[0][0]).toBe(target);
       expect(
         await screen.findByText(/edge\.example\.net:7668/),
-      ).toHaveTextContent('https://example.com:7668/.well-known/somfp');
+      ).toHaveTextContent('https://example.com:7668/somfp/discovery');
     },
   );
   it('keeps active probes unavailable to viewers', async () => {

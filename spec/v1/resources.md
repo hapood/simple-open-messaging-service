@@ -56,7 +56,7 @@ resource response.
 ### 3.1 Operation and authorization coordinate
 
 ```http
-GET /s2s/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAccount=:toAccount&seq=:seq
+GET /somfp/v1/media/:digest?fromAccount=:fromAccount&fromDomain=:fromDomain&toAccount=:toAccount&seq=:seq
 ```
 
 | Property                  | Requirement                                                    |
@@ -171,14 +171,14 @@ The complete resource is the 16 ASCII bytes `hello federation`, whose SHA-256
 is the path digest below. This request asks for the first five bytes:
 
 ```http
-GET /s2s/v1/media/d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa?fromAccount=alice&fromDomain=b.example&toAccount=bob&seq=42 HTTP/1.1
+GET /somfp/v1/media/d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa?fromAccount=alice&fromDomain=b.example&toAccount=bob&seq=42 HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
 Range: bytes=0-4
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:6YAuNShBJXwELU+pYCbi+PijcgbC+rvmdio7U6mLEKSuVs1nreRH++To7aIduclGuBCy9XJ5kRRBQULPlPNPBQ==:
+Signature: sig1=:SrYDa+P1zXWoLoy+T/ADjpjcj89DGXK5SLPKf27WV1ANhHCSI9Oxx3VmCeE1Aa1DSp95eD6JB57lYhzCbLnyDw==:
 ```
 
 ```http
@@ -200,7 +200,7 @@ bytes; the path digest covers the complete resource.
 ### 4.1 Operation and authorization
 
 ```http
-GET /s2s/v1/forward-bundles/:bundleId
+GET /somfp/v1/forward-bundles/:bundleId
 ```
 
 | Property       | Requirement                                                           |
@@ -282,13 +282,13 @@ an HTTP success does not waive those requirements.
 ### 4.5 Minimal example
 
 ```http
-GET /s2s/v1/forward-bundles/a1857d82c45ec933fedd5249a6d271a5e63d207f1c7ed55a60fd797cddf79b4a HTTP/1.1
+GET /somfp/v1/forward-bundles/a1857d82c45ec933fedd5249a6d271a5e63d207f1c7ed55a60fd797cddf79b4a HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:lZ/YBT5wW+UAX2K/JkMK/b84kypjOuM9lFcNGp9oFWn5ky43VFZyAzNleMdzoTSxQQypSxFON6Ii/liekNS2Dg==:
+Signature: sig1=:AF2lKbxG81WG0Yj4aV0k/3HDwXubWnVQ5lEaYd9BIcyhPLs69cxNZBx5Gbn8OLIRiOqmvZMbZ7cvpu2NbiOlDA==:
 ```
 
 ```http

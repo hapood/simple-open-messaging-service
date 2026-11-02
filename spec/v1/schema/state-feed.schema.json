@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:state-feed",
-  "title": "GET /s2s/v1/state-feed response data",
+  "title": "GET /somfp/v1/state-feed response data",
   "$defs": {
     "relationshipIntentBody": {
       "type": "object",

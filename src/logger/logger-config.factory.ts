@@ -32,7 +32,7 @@ export function buildLoggerParams(): Params {
     // wildcard. Nest's LegacyRouteConverter catches it, auto-converts `*` → `{*path}`, and logs a WARN
     // per middleware at startup (twice — pino-http applies two middlewares to this one route). Supplying
     // the v8 named-wildcard form directly is the same path Nest would convert `*` into, so matching is
-    // identical (still every /api/v1 request; /uploads, /.well-known, and the SPA already bypass Nest's
+    // identical (still every /api/v1 request; /uploads, /SOMFP discovery, and the SPA already bypass Nest's
     // middleware chain via raw Fastify hooks) — it just skips the warning. This is what upstream
     // nestjs-pino ought to ship as its default; remove this override if it ever does.
     forRoutes: [{ path: '/*path', method: RequestMethod.ALL }],

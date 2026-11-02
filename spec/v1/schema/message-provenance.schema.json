@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:message-provenance",
-  "title": "POST /s2s/v1/message-provenance request and response data",
+  "title": "POST /somfp/v1/message-provenance request and response data",
   "$defs": {
     "query": {
       "type": "object",

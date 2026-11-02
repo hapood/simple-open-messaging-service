@@ -39,7 +39,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
       }),
       signedRequest: vi.fn().mockReturnValue({
         method: 'POST',
-        url: new URL('https://local.example/s2s/v1/recognize'),
+        url: new URL('https://local.example/somfp/v1/recognize'),
         body: '{}',
       }),
       verifyWithPublicKey: vi.fn(),
@@ -80,7 +80,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
   }
 
   const healthRequest = {
-    url: '/s2s/v1/health',
+    url: '/somfp/v1/health',
     rawBody: Buffer.alloc(0),
     headers: {},
   } as never;
@@ -182,17 +182,17 @@ describe('S2sRecognitionController Health privacy projection', () => {
 
   it.each([
     {
-      url: '/s2s/v1/health?domain=peer.example',
+      url: '/somfp/v1/health?domain=peer.example',
       rawBody: Buffer.alloc(0),
       headers: {},
     },
     {
-      url: '/s2s/v1/health',
+      url: '/somfp/v1/health',
       rawBody: Buffer.from('{}'),
       headers: {},
     },
     {
-      url: '/s2s/v1/health',
+      url: '/somfp/v1/health',
       rawBody: Buffer.alloc(0),
       headers: { 'content-type': 'application/json' },
     },
@@ -624,7 +624,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
 
   const signedRequest = {
     method: 'POST' as const,
-    url: new URL('https://local.example/s2s/v1/recognize'),
+    url: new URL('https://local.example/somfp/v1/recognize'),
     body: '{}',
   };
   const recognizeHeaders = {

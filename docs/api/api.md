@@ -676,7 +676,28 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
   `isCurrent` and `canRevoke`. `POST /admin/admin-sessions/:id/revoke` lets every
   administrator end their own other sessions; only SUPER_ADMIN may end someone else's.
   The current session must use `/admin/logout`. Revocation is immediate and audited.
-- `POST /admin/audit` — `@Audit`-tagged action log (`AdminActionLog`).
+- `POST /admin/audit` `{ skip?, take?, action?, adminId?, status?, from?, to? }` —
+  read-only `@Audit` action summaries (`AdminActionLog`), available to all administrator roles.
+  `action` is a literal substring; `adminId` is a positive actor ID; `status` is
+  `STARTED`, `SUCCEEDED`, or `FAILED`. ISO 8601 time bounds are inclusive `from` and
+  exclusive `to`. Returns `{ list, total }`, ordered by creation time and ID descending;
+  operation data is excluded from this list. `take` defaults to 50 and is capped at 200.
+- `POST /admin/audit/actions` `{}` — returns `{ actions: string[] }` from the action registry.
+- `POST /admin/audit/detail` `{ id: string }` — returns one audit record with resolved
+  `targetLabel`, `updatedAt`, and `meta` operation data; missing IDs return HTTP 404.
+  IDs are decimal strings (PostgreSQL bigint), and timestamps are epoch milliseconds.
+  `meta` contains only action-specific allowlisted parameters, not raw HTTP bodies,
+  credentials, response bodies, or confirmed before/after state. It is `{}` when an
+  operation has no additional data. Failed operations record a safe HTTP failure category
+  or a generic failure summary, never raw exception messages. `STARTED` means no final
+  result was recorded, not necessarily that execution is still in progress.
+  The console exposes `/audit` and `/audit/:id` under Security, separately from runtime logs.
+- Media administration is SUPER_ADMIN-only: `POST /admin/media/{files,uploads,downloads,temporary}`
+  returns paginated privacy-safe inventory; `GET /admin/media/downloader/stream` sends process-local
+  SSE snapshots. Global and user-scoped views share the same queries. Stop/retry, temporary cleanup,
+  and unreferenced-file reclamation use existing task/asset records and audited commands. File names,
+  content, MIME types, and preview/download URLs are not exposed. See
+  [Media administration](../development/media-administration.md) for contracts and lifecycle semantics.
 - `POST /admin/durable-tasks` — paginated durable-task execution history with status and search filters.
 - `POST /admin/logs/output-level` → `{ level }`; `POST /admin/logs/output-level/set`
   `{ level }` changes the process-wide output threshold for console, files, and live logs.
@@ -727,7 +748,7 @@ probe-result shape is not supported.
 The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
 On connect the server pushes a **`HELLO`** frame with `userId`, `sessionId`, `pushSubscriptionRev`, `stateFeedEndId`, `threadFeedEndId`, `profileRev`, and `activeCall`.
-`stateFeedEndId` bounds relationship/request metadata catch-up. `threadFeedEndId` independently bounds conversation snapshots, settings/read state, unread counts, and content ends. Profile namespace and Group Meta invalidations use their own synchronization coordinates. The stream is push-only; it sends no idle heartbeat.
+`stateFeedEndId` bounds relationship/request metadata catch-up. `threadFeedEndId` independently bounds conversation snapshots, settings/read state, unread counts, and content ends. Profile namespace and Group Meta invalidations use their own synchronization coordinates. The stream is push-only. A transport-only `heartbeat` event with `{}` data is sent immediately after subscription and every 10 seconds, independently of business activity. Browser and native long-lived SSE consumers reconnect after 30 seconds without receiving non-empty bytes; heartbeats and comments count as bytes but never trigger feed synchronization. Opening the stream has a separate 15-second deadline, and the HELLO handshake remains independently required.
 
 ### Frame format
 
@@ -764,7 +785,7 @@ connection. A late confirmation for an older head cannot confirm a newer wake. A
 for the same authenticated device session sends `SSE_REPLACED` to its old connection and closes it;
 that client must stop automatic reconnects, and the old UUID no longer accepts receipts. Browser
 tabs sharing one session hand ownership to the newly active tab. This proves SSE receipt, **not message read status or Android notification
-display**. No idle polling or heartbeat is involved. The generated wire `id` is neither a durable
+display**. Receipts are driven by committed feed drains, not by polling or transport heartbeats. The generated wire `id` is neither a durable
 cursor nor this connection UUID.
 
 Pending device-session push heads, deadlines, and confirmed cursors live only in the origin server's

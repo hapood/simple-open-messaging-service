@@ -24,7 +24,7 @@ import { parseRootKeyHeader } from './signature.service.js';
  * Recognize and Health have distinct bootstrap/status verification in
  * S2sRecognitionController and do not use this ordinary data-plane guard.
  *
- * Verification (keyId parse + .well-known key fetch + sig verify) is delegated to S2sVerifyService,
+ * Verification (keyId parse + SOMFP discovery key fetch + sig verify) is delegated to S2sVerifyService,
  * shared with the recognition bootstrap. This guard adds the local-facts gate and
  * the from.domain==signer.binding on top.
  *
@@ -34,7 +34,7 @@ import { parseRootKeyHeader } from './signature.service.js';
  *   1. missing/malformed Signature-Input / keyId / S2S-Root-Key → 400 FEDERATION_MALFORMED (no retry)
  *   2. claimed root not pinned / signer not recognized          → 401 (no retry)
  *   3. local recognition or receive readiness incomplete        → 401 FEDERATION_RECOGNITION_REQUIRED
- *   4. key fetch transient failure (.well-known unreachable)    → 500 INTERNAL (RETRY)
+ *   4. key fetch transient failure (SOMFP discovery unreachable)    → 500 INTERNAL (RETRY)
  *   5. keyId not in the peer's published key set                → 401 FEDERATION_BAD_SIGNATURE  (no retry)
  *   6. signature invalid / body tampered                        → 401 FEDERATION_BAD_SIGNATURE  (no retry)
  *   7. from.domain != signer.domain (bodies with `from`)        → 401 FEDERATION_BINDING_VIOLATION(no retry)
@@ -143,7 +143,7 @@ export class S2sSignatureGuard implements CanActivate {
         HttpStatus.UNAUTHORIZED,
       );
     }
-    // 3-5. Fetch the signer's key (.well-known, fetch-on-miss) + verify the signature over the raw body.
+    // 3-5. Fetch the signer's key (SOMFP discovery, fetch-on-miss) + verify the signature over the raw body.
     await this.verify.fetchAndVerify(
       this.verify.signedRequest(req),
       headers,

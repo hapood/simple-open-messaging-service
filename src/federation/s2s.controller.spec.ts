@@ -133,7 +133,7 @@ function target() {
 function mediaRequest(range: string): FastifyRequest {
   return {
     method: 'GET',
-    url: `/s2s/v1/media/${'a'.repeat(64)}?fromAccount=alice&fromDomain=b.example&toAccount=bob&seq=42`,
+    url: `/somfp/v1/media/${'a'.repeat(64)}?fromAccount=alice&fromDomain=b.example&toAccount=bob&seq=42`,
     rawBody: Buffer.alloc(0),
     headers: { range },
     peer: {
@@ -182,7 +182,7 @@ describe('S2sController public account profiles', () => {
     const req = mediaRequest('');
     setRequestUrl(
       req,
-      `/s2s/v1/accounts/alice?publicKey=${encodeURIComponent(
+      `/somfp/v1/accounts/alice?publicKey=${encodeURIComponent(
         'A'.repeat(43) + '=',
       )}&challenge=${encodeURIComponent('B'.repeat(64))}`,
     );
@@ -215,7 +215,7 @@ describe('S2sController public account profiles', () => {
     const req = mediaRequest('');
     setRequestUrl(
       req,
-      `/s2s/v1/accounts/alice?publicKey=${encodeURIComponent('A'.repeat(43) + '=')}&challenge=${encodeURIComponent('B'.repeat(64))}`,
+      `/somfp/v1/accounts/alice?publicKey=${encodeURIComponent('A'.repeat(43) + '=')}&challenge=${encodeURIComponent('B'.repeat(64))}`,
     );
     await expect(controller.getAccountProfile(req)).resolves.toEqual({
       account: 'alice',
@@ -231,7 +231,7 @@ describe('S2sController public account profiles', () => {
   it('rejects an old namespace-bearing path', async () => {
     const { controller, profiles } = target();
     const req = mediaRequest('');
-    setRequestUrl(req, '/s2s/v1/accounts/0/alice');
+    setRequestUrl(req, '/somfp/v1/accounts/0/alice');
     await expect(controller.getAccountProfile(req)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
@@ -243,7 +243,7 @@ describe('S2sController account profiles', () => {
   it('passes only the exact account/revision and authenticated signer', async () => {
     const { controller, profiles } = target();
     const req = mediaRequest('');
-    setRequestUrl(req, '/s2s/v1/account-profiles/0/alice/4');
+    setRequestUrl(req, '/somfp/v1/account-profiles/0/alice/4');
     expect(await controller.getExactAccountProfile(req)).toMatchObject({
       generatedAt: 1_700_000_000_000,
       account: 'alice',
@@ -261,10 +261,10 @@ describe('S2sController account profiles', () => {
     const { controller, profiles } = target();
     const req = mediaRequest('');
     for (const url of [
-      '/s2s/v1/account-profiles/0/alice/0',
-      '/s2s/v1/account-profiles/0/%61lice/4',
-      '/s2s/v1/account-profiles/0/alice/4?seq=1',
-      '/s2s/v1/account-profiles/0/alice/4/extra',
+      '/somfp/v1/account-profiles/0/alice/0',
+      '/somfp/v1/account-profiles/0/%61lice/4',
+      '/somfp/v1/account-profiles/0/alice/4?seq=1',
+      '/somfp/v1/account-profiles/0/alice/4/extra',
     ]) {
       setRequestUrl(req, url);
       await expect(
@@ -281,7 +281,7 @@ describe('S2sController group member profiles', () => {
   it('passes canonical independent path variables and authenticated signer', async () => {
     const { controller, profiles } = target();
     const req = mediaRequest('');
-    setRequestUrl(req, '/s2s/v1/group-member-profiles/%21team/0/alice/4');
+    setRequestUrl(req, '/somfp/v1/group-member-profiles/%21team/0/alice/4');
     expect(await controller.getGroupMemberProfile(req)).toEqual({
       generatedAt: 1_700_000_000_000,
       account: 'alice',
@@ -302,11 +302,11 @@ describe('S2sController group member profiles', () => {
     const { controller, profiles } = target();
     const req = mediaRequest('');
     for (const url of [
-      '/s2s/v1/group-member-profiles/alice/0/bob/4',
-      '/s2s/v1/group-member-profiles/%21team/0/%61lice/4',
-      '/s2s/v1/group-member-profiles/%21team/0/alice/0',
-      '/s2s/v1/group-member-profiles/%21team/0/alice/4?seq=1',
-      '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/4',
+      '/somfp/v1/group-member-profiles/alice/0/bob/4',
+      '/somfp/v1/group-member-profiles/%21team/0/%61lice/4',
+      '/somfp/v1/group-member-profiles/%21team/0/alice/0',
+      '/somfp/v1/group-member-profiles/%21team/0/alice/4?seq=1',
+      '/somfp/v1/group-member-profiles/%21team/0/alice/member.example/4',
     ]) {
       setRequestUrl(req, url);
       await expect(controller.getGroupMemberProfile(req)).rejects.toMatchObject(

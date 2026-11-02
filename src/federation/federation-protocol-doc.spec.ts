@@ -148,7 +148,7 @@ describe('Federation v1 protocol documentation', () => {
       )) {
         const path =
           file === 'well-known.controller.ts'
-            ? `/.well-known/${match[2]}`
+            ? `/somfp/${match[2]}`
             : `/${FEDERATION_API_PREFIX}/${match[2]}`;
         implemented.push(`${match[1].toUpperCase()} ${path}`);
       }
@@ -528,24 +528,24 @@ describe('Federation v1 protocol documentation', () => {
         (operation) => `${operation.method} ${operation.path}`,
       ),
     ).toEqual([
-      'GET /.well-known/somfp',
-      'POST /s2s/v1/recognize',
-      'GET /s2s/v1/health',
-      'POST /s2s/v1/verify',
-      'POST /s2s/v1/feed-heads',
-      'GET /s2s/v1/state-feed',
-      'GET /s2s/v1/profile-namespace-feed',
-      'GET /s2s/v1/profile-namespaces/:nsid',
-      'GET /s2s/v1/group-meta',
-      'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
-      'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
-      'GET /s2s/v1/messages',
-      'GET /s2s/v1/message-tombstones',
-      'POST /s2s/v1/message-provenance',
-      'POST /s2s/v1/call',
-      'GET /s2s/v1/accounts/:account',
-      'GET /s2s/v1/media/:digest',
-      'GET /s2s/v1/forward-bundles/:bundleId',
+      'GET /somfp/discovery',
+      'POST /somfp/v1/recognize',
+      'GET /somfp/v1/health',
+      'POST /somfp/v1/verify',
+      'POST /somfp/v1/feed-heads',
+      'GET /somfp/v1/state-feed',
+      'GET /somfp/v1/profile-namespace-feed',
+      'GET /somfp/v1/profile-namespaces/:nsid',
+      'GET /somfp/v1/group-meta',
+      'GET /somfp/v1/account-profiles/:namespaceId/:account/:profileRev',
+      'GET /somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
+      'GET /somfp/v1/messages',
+      'GET /somfp/v1/message-tombstones',
+      'POST /somfp/v1/message-provenance',
+      'POST /somfp/v1/call',
+      'GET /somfp/v1/accounts/:account',
+      'GET /somfp/v1/media/:digest',
+      'GET /somfp/v1/forward-bundles/:bundleId',
     ]);
   });
 });

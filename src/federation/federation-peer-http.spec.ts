@@ -33,7 +33,7 @@ describe('FederationPeerHttp terminal expiry', () => {
     const buildBody = vi.fn((startedAt: Date) =>
       JSON.stringify({ sentAt: startedAt.getTime() }),
     );
-    const pending = http.post('/s2s/v1/call', buildBody, 'peer.example', {
+    const pending = http.post('/somfp/v1/call', buildBody, 'peer.example', {
       signatureExpiresAtSec: 1_700_000_300,
     });
     await vi.waitFor(() =>
@@ -46,7 +46,7 @@ describe('FederationPeerHttp terminal expiry', () => {
     expect(signature.signOutbound).toHaveBeenCalledWith(
       {
         method: 'POST',
-        url: new URL('https://peer.example/s2s/v1/call'),
+        url: new URL('https://peer.example/somfp/v1/call'),
         body: JSON.stringify({ sentAt: buildBody.mock.calls[0][0].getTime() }),
       },
       expect.any(Date),

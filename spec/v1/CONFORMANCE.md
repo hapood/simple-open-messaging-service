@@ -74,7 +74,7 @@ observable requirements:
   without adding an implicit grace period. The predecessor remains published and
   valid for a post-switch verification overlap, so the successor is valid before
   first use and the predecessor remains valid after that first successor-signed
-  request. The certificate validity intervals in a well-known document need not
+  request. The certificate validity intervals in a discovery document need not
   be contiguous; conformance does not require continuous certificate coverage.
 - A domain-only re-binding can retain the same root, signing key, `KeyName`, and
   validity intervals. The publisher updates the domain in `keyId` and recomputes

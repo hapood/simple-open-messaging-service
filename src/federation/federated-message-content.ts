@@ -567,7 +567,7 @@ export function federatedContentDigests(
  * Federation v1 wire `content` for the given `(contentType, content)`. This is the digest a peer
  * computes over the wire it receives, so a publisher stores it at creation time and compares it
  * against the digest carried by a later processing receipt to confirm the content was not altered
- * in transit. It is also the digest a provenance query (`POST /s2s/v1/message-provenance`) supplies.
+ * in transit. It is also the digest a provenance query (`POST /somfp/v1/message-provenance`) supplies.
  *
  * The input `content` is the local stored form; it is projected to the wire form via
  * `toFederatedMessageContent` before hashing, so the digest is independent of the local storage

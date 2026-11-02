@@ -429,7 +429,7 @@ describe('FederationNamespaceAdminService', () => {
     'requires a real sealed challenge on approval: %s',
     async (answer) => {
       const verify = vi.fn(async (url: URL, init: RequestInit) => {
-        expect(url.href).toBe('https://peer.example/s2s/v1/verify');
+        expect(url.href).toBe('https://peer.example/somfp/v1/verify');
         const body = JSON.parse(init.body as string) as {
           publicKey: string;
           encryptedValue: string;

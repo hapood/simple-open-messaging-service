@@ -1,12 +1,17 @@
 # SOMFP Changelog
 
-## 1.0.0-draft.2 (in progress)
+## 1.0.0-draft.2
 
 Not backward compatible with draft.1.
 
+- Move cross-version discovery to `/somfp/discovery` and the versioned wire
+  surface to `/somfp/v1/*`. Retired discovery and S2S paths have no aliases;
+  communicating nodes must upgrade together. HTTP signature paths and published
+  test signatures change accordingly.
+
 - Add required `generatedAt` to `feed-heads`; request send time comes from the
   authenticated HTTP signature's `created` parameter.
-- Require well-known `signingKeyCreatedAt` diagnostic metadata for the
+- Require discovery `signingKeyCreatedAt` diagnostic metadata for the
   currently active HTTP signing key's creation time.
 - Require `generatedAt` on every State Feed item to identify the publisher's
   generation time for its current `feedId` version, unchanged by retransmission.

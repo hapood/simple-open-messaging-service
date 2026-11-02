@@ -297,7 +297,7 @@ describe('database-backed root-epoch rotation', () => {
       rootPublicKey: newRootPublicKey,
       trustLevel: 'available',
     });
-    const approvedHealth = await signedRequest(appB, appA, '/s2s/v1/health');
+    const approvedHealth = await signedRequest(appB, appA, '/somfp/v1/health');
     expect(approvedHealth).toEqual({
       code: 0,
       message: 'successful',
@@ -348,7 +348,7 @@ describe('database-backed root-epoch rotation', () => {
     const feed = await signedRequest(
       appB,
       appA,
-      '/s2s/v1/profile-namespace-feed',
+      '/somfp/v1/profile-namespace-feed',
     );
     expect(feed.code).toBe(0);
     assertFederationWireSchema(
@@ -357,7 +357,7 @@ describe('database-backed root-epoch rotation', () => {
     );
 
     // Recognition and Health disclose the same namespace after key succession.
-    const recognized = await signedRequest(appB, appA, '/s2s/v1/recognize', {
+    const recognized = await signedRequest(appB, appA, '/somfp/v1/recognize', {
       namespaceId: peerAssignedLocalNamespaceId,
     });
     assertFederationWireSchema(
@@ -376,7 +376,7 @@ describe('database-backed root-epoch rotation', () => {
         peerAssignedLocalNamespaceId: peerNamespaceId,
       },
     });
-    const health = await signedRequest(appB, appA, '/s2s/v1/health');
+    const health = await signedRequest(appB, appA, '/somfp/v1/health');
     assertFederationWireSchema(
       'urn:somfp:v1:identity#/$defs/healthResult',
       health.data,
@@ -398,7 +398,7 @@ describe('database-backed root-epoch rotation', () => {
     const ownFeed = await signedRequest(
       appA,
       appB,
-      '/s2s/v1/profile-namespace-feed',
+      '/somfp/v1/profile-namespace-feed',
     );
     expect(ownFeed.code).toBe(0);
     assertFederationWireSchema(
@@ -417,7 +417,7 @@ describe('database-backed root-epoch rotation', () => {
       const bindings = await signedRequest(
         sender,
         publisher,
-        `/s2s/v1/profile-namespaces/${namespaceId}`,
+        `/somfp/v1/profile-namespaces/${namespaceId}`,
       );
       expect(bindings.code).toBe(0);
       assertFederationWireSchema(

@@ -53,7 +53,7 @@ export class FederationProfileNamespacePullService {
     if (through !== undefined) query.set('through', through.toString());
     return this.trustedPeers.run(domain, () =>
       this.peerHttp.get<ProfileNamespaceFeedPage>(
-        `/s2s/v1/profile-namespace-feed${
+        `/somfp/v1/profile-namespace-feed${
           query.size === 0 ? '' : `?${query.toString()}`
         }`,
         domain,

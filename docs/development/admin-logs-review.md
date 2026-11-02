@@ -1,6 +1,6 @@
 # Admin Logs Review and Follow-up Plan
 
-Status: output-level authorization and auditing have been implemented. Other findings remain deferred; the original review evidence below is retained where applicable.
+Status: output-level authorization and auditing have been implemented. Shared SSE liveness and replay-snapshot replacement have automated regression coverage; deployment and native-device smoke tests remain pending. Other findings remain deferred; the original review evidence below is retained where applicable.
 
 ## Scope and Evidence
 
@@ -12,9 +12,11 @@ Overall assessment: the module provides a basic log viewer, but needs stronger s
 
 ## Priority 1: Correctness and Authorization
 
-### 1. Idle live streams reconnect unnecessarily and replay duplicate records
+### 1. Idle live streams reconnect unnecessarily and replay duplicate records (implemented with automated coverage)
 
-Evidence:
+The shared SSE reader now owns the 30-second receive-idle timeout and per-attempt cleanup. The controller applies the common immediate/10-second heartbeat independently of log filters. Reconnect replaces the displayed snapshot rather than appending another replay. Clear affects the current view only; reconnect reloads the server snapshot, including after a server restart. This is not a resumable log cursor: retained history remains available through historical search.
+
+Original evidence:
 
 - `admin-web/src/hooks/use-log-stream.ts` assumes a 25-second heartbeat and aborts a stream after roughly 60 seconds without a parsed event.
 - `src/logger/log-viewer.service.ts` emits log records, but no heartbeat.
@@ -171,11 +173,11 @@ Results:
 - Backend: 2 test files, 8 tests passed.
 - Frontend: 1 test file, 3 tests passed.
 
-The original tests did not establish correctness for these findings. Follow-up verification now includes VIEWER mutation rejection and successful output-level audit records in `test/admin-rbac.e2e-spec.ts`, plus frontend read-only control coverage. Idle heartbeats, reconnect deduplication, hard scan budgets, and concurrent diagnostic publication/deletion remain unverified.
+The original tests did not establish correctness for these findings. Follow-up verification includes VIEWER mutation rejection and successful output-level audit records in `test/admin-rbac.e2e-spec.ts`, plus frontend read-only control coverage. Shared SSE tests cover receive-idle/open deadlines, heartbeat filtering, cancellation and stale-attempt cleanup; the actual framework log stream test covers immediate headers without matching logs. Admin hook tests cover replay-snapshot replacement and cancellation during backoff. Rust paused-time tests cover byte-driven receive deadlines across stream attempts. Proxy/deployment and native-device behavior still need smoke tests. Hard scan budgets and concurrent diagnostic publication/deletion remain unverified.
 
 ## Recommended Implementation Order
 
-1. Fix live-stream heartbeat/resume behavior (output-level authorization/auditing is complete).
+1. Smoke-test shared live-stream heartbeat and snapshot-replacement behavior through the deployed proxy and on native devices (implementation and automated coverage complete).
 2. Coordinate diagnostic publication/deletion and enforce atomic upload admission.
 3. Implement bounded historical reading and stable pagination.
 4. Add structured details, correlation searches, time ranges, and local viewer filters.

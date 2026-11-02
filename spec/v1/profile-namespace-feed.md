@@ -4,8 +4,8 @@ Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 Operations:
 
-- `GET /s2s/v1/profile-namespace-feed`
-- `GET /s2s/v1/profile-namespaces/:nsid`
+- `GET /somfp/v1/profile-namespace-feed`
+- `GET /somfp/v1/profile-namespaces/:nsid`
 
 This document is entirely normative. The Profile Namespace Feed invalidates
 cached namespace-identity bindings — the domain and root public key a consumer
@@ -49,7 +49,7 @@ The feed and bindings query describe only positive publisher-scoped namespace ID
 
 ## 2. Feed request and bootstrap
 
-`GET /s2s/v1/profile-namespace-feed` accepts the closed query containing
+`GET /somfp/v1/profile-namespace-feed` accepts the closed query containing
 optional `after`, `take`, and `through`. `after` is an exclusive non-negative
 decimal cursor, `take` a positive safe-integer suggestion, and `through` an
 inclusive bound that MUST be at least `after`. `take` and `through` require
@@ -136,7 +136,7 @@ SHOULD also reconcile during ordinary periodic State Feed draining.
 
 ## 6. Namespace bindings query
 
-`GET /s2s/v1/profile-namespaces/:nsid` resolves one namespace id in the
+`GET /somfp/v1/profile-namespaces/:nsid` resolves one namespace id in the
 authenticated publisher's own namespace space. `nsid` is a positive safe-integer
 canonical decimal path parameter; `0` is malformed. The success data envelope carries:
 

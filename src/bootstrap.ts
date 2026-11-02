@@ -26,7 +26,7 @@ import { BusinessCode } from './common/business-code.js';
 import {
   CLIENT_API_PREFIX,
   FEDERATION_API_PREFIX,
-  FEDERATION_WELL_KNOWN_PATH,
+  FEDERATION_DISCOVERY_PATH,
 } from './federation/federation-protocol.js';
 import { dataDirectory } from './common/data-directory.js';
 import { MEDIA_UPLOAD_CHUNK_BYTES } from '../shared/media-upload-limits.js';
@@ -46,7 +46,7 @@ const FILE_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
 /** Federation owns its entire protocol namespace outside the client prefix.
  * New S2S controllers inherit this boundary without duplicating their routes here. */
 export const GLOBAL_PREFIX_EXCLUSIONS = [
-  { path: FEDERATION_WELL_KNOWN_PATH, method: RequestMethod.GET },
+  { path: FEDERATION_DISCOVERY_PATH, method: RequestMethod.GET },
   {
     path: `${FEDERATION_API_PREFIX}/{*path}`,
     method: RequestMethod.ALL,
@@ -140,7 +140,7 @@ export async function configureApp(
   await app.register(fastifyCookie);
 
   // S2S raw-body capture: RFC 9421 content-digest verification needs the EXACT body bytes the sender
-  // signed — re-serialized JSON would not match. Scoped to /s2s/v1/* so only S2S requests pay
+  // signed — re-serialized JSON would not match. Scoped to /somfp/v1/* so only S2S requests pay
   // the double-buffer cost; every other route passes through untouched. S2sSignatureGuard reads
   // req.rawBody.
   adapter.getInstance().addHook('preParsing', async (req, _reply, payload) => {
@@ -171,8 +171,7 @@ export async function configureApp(
       async (request: FastifyRequest, reply: FastifyReply) => {
         if (
           !request.url.startsWith('/api/') &&
-          !request.url.startsWith('/s2s/') &&
-          !request.url.startsWith('/.well-known/')
+          !request.url.startsWith('/somfp/')
         )
           return;
         reply.header('X-Request-Id', String(request.id));
@@ -217,10 +216,10 @@ export async function configureApp(
   app.useGlobalInterceptors(new SerializeInterceptor(app.get(Reflector)));
 
   // Client HTTP endpoints (incl. SSE /events) live under /api/v1. Federation is an independently
-  // versioned machine-to-machine surface under /s2s/v1 and is excluded from that client prefix.
+  // versioned machine-to-machine surface under /somfp/v1 and is excluded from that client prefix.
   // The prefix must be set
   // before Swagger createDocument so doc paths include it). The interactive docs mount at
-  // /api/v1/docs in non-production only — see the gate below. .well-known/somfp is excluded — it must
+  // /api/v1/docs in non-production only — see the gate below. somfp/discovery is excluded — it must
   // be served at the bare path per RFC 8615 (peers fetch it without knowing our /api/v1 prefix).
   app.setGlobalPrefix(CLIENT_API_PREFIX, {
     exclude: [...GLOBAL_PREFIX_EXCLUSIONS],
@@ -413,7 +412,7 @@ async function registerStaticServing(
   });
 
   // Frontend static serving (web + admin SPA) moved to Caddy — it serves the built dist via
-  // file_server + try_files SPA fallback in the generated Caddyfile (see docker/init.sh). Fastify is
+  // file_server + try_files SPA fallback in the generated Caddyfile (see src/edge/caddyfile-renderer.ts). Fastify is
   // API-only here (/api/* routes) plus the auth-gated /uploads registered above. (Previously @fastify/static
   // also mounted the frontend here, registering a not-found handler Fastify rejected as "already set".)
 }

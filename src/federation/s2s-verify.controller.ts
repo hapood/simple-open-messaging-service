@@ -20,11 +20,11 @@ const MAX_PLAINTEXT_BYTES = 4096;
 const MAX_BOX_CHARS = 8192;
 
 /**
- * POST /s2s/v1/verify — the stateless sealed-challenge oracle (Peer
+ * POST /somfp/v1/verify — the stateless sealed-challenge oracle (Peer
  * Recognition 12). Recognized peers prove the responder's continued
  * possession of any retained key — current or retired — by having a sealed
  * box opened. Namespace-id to bindings resolution lives on
- * GET /s2s/v1/profile-namespaces/:nsid.
+ * GET /somfp/v1/profile-namespaces/:nsid.
  *
  * The oracle is stateless by design: replay protection is the caller's fresh
  * challenge, not server memory. The recovered plaintext bytes are returned as canonical

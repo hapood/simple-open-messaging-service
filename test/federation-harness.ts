@@ -1,3 +1,4 @@
+import { RESTORE_SYSTEM_ACCOUNT_SQL } from './support/database-baseline.js';
 import { execSync } from 'node:child_process';
 import { fork, type ChildProcess } from 'node:child_process';
 import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
@@ -739,6 +740,7 @@ async function resetFederationApps(
     nodes.map(({ app, domain }) =>
       app.database.transaction(async (tx) => {
         await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
+        await tx.execute(sql.raw(RESTORE_SYSTEM_ACCOUNT_SQL));
         await tx.execute(sql`DELETE FROM "SystemSetting"
       WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
         await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));

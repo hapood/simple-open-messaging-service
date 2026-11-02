@@ -34,7 +34,7 @@ function request(
 }
 
 const mediaSpec = {
-  pathPrefix: '/s2s/v1/media/',
+  pathPrefix: '/somfp/v1/media/',
   pathName: 'digest',
   query: [
     { name: 'fromAccount' },
@@ -68,7 +68,7 @@ describe('Federation resource raw request validation', () => {
     const digest = 'a'.repeat(64);
     const parsed = parseFederationResourceRequest(
       request(
-        `/s2s/v1/media/${digest}?fromAccount=alice&fromDomain=a.example&toAccount=bob&seq=42&bundleId=${digest}`,
+        `/somfp/v1/media/${digest}?fromAccount=alice&fromDomain=a.example&toAccount=bob&seq=42&bundleId=${digest}`,
       ),
       mediaSpec,
     );
@@ -91,15 +91,15 @@ describe('Federation resource raw request validation', () => {
   ])('rejects unknown, duplicate, or out-of-order query: %s', (query) => {
     expectMalformed(() =>
       parseFederationResourceRequest(
-        request(`/s2s/v1/media/${'a'.repeat(64)}${query}`),
+        request(`/somfp/v1/media/${'a'.repeat(64)}${query}`),
         mediaSpec,
       ),
     );
   });
 
   it('rejects a GET body, Content-Type, and non-zero Content-Length', () => {
-    const url = '/s2s/v1/accounts/alice';
-    const spec = { pathPrefix: '/s2s/v1/accounts/', pathName: 'account' };
+    const url = '/somfp/v1/accounts/alice';
+    const spec = { pathPrefix: '/somfp/v1/accounts/', pathName: 'account' };
     expectMalformed(() =>
       parseFederationResourceRequest(request(url, { rawBody: '{}' }), spec),
     );
@@ -118,7 +118,7 @@ describe('Federation resource raw request validation', () => {
   });
 
   it('parses independently encoded exact-profile path segments without a query', () => {
-    const path = '/s2s/v1/account-profiles/';
+    const path = '/somfp/v1/account-profiles/';
     expect(
       parseFederationResourcePath(request(`${path}0/%21group/7`), path, [
         'namespaceId',

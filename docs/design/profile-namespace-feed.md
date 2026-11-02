@@ -104,7 +104,7 @@ so no backward compatibility is maintained for any change in this document.
 Recognize is unchanged — it carries no Profile Namespace Feed field. The
 per-server counter is disclosed through the State Feed channel:
 
-- the `GET /s2s/v1/state-feed` page response envelope gains
+- the `GET /somfp/v1/state-feed` page response envelope gains
   `profileNamespaceFeedEndId` (decimal string) alongside `stateFeedEndId`;
 - a consumer compares it against its
   `profileNamespaceFeedPulledThrough` for the publisher and
@@ -114,7 +114,7 @@ per-server counter is disclosed through the State Feed channel:
 
 ### 4.2 Feed head push
 
-`POST /s2s/v1/feed-heads` carries one merged, closed body:
+`POST /somfp/v1/feed-heads` carries one merged, closed body:
 
 ```ts
 interface FeedHeadsPush {
@@ -133,7 +133,7 @@ a second key.
 
 ### 4.3 Feed pull
 
-`GET /s2s/v1/profile-namespace-feed?after=&take=&through=` (recognized
+`GET /somfp/v1/profile-namespace-feed?after=&take=&through=` (recognized
 signed):
 
 - serves the shared compacted rows with `feedId > after`, ordered
@@ -149,7 +149,7 @@ feedEndId, hasMore }` with decimal-string feed ids.
 
 ### 4.4 Namespace bindings pull
 
-`GET /s2s/v1/profile-namespaces/:nsid` (recognized signed):
+`GET /somfp/v1/profile-namespaces/:nsid` (recognized signed):
 
 - resolves exactly one nsid _in the responder's own namespace space_;
   identity selection follows the s2s path-parameter convention of
@@ -318,7 +318,7 @@ re-bind, and only a reset retirement — the identity the caller knew no longer
 exists — is an `IDENTITY_MISMATCH` rejection. First contact by address
 resolves the domain's current active namespace and is never blocked.
 
-The profile-card lookup (`GET /s2s/v1/accounts/:account`) is sealed-challenge
+The profile-card lookup (`GET /somfp/v1/accounts/:account`) is sealed-challenge
 mandatory on the responder. The caller's key selection: address-based
 resolution challenges under the current handshake pin (`PIN`); contact-card
 and roster references challenge under the root key the publisher's bindings

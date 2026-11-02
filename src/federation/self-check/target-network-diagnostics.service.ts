@@ -205,7 +205,7 @@ export class TargetNetworkDiagnosticsService {
         { observe },
       );
       const response = await requestFederation(
-        `${resolved.baseUrl}/.well-known/somfp`,
+        `${resolved.baseUrl}/somfp/discovery`,
         dispatcher,
         {
           headers: { accept: 'application/json' },

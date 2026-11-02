@@ -2,8 +2,8 @@
 
 - Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 - Protocol identifier: `1`
-- S2S API prefix: `/s2s/v1`
-- Cross-version discovery path: `/.well-known/somfp`
+- S2S API prefix: `/somfp/v1`
+- Cross-version discovery path: `/somfp/discovery`
 - DNS SRV service name: `_somfp._tcp`
 
 This core specification defines Federation v1 versioning, HTTP surface, transport, shared Federation types, request signatures, common responses, error classification, retry behavior, and base cursor semantics. The referenced normative operation documents define operation-specific bodies, authorization, and state machines. Implementation database fields, workers, queues, configuration, and local product limits are not protocol requirements.
@@ -40,23 +40,23 @@ The Federation v1 data plane uses a fixed authoritative topology. An author's ho
 
 ## 2. Versioning and compatibility
 
-SOMFP distinguishes the wire-protocol major from the specification-package version. The wire negotiates only a positive integer major such as `1`; URLs use `/s2s/v1`, and discovery uses `protocolVersions: [1]`. The package containing normative text, JSON Schema, vectors, and conformance tooling uses Semantic Versioning, such as `1.0.0-draft.2`, `1.0.0-rc.0`, or `1.0.0`. The package version MUST NOT appear in an S2S body, URL, or version-selection algorithm and MUST NOT be used for capability negotiation. A v1 patch release may contain only errata and artifact corrections that do not change peer-observable wire behavior. Once a wire major is frozen, any wire behavior change requires a new integer major. Before freezing a draft or release candidate, protocol gaps MAY be corrected within that working major only when the breaking wire changes are identified in the reviewable pull request during draft review, or in the release notes once a release candidate is published; implementations of an earlier working package do not thereby become compatible with the revised package.
+SOMFP distinguishes the wire-protocol major from the specification-package version. The wire negotiates only a positive integer major such as `1`; URLs use `/somfp/v1`, and discovery uses `protocolVersions: [1]`. The package containing normative text, JSON Schema, vectors, and conformance tooling uses Semantic Versioning, such as `1.0.0-draft.2`, `1.0.0-rc.0`, or `1.0.0`. The package version MUST NOT appear in an S2S body, URL, or version-selection algorithm and MUST NOT be used for capability negotiation. A v1 patch release may contain only errata and artifact corrections that do not change peer-observable wire behavior. Once a wire major is frozen, any wire behavior change requires a new integer major. Before freezing a draft or release candidate, protocol gaps MAY be corrected within that working major only when the breaking wire changes are identified in the reviewable pull request during draft review, or in the release notes once a release candidate is published; implementations of an earlier working package do not thereby become compatible with the revised package.
 
-Every Federation v1 S2S data-plane endpoint is under `/s2s/v1/*`. The public discovery endpoint is fixed at `/.well-known/somfp` because a caller cannot rely on an API prefix before reading discovery.
+Every Federation v1 S2S data-plane endpoint is under `/somfp/v1/*`. The public discovery endpoint is fixed at `/somfp/discovery` because a caller cannot rely on an API prefix before reading discovery.
 
-`/.well-known/somfp` is a cross-version discovery document, not a response owned by one Federation major. `protocolVersions` is Federation's permanent cross-version bootstrap field. Every present or future major using `/.well-known/somfp` MUST support and return it and MUST NOT remove or rename it or change its type or selection semantics. It MUST be a non-empty JSON number array of unique, strictly increasing positive safe integers and MUST completely list every Federation major that the node currently enables and fully implements. A node MUST NOT publish a major for which it implements only some mandatory behavior.
+`/somfp/discovery` is a cross-version discovery document, not a response owned by one Federation major. `protocolVersions` is Federation's permanent cross-version bootstrap field. Every present or future major using `/somfp/discovery` MUST support and return it and MUST NOT remove or rename it or change its type or selection semantics. It MUST be a non-empty JSON number array of unique, strictly increasing positive safe integers and MUST completely list every Federation major that the node currently enables and fully implements. A node MUST NOT publish a major for which it implements only some mandatory behavior.
 
-A caller MUST first read `protocolVersions`, select the highest value `V` in the intersection of both version arrays, and then validate the shared and version-specific well-known fields according to version `V`. An empty intersection prevents federation establishment. The `/s2s/v<V>` path explicitly expresses the selected version; state, message, command, and Recognize bodies MUST NOT repeat a version field.
+A caller MUST first read `protocolVersions`, select the highest value `V` in the intersection of both version arrays, and then validate the shared and version-specific discovery fields according to version `V`. An empty intersection prevents federation establishment. The `/somfp/v<V>` path explicitly expresses the selected version; state, message, command, and Recognize bodies MUST NOT repeat a version field.
 
-Beyond the permanently mandatory `protocolVersions`, later majors SHOULD retain semantically compatible shared fields and MAY add fields to the same well-known object. A field with the same name MUST retain the same type and semantics across every major listed in `protocolVersions`; a changed meaning MUST use a new field name. Only a handshake selecting the defining major interprets a field added by that major. An implementation selecting v1 MUST ignore fields undefined by v1 and MUST NOT allow them to change v1 identity, authorization, surface, or security behavior.
+Beyond the permanently mandatory `protocolVersions`, later majors SHOULD retain semantically compatible shared fields and MAY add fields to the same discovery object. A field with the same name MUST retain the same type and semantics across every major listed in `protocolVersions`; a changed meaning MUST use a new field name. Only a handshake selecting the defining major interprets a field added by that major. An implementation selecting v1 MUST ignore fields undefined by v1 and MUST NOT allow them to change v1 identity, authorization, surface, or security behavior.
 
 The optional `software` field is diagnostic only. A consumer MUST NOT enable, disable, or change v1 protocol behavior based on a product name, software version, or build number. An implementation MAY publish `1` in `protocolVersions` only when it fully supports every mandatory behavior in this specification.
 
-Each `/s2s/v<major>` handler MUST accept only a major currently published by the node and MUST NOT transparently downgrade an unsupported version. If a successful well-known refresh establishes that a known peer no longer shares a version with the node, the node MUST record the version reason, enter `halted`, stop automatic communication, and reject the peer's ordinary data plane. It MUST NOT thereby delete identity pins, cursors, mirrors, or authorization. Recovery is local administration. A node need not refresh well-known before every request; refresh frequency and connection lifecycle are implementation choices, but request behavior MUST NOT create tight polling or traffic amplification.
+Each `/somfp/v<major>` handler MUST accept only a major currently published by the node and MUST NOT transparently downgrade an unsupported version. If a successful discovery refresh establishes that a known peer no longer shares a version with the node, the node MUST record the version reason, enter `halted`, stop automatic communication, and reject the peer's ordinary data plane. It MUST NOT thereby delete identity pins, cursors, mirrors, or authorization. Recovery is local administration. A node need not refresh discovery before every request; refresh frequency and connection lifecycle are implementation choices, but request behavior MUST NOT create tight polling or traffic amplification.
 
-The node MUST reject a request for a syntactically recognized `/s2s/v<major>` that it does not enable and SHOULD return HTTP `409` with `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`. It MUST NOT route the request to another major's handler.
+The node MUST reject a request for a syntactically recognized `/somfp/v<major>` that it does not enable and SHOULD return HTTP `409` with `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`. It MUST NOT route the request to another major's handler.
 
-The v1 wire surface and every v1 object are closed. Unknown fields and unknown enum values are malformed unless an operation explicitly says otherwise. Adding, removing, or renaming a field or enum value, changing its meaning, or changing an endpoint, authentication, status code, idempotency, or cursor semantics is incompatible and requires a new `/s2s/v2` major. Errata, non-normative explanation, and implementation optimization that does not change externally observable protocol behavior MAY be released within v1.
+The v1 wire surface and every v1 object are closed. Unknown fields and unknown enum values are malformed unless an operation explicitly says otherwise. Adding, removing, or renaming a field or enum value, changing its meaning, or changing an endpoint, authentication, status code, idempotency, or cursor semantics is incompatible and requires a new `/somfp/v2` major. Errata, non-normative explanation, and implementation optimization that does not change externally observable protocol behavior MAY be released within v1.
 
 ## 3. Federation v1 HTTP surface
 
@@ -64,24 +64,24 @@ The following table is the complete v1 surface. Its synchronization surface cont
 
 | Method | Absolute path                                                                         | Authentication context | Request                                         | Success     | Response                                  |
 | ------ | ------------------------------------------------------------------------------------- | ---------------------- | ----------------------------------------------- | ----------- | ----------------------------------------- |
-| `GET`  | `/.well-known/somfp`                                                                  | public TLS             | no query or body                                | `200`       | bare discovery object                     |
-| `POST` | `/s2s/v1/recognize`                                                                   | bootstrap signed       | empty object or sender-assigned local namespace | `200`       | success data envelope                     |
-| `POST` | `/s2s/v1/verify`                                                                      | recognized signed      | sealed challenge query                          | `200`       | success data envelope                     |
-| `POST` | `/s2s/v1/message-provenance`                                                          | recognized signed      | batch of thread/sequence/digest queries         | `200`       | success data or declined envelope         |
-| `GET`  | `/s2s/v1/health`                                                                      | status signed          | no query or body                                | `200`       | success envelope with privacy-safe status |
-| `POST` | `/s2s/v1/feed-heads`                                                                  | lightweight signed     | JSON feed-head hint                             | `200`       | success ACK envelope                      |
-| `GET`  | `/s2s/v1/state-feed`                                                                  | recognized signed      | feed query                                      | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/profile-namespace-feed`                                                      | recognized signed      | namespace feed query                            | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/group-meta`                                                                  | recognized signed      | group/meta mode query                           | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/account-profiles/:namespaceId/:account/:profileRev`                          | recognized signed      | path profile evidence                           | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev` | recognized signed      | path member evidence                            | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/messages`                                                                    | recognized signed      | thread data query                               | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/message-tombstones`                                                          | recognized signed      | thread data query                               | `200`       | success data envelope                     |
-| `POST` | `/s2s/v1/call`                                                                        | recognized signed      | JSON call frame                                 | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/accounts/:account`                                                           | recognized signed      | path account                                    | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/profile-namespaces/:nsid`                                                    | recognized signed      | path namespace bindings                         | `200`       | success data envelope                     |
-| `GET`  | `/s2s/v1/media/:digest`                                                               | recognized signed      | path/query/optional Range                       | `200`/`206` | raw bytes                                 |
-| `GET`  | `/s2s/v1/forward-bundles/:bundleId`                                                   | recognized signed      | path bundle ID                                  | `200`       | success data envelope                     |
+| `GET`  | `/somfp/discovery`                                                                  | public TLS             | no query or body                                | `200`       | bare discovery object                     |
+| `POST` | `/somfp/v1/recognize`                                                                   | bootstrap signed       | empty object or sender-assigned local namespace | `200`       | success data envelope                     |
+| `POST` | `/somfp/v1/verify`                                                                      | recognized signed      | sealed challenge query                          | `200`       | success data envelope                     |
+| `POST` | `/somfp/v1/message-provenance`                                                          | recognized signed      | batch of thread/sequence/digest queries         | `200`       | success data or declined envelope         |
+| `GET`  | `/somfp/v1/health`                                                                      | status signed          | no query or body                                | `200`       | success envelope with privacy-safe status |
+| `POST` | `/somfp/v1/feed-heads`                                                                  | lightweight signed     | JSON feed-head hint                             | `200`       | success ACK envelope                      |
+| `GET`  | `/somfp/v1/state-feed`                                                                  | recognized signed      | feed query                                      | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/profile-namespace-feed`                                                      | recognized signed      | namespace feed query                            | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/group-meta`                                                                  | recognized signed      | group/meta mode query                           | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/account-profiles/:namespaceId/:account/:profileRev`                          | recognized signed      | path profile evidence                           | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev` | recognized signed      | path member evidence                            | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/messages`                                                                    | recognized signed      | thread data query                               | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/message-tombstones`                                                          | recognized signed      | thread data query                               | `200`       | success data envelope                     |
+| `POST` | `/somfp/v1/call`                                                                        | recognized signed      | JSON call frame                                 | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/accounts/:account`                                                           | recognized signed      | path account                                    | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/profile-namespaces/:nsid`                                                    | recognized signed      | path namespace bindings                         | `200`       | success data envelope                     |
+| `GET`  | `/somfp/v1/media/:digest`                                                               | recognized signed      | path/query/optional Range                       | `200`/`206` | raw bytes                                 |
+| `GET`  | `/somfp/v1/forward-bundles/:bundleId`                                                   | recognized signed      | path bundle ID                                  | `200`       | success data envelope                     |
 
 All four signed contexts use the same HTTP Message Signature profile but have different authorization boundaries:
 
@@ -117,7 +117,7 @@ is the sole definition of recognition facts, the closed peer lifecycle, and
 operation gates. Its Section 9 defines Health's distinct privacy projection.
 A lifecycle label alone is not authorization.
 
-## 4. Well-known discovery and keys
+## 4. Discovery and keys
 
 [Transport and Security, Section 1](./transport-security.md) is the sole normative definition of the discovery document, root identity, signing-key certificates, and rotation.
 
@@ -225,7 +225,7 @@ A consumer observing later profile or group state for the same `Address` MUST th
 
 ### 7.1 Media types and response kinds
 
-Successful `well-known` responses are the bare JSON object defined by the discovery specification. Every other successful JSON operation, including `recognize` and `health`, uses an envelope from this section. A JSON response MUST use `Content-Type: application/json`; HTTP `204` MUST NOT be used.
+Successful `discovery` responses are the bare JSON object defined by the discovery specification. Every other successful JSON operation, including `recognize` and `health`, uses an envelope from this section. A JSON response MUST use `Content-Type: application/json`; HTTP `204` MUST NOT be used.
 
 `media/:digest` is the only raw binary response. A complete response uses `200`, a satisfiable single Range uses `206`, and an unsatisfiable Range uses `416`. An error occurring before any bytes are sent uses the JSON error envelope and retains the error HTTP status. After successful headers or body bytes have been sent, a mid-stream read failure MUST terminate the connection and MUST NOT append JSON to the binary body.
 
@@ -304,7 +304,7 @@ hosted by that peer must remain confirmed.
 
 [Federation v1 State Feed](./state-feed.md) defines complete pages, its two event bodies, field constraints, compacted thread-content heads, and merge semantics. [Group Meta Feed](./group-meta.md) defines the group-origin canonical role/profile-reference roster, group profile revision, and compacted current announcement. [Profiles](./profiles.md) defines public current profile lookup and exact profile lookup authorized by messages, Group Meta, or Relationship Intent. [Federation v1 Message Query](./message-feed.md) defines `/messages`. [Message](./message.md) defines the nine core message contents and their media and forward bodies. [Federation v1 Message Tombstone Query](./message-tombstone-feed.md) defines authoritative deletion facts and `/message-tombstones`. Those documents and this one jointly form the v1 normative text; this summary cannot override their field-level requirements.
 
-One-to-one real-time calls use WebRTC media/JSEP and signed `/s2s/v1/call`
+One-to-one real-time calls use WebRTC media/JSEP and signed `/somfp/v1/call`
 frames for federation signaling. [Federation v1 Audio and Video
 Calls](./calls.md) defines the mandatory end-to-end Call Profile covering the
 HTTP operation, frame, lifecycle, endpoint WebRTC/JSEP behavior, failure

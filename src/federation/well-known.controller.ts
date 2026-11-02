@@ -8,8 +8,8 @@ import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
 /**
  * Publish this server's S2S root identity group and signing certificates.
  * PUBLIC (no auth) — peers fetch this over HTTPS to discover and verify our
- * keys (RFC 8615 well-known URI). Excluded from the /api/v1 global prefix in
- * bootstrap.ts so it is served at exactly /.well-known/somfp.
+ * keys. Excluded from the /api/v1 global prefix in
+ * bootstrap.ts so it is served at exactly /somfp/discovery.
  *
  * `roots` is the identity anchor set: every root epoch still published,
  * including rotated-out predecessors whose entries must remain visible until
@@ -19,11 +19,11 @@ import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
  */
 @Public()
 @Raw()
-@Controller('.well-known')
+@Controller('somfp')
 export class WellKnownController {
   constructor(private readonly keypair: KeypairService) {}
 
-  @Get('somfp')
+  @Get('discovery')
   getWellKnown() {
     return {
       software: `soms/${SERVER_VERSION}`,

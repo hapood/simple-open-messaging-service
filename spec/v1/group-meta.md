@@ -2,7 +2,7 @@
 
 Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
-This document is entirely normative. `GET /s2s/v1/group-meta` exposes the one
+This document is entirely normative. `GET /somfp/v1/group-meta` exposes the one
 canonical Group Meta Feed owned by a group's origin. The feed is the origin's
 authoritative member roster and role state; it is not copied once per target
 peer. Mirrors derive group membership and the owner from this feed. It also carries the

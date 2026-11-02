@@ -99,7 +99,7 @@ Do not gate SDP completion or business-type persistence on decoded frame arrival
 
 This is a breaking closed-contract revision: old answers lack the required field, and old endpoints may omit ICE usernameFragment. There is no dual-format compatibility path and no automatic legacy fallback.
 
-Recommended for the current RELEASE CANDIDATE: revise the unreleased v1 Call Profile and schema together and coordinate deployment of servers/Web/Android on all lab nodes. Update release-candidate publication metadata consistently when publishing this revision. `/s2s/v1/call` remains unchanged ONLY under this explicitly pre-release revision policy.
+Recommended for the current RELEASE CANDIDATE: revise the unreleased v1 Call Profile and schema together and coordinate deployment of servers/Web/Android on all lab nodes. Update release-candidate publication metadata consistently when publishing this revision. `/somfp/v1/call` remains unchanged ONLY under this explicitly pre-release revision policy.
 
 If interoperability with already-published external v1 implementations must be retained, publish a new federation major instead. Do not silently replace a released v1 contract, or merely add a per-call version field while the rest of discovery still advertises indistinguishable v1 support.
 

@@ -60,4 +60,4 @@ artifact, not a runtime conformance certification.
 
 The current working package is [Simple Open Messaging Federation Protocol v1.0.0-draft.2 — Draft, Final Review](./v1/README.md). Every implementation claiming compatibility, including SOMS, must demonstrate conformance through tests. Implementation code, implementation-specific reviews, JSON Schema, and examples cannot independently alter the meaning of the normative text.
 
-The conformant discovery identifiers are `/.well-known/somfp` and `_somfp._tcp`. No alternative discovery identifier belongs to the SOMFP v1 surface.
+The conformant discovery identifiers are `/somfp/discovery` and `_somfp._tcp`. No alternative discovery identifier belongs to the SOMFP v1 surface.

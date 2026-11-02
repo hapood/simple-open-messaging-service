@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:profile",
-  "title": "GET /s2s/v1/accounts/:account response data",
+  "title": "GET /somfp/v1/accounts/:account response data",
   "type": "object",
   "required": ["account", "generatedAt", "profileRev", "profile", "proof"],
   "properties": {

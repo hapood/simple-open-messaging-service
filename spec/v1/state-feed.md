@@ -2,7 +2,7 @@
 
 Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
-This document is entirely normative. `GET /s2s/v1/state-feed` is the
+This document is entirely normative. `GET /somfp/v1/state-feed` is the
 per-peer compacted feed for relationship facts and per-thread message,
 deletion, and Group Meta query heads. It carries no user or group
 profile display data; Relationship Intent carries an authorization snapshot and an exact revision

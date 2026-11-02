@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:call",
-  "title": "POST /s2s/v1/call request",
+  "title": "POST /somfp/v1/call request",
   "$defs": {
     "base": {
       "type": "object",

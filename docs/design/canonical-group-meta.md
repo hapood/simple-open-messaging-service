@@ -328,7 +328,7 @@ member's thread feed; the per-item and per-batch fan-out admissions already
 carried the intermediate advances.
 A round that advanced the applied group-profile reference then pulls the exact
 snapshot content from the origin through
-`/s2s/v1/account-profiles/:namespaceId/:account/:profileRev`, because the
+`/somfp/v1/account-profiles/:namespaceId/:account/:profileRev`, because the
 `GROUP_PROFILE` feed item carries the selected namespace and revision but no
 display bytes; a failed pull degrades display until the next head re-admits it.
 Group Meta item and batch transactions publish nothing beyond the fan-out
@@ -398,7 +398,7 @@ group origin
   -> may warm the revision immediately after REQUESTED commits
   -> publishes the stable reference without waiting for profile bytes
   -> lazily resolves and caches the exact revision through the global coordinator
-  -> serves GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
+  -> serves GET /somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
 
 group mirror
   -> requests only from the group origin

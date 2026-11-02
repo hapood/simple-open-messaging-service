@@ -6,7 +6,7 @@ import { SetMetadata } from '@nestjs/common';
  * envelope-wrapping for that route (it still runs `serializeBody` — BigInt/Date conversion — on the raw
  * return). Mirrors the `@Public()` / `IS_PUBLIC` opt-out convention.
  *
- * Apply at CLASS level when every method is non-envelope (the S2S federation controllers, `.well-known`);
+ * Apply at CLASS level when every method is non-envelope (the S2S federation controllers, `SOMFP discovery`);
  * at METHOD level for a mixed controller (a shell/diagnostics/log handler that streams bytes alongside
  * enveloped siblings). Handlers that already bypass the interceptor via `reply.hijack()` / `@Res()`
  * (non-passthrough) are auto-skipped by Nest, but marking them `@Raw()` makes the intent explicit and guards

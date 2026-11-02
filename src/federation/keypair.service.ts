@@ -311,7 +311,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       });
   }
 
-  /** Certificates published in /.well-known/somfp keys[]: every key still inside
+  /** Certificates published in /somfp/discovery keys[]: every key still inside
    *  its advertised validity whose authorizing root is the claimable epoch. The
    *  planned successor is published before first use; the predecessor stays
    *  published until its notAfter. After a root rotation only

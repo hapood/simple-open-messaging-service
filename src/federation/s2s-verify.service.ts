@@ -11,7 +11,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { parseKeyId } from './key-id.js';
 
 /**
- * Shared inbound RFC 9421 verification primitives — the keyId parse + .well-known key fetch + signature
+ * Shared inbound RFC 9421 verification primitives — the keyId parse + SOMFP discovery key fetch + signature
  * verify used by BOTH the friend-op guard (allow-list-gated) and the init bootstrap (which IS the trust
  * establishment, so it skips the allow-list). Extracted so the two trust models share one verification
  * path instead of duplicating the signature/key-fetch logic.
@@ -45,7 +45,7 @@ export class S2sVerifyService {
   }
 
   /** Build the SignedRequest (method/path/query/authority/body) the verifier expects. body comes from the
-   *  /s2s/v1/* raw-body capture hook in bootstrap.ts — re-serialized JSON would not match the digest. */
+   *  /somfp/v1/* raw-body capture hook in bootstrap.ts — re-serialized JSON would not match the digest. */
   signedRequest(req: FastifyRequest): SignedRequest {
     const requestTarget = req.url ?? '';
     return {
@@ -97,7 +97,7 @@ export class S2sVerifyService {
   }
 
   /**
-   * Fetch the signer's public key from their .well-known (authoritative — fetch-on-miss + TTL cached,
+   * Fetch the signer's public key from their SOMFP discovery (authoritative — fetch-on-miss + TTL cached,
    * so the requester can't lie with an inline key) and verify the signature over the raw body. Throws
    * INTERNAL (503 → sender retries) on a transient fetch failure; FEDERATION_BAD_SIGNATURE
    * (401, no retry) if the keyId isn't published or the signature/content-digest fails. Caches the key

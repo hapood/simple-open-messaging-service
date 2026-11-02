@@ -32,7 +32,7 @@ describe('exact signed profile operations', () => {
     const { get, profiles } = target();
     await profiles.fetchExactAccountProfile('alice', 4, 'member.example');
     expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/account-profiles/0/alice/4',
+      '/somfp/v1/account-profiles/0/alice/4',
       'member.example',
       expect.any(Number),
     );
@@ -47,7 +47,7 @@ describe('exact signed profile operations', () => {
       'group.example',
     );
     expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/group-member-profiles/%21group/0/alice/4',
+      '/somfp/v1/group-member-profiles/%21group/0/alice/4',
       'group.example',
       expect.any(Number),
     );

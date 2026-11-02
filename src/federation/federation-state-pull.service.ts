@@ -65,7 +65,7 @@ export class FederationStatePullService {
     try {
       return await this.trustedPeers.run(domain, () =>
         this.peerHttp.get<PeerStateFeedPage>(
-          `/s2s/v1/state-feed${query.size === 0 ? '' : `?${query.toString()}`}`,
+          `/somfp/v1/state-feed${query.size === 0 ? '' : `?${query.toString()}`}`,
           domain,
           16 * 1024 * 1024,
         ),

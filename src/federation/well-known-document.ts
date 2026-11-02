@@ -7,7 +7,7 @@ import {
 import { selectFederationProtocolVersion } from './federation-protocol.js';
 import { parseKeyId } from './key-id.js';
 
-/** The public `/.well-known/somfp` v1 discovery document. Owned here so the
+/** The public `/somfp/discovery` v1 discovery document. Owned here so the
  *  document contract has one definition shared by discovery and diagnostics. */
 export interface WellKnownDoc {
   software?: string;

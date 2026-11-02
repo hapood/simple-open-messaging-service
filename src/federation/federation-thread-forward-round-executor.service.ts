@@ -206,7 +206,7 @@ export class FederationThreadForwardRoundExecutorService {
     try {
       response = await this.threadResources.fetch<FederationMessageQueryPage>(
         source.threadId,
-        `/s2s/v1/messages?${query.toString()}`,
+        `/somfp/v1/messages?${query.toString()}`,
         source.peerDomain,
         16 * 1024 * 1024,
       );
@@ -252,7 +252,7 @@ export class FederationThreadForwardRoundExecutorService {
       response =
         await this.threadResources.fetch<FederationMessageTombstoneQueryPage>(
           source.threadId,
-          `/s2s/v1/message-tombstones?${query.toString()}`,
+          `/somfp/v1/message-tombstones?${query.toString()}`,
           source.peerDomain,
           4 * 1024 * 1024,
         );
@@ -410,7 +410,7 @@ export class FederationThreadForwardRoundExecutorService {
         const dependency =
           await this.threadResources.fetch<InboundForwardWireBundle>(
             source.threadId,
-            `/s2s/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
+            `/somfp/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
             source.peerDomain,
             FORWARD_MAX_WIRE_JSON_BYTES,
           );

@@ -24,7 +24,7 @@ const releaseSpecDir = resolve(spec);
 const normativeSpecDir = join(releaseSpecDir, 'v1');
 const specDir = join(normativeSpecDir, 'schema');
 const protocolVersion = 1;
-const federationApiPrefix = 's2s/v1';
+const federationApiPrefix = 'somfp/v1';
 
 interface Vector {
   name: string;
@@ -375,24 +375,24 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     throw new Error('HTTP manifest version/prefix differs from code constants');
   }
   const expected = new Set([
-    'GET /.well-known/somfp',
-    'POST /s2s/v1/recognize',
-    'GET /s2s/v1/health',
-    'POST /s2s/v1/verify',
-    'POST /s2s/v1/feed-heads',
-    'GET /s2s/v1/state-feed',
-    'GET /s2s/v1/profile-namespace-feed',
-    'GET /s2s/v1/profile-namespaces/:nsid',
-    'GET /s2s/v1/group-meta',
-    'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
-    'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
-    'GET /s2s/v1/messages',
-    'GET /s2s/v1/message-tombstones',
-    'POST /s2s/v1/message-provenance',
-    'POST /s2s/v1/call',
-    'GET /s2s/v1/accounts/:account',
-    'GET /s2s/v1/media/:digest',
-    'GET /s2s/v1/forward-bundles/:bundleId',
+    'GET /somfp/discovery',
+    'POST /somfp/v1/recognize',
+    'GET /somfp/v1/health',
+    'POST /somfp/v1/verify',
+    'POST /somfp/v1/feed-heads',
+    'GET /somfp/v1/state-feed',
+    'GET /somfp/v1/profile-namespace-feed',
+    'GET /somfp/v1/profile-namespaces/:nsid',
+    'GET /somfp/v1/group-meta',
+    'GET /somfp/v1/account-profiles/:namespaceId/:account/:profileRev',
+    'GET /somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
+    'GET /somfp/v1/messages',
+    'GET /somfp/v1/message-tombstones',
+    'POST /somfp/v1/message-provenance',
+    'POST /somfp/v1/call',
+    'GET /somfp/v1/accounts/:account',
+    'GET /somfp/v1/media/:digest',
+    'GET /somfp/v1/forward-bundles/:bundleId',
   ]);
   const actual = new Set(
     manifest.operations.map(

@@ -165,7 +165,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
       });
       expect(fetch).toHaveBeenCalledWith(
         31,
-        `/s2s/v1/messages?${demand}&before=100&through=40&take=20&includeSelf=${includeSelf}`,
+        `/somfp/v1/messages?${demand}&before=100&through=40&take=20&includeSelf=${includeSelf}`,
         source.peerDomain,
         16 * 1024 * 1024,
       );

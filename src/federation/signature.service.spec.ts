@@ -7,7 +7,7 @@ import type { KeypairService } from './keypair.service.js';
 describe('SignatureService (RFC 9421 + Ed25519)', () => {
   const req = {
     method: 'POST',
-    url: new URL('https://peer.com/s2s/v1/feed-heads?cursor=abc%2D1'),
+    url: new URL('https://peer.com/somfp/v1/feed-heads?cursor=abc%2D1'),
     body: '{"hi":1}',
   };
 
@@ -47,7 +47,7 @@ describe('SignatureService (RFC 9421 + Ed25519)', () => {
     for (const recipient of ['peer-b.test', 'peer-c.test']) {
       const recognize = {
         method: 'POST',
-        url: new URL(`https://${recipient}/s2s/v1/recognize`),
+        url: new URL(`https://${recipient}/somfp/v1/recognize`),
         body: '{"namespaceId":7}',
       };
       const headers = await svc.signOutbound(recognize);

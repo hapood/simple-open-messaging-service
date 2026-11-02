@@ -288,7 +288,7 @@ export class DiscoveryService implements OnApplicationShutdown {
     const base = await this.resolveBase(domain);
     const release = await this.acquireRequestSlot(domain);
     try {
-      const response = await this.request(`${base}/.well-known/somfp`, {
+      const response = await this.request(`${base}/somfp/discovery`, {
         headers: { accept: 'application/json' },
       });
       return await readFederationDiscovery(domain, response);

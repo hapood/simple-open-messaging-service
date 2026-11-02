@@ -12,7 +12,7 @@ import {
   FEDERATION_API_PREFIX,
   FEDERATION_PROTOCOL_VERSION,
   selectFederationProtocolVersion,
-  FEDERATION_WELL_KNOWN_PATH,
+  FEDERATION_DISCOVERY_PATH,
 } from './federation-protocol.js';
 
 type ControllerClass = abstract new (...args: never[]) => unknown;
@@ -58,24 +58,24 @@ describe('Federation v1 surface', () => {
         .sort(),
     ).toEqual(
       [
-        'GET /.well-known/somfp',
-        'GET /s2s/v1/forward-bundles/:bundleId',
-        'GET /s2s/v1/group-meta',
-        'GET /s2s/v1/media/:digest',
-        'GET /s2s/v1/messages',
-        'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
-        'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
-        'GET /s2s/v1/message-tombstones',
-        'GET /s2s/v1/state-feed',
-        'GET /s2s/v1/profile-namespace-feed',
-        'GET /s2s/v1/profile-namespaces/:nsid',
-        'GET /s2s/v1/accounts/:account',
-        'POST /s2s/v1/call',
-        'POST /s2s/v1/feed-heads',
-        'POST /s2s/v1/message-provenance',
-        'GET /s2s/v1/health',
-        'POST /s2s/v1/recognize',
-        'POST /s2s/v1/verify',
+        'GET /somfp/discovery',
+        'GET /somfp/v1/forward-bundles/:bundleId',
+        'GET /somfp/v1/group-meta',
+        'GET /somfp/v1/media/:digest',
+        'GET /somfp/v1/messages',
+        'GET /somfp/v1/account-profiles/:namespaceId/:account/:profileRev',
+        'GET /somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
+        'GET /somfp/v1/message-tombstones',
+        'GET /somfp/v1/state-feed',
+        'GET /somfp/v1/profile-namespace-feed',
+        'GET /somfp/v1/profile-namespaces/:nsid',
+        'GET /somfp/v1/accounts/:account',
+        'POST /somfp/v1/call',
+        'POST /somfp/v1/feed-heads',
+        'POST /somfp/v1/message-provenance',
+        'GET /somfp/v1/health',
+        'POST /somfp/v1/recognize',
+        'POST /somfp/v1/verify',
       ].sort(),
     );
   });
@@ -112,8 +112,8 @@ describe('Federation v1 surface', () => {
     } as never);
 
     const document = controller.getWellKnown();
-    expect(FEDERATION_API_PREFIX).toBe('s2s/v1');
-    expect(FEDERATION_WELL_KNOWN_PATH).toBe('.well-known/somfp');
+    expect(FEDERATION_API_PREFIX).toBe('somfp/v1');
+    expect(FEDERATION_DISCOVERY_PATH).toBe('somfp/discovery');
     expect(document.protocolVersions).toEqual([FEDERATION_PROTOCOL_VERSION]);
     expect(document.software).toMatch(/^soms\//);
     expect(document).not.toHaveProperty('capabilities');

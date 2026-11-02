@@ -213,7 +213,7 @@ describe('profile wire contracts across isolated federation servers', () => {
         (entry) =>
           entry.status === 200 &&
           new URL(entry.path, appA.baseUrl).pathname ===
-            `/s2s/v1/accounts/${owner}`,
+            `/somfp/v1/accounts/${owner}`,
       );
     expect(responses.length).toBeGreaterThan(0);
     for (const response of responses) {
@@ -256,7 +256,7 @@ describe('profile wire contracts across isolated federation servers', () => {
         (entry) =>
           entry.status === 200 &&
           new URL(entry.path, appA.baseUrl).pathname ===
-            `/s2s/v1/accounts/${account}`,
+            `/somfp/v1/accounts/${account}`,
       );
     expect(responses.length).toBeGreaterThan(0);
     for (const response of responses) {

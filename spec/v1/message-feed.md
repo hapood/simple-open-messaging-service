@@ -4,7 +4,7 @@ Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 Normative scope: this entire document is normative.
 
 This document defines the per-thread message-content query
-`GET /s2s/v1/messages`. The compacted `thread + messageEndSeq +
+`GET /somfp/v1/messages`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
 [State Feed](./state-feed.md#5-thread_content_head). Authorization, message
 return, and content-retention policy are applied by the query operation. See
@@ -13,7 +13,7 @@ common rules.
 
 ## 1. Thread-query union
 
-`GET /s2s/v1/messages` uses a closed query. Common fields are `after`,
+`GET /somfp/v1/messages` uses a closed query. Common fields are `after`,
 `before`, `through`, `take`, and `includeSelf`. `after` and `before` are optional
 exclusive cursors and MUST NOT appear together. Omitting both bootstraps the
 thread query; `take` and `through` then MUST also be omitted. With either cursor,
@@ -306,4 +306,4 @@ When the request is correctly authenticated and peer lifecycle can continue, mes
 - `FEDERATION_MESSAGE_QUERY_RATE_LIMITED`: the current signer, thread, or query budget is receiving requests too frequently.
 - `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE`: query materialization, storage, or background reconciliation for the thread temporarily cannot provide a consistent page.
 
-All three MUST carry `{ retryAfter }`, a non-negative integer number of seconds measured from complete receipt of the response. The consumer MUST NOT advance the message-query cursor or mark the peer `degraded`; it retries after waiting at least `retryAfter`, using locally bounded, jittered behavior. The latter two codes apply only to `GET /s2s/v1/messages`; the common quota code may also be used by other operations under their own documents. None may replace HTTP `503` for federation-wide service unavailability.
+All three MUST carry `{ retryAfter }`, a non-negative integer number of seconds measured from complete receipt of the response. The consumer MUST NOT advance the message-query cursor or mark the peer `degraded`; it retries after waiting at least `retryAfter`, using locally bounded, jittered behavior. The latter two codes apply only to `GET /somfp/v1/messages`; the common quota code may also be used by other operations under their own documents. None may replace HTTP `503` for federation-wide service unavailability.

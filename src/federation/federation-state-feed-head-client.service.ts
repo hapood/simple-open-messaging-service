@@ -49,7 +49,7 @@ export class FederationStateFeedHeadClient {
     const snapshot = result.rows[0];
     if (!snapshot) throw new Error('feed-head namespace is missing');
     await this.peerHttp.post(
-      '/s2s/v1/feed-heads',
+      '/somfp/v1/feed-heads',
       JSON.stringify(snapshot),
       peerDomain,
     );

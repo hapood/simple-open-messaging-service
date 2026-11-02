@@ -6,9 +6,9 @@ This document is entirely normative. It defines the three Federation v1 profile
 read operations:
 
 ```http
-GET /s2s/v1/accounts/:account
-GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
-GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
+GET /somfp/v1/accounts/:account
+GET /somfp/v1/account-profiles/:namespaceId/:account/:profileRev
+GET /somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
 ```
 
 All three operations use `recognized signed` authentication and have no
@@ -46,9 +46,9 @@ requests. The public lookup additionally requires the `publicKey` and
 `challenge` query parameters of Section 3:
 
 ```http
-GET /s2s/v1/accounts/%21team
-GET /s2s/v1/account-profiles/0/%21team/7
-GET /s2s/v1/group-member-profiles/%21team/0/alice/7
+GET /somfp/v1/accounts/%21team
+GET /somfp/v1/account-profiles/0/%21team/7
+GET /somfp/v1/group-member-profiles/%21team/0/alice/7
 ```
 
 A literal `!team` path segment is non-canonical and returns
@@ -69,7 +69,7 @@ FEDERATION_MALFORMED`.
 
 ### 2.1 Public current profile
 
-`GET /s2s/v1/accounts/:account` returns the current public profile
+`GET /somfp/v1/accounts/:account` returns the current public profile
 for an exact local account on the responding server. Its success `data`
 is a closed object with exactly these fields:
 
@@ -173,7 +173,7 @@ null, negative, fractional, non-numeric, or unsafe-integer values are malformed.
 ## 3. Public Account Profile
 
 ```http
-GET /s2s/v1/accounts/:account
+GET /somfp/v1/accounts/:account
 ```
 
 `account` MAY be a `UserAccount` or `GroupAccount`. The operation resolves only
@@ -205,7 +205,7 @@ covered by the signed `@query` component and cannot be altered in transit.
 ## 4. Account Profile by Account Evidence
 
 ```http
-GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
+GET /somfp/v1/account-profiles/:namespaceId/:account/:profileRev
 ```
 
 `account` MAY be a `UserAccount` or a `GroupAccount` owned by the responding
@@ -256,7 +256,7 @@ remote group and MUST NOT redirect another peer to a mirror.
 ## 5. Group Member Profile
 
 ```http
-GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
+GET /somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
 ```
 
 Path variables are:

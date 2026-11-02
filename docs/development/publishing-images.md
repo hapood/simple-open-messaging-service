@@ -45,9 +45,8 @@ docker --config "$docker_config" pull ghcr.io/hapood/simple-open-messaging-servi
 rm -r "$docker_config"
 ```
 
-The Compose generator and NAS template default to
-`ghcr.io/hapood/simple-open-messaging-service:v0.1.0-alpha.0`; the public template uses `:latest`.
-Publish that tag from `main` after
+The Compose generator and both deployment templates default to `:latest`.
+To publish a pinned release such as `v0.1.0-alpha.2`, push its matching tag from `main` after
 the release pull request has been approved and squash-merged. Versioned images become available
 after the tag workflow succeeds; merging to `main` alone does not publish them.
 

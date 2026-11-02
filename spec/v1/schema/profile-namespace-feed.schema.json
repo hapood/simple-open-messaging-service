@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:profile-namespace-feed",
-  "title": "GET /s2s/v1/profile-namespace-feed response data",
+  "title": "GET /somfp/v1/profile-namespace-feed response data",
   "$defs": {
     "item": {
       "type": "object",

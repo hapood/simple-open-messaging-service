@@ -128,11 +128,11 @@ export class FederationCallBridgeService {
     }
     const body = JSON.stringify(toS2SCallWireFrame(frame));
     if (params.signatureExpiresAtSec !== undefined) {
-      await this.peerHttp.post('/s2s/v1/call', body, peerDomain, {
+      await this.peerHttp.post('/somfp/v1/call', body, peerDomain, {
         signatureExpiresAtSec: params.signatureExpiresAtSec,
       });
     } else {
-      await this.peerHttp.post('/s2s/v1/call', body, peerDomain);
+      await this.peerHttp.post('/somfp/v1/call', body, peerDomain);
     }
   }
 

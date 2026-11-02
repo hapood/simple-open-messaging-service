@@ -47,7 +47,7 @@ function subject(overrides?: {
     recognition as never,
   );
   const request = {
-    url: '/s2s/v1/accounts/alice',
+    url: '/somfp/v1/accounts/alice',
     body: undefined as unknown,
   };
   const context = {
