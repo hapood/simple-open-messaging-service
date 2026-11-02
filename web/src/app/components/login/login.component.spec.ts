@@ -4,6 +4,7 @@ import { Subject } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { AuthService } from '../../services/auth.service';
 import { ConfigService } from '../../services/config.service';
+import { LanguageService } from '../../services/language.service';
 import { RouteService } from '../../services/route.service';
 import { ToastService } from '../../services/toast.service';
 import { LoginComponent } from './login.component';
@@ -28,6 +29,9 @@ describe('LoginComponent cancellation', () => {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
         },
+        // The component only reads the language signal; the real service drags translation
+        // dictionaries and preference restoration into this cancellation-focused spec.
+        { provide: LanguageService, useValue: { lang: signal('en') } },
         { provide: RouteService, useValue: {} },
         { provide: ToastService, useValue: { warn: vi.fn(), info: vi.fn() } },
       ],
@@ -67,6 +71,9 @@ describe('LoginComponent cancellation', () => {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
         },
+        // The component only reads the language signal; the real service drags translation
+        // dictionaries and preference restoration into this cancellation-focused spec.
+        { provide: LanguageService, useValue: { lang: signal('en') } },
         { provide: RouteService, useValue: {} },
         { provide: ToastService, useValue: { warn: vi.fn(), info: vi.fn() } },
       ],

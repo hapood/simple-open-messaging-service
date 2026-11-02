@@ -29,6 +29,7 @@ import {
 
 import { PageNotFoundComponent } from '../../app/pages/page-not-found/page-not-found.component';
 import { ForbiddenPageComponent } from '../../app/pages/forbidden-page/forbidden-page.component';
+import { LoginPageComponent } from '../../app/pages/login-page/login-page.component';
 
 export type MentionTarget = 'me' | 'all' | 'other';
 export type CardGenStatus = 'idle' | 'pending' | 'succeeded' | 'failed';
@@ -61,6 +62,7 @@ interface DemoThreadItem {
     IconComponent,
     PageNotFoundComponent,
     ForbiddenPageComponent,
+    LoginPageComponent,
   ],
   template: `
     <div class="tool" [class.rail-open]="!collapsed()">
@@ -225,8 +227,8 @@ interface DemoThreadItem {
                 Thread List
               </a>
               <a class="nav-tab nav-tab--highlight" href="#section-errors" (click)="scrollTo('section-errors', $event)">
-                <span class="nav-tab-badge">New</span>
-                404 & 403 Error Pages
+                <span class="nav-tab-badge">M3</span>
+                404, 403 & Login
               </a>
             </nav>
           </header>
@@ -765,9 +767,9 @@ interface DemoThreadItem {
             <mat-card-header class="showcase-card-header">
               <div class="header-text-block">
                 <span class="section-tag">System States & Diagnostics</span>
-                <mat-card-title>404 Page Not Found & 403 Forbidden Redesign</mat-card-title>
+                <mat-card-title>404, 403 & Login Card Redesign (M3 Segmented)</mat-card-title>
                 <mat-card-subtitle>
-                  Material Design 3 layout · SOMS graphite & action-blue palette · integer-pixel metrics · responsive viewports
+                  Material Design 3 Segmented Buttons · SOMS graphite & action-blue palette · integer-pixel metrics · responsive viewports
                 </mat-card-subtitle>
               </div>
               <div class="header-actions">
@@ -776,6 +778,9 @@ interface DemoThreadItem {
                 </a>
                 <a mat-stroked-button routerLink="/403" target="_blank">
                   Standalone 403 ↗
+                </a>
+                <a mat-stroked-button routerLink="/login" target="_blank">
+                  Standalone Login ↗
                 </a>
               </div>
             </mat-card-header>
@@ -790,6 +795,9 @@ interface DemoThreadItem {
                     (change)="activeErrorPage.set($event.value)"
                     aria-label="Select Error Page Preview"
                   >
+                    <mat-button-toggle value="login">
+                      🔑 Login (登录卡片 · M3 Segmented)
+                    </mat-button-toggle>
                     <mat-button-toggle value="404">
                       🔍 404 (Page Not Found · 页面未找到)
                     </mat-button-toggle>
@@ -822,15 +830,17 @@ interface DemoThreadItem {
                       <span class="browser-dot"></span>
                       <span class="browser-dot"></span>
                       <span class="browser-dot"></span>
-                      <span class="browser-address">soms://mesh/{{ activeErrorPage() === '404' ? 'lost-signal' : 'restricted-channel' }}</span>
+                      <span class="browser-address">soms://mesh/{{ activeErrorPage() === '404' ? 'lost-signal' : (activeErrorPage() === '403' ? 'restricted-channel' : 'auth/sign-in') }}</span>
                       <span class="browser-meta">{{ errorViewportWidth() }}</span>
                     </div>
                   }
-                  <div class="error-component-mount">
+                  <div class="error-component-mount" [class.mount-login]="activeErrorPage() === 'login'">
                     @if (activeErrorPage() === '404') {
                       <app-page-not-found />
-                    } @else {
+                    } @else if (activeErrorPage() === '403') {
                       <app-forbidden />
+                    } @else {
+                      <app-login-page />
                     }
                   </div>
                 </div>
@@ -870,8 +880,8 @@ export class EffectsPageComponent {
   readonly navIconStyle = { width: '20px', height: '20px' };
   readonly AppIconType = AppIconType;
 
-  // 6. Error & Permission Pages State
-  readonly activeErrorPage = signal<'404' | '403'>('404');
+  // 6. Error & Permission & Login Pages State
+  readonly activeErrorPage = signal<'404' | '403' | 'login'>('login');
   readonly errorViewport = signal<'fluid' | 'desktop' | 'tablet' | 'mobile'>(
     'fluid',
   );

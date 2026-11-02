@@ -17,122 +17,117 @@
     </span>
   </h1>
 
-  <div class="auth-tabs-slot">
-    <mat-tab-group
-      [selectedIndex]="selectedTabIndex()"
-      (selectedIndexChange)="onTabChange($event)"
-      animationDuration="250ms"
-      class="auth-tab-group"
-      mat-stretch-tabs="false"
-      mat-align-tabs="center"
-    >
-      @for (item of methodOptions(); track item.key) {
-        <mat-tab [disabled]="item.disabled">
-          <ng-template mat-tab-label>
-            <span class="tab-label">{{ tabLabelKey(item.key) | transloco }}</span>
-          </ng-template>
+  <div class="auth-segmented-slot">
+    <app-segmented-button
+      [options]="segmentedOptions()"
+      [value]="activeMethod()"
+      (valueChange)="onSegmentChange($event)"
+      [ariaLabel]="'auth.loginBtn' | transloco"
+      name="loginMethod"
+    />
+  </div>
 
-          <ng-template matTabContent>
-            <div class="tab-content-panel">
-              @switch (item.key) {
-                @case ('qr') {
-                  <app-qr-stage (onSuccess)="onQrSuccess($event)" />
-                }
-                @case ('password') {
-                  <mat-form-field class="field" appearance="fill">
-                    <mat-label>{{ 'auth.account' | transloco }}</mat-label>
-                    <input
-                      matInput
-                      name="account"
-                      autocomplete="username"
-                      enterkeyhint="next"
-                      autofocus
-                      [ngModel]="account()"
-                      (ngModelChange)="onAccountInput($event)"
-                    />
-                  </mat-form-field>
-
-                  <mat-form-field class="field" appearance="fill">
-                    <mat-label>{{ 'auth.password' | transloco }}</mat-label>
-                    <input
-                      matInput
-                      name="password"
-                      autocomplete="current-password"
-                      enterkeyhint="go"
-                      [type]="showPassword() ? 'text' : 'password'"
-                      [ngModel]="password()"
-                      (ngModelChange)="onPasswordInput($event)"
-                    />
-                    <button
-                      mat-icon-button
-                      matSuffix
-                      type="button"
-                      (click)="togglePassword()"
-                      [attr.aria-label]="
-                        (showPassword() ? 'auth.hidePassword' : 'auth.showPassword')
-                          | transloco
-                      "
-                    >
-                      <app-icon
-                        [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE"
-                        [style]="{ width: '20px', height: '20px' }"
-                      />
-                    </button>
-                  </mat-form-field>
-
-                  <button
-                    mat-flat-button
-                    color="primary"
-                    type="submit"
-                    class="submit-btn"
-                    [disabled]="isLoginBtnDisabled()"
-                  >
-                    {{ 'auth.loginBtn' | transloco }}
-                  </button>
-                }
-                @case ('otp') {
-                  <mat-form-field class="field" appearance="fill">
-                    <mat-label>{{ 'auth.account' | transloco }}</mat-label>
-                    <input
-                      matInput
-                      name="otpAccount"
-                      autocomplete="username"
-                      enterkeyhint="next"
-                      [ngModel]="account()"
-                      (ngModelChange)="onAccountInput($event)"
-                    />
-                  </mat-form-field>
-
-                  <mat-form-field class="field" appearance="fill">
-                    <mat-label>{{ 'auth.otpCode' | transloco }}</mat-label>
-                    <input
-                      matInput
-                      name="code"
-                      inputmode="numeric"
-                      maxlength="6"
-                      autocomplete="one-time-code"
-                      enterkeyhint="go"
-                      [ngModel]="code()"
-                      (ngModelChange)="onCodeInput($event)"
-                    />
-                  </mat-form-field>
-
-                  <button
-                    mat-flat-button
-                    color="primary"
-                    type="submit"
-                    class="submit-btn"
-                    [disabled]="isLoginBtnDisabled()"
-                  >
-                    {{ 'auth.loginBtn' | transloco }}
-                  </button>
-                }
-              }
-            </div>
-          </ng-template>
-        </mat-tab>
+  <div class="tab-content-panel">
+    @switch (activeMethod()) {
+      @case ('qr') {
+        <div class="panel-in" data-method="qr">
+          <app-qr-stage (onSuccess)="onQrSuccess($event)" />
+        </div>
       }
-    </mat-tab-group>
+      @case ('password') {
+        <div class="panel-in" data-method="password">
+        <mat-form-field class="field" appearance="fill">
+          <mat-label>{{ 'auth.account' | transloco }}</mat-label>
+          <input
+            matInput
+            name="account"
+            autocomplete="username"
+            enterkeyhint="next"
+            autofocus
+            [ngModel]="account()"
+            (ngModelChange)="onAccountInput($event)"
+          />
+        </mat-form-field>
+
+        <mat-form-field class="field" appearance="fill">
+          <mat-label>{{ 'auth.password' | transloco }}</mat-label>
+          <input
+            matInput
+            name="password"
+            autocomplete="current-password"
+            enterkeyhint="go"
+            [type]="showPassword() ? 'text' : 'password'"
+            [ngModel]="password()"
+            (ngModelChange)="onPasswordInput($event)"
+          />
+          <button
+            mat-icon-button
+            matSuffix
+            type="button"
+            (click)="togglePassword()"
+            [attr.aria-label]="
+              (showPassword() ? 'auth.hidePassword' : 'auth.showPassword')
+                | transloco
+            "
+          >
+            <app-icon
+              [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </button>
+        </mat-form-field>
+
+        <button
+          mat-flat-button
+          color="primary"
+          type="submit"
+          class="submit-btn"
+          [disabled]="isLoginBtnDisabled()"
+        >
+          {{ 'auth.loginBtn' | transloco }}
+        </button>
+        </div>
+      }
+      @case ('otp') {
+        <div class="panel-in" data-method="otp">
+        <mat-form-field class="field" appearance="fill">
+          <mat-label>{{ 'auth.account' | transloco }}</mat-label>
+          <input
+            matInput
+            name="otpAccount"
+            autocomplete="username"
+            enterkeyhint="next"
+            [ngModel]="account()"
+            (ngModelChange)="onAccountInput($event)"
+          />
+        </mat-form-field>
+
+        <mat-form-field class="field" appearance="fill">
+          <mat-label>{{ 'auth.otpCode' | transloco }}</mat-label>
+          <input
+            matInput
+            name="code"
+            inputmode="numeric"
+            maxlength="6"
+            autocomplete="one-time-code"
+            enterkeyhint="go"
+            [ngModel]="code()"
+            (ngModelChange)="onCodeInput($event)"
+          />
+        </mat-form-field>
+
+        <button
+          mat-flat-button
+          color="primary"
+          type="submit"
+          class="submit-btn"
+          [disabled]="isLoginBtnDisabled()"
+        >
+          {{ 'auth.loginBtn' | transloco }}
+        </button>
+        </div>
+      }
+    }
   </div>
 
   @if (config.registrationOpen()) {

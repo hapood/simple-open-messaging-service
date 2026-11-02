@@ -1,0 +1,70 @@
+<mat-button-toggle-group
+  [value]="value()"
+  (change)="onSelectionChange($event.value)"
+  [name]="name()"
+  [attr.aria-label]="ariaLabel()"
+  hideSingleSelectionIndicator="true"
+  class="m3-segmented-group"
+>
+  @for (item of options(); track item.key) {
+    <mat-button-toggle
+      [value]="item.key"
+      [disabled]="item.disabled"
+      class="m3-segmented-item"
+    >
+      <span class="m3-segment-content">
+        @if (item.icon === 'password') {
+          <svg
+            class="m3-segment-icon"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+        } @else if (item.icon === 'otp') {
+          <svg
+            class="m3-segment-icon"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+        } @else if (item.icon === 'qr') {
+          <svg
+            class="m3-segment-icon"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="7" height="7" rx="1" />
+            <rect x="14" y="3" width="7" height="7" rx="1" />
+            <rect x="3" y="14" width="7" height="7" rx="1" />
+            <path d="M14 14h3v3h-3zM20 14v3h-3M14 20h3M20 20h.01" />
+          </svg>
+        }
+        <span class="m3-segment-label">{{ item.label }}</span>
+      </span>
+    </mat-button-toggle>
+  }
+</mat-button-toggle-group>

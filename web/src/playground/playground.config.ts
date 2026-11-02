@@ -133,6 +133,13 @@ export const playgroundConfig: ApplicationConfig = {
               (m) => m.ForbiddenPageComponent,
             ),
         },
+        {
+          path: 'login',
+          loadComponent: () =>
+            import('../app/pages/login-page/login-page.component').then(
+              (m) => m.LoginPageComponent,
+            ),
+        },
         { path: '**', redirectTo: '' },
       ],
       withHashLocation(),

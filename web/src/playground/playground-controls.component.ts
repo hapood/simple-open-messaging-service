@@ -269,6 +269,9 @@ type KernelFieldKey =
             >
               Visual Effects & Error Pages Showcase
             </a>
+            <a mat-stroked-button href="#/login" (click)="panelOpen.set(false)">
+              Login Page (M3 Segmented Preview)
+            </a>
             <a mat-stroked-button href="#/404" (click)="panelOpen.set(false)">
               404 (Page Not Found)
             </a>

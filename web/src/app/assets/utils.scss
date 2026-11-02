@@ -128,7 +128,7 @@
     align-items: center;
     justify-content: center;
     box-sizing: border-box; // padding stays inside the grid-stretched size — no explicit height is set
-    padding: 32px 24px;
+    padding: 64px 24px 32px; // Safe top clearance so centered form card never collides with top-right toolbar
     background:
       radial-gradient(circle at 88% 10%, color-mix(in srgb, var(--app-brand) 7%, transparent), transparent 30%),
       radial-gradient(circle at 12% 90%, color-mix(in srgb, var(--app-text-muted) 5%, transparent), transparent 32%),

@@ -25,13 +25,17 @@ import {
   AppIconType,
 } from '../../components/icon/icon.component';
 import { RouteService, RoutePage } from '../../services/route.service';
+import { LanguageService } from '../../services/language.service';
 import { MatButtonModule } from '@angular/material/button';
-import { MatTabsModule } from '@angular/material/tabs';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { QrStageComponent } from '../qr-stage/qr-stage.component';
 import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
+import {
+  SegmentedButtonComponent,
+  SegmentedButtonOption,
+} from '../segmented-button/segmented-button.component';
 
 @Component({
   selector: 'app-login',
@@ -41,12 +45,12 @@ import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
     FormsModule,
     TranslocoPipe,
     MatButtonModule,
-    MatTabsModule,
     MatFormFieldModule,
     MatInputModule,
     MatProgressBarModule,
     QrStageComponent,
     BrandLogoComponent,
+    SegmentedButtonComponent,
   ],
   templateUrl: './login.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -60,6 +64,7 @@ export class LoginComponent {
 
   readonly AppIcon = AppIconType;
   private readonly transloco = inject(TranslocoService);
+  private readonly language = inject(LanguageService);
   private readonly toast = inject(ToastService);
   private readonly activatedRoute = inject(ActivatedRoute, { optional: true });
   /** Public site config — tab order, disabled state, default method and the register-link visibility all
@@ -71,16 +76,23 @@ export class LoginComponent {
     () => this.config.loginMethods() ?? [],
   );
 
+  /** Labels are translated eagerly; reading the language signal keeps them reactive to
+   *  runtime language switches (transloco.translate alone would return a stale snapshot). */
+  readonly segmentedOptions = computed<SegmentedButtonOption<LoginMethod>[]>(
+    () => {
+      this.language.lang();
+      return this.methodOptions().map((item) => ({
+        key: item.key,
+        label: this.transloco.translate(this.tabLabelKey(item.key)),
+        icon: item.key,
+        disabled: item.disabled,
+      }));
+    },
+  );
+
   /** The active login method. Initialized from the `?mode=` query param (when that method is usable) or
    *  the server-advertised default; re-picked if a config reload changes the policy under our feet. */
   readonly activeMethod: WritableSignal<LoginMethod>;
-
-  readonly selectedTabIndex = computed(() => {
-    const index = this.methodOptions().findIndex(
-      (m) => m.key === this.activeMethod(),
-    );
-    return index >= 0 ? index : 0;
-  });
 
   account = signal('');
   password = signal('');
@@ -152,10 +164,9 @@ export class LoginComponent {
     }
   }
 
-  onTabChange(index: number) {
-    const item = this.methodOptions()[index];
-    if (item && !item.disabled) {
-      this.setMethod(item.key);
+  onSegmentChange(method?: LoginMethod) {
+    if (method) {
+      this.setMethod(method);
     }
   }
 

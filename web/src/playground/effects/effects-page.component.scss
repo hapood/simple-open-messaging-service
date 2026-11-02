@@ -1361,9 +1361,19 @@ p {
   overflow-y: auto;
 
   app-page-not-found,
-  app-forbidden {
+  app-forbidden,
+  app-login-page {
     display: block;
     width: 100%;
+  }
+
+  &.mount-login {
+    app-login-page {
+      .auth-shell {
+        min-height: 580px;
+        height: auto;
+      }
+    }
   }
 
   .error-page {

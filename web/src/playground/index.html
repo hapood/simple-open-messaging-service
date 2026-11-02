@@ -208,15 +208,22 @@
       .playground-viewport app-deployment-page,
       .playground-viewport app-effects-page,
       .playground-viewport app-page-not-found,
-      .playground-viewport app-forbidden {
+      .playground-viewport app-forbidden,
+      .playground-viewport app-login-page {
         height: 100%;
       }
       .playground-viewport app-deployment-page,
       .playground-viewport app-effects-page,
       .playground-viewport app-page-not-found,
-      .playground-viewport app-forbidden {
+      .playground-viewport app-forbidden,
+      .playground-viewport app-login-page {
+        display: block;
         position: relative;
         overflow-y: auto;
+      }
+      .playground-viewport app-login-page .auth-shell {
+        height: 100%;
+        min-height: 100%;
       }
       .playground-page .app-splash {
         height: 100%;
