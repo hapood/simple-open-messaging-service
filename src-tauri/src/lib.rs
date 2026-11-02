@@ -22,6 +22,7 @@ mod auth_lifecycle;
 #[cfg(any(target_os = "android", test))]
 mod call;
 mod client_compat;
+mod credential_storage;
 mod diagnostics;
 mod login_connection;
 mod login_request;
@@ -147,13 +148,11 @@ pub(crate) struct ServerSessionState {
     select_lock: Arc<tokio::sync::Mutex<()>>,
     server_setup: Arc<server_setup::ServerSetup>,
     auth_lifecycle: Arc<auth_lifecycle::AuthLifecycle>,
-    token: Arc<Mutex<Option<String>>>,
+
     config_path: Arc<Mutex<PathBuf>>,
-    /// Woken by `set_session_token` after writing a non-empty token. The desktop SSE supervisor awaits
-    /// this when no token is set, so an `sse_start` issued before login (the facade connects eagerly at
-    /// boot) blocks without busy-looping and without 401-storming, then opens the moment login provides
-    /// a token. `tokio::sync::Notify` stores one permit, so a `notify_one()` that races ahead of the
-    /// `notified().await` is not lost — race-free. Unused on mobile (Kotlin owns SSE + the token).
+    /// Wakes unbound shared realtime workers after login activation. The immutable login owner,
+    /// not a second global credential or UUID mirror, admits subsequent network and cache work.
+    /// Notify retains a permit when activation races ahead of the worker's wait.
     token_notify: Arc<Notify>,
     /// Cached reqwest client for `proxy_api`, keyed on the origin string. Rebuilt only when the origin
     /// changes (see `ServerSessionState::api_client`) — so API calls reuse one connection pool (TCP+TLS
@@ -172,100 +171,16 @@ pub(crate) struct ServerSessionState {
     /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
     media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     logout_tasks: native_logout::LogoutTasks,
-    /// The active native login UUID (login-lifetime identity; distinct from the transport token).
-    login_session: Arc<Mutex<Option<login_session_store::LoginSessionId>>>,
 }
 
 impl ServerSessionState {
-    fn replace_session_token(&self, token: Option<String>) -> Option<String> {
-        if let Ok(mut current) = self.token.lock() {
-            if current.is_some() && *current != token {
-                #[cfg(not(desktop))]
-                {
-                    for (cid, voice) in self
-                        .native_voice_pending
-                        .lock()
-                        .expect("native voice lock")
-                        .drain()
-                    {
-                        if let Some(cancel) = self
-                            .upload_cancels
-                            .lock()
-                            .expect("upload cancels lock")
-                            .remove(&cid)
-                        {
-                            cancel.cancel();
-                        }
-                        let _ = std::fs::remove_file(voice.path());
-                    }
-                }
-            }
-            let previous = std::mem::replace(&mut *current, token);
-            drop(current);
-            self.token_notify.notify_one();
-            realtime::runtime().refresh_login_work();
-            return previous;
-        }
-        None
+    fn session_token(&self) -> Option<String> {
+        native_db::active_login().ok()?.credential().ok()
     }
 
-    #[cfg(any(target_os = "android", test))]
-    pub(crate) fn update_session_token_admitted(
-        &self,
-        token: Option<String>,
-        session_uuid: &str,
-    ) -> Result<(), String> {
-        let id = crate::login_session_store::LoginSessionId::try_from(session_uuid.to_string())?;
-        match token {
-            Some(token) => {
-                // Publishing a credential is the activation boundary: it must belong to a
-                // preparation made for the CURRENT server configuration.
-                let active = self
-                    .login_session
-                    .lock()
-                    .map_err(|_| "login session lock poisoned")?;
-                if *active != Some(id.clone()) {
-                    return Err("native login superseded".into());
-                }
-                let guard = self
-                    .auth_lifecycle
-                    .enter(crate::auth_lifecycle::Phase::Login)?;
-                guard.validate_login(session_uuid)?;
-                let owner = crate::native_db::login_connection(&id)?;
-                if owner.credential().map_err(|e| e.to_string())? != token {
-                    return Err("credential mismatch".into());
-                }
-                self.replace_session_token(Some(token));
-                Ok(())
-            }
-            None => {
-                let mut active = self
-                    .login_session
-                    .lock()
-                    .map_err(|_| "login session lock poisoned")?;
-                if active.as_ref() == Some(&id) {
-                    *active = None;
-                    drop(active);
-                    self.replace_session_token(None);
-                }
-                Ok(())
-            }
-        }
-    }
-
-    #[cfg(any(target_os = "android", test))]
-    pub(crate) fn clear_residual_token(&self) -> Result<(), String> {
-        let active = self
-            .login_session
-            .lock()
-            .map_err(|_| "login session lock poisoned")?;
-        if active.is_none() {
-            drop(active);
-            self.replace_session_token(None);
-            Ok(())
-        } else {
-            Err("cannot clear residual token while a login session is active".into())
-        }
+    fn login_activated(&self) {
+        self.token_notify.notify_one();
+        realtime::runtime().refresh_login_work();
     }
 
     fn new() -> Self {
@@ -284,7 +199,7 @@ impl ServerSessionState {
             select_lock: Arc::new(tokio::sync::Mutex::new(())),
             server_setup: Arc::new(server_setup::ServerSetup::default()),
             auth_lifecycle: Arc::new(auth_lifecycle::AuthLifecycle::default()),
-            token: Arc::new(Mutex::new(None)),
+
             config_path: Arc::new(Mutex::new(PathBuf::new())),
             token_notify: Arc::new(Notify::new()),
             // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
@@ -298,7 +213,6 @@ impl ServerSessionState {
             native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             logout_tasks: native_logout::LogoutTasks::default(),
-            login_session: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -582,7 +496,8 @@ pub fn run() {
                     native_db::profile_avatars::native_db_get_profile_avatar,
                     native_db::messages::native_db_query_messages,
                     native_db::messages::native_db_count_unread_message_slots,
-                    native_db::messages::native_message_history_get,
+                    native_db::history_ipc::native_message_history_start,
+                    native_db::history_ipc::native_message_history_cancel,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
                     native_db::messages::native_db_get_deleted_hwm,
@@ -672,7 +587,8 @@ pub fn run() {
                     native_db::profile_avatars::native_db_get_profile_avatar,
                     native_db::messages::native_db_query_messages,
                     native_db::messages::native_db_count_unread_message_slots,
-                    native_db::messages::native_message_history_get,
+                    native_db::history_ipc::native_message_history_start,
+                    native_db::history_ipc::native_message_history_cancel,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
                     native_db::messages::native_db_get_deleted_hwm,

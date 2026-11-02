@@ -161,7 +161,7 @@ async fn post_diagnostics_bundle(
         .post(&url)
         .multipart(form)
         .header("x-request-id", request_id);
-    if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
+    if let Some(t) = proxy.session_token() {
         req = req.header("authorization", format!("Bearer {}", t));
     }
     let resp = match req.send().await {

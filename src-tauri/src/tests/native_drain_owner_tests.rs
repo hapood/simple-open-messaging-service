@@ -436,9 +436,8 @@ async fn group_meta_drain_retains_owner_and_materializes_profiles() {
     origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
     let intent = fixture(&proxy, true);
     OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
-    // Mutating runtime mirrors after capture cannot retarget any page or profile request.
+    // Mutating routing after capture cannot retarget any page or profile request.
     origins(&proxy, "http://127.0.0.1:1");
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serving = tokio::spawn(async move {
         {
             let (mut socket, _) = server.accept().await.unwrap();
@@ -668,7 +667,6 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
     let intent = fixture(&proxy, false);
     OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
     origins(&proxy, "http://127.0.0.1:1");
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serving = tokio::spawn(async move {
         let (mut socket, _) = server.accept().await.unwrap();
         let (headers, body) = read_request(&mut socket).await;

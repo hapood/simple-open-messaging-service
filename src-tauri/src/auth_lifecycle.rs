@@ -11,7 +11,7 @@ use std::{
 /// waiter neither releases the phase nor admits conflicting work.
 ///
 /// Scope ends at activation: everything after a login is established belongs to the
-/// login-session epoch (login_session + LoginConnection), never to this machine.
+/// login-session epoch owned by LoginConnection, never to this machine.
 #[derive(Debug, Default)]
 pub(crate) struct AuthLifecycle(Mutex<State>);
 

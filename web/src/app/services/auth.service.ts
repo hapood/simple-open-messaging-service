@@ -588,39 +588,30 @@ export class AuthService {
     this.sessionState.setAuthenticated(false);
   }
 
-  /** Clear the native token (Rust `ProxyState.token` via `clear_session_token` + the OS secure store).
-   *  Returns whether the PERSISTENT (keyring / EncryptedSharedPreferences) clear succeeded (false → the
-   *  logout-failed toast). The Rust in-memory clear is best-effort. */
+  /** End the captured login owner before clearing its OS credential. A delayed storage command
+   * cannot clear a successor login. False reports either admission or persistent-storage failure. */
   private async clearNativeToken(sessionUuid: string): Promise<boolean> {
     let nativeOk = true;
+    // End the captured owner before issuing any OS credential deletion.
+    try {
+      await tauriInvoke('clear_session_token', { sessionUuid });
+    } catch {
+      return false;
+    }
     if (isAndroidNative()) {
-      // Android: clear Kotlin's EncryptedSharedPreferences (SomsFcm) AND Rust's ProxyState.token. The Rust
-      // clear is needed because login now pushes the token to BOTH stores (setSessionToken) — leaving
-      // ProxyState.token set would keep `api_request` sending the revoked Bearer after logout.
+      // Rust already ended the owner. The Android adapter only clears encrypted storage.
       try {
         window.SomsFcm!.setSessionToken(null, sessionUuid);
       } catch {
         nativeOk = false;
       }
-      try {
-        await tauriInvoke('clear_session_token', { sessionUuid });
-      } catch {
-        /* ProxyState.token in-memory copy */
-      }
     } else if (isTauri()) {
-      // Desktop: clear the persistent keyring + the Rust in-memory token independently — a locked keyring
-      // must not skip the proxy clear. nativeOk tracks the persistent keyring (the failure that leaves a
-      // stale token). (secure_clear_token is a desktop-only command — not reachable on Android.)
+      // Desktop storage failure cannot revive the already-ended Rust owner.
       try {
         await tauriInvoke('secure_clear_token', { sessionUuid });
       } catch {
         nativeOk = false;
       } // idempotent: NoEntry → Ok
-      try {
-        await tauriInvoke('clear_session_token', { sessionUuid });
-      } catch {
-        /* ProxyState.token in-memory copy */
-      }
     } else {
       this.clearPresenceCookie();
     }
@@ -741,7 +732,7 @@ export class AuthService {
           platformCleared = true;
         }
       }
-      // The acknowledgement proves Rust captured the ended token before Android clears both copies.
+      // The acknowledgement proves Rust captured and ended the owner before Android clears storage.
       if (isAndroidNative() && !platformCleared && endedLogin) {
         try {
           window.SomsFcm!.setSessionToken(null, endedLogin);

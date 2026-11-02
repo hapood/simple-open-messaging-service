@@ -86,35 +86,36 @@ object SomsSecureStore {
         require(sessionUuid.isNotBlank()) { "sessionUuid must not be blank" }
         var releaseResources: (() -> Unit)? = null
         try {
-            synchronized(this) {
-                val previous = getSessionToken(ctx)
-                val currentUuid = getLoginSessionId(ctx)
-                if (token.isNullOrEmpty() && currentUuid != null && currentUuid != sessionUuid) {
-                    return
+            RustRuntimeBridge.storeSessionToken(token, sessionUuid, Runnable {
+                synchronized(this) {
+                    val previous = getSessionToken(ctx)
+                    val currentUuid = getLoginSessionId(ctx)
+                    if (token.isNullOrEmpty() && currentUuid != null && currentUuid != sessionUuid) {
+                        return@Runnable
+                    }
+                    val changed = token.isNullOrEmpty() || token != previous
+                    if (!previous.isNullOrEmpty() && previous != token) {
+                        releaseResources = CallController.prepareSessionResourceRelease()
+                    }
+                    val ed = prefs(ctx).edit()
+                    if (changed) {
+                        ed.remove("session_id")
+                        ed.remove(KEY_CURRENT_USER_ID)
+                    }
+                    if (token.isNullOrEmpty()) {
+                        ed.remove(KEY_SESSION_TOKEN)
+                        ed.remove(KEY_LOGIN_SESSION_ID)
+                        ed.remove(KEY_CURRENT_USER_ID)
+                    } else {
+                        ed.putString(KEY_SESSION_TOKEN, token)
+                        ed.putString(KEY_LOGIN_SESSION_ID, sessionUuid)
+                    }
+                    ed.apply()
+                    if (changed) {
+                        SomsMessagingService.clearSessionMessageNotifs(ctx)
+                    }
                 }
-                val changed = token.isNullOrEmpty() || token != previous
-                if (!previous.isNullOrEmpty() && previous != token) {
-                    releaseResources = CallController.prepareSessionResourceRelease()
-                }
-                RustRuntimeBridge.setSessionToken(token, sessionUuid)
-                val ed = prefs(ctx).edit()
-                if (changed) {
-                    ed.remove("session_id")
-                    ed.remove(KEY_CURRENT_USER_ID)
-                }
-                if (token.isNullOrEmpty()) {
-                    ed.remove(KEY_SESSION_TOKEN)
-                    ed.remove(KEY_LOGIN_SESSION_ID)
-                    ed.remove(KEY_CURRENT_USER_ID)
-                } else {
-                    ed.putString(KEY_SESSION_TOKEN, token)
-                    ed.putString(KEY_LOGIN_SESSION_ID, sessionUuid)
-                }
-                ed.apply()
-                if (changed) {
-                    SomsMessagingService.clearSessionMessageNotifs(ctx)
-                }
-            }
+            })
         } finally {
             // SDK cancellation and media disposal must never run under the credential monitor.
             releaseResources?.invoke()
@@ -125,19 +126,20 @@ object SomsSecureStore {
     fun discardResidualToken(ctx: Context) {
         var releaseResources: (() -> Unit)? = null
         try {
-            synchronized(this) {
-                if (getSessionToken(ctx) != null) {
-                    releaseResources = CallController.prepareSessionResourceRelease()
+            RustRuntimeBridge.discardResidualToken(Runnable {
+                synchronized(this) {
+                    if (getSessionToken(ctx) != null) {
+                        releaseResources = CallController.prepareSessionResourceRelease()
+                    }
+                    prefs(ctx).edit()
+                        .remove(KEY_SESSION_TOKEN)
+                        .remove(KEY_LOGIN_SESSION_ID)
+                        .remove(KEY_CURRENT_USER_ID)
+                        .remove("session_id")
+                        .apply()
+                    SomsMessagingService.clearSessionMessageNotifs(ctx)
                 }
-                RustRuntimeBridge.discardResidualToken()
-                prefs(ctx).edit()
-                    .remove(KEY_SESSION_TOKEN)
-                    .remove(KEY_LOGIN_SESSION_ID)
-                    .remove(KEY_CURRENT_USER_ID)
-                    .remove("session_id")
-                    .apply()
-                SomsMessagingService.clearSessionMessageNotifs(ctx)
-            }
+            })
         } finally {
             releaseResources?.invoke()
         }

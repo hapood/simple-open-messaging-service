@@ -1518,19 +1518,6 @@ pub(crate) async fn commit_native_message_page(
     .map_err(|e| format!("join message page commit: {e}"))?
 }
 
-#[tauri::command]
-pub(crate) async fn native_message_history_get(
-    app: tauri::AppHandle,
-    proxy: tauri::State<'_, ServerSessionState>,
-    user_id: i64,
-    thread_id: i64,
-    demand: NativeHistoryDemand,
-) -> Result<NativeHistoryResult, String> {
-    NativeHistoryIntent::capture(Some(&app), &proxy, user_id, thread_id)?
-        .get(demand)
-        .await
-}
-
 impl NativeHistoryIntent {
     pub(super) async fn get(
         mut self,

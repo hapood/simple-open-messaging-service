@@ -146,7 +146,7 @@ fn cache_key(origin: &str, credential: Option<&str>, path: &str) -> String {
 
 fn request_identity(proxy: &ServerSessionState, path: &str) -> (String, Option<String>, String) {
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
-    let token = proxy.token.lock().ok().and_then(|value| value.clone());
+    let token = proxy.session_token();
     let key = cache_key(&origin, token.as_deref(), path);
     (origin, token, key)
 }

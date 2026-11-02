@@ -420,7 +420,7 @@ pub(crate) fn is_allowed_http_path(path: &str) -> bool {
 /// `media_request` commands with a single unified transport.
 ///
 /// Paths are restricted to `/api/v1/*` and `/uploads/*`.
-/// Authorization Bearer is injected by Rust from `ServerSessionState.token` (JS never handles it).
+/// Authorization Bearer is injected by Rust from the active login owner (JS never handles it).
 /// Headers send is bounded by `API_HEADERS_TIMEOUT`.
 /// Body stream consumption is bounded by `API_BODY_INACTIVITY_TIMEOUT` between chunks.
 #[derive(serde::Serialize)]
@@ -547,7 +547,7 @@ pub(crate) async fn perform_http_request_with_events(
         let target = format!("{}{}", api_origin, path);
         let client = proxy.api_client(&api_origin);
         let mut req = client.request(method.clone(), &target);
-        if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
+        if let Some(t) = proxy.session_token() {
             req = req.header("authorization", format!("Bearer {}", t));
         }
         for name in [

@@ -33,6 +33,14 @@ impl LoginConnections {
         id: LoginSessionId,
         database: Connection,
     ) -> Result<Arc<LoginConnection>, String> {
+        self.install_restoring(id, Some(database))
+    }
+
+    pub(super) fn install_restoring(
+        &self,
+        id: LoginSessionId,
+        database: Option<Connection>,
+    ) -> Result<Arc<LoginConnection>, String> {
         let mut slot = self
             .0
             .lock()
@@ -40,7 +48,7 @@ impl LoginConnections {
         if slot.is_some() {
             return Err("release the previous login connection before initialization".into());
         }
-        let owner = LoginConnection::preparing(id, database);
+        let owner = LoginConnection::restoring(id, database);
         *slot = Some(owner.clone());
         Ok(owner)
     }

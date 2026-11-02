@@ -49,6 +49,7 @@ class SplashResourcesTest {
         val theme = launchTheme("values-v31/themes.xml")
         assertEquals("@drawable/splash_logo", theme["android:windowSplashScreenAnimatedIcon"])
         assertEquals("@color/splash_background", theme["android:windowSplashScreenBackground"])
+        assertEquals("@drawable/splash_window", theme["android:windowBackground"])
         // A night-qualified style would take precedence over the version-only style on dark devices.
         val nightThemes = File("src/main/res/values-night/themes.xml")
         if (nightThemes.exists()) {
@@ -72,12 +73,10 @@ class SplashResourcesTest {
             assertEquals(lightBars, bool.textContent)
             val colors = children(resource("$qualifier/colors.xml"), "color")
                 .associate { it.getAttribute("name") to it.textContent }
-            listOf("background", "bubble", "outline", "mark", "accent", "text",
-                "text_secondary", "text_status").forEach { name ->
+            listOf("background", "text", "text_secondary", "text_status").forEach { name ->
                 assertTrue("Missing $qualifier splash_$name", colors.containsKey("splash_$name"))
             }
             assertTrue(colors["splash_text"] != colors["splash_background"])
-            assertTrue(colors["splash_mark"] != colors["splash_bubble"])
         }
         val vector = resource("drawable/splash_logo.xml")
         val paths = children(children(vector, "group").single(), "path")
@@ -85,6 +84,26 @@ class SplashResourcesTest {
         assertEquals("@color/splash_outline", paths[0].getAttribute("android:strokeColor"))
         assertEquals("@color/splash_mark", paths[1].getAttribute("android:strokeColor"))
         assertEquals("@color/splash_accent", paths.last().getAttribute("android:fillColor"))
+    }
+
+    @Test
+    fun logoKeepsItsBrandColorsInNightMode() {
+        val defaults = children(resource("values/colors.xml"), "color")
+            .associate { it.getAttribute("name") to it.textContent }
+        val night = children(resource("values-night/colors.xml"), "color")
+            .associate { it.getAttribute("name") to it.textContent }
+        val brandColors = mapOf(
+            "splash_bubble" to "#FFF8F4EC",
+            "splash_outline" to "#FFBBAF9F",
+            "splash_mark" to "#FF19212A",
+            "splash_accent" to "#FFF04B3A",
+        )
+        brandColors.forEach { (name, color) ->
+            assertEquals(color, defaults[name])
+            assertFalse("Night mode must inherit $name instead of recoloring the logo", night.containsKey(name))
+        }
+        assertTrue(defaults["splash_background"] != night["splash_background"])
+        assertTrue(defaults["splash_text"] != night["splash_text"])
     }
 
     @Test

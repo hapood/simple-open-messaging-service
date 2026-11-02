@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_db::profile_subscriptions::tests::{fixture, request, response};
+use crate::native_db::profile_subscriptions::tests::{fixture_for_user, request, response};
 use crate::ServerSessionState;
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
@@ -10,6 +10,13 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::oneshot,
 };
+
+fn fixture(proxy: &ServerSessionState) -> FeedIntent {
+    // Wakes match by user and namespace coordinates, unlike flights keyed by
+    // login owner. Give independent test databases independent wake audiences.
+    static USER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1000);
+    fixture_for_user(proxy, USER.fetch_add(1, Ordering::SeqCst))
+}
 
 fn pair(publisher: i64) -> ProfileNamespacePair {
     ProfileNamespacePair {
@@ -29,19 +36,21 @@ async fn force_row(
     expired: bool,
 ) {
     let domain = domain.to_owned();
+    let user_id = intent.user_id;
     intent
         .db(move |conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO profile_namespaces(
                    user_id,publisher_namespace_id,profile_namespace_id,domain,root_public_key,
                    update_feed_id,change_seq,expired,status,refreshed_at
-                 ) VALUES(42,?1,2,?2,'key',?3,?4,?5,'ACTIVE',0)",
+                 ) VALUES(?6,?1,2,?2,'key',?3,?4,?5,'ACTIVE',0)",
                 params![
                     publisher,
                     domain,
                     update_feed_id,
                     change_seq,
-                    expired as i64
+                    expired as i64,
+                    user_id
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -129,7 +138,7 @@ async fn namespace_watch_re_emits_guarded_updates_on_wake() {
 
     // An advanced change coordinate lands.
     force_row(&intent, 7, "after.test", 6, 7, false).await;
-    wake(42, &[pair(7)]);
+    wake(intent.user_id, &[pair(7)]);
     assert!(
         subscription.changed().await,
         "advanced binding must re-emit"
@@ -143,7 +152,7 @@ async fn namespace_watch_re_emits_guarded_updates_on_wake() {
 
     // A regressed coordinate drops: no emission within a quiet window.
     force_row(&intent, 7, "stale.test", 5, 9, false).await;
-    wake(42, &[pair(7)]);
+    wake(intent.user_id, &[pair(7)]);
     assert!(
         tokio::time::timeout(Duration::from_millis(150), subscription.changed())
             .await
@@ -153,7 +162,7 @@ async fn namespace_watch_re_emits_guarded_updates_on_wake() {
 
     // Equal coordinates allow a display-field refresh in place.
     force_row(&intent, 7, "equal.test", 6, 7, false).await;
-    wake(42, &[pair(7)]);
+    wake(intent.user_id, &[pair(7)]);
     assert!(subscription.changed().await, "equal binding must re-emit");
     match subscription.state() {
         NamespaceWatch::Ready { binding } => {
@@ -198,7 +207,7 @@ async fn namespace_pending_round_resolves_after_a_wake() {
         .unwrap();
     // The PENDING round waits for a wake; a lost wake would only expire after
     // the TTL, so this also proves the wake path retries the resolve round.
-    wake(42, &[pair(8)]);
+    wake(intent.user_id, &[pair(8)]);
     let binding = wait_ready(&mut subscription).await;
     assert_eq!(binding.domain.as_deref(), Some("woken.test"));
     drop(subscription);
@@ -227,12 +236,13 @@ async fn namespace_unrecoverable_answer_writes_a_tomb_and_ends_terminal() {
             break;
         }
     }
+    let user_id = intent.user_id;
     let tomb: Option<i64> = intent
-        .db(|conn| {
+        .db(move |conn| {
             conn.query_row(
                 "SELECT created_at FROM profile_namespace_tombs
-                 WHERE user_id=42 AND publisher_namespace_id=9 AND profile_namespace_id=2",
-                [],
+                 WHERE user_id=?1 AND publisher_namespace_id=9 AND profile_namespace_id=2",
+                params![user_id],
                 |row| row.get(0),
             )
             .optional()

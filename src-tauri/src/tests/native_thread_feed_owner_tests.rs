@@ -187,7 +187,6 @@ async fn paged_feed(invalid_second: bool) {
     // Mutating global routing/credentials after capture cannot change either page request.
     *proxy.api_origin.lock().unwrap() = "http://127.0.0.1:9".into();
     *proxy.api_origin_primary.lock().unwrap() = "http://127.0.0.1:9".into();
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serving = tokio::spawn(async move {
         let (mut socket, _) = server.accept().await.unwrap();
         let (headers, _) = read_request(&mut socket).await;

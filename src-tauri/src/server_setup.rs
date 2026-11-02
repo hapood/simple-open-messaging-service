@@ -87,18 +87,8 @@ impl ServerSetup {
     }
 }
 
-pub(crate) fn assert_signed_out(state: &ServerSessionState) -> Result<(), String> {
-    if state
-        .login_session
-        .lock()
-        .map_err(|_| "login lock poisoned")?
-        .is_some()
-        || state
-            .token
-            .lock()
-            .map_err(|_| "token lock poisoned")?
-            .is_some()
-    {
+pub(crate) fn assert_signed_out() -> Result<(), String> {
+    if crate::native_db::current_login()?.is_some_and(|owner| owner.assert_active().is_ok()) {
         return Err("sign out before changing the server".into());
     }
     Ok(())
@@ -108,7 +98,7 @@ pub(crate) fn assert_signed_out(state: &ServerSessionState) -> Result<(), String
 pub(crate) fn begin_server_setup(
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<String, String> {
-    assert_signed_out(&state)?;
+    assert_signed_out()?;
     state.server_setup.begin()
 }
 
@@ -123,7 +113,7 @@ pub(crate) async fn check_server_setup(
     origin: String,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<serde_json::Value, String> {
-    assert_signed_out(&state)?;
+    assert_signed_out()?;
     check(&state.server_setup, &id, origin).await
 }
 
@@ -177,7 +167,7 @@ pub(crate) async fn commit_server_setup(
     let guard = state
         .auth_lifecycle
         .enter(crate::auth_lifecycle::Phase::ServerSetup)?;
-    assert_signed_out(&state)?;
+    assert_signed_out()?;
     let origins = state.server_setup.take_configuration(&id, use_advertised)?;
     guard.invalidate_logins();
     let proxy = state.inner().clone();
@@ -484,8 +474,24 @@ mod tests {
 
     #[test]
     fn signed_in_configuration_is_rejected() {
-        let state = ServerSessionState::new();
-        *state.token.lock().unwrap() = Some("token".into());
-        assert!(assert_signed_out(&state).is_err());
+        let _lock = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
+        let id =
+            crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string())
+                .unwrap();
+        let owner = crate::native_db::install_test_login_connection(
+            id,
+            rusqlite::Connection::open_in_memory().unwrap(),
+        )
+        .unwrap();
+        assert!(assert_signed_out().is_ok());
+        owner
+            .begin_activation()
+            .unwrap()
+            .commit("token".into())
+            .unwrap();
+        assert!(assert_signed_out().is_err());
+        owner.end().unwrap();
+        assert!(assert_signed_out().is_ok());
+        crate::native_db::release_login_connection(&owner).unwrap();
     }
 }

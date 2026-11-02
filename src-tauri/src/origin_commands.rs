@@ -4,8 +4,7 @@ use log::warn;
 #[cfg(desktop)]
 use crate::secure_storage;
 use crate::{
-    pick_origin_race, validate_origin,
-    OriginMode, ServerSessionState, DEFAULT_API_ORIGIN,
+    pick_origin_race, validate_origin, OriginMode, ServerSessionState, DEFAULT_API_ORIGIN,
 };
 
 // --- frontend-facing commands (origin + token) --------------------------------------------
@@ -87,7 +86,9 @@ pub(crate) async fn set_session_token(
     session_uuid: Option<String>,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<(), String> {
-    let guard = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Login)?;
+    let guard = state
+        .auth_lifecycle
+        .enter(crate::auth_lifecycle::Phase::Login)?;
     let proxy = state.inner().clone();
     // Once admitted, activation belongs to the worker rather than the IPC waiter.
     tauri::async_runtime::spawn_blocking(move || {
@@ -101,7 +102,6 @@ pub(crate) async fn set_session_token(
             Some(owner.begin_activation().map_err(|e| e.to_string())?)
         };
         let token_for_activation = token.clone();
-        let id_for_state = id.clone();
         let preferences = crate::native_db::preferences_connection()?;
         preferences.with_database(|conn| {
             crate::login_session_store::SessionStore::activate(conn, &id, &token_for_activation)
@@ -112,9 +112,8 @@ pub(crate) async fn set_session_token(
                 .map_err(|e| e.to_string())?;
         }
         owner.assert_active().map_err(|e| e.to_string())?;
-        *proxy.login_session.lock().expect("login session lock") = Some(id_for_state);
-        proxy.replace_session_token(Some(token));
         drop(guard);
+        proxy.login_activated();
         Ok(())
     })
     .await
@@ -128,13 +127,17 @@ pub(crate) async fn login_session_for_token(
     token: String,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<Option<String>, String> {
-    let guard = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Login)?;
+    let guard = state
+        .auth_lifecycle
+        .enter(crate::auth_lifecycle::Phase::Login)?;
     let preferences = crate::native_db::preferences_connection()?;
     tauri::async_runtime::spawn_blocking(move || {
         let id = preferences.with_database(|conn| {
             Ok(crate::login_session_store::SessionStore::restore(conn, &token)?.map(String::from))
         })?;
-        if let Some(id) = &id { guard.register_login(id)?; }
+        if let Some(id) = &id {
+            guard.register_login(id)?;
+        }
         Ok(id)
     })
     .await
@@ -142,34 +145,13 @@ pub(crate) async fn login_session_for_token(
 }
 
 #[tauri::command]
-pub(crate) async fn clear_session_token(
-    session_uuid: String,
-    state: tauri::State<'_, ServerSessionState>,
-) -> Result<(), String> {
+pub(crate) async fn clear_session_token(session_uuid: String) -> Result<(), String> {
     let expected = crate::login_session_store::LoginSessionId::try_from(session_uuid)?;
-    let ended = {
-        let mut active = state.login_session.lock().expect("login session lock");
-        if *active != Some(expected.clone()) {
-            return Ok(());
-        }
-        active.take()
-    };
-    if let Some(id) = ended.as_ref() {
-        let owner = crate::native_db::end_login_connection(id)?;
-        let preferences = crate::native_db::preferences_connection()?;
-        tauri::async_runtime::spawn_blocking(move || {
-            let durable = preferences.with_database(|conn| {
-                crate::login_session_store::SessionStore::end(conn, ended.as_ref())?;
-                crate::login_session_store::SessionStore::finish_ending(conn, ended.as_ref())
-            });
-            let released = crate::native_db::release_login_connection(&owner);
-            durable.and(released)
-        })
-        .await
-        .map_err(|e| format!("join native local end: {e}"))??;
-    }
-    state.replace_session_token(None);
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::native_db::end_current_login_if_matching(&expected)
+    })
+    .await
+    .map_err(|e| format!("join native local end: {e}"))?
 }
 
 #[derive(serde::Serialize)]
@@ -194,14 +176,13 @@ pub(crate) async fn begin_logout(
         .as_deref()
         .map(|uuid| crate::login_session_store::LoginSessionId::try_from(uuid.to_string()))
         .transpose()?;
-    {
-        let mut active = state.login_session.lock().expect("login session lock");
-        if *active != expected {
-            return Err("native login superseded".into());
-        }
-        *active = None;
+    let owner = crate::native_db::current_login()?;
+    if owner.as_ref().map(|owner| owner.id()) != expected.as_ref() {
+        return Err("native login superseded".into());
     }
-    // The guard is dropped before awaiting: never hold the login lock across blocking I/O.
+    // Capture the ended owner's credential before cancellation. Cleanup can never read or
+    // clear a successor credential, even when SQL or OS storage finishes after a new login.
+    let token = owner.as_ref().and_then(|owner| owner.credential().ok());
     if let Some(id) = expected.as_ref() {
         let owner = crate::native_db::end_login_connection(id)?;
         let preferences = crate::native_db::preferences_connection()?;
@@ -217,7 +198,6 @@ pub(crate) async fn begin_logout(
         .await
         .map_err(|e| format!("join native logout end: {e}"))??;
     }
-    let token = state.replace_session_token(None);
     let ticket = token.and_then(|token| {
         // Never re-read the mutable origin after capturing the ended credential.
         let origin = validate_origin(&origin)?;
@@ -230,7 +210,7 @@ pub(crate) async fn begin_logout(
 
     #[cfg(desktop)]
     let local_clear_failed = match expected.as_ref() {
-        Some(id) => match secure_storage::secure_clear_token_internal(&id.to_string(), &state) {
+        Some(id) => match secure_storage::secure_clear_token_internal(&id.to_string()) {
             Ok(()) => false,
             Err(error) => {
                 warn!("logout credential clear failed: {error}");

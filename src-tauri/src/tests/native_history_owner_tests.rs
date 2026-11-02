@@ -115,6 +115,51 @@ fn sequences(result: NativeHistoryResult) -> Vec<i64> {
 }
 
 #[tokio::test]
+async fn consumer_cancel_closes_in_flight_history_http_without_ending_login() {
+    let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = ServerSessionState::new();
+    origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
+    let owner = owner();
+    let history = intent(&owner, &proxy);
+    let token = tokio_util::sync::CancellationToken::new();
+    let task_token = token.clone();
+    let task = tokio::spawn(async move {
+        crate::native_db::history_ipc::run_until_cancelled(
+            &task_token,
+            history.get(NativeHistoryDemand::Latest {
+                count: 3,
+                known_newest_seq: None,
+            }),
+        )
+        .await
+    });
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_query(&mut socket).await, json!({"threadId": 7}));
+    token.cancel();
+    assert!(tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_none());
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), socket.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    owner
+        .capture_database_work()
+        .unwrap()
+        .assert_current()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connection() {
     let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
@@ -123,7 +168,6 @@ async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connectio
     let history = intent(&owner, &proxy);
     // Mutating runtime mirrors after intent creation cannot retarget any page.
     origins(&proxy, "http://127.0.0.1:1");
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serving = tokio::spawn(async move {
         for (query, reply) in [
             (json!({"threadId": 7}), cursor(4)),

@@ -25,7 +25,6 @@ pub struct Runtime {
     current: Arc<AtomicU64>,
     owner: Arc<Mutex<Option<Arc<LoginConnection>>>>,
     sink: Arc<Mutex<Option<Arc<dyn Sink>>>>,
-    proxy: ServerSessionState,
 }
 
 enum Input {
@@ -97,7 +96,6 @@ impl Runtime {
             current,
             owner,
             sink,
-            proxy,
         }
     }
     pub fn bind(&self, sink: Arc<dyn Sink>) {
@@ -122,18 +120,10 @@ impl Runtime {
         let _ = self.sender.send(Input::Detach(lease));
     }
     pub async fn command(&self, expected: u64, data: Value) -> Result<Value, String> {
-        let id = self
-            .proxy
-            .login_session
-            .lock()
-            .map_err(|_| "login lock poisoned")?
-            .clone()
-            .ok_or("no active login")?;
-        if data["loginSessionId"].as_str() != Some(id.to_string().as_str()) {
+        let owner = crate::native_db::active_login()?;
+        if data["loginSessionId"].as_str() != Some(owner.id().to_string().as_str()) {
             return Err("native login superseded".into());
         }
-        let owner = crate::native_db::login_connection(&id)?;
-        owner.assert_active().map_err(|error| error.to_string())?;
         let mut command = Command::decode(expected, data)?;
         if let Command::NewCall { incoming, data } = command {
             let captured = owner.clone();
@@ -654,8 +644,6 @@ mod tests {
     #[tokio::test]
     async fn command_requires_the_original_login_identity_before_lookup_or_dispatch() {
         let proxy = ServerSessionState::new();
-        *proxy.login_session.lock().unwrap() =
-            Some(LoginSessionId::try_from(uuid::Uuid::new_v4().to_string()).unwrap());
         let runtime = Runtime::new(proxy);
         assert!(runtime.command(0,json!({"type":"initiate","callSid":SID,"loginSessionId":uuid::Uuid::new_v4().to_string()})).await.is_err());
         assert!(runtime

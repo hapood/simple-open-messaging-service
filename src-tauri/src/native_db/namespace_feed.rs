@@ -37,9 +37,16 @@ struct Page {
     has_more: bool,
 }
 
+/** Contract (mirrors `serveClientChanges` and the browser / s2s consumers): a
+ *  page that finds nothing new reports `scanned_through == after` with no
+ *  items and `has_more == false` — the drain's legal no-op. Progress is
+ *  mandatory only when the drain continues (`has_more`); a non-empty page
+ *  always advances through its last item, items must stay inside the scanned
+ *  window, and the scan may never move backwards or beyond the head. */
 fn validate(page: &Page, after: i64) -> Result<(), String> {
-    if page.scanned_through <= after
+    if page.scanned_through < after
         || page.end_id < page.scanned_through
+        || (page.has_more && page.scanned_through == after)
         || page
             .items
             .iter()

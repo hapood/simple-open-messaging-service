@@ -196,5 +196,30 @@ fn drain_rejects_pages_that_skip_or_rewind_coordinates() {
         "change at or below `after`"
     );
     assert!(validate(&page(5, 6), 0).is_err(), "change beyond the scan");
-    assert!(validate(&page(4, 4), 4).is_err(), "scan did not advance");
+    assert!(
+        validate(&page(4, 4), 4).is_err(),
+        "a non-empty page cannot land on the cursor it was queried with"
+    );
+    let no_op = |scanned: i64, end: i64, has_more: bool| Page {
+        items: vec![],
+        scanned_through: scanned,
+        end_id: end,
+        has_more,
+    };
+    assert!(
+        validate(&no_op(4, 4, false), 4).is_ok(),
+        "a caught-up drain returns the empty page the server serves"
+    );
+    assert!(
+        validate(&no_op(4, 9, false), 4).is_ok(),
+        "compaction may leave the head past the last retained change"
+    );
+    assert!(
+        validate(&no_op(4, 4, true), 4).is_err(),
+        "has_more without progress would loop the drain forever"
+    );
+    assert!(
+        validate(&no_op(3, 3, false), 4).is_err(),
+        "the scan may never move backwards"
+    );
 }

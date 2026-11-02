@@ -77,10 +77,8 @@ async fn http_path_validation_allows_api_and_uploads_only() {
 #[tokio::test]
 async fn read_body_with_inactivity_timeout_succeeds_when_stream_progresses() {
     use futures_util::stream;
-    let chunks: Vec<Result<Vec<u8>, reqwest::Error>> = vec![
-        Ok(b"hello ".to_vec()),
-        Ok(b"world".to_vec()),
-    ];
+    let chunks: Vec<Result<Vec<u8>, reqwest::Error>> =
+        vec![Ok(b"hello ".to_vec()), Ok(b"world".to_vec())];
     let stream = stream::iter(chunks);
     let result = read_body_with_inactivity_timeout(stream, Duration::from_millis(500), None).await;
     assert_eq!(result.unwrap(), b"hello world");
@@ -102,12 +100,8 @@ async fn read_body_with_inactivity_timeout_aborts_on_cancellation() {
             Poll::Pending
         }
     });
-    let result = read_body_with_inactivity_timeout(
-        stream,
-        Duration::from_secs(10),
-        Some(&cancel),
-    )
-    .await;
+    let result =
+        read_body_with_inactivity_timeout(stream, Duration::from_secs(10), Some(&cancel)).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("cancelled"));
 }

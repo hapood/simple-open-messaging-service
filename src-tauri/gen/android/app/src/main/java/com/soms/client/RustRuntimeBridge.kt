@@ -37,16 +37,13 @@ object RustRuntimeBridge {
     external fun setNotificationPreference(key: String, value: String)
     external fun queryCallPeer(userId: Int, threadId: Int, account: String, namespaceId: Int): String?
 
-    @Synchronized
-    fun setSessionToken(token: String?, sessionUuid: String) {
+    fun storeSessionToken(token: String?, sessionUuid: String, storage: Runnable) {
         require(sessionUuid.isNotBlank()) { "sessionUuid must not be blank" }
-        val normalizedToken = token?.takeIf { it.isNotEmpty() }
-        updateSessionToken(normalizedToken, sessionUuid)
+        persistSessionToken(token?.takeIf { it.isNotEmpty() }, sessionUuid, storage)
     }
 
-    @Synchronized
-    fun discardResidualToken() {
-        clearResidualToken()
+    fun discardResidualToken(storage: Runnable) {
+        clearResidualToken(storage)
     }
 
     @Synchronized
@@ -65,11 +62,12 @@ object RustRuntimeBridge {
     external fun realtimeRetryNow(instance: Long): Long
     external fun realtimeForceReconnect(instance: Long): Long
     external fun realtimeGetState(): String
+
     external fun realtimeReplayHello(): String?
     external fun realtimePickOrigin(): String?
 
-    private external fun updateSessionToken(token: String?, sessionUuid: String)
-    private external fun clearResidualToken()
+    private external fun persistSessionToken(token: String?, sessionUuid: String, storage: Runnable)
+    private external fun clearResidualToken(storage: Runnable)
 
     fun synchronizeNotifications(userId: Int, threadFeedEndId: Int): NativeNotificationBatch {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Notification synchronization must run off the main thread" }

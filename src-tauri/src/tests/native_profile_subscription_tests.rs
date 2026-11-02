@@ -12,6 +12,10 @@ use tokio::{
 };
 
 pub(crate) fn fixture(proxy: &ServerSessionState) -> FeedIntent {
+    fixture_for_user(proxy, 42)
+}
+
+pub(crate) fn fixture_for_user(proxy: &ServerSessionState, user_id: i64) -> FeedIntent {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::native_db::create_cache_schema(&conn).unwrap();
     let owner = LoginConnection::preparing(
@@ -24,7 +28,7 @@ pub(crate) fn fixture(proxy: &ServerSessionState) -> FeedIntent {
         .commit("profile-token".into())
         .unwrap();
     FeedIntent::from_parts(
-        42,
+        user_id,
         owner.capture_database_work().unwrap(),
         LoginRequest::capture(proxy, owner.clone()).unwrap(),
     )
@@ -111,7 +115,7 @@ async fn shared_pending_demand_survives_one_consumers_release() {
         .unwrap();
     drop(first);
     assert_eq!(count.load(Ordering::SeqCst), 1);
-    wake(42, "PROFILE_AVAILABLE", &key());
+    wake(intent.user_id, "PROFILE_AVAILABLE", &key());
     let profile = tokio::time::timeout(Duration::from_secs(3), second.ready())
         .await
         .unwrap()

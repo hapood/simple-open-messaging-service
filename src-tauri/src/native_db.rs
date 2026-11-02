@@ -22,6 +22,7 @@ mod login_connections;
 mod lru;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod mentions;
+pub(crate) mod history_ipc;
 pub(crate) mod messages;
 pub(crate) mod namespace_feed;
 pub(crate) mod namespace_subscriptions;
@@ -92,19 +93,26 @@ pub(crate) fn initialize_login_cache() -> Result<(), String> {
     })?;
     let Some(id) = id else { return Ok(()) };
     let path = location::directory()?.join(id.sqlite_filename());
-    if !path
-        .try_exists()
-        .map_err(|e| format!("inspect login cache: {e}"))?
-    {
-        return Ok(());
-    }
-    let conn = Connection::open_with_flags(
-        &path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| format!("restore login cache connection: {e}"))?;
-    configure(&conn)?;
-    login_connections::LOGIN_CONNECTIONS.install(id, conn)?;
+    let database = (|| -> Result<Option<Connection>, String> {
+        if !path
+            .try_exists()
+            .map_err(|e| format!("inspect login cache: {e}"))?
+        {
+            return Ok(None);
+        }
+        let conn = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| format!("restore login cache connection: {e}"))?;
+        configure(&conn)?;
+        Ok(Some(conn))
+    })();
+    let database = database.unwrap_or_else(|error| {
+        log::warn!("login cache requires explicit repair: {error}");
+        None
+    });
+    login_connections::LOGIN_CONNECTIONS.install_restoring(id, database)?;
     Ok(())
 }
 
@@ -116,6 +124,17 @@ where
     F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
 {
     spawn_owned_database(capture_database_work(), operation)
+}
+
+/// The sole in-memory login authority. Capture once, then carry this owner through all work.
+pub(crate) fn active_login(
+) -> Result<std::sync::Arc<crate::login_connection::LoginConnection>, String> {
+    login_connections::LOGIN_CONNECTIONS.capture()
+}
+
+pub(crate) fn current_login(
+) -> Result<Option<std::sync::Arc<crate::login_connection::LoginConnection>>, String> {
+    login_connections::LOGIN_CONNECTIONS.current()
 }
 
 pub(crate) fn capture_database_work() -> Result<crate::login_connection::DatabaseWork, String> {
@@ -214,6 +233,34 @@ pub(crate) fn release_login_connection(
     owner: &std::sync::Arc<crate::login_connection::LoginConnection>,
 ) -> Result<(), String> {
     login_connections::LOGIN_CONNECTIONS.release(owner)
+}
+
+/// End the login durably: epoch end, journal end, and slot release — the same sequence the
+/// `clear_session_token` command and `begin_logout` run. Shared with the Android adapter's
+/// forced-teardown path so a platform cannot strand a revoked credential behind a storage-lane
+/// refusal.
+pub(crate) fn end_login_durable(
+    id: &crate::login_session_store::LoginSessionId,
+) -> Result<(), String> {
+    let owner = end_login_connection(id)?;
+    let preferences = preferences_connection()?;
+    preferences.with_database(|conn| {
+        crate::login_session_store::SessionStore::end(conn, Some(id))?;
+        crate::login_session_store::SessionStore::finish_ending(conn, Some(id))
+    })?;
+    release_login_connection(&owner)
+}
+
+/// End the current login only when it matches `id`; a superseded or absent login is a no-op.
+/// Callers must have proven knowledge of the epoch UUID (renderer capture, or a server-forced
+/// teardown carrying the UUID) before ending anything.
+pub(crate) fn end_current_login_if_matching(
+    id: &crate::login_session_store::LoginSessionId,
+) -> Result<(), String> {
+    match current_login()? {
+        Some(owner) if owner.id() == id => end_login_durable(id),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -639,6 +686,36 @@ pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
             .invalidate_database_work()
             .map_err(|e| e.to_string())?;
         owner
+            .initialize_missing_cache(|| {
+                let directory = location::directory()?;
+                let path = directory.join(owner.id().sqlite_filename());
+                let open = || -> Result<Connection, String> {
+                    let conn = Connection::open(&path)
+                        .map_err(|e| format!("open login cache for repair: {e}"))?;
+                    configure(&conn)?;
+                    Ok(conn)
+                };
+                match open() {
+                    Ok(conn) => Ok(conn),
+                    Err(error) => {
+                        // This is the explicit disposable-cache repair boundary, never restoration.
+                        // A corrupt SQLite header cannot be healed by schema DDL.
+                        log::warn!("recreating unreadable login cache: {error}");
+                        for file in owner.id().cache_files(&directory) {
+                            match std::fs::remove_file(file) {
+                                Ok(()) => {}
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(error) => {
+                                    return Err(format!("remove corrupt login cache: {error}"))
+                                }
+                            }
+                        }
+                        open()
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        owner
             .with_initialization_database(|conn| {
                 let tx = conn
                     .transaction_with_behavior(TransactionBehavior::Exclusive)
@@ -1001,6 +1078,30 @@ mod login_cache_tests {
             &first_owner,
             &login_connection(&first).unwrap()
         ));
+        // Process restart with a missing cache retains the login identity and credential. The
+        // existing frontend validate/recreate flow repairs it without replacing the owner or epoch.
+        first_owner.end().unwrap();
+        release_login_connection(&first_owner).unwrap();
+        for file in first.cache_files(temp.path()) {
+            if file.exists() {
+                std::fs::remove_file(file).unwrap();
+            }
+        }
+        initialize_login_cache().unwrap();
+        assert!(!first_file.exists());
+        restore_login_credential("secret-one").unwrap().unwrap();
+        let first_owner = active_login().unwrap();
+        assert_eq!(first_owner.id(), &first);
+        assert_eq!(first_owner.credential().unwrap(), "secret-one");
+        assert!(capture_database_work().is_err());
+        assert!(tauri::async_runtime::block_on(native_db_validate_cache()).is_err());
+        tauri::async_runtime::block_on(native_db_recreate_cache()).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &first_owner,
+            &active_login().unwrap()
+        ));
+        assert!(capture_database_work().is_ok());
+        tauri::async_runtime::block_on(native_db_validate_cache()).unwrap();
         preferences
             .with_database(|conn| {
                 // Logout: the journal records cleanup ownership, the cache file stays on disk.
@@ -1158,5 +1259,93 @@ mod login_cache_tests {
         let third_owner = login_connection(&third).unwrap();
         third_owner.end().unwrap();
         release_login_connection(&third_owner).unwrap();
+    }
+
+    #[test]
+    fn forced_teardown_ends_the_matching_login_before_the_storage_lane_clears() {
+        let _filesystem = FILESYSTEM_TEST_LOCK.lock().unwrap();
+        let _temp = shared_test_location();
+
+        // An admitted login with a durable journal, as a running native session has. The
+        // journal records activation before the owner commits its credential.
+        let uuid = prepare_fresh_login(preferences_connection().unwrap()).unwrap();
+        let id = LoginSessionId::try_from(uuid).unwrap();
+        let owner = login_connection(&id).unwrap();
+        preferences_connection()
+            .unwrap()
+            .with_database(|conn| SessionStore::activate(conn, &id, "secret"))
+            .unwrap();
+        owner
+            .begin_activation()
+            .unwrap()
+            .commit("secret".into())
+            .unwrap();
+
+        // The adapter's forced-teardown ordering (FORCE_LOGOUT): a matching UUID ends the
+        // durable login first — epoch, journal, slot — so the storage lane's gated clear then
+        // succeeds instead of refusing an admitted login and stranding a revoked credential.
+        end_current_login_if_matching(&id).unwrap();
+        assert!(owner.assert_active().is_err());
+        assert!(login_connections::LOGIN_CONNECTIONS
+            .current()
+            .unwrap()
+            .is_none());
+        preferences_connection()
+            .unwrap()
+            .with_database(|conn| {
+                let journal = SessionStore::read(conn)?.unwrap();
+                assert_eq!(journal.active_session(), None);
+                assert!(journal.pending_cleanup().contains(&id));
+                Ok(())
+            })
+            .unwrap();
+        crate::credential_storage::clear(Some(&id.to_string()), || Ok(())).unwrap();
+
+        // A stale predecessor UUID must not end the successor and the lane keeps refusing it
+        // while the successor is admitted — clearing is not an ownership takeover.
+        let successor_uuid = prepare_fresh_login(preferences_connection().unwrap()).unwrap();
+        let successor = LoginSessionId::try_from(successor_uuid).unwrap();
+        let successor_owner = login_connection(&successor).unwrap();
+        preferences_connection()
+            .unwrap()
+            .with_database(|conn| SessionStore::activate(conn, &successor, "next"))
+            .unwrap();
+        successor_owner
+            .begin_activation()
+            .unwrap()
+            .commit("next".into())
+            .unwrap();
+        end_current_login_if_matching(&id).unwrap(); // mismatched UUID: deliberate no-op
+        assert!(successor_owner.assert_active().is_ok());
+        assert!(crate::credential_storage::clear(Some(&id.to_string()), || {
+            panic!("predecessor clear must not delete the successor credential")
+        })
+        .is_err());
+        successor_owner.end().unwrap();
+        release_login_connection(&successor_owner).unwrap();
+
+        // The parallel harness gives no ordering between tests sharing this location, so restore
+        // the pristine state the other tests assume: no durable journal row, no session caches.
+        preferences_connection()
+            .unwrap()
+            .with_database(|conn| {
+                conn.execute(
+                    "DELETE FROM client_preferences
+                     WHERE scope='device' AND key='soms.native-login-session.v1'",
+                    [],
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        for entry in std::fs::read_dir(_temp.path()).unwrap() {
+            let path = entry.unwrap().path();
+            let is_session_cache = path
+                .file_name()
+                .map(|name| name.to_string_lossy().starts_with("soms-session-"))
+                .unwrap_or(false);
+            if is_session_cache {
+                std::fs::remove_file(&path).unwrap();
+            }
+        }
     }
 }

@@ -7,7 +7,7 @@
     <string name="splash_tagline">Open chat. Simple and instant.</string>
     <string name="splash_preparing">Preparing</string>
     <string name="splash_restoring_session">Restoring session</string>
-    <string name="splash_loading_config">Loading configuration</string>
+    <string name="splash_loading_config">Requesting remote configuration</string>
     <string name="splash_preparing_interface">Preparing interface</string>
     <!-- Foreground-service persistent notification (FGS-required, IMPORTANCE_LOW). -->
     <string name="notif_fgs_running">"Running in background"</string>

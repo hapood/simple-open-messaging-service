@@ -126,7 +126,7 @@ async fn upload_resumable_open_file(
     const FALLBACK_CHUNK: usize = 4 * 1024 * 1024;
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
     let client = proxy.api_client(&origin);
-    let token = proxy.token.lock().ok().and_then(|g| g.clone());
+    let token = proxy.session_token();
     let auth = |request: reqwest::RequestBuilder| {
         if let Some(value) = token.as_ref() {
             request.header("authorization", format!("Bearer {value}"))
@@ -416,6 +416,7 @@ fn native_voice_upload_fields(part_id: &str) -> std::collections::HashMap<String
 #[cfg(not(desktop))]
 #[derive(Clone)]
 pub(crate) struct NativeVoicePending {
+    owner: Arc<crate::login_connection::LoginConnection>,
     path: String,
     part_id: String,
     context_id: i64,
@@ -423,13 +424,6 @@ pub(crate) struct NativeVoicePending {
     duration_ms: i64,
     size: i64,
     active: bool,
-}
-
-#[cfg(not(desktop))]
-impl NativeVoicePending {
-    pub(crate) fn path(&self) -> &str {
-        &self.path
-    }
 }
 
 /// Only a previously recorded app-private file may be retried. JS supplies the opaque send ID,
@@ -449,6 +443,7 @@ pub(crate) fn retry_native_voice(
         let entry = entries
             .get_mut(&client_message_id)
             .ok_or("voice recording unavailable")?;
+        entry.owner.assert_active().map_err(|e| e.to_string())?;
         if entry.active {
             return Err("voice upload already active".into());
         }
@@ -506,7 +501,36 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         return;
     };
     let proxy = app.state::<ServerSessionState>().inner().clone();
+    let owner = match crate::native_db::current_login() {
+        // A non-ACTIVE owner still owns this recording: the entry is created, the spawn emits
+        // a visible failure from its credential gate, and a later retry re-asserts admission —
+        // exactly the old unauthenticated-stage behavior with epoch discipline.
+        Ok(Some(owner)) => owner,
+        Ok(None) | Err(_) => {
+            // No login connection exists at all: nothing can own or retry this recording, so
+            // close the UI loop visibly and drop the file instead of leaking it silently.
+            let emit = |phase: &str, error: Option<&str>| {
+                let _ = app.emit(
+                    "native-voice-upload",
+                    serde_json::json!({
+                        "contextId": context_id,
+                        "threadId": thread_id,
+                        "clientMessageId": client_message_id,
+                        "durationMs": duration_ms,
+                        "size": size,
+                        "phase": phase,
+                        "error": error,
+                    }),
+                );
+            };
+            emit("started", None);
+            emit("failed", Some("no native login to upload with"));
+            let _ = fs::remove_file(path);
+            return;
+        }
+    };
     let pending = NativeVoicePending {
+        owner: owner.clone(),
         path,
         part_id: uuid::Uuid::new_v4().to_string(),
         context_id,
@@ -520,6 +544,38 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         .lock()
         .expect("native voice lock")
         .insert(client_message_id.clone(), pending.clone());
+    // The captured epoch owns disposal. Late cancellation only removes its own recording,
+    // never a successor's entry, and never holds a lifecycle lock during filesystem work.
+    let cleanup_proxy = proxy.clone();
+    let cleanup_id = client_message_id.clone();
+    tauri::async_runtime::spawn(async move {
+        owner.cancellation().cancelled().await;
+        let removed = {
+            let mut entries = cleanup_proxy
+                .native_voice_pending
+                .lock()
+                .expect("native voice lock");
+            if entries
+                .get(&cleanup_id)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.owner, &owner))
+            {
+                entries.remove(&cleanup_id)
+            } else {
+                None
+            }
+        };
+        if let Some(entry) = removed {
+            if let Some(cancel) = cleanup_proxy
+                .upload_cancels
+                .lock()
+                .expect("upload cancels lock")
+                .remove(&cleanup_id)
+            {
+                cancel.cancel();
+            }
+            let _ = fs::remove_file(entry.path);
+        }
+    });
     spawn_native_voice_upload(app, proxy, pending, client_message_id, false);
 }
 
@@ -532,6 +588,7 @@ fn spawn_native_voice_upload(
     retry: bool,
 ) {
     tauri::async_runtime::spawn(async move {
+        let owner = pending.owner.clone();
         let NativeVoicePending {
             path,
             part_id,
@@ -557,17 +614,27 @@ fn spawn_native_voice_upload(
         };
         emit_phase("started", None);
         let origin = proxy.api_origin.lock().expect("origin lock").clone();
-        let token = proxy.token.lock().ok().and_then(|value| value.clone());
+        let token = match owner.credential() {
+            Ok(token) => token,
+            Err(_) => {
+                // The epoch ended between "started" and the credential read: still emit the
+                // terminal phase so the UI never waits on a stuck "started".
+                emit_phase("failed", Some("native login is not admitted"));
+                return;
+            }
+        };
         let stage_body = native_voice_stage_body(thread_id, &client_message_id, retry).to_string();
         let mut stage = proxy
             .api_client(&origin)
             .post(format!("{origin}/api/v1/send-media"))
             .header("content-type", "application/json")
             .body(stage_body);
-        if let Some(token) = token {
-            stage = stage.header("authorization", format!("Bearer {token}"));
-        }
-        let stage_result = async {
+        stage = stage.header("authorization", format!("Bearer {token}"));
+        let cancellation = owner.cancellation();
+        let stage_result = tokio::select! {
+          biased;
+          _ = cancellation.cancelled() => return,
+          result = async {
             let response = send_with_headers_deadline(stage, API_HEADERS_TIMEOUT)
                 .await
                 .map_err(|e| format!("stage send: {e:?}"))?;
@@ -585,24 +652,30 @@ fn spawn_native_voice_upload(
                 return Err(format!("stage rejected: {text}"));
             }
             Ok(())
-        }
-        .await;
+          } => result,
+        };
         let result = match stage_result {
             Ok(()) => {
-                upload_stream_path_core(
-                    app.clone(),
-                    proxy.clone(),
-                    path.clone(),
-                    "voice.m4a".to_string(),
-                    "audio/mp4".to_string(),
-                    size.max(0) as u64,
-                    native_voice_upload_fields(&part_id),
-                    Some(client_message_id.clone()),
-                )
-                .await
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return,
+                    result = upload_stream_path_core(
+                        app.clone(),
+                        proxy.clone(),
+                        path.clone(),
+                        "voice.m4a".to_string(),
+                        "audio/mp4".to_string(),
+                        size.max(0) as u64,
+                        native_voice_upload_fields(&part_id),
+                        Some(client_message_id.clone()),
+                    ) => result,
+                }
             }
             Err(error) => Err(error),
         };
+        if owner.assert_active().is_err() {
+            return;
+        }
         let success = matches!(&result, Ok(response) if response.get("code").and_then(|v| v.as_i64()) == Some(0));
         // Discard may have removed this entry while an IPC request was in flight. Never resurrect it.
         let retained = {

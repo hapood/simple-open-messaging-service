@@ -217,14 +217,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
         // Eagerly start the same async runtime Tauri uses later; this performs no network I/O.
         let _ = tauri::async_runtime::handle();
         if let Some(token) = token {
-            if let Some(id) = crate::native_db::restore_login_credential(&token)? {
-                *state
-                    .login_session
-                    .lock()
-                    .map_err(|_| "login session lock poisoned")? =
-                    Some(crate::login_session_store::LoginSessionId::try_from(id)?);
-                *state.token.lock().map_err(|_| "token lock poisoned")? = Some(token);
-            }
+            crate::native_db::restore_login_credential(&token)?;
         }
         *state
             .config_path
@@ -251,11 +244,12 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_updateSessionToken(
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_persistSessionToken(
     mut env: JNIEnv,
     _receiver: JObject,
     token: JString,
     session_uuid: JString,
+    storage: JObject,
 ) {
     let result = (|| -> Result<(), String> {
         let token = if token.is_null() {
@@ -274,11 +268,30 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_updateSessionToken
         if session_uuid.is_empty() {
             return Err("session UUID must not be empty".into());
         }
-        let state = proxy_state()?;
-        state.update_session_token_admitted(token, &session_uuid)
+        let store = || {
+            env.call_method(&storage, "run", "()V", &[])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        match token {
+            Some(token) => crate::credential_storage::persist(&session_uuid, &token, store),
+            None => {
+                // Server-forced teardown (FORCE_LOGOUT) arrives while the login may still be
+                // admitted. The platform adapter cannot drive the renderer logout flow, so end
+                // the matching epoch with the same semantics as the clear_session_token command
+                // before entering the storage lane; the lane still refuses a mismatched
+                // (superseded) active login and keeps the residual path gated.
+                let id =
+                    crate::login_session_store::LoginSessionId::try_from(session_uuid.clone())?;
+                crate::native_db::end_current_login_if_matching(&id)?;
+                crate::credential_storage::clear(Some(&session_uuid), store)
+            }
+        }
     })();
     if let Err(error) = result {
-        let _ = env.throw_new("java/lang/IllegalStateException", error);
+        if !env.exception_check().unwrap_or(true) {
+            let _ = env.throw_new("java/lang/IllegalStateException", error);
+        }
     }
 }
 
@@ -286,13 +299,17 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_updateSessionToken
 pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_clearResidualToken(
     mut env: JNIEnv,
     _receiver: JObject,
+    storage: JObject,
 ) {
-    let result = (|| -> Result<(), String> {
-        let state = proxy_state()?;
-        state.clear_residual_token()
-    })();
+    let result = crate::credential_storage::clear(None, || {
+        env.call_method(&storage, "run", "()V", &[])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    });
     if let Err(error) = result {
-        let _ = env.throw_new("java/lang/IllegalStateException", error);
+        if !env.exception_check().unwrap_or(true) {
+            let _ = env.throw_new("java/lang/IllegalStateException", error);
+        }
     }
 }
 

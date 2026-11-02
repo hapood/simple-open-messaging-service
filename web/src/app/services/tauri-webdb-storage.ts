@@ -129,6 +129,7 @@ export class TauriWebdbStorage extends WebdbStorage {
     ++this.cacheEpoch;
     this.currentUserId = userId;
     this.activateMessageLifetime();
+    await this.initializeAccountState();
     this.ready.set(true);
     return null;
   }
@@ -137,6 +138,7 @@ export class TauriWebdbStorage extends WebdbStorage {
     ++this.cacheEpoch;
     this.currentUserId = userId;
     this.activateMessageLifetime();
+    await this.initializeAccountState();
     this.ready.set(true);
     return null;
   }

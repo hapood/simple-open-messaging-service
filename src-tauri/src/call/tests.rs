@@ -120,9 +120,11 @@ fn admission_failures_publish_their_reason_before_release_and_allow_explicit_ret
         assert!(machine.snapshot.terminal_reason.is_none());
         assert!(!effects.iter().any(|effect| matches!(effect,
             Effect::Http { path, .. } if path.ends_with("/initiate"))));
-        assert!(machine
-            .command(json!({"type":"initiate","callSid":OTHER,"threadId":1}), 0)
-            .0);
+        assert!(
+            machine
+                .command(json!({"type":"initiate","callSid":OTHER,"threadId":1}), 0)
+                .0
+        );
         assert!(machine.snapshot.terminal_reason.is_none());
     }
 }

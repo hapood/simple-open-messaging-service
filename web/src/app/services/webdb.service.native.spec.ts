@@ -67,6 +67,18 @@ describe('WebdbService native SQLite routing', () => {
     tauriWindow().__TAURI__ = undefined;
   });
 
+  it('initializes the native account record before opening reads without inventing sync cursors', async () => {
+    expect(calls).toContainEqual({
+      cmd: 'native_db_initialize_account_state',
+      args: { userId: 42 },
+    });
+    responses.set('native_db_read_account_state', accountState());
+    await expect(service.readAccountState()).resolves.toEqual(accountState());
+    const initialization = calls.findIndex((call) => call.cmd === 'native_db_initialize_account_state');
+    const read = calls.findIndex((call) => call.cmd === 'native_db_read_account_state');
+    expect(initialization).toBeLessThan(read);
+  });
+
   it.each(['openExistingForUser', 'recreateForUser'] as const)(
     're-arms the account lifetime on %s after logout without a renderer reload',
     async (open) => {

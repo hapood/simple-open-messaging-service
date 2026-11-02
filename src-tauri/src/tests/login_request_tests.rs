@@ -79,7 +79,6 @@ async fn captured_request_never_reads_successor_origin_or_credential() {
     let owner = owner();
     let mut request = LoginRequest::capture(&proxy, owner.clone()).unwrap();
     origins(&proxy, &successor_origin, None);
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serve = tokio::spawn(async move {
         let (mut socket, _) = server.accept().await.unwrap();
         let headers = read_request(&mut socket).await;
@@ -170,7 +169,6 @@ async fn verify_captured_failover(post_query: bool) {
     let owner = owner();
     let mut request = LoginRequest::capture(&proxy, owner).unwrap();
     origins(&proxy, &successor_origin, None);
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serve = tokio::spawn(async move {
         let (mut probe, _) = fallback.accept().await.unwrap();
         let headers = read_request(&mut probe).await;
@@ -227,10 +225,6 @@ async fn verify_captured_failover(post_query: bool) {
     assert_eq!(response.body, "replayed");
     serve.await.unwrap();
     assert_eq!(*proxy.api_origin.lock().unwrap(), successor_origin);
-    assert_eq!(
-        proxy.token.lock().unwrap().as_deref(),
-        Some("successor-token")
-    );
     assert!(
         tokio::time::timeout(Duration::from_millis(50), successor.accept())
             .await

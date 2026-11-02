@@ -1,12 +1,12 @@
 <resources>
-    <!-- Android 12+ system splash. Its background and mark match MainActivity's continuation overlay, so
-         the handoff is visually lossless while the latter adds the quiet, JS-driven progress label. -->
+    <!-- Android 12+ system splash. The Activity captures the system icon bounds before revealing
+         its continuation. Keep a drawable window fallback for OEMs that omit the system splash. -->
     <style name="Theme.soms_desktop" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:windowSplashScreenBackground">@color/splash_background</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
         <item name="android:windowSplashScreenAnimationDuration">350</item>
-        <item name="android:windowBackground">@color/splash_background</item>
+        <item name="android:windowBackground">@drawable/splash_window</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">@bool/splash_light_system_bars</item>
