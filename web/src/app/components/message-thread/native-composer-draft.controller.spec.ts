@@ -27,6 +27,36 @@ describe('NativeComposerDraftController link generation ownership', () => {
     };
   }
 
+  it('selects candidates without fetching until explicitly requested', () => {
+    const { controller, generations } = setup();
+    controller.selectLink('https://example.com');
+    expect(generations.begin$).not.toHaveBeenCalled();
+    const ready = vi.fn();
+    generations.begin$.mockReturnValueOnce(
+      of({
+        generationId: 'clicked',
+        status: 'pending',
+        polling: true,
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+    controller.consumeLink('https://example.com', 'draft', ready);
+    expect(ready).toHaveBeenCalledWith('clicked');
+    controller.consumeLink('https://example.com', 'draft', ready);
+    expect(generations.begin$).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a clicked request when the candidate changes', () => {
+    const { controller, generations } = setup();
+    const request = new Subject<LinkGenerationView>();
+    const ready = vi.fn();
+    generations.begin$.mockReturnValueOnce(request);
+    controller.consumeLink('https://example.com', 'draft', ready);
+    controller.selectLink('https://other.example');
+    expect(request.observed).toBe(false);
+    expect(ready).not.toHaveBeenCalled();
+  });
+
   it('cancels the in-flight generation request when the link changes', () => {
     const { controller, generations } = setup();
     const first = new Subject<LinkGenerationView>();

@@ -259,6 +259,51 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(mount).toHaveBeenCalledWith(contentElement, 0);
   });
 
+  it('starts the active Android video through Rust without a second play-button tap', async () => {
+    const video: AlbumMedia = {
+      kind: 'video',
+      src: '/uploads/video',
+      w: 1080,
+      h: 1920,
+      msgId: 43,
+    };
+    const component = create([video, video]);
+    Object.defineProperty(component, 'isAndroidApp', { value: true });
+    const stream = {
+      streamUrl: 'http://localhost:1234/video/capability',
+      thumbnailUploadUrl: '',
+      hasThumbnail: false,
+    };
+    const internals = component as unknown as {
+      nativeVideo: { stream(path: string): Promise<typeof stream> };
+      mountVideoPlayer(element: HTMLElement, index: number): Promise<void>;
+      createVideoPlayer(
+        element: HTMLElement,
+        media: AlbumMedia,
+        index: number,
+        local: typeof stream,
+      ): Promise<void>;
+    };
+    const request = vi
+      .spyOn(internals.nativeVideo, 'stream')
+      .mockResolvedValue(stream);
+    const mount = vi
+      .spyOn(internals, 'createVideoPlayer')
+      .mockResolvedValue(undefined);
+    const container = document.createElement('div');
+    container.className = 'gv-slide-video';
+    document.body.append(container);
+    try {
+      await internals.mountVideoPlayer(container, 1);
+      expect(request).not.toHaveBeenCalled();
+      await internals.mountVideoPlayer(container, 0);
+      expect(request).toHaveBeenCalledWith(video.src);
+      expect(mount).toHaveBeenCalledWith(container, video, 0, stream);
+    } finally {
+      container.remove();
+    }
+  });
+
   it('destroys every mounted player when the viewer closes', () => {
     const component = create();
     const destroyA = vi.fn().mockName('destroyA');

@@ -22,6 +22,7 @@
     <string name="pip_hang_up">Hang up</string>
     <string name="composer_emoji">Emoji</string>
     <string name="composer_system_keyboard">System keyboard</string>
+    <string name="composer_link_card">Generate link card</string>
     <string name="composer_attach">Attach</string>
     <string name="composer_gallery">Gallery</string>
     <string name="composer_file">File</string>

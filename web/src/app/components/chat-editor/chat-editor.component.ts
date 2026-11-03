@@ -18,6 +18,7 @@ import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { InputDeviceService } from '../../services/input-device.service';
 import { baseKeymap } from '@tiptap/pm/commands';
+import { detectComposerUrls } from '../../../../../shared/composer-url';
 import { serializeEditorBlocks } from './editor-message-serializer';
 import { ALL_MENTION_ID } from '../../lib/message-entity';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
@@ -85,7 +86,7 @@ export class ChatEditorComponent {
 
   /** Fires on every keystroke with the current inline-HTML content (the value to store/send). */
   readonly html = output<string>();
-  /** Structured links already recognized by Tiptap. Consumers must not parse the full draft again. */
+  /** Scheme-based candidates, independent of Tiptap's whitespace-triggered autolink marks. */
   readonly linkMarkers = output<readonly ComposerLinkMarker[]>();
   /** Fires on Enter (desktop, non-empty) — the parent sends the last html it received, then clear()s. */
   readonly send = output<void>();
@@ -222,22 +223,23 @@ export class ChatEditorComponent {
     return this.editor?.getText() ?? '';
   }
 
-  /** Read existing link marks without rerunning URL recognition over the draft text. */
+  /** Scan textblocks with inline atoms as boundaries, matching the native editor's URL rules. */
   getLinkMarkers(): ComposerLinkMarker[] {
     const editor = this.editor;
     if (!editor) return [];
     const markers: ComposerLinkMarker[] = [];
     editor.state.doc.descendants((node, pos) => {
-      if (!node.isText || !node.text) return;
-      const link = node.marks.find((mark) => mark.type.name === 'link');
-      const href = link?.attrs['href'];
-      if (typeof href !== 'string' || !href) return;
-      const previous = markers.at(-1);
-      if (previous?.href === href && previous.end === pos) {
-        previous.end = pos + node.nodeSize;
-      } else {
-        markers.push({ href, start: pos, end: pos + node.nodeSize });
+      if (!node.isTextblock) return;
+      // Preserve offsets and join text split by formatting; mentions and hard breaks end a run.
+      const text = node.textBetween(0, node.content.size, '', ' ');
+      for (const marker of detectComposerUrls(text)) {
+        markers.push({
+          href: marker.href,
+          start: pos + 1 + marker.start,
+          end: pos + 1 + marker.end,
+        });
       }
+      return false;
     });
     return markers;
   }

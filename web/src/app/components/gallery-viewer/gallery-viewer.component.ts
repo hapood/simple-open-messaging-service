@@ -287,7 +287,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   mediaUrl(media: AlbumMedia): string {
-    if (media.kind === 'video' && this.useNativeVideo)
+    if (media.kind === 'video' && this.isAndroidApp)
       return this.nativeVideo.thumbnailUrl(media.src);
     return this.downloads.displayUrl(media);
   }
@@ -545,29 +545,26 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     if (this.videoPlayers.has(index) || this.videoPlayerMounts.has(index))
       return;
     this.videoPlayerMounts.add(index);
-    if (this.isAndroidApp) {
-      container
-        .querySelector<HTMLButtonElement>('.gv-native-video-open')
-        ?.addEventListener('click', (event) => {
-          event.stopPropagation();
-          if (this.useNativeVideo) {
-            void this.nativeVideo.open(media.src);
-            return;
-          }
-          void this.nativeVideo.stream(media.src).then((stream) => {
-            if (!stream || !container.isConnected) {
-              this.setVideoError(index, 'network');
-              return;
-            }
-            container.replaceChildren();
-            void this.createVideoPlayer(container, media, index, stream);
-          });
-        });
-      this.videoPlayerMounts.delete(index);
-      return;
-    }
     try {
+      if (this.isAndroidApp) {
+        if (index !== this.index()) return;
+        if (this.useNativeVideo) {
+          await this.nativeVideo.open(media.src);
+          return;
+        }
+        const stream = await this.nativeVideo.stream(media.src);
+        if (!container.isConnected || index !== this.index()) return;
+        if (!stream) {
+          this.setVideoError(index, 'network');
+          return;
+        }
+        container.replaceChildren();
+        await this.createVideoPlayer(container, media, index, stream);
+        return;
+      }
       await this.createVideoPlayer(container, media, index, null);
+    } catch {
+      this.setVideoError(index, 'network');
     } finally {
       this.videoPlayerMounts.delete(index);
     }
@@ -664,6 +661,28 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
         setTimeout(capture, 100);
       }
     };
+    player.on('video:loadedmetadata', () => {
+      const { videoWidth: width, videoHeight: height } = player.video;
+      if (width < 1 || height < 1) return;
+      // Old messages may contain encoded dimensions without the display-matrix rotation applied.
+      // Correct the existing slide in place; refreshing content would destroy the active player.
+      const data = this.slides[index];
+      if (data) {
+        data.width = width;
+        data.height = height;
+      }
+      container
+        .closest<HTMLElement>('.gv-native-video-shell')
+        ?.style.setProperty('--gv-video-ratio', `${width}/${height}`);
+      const slide = this.pswp?.currSlide;
+      if (slide?.index === index) {
+        slide.width = width;
+        slide.height = height;
+        slide.content.width = width;
+        slide.content.height = height;
+        slide.resize();
+      }
+    });
     player.on('video:loadeddata', () => this.setVideoError(index, null));
     player.on('video:playing', onPlayable);
     player.on('video:canplay', () => this.setVideoError(index, null));
@@ -692,7 +711,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private activateVideo(activeIndex: number): void {
-    if (this.isAndroidApp) return;
     this.videoPlaying.set(false);
     for (const index of [...this.videoPlayers.keys()]) {
       if (index !== activeIndex) this.destroyVideoPlayer(index);

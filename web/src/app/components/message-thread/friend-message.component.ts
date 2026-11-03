@@ -152,7 +152,11 @@ import {
 } from '../../services/profile-store.service';
 import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import { namespaceDisplayDomain } from '../../services/profile-namespace-domain';
-import { PopupType, RouteService } from '../../services/route.service';
+import {
+  PopupType,
+  RouteService,
+  type DlgRef,
+} from '../../services/route.service';
 import { currentGroupAnnouncement } from '../../services/group-announcement';
 import { GroupAnnouncementComponent } from '../group-announcement/group-announcement.component';
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
@@ -1093,9 +1097,12 @@ export class MessageThreadComponent implements OnDestroy {
         this.nativeDraft.set(event.text);
         this.saveNativeComposerDraft();
         return;
+      case 'openLinkCard':
+        this.openComposerLinkWebDialog(event.url, event.text);
+        return;
       case 'linkMarkers':
         this.nativeDraft.set(event.text);
-        this.nativeDraft.consumeLink(event.links[0]?.href ?? null, event.text);
+        this.nativeDraft.selectLink(event.links[0]?.href ?? null);
         this.saveNativeComposerDraft();
         return;
       case 'destroy':
@@ -1106,6 +1113,51 @@ export class MessageThreadComponent implements OnDestroy {
       case 'recording':
         return;
     }
+  }
+
+  /** Existing Web dialog opened by the native composer's link action. */
+  private composerLinkWebDialog?: DlgRef;
+
+  private openComposerLinkWebDialog(url: string, text: string): void {
+    const binding = this.lifecycle.binding;
+    if (!binding || !url || this.composerLinkWebDialog) return;
+    this.nativeDraft.set(text);
+    this.nativeDraft.consumeLink(
+      url,
+      text,
+      (generationId) => {
+        if (binding.signal.aborted || this.lifecycle.binding !== binding)
+          return;
+        this.saveNativeComposerDraft();
+        const close = () => {
+          const dialog = this.composerLinkWebDialog;
+          this.composerLinkWebDialog = undefined;
+          if (dialog) this.route.closeDialogAndAbove(dialog);
+        };
+        binding.signal.addEventListener('abort', close, { once: true });
+        this.composerLinkWebDialog = this.route.popupDlg(
+          PopupType.LINK_CARD_GENERATION,
+          { generationId, originalText: text, mode: 'composer' },
+          (result) => {
+            binding.signal.removeEventListener('abort', close);
+            this.composerLinkWebDialog = undefined;
+            if (binding.signal.aborted || this.lifecycle.binding !== binding)
+              return;
+            if (result?.kind === 'retry') {
+              this.nativeDraft.clearLink();
+              this.openComposerLinkWebDialog(url, text);
+            } else if (result?.kind === 'link') {
+              this.onSendIntent(result);
+            }
+          },
+          { scopeThreadId: binding.threadId },
+        );
+      },
+      () => {
+        if (!binding.signal.aborted)
+          this.toast.warn(this.transloco.translate('linkCard.generateFailed'));
+      },
+    );
   }
 
   private async pickNativeComposerAttachment(

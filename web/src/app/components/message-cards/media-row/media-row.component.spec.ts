@@ -75,6 +75,86 @@ describe('MediaRowComponent — deferred image loading', () => {
     },
   );
 
+  it.each([false, true])(
+    'fades the entire completed video badge (confirmation marker: %s), including after remount',
+    async (confirmed) => {
+      const video: AlbumMedia = { ...image(1, 4096), kind: 'video' };
+      for (let mount = 0; mount < 2; mount++) {
+        const fixture = await render([video], 'VIDEO');
+        fixture.nativeElement.classList.toggle('cb-confirmed', confirmed);
+        fixture.componentRef.setInput('data', {
+          ...message([video], 'VIDEO'),
+          isSelf: true,
+          status: 'sending',
+        });
+        fixture.detectChanges();
+        const sending = fixture.nativeElement.querySelector('.msg-status');
+        expect(getComputedStyle(sending).animationName).toBe('none');
+        fixture.componentRef.setInput('data', {
+          ...message([video], 'VIDEO'),
+          isSelf: true,
+          status: 'sent',
+        });
+        fixture.detectChanges();
+        const badge = fixture.nativeElement.querySelector('.msg-status');
+        const animation = badge.getAnimations().find(
+          (entry: Animation) =>
+            entry instanceof CSSAnimation &&
+            entry.animationName.includes('msg-media-sent-badge'),
+        );
+        expect(animation).toBeDefined();
+        animation.finish();
+        expect(getComputedStyle(badge).opacity).toBe('0');
+        fixture.destroy();
+      }
+    },
+  );
+
+  it('waits for video readiness before probing a first frame, then mounts without a refresh', async () => {
+    const video: AlbumMedia = {
+      ...image(1, 4096),
+      kind: 'video',
+      status: 'downloading',
+    };
+    const fixture = await render([video], 'VIDEO');
+    expect(fixture.nativeElement.querySelector('video')).toBeNull();
+    fixture.componentRef.setInput(
+      'data',
+      message([{ ...video, status: 'ready' }], 'VIDEO'),
+    );
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const element = fixture.nativeElement.querySelector(
+      'video',
+    ) as HTMLVideoElement;
+    expect(element).not.toBeNull();
+    element.dispatchEvent(new Event('loadeddata'));
+    fixture.detectChanges();
+    expect(element.style.opacity).toBe('1');
+    fixture.destroy();
+  });
+
+  it('does not carry a failed optimistic video probe to the authoritative source', async () => {
+    const video: AlbumMedia = {
+      ...image(1, 4096),
+      kind: 'video',
+      src: 'blob:pending-video',
+    };
+    const fixture = await render([video], 'VIDEO');
+    fixture.componentInstance.onVideoError(0);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('video')).toBeNull();
+    fixture.componentRef.setInput(
+      'data',
+      message([{ ...video, src: '/uploads/final-video' }], 'VIDEO'),
+    );
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('video')).not.toBeNull();
+    expect(fixture.componentInstance.cells()[0].unplayable).toBe(false);
+    fixture.destroy();
+  });
+
   it('opens the viewer without rendering the old click-to-load copy', async () => {
     const images = [image(1, 4096)];
     const fixture = await render(images);

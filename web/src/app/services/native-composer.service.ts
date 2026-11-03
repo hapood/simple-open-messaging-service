@@ -34,6 +34,14 @@ export type NativeComposerEvent =
       version: 1;
       contextId: number;
       sequence: number;
+      kind: 'openLinkCard';
+      text: string;
+      url: string;
+    }
+  | {
+      version: 1;
+      contextId: number;
+      sequence: number;
       kind: 'interaction';
     }
   | {

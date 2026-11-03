@@ -212,9 +212,10 @@ export class MediaRowComponent {
         thumbnail,
         duration: m?.duration,
         name: m?.name,
-        unplayable: kind === 'video' && failed.has(i),
+        unplayable: kind === 'video' && failed.has(this.videoResourceKey(i)),
+        videoLoaded: this.loadedVideoFrames().has(this.videoResourceKey(i)),
         // Federated media localize status is message-level (all cells share it). Non-media defaults ready.
-        status: this.data().mediaStatus ?? MEDIA_STATUS.READY,
+        status: m?.status ?? this.data().mediaStatus ?? MEDIA_STATUS.READY,
         // Size-tiered placeholder: only IMAGE over threshold, not yet tapped-to-load. VIDEO/AUDIO are
         // unaffected (they are a gray cell / first-frame already).
         placeholder: gated,
@@ -230,13 +231,23 @@ export class MediaRowComponent {
   });
 
   /** Indices of video cells whose <video> failed to decode (unsupported codec) → gray placeholder. */
-  readonly unplayableVideos = signal<Set<number>>(new Set());
-  readonly loadedVideoFrames = signal<Set<number>>(new Set());
+  readonly unplayableVideos = signal<Set<string>>(new Set());
+  readonly loadedVideoFrames = signal<Set<string>>(new Set());
+
+  private videoResourceKey(i: number): string {
+    const media = this.displayedImages()[i];
+    return JSON.stringify([
+      media?.msgId,
+      media?.src,
+      media?.status ?? this.data().mediaStatus ?? MEDIA_STATUS.READY,
+    ]);
+  }
   onVideoLoaded(i: number): void {
+    const key = this.videoResourceKey(i);
     this.loadedVideoFrames.update((current) => {
-      if (current.has(i)) return current;
+      if (current.has(key)) return current;
       const next = new Set(current);
-      next.add(i);
+      next.add(key);
       return next;
     });
     this.render();
@@ -266,10 +277,11 @@ export class MediaRowComponent {
     (event.currentTarget as HTMLImageElement).style.opacity = '0';
   }
   onVideoError(i: number): void {
+    const key = this.videoResourceKey(i);
     this.unplayableVideos.update((s) => {
-      if (s.has(i)) return s;
+      if (s.has(key)) return s;
       const next = new Set(s);
-      next.add(i);
+      next.add(key);
       return next;
     });
     this.render();

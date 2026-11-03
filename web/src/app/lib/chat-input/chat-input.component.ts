@@ -326,7 +326,7 @@ export class ChatInputComponent implements OnDestroy {
     this.draftHtml.set(h);
   }
 
-  /** Tiptap has already recognized these URLs; only debounce consumption of its structured marks. */
+  /** The editor recognizes native-compatible URL candidates; debounce their presentation here. */
   onLinkMarkers(markers: readonly ComposerLinkMarker[]): void {
     this.pendingLinkUrl = markers[0]?.href ?? null;
     this.scheduleLinkDetection();

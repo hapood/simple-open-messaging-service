@@ -594,11 +594,13 @@ export function cachedChatThumbnailUrl(
 }
 
 const VIDEO_CAS_PATH =
-  /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\.[A-Za-z0-9]+$/;
+  /^\/uploads\/msg-assets\/([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})(?:\?threadId=[1-9][0-9]*&seq=[1-9][0-9]*)?$/;
 
 /** The server-side content digest is the only identity accepted for a native video or thumbnail. */
 export function videoCasDigest(path: string | null | undefined): string | null {
-  return path?.match(VIDEO_CAS_PATH)?.[1] ?? null;
+  const match = path?.match(VIDEO_CAS_PATH);
+  if (!match || !match[3].startsWith(match[1] + match[2])) return null;
+  return match[3];
 }
 
 /** Local thumbnail URL served by the existing Tauri media protocol. It legitimately returns 404 until
@@ -610,7 +612,7 @@ export function nativeVideoThumbnailUrl(
   const digest = videoCasDigest(path);
   if (!digest || !isTauri() || !isAndroid()) return '';
   return assetUrl(
-    `/video-thumbnails${path}${revision > 0 ? `?v=${revision}` : ''}`,
+    `/video-thumbnails${path}${revision > 0 ? `${path!.includes('?') ? '&' : '?'}v=${revision}` : ''}`,
   );
 }
 

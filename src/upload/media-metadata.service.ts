@@ -18,6 +18,8 @@ interface ProbeOutput {
     width?: number;
     height?: number;
     duration?: string;
+    tags?: { rotate?: string };
+    side_data_list?: Array<{ rotation?: number }>;
   }>;
   format?: { duration?: string };
 }
@@ -88,7 +90,21 @@ export class MediaMetadataService {
     if (!video || !video.width || !video.height) {
       throw new Error('video upload must contain a video stream');
     }
-    return { w: video.width, h: video.height, duration };
+    // Stream dimensions describe encoded pixels, not necessarily the intended display orientation.
+    // Modern MP4 stores rotation in a display matrix; older containers use a rotate tag.
+    const rotation = Number(
+      video.side_data_list?.find((side) => Number.isFinite(side.rotation))
+        ?.rotation ??
+        video.tags?.rotate ??
+        0,
+    );
+    const normalized = ((rotation % 360) + 360) % 360;
+    const swap = normalized === 90 || normalized === 270;
+    return {
+      w: swap ? video.height : video.width,
+      h: swap ? video.width : video.height,
+      duration,
+    };
   }
 
   private ffprobe(path: string): Promise<ProbeOutput> {
@@ -97,7 +113,7 @@ export class MediaMetadataService {
         '-v',
         'error',
         '-show_entries',
-        'stream=codec_type,width,height,duration:format=duration',
+        'stream=codec_type,width,height,duration:stream_tags=rotate:stream_side_data=rotation:format=duration',
         '-of',
         'json',
         path,

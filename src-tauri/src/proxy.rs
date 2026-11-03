@@ -19,7 +19,20 @@ pub(crate) async fn proxy_media(
             responder.respond(empty(StatusCode::NOT_FOUND));
             return;
         }
-        match media_cache::get_video_thumbnail(&app, &st, source_path).await {
+        let query = request
+            .uri()
+            .query()
+            .unwrap_or("")
+            .split('&')
+            .filter(|field| !field.is_empty() && !field.starts_with("v="))
+            .collect::<Vec<_>>()
+            .join("&");
+        let source_path = if query.is_empty() {
+            source_path.to_string()
+        } else {
+            format!("{source_path}?{query}")
+        };
+        match media_cache::get_video_thumbnail(&app, &st, &source_path).await {
             Ok(bytes) => {
                 responder.respond(
                     Response::builder()

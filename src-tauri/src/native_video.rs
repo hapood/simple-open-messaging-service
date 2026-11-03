@@ -90,19 +90,33 @@ async fn start_hub(
 }
 
 fn valid_source_path(path: &str) -> bool {
-    if path.contains("..") || path.contains('\\') || path.contains('#') || path.contains('?') {
+    if path.contains("..") || path.contains('\\') || path.contains('#') {
         return false;
     }
-    let Some(rest) = path.strip_prefix("/uploads/shards/") else {
+    let (pathname, query) = path.split_once('?').unwrap_or((path, ""));
+    if !query.is_empty() {
+        let fields = query.split('&').collect::<Vec<_>>();
+        if fields.len() != 2
+            || !fields
+                .iter()
+                .zip(["threadId=", "seq="])
+                .all(|(field, prefix)| {
+                    field.strip_prefix(prefix).is_some_and(|value| {
+                        !value.starts_with('0') && value.parse::<u64>().is_ok_and(|id| id > 0)
+                    })
+                })
+        {
+            return false;
+        }
+    }
+    let Some(rest) = pathname.strip_prefix("/uploads/msg-assets/") else {
         return false;
     };
     let parts = rest.split('/').collect::<Vec<_>>();
     if parts.len() != 3 {
         return false;
     }
-    let Some((digest, extension)) = parts[2].split_once('.') else {
-        return false;
-    };
+    let digest = parts[2];
     let lower_hex = |value: &str| {
         value
             .bytes()
@@ -111,13 +125,36 @@ fn valid_source_path(path: &str) -> bool {
     parts[0].len() == 2
         && parts[1].len() == 2
         && digest.len() == 64
-        && !extension.is_empty()
-        && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
         && lower_hex(parts[0])
         && lower_hex(parts[1])
         && lower_hex(digest)
         && digest.starts_with(parts[0])
         && digest[2..].starts_with(parts[1])
+}
+
+// WebViews start playback with bytes=0-. The cache materializes each response before publishing it,
+// so bound each interval to avoid buffering the entire video before delivering its first frame.
+fn playback_range(value: &str) -> String {
+    const CHUNK_BYTES: u64 = 1024 * 1024;
+    let Some((start, end)) = value
+        .strip_prefix("bytes=")
+        .and_then(|range| range.split_once('-'))
+    else {
+        return value.to_string();
+    };
+    let Ok(start) = start.parse::<u64>() else {
+        return value.to_string();
+    };
+    let limit = start.saturating_add(CHUNK_BYTES - 1);
+    let end = if end.is_empty() {
+        limit
+    } else {
+        match end.parse::<u64>() {
+            Ok(end) if end >= start => end.min(limit),
+            _ => return value.to_string(),
+        }
+    };
+    format!("bytes={start}-{end}")
 }
 
 async fn serve(
@@ -167,7 +204,8 @@ async fn serve(
                 .or_else(|| line.strip_prefix("range: "))
         });
         if let Some(range) = range {
-            let media = media_cache::get_or_fetch_range(&app, &proxy, &source_path, range)
+            let range = playback_range(range);
+            let media = media_cache::get_or_fetch_range(&app, &proxy, &source_path, &range)
                 .await
                 .map_err(|error| format!("stream cached video range: {error}"))?;
             let mut extra = Vec::new();

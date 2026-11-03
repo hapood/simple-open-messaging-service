@@ -62,12 +62,25 @@ export class NativeComposerDraftController {
     if (text) this.text.update((draft) => (draft ? `${draft}\n${text}` : text));
   }
 
-  consumeLink(url: string | null, text: string): void {
+  selectLink(url: string | null): void {
+    if (url === this.linkUrl) return;
+    this.clearLink();
+    this.linkUrl = url;
+  }
+
+  consumeLink(
+    url: string | null,
+    text: string,
+    onReady?: (generationId: string) => void,
+    onError?: () => void,
+  ): void {
     if (
       url === this.linkUrl &&
       (!url || this.generationStarting || this.generationId)
-    )
+    ) {
+      if (this.generationId) onReady?.(this.generationId);
       return;
+    }
     this.stopGenerationRequest();
     if (this.generationId) this.generations.forget(this.generationId);
     this.linkUrl = url;
@@ -78,9 +91,11 @@ export class NativeComposerDraftController {
       next: (generation) => {
         this.generationId = generation.generationId;
         this.generationStarting = false;
+        onReady?.(generation.generationId);
       },
       error: () => {
         this.generationStarting = false;
+        onError?.();
       },
     });
   }

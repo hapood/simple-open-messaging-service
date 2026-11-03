@@ -20,6 +20,7 @@ describe('MediaAvailabilityService', () => {
       }>;
     };
   }>;
+  let progress: Subject<'downloading' | 'ready' | 'failed'>;
   let query: ReturnType<typeof vi.fn>;
   let persist: ReturnType<typeof vi.fn>;
   let service: MediaAvailabilityService;
@@ -29,11 +30,13 @@ describe('MediaAvailabilityService', () => {
     reconnect = new Subject();
     deleted = new Subject();
     snapshots = new Subject();
+    progress = new Subject();
     query = vi.fn().mockReturnValue(snapshots);
     persist = vi.fn().mockResolvedValue(true);
     service = new MediaAvailabilityService(
       {
         queryMediaStatus: query,
+        mediaDownloadProgress: vi.fn().mockReturnValue(progress),
         relocalizeMedia: vi
           .fn()
           .mockReturnValue(of({ code: 0, data: { status: 'pending' } })),
@@ -41,6 +44,27 @@ describe('MediaAvailabilityService', () => {
       { setMediaStatus: persist, deletedLive$: deleted } as never,
       { eventSubject: events, reconnect$: reconnect } as never,
     );
+  });
+
+  it('clears downloading from the temporary progress stream without a legacy push or refresh', async () => {
+    query.mockReturnValue(
+      of({ code: 0, data: { statuses: [{ seq: 2, status: 'downloading' }] } }),
+    );
+    const registration = service.register(7, 2, 'downloading');
+    await vi.waitFor(() => expect(query).toHaveBeenCalledOnce());
+    progress.next('ready');
+    await vi.waitFor(() => expect(registration.status()).toBe('ready'));
+    expect(persist).toHaveBeenCalledWith(7, 2, 'ready');
+    expect(progress.observed).toBe(false);
+  });
+
+  it('closes the progress stream when the last mounted consumer leaves', () => {
+    const first = service.register(7, 2, 'downloading');
+    const second = service.register(7, 2, 'downloading');
+    first.unregister();
+    expect(progress.observed).toBe(true);
+    second.unregister();
+    expect(progress.observed).toBe(false);
   });
 
   it('coalesces mounted messages by thread and does not poll', async () => {

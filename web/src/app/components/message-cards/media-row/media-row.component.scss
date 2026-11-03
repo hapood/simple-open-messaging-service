@@ -301,8 +301,23 @@ app-audio-player {
   background: rgba(0, 0, 0, 0.45);
   border-radius: 50%;
   color: var(--app-success);
+  &.msg-status--sent {
+    // Fade the whole badge, including its contrast background. A confirmed row can
+    // remount without cb-confirmed, so completion must not depend on that marker.
+    animation: msg-media-sent-badge 1.2s ease-out forwards;
+  }
   &.msg-status--failed {
     color: var(--app-danger, #ff5252);
+  }
+}
+
+@keyframes msg-media-sent-badge {
+  from,
+  33% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
   }
 }
 

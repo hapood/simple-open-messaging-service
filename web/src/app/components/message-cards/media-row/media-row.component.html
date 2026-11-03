@@ -264,7 +264,11 @@
                     }
                   </span>
                 }
-                @if (c.kind === 'video' && c.thumbnail) {
+                @if (
+                  c.kind === 'video' &&
+                  c.status === MEDIA_STATUS.READY &&
+                  c.thumbnail
+                ) {
                   <img
                     class="msg-media-video msg-media-video--thumbnail"
                     [src]="c.thumbnail"
@@ -273,10 +277,15 @@
                     (error)="onThumbnailError($event)"
                   />
                 }
-                @if (c.kind === 'video' && !isAndroidApp && !c.unplayable) {
+                @if (
+                  c.kind === 'video' &&
+                  c.status === MEDIA_STATUS.READY &&
+                  !isAndroidApp &&
+                  !c.unplayable
+                ) {
                   <video
                     class="msg-media-video"
-                    [style.opacity]="loadedVideoFrames().has($index) ? 1 : 0"
+                    [style.opacity]="c.videoLoaded ? 1 : 0"
                     [src]="c.src"
                     preload="metadata"
                     aria-hidden="true"

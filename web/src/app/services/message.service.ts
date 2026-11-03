@@ -1,3 +1,8 @@
+import {
+  consumeSse,
+  SseDecoder,
+  type SseFrame,
+} from '../../../../shared/sse-client';
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpContext, HttpHeaders } from '@angular/common/http';
 import {
@@ -564,6 +569,76 @@ export class MsgService {
         status: 'pending' | 'downloading' | 'ready' | 'failed';
       }>
     >(`${apiPrefix()}/relocalize-media`, { threadId, seq });
+  }
+
+  mediaDownloadProgress(
+    threadId: number,
+    seq: number,
+  ): Observable<import('./model').MediaStatus> {
+    const url = `${apiPrefix()}/message/media-message-progress?threadId=${threadId}&seq=${seq}`;
+    return new Observable((subscriber) => {
+      let revision = 0;
+      const onFrame = (frame: SseFrame) => {
+        if (frame.event !== 'MEDIA_MESSAGE_DOWNLOAD_PROGRESS' || !frame.data)
+          return;
+        const data = JSON.parse(frame.data) as { status?: string };
+        if (
+          data.status === 'downloading' ||
+          data.status === 'ready' ||
+          data.status === 'failed'
+        ) {
+          revision += 1;
+          subscriber.next(data.status);
+        }
+      };
+      if (isTauri()) {
+        return this.http
+          .get(url, {
+            responseType: 'text',
+            headers: { Accept: 'text/event-stream' },
+          })
+          .subscribe({
+            next: (text) => new SseDecoder().push(text, onFrame),
+            error: (error) => subscriber.error(error),
+            complete: () => subscriber.complete(),
+          });
+      }
+      const aborter = new AbortController();
+      let snapshot: import('rxjs').Subscription | undefined;
+      void consumeSse(url, {
+        signal: aborter.signal,
+        onFrame,
+        onOpen: () => {
+          // Subscribe before reading the snapshot so completion during stream setup is not lost.
+          const before = revision;
+          snapshot = this.queryMediaStatus(threadId, [seq]).subscribe({
+            next: (response) => {
+              const status = response.data?.statuses.find(
+                (item) => item.seq === seq,
+              )?.status;
+              if (
+                response.code === 0 &&
+                status &&
+                revision === before &&
+                !subscriber.closed
+              ) {
+                subscriber.next(status);
+              }
+            },
+            error: () => undefined,
+          });
+        },
+      }).then(
+        () => subscriber.complete(),
+        (error: unknown) => {
+          if (!aborter.signal.aborted) subscriber.error(error);
+        },
+      );
+      return () => {
+        aborter.abort();
+        snapshot?.unsubscribe();
+      };
+    });
   }
 
   /** Read the authoritative federated media status for mounted messages. Used on mount and reconnect. */

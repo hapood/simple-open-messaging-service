@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
 import { MediaMetadataService } from './media-metadata.service.js';
 
@@ -38,6 +38,83 @@ describe('MediaMetadataService', () => {
     await expect(service.fromBuffer(png, 'IMAGE')).resolves.toEqual({
       w: 17,
       h: 23,
+    });
+  });
+
+  it.each([90, -90, 270, 450])(
+    'uses display dimensions for rotation %s',
+    async (rotation) => {
+      const instance = new MediaMetadataService();
+      const probe = vi.spyOn(
+        instance as unknown as { ffprobe(path: string): Promise<unknown> },
+        'ffprobe',
+      );
+      probe.mockResolvedValue({
+        streams: [
+          {
+            codec_type: 'video',
+            width: 1920,
+            height: 1080,
+            side_data_list: [{ rotation }],
+          },
+        ],
+        format: { duration: '1' },
+      });
+      await expect(instance.fromFile('unused', 'VIDEO')).resolves.toEqual({
+        w: 1080,
+        h: 1920,
+        duration: 1,
+      });
+    },
+  );
+
+  it.each([0, 180, 360])(
+    'preserves dimensions for rotation %s',
+    async (rotation) => {
+      const instance = new MediaMetadataService();
+      vi.spyOn(
+        instance as unknown as { ffprobe(path: string): Promise<unknown> },
+        'ffprobe',
+      ).mockResolvedValue({
+        streams: [
+          {
+            codec_type: 'video',
+            width: 1920,
+            height: 1080,
+            tags: { rotate: String(rotation) },
+          },
+        ],
+        format: { duration: '1' },
+      });
+      await expect(instance.fromFile('unused', 'VIDEO')).resolves.toEqual({
+        w: 1920,
+        h: 1080,
+        duration: 1,
+      });
+    },
+  );
+
+  it('uses the display matrix before the legacy rotation tag', async () => {
+    const instance = new MediaMetadataService();
+    vi.spyOn(
+      instance as unknown as { ffprobe(path: string): Promise<unknown> },
+      'ffprobe',
+    ).mockResolvedValue({
+      streams: [
+        {
+          codec_type: 'video',
+          width: 1920,
+          height: 1080,
+          tags: { rotate: '0' },
+          side_data_list: [{ rotation: -90 }],
+        },
+      ],
+      format: { duration: '1' },
+    });
+    await expect(instance.fromFile('unused', 'VIDEO')).resolves.toEqual({
+      w: 1080,
+      h: 1920,
+      duration: 1,
     });
   });
 

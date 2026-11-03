@@ -105,6 +105,19 @@ class NativeComposerController(
         isFocusable = false
         setPadding(dp(8), dp(8), dp(8), dp(8))
     }
+    private val linkAction = iconButton(
+        R.drawable.ic_composer_link,
+        activity.getString(R.string.composer_link_card),
+    ).apply {
+        visibility = View.GONE
+        setOnClickListener {
+            emit(JSONObject().apply {
+                put("kind", "openLinkCard")
+                put("text", input.text?.toString().orEmpty())
+                put("url", input.urlMarkers().firstOrNull()?.href ?: "")
+            })
+        }
+    }
     private val input = MentionEditText(activity).apply {
         hint = "Message"
         textSize = 16f
@@ -461,6 +474,7 @@ class NativeComposerController(
                 put("end", marker.end)
             })
         }
+        linkAction.visibility = if (links.length() > 0) View.VISIBLE else View.GONE
         emit(JSONObject().apply {
             put("kind", "linkMarkers")
             put("text", input.text?.toString().orEmpty())
@@ -535,6 +549,7 @@ class NativeComposerController(
                 gravity = Gravity.START or Gravity.BOTTOM
             },
         )
+        row.addView(linkAction, LinearLayout.LayoutParams(dp(40), dp(48)))
         row.addView(attachSlot, LinearLayout.LayoutParams(dp(40), dp(48)))
         val inputWrap = FrameLayout(activity).apply {
             clipChildren = false
@@ -759,6 +774,7 @@ class NativeComposerController(
             },
         )
         input.hint = context.optString("placeholder", "Message")
+        linkAction.visibility = View.GONE
         input.setText(context.optString("initialDraft", ""))
         input.setSelection(input.length())
         setQuote(context.optJSONObject("quote"))
@@ -806,6 +822,7 @@ class NativeComposerController(
     fun update(json: String) {
         val patch = runCatching { JSONObject(json) }.getOrNull() ?: return
         if (patch.optLong("contextId") != contextId) return
+        if (patch.has("clearDraft") && patch.optBoolean("clearDraft")) input.text?.clear()
         if (patch.has("placeholder")) input.hint = patch.optString("placeholder")
         if (patch.has("mentionAllLabel")) mentionAllLabel = patch.optString("mentionAllLabel")
         if (patch.has("sending")) setSending(patch.optBoolean("sending"))
@@ -1543,6 +1560,7 @@ class NativeComposerController(
         )
         updateAttachmentButtonState()
         updateKeyboardButtonState()
+        linkAction.setColorFilter(secondary)
         attachmentIcons.forEach { it.setColorFilter(PRIMARY) }
         attachmentLabels.forEach { it.setTextColor(onSurface) }
         keyboard.setColorFilter(secondary)

@@ -138,16 +138,24 @@ describe('assetUrl', () => {
   it('extracts only a canonical CAS digest and builds the Android local-thumbnail URL', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     const digest = 'ab'.repeat(32);
-    const path = `/uploads/shards/ab/cd/${digest}.mp4`;
+    const path = `/uploads/msg-assets/ab/ab/${digest}?threadId=1&seq=6`;
     expect(videoCasDigest(path)).toBe(digest);
     expect(nativeVideoThumbnailUrl(path, 2)).toBe(
-      `http://media.localhost/video-thumbnails${path}?v=2`,
+      `http://media.localhost/video-thumbnails${path}&v=2`,
     );
   });
 
   it('does not invent an identity for a non-CAS video URL', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     expect(videoCasDigest('https://cdn.example/video.mp4')).toBeNull();
+    expect(
+      videoCasDigest(`/uploads/msg-assets/aa/bb/${'ab'.repeat(32)}`),
+    ).toBeNull();
+    expect(
+      videoCasDigest(
+        `/uploads/msg-assets/ab/ab/${'ab'.repeat(32)}?threadId=0&seq=6`,
+      ),
+    ).toBeNull();
     expect(nativeVideoThumbnailUrl('https://cdn.example/video.mp4')).toBe('');
   });
 });
