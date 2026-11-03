@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BAN_DIM_IP, BruteForceService } from './brute-force.service.js';
+import { IP_AUTH_FAILURE_STEPS } from './ip-auth-policy.js';
 import { SessionTokenService } from './session-token.service.js';
 
 /**
@@ -11,7 +15,10 @@ import { SessionTokenService } from './session-token.service.js';
  */
 @Injectable()
 export class BearerAuthService {
-  constructor(private readonly sessions: SessionTokenService) {}
+  constructor(
+    private readonly sessions: SessionTokenService,
+    private readonly bruteForce: BruteForceService,
+  ) {}
 
   async resolve(
     raw: string | null | undefined,
@@ -23,16 +30,41 @@ export class BearerAuthService {
     autoTerminateDays: number;
     mustChangePassword: boolean;
   } | null> {
+    // Missing credentials are ordinary anonymous traffic, not failed guesses.
     if (!raw) return null;
-    const session = await this.sessions.validate(raw, opts);
-    return session === null
-      ? null
-      : {
-          userId: session.userId,
-          sessionId: session.sessionId,
-          slid: session.slid,
-          autoTerminateDays: session.autoTerminateDays,
-          mustChangePassword: session.mustChangePassword,
-        };
+    const ip = opts.ip ?? 'unknown';
+    this.rejectBan(
+      this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_IP, value: ip }]),
+    );
+    // Reject malformed credentials before storage access. Only issued 32-byte hex tokens are valid.
+    // Storage errors propagate without being counted as credential failures.
+    const session = /^[a-f0-9]{64}$/.test(raw)
+      ? await this.sessions.validate(raw, opts)
+      : null;
+    if (session === null) {
+      this.rejectBan(
+        this.bruteForce.registerFailure(BAN_DIM_IP, ip, IP_AUTH_FAILURE_STEPS),
+      );
+      return null;
+    }
+    // Never clear the shared IP counter on success: another client behind the same NAT
+    // (or an attacker with one valid credential) must not reset unsuccessful guesses.
+    return {
+      userId: session.userId,
+      sessionId: session.sessionId,
+      slid: session.slid,
+      autoTerminateDays: session.autoTerminateDays,
+      mustChangePassword: session.mustChangePassword,
+    };
+  }
+
+  private rejectBan(bannedUntil: number | undefined): void {
+    if (bannedUntil === undefined) return;
+    throw new BusinessException(
+      BusinessCode.RATE_LIMITED,
+      'too many authentication failures',
+      HttpStatus.TOO_MANY_REQUESTS,
+      { bannedUntil },
+    );
   }
 }

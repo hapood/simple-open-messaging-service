@@ -44,6 +44,72 @@ describe('BruteForceService', () => {
     { count: 20, banMs: 24 * 60 * 60 * 1000 },
   ];
 
+  describe('bounded storage and canonical IP bans', () => {
+    it('shares a /56 ban across IPv6 subnets and accepts the admin CIDR for unban', () => {
+      const until = svc.registerFailure(BAN_DIM_IP, '2001:db8:abcd:1201::1', [
+        { count: 0, banMs: 60_000 },
+      ]);
+      expect(
+        svc.activeBanUntil([
+          { dimension: BAN_DIM_IP, value: '2001:db8:abcd:12ff::2' },
+        ]),
+      ).toBe(until);
+      expect(
+        svc.activeBanUntil([
+          { dimension: BAN_DIM_IP, value: '2001:db8:abcd:1300::1' },
+        ]),
+      ).toBeUndefined();
+      expect(svc.listBans()[0].value).toBe('2001:db8:abcd:1200::/56');
+      svc.unban({ ip: svc.listBans()[0].value });
+      expect(svc.listBans()).toEqual([]);
+    });
+
+    it('collapses IPv4-mapped IPv6 into the IPv4 ban', () => {
+      const until = svc.registerFailure(BAN_DIM_IP, '::ffff:192.0.2.1', [
+        { count: 0, banMs: 60_000 },
+      ]);
+      expect(
+        svc.activeBanUntil([{ dimension: BAN_DIM_IP, value: '192.0.2.1' }]),
+      ).toBe(until);
+      svc.unban({ ip: '192.0.2.1' });
+      expect(svc.listBans()).toEqual([]);
+    });
+
+    it('bounds per-key timestamps without losing the highest sliding-window tier', () => {
+      for (let i = 0; i < 2000; i++) {
+        svc.registerFailure(BAN_DIM_USER, 'alice', steps);
+      }
+      expect(svc['_failLog'].get('user:alice')).toHaveLength(21);
+      vi.advanceTimersByTime(WINDOW_MS - 1);
+      expect(svc.registerFailure(BAN_DIM_USER, 'alice', steps)).toBe(
+        Date.now() + 24 * 60 * 60 * 1000,
+      );
+      vi.advanceTimersByTime(2);
+      svc.clearFailures(BAN_DIM_USER, 'alice');
+      expect(svc.registerFailure(BAN_DIM_USER, 'alice', steps)).toBeUndefined();
+    });
+
+    it('fails closed at capacity without evicting bans, and reclaims expired entries', () => {
+      const rule = [{ count: 0, banMs: 60_000 }];
+      for (let i = 0; i < 50_000; i++) {
+        svc.registerFailure(BAN_DIM_USER, String(i), rule);
+      }
+      expect(() => svc.registerFailure(BAN_DIM_USER, 'overflow', rule)).toThrow(
+        'Login protection capacity exhausted',
+      );
+      expect(svc['_failLog'].size + svc['_banned'].size).toBe(100_000);
+      expect(
+        svc.activeBanUntil([{ dimension: BAN_DIM_USER, value: '0' }]),
+      ).toBe(base + 60_000);
+      expect(svc.registerFailure(BAN_DIM_USER, '0', rule)).toBe(base + 60_000);
+      vi.advanceTimersByTime(WINDOW_MS + 1);
+      expect(svc.registerFailure(BAN_DIM_USER, 'new', rule)).toBe(
+        Date.now() + 60_000,
+      );
+      expect(svc['_failLog'].size + svc['_banned'].size).toBe(2);
+    });
+  });
+
   describe('restriction warnings', () => {
     const tiers = [
       { count: 1, banMs: 1000 },

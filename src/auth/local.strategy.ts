@@ -2,6 +2,7 @@ import { Strategy } from 'passport-local';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
+import { IP_AUTH_FAILURE_STEPS } from './ip-auth-policy.js';
 import { AuthService } from './auth.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -49,11 +50,7 @@ interface Dimension {
 const RULES: Record<'ip' | 'user', Dimension> = {
   ip: {
     dimension: BAN_DIM_IP,
-    steps: [
-      { count: 10, banMs: 30 * 60 * 1000 },
-      { count: 20, banMs: 3 * 60 * 60 * 1000 },
-      { count: 40, banMs: 24 * 60 * 60 * 1000 },
-    ],
+    steps: IP_AUTH_FAILURE_STEPS,
   },
   user: {
     dimension: BAN_DIM_USER,

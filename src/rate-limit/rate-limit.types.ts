@@ -1,7 +1,7 @@
 export type RateLimitMode = 'disabled' | 'shadow' | 'enforce';
 
 export interface RateLimitSubject {
-  /** Stable dimension name, for example user, ip-exact, ip-prefix64, admin or peer. */
+  /** Stable dimension name, for example user, ip-exact, ip-prefix56, admin or peer. */
   type: string;
   /** Canonical value. It must not contain a raw URL or bearer credential. */
   key: string;

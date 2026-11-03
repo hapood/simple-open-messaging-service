@@ -17,22 +17,22 @@ describe('normalizeClientAddress', () => {
     );
   });
 
-  it('groups temporary addresses by /64 while retaining distinct exact subjects', () => {
+  it('groups temporary addresses by /56 while retaining distinct exact subjects', () => {
     const first = normalizeClientAddress('2001:db8:1:2::1');
-    const second = normalizeClientAddress('2001:db8:1:2:ffff::abcd');
+    const second = normalizeClientAddress('2001:db8:1:ff:ffff::abcd');
     expect(first?.exactSubject).not.toBe(second?.exactSubject);
     expect(first?.family).toBe('ipv6');
     expect(second?.family).toBe('ipv6');
     if (first?.family === 'ipv6' && second?.family === 'ipv6') {
-      expect(first.prefix64Subject).toBe(second.prefix64Subject);
+      expect(first.prefix56Subject).toBe(second.prefix56Subject);
     }
   });
 
-  it('keeps different /64 prefixes separate', () => {
+  it('keeps different /56 prefixes separate', () => {
     const first = normalizeClientAddress('2001:db8:1:2::1');
-    const second = normalizeClientAddress('2001:db8:1:3::1');
+    const second = normalizeClientAddress('2001:db8:1:100::1');
     if (first?.family === 'ipv6' && second?.family === 'ipv6') {
-      expect(first.prefix64Subject).not.toBe(second.prefix64Subject);
+      expect(first.prefix56Subject).not.toBe(second.prefix56Subject);
     } else {
       throw new Error('expected IPv6 identities');
     }

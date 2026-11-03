@@ -73,7 +73,7 @@ describe('rate-limit HTTP integration', () => {
     expectNewLimiterResponse(blocked);
   });
 
-  it('aggregates distinct IPv6 clients in the same /64 prefix', async () => {
+  it('aggregates distinct IPv6 clients in the same /56 prefix', async () => {
     const app = await createApp('enforce', true);
 
     await post(app, '2001:db8:1234:5678::1').expect(HttpStatus.OK);

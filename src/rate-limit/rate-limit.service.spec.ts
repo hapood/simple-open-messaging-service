@@ -59,7 +59,7 @@ describe('RateLimitService', () => {
           burst: 1,
         },
         {
-          subject: { type: 'ip-prefix64', key: 'ip6-prefix64:2001:db8::/64' },
+          subject: { type: 'ip-prefix56', key: 'ip6-prefix56:2001:db8::/56' },
           ratePerSecond: 10,
           burst: 10,
         },

@@ -19,6 +19,7 @@ import {
   MEDIA_TOKEN_COOKIE,
   refreshSessionCookies,
 } from './auth/media-token.js';
+import { BusinessException } from './common/business.exception.js';
 import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
 import { LinkPreviewService } from './link-preview/link-preview.service.js';
@@ -294,9 +295,23 @@ async function registerStaticServing(
         // media surfaces enforce identical auth (and revocation) rules.
         const fromCookie = request.cookies?.[MEDIA_TOKEN_COOKIE];
         const raw = fromCookie ?? extractBearer(request.headers.authorization);
-        const principal = raw
-          ? await bearerAuth.resolve(raw, { ip: request.ip })
-          : null;
+        // Static Fastify hooks do not pass through Nest's exception filter.
+        let principal: Awaited<ReturnType<BearerAuthService['resolve']>>;
+        try {
+          principal = await bearerAuth.resolve(raw, { ip: request.ip });
+        } catch (error) {
+          if (
+            error instanceof BusinessException &&
+            error.bizCode === BusinessCode.RATE_LIMITED
+          ) {
+            return reply.code(error.getStatus()).type('application/json').send({
+              code: error.bizCode,
+              message: error.message,
+              data: error.data,
+            });
+          }
+          throw error;
+        }
         if (!principal) {
           return reply.code(401).type('application/json').send({
             statusCode: 401,

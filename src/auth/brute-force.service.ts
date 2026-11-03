@@ -1,5 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
+import { normalizeClientAddress } from '../rate-limit/client-address.js';
 
 /** Sliding window: only failures within this span count; older ones auto-age-out so a legitimate user's
  *  occasional typos never accumulate into a permanent ban. */
@@ -7,12 +12,16 @@ const WINDOW_MS = 15 * 60 * 1000;
 /** Reclaim expired entries periodically so a flood of distinct keys (one per attacker IP/account) can't
  *  bloat the maps between lazy reclaims. */
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+/** Across failure logs and bans; never evict active restrictions to admit new identities. */
+const MAX_ENTRIES = 100_000;
+const MAX_FAILURES_PER_KEY = 1_000;
+const CAPACITY_SWEEP_INTERVAL_MS = 5_000;
 
 /** Dimension namespaces — opaque keys that partition the failure/ban space so each login method tracks its
  *  own surface without colliding, while sharing storage + admin observability. A single account may be
  *  tracked under several dimensions at once (a password guess and an OTP guess are different attacks with
  *  different entropies), so each gets its own counter and ban. */
-export const BAN_DIM_IP = 'ip'; // password-login IP dimension (NAT-shared, lenient)
+export const BAN_DIM_IP = 'ip'; // shared password-login/session-token IP dimension (NAT-shared, lenient)
 export const BAN_DIM_USER = 'user'; // password-login account dimension
 export const BAN_DIM_OTP = 'otp'; // one-time-code account dimension
 export const BAN_DIM_ADMIN_PWD = 'admin_pwd'; // admin console password-login account dimension
@@ -44,7 +53,7 @@ export interface BanKey {
 export interface BanView {
   /** `${dimension}:${value}` — the canonical key (stable for the admin UI row identity). */
   key: string;
-  /** The ban type — which login surface this locks: 'ip' (password-login IP), 'user' (password-login
+  /** The ban type — which login surface this locks: 'ip' (password-login/session-token IP), 'user' (password-login
    *  account), or 'otp' (one-time-code account). The API field is `type` (a stable, deployed name); the
    *  value IS the internal dimension namespace. */
   type: string;
@@ -76,6 +85,29 @@ export class BruteForceService {
   private readonly logger = new Logger(BruteForceService.name);
   // Highest threshold observed during each effective restriction, for warning deduplication only.
   private readonly _banThresholds = new Map<string, number>();
+  private lastCapacitySweep = Number.NEGATIVE_INFINITY;
+
+  private ensureCapacity(additionalEntries: number, now: number): void {
+    if (
+      this._failLog.size + this._banned.size + additionalEntries <=
+      MAX_ENTRIES
+    )
+      return;
+    if (now - this.lastCapacitySweep >= CAPACITY_SWEEP_INTERVAL_MS) {
+      this.lastCapacitySweep = now;
+      this.cleanup();
+    }
+    if (
+      this._failLog.size + this._banned.size + additionalEntries >
+      MAX_ENTRIES
+    ) {
+      // Fail closed without discarding another client's counter or ban. Do not log each
+      // rejected identity: high-cardinality traffic must not become a log-volume attack.
+      throw new ServiceUnavailableException(
+        'Login protection capacity exhausted',
+      );
+    }
+  }
 
   /** Record one failure for (dimension, value) under the given ascending steps; return the ban deadline iff a
    *  tier is newly crossed this call (else undefined). Only failures within {@link WINDOW_MS} are counted. */
@@ -84,13 +116,24 @@ export class BruteForceService {
     value: string,
     steps: readonly BanStep[],
   ): number | undefined {
+    const retainedFailures =
+      Math.max(0, ...steps.map((step) => step.count)) + 1;
+    if (
+      !Number.isInteger(retainedFailures) ||
+      retainedFailures > MAX_FAILURES_PER_KEY ||
+      steps.some((step) => !Number.isInteger(step.count) || step.count < 0)
+    ) {
+      throw new Error('Invalid login failure thresholds');
+    }
     const now = Date.now();
     const key = keyOf(dimension, value);
     const fresh = (this._failLog.get(key) ?? []).filter(
       (t) => now - t < WINDOW_MS,
     );
     fresh.push(now);
-    this._failLog.set(key, fresh);
+    // The newest highest-threshold + 1 timestamps suffice for every sliding-window tier.
+    if (fresh.length > retainedFailures)
+      fresh.splice(0, fresh.length - retainedFailures);
     // Highest matched tier wins (steps are ascending; a later tier overwrites an earlier ban deadline).
     let ban: number | undefined;
     let matched: BanStep | undefined;
@@ -100,6 +143,13 @@ export class BruteForceService {
         ban = now + s.banMs;
       }
     }
+    // Reserve every needed slot before changing either map. Never partially record a failure.
+    this.ensureCapacity(
+      Number(!this._failLog.has(key)) +
+        Number(ban !== undefined && !this._banned.has(key)),
+      now,
+    );
+    this._failLog.set(key, fresh);
     if (ban !== undefined && matched) {
       const previousUntil = this._banned.get(key);
       const active = previousUntil !== undefined && previousUntil > now;
@@ -192,8 +242,8 @@ export class BruteForceService {
   }
 
   /** Periodic reclamation: drop fully-aged failure logs and expired bans so a flood of distinct keys can't
-   *  bloat the maps. (The public methods also reclaim lazily; this bounds memory between calls.) Registered
-   *  with @nestjs/schedule; the framework clears it on shutdown. */
+   *  bloat the maps indefinitely. Hard admission and per-key timestamp limits also bound live data.
+   *  Registered with @nestjs/schedule; the framework clears it on shutdown. */
   @Interval(CLEANUP_INTERVAL_MS)
   cleanup(): void {
     const now = Date.now();
@@ -212,5 +262,15 @@ export class BruteForceService {
 }
 
 function keyOf(dimension: string, value: string): string {
+  if (dimension === BAN_DIM_IP) {
+    // Accept the canonical CIDR shown by the admin ban list as well as a host address.
+    const address = normalizeClientAddress(value.replace(/\/56$/, ''));
+    if (address) {
+      value =
+        address.family === 'ipv6'
+          ? address.prefix56Subject.slice('ip6-prefix56:'.length)
+          : address.address;
+    }
+  }
   return `${dimension}:${value}`;
 }

@@ -116,7 +116,7 @@ export class AuthPolicyRegistry {
   private ipRules(
     request: FastifyRequest,
     exact: TokenBucketConfig,
-    prefix64?: TokenBucketConfig,
+    prefix56?: TokenBucketConfig,
   ): RateLimitRule[] {
     const address = this.identities.fromRequest(request);
     if (!address) {
@@ -129,11 +129,11 @@ export class AuthPolicyRegistry {
         burst: exact.burst,
       },
     ];
-    if (address.family === 'ipv6' && prefix64 !== undefined) {
+    if (address.family === 'ipv6' && prefix56 !== undefined) {
       rules.push({
-        subject: { type: 'ip-prefix64', key: address.prefix64Subject },
-        ratePerSecond: prefix64.ratePerSecond,
-        burst: prefix64.burst,
+        subject: { type: 'ip-prefix56', key: address.prefix56Subject },
+        ratePerSecond: prefix56.ratePerSecond,
+        burst: prefix56.burst,
       });
     }
     return rules;

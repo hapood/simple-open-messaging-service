@@ -106,7 +106,7 @@ describe('AuthPolicyRegistry', () => {
     expect(policy.mode).toBe('shadow');
     expect(policy.rules.map((rule) => rule.subject.type)).toEqual([
       'ip-exact',
-      'ip-prefix64',
+      'ip-prefix56',
       'account',
     ]);
     expect(JSON.stringify(policy)).not.toContain('Alice');
@@ -132,15 +132,15 @@ describe('AuthPolicyRegistry', () => {
     }
   });
 
-  it('uses one /64 rule for rotating IPv6 interface identifiers', () => {
+  it('uses one /56 rule for rotating IPv6 interface identifiers', () => {
     const policy = registry().build(
       AUTH_RATE_LIMIT_POLICIES.otpLogin,
       request({ account: 'alice' }),
     );
     expect(
-      policy.rules.find((rule) => rule.subject.type === 'ip-prefix64')?.subject
+      policy.rules.find((rule) => rule.subject.type === 'ip-prefix56')?.subject
         .key,
-    ).toBe('ip6-prefix64:2001:db8:1:2::/64');
+    ).toBe('ip6-prefix56:2001:db8:1::/56');
   });
 
   it('enforces IPv4 and its IPv4-mapped IPv6 representation as one exact-IP bucket', () => {
@@ -168,7 +168,7 @@ describe('AuthPolicyRegistry', () => {
     ).toBe(false);
   });
 
-  it('enforces rotating IPv6 addresses through their shared /64 bucket', () => {
+  it('enforces rotating IPv6 addresses through their shared /56 bucket', () => {
     const rateLimits = new RateLimitService();
     const registryUnderTest = enforcingRegistry(rateLimits);
     for (let index = 1; index <= 10; index++) {
