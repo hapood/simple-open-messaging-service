@@ -33,5 +33,4 @@ export class DashboardController {
   async summary() {
     return this.dashboard.summary();
   }
-
 }

@@ -25,9 +25,7 @@ describe('PUBLIC_CONFIG invariants', () => {
   });
 
   it('defaults to a present, enabled login method', () => {
-    const fallback = PUBLIC_CONFIG.loginMethods.find(
-      (item) => !item.disabled,
-    );
+    const fallback = PUBLIC_CONFIG.loginMethods.find((item) => !item.disabled);
     expect(PUBLIC_CONFIG.defaultLoginMethod).toBe(fallback?.key);
   });
 

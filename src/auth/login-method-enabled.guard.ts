@@ -1,10 +1,7 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import {
-  isLoginMethodEnabled,
-  LoginMethod,
-} from '../config/public-config.js';
+import { isLoginMethodEnabled, LoginMethod } from '../config/public-config.js';
 
 /**
  * Builds a guard that rejects a login route BEFORE its credential work runs, whenever the given method is

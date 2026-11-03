@@ -50,7 +50,9 @@ export class FederationMediaRangeClient {
       toAccount,
       seq: String(sourceSeq),
     });
-    const url = new URL(`${base}/somfp/v1/media/${digest}?${params.toString()}`);
+    const url = new URL(
+      `${base}/somfp/v1/media/${digest}?${params.toString()}`,
+    );
     let offset = startOffset;
     let total: number | null = null;
     let markedAlive = false;

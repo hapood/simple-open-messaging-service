@@ -218,7 +218,10 @@ describe('mention target resolution across group authority modes', () => {
       .delete(groupAccount)
       .where(eq(groupAccount.id, authorityGroupId));
     await database.db.delete(user).where(inArray(user.id, createdUserIds));
-    await database.pool.query('DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1', [peerNamespaceId]);
+    await database.pool.query(
+      'DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1',
+      [peerNamespaceId],
+    );
     await database.db
       .delete(identityNamespace)
       .where(eq(identityNamespace.id, peerNamespaceId));

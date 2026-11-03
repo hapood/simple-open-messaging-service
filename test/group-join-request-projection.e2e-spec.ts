@@ -167,9 +167,18 @@ describe('permanent group request history and online visibility', () => {
     );
     if (duplicate) {
       expect(response.body.data.invited).toEqual([]);
-      expect(response.body.data.skipped).toEqual([expect.objectContaining({ account: member.account, namespaceId: 0, reason: 'ALREADY_INVITED', code: BusinessCode.ALREADY_EXISTS })]);
+      expect(response.body.data.skipped).toEqual([
+        expect.objectContaining({
+          account: member.account,
+          namespaceId: 0,
+          reason: 'ALREADY_INVITED',
+          code: BusinessCode.ALREADY_EXISTS,
+        }),
+      ]);
     } else {
-      expect(response.body.data.invited).toEqual([{ account: member.account, namespaceId: 0 }]);
+      expect(response.body.data.invited).toEqual([
+        { account: member.account, namespaceId: 0 },
+      ]);
       expect(response.body.data.skipped).toEqual([]);
     }
   }

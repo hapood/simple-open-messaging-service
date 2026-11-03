@@ -164,9 +164,10 @@ export function startS2sProxy(appAPort: number): Promise<S2sProxy> {
         // intentionally held by this proxy. `destroyed` therefore does not mean that the client cancelled
         // the exchange; `aborted` is the signal that makes a queued relay unsafe to resume.
         if (req.aborted) return;
-        const fixtureDigest = /^\/somfp\/v1\/media\/([a-f0-9]{64})(?:\?|$)/.exec(
-          req.url ?? '/',
-        )?.[1];
+        const fixtureDigest =
+          /^\/somfp\/v1\/media\/([a-f0-9]{64})(?:\?|$)/.exec(
+            req.url ?? '/',
+          )?.[1];
         const fixture = fixtureDigest
           ? getFileFixtures.get(fixtureDigest)
           : undefined;

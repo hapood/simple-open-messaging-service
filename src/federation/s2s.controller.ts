@@ -524,11 +524,11 @@ export class S2sController {
 
   @Get('account-profiles/:namespaceId/:account/:profileRev')
   async getExactAccountProfile(@Req() req: FastifyRequest) {
-    const path = parseFederationResourcePath(req, '/somfp/v1/account-profiles/', [
-      'namespaceId',
-      'account',
-      'profileRev',
-    ]);
+    const path = parseFederationResourcePath(
+      req,
+      '/somfp/v1/account-profiles/',
+      ['namespaceId', 'account', 'profileRev'],
+    );
     const profileNamespaceId = requireSafeDecimal(
       path.namespaceId,
       'namespaceId',

@@ -60,7 +60,11 @@ export class AuthController {
 
   @Public()
   @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.passwordLogin)
-  @UseGuards(RateLimitGuard, loginMethodEnabledGuard('password'), LocalAuthGuard)
+  @UseGuards(
+    RateLimitGuard,
+    loginMethodEnabledGuard('password'),
+    LocalAuthGuard,
+  )
   @HttpCode(HttpStatus.OK)
   @Post('auth/login')
   @ApiOperation({

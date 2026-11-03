@@ -45,7 +45,10 @@ export class DurableTaskAdminController {
     // mutations. Those rows render as $system; user actors render as #id.
     const [list, total] = await Promise.all([
       this.database.db
-        .select({ ...getTableColumns(durableTask), actorAccount: account.account })
+        .select({
+          ...getTableColumns(durableTask),
+          actorAccount: account.account,
+        })
         .from(durableTask)
         .leftJoin(account, eq(durableTask.actorUserId, account.id))
         .where(where)

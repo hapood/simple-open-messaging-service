@@ -6,11 +6,7 @@ import { ApiProperty } from '@nestjs/swagger';
 export type LoginMethod = 'password' | 'otp' | 'qr';
 
 /** Every valid {@link LoginMethod}. Served to Swagger as the enum surface of `loginMethods` entries. */
-export const LOGIN_METHODS: readonly LoginMethod[] = [
-  'password',
-  'otp',
-  'qr',
-];
+export const LOGIN_METHODS: readonly LoginMethod[] = ['password', 'otp', 'qr'];
 
 /**
  * One advertised login method. The list's order is the client's presentation order (e.g. the login tab

@@ -956,7 +956,11 @@ describe('transactional thread attention', () => {
           .set({ messageVisibleThroughSeq })
           .where(eq(accountThreadState.accountId, userId));
       });
-      expect(await state()).toEqual({ ...before, messageVisibleThroughSeq, updatedAt: expect.any(Date) });
+      expect(await state()).toEqual({
+        ...before,
+        messageVisibleThroughSeq,
+        updatedAt: expect.any(Date),
+      });
       expect(await db.db.select().from(account)).toEqual(beforeOwner);
       expect(await db.db.select().from(durableTask)).toEqual(beforeTasks);
     }

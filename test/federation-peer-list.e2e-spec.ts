@@ -25,7 +25,10 @@ describe('remote-only federation listing', () => {
   });
   afterAll(async () => {
     if (peerId) {
-      await database.pool.query('DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1', [peerId]);
+      await database.pool.query(
+        'DELETE FROM "FederationFeedState" WHERE "namespaceId" = $1',
+        [peerId],
+      );
       await database.pool.query(
         'DELETE FROM "IdentityNamespace" WHERE id = $1',
         [peerId],

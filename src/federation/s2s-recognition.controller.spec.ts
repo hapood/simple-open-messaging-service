@@ -361,7 +361,11 @@ describe('FederationRecognitionService health transitions', () => {
   });
 
   it('marks reachability lost when Health discovery fails', async () => {
-    const { database } = txDatabase({ id: 12, active: true, rootPublicKey: 'root-a' });
+    const { database } = txDatabase({
+      id: 12,
+      active: true,
+      rootPublicKey: 'root-a',
+    });
     const recognition = new FederationRecognitionService(
       database as never,
       {
@@ -527,7 +531,13 @@ describe('FederationRecognitionService health transitions', () => {
         }),
       })),
     };
-    const { database } = txDatabase({ id: 12, active: true, rootPublicKey: 'root-a', identityPinnedAt: new Date(), localServiceAvailable: true });
+    const { database } = txDatabase({
+      id: 12,
+      active: true,
+      rootPublicKey: 'root-a',
+      identityPinnedAt: new Date(),
+      localServiceAvailable: true,
+    });
     const namespaces = {
       captureVerifiedInTx: vi.fn().mockResolvedValue({ namespaceId: 12 }),
       recordPeerAssignedLocalNamespaceInTx: vi
@@ -546,7 +556,11 @@ describe('FederationRecognitionService health transitions', () => {
     const first = recognition.checkHealth('peer.example');
     const second = recognition.checkHealth('peer.example');
 
-    await vi.waitFor(() => expect(discovery.resolveBase).toHaveBeenCalledExactlyOnceWith('peer.example'));
+    await vi.waitFor(() =>
+      expect(discovery.resolveBase).toHaveBeenCalledExactlyOnceWith(
+        'peer.example',
+      ),
+    );
     releaseBase('http://127.0.0.1:1');
     await expect(Promise.all([first, second])).resolves.toEqual([
       'available',
