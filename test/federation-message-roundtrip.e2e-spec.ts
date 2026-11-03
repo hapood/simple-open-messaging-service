@@ -270,9 +270,8 @@ describe('federation message round-trip digest fidelity', () => {
   it('preserves an IMAGE wire body across the round-trip', async () => {
     const wire = JSON.stringify({
       digest: digestA,
-      width: 10,
-      height: 20,
       name: 'photo.png',
+      meta: { kind: 'IMAGE', width: 10, height: 20 },
     });
     const r = await roundtrip(
       ContentType.IMAGE,
@@ -287,7 +286,7 @@ describe('federation message round-trip digest fidelity', () => {
     const wire = JSON.stringify({
       digest: digestA,
       name: 'doc.txt',
-      mimeType: 'text/plain',
+      meta: { kind: 'FILE' },
     });
     const r = await roundtrip(
       ContentType.FILE,
@@ -302,10 +301,7 @@ describe('federation message round-trip digest fidelity', () => {
     const wire = JSON.stringify({
       digest: digestA,
       name: 'clip.mp4',
-      mimeType: 'video/mp4',
-      width: 1280,
-      height: 720,
-      duration: 12.5,
+      meta: { kind: 'VIDEO', width: 1280, height: 720, duration: 12.5 },
     });
     const r = await roundtrip(
       ContentType.VIDEO,
@@ -320,8 +316,7 @@ describe('federation message round-trip digest fidelity', () => {
     const wire = JSON.stringify({
       digest: digestA,
       name: 'song.mp3',
-      mimeType: 'audio/mpeg',
-      duration: 200.0,
+      meta: { kind: 'AUDIO', duration: 200.0 },
     });
     const r = await roundtrip(
       ContentType.AUDIO,
@@ -336,20 +331,14 @@ describe('federation message round-trip digest fidelity', () => {
     const wire = JSON.stringify({
       items: [
         {
-          kind: 'IMAGE',
           digest: digestA,
           name: 'a.png',
-          width: 10,
-          height: 20,
+          meta: { kind: 'IMAGE', width: 10, height: 20 },
         },
         {
-          kind: 'VIDEO',
           digest: digestB,
           name: 'b.mp4',
-          mimeType: 'video/mp4',
-          width: 100,
-          height: 200,
-          duration: 3.0,
+          meta: { kind: 'VIDEO', width: 100, height: 200, duration: 3.0 },
         },
       ],
     });
