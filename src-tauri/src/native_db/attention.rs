@@ -2219,6 +2219,30 @@ pub(crate) async fn native_db_advance_thread_read(
 #[path = "../tests/native_thread_feed_owner_tests.rs"]
 mod owner_tests;
 
+/// Shared by the stalled-connection tests below: asserts the peer tore down the physical
+/// connection. A graceful close reads EOF (Ok(0)); an abrupt cancel may surface as RST
+/// (ConnectionReset) or BrokenPipe depending on the platform TCP stack — both prove the
+/// connection is gone, which is what cancellation must guarantee.
+#[cfg(test)]
+pub(crate) async fn assert_client_closed_connection(socket: &mut tokio::net::TcpStream) {
+    use tokio::io::AsyncReadExt;
+    let mut byte = [0; 1];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(3), socket.read(&mut byte))
+        .await
+        .expect("peer never closed its TCP connection");
+    assert!(
+        match read {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(ref error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+            ),
+        },
+        "cancelled body must close its TCP connection (read: {read:?})"
+    );
+}
+
 #[cfg(test)]
 #[path = "../tests/native_drain_owner_tests.rs"]
 mod drain_owner_tests;

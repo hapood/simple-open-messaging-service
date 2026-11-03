@@ -16,13 +16,13 @@ mod desktop_badge;
 pub(crate) mod desktop_notifications;
 mod device_connection;
 mod group_meta_store;
+pub(crate) mod history_ipc;
 mod lifetime;
 pub(crate) mod location;
 mod login_connections;
 mod lru;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod mentions;
-pub(crate) mod history_ipc;
 pub(crate) mod messages;
 pub(crate) mod namespace_feed;
 pub(crate) mod namespace_subscriptions;

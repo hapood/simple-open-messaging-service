@@ -244,23 +244,7 @@ async fn stalled_drain_sockets_close_on_end_or_repair() {
                     .await
                     .unwrap();
                 started.send(()).unwrap();
-                let mut byte = [0; 1];
-                let read = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte))
-                    .await
-                    .unwrap();
-                // A graceful close reads EOF (Ok(0)); an abrupt cancel may surface as RST
-                // (ConnectionReset) or BrokenPipe depending on the platform TCP stack. Both
-                // prove the client tore down its physical connection.
-                let closed = match read {
-                    Ok(0) => true,
-                    Ok(_) => false,
-                    Err(error) => matches!(
-                        error.kind(),
-                        std::io::ErrorKind::ConnectionReset
-                            | std::io::ErrorKind::BrokenPipe
-                    ),
-                };
-                assert!(closed, "cancelled drain must close its TCP connection");
+                super::assert_client_closed_connection(&mut socket).await;
             });
             let owner = intent.work.owner().clone();
             let error = if group {
