@@ -1,5 +1,4 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { systemSetting } from '../database/schema.js';
 

@@ -13,7 +13,6 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AllExceptionsFilter } from '../common/exception.filter.js';
 import { BusinessCode } from '../common/business-code.js';
-import { DatabaseService } from '../database/database.service.js';
 import {
   AuthPolicyRegistry,
   AUTH_RATE_LIMIT_POLICIES,

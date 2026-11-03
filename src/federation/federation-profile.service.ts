@@ -1,5 +1,4 @@
 import {
-  groupStateSql,
   readGroupState,
   groupStateFields,
 } from '../group/shared/group-state.js';

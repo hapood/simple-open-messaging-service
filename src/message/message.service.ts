@@ -1278,7 +1278,8 @@ export class MessageService {
             scope.visibleThroughSeq ?? scope.currentEnd,
           ) + 1;
         const cursorData = { resumeAfter: lower, resumeBefore: upper };
-        let { after, before } = query;
+        const { after } = query;
+        let { before } = query;
         const { through } = query;
         let resolvedAnchorSeq: number | null = null;
         const hasAnchor =

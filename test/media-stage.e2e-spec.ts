@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'crypto';
 import { and, count, eq, inArray, or } from 'drizzle-orm';
@@ -257,7 +256,6 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
 
   it('commitOutboundBatch commits a Message + messageAsset and deletes the stage; re-commit is idempotent', async () => {
     const cid = randomUUID();
-    const partId = randomUUID();
     const digest = 'a'.repeat(64);
     await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
 

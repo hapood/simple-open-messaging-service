@@ -1,5 +1,4 @@
 import { accountAddressInTx } from '../src/user/account-address.js';
-import { localIdentityDomain } from './support/local-domain.js';
 import {
   afterAll,
   afterEach,

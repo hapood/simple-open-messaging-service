@@ -15,7 +15,6 @@ import {
   serial,
   boolean,
   primaryKey,
-  date,
   pgEnum,
   uuid,
   customType,

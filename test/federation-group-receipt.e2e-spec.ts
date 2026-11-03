@@ -10,7 +10,6 @@ import {
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import { ContentType } from '../src/database/enums.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';

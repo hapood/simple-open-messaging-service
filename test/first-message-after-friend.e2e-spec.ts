@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { localIdentityDomain } from './support/local-domain.js';
 import request from 'supertest';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';

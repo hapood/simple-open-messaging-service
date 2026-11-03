@@ -89,8 +89,8 @@ export class DeletedMessageService {
   private async assertFederatedResponseWritable(
     tx: DatabaseTransaction,
     threadId: number,
-    peerDomain: string,
-    namespaceId: number,
+    _peerDomain: string,
+    _namespaceId: number,
   ): Promise<void> {
     const [state] = await tx
       .select({ id: messageThread.id })

@@ -125,23 +125,6 @@ function defaultConfigs(): Record<string, AuthRateLimitConfig> {
   );
 }
 
-function parseConfigs(raw: string): Record<string, AuthRateLimitConfig> {
-  return parseConfigurationInput(JSON.parse(raw));
-}
-
-function configurationView(
-  configs: Record<string, AuthRateLimitConfig>,
-): AuthRateLimitPolicyConfigView[] {
-  return Object.entries(POLICY_DEFINITIONS).map(([policy, definition]) => ({
-    policy,
-    mode: configs[policy].mode,
-    buckets: (Object.keys(definition.buckets) as BucketName[]).map((name) => ({
-      name,
-      ...configs[policy][name]!,
-    })),
-  }));
-}
-
 function parseConfigurationInput(
   input: unknown,
 ): Record<string, AuthRateLimitConfig> {

@@ -46,12 +46,8 @@ import {
 } from '../shared/user-intent-state-sql.js';
 import { Logger } from '@nestjs/common';
 import { MeasureBusinessOperation } from '../../../diagnostics/execution-measurement.js';
-import { and, eq, sql } from 'drizzle-orm';
-import {
-  account,
-  relationshipIntent,
-  relationshipRequest,
-} from '../../../database/schema.js';
+import { and, eq } from 'drizzle-orm';
+import { account, relationshipRequest } from '../../../database/schema.js';
 import type {
   RequestDecision,
   RequestDecisionResult,

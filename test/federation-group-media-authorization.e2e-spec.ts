@@ -8,7 +8,6 @@ import { ContentType } from '../src/database/enums.js';
 import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { dataDirectory } from '../src/common/data-directory.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { FederationPeerResourceService } from '../src/federation/federation-peer-resource.service.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 import { wirePayloadDigest } from '../src/federation/federated-message-content.js';

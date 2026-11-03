@@ -166,10 +166,9 @@ describe('RelationshipController.requestRelationship', () => {
   });
 
   it('authors a remote-group application directly', async () => {
-    const admissionTx = { admission: true };
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
     const memberIntents = {
-      executeByNamespace: vi.fn().mockImplementation(async (params) => {
+      executeByNamespace: vi.fn().mockImplementation(async () => {
         return { status: 'APPLIED' };
       }),
     };
@@ -198,9 +197,8 @@ describe('RelationshipController.requestRelationship', () => {
 
   it('runs the local request synchronously through domain-owned admission', async () => {
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
-    const admissionTx = { admission: true };
     const userIntents = {
-      execute: vi.fn().mockImplementation(async (_params, options) => {
+      execute: vi.fn().mockImplementation(async (_params) => {
         return { status: 'APPLIED' };
       }),
     };
@@ -244,9 +242,8 @@ describe('RelationshipController.requestRelationship', () => {
 
   it('runs the federated request synchronously through domain-owned admission', async () => {
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
-    const admissionTx = { admission: true };
     const userIntents = {
-      execute: vi.fn().mockImplementation(async (_params, options) => {
+      execute: vi.fn().mockImplementation(async (_params) => {
         return { status: 'APPLIED' };
       }),
     };

@@ -4,11 +4,7 @@ import type { ThreadContentLock } from '../../common/locks/thread-content-lock.j
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import { GroupRole } from '../../database/enums.js';
-import {
-  groupMeta,
-  groupMetaMemberFeed,
-  messageThread,
-} from '../../database/schema.js';
+import { groupMeta, messageThread } from '../../database/schema.js';
 import { groupStateFields, groupStateSql } from '../shared/group-state.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
 

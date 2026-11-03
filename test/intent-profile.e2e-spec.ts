@@ -14,7 +14,6 @@ import {
   relationshipPair,
 } from '../src/database/schema.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('exact directed intent account-profile disclosure', () => {
