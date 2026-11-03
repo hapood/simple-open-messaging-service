@@ -82,13 +82,19 @@ async fn last_pc_consumer_cancellation_closes_stalled_headers_and_body_sockets()
             }
             started.send(()).unwrap();
             let mut byte = [0];
-            assert_eq!(
-                tokio::time::timeout(Duration::from_secs(3), socket.read(&mut byte))
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                0
-            );
+            // A graceful close reads EOF; an abrupt cancel may surface as RST
+            // (ConnectionReset) or BrokenPipe depending on the platform TCP stack.
+            match tokio::time::timeout(Duration::from_secs(3), socket.read(&mut byte)).await.unwrap() {
+                Ok(0) => {}
+                Ok(_) => panic!("shared HTTP connection delivered unexpected bytes"),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                    ) => {}
+                Err(error) => panic!("shared HTTP closed with error: {error}"),
+            }
         });
         let id = uuid::Uuid::new_v4().to_string();
         let request_proxy = proxy.clone();

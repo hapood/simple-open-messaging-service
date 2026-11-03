@@ -63,7 +63,7 @@ jobs:
       - name: Install frontend and Tauri tooling
         run: |
           npm ci --prefix web
-          cargo install tauri-cli --version 2.11.4 --locked
+          cargo install tauri-cli --version 2.12.4 --locked
       - name: Build arm64 debug APK
         run: make -C src-tauri apk-debug ABI=aarch64
       - name: Run Android JVM tests
@@ -105,7 +105,7 @@ jobs:
       - name: Install frontend and Tauri tooling
         run: |
           npm ci --prefix web
-          cargo install tauri-cli --version 2.11.4 --locked
+          cargo install tauri-cli --version 2.12.4 --locked
       - name: Build Linux desktop bundles
         run: make -C src-tauri linux
       - name: Test shared Rust runtime on Linux
@@ -131,7 +131,7 @@ jobs:
       - name: Install frontend and Tauri tooling
         run: |
           npm ci --prefix web
-          cargo install tauri-cli --version 2.11.4 --locked
+          cargo install tauri-cli --version 2.12.4 --locked
       - name: Build universal macOS bundles
         run: make -C src-tauri macos
       - name: Test shared Rust runtime on macOS
