@@ -41,7 +41,7 @@
 #
 # Host prerequisites (all on PATH): Rust toolchain + 4 android targets (rustup target add
 # aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android), Android SDK
-# with NDK r27b (27.1.12297006) — ANDROID_HOME set, JDK 17, tauri-cli 2.11.4 (cargo install tauri-cli),
+# with NDK r27b (27.1.12297006) — ANDROID_HOME set, JDK 17, tauri-cli 2.12.4 (cargo install tauri-cli),
 # Node (for the frontend `npm run build:native` in ../web), and adb (for `make install`/`run`).
 
 # Anchor every path to this Makefile's own location so it runs identically regardless of CWD:
@@ -55,7 +55,7 @@ export TAURI_FRONTEND_PATH := $(ROOT)
 # LOCAL host toolchain (the build runs natively — no container). ANDROID_HOME is the SDK root; override
 # if yours lives elsewhere. The NDK is auto-detected under $ANDROID_HOME/ndk/<ver> (override
 # ANDROID_NDK_HOME). JAVA_HOME is derived from `java` on PATH. tauri-cli (cargo install tauri-cli
-# 2.11.4) MUST match web/package.json's @tauri-apps/cli — move them together or `tauri dev` and the
+# 2.12.4) MUST match web/package.json's @tauri-apps/cli — move them together or `tauri dev` and the
 # build CLI diverge. All exported so every recipe shell — and the gradle/cargo subprocesses — see them.
 ANDROID_HOME     ?= $(HOME)/Android/Sdk
 ANDROID_NDK_HOME ?= $(firstword $(wildcard $(ANDROID_HOME)/ndk/*))
@@ -131,7 +131,7 @@ define do_build
 	@# Host toolchain gate (the build runs natively — no container). Fail fast with the exact install
 	@# command rather than letting gradle/NDK fail opaquely. Mirrors do_macos's rust-target check.
 	@command -v cargo >/dev/null 2>&1 || { echo "✗ cargo not on PATH — install the Rust toolchain (https://rustup.rs)."; exit 1; }
-	@cargo tauri --version >/dev/null 2>&1 || { echo "✗ tauri-cli not installed — run: cargo install tauri-cli --version 2.11.4 --locked"; exit 1; }
+	@cargo tauri --version >/dev/null 2>&1 || { echo "✗ tauri-cli not installed — run: cargo install tauri-cli --version 2.12.4 --locked"; exit 1; }
 	@test -d "$(ANDROID_HOME)" || { echo "✗ ANDROID_HOME not found ($(ANDROID_HOME)) — install the Android SDK and set ANDROID_HOME."; exit 1; }
 	@test -n "$(ANDROID_NDK_HOME)" -a -d "$(ANDROID_NDK_HOME)" || { echo "✗ NDK not found under $(ANDROID_HOME)/ndk/ — run: sdkmanager \"ndk;27.1.12297006\" (or set ANDROID_NDK_HOME)."; exit 1; }
 	@for t in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android; do \
@@ -292,7 +292,7 @@ define do_linux
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
 	@# Host toolchain gate — same pins as the other recipes.
 	@command -v cargo >/dev/null 2>&1 || { echo "✗ cargo not on PATH — install the Rust toolchain (https://rustup.rs)."; exit 1; }
-	@cargo tauri --version >/dev/null 2>&1 || { echo "✗ tauri-cli not installed — run: cargo install tauri-cli --version 2.11.4 --locked"; exit 1; }
+	@cargo tauri --version >/dev/null 2>&1 || { echo "✗ tauri-cli not installed — run: cargo install tauri-cli --version 2.12.4 --locked"; exit 1; }
 	@rustup target list --installed 2>/dev/null | grep -qx "x86_64-unknown-linux-gnu" || { echo "✗ missing rust target x86_64-unknown-linux-gnu — run: rustup target add x86_64-unknown-linux-gnu"; exit 1; }
 	@# WebKitGTK gate: wry pkg-config-resolves webkit2gtk-4.1 at build time (gtk-3/soup-3 ride along as
 	@# its dependencies). Ubuntu 22.04 is the oldest host that ships 4.1 — this doubles as the host-floor
