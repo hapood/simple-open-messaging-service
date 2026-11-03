@@ -1,20 +1,9 @@
 /**
- * Magic-byte media signature detection for the video/audio upload routes. The backend validates the
- * container FAMILY (is this really a video/audio container, not a forged MIME or a polyglot?) but
- * does NOT probe codecs/duration/dimensions — those are the frontend's job (<video>/<audio>
- * loadedmetadata). This keeps the backend ffmpeg-free.
- *
- * Returns the on-disk extension (trusted — derived from the actual bytes, not the client filename)
- * and the family, so saveCas() can name the shard file and the route can gate on family. `null`
- * means "no recognized container signature" → the route rejects.
- *
- * Accepted limitations (by design):
- *  - The ISO BMFF `ftyp` box is shared by mp4 (video) and m4a (audio); we split on the brand
- *    (M4A/M4B/M4P → audio, everything else → video mp4). .mov uses the qt brand but is served as
- *    .mp4 (video/mp4) — browsers play it identically.
- *  - webm and mkv share the EBML signature and are both accepted as .webm.
- *  - Backend validates the container, not codec validity. A truncated/corrupt file with a valid
- *    header is accepted; the frontend <video>/<audio> degrades gracefully (error event → placeholder).
+ * Lightweight container signatures used to choose the complete-file decoder. Signatures alone
+ * cannot distinguish audio-only MP4/WebM from video, validate codecs, or prove a file decodes.
+ * Complete-file stream probing determines the authoritative audio/video family before publishing.
+ * A null signature is treated as a generic attachment rather than rejected by filename or MIME.
+ * ISO BMFF brands and EBML provide initial container hints only.
  */
 
 type MediaFamily = 'image' | 'video' | 'audio';

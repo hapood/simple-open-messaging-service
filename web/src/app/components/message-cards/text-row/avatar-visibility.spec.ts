@@ -14,7 +14,6 @@ import type { AuthoredMessageItem, ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
 import { LinkCardService } from '../../../services/link-card.service';
 import { ImageDownloadService } from '../../../services/image-download.service';
-import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { RouteService } from '../../../services/route.service';
 
 /**
@@ -71,10 +70,6 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
         {
           provide: ImageDownloadService,
           useValue: { thumbnailUrl: ({ src }: { src: string }) => src },
-        },
-        {
-          provide: MediaSizeThresholdService,
-          useValue: { shouldDefer: (size: number) => size > 1024 },
         },
         {
           provide: RouteService,

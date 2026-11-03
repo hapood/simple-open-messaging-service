@@ -1,6 +1,18 @@
 {
   "vectors": [
     {
+      "name": "file presentation retains actual media kind",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "FILE",
+        "content": {
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": "video.mp4",
+          "meta": { "kind": "VIDEO", "width": 1920, "height": 1080, "duration": 12.5 }
+        }
+      }
+    },
+    {
       "name": "state item generation times need not follow feed order",
       "schema": "urn:somfp:v1:state-feed",
       "value": {
@@ -554,8 +566,7 @@
           "content": {
             "name": "photo.png",
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
-            "width": 1,
-            "height": 1
+            "meta": { "kind": "IMAGE", "width": 1, "height": 1 }
           }
         },
         {
@@ -563,10 +574,7 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "v",
-            "mimeType": "video/webm",
-            "width": 1,
-            "height": 1,
-            "duration": 1
+            "meta": { "kind": "VIDEO", "width": 1, "height": 1, "duration": 1 }
           }
         },
         {
@@ -574,7 +582,7 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "f",
-            "mimeType": "application/octet-stream"
+            "meta": { "kind": "FILE" }
           }
         },
         {
@@ -582,8 +590,7 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "a",
-            "mimeType": "audio/opus",
-            "duration": 1
+            "meta": { "kind": "AUDIO", "duration": 1 }
           }
         },
         {
@@ -627,11 +634,9 @@
           "content": {
             "items": [
               {
-                "kind": "IMAGE",
                 "name": "photo.png",
                 "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
-                "width": 1,
-                "height": 1
+                "meta": { "kind": "IMAGE", "width": 1, "height": 1 }
               }
             ]
           }

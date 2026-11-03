@@ -1475,8 +1475,10 @@ CREATE TABLE public."MediaAsset" (
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     digest character varying(64) NOT NULL,
     bytes bigint NOT NULL,
+    meta jsonb,
     "isDeleted" boolean DEFAULT false NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "MediaAsset_meta_object_check" CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
 
@@ -3057,6 +3059,9 @@ CREATE INDEX "LoginCode_userId_idx" ON public."LoginCode" USING btree ("userId")
 --
 
 CREATE INDEX "MediaAsset_isDeleted_idx" ON public."MediaAsset" USING btree ("isDeleted");
+
+CREATE INDEX "MediaAsset_thumbnail_digest_idx" ON public."MediaAsset" ((meta #>> '{thumbnail,digest}'))
+    WHERE meta #>> '{thumbnail,digest}' IS NOT NULL;
 
 
 --

@@ -182,6 +182,7 @@ identifier = "allow-media-download"
 description = "Enables the task-scoped native media download commands (stream into the shared cache, report progress, and cancel)."
 commands.allow = [
   "cache_media",
+  "has_cached_media",
   "download_media",
   "cancel_media_download",
   "clear_media_cache",

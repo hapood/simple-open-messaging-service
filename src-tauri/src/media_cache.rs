@@ -12,9 +12,6 @@ use tokio_util::sync::CancellationToken;
 
 const CACHE_DIR: &str = "media";
 const CHAT_THUMBNAIL_DIR: &str = "chat-thumbnails";
-const CHAT_THUMBNAIL_LONG_EDGE: u32 = 960;
-const CHAT_THUMBNAIL_MAX_SOURCE_EDGE: u32 = 16_384;
-const CHAT_THUMBNAIL_MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_CACHE_LIMIT_MB: u64 = 512;
 const CACHE_LIMIT_FILENAME: &str = "media-cache-limit-mb";
 const MIN_CACHE_LIMIT_MB: u64 = 128;
@@ -174,200 +171,80 @@ fn thumbnail_path(app: &tauri::AppHandle, key: &str) -> Result<PathBuf, String> 
     Ok(root.join(format!("{key}.webp")))
 }
 
-fn video_thumbnail_path(app: &tauri::AppHandle, key: &str) -> Result<PathBuf, String> {
-    let (data_path, _) = cache_paths(app, key)?;
-    Ok(data_path.with_extension("video.webp"))
-}
-
-pub(crate) async fn get_video_thumbnail(
+/// Server-generated derivatives have an independent authenticated cache namespace.
+pub(crate) async fn fetch_thumbnail(
     app: &tauri::AppHandle,
     proxy: &ServerSessionState,
-    source_path: &str,
+    path: &str,
 ) -> Result<Vec<u8>, String> {
-    validate_path(source_path)?;
-    let (_, _, key) = request_identity(proxy, source_path);
-    tokio::fs::read(video_thumbnail_path(app, &key)?)
-        .await
-        .map_err(|error| format!("read video thumbnail: {error}"))
-}
-
-/** Import the Android player's first rendered frame into the authenticated Rust cache namespace.
- * Decode is authoritative: a loopback caller cannot persist arbitrary bytes under an image URL. */
-pub(crate) async fn put_video_thumbnail(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
-    source_path: &str,
-    bytes: Vec<u8>,
-) -> Result<(), String> {
-    validate_path(source_path)?;
-    if bytes.is_empty() || bytes.len() > 512 * 1024 {
-        return Err("video thumbnail must be between 1 byte and 512 KiB".into());
+    let maintenance = CACHE_MAINTENANCE.get_or_init(|| RwLock::new(()));
+    validate_path(path)?;
+    if !path.starts_with("/uploads/thumbnails/") {
+        return Err("invalid thumbnail path".into());
     }
-    let (_, _, key) = request_identity(proxy, source_path);
-    let output = video_thumbnail_path(app, &key)?;
-    let temporary = output.with_extension("video.webp.tmp");
-    let verified = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
-        let image = image::load_from_memory(&bytes)
-            .map_err(|error| format!("decode video thumbnail: {error}"))?;
-        if image.width() > 512 || image.height() > 512 {
-            return Err("video thumbnail dimensions exceed 512px".into());
-        }
-        let mut encoded = Vec::new();
-        image
-            .write_to(
-                &mut std::io::Cursor::new(&mut encoded),
-                image::ImageOutputFormat::WebP,
-            )
-            .map_err(|error| format!("encode video thumbnail: {error}"))?;
-        Ok(encoded)
-    })
-    .await
-    .map_err(|error| format!("join video-thumbnail worker: {error}"))??;
-    tokio::fs::write(&temporary, verified)
-        .await
-        .map_err(|error| format!("write video thumbnail: {error}"))?;
-    tokio::fs::rename(&temporary, &output)
-        .await
-        .map_err(|error| format!("commit video thumbnail: {error}"))?;
-    if let Some(root) = output.parent() {
-        prune_cache(app, root, &key).await;
-    }
-    Ok(())
-}
-
-/** Generate at most one 960px WebP per authenticated media-cache identity. Image decode/resize is CPU
- * work, so keep it off Tokio workers. Atomic rename prevents a racing URI request from seeing a partial
- * image. Sources already within the target box are still re-encoded: the alternate URL has one stable
- * WebP content type and never aliases the original cache file. */
-async fn ensure_chat_thumbnail(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
-    source_path: &str,
-    source_bytes: Vec<u8>,
-) -> Result<Vec<u8>, String> {
-    validate_path(source_path)?;
-    let (_, _, key) = request_identity(proxy, source_path);
+    let (origin, token, key) = request_identity(proxy, path);
     let output = thumbnail_path(app, &key)?;
-    if let Ok(bytes) = tokio::fs::read(&output).await {
-        return Ok(bytes);
-    }
     let lock = key_lock(&format!("thumbnail:{key}")).await;
     let _guard = lock.lock().await;
-    if let Ok(bytes) = tokio::fs::read(&output).await {
-        return Ok(bytes);
-    }
-    let temporary = output.with_extension("webp.tmp");
-    let output_for_worker = output.clone();
-    let temporary_for_worker = temporary.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
-        let mut limits = image::io::Limits::default();
-        limits.max_image_width = Some(CHAT_THUMBNAIL_MAX_SOURCE_EDGE);
-        limits.max_image_height = Some(CHAT_THUMBNAIL_MAX_SOURCE_EDGE);
-        limits.max_alloc = Some(CHAT_THUMBNAIL_MAX_DECODE_BYTES);
-        let mut reader = image::io::Reader::new(std::io::Cursor::new(source_bytes))
-            .with_guessed_format()
-            .map_err(|error| format!("identify thumbnail source: {error}"))?;
-        reader.limits(limits);
-        let decoded = reader
-            .decode()
-            .map_err(|error| format!("decode thumbnail source: {error}"))?;
-        let resized = if decoded.width() > CHAT_THUMBNAIL_LONG_EDGE
-            || decoded.height() > CHAT_THUMBNAIL_LONG_EDGE
-        {
-            decoded.resize(
-                CHAT_THUMBNAIL_LONG_EDGE,
-                CHAT_THUMBNAIL_LONG_EDGE,
-                image::imageops::FilterType::Triangle,
-            )
-        } else {
-            decoded
-        };
-        let mut bytes = Vec::new();
-        resized
-            .write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageOutputFormat::WebP,
-            )
-            .map_err(|error| format!("encode thumbnail: {error}"))?;
-        std::fs::write(&temporary_for_worker, &bytes)
-            .map_err(|error| format!("write thumbnail: {error}"))?;
-        std::fs::rename(&temporary_for_worker, &output_for_worker)
-            .map_err(|error| format!("commit thumbnail: {error}"))?;
-        Ok(bytes)
-    })
-    .await
-    .map_err(|error| format!("join thumbnail worker: {error}"))?
-}
-
-pub(crate) async fn get_or_create_chat_thumbnail(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
-    source_path: &str,
-) -> Result<Vec<u8>, String> {
-    validate_path(source_path)?;
-    let (_, _, key) = request_identity(proxy, source_path);
-    if let Ok(bytes) = tokio::fs::read(thumbnail_path(app, &key)?).await {
-        return Ok(bytes);
-    }
-    let original = get_or_fetch(app, proxy, source_path).await?;
-    ensure_chat_thumbnail(app, proxy, source_path, original.bytes).await
-}
-
-pub(crate) async fn read_chat_thumbnail(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
-    source_path: &str,
-) -> Option<Vec<u8>> {
-    validate_path(source_path).ok()?;
-    let (_, _, key) = request_identity(proxy, source_path);
-    tokio::fs::read(thumbnail_path(app, &key).ok()?).await.ok()
-}
-
-/** Cache-only thumbnail lookup for size-gated list cards. It may encode a missing thumbnail from a
- * complete cached original, but it never calls get_or_fetch and therefore never opens the network. */
-pub(crate) async fn get_cached_chat_thumbnail(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
-    source_path: &str,
-) -> Result<Vec<u8>, String> {
-    validate_path(source_path)?;
-    let (_, _, key) = request_identity(proxy, source_path);
-    if let Ok(bytes) = tokio::fs::read(thumbnail_path(app, &key)?).await {
-        return Ok(bytes);
-    }
-    let maintenance = CACHE_MAINTENANCE.get_or_init(|| RwLock::new(()));
-    let _maintenance_guard = maintenance.read().await;
-    let (data_path, meta_path) = cache_paths(app, &key)?;
-    let lock = key_lock(&key).await;
-    let _guard = lock.lock().await;
-    let original = read_cached(&data_path, &meta_path, expected_digest(source_path), true)
-        .await
-        .ok_or_else(|| "original image is not cached".to_string())?;
-    drop(_guard);
-    drop(_maintenance_guard);
-    ensure_chat_thumbnail(app, proxy, source_path, original.bytes).await
-}
-
-/** Best-effort post-original warm-up. The URI response must not wait for this: a later thumbnail request
- * either hits the completed file or joins the same per-thumbnail lock in ensure_chat_thumbnail. */
-pub(crate) fn warm_chat_thumbnail(
-    app: tauri::AppHandle,
-    proxy: ServerSessionState,
-    source_path: String,
-) {
-    tauri::async_runtime::spawn(async move {
-        match get_or_create_chat_thumbnail(&app, &proxy, &source_path).await {
-            Ok(_) => {
-                let _ = app.emit(
-                    "chat-thumbnail-ready",
-                    serde_json::json!({ "sourcePath": source_path }),
-                );
+    {
+        let _maintenance = maintenance.read().await;
+        if let Ok(bytes) = tokio::fs::read(&output).await {
+            if request_identity(proxy, path).2 != key {
+                return Err("thumbnail session changed".into());
             }
-            Err(error) => {
-                log::debug!("chat thumbnail warm-up skipped for {source_path}: {error}");
-            }
+            return Ok(bytes);
         }
-    });
+    }
+    let mut request = proxy
+        .api_client(&origin)
+        .get(format!("{origin}{path}"))
+        .timeout(std::time::Duration::from_secs(30));
+    if let Some(token) = token.as_ref() {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("thumbnail HTTP {}", response.status()));
+    }
+    let digest = response
+        .headers()
+        .get("x-thumbnail-digest")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("missing thumbnail digest")?
+        .to_string();
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        if bytes.len() + chunk.len() > 1024 * 1024 {
+            return Err("thumbnail too large".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if sha256_hex(&bytes) != digest {
+        return Err("thumbnail digest mismatch".into());
+    }
+    if request_identity(proxy, path).2 != key {
+        return Err("thumbnail session changed".into());
+    }
+    let _maintenance = maintenance.read().await;
+    if request_identity(proxy, path).2 != key {
+        return Err("thumbnail session changed".into());
+    }
+    let temporary = output.with_extension("tmp");
+    tokio::fs::write(&temporary, &bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::rename(&temporary, &output)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Ok(root) = app.path().app_cache_dir().map(|p| p.join(CACHE_DIR)) {
+        prune_cache(app, &root, &key).await;
+    }
+    if request_identity(proxy, path).2 != key {
+        return Err("thumbnail session changed".into());
+    }
+    Ok(bytes)
 }
 
 async fn key_lock(key: &str) -> KeyLock {
@@ -1389,11 +1266,6 @@ async fn prune_cache(app: &tauri::AppHandle, root: &Path, protected_key: &str) {
                 }
             })
             .unwrap_or_else(|| metadata.len());
-        let thumbnail_size = tokio::fs::metadata(root.join(format!("{key}.video.webp")))
-            .await
-            .map(|value| value.len())
-            .unwrap_or(0);
-        let size = size.saturating_add(thumbnail_size);
         total = total.saturating_add(size);
         if key != protected_key {
             let touched = tokio::fs::metadata(&meta_path)
@@ -1404,7 +1276,20 @@ async fn prune_cache(app: &tauri::AppHandle, root: &Path, protected_key: &str) {
             candidates.push((touched, size, key.to_string()));
         }
     }
+    let thumbnail_entries = thumbnail_entries(app).await;
+    total = total.saturating_add(thumbnail_entries.iter().map(|(_, size)| size).sum::<u64>());
     let max_cache_bytes = cache_limit_mb(app).saturating_mul(1024 * 1024);
+    for (path, size) in thumbnail_entries {
+        if total <= max_cache_bytes {
+            break;
+        }
+        if path.file_stem().and_then(|s| s.to_str()) == Some(protected_key) {
+            continue;
+        }
+        if tokio::fs::remove_file(path).await.is_ok() {
+            total = total.saturating_sub(size);
+        }
+    }
     if total <= max_cache_bytes {
         return;
     }
@@ -1412,12 +1297,34 @@ async fn prune_cache(app: &tauri::AppHandle, root: &Path, protected_key: &str) {
     for (_, size, key) in candidates {
         let _ = tokio::fs::remove_file(root.join(format!("{key}.bin"))).await;
         let _ = tokio::fs::remove_file(root.join(format!("{key}.json"))).await;
-        let _ = tokio::fs::remove_file(root.join(format!("{key}.video.webp"))).await;
         total = total.saturating_sub(size);
         if total <= max_cache_bytes {
             break;
         }
     }
+}
+
+async fn thumbnail_entries(app: &tauri::AppHandle) -> Vec<(PathBuf, u64)> {
+    let mut result = Vec::new();
+    let Ok(root) = app
+        .path()
+        .app_cache_dir()
+        .map(|p| p.join(CHAT_THUMBNAIL_DIR))
+    else {
+        return result;
+    };
+    let Ok(mut entries) = tokio::fs::read_dir(root).await else {
+        return result;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry.path().extension().and_then(|s| s.to_str()) != Some("webp") {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata().await {
+            result.push((entry.path(), meta.len()));
+        }
+    }
+    result
 }
 
 fn cache_limit_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1463,13 +1370,15 @@ async fn cache_used_bytes(app: &tauri::AppHandle) -> u64 {
                 .sum(),
             None => entry.metadata().await.map(|meta| meta.len()).unwrap_or(0),
         };
-        let thumbnail_size = tokio::fs::metadata(root.join(format!("{key}.video.webp")))
-            .await
-            .map(|value| value.len())
-            .unwrap_or(0);
-        total = total.saturating_add(size.saturating_add(thumbnail_size));
+        total = total.saturating_add(size);
     }
-    total
+    total.saturating_add(
+        thumbnail_entries(app)
+            .await
+            .iter()
+            .map(|(_, size)| size)
+            .sum::<u64>(),
+    )
 }
 
 #[tauri::command]
@@ -1527,6 +1436,16 @@ pub(crate) async fn clear_media_cache(app: tauri::AppHandle) -> Result<MediaCach
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("clear media cache: {error}")),
     }
+    let thumbnails = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join(CHAT_THUMBNAIL_DIR);
+    match tokio::fs::remove_dir_all(thumbnails).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("clear thumbnail cache: {error}")),
+    }
     std::fs::create_dir_all(&root).map_err(|e| format!("recreate media cache: {e}"))?;
     Ok(MediaCacheInfo {
         limit_mb: cache_limit_mb(&app),
@@ -1537,6 +1456,23 @@ pub(crate) async fn clear_media_cache(app: tauri::AppHandle) -> Result<MediaCach
 #[cfg(test)]
 #[path = "tests/media_cache_tests.rs"]
 mod tests;
+
+#[tauri::command]
+pub(crate) async fn has_cached_media(
+    app: tauri::AppHandle,
+    proxy: tauri::State<'_, ServerSessionState>,
+    path: String,
+) -> Result<bool, String> {
+    validate_path(&path)?;
+    let (_, _, key) = request_identity(&proxy, &path);
+    let (data, meta) = cache_paths(&app, &key)?;
+    let lock = key_lock(&key).await;
+    let _guard = lock.lock().await;
+    let found = read_cached(&data, &meta, expected_digest(&path), false)
+        .await
+        .is_some();
+    Ok(found && request_identity(&proxy, &path).2 == key)
+}
 
 #[tauri::command]
 pub(crate) async fn cache_media(

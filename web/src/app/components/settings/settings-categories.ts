@@ -3,7 +3,6 @@ import { TranslocoService } from '@jsverse/transloco';
 import { AppIconType } from '../icon/model';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
-import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
 import { WebPushService } from '../../services/web-push.service';
 import { WebsocketService } from '../../services/websocket.service';
@@ -61,7 +60,6 @@ export interface SettingsCategoryDeps {
   readonly theme: ThemeService;
   readonly chatAppearance: ChatAppearanceService;
   readonly language: LanguageService;
-  readonly mediaSize: MediaSizeThresholdService;
   readonly bgSync: BackgroundSyncService;
   readonly webPush: WebPushService;
   readonly ws: WebsocketService;
@@ -88,15 +86,6 @@ export function buildSettingsCategories(
           ? 'settings.themeLight'
           : 'settings.themeDark';
     return d.transloco.translate(key);
-  };
-  const thresholdLabel = (): string => {
-    void d.language.lang();
-    const policy = d.mediaSize.policy();
-    if (policy.mode === 'unlimited')
-      return d.transloco.translate('settings.noLimit');
-    const kb = policy.bytes / 1024;
-    if (kb >= 1024) return `${kb / 1024} MB`;
-    return `${kb} KB`;
   };
   const pushSummary = (): string => {
     void d.language.lang();
@@ -167,7 +156,7 @@ export function buildSettingsCategories(
       id: 'media',
       icon: AppIconType.IMAGE,
       titleKey: 'settings.media',
-      summary: thresholdLabel,
+      summary: () => d.transloco.translate('settings.uploadConcurrency'),
       component: SettingsMediaComponent,
       visible: () => true,
       order: 2,

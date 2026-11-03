@@ -18,7 +18,6 @@ import {
 } from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../app/i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../app/i18n/transloco.loader';
-import { MediaSizeThresholdService } from '../app/services/media-size-threshold.service';
 import { MESSAGE_THREAD_ADAPTER } from '../app/components/message-thread/message-thread-adapter';
 import { PlaygroundMessageThreadAdapter } from './playground-message-thread.adapter';
 import { WebsocketService } from '../app/services/websocket.service';
@@ -47,15 +46,6 @@ import { ProfileNamespaceRepository } from '../app/services/profile-namespace-st
 import { UserService } from '../app/services/user.service';
 import { WebdbService, WebdbStorage } from '../app/services/webdb.service';
 import { SessionLifecycleService } from '../app/services/session-lifecycle.service';
-
-/** Mock media is embedded as data/blob URLs, so this standalone entry never applies the production
- * remote-download size gate. The production app keeps its normal user-configurable service. */
-const playgroundMediaThreshold = {
-  policy: () => ({ mode: 'unlimited' as const }),
-  shouldDefer: () => false,
-  isLoaded: () => true,
-  markLoaded: () => undefined,
-};
 
 const playgroundNamespaceRepository = {
   resolve: (pair: {
@@ -145,10 +135,6 @@ export const playgroundConfig: ApplicationConfig = {
       withHashLocation(),
     ),
     provideAnimationsAsync(),
-    {
-      provide: MediaSizeThresholdService,
-      useValue: playgroundMediaThreshold,
-    },
     {
       provide: MESSAGE_THREAD_ADAPTER,
       useExisting: PlaygroundMessageThreadAdapter,

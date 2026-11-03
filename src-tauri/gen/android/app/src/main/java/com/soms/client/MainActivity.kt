@@ -893,17 +893,13 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun open(
             streamUrl: String,
-            thumbnailUploadUrl: String,
             digest: String,
-            hasThumbnail: Boolean,
         ) {
             val activity = activityRef.get() ?: return
             activity.runOnUiThread {
                 activity.startActivity(
                     Intent(activity, VideoPlayerActivity::class.java)
                         .putExtra(VideoPlayerActivity.EXTRA_STREAM_URL, streamUrl)
-                        .putExtra(VideoPlayerActivity.EXTRA_THUMBNAIL_UPLOAD_URL, thumbnailUploadUrl)
-                        .putExtra(VideoPlayerActivity.EXTRA_HAS_THUMBNAIL, hasThumbnail)
                         .putExtra(VideoPlayerActivity.EXTRA_DIGEST, digest),
                 )
             }

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { UploadController } from './upload.controller.js';
+import { UploadRecoveryService } from './upload-recovery.service.js';
 import { ResumableUploadService } from './resumable-upload.service.js';
 import { MediaAccessService } from './media-access.service.js';
 import { UploadModule } from './upload.module.js';
@@ -24,7 +25,11 @@ import { QuotaModule } from '../quota/quota.module.js';
 @Module({
   imports: [UploadModule, MessageModule, QuotaModule],
   controllers: [UploadController],
-  providers: [ResumableUploadService, MediaAccessService],
+  providers: [
+    ResumableUploadService,
+    MediaAccessService,
+    UploadRecoveryService,
+  ],
   exports: [ResumableUploadService, MediaAccessService],
 })
 export class ResumableUploadModule {}

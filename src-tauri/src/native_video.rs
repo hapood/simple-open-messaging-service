@@ -6,7 +6,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OnceCell, RwLock};
 
 const MAX_HEADERS: usize = 16 * 1024;
-const MAX_THUMBNAIL: usize = 512 * 1024;
 static VIDEO_HUB: OnceCell<Arc<VideoHub>> = OnceCell::const_new();
 
 struct VideoHub {
@@ -18,8 +17,6 @@ struct VideoHub {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeVideoStream {
     stream_url: String,
-    thumbnail_upload_url: String,
-    has_thumbnail: bool,
 }
 
 /** Register a capability on the process-wide loopback Range server backed by the authoritative Rust
@@ -47,16 +44,9 @@ pub(crate) async fn create_native_video_stream(
         .map(|value| format!("{value:02x}"))
         .collect::<String>();
     let video_route = format!("/video/{capability}");
-    let thumbnail_route = format!("/thumbnail/{capability}");
     hub.routes.write().await.insert(capability, path.clone());
-    let proxy = proxy.inner().clone();
-    let has_thumbnail = media_cache::get_video_thumbnail(&app, &proxy, &path)
-        .await
-        .is_ok();
     Ok(NativeVideoStream {
         stream_url: format!("http://localhost:{}{video_route}", hub.port),
-        thumbnail_upload_url: format!("http://localhost:{}{thumbnail_route}", hub.port),
-        has_thumbnail,
     })
 }
 
@@ -235,39 +225,6 @@ async fn serve(
             &[("Accept-Ranges", "bytes")],
         )
         .await;
-    }
-
-    if method == "POST" && route_parts.get(1) == Some(&"thumbnail") {
-        let Some(source_path) = source_path else {
-            return respond(&mut socket, 404, "text/plain", &[], &[]).await;
-        };
-        let length = headers
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("Content-Length: ")
-                    .or_else(|| line.strip_prefix("content-length: "))
-            })
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .ok_or_else(|| "video thumbnail request has no content length".to_string())?;
-        if length == 0 || length > MAX_THUMBNAIL {
-            return respond(&mut socket, 413, "text/plain", &[], &[]).await;
-        }
-        let mut body = request[header_end..].to_vec();
-        while body.len() < length {
-            let remaining = length - body.len();
-            let mut chunk = vec![0u8; remaining.min(16 * 1024)];
-            let read = socket
-                .read(&mut chunk)
-                .await
-                .map_err(|error| format!("read video thumbnail: {error}"))?;
-            if read == 0 {
-                return respond(&mut socket, 400, "text/plain", &[], &[]).await;
-            }
-            body.extend_from_slice(&chunk[..read]);
-        }
-        body.truncate(length);
-        media_cache::put_video_thumbnail(&app, &proxy, &source_path, body).await?;
-        return respond(&mut socket, 204, "text/plain", &[], &[]).await;
     }
 
     respond(&mut socket, 404, "text/plain", &[], &[]).await

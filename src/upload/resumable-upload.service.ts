@@ -24,6 +24,7 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { MAX_FILE_NAME_LEN, type OutboundFilePayload } from './file-content.js';
 import { ContentType } from '../database/enums.js';
 import { dataDirectory } from '../common/data-directory.js';
+import { InvalidMediaDataError } from './media-tool.js';
 import { InvalidUploadMediaError, UploadService } from './upload.service.js';
 
 import { MEDIA_UPLOAD_CHUNK_BYTES } from '../../shared/media-upload-limits.js';
@@ -56,7 +57,7 @@ export interface UploadSessionView {
  *
  * Session status meanings:
  *   UPLOADING  — chunks still arriving (sidecar authoritative for the offset)
- *   COMPLETING — per-file done: digest + result recorded, staging retained, awaiting batch commit
+ *   COMPLETING — complete bytes accepted; server processing or batch commit remains pending
  *   COMPLETED  — the batch committed (message exists, bytes in the shard tree, staging removed)
  *   ABORTED    — terminal failure (admin abort / staged part lost); re-init resets for retry
  *
@@ -262,6 +263,10 @@ export class ResumableUploadService {
       let session = await this.owned(userId, uploadId);
       if (session.status === 'COMPLETED') return this.viewOf(session);
       if (session.status === 'ABORTED') return this.invalid('upload aborted');
+      if (session.status === 'COMPLETING' && session.digest && session.result) {
+        await this.tryCommitBatch(session.clientMessageId, userId);
+        return this.viewOf(await this.owned(userId, uploadId));
+      }
       const offset = await this.readSidecarOffset(session);
       if (offset !== session.totalBytes) {
         return this.invalid('upload is incomplete');
@@ -272,6 +277,21 @@ export class ResumableUploadService {
         .catch(() => -1);
       if (BigInt(actual) !== session.totalBytes) {
         return this.invalid('temporary file size mismatch');
+      }
+      // Persist the server-owned continuation before decoding or generating derivatives.
+      if (session.status === 'UPLOADING') {
+        const [completing] = await this.database.db
+          .update(uploadSession)
+          .set({ status: 'COMPLETING', updatedAt: new Date() })
+          .where(
+            and(
+              eq(uploadSession.id, session.id),
+              eq(uploadSession.status, 'UPLOADING'),
+            ),
+          )
+          .returning();
+        if (!completing) return this.invalid('upload state changed');
+        session = completing;
       }
       let stored = session.result as {
         payload?: OutboundFilePayload;
@@ -288,7 +308,11 @@ export class ResumableUploadService {
             session.mimeType,
           )
           .catch(async (error: unknown) => {
-            if (!(error instanceof InvalidUploadMediaError)) throw error;
+            if (
+              !(error instanceof InvalidUploadMediaError) &&
+              !(error instanceof InvalidMediaDataError)
+            )
+              throw error;
             await this.abortSession(session.id, error.message);
             await this.messages.failStaged(
               userId,
@@ -313,11 +337,6 @@ export class ResumableUploadService {
             ? { overrideContentType: resolved.overrideContentType }
             : {}),
         };
-        // Dedup fast path: identical bytes already in the shard tree — the staging file is
-        // immediately droppable; the batch commit's move phase will skip this digest.
-        if (this.upload.casShardExists(resolved.digest)) {
-          await this.discardStaging(session.tmpKey);
-        }
         const [updated] = await this.database.db
           .update(uploadSession)
           .set({
@@ -329,7 +348,7 @@ export class ResumableUploadService {
           .where(
             and(
               eq(uploadSession.id, session.id),
-              eq(uploadSession.status, 'UPLOADING'),
+              eq(uploadSession.status, 'COMPLETING'),
             ),
           )
           .returning();
@@ -410,7 +429,13 @@ export class ResumableUploadService {
       });
       if (items.some((item) => !item.digest || !item.payload)) return null;
       for (const item of items) {
-        if (this.upload.casShardExists(item.digest)) continue; // dedup or a prior crash's landing
+        // Processing errors retain COMPLETING for retry; only actual missing bytes abort the part.
+        item.payload.localMeta = await this.upload.prepareStagedMetadata(
+          this.partPath(item.session.tmpKey),
+          item.digest,
+          item.payload.localMeta,
+        );
+        if (this.upload.casShardExists(item.digest)) continue;
         try {
           await this.upload.landStagedPart(
             this.partPath(item.session.tmpKey),
@@ -725,6 +750,13 @@ export class ResumableUploadService {
     sessions: Array<typeof uploadSession.$inferSelect>,
   ) {
     for (const session of sessions) {
+      const payload = (session.result as { payload: OutboundFilePayload })
+        .payload;
+      payload.localMeta = await this.upload.prepareStagedMetadata(
+        this.partPath(session.tmpKey),
+        session.digest!,
+        payload.localMeta,
+      );
       if (!this.upload.casShardExists(session.digest!)) {
         await this.upload.landStagedPart(
           this.partPath(session.tmpKey),
@@ -867,6 +899,8 @@ export class ResumableUploadService {
         : session.status === 'ABORTED'
           ? 0n
           : await this.readSidecarOffset(session);
+    const result = stored?.payload ? { ...stored.payload } : undefined;
+    if (result) delete result.localMeta;
     return {
       uploadId: session.uploadId,
       clientMessageId: session.clientMessageId,
@@ -878,7 +912,7 @@ export class ResumableUploadService {
       offset: Number(offset),
       chunkSize: RESUMABLE_CHUNK_SIZE,
       status: session.status,
-      ...(stored?.payload ? { result: stored.payload } : {}),
+      ...(result ? { result } : {}),
     };
   }
 

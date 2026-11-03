@@ -11,110 +11,20 @@ pub(crate) async fn proxy_media(
         Some(pq) => pq.as_str().to_string(),
         None => "/".to_string(),
     };
-    // First-frame thumbnails live inside the authenticated Rust media-cache namespace and therefore share
-    // its quota, eviction, clear-cache and account isolation. The URL contains the canonical source path;
-    // no digest-only global namespace can leak a prior account's frame.
-    if let Some(source_path) = request.uri().path().strip_prefix("/video-thumbnails") {
-        if !source_path.starts_with("/uploads/") {
-            responder.respond(empty(StatusCode::NOT_FOUND));
-            return;
-        }
-        let query = request
-            .uri()
-            .query()
-            .unwrap_or("")
-            .split('&')
-            .filter(|field| !field.is_empty() && !field.starts_with("v="))
-            .collect::<Vec<_>>()
-            .join("&");
-        let source_path = if query.is_empty() {
-            source_path.to_string()
-        } else {
-            format!("{source_path}?{query}")
-        };
-        match media_cache::get_video_thumbnail(&app, &st, &source_path).await {
-            Ok(bytes) => {
-                responder.respond(
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header("content-type", "image/webp")
-                        .header("content-length", bytes.len().to_string())
-                        .header("cache-control", "no-store")
-                        .header("x-content-type-options", "nosniff")
-                        .body(Cow::Owned(bytes))
-                        .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
-                );
-            }
-            Err(_) => responder.respond(empty(StatusCode::NOT_FOUND)),
-        }
-        return;
-    }
-    // Alternate chat-card path: the suffix is the canonical authenticated `/uploads/*` path. Rust
-    // reuses the original cache/download, creates a bounded WebP once, and falls back to original bytes
-    // for unsupported/corrupt image formats. The canonical `/uploads/*` branch below always stays original.
-    if let Some(source_path) = request.uri().path().strip_prefix("/chat-thumbnails") {
-        if !source_path.starts_with("/uploads/") {
-            responder.respond(empty(StatusCode::NOT_FOUND));
-            return;
-        }
-        if let Some(bytes) = media_cache::read_chat_thumbnail(&app, &st, source_path).await {
-            responder.respond(
+    if path_and_query.starts_with("/uploads/thumbnails/") {
+        match media_cache::fetch_thumbnail(&app, &st, &path_and_query).await {
+            Ok(bytes) => responder.respond(
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "image/webp")
-                    .header("content-length", bytes.len().to_string())
                     .header("cache-control", "no-store")
-                    .header("x-content-type-options", "nosniff")
                     .body(Cow::Owned(bytes))
                     .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
-            );
-            return;
-        }
-        match media_cache::get_or_fetch(&app, &st, source_path).await {
-            Ok(media) => {
-                // Do not put WebP encoding on the first-paint path. The original displays now; completion
-                // emits chat-thumbnail-ready and the mounted card reloads this same alternate URL.
-                media_cache::warm_chat_thumbnail(app.clone(), st.clone(), source_path.to_string());
-                let mut builder = Response::builder()
-                    .status(StatusCode::OK)
-                    .header("content-length", media.bytes.len().to_string())
-                    .header("cache-control", "no-store");
-                if let Some(content_type) = media.content_type {
-                    builder = builder.header("content-type", content_type);
-                }
-                responder.respond(
-                    builder
-                        .body(Cow::Owned(media.bytes))
-                        .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
-                );
-            }
+            ),
             Err(error) => {
-                warn!("chat thumbnail source failed for {source_path}: {error}");
-                responder.respond(empty(StatusCode::BAD_GATEWAY));
+                warn!("thumbnail request failed: {error}");
+                responder.respond(empty(StatusCode::NOT_FOUND));
             }
-        }
-        return;
-    }
-    // Cache-only variant used by oversized gallery-card icons. A miss must stay a 404: probing this
-    // route is not permission to fetch the original bytes across the user's configured size gate.
-    if let Some(source_path) = request.uri().path().strip_prefix("/cached-chat-thumbnails") {
-        if !source_path.starts_with("/uploads/") {
-            responder.respond(empty(StatusCode::NOT_FOUND));
-            return;
-        }
-        if let Ok(bytes) = media_cache::get_cached_chat_thumbnail(&app, &st, source_path).await {
-            responder.respond(
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header("content-type", "image/webp")
-                    .header("content-length", bytes.len().to_string())
-                    .header("cache-control", "no-store")
-                    .header("x-content-type-options", "nosniff")
-                    .body(Cow::Owned(bytes))
-                    .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
-            );
-        } else {
-            responder.respond(empty(StatusCode::NOT_FOUND));
         }
         return;
     }
@@ -161,13 +71,6 @@ pub(crate) async fn proxy_media(
     // first-frame delay versus passthrough and prevents a later duplicate download.
     match media_cache::get_or_fetch(&app, &st, &path_and_query).await {
         Ok(media) => {
-            let should_warm_thumbnail = media
-                .content_type
-                .as_deref()
-                .is_some_and(|value| value.starts_with("image/"));
-            if should_warm_thumbnail {
-                media_cache::warm_chat_thumbnail(app.clone(), st.clone(), path_and_query.clone());
-            }
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header("content-length", media.bytes.len().to_string())

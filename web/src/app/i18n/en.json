@@ -594,7 +594,6 @@
     "mediaPending": "Waiting to download",
     "mediaDownloading": "Downloading…",
     "mediaFailed": "Download failed",
-    "tapToLoad": "Tap to load",
     "imageLoading": "Loading image…",
     "imageLoadRetry": "Load failed. Tap to retry",
     "unknownSize": "Unknown size",
@@ -718,7 +717,7 @@
     "aliasPlaceholder": "Enter a remark (e.g. Alice (work))"
   },
   "gallery": {
-    "loadImage": "Load image",
+    "loadImage": "View original",
     "loadingImage": "Loading image",
     "downloadedBytes": "Downloaded {{size}}",
     "failed": "Image failed to load",
@@ -1032,7 +1031,6 @@
     "appUpdateTitle": "App updates",
     "appUpdateManual": "Install a new app package to update. In-app download is not available yet.",
     "media": "Media",
-    "mediaThresholdHint": "Larger images show a tap-to-load placeholder.",
     "noLimit": "No limit",
     "devices": "Devices",
     "devicesHint": "Active sessions"

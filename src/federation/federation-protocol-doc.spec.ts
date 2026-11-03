@@ -38,7 +38,10 @@ describe('Federation v1 protocol documentation', () => {
     const ajv = new Ajv2020Module.default({ strict: false });
     ajv.addSchema(readSchema('common.schema.json'));
     const validate = ajv.compile(readSchema('message-content.schema.json'));
-    const image = { digest: 'a'.repeat(64), width: 1, height: 1 };
+    const image = {
+      digest: 'a'.repeat(64),
+      meta: { kind: 'IMAGE', width: 1, height: 1 },
+    };
     for (const name of ['photo.png', '旅行照片.png', undefined, '', null, 1]) {
       const fields = { ...image, ...(name === undefined ? {} : { name }) };
       const expected = typeof name === 'string' && name.length > 0;
@@ -48,7 +51,7 @@ describe('Federation v1 protocol documentation', () => {
       expect(
         validate({
           contentType: 'GALLERY',
-          content: { items: [{ kind: 'IMAGE', ...fields }] },
+          content: { items: [fields] },
         }),
       ).toBe(expected);
     }

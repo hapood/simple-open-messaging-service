@@ -31,6 +31,10 @@ import { detectMedia, type DetectedMedia } from './media-sig.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
 import { FileSizeLimitError } from './file-size-limit.js';
 import { MediaMetadataService } from './media-metadata.service.js';
+import {
+  isStoredMediaMetadata,
+  type StoredMediaMetadata,
+} from './stored-media-metadata.js';
 
 export class InvalidUploadMediaError extends Error {}
 
@@ -93,6 +97,7 @@ export class UploadService {
    *  `*.tmp` crash-leftovers from the buffer publish paths. Kept out of the shard tree so the formal CAS
    *  dirs hold only published blobs and the GC temp pass is a single flat scan (design doc §12.4/§12.6). */
   readonly casTmpDir = dataDirectory('cas', 'tmp');
+  readonly thumbnailDir = dataDirectory('thumbnails');
   private readonly casIngestLocks = new KeyedMutex();
 
   constructor(
@@ -217,9 +222,8 @@ export class UploadService {
    * {@link resolveStagedPart} to gate each part on the staged `intent`:
    *   - IMAGE intent whose bytes are not an inline-renderable image (HEIC/AVIF/…) → downloadable FILE,
    *     signaling `overrideContentType: FILE`;
-   *   - VIDEO/AUDIO intent rejects a non-matching container (AUDIO accepts the recorder-shared
-   *     webm/mp4 containers, mapped to audio);
-   *   - GALLERY detects freely (a webm in a bundle is VIDEO by signature — an accepted limitation).
+   *   - VIDEO/AUDIO intent rejects files without the corresponding actual streams;
+   *   - GALLERY detects every member independently, including audio-only MP4/WebM.
    * Returns the detected family, the trusted on-disk ext, the display MIME (omitted for IMAGE), and the
    * sanitized display name.
    */
@@ -253,8 +257,10 @@ export class UploadService {
         }
         break;
       case ContentType.FILE:
-        family = 'FILE';
-        ext = parseFileExt(filename) || 'bin';
+        family = detected
+          ? (detected.family.toUpperCase() as OutboundFilePayload['family'])
+          : 'FILE';
+        ext = detected?.ext ?? (parseFileExt(filename) || 'bin');
         break;
       case ContentType.VIDEO:
         if (!detected || detected.family !== 'video') {
@@ -264,10 +270,7 @@ export class UploadService {
         ext = detected.ext;
         break;
       case ContentType.AUDIO: {
-        const sharedAsAudio =
-          detected?.family === 'video' &&
-          (detected.ext === 'webm' || detected.ext === 'mp4');
-        if (!detected || (detected.family !== 'audio' && !sharedAsAudio)) {
+        if (!detected || detected.family !== 'audio') {
           throw new InvalidUploadMediaError('invalid audio');
         }
         family = 'AUDIO';
@@ -402,29 +405,30 @@ export class UploadService {
   }> {
     const info = await statAsync(tmpPath);
     const hash = createHash('sha256');
-    const headerChunks: Buffer[] = [];
-    let headerBytes = 0;
     for await (const chunk of createReadStream(tmpPath)) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      hash.update(buffer);
-      if (headerBytes < 4096) {
-        const part = buffer.subarray(0, 4096 - headerBytes);
-        headerChunks.push(part);
-        headerBytes += part.length;
-      }
+      hash.update(chunk);
     }
-    const header = Buffer.concat(headerChunks);
+    const digest = hash.digest('hex');
+    const localMeta = await this.prepareMetadata(tmpPath, digest);
+    const detected = detectMedia(await this.readHeader(tmpPath));
+    const actualDetected =
+      detected && localMeta.kind !== 'FILE'
+        ? {
+            ...detected,
+            family: localMeta.kind.toLowerCase() as DetectedMedia['family'],
+          }
+        : detected;
     const resolved = this.resolveOutboundFile(
-      detectMedia(header),
+      actualDetected,
       intent,
       originalName,
       declaredMime,
     );
-    const metadata = await this.mediaMetadata.fromFile(
-      tmpPath,
-      resolved.family,
-    );
-    const digest = hash.digest('hex');
+    const media = localMeta;
+    const metadata = {
+      ...('width' in media ? { w: media.width, h: media.height } : {}),
+      ...('duration' in media ? { duration: media.duration } : {}),
+    };
     const payload: OutboundFilePayload = {
       digest,
       url: this.casShardPath(digest).url,
@@ -433,6 +437,7 @@ export class UploadService {
       name: resolved.name,
       ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
       ...metadata,
+      localMeta,
     };
     return {
       digest,
@@ -441,6 +446,91 @@ export class UploadService {
         ? { overrideContentType: resolved.overrideContentType }
         : {}),
     };
+  }
+
+  private async readHeader(path: string): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of createReadStream(path, { start: 0, end: 4095 }))
+      chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  }
+
+  /** Recheck an already-landed original when recovering without a durable asset result. */
+  private async verifyOriginal(path: string, digest: string): Promise<void> {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(path)) hash.update(chunk);
+    if (hash.digest('hex') !== digest) throw new Error('CAS digest mismatch');
+  }
+
+  /** Prepare one complete local result; publication of the JSON happens after file landing. */
+  private async prepareMetadata(
+    path: string,
+    digest: string,
+  ): Promise<StoredMediaMetadata> {
+    const existing = await this.mediaAsset.metadata(digest);
+    if (existing) return existing;
+    const processed = await this.mediaMetadata.processFile(path);
+    if (!isStoredMediaMetadata(processed.meta))
+      throw new Error('invalid processed metadata');
+    if (processed.thumbnail) {
+      await saveContentAddressedBuffer(
+        processed.thumbnail,
+        (hash) =>
+          join(this.thumbnailDir, hash.slice(0, 2), hash.slice(2, 4), hash),
+        join(this.thumbnailDir, 'tmp'),
+      );
+    }
+    return processed.meta;
+  }
+
+  async prepareStagedMetadata(
+    tmpPath: string,
+    digest: string,
+    prepared?: StoredMediaMetadata,
+  ): Promise<StoredMediaMetadata> {
+    return this.withCasDigestLock(digest, async () => {
+      if (isStoredMediaMetadata(prepared)) {
+        const media = prepared;
+        if (
+          !('thumbnail' in media) ||
+          existsSync(
+            join(
+              this.thumbnailDir,
+              media.thumbnail.digest.slice(0, 2),
+              media.thumbnail.digest.slice(2, 4),
+              media.thumbnail.digest,
+            ),
+          )
+        )
+          return prepared;
+      }
+      const finalExists = this.casShardExists(digest);
+      if (finalExists)
+        await this.verifyOriginal(this.casShardPath(digest).abs, digest);
+      return this.prepareMetadata(
+        finalExists ? this.casShardPath(digest).abs : tmpPath,
+        digest,
+      );
+    });
+  }
+
+  /** Resume processing from a verified final original without requesting its bytes again. */
+  async ensureLocalMetadata(digest: string): Promise<StoredMediaMetadata> {
+    return this.withCasDigestLock(digest, async () => {
+      const path = this.casShardPath(digest).abs;
+      const size = (await statAsync(path)).size;
+      const existing = await this.mediaAsset.metadata(digest);
+      if (existing) return existing;
+      await this.verifyOriginal(path, digest);
+      const meta = await this.prepareMetadata(path, digest);
+      await this.mediaAsset.publishReady(
+        digest,
+        BigInt(size),
+        async () => {},
+        meta,
+      );
+      return meta;
+    });
   }
 
   /** Shard-tree destination for a digest. Public read-only view for the batch-commit orchestrator. */
@@ -567,6 +657,8 @@ export class UploadService {
         if (size !== opts.declaredBytes)
           throw new Error('CAS file size mismatch');
         FileSizeLimitError.assert(size, opts.maxFileBytes);
+        await this.verifyOriginal(abs, expectedDigest);
+        const meta = await this.prepareMetadata(abs, expectedDigest);
         await this.mediaAsset.publishReady(
           expectedDigest,
           BigInt(size),
@@ -574,6 +666,7 @@ export class UploadService {
             if ((await statAsync(abs)).size !== size)
               throw new Error('CAS file changed before publication');
           },
+          meta,
         );
         return { url, digest: expectedDigest, size };
       }
@@ -688,12 +781,15 @@ export class UploadService {
       };
       const finishPublish = async () => {
         opts.signal?.throwIfAborted();
+        const meta = await this.prepareMetadata(part, expectedDigest);
+        opts.signal?.throwIfAborted();
         await this.mediaAsset.publishReady(
           expectedDigest,
           BigInt(offset),
           async () => {
             await renameAsync(part, abs);
           },
+          meta,
         );
         await unlinkAsync(complete).catch(() => {});
         await unlinkAsync(resume).catch(() => {});

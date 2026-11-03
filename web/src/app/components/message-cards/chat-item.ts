@@ -51,6 +51,7 @@ export interface FileInfo {
   size: number;
   /** Validated mimetype (drives the file-type icon). */
   mimeType: string;
+  thumbnail?: string;
 }
 
 /**

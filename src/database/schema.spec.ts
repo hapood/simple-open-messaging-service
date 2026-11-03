@@ -23,20 +23,29 @@ const baselineTables = new Map(
 );
 
 describe('common row timestamps', () => {
-  it('keeps the disposable schema in one baseline', () => {
+  it('keeps the reset schema and media metadata in one baseline', () => {
     expect(
       readdirSync(migrationsDirectory)
         .filter((name) => name.endsWith('.sql'))
         .sort(),
     ).toEqual(['0000_base.sql']);
+    expect(schema.mediaAsset.meta.getSQLType()).toBe('jsonb');
+    expect(baselineTables.get('MediaAsset')).toContain('meta jsonb');
+    expect(baseline).toContain("'{thumbnail,digest}'");
   });
 
   it('keeps high-frequency peer observations out of identity rows', () => {
-    const identityColumns = tables.find((table) => table.name === 'IdentityNamespace')!.columns.map((column) => column.name);
+    const identityColumns = tables
+      .find((table) => table.name === 'IdentityNamespace')!
+      .columns.map((column) => column.name);
     expect(identityColumns).not.toContain('lastHandshakeAt');
     expect(identityColumns).not.toContain('latestHealthCheck');
-    expect(baselineTables.get('FederationFeedState')).toContain('"lastHandshakeAt" timestamp(3) with time zone');
-    expect(baselineTables.get('FederationFeedState')).toContain('"latestHealthCheck" jsonb');
+    expect(baselineTables.get('FederationFeedState')).toContain(
+      '"lastHandshakeAt" timestamp(3) with time zone',
+    );
+    expect(baselineTables.get('FederationFeedState')).toContain(
+      '"latestHealthCheck" jsonb',
+    );
   });
 
   it('stores peer signing-key creation time as non-null epoch milliseconds', () => {
@@ -54,8 +63,12 @@ describe('common row timestamps', () => {
     expect(column.notNull).toBe(true);
     expect(column.default).toBeUndefined();
     expect(column.getSQLType()).toBe('bigint');
-    expect(baselineTables.get('Profile')).toContain('"generatedAt" bigint NOT NULL');
-    expect(baselineTables.get('Profile')).toContain('"generatedAt" >= 0 AND "generatedAt" <= 9007199254740991');
+    expect(baselineTables.get('Profile')).toContain(
+      '"generatedAt" bigint NOT NULL',
+    );
+    expect(baselineTables.get('Profile')).toContain(
+      '"generatedAt" >= 0 AND "generatedAt" <= 9007199254740991',
+    );
   });
 
   it('checks every business table in both schema definitions', () => {

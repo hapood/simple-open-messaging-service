@@ -4,6 +4,7 @@ import { QuotaService } from '../quota/quota.service.js';
 import { CasOversizeError, UploadService } from '../upload/upload.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { and, eq } from 'drizzle-orm';
+import { isStoredMediaMetadata } from '../upload/stored-media-metadata.js';
 import { mediaAsset } from '../database/schema.js';
 
 /** One admission/accounting boundary for peer-hosted attachment IO in every message path. */
@@ -41,6 +42,8 @@ export class FederationMediaTransferService {
         if (have) {
           if (have.bytes !== BigInt(input.declaredBytes))
             throw new Error('CAS file size mismatch');
+          if (!isStoredMediaMetadata(have.meta))
+            await this.upload.ensureLocalMetadata(input.digest);
           return;
         }
         const day = Math.floor(Date.now() / 86400000);
@@ -103,7 +106,7 @@ export class FederationMediaTransferService {
         eq(mediaAsset.digest, digest),
         eq(mediaAsset.isDeleted, false),
       ),
-      columns: { bytes: true },
+      columns: { bytes: true, meta: true },
     });
   }
 }

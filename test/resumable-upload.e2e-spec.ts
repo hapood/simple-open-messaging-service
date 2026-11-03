@@ -1,4 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { UploadService } from '../src/upload/upload.service';
+import { UploadRecoveryService } from '../src/upload/upload-recovery.service';
+import { MediaMetadataService } from '../src/upload/media-metadata.service';
 import { Test } from '@nestjs/testing';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import type { INestApplication } from '@nestjs/common';
@@ -236,6 +239,125 @@ describe('sequential resumable uploads', () => {
     expect((await uploads.cancel(userId, initialized.uploadId)).status).toBe(
       'ABORTED',
     );
+  });
+
+  it('resumes a moved original without staging and finalizes committed metadata without decoding again', async () => {
+    const clientMessageId = randomUUID();
+    await messages.stageMedia(
+      userId,
+      threadId,
+      'GALLERY' as never,
+      clientMessageId,
+      2,
+    );
+    const bytes = Buffer.from(`recovery-${randomUUID()}`);
+    const initialized = await uploads.init(userId, {
+      clientMessageId,
+      partId: randomUUID(),
+      position: 0,
+      intent: 'FILE',
+      originalName: 'recovery.bin',
+      mimeType: 'application/octet-stream',
+      totalBytes: bytes.length,
+    });
+    await uploads.append(
+      userId,
+      initialized.uploadId,
+      `bytes 0-${bytes.length - 1}/${bytes.length}`,
+      bytes,
+    );
+    expect((await uploads.complete(userId, initialized.uploadId)).status).toBe(
+      'COMPLETING',
+    );
+    const row = (await database.db.query.uploadSession.findFirst({
+      where: eq(uploadSession.uploadId, initialized.uploadId),
+    }))!;
+    await app
+      .get(UploadService)
+      .landStagedPart(
+        join(dataDirectory('resumable'), `${row.tmpKey}.part`),
+        row.digest!,
+      );
+    const result = row.result as { payload: Record<string, unknown> };
+    delete result.payload.localMeta;
+    await database.db
+      .update(uploadSession)
+      .set({ result })
+      .where(eq(uploadSession.id, row.id));
+    const process = vi.spyOn(app.get(MediaMetadataService), 'processFile');
+    try {
+      expect((await uploads.sendCompleted(userId, clientMessageId)).sent).toBe(
+        true,
+      );
+      expect(process).toHaveBeenCalledOnce();
+      const asset = await database.db.query.mediaAsset.findFirst({
+        where: eq(mediaAsset.digest, row.digest!),
+      });
+      expect(asset?.meta?.kind).toBe('FILE');
+      // Simulate a crash after the message/meta transaction, before upload finalization.
+      await database.db
+        .update(uploadSession)
+        .set({ status: 'COMPLETING', completedAt: null })
+        .where(eq(uploadSession.id, row.id));
+      process.mockClear();
+      await app.get(UploadRecoveryService).resume();
+      expect(
+        (
+          await database.db.query.uploadSession.findFirst({
+            where: eq(uploadSession.uploadId, initialized.uploadId),
+          })
+        )?.status,
+      ).toBe('COMPLETED');
+      expect(process).not.toHaveBeenCalled();
+    } finally {
+      process.mockRestore();
+    }
+  });
+
+  it('automatically continues accepted bytes after processing is interrupted', async () => {
+    const clientMessageId = randomUUID();
+    const bytes = Buffer.from(`interrupted-${randomUUID()}`);
+    await messages.stageMedia(
+      userId,
+      threadId,
+      'FILE' as never,
+      clientMessageId,
+    );
+    const initialized = await uploads.init(userId, {
+      clientMessageId,
+      partId: randomUUID(),
+      position: 0,
+      intent: 'FILE',
+      originalName: 'input.bin',
+      mimeType: 'application/octet-stream',
+      totalBytes: bytes.length,
+    });
+    await uploads.append(
+      userId,
+      initialized.uploadId,
+      `bytes 0-${bytes.length - 1}/${bytes.length}`,
+      bytes,
+    );
+    const process = vi
+      .spyOn(app.get(MediaMetadataService), 'processFile')
+      .mockRejectedValueOnce(new Error('interrupted decoder'));
+    try {
+      await expect(
+        uploads.complete(userId, initialized.uploadId),
+      ).rejects.toThrow('interrupted decoder');
+      const interrupted = await database.db.query.uploadSession.findFirst({
+        where: eq(uploadSession.uploadId, initialized.uploadId),
+      });
+      expect(interrupted).toMatchObject({ status: 'COMPLETING', result: null });
+      await app.get(UploadRecoveryService).resume();
+      const finished = await database.db.query.uploadSession.findFirst({
+        where: eq(uploadSession.uploadId, initialized.uploadId),
+      });
+      expect(finished?.status).toBe('COMPLETED');
+      expect(process).toHaveBeenCalledTimes(2);
+    } finally {
+      process.mockRestore();
+    }
   });
 
   it('sends only completed gallery files, compacts positions, and discards unfinished sessions', async () => {

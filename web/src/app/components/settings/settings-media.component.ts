@@ -8,12 +8,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
 import { MatCardModule } from '@angular/material/card';
 import { MatRadioModule } from '@angular/material/radio';
-import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import {
-  MediaSizeThresholdService,
-  MEDIA_LOAD_POLICY_OPTIONS,
-  type MediaLoadPolicy,
-} from '../../services/media-size-threshold.service';
+import { TranslocoPipe } from '@jsverse/transloco';
 import {
   AttachmentUploadQueueService,
   UPLOAD_CONCURRENCY_OPTIONS,
@@ -23,11 +18,7 @@ import {
   NativeMediaCacheService,
 } from '../../services/native-media-cache.service';
 
-/**
- * Settings → Media sub-page. The image size-threshold picker as an M3 radio list (the old dropdown was
- * the only settings control still using a `<mat-select>` — a radio page is the scalable M3 treatment and
- * keeps every Settings choice consistent). Body-only.
- */
+/** Media settings: upload concurrency and native cache capacity. */
 @Component({
   selector: 'app-settings-media',
   imports: [
@@ -38,28 +29,6 @@ import {
     TranslocoPipe,
   ],
   template: `
-    <section class="settings-group">
-      <mat-card appearance="outlined" class="settings-card">
-        <mat-list>
-          @for (
-            policy of options;
-            track policy.mode + (policy.mode === 'limited' ? policy.bytes : 0)
-          ) {
-            <mat-list-item (click)="select(policy)">
-              <span matListItemTitle>{{ label(policy) }}</span>
-              <mat-radio-button
-                matListItemMeta
-                name="media-threshold"
-                [checked]="isSelected(policy)"
-                [attr.aria-label]="label(policy)"
-              >
-              </mat-radio-button>
-            </mat-list-item>
-          }
-        </mat-list>
-      </mat-card>
-      <span class="hint">{{ 'settings.mediaThresholdHint' | transloco }}</span>
-    </section>
     <section class="settings-group">
       <h3>{{ 'settings.uploadConcurrency' | transloco }}</h3>
       <mat-card appearance="outlined" class="settings-card">
@@ -160,14 +129,9 @@ import {
   styleUrl: './sub-page.scss',
 })
 export class SettingsMediaComponent {
-  private readonly media = inject(MediaSizeThresholdService);
   private readonly uploadQueue = inject(AttachmentUploadQueueService);
-  private readonly transloco = inject(TranslocoService);
   readonly nativeCache = inject(NativeMediaCacheService);
 
-  readonly current = this.media.policy;
-  /** The offered threshold options. */
-  readonly options = MEDIA_LOAD_POLICY_OPTIONS;
   readonly uploadConcurrency = this.uploadQueue.maxConcurrent;
   readonly uploadOptions: readonly number[] = UPLOAD_CONCURRENCY_OPTIONS;
   readonly showClearCache = this.nativeCache.available;
@@ -176,28 +140,6 @@ export class SettingsMediaComponent {
   readonly updatingCache = signal(false);
   readonly cacheCleared = signal(false);
   readonly cacheClearFailed = signal(false);
-
-  /** Display label for a policy: "512 KB" / "1 MB" / "2 MB" / "No limit". */
-  label(policy: MediaLoadPolicy): string {
-    if (policy.mode === 'unlimited')
-      return this.transloco.translate('settings.noLimit');
-    const kb = policy.bytes / 1024;
-    if (kb >= 1024) return `${kb / 1024} MB`;
-    return `${kb} KB`;
-  }
-
-  isSelected(policy: MediaLoadPolicy): boolean {
-    const current = this.current();
-    return (
-      current.mode === policy.mode &&
-      (current.mode === 'unlimited' ||
-        (policy.mode === 'limited' && current.bytes === policy.bytes))
-    );
-  }
-
-  select(policy: MediaLoadPolicy): void {
-    this.media.setPolicy(policy);
-  }
 
   selectUploadConcurrency(count: number): void {
     this.uploadQueue.setMaxConcurrent(count);

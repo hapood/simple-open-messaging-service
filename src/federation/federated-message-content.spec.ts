@@ -16,12 +16,16 @@ describe('federated message content projection', () => {
     [
       ContentType.IMAGE,
       { url: cas(digestA), w: 10, h: 20, size: 30, name: 'a.png' },
-      { digest: digestA, width: 10, height: 20, name: 'a.png' },
+      {
+        digest: digestA,
+        meta: { kind: 'IMAGE', width: 10, height: 20 },
+        name: 'a.png',
+      },
     ],
     [
       ContentType.FILE,
       { url: cas(digestA), name: 'a.txt', size: 30, mimeType: 'text/plain' },
-      { digest: digestA, name: 'a.txt', mimeType: 'text/plain' },
+      { digest: digestA, name: 'a.txt', meta: { kind: 'FILE' } },
     ],
     [
       ContentType.VIDEO,
@@ -37,10 +41,7 @@ describe('federated message content projection', () => {
       {
         digest: digestA,
         name: 'a.mp4',
-        mimeType: 'video/mp4',
-        width: 10,
-        height: 20,
-        duration: 1.5,
+        meta: { kind: 'VIDEO', width: 10, height: 20, duration: 1.5 },
       },
     ],
     [
@@ -55,8 +56,7 @@ describe('federated message content projection', () => {
       {
         digest: digestA,
         name: 'a.mp3',
-        mimeType: 'audio/mpeg',
-        duration: 1.5,
+        meta: { kind: 'AUDIO', duration: 1.5 },
       },
     ],
   ] as const)('projects %s without a URL', (contentType, local, wire) => {
@@ -71,7 +71,59 @@ describe('federated message content projection', () => {
           new Map([[digestA, 30]]),
         ),
       ),
-    ).toEqual({ ...local, url: cas(digestA) });
+    ).toEqual({
+      ...local,
+      url: cas(digestA),
+      ...('mimeType' in local ? { mimeType: 'application/octet-stream' } : {}),
+    });
+  });
+
+  it('preserves actual video metadata through FILE projection and retransmission', () => {
+    const wire = {
+      digest: digestA,
+      name: 'video.mp4',
+      meta: { kind: 'VIDEO', width: 20, height: 10, duration: 2 },
+    };
+    const local = fromFederatedMessageContent(
+      ContentType.FILE,
+      JSON.stringify(wire),
+      new Map([[digestA, 100]]),
+    );
+    expect(JSON.parse(local)).toMatchObject({
+      meta: wire.meta,
+      mimeType: 'application/octet-stream',
+    });
+    expect(
+      JSON.parse(toFederatedMessageContent(ContentType.FILE, local)),
+    ).toEqual(wire);
+  });
+
+  it.each([
+    {
+      digest: digestA,
+      name: 'file',
+      mimeType: 'text/plain',
+      meta: { kind: 'FILE' },
+    },
+    {
+      digest: digestA,
+      name: 'file',
+      meta: { kind: 'FILE', mimeType: 'text/plain' },
+    },
+    {
+      digest: digestA,
+      name: 'file',
+      meta: { kind: 'FILE', thumbnail: { digest: digestB } },
+    },
+    { digest: digestA, name: 'file', kind: 'FILE' },
+  ])('rejects non-protocol attachment fields: %j', (wire) => {
+    expect(() =>
+      fromFederatedMessageContent(
+        ContentType.FILE,
+        JSON.stringify(wire),
+        new Map([[digestA, 100]]),
+      ),
+    ).toThrow();
   });
 
   it('requires image filenames across peers', () => {
@@ -87,8 +139,7 @@ describe('federated message content projection', () => {
     );
     expect(wire).toEqual({
       digest: digestA,
-      width: 10,
-      height: 20,
+      meta: { kind: 'IMAGE', width: 10, height: 20 },
       name: 'photo.png',
     });
     expect(
@@ -137,7 +188,9 @@ describe('federated message content projection', () => {
       digestA,
       digestB,
     ]);
-    expect(wire.items[0]).toMatchObject({ width: 2, height: 3 });
+    expect(wire.items[0]).toMatchObject({
+      meta: { kind: 'IMAGE', width: 2, height: 3 },
+    });
     expect(wire.items[0]).not.toHaveProperty('w');
     expect(wire.items[0]).not.toHaveProperty('h');
     expect(wire.items[0]).not.toHaveProperty('size');

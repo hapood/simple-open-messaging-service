@@ -4,7 +4,10 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { uploadMessagePart } from './support/upload';
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import sharp from 'sharp';
+import { readFile } from 'node:fs/promises';
+import { detectMedia } from '../src/upload/media-sig';
 import { eq } from 'drizzle-orm';
 import {
   DatabaseService,
@@ -120,6 +123,39 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   beforeAll(async () => {
     ({ app, database } = await createTestApp((builder) => {
       builder.overrideProvider(MediaMetadataService).useValue({
+        processFile: vi.fn(async (path: string) => {
+          const detected = detectMedia(await readFile(path));
+          const kind = detected?.family.toUpperCase() ?? 'FILE';
+          const thumbnail = await sharp(await makePng(30))
+            .webp()
+            .toBuffer();
+          const descriptor = {
+            digest: createHash('sha256').update(thumbnail).digest('hex'),
+            size: thumbnail.length,
+            mimeType: 'image/webp' as const,
+            width: 1,
+            height: 1,
+          };
+          if (kind === 'IMAGE' || kind === 'VIDEO')
+            return {
+              thumbnail,
+              meta: {
+                mimeType: kind === 'IMAGE' ? 'image/png' : 'video/mp4',
+                kind,
+                width: 1,
+                height: 1,
+                ...(kind === 'VIDEO' ? { duration: 1 } : {}),
+                thumbnail: descriptor,
+              },
+            };
+          return {
+            meta: {
+              mimeType: 'application/octet-stream',
+              kind,
+              ...(kind === 'AUDIO' ? { duration: 1 } : {}),
+            },
+          };
+        }),
         fromFile: vi.fn(
           async (
             _path: string,
@@ -133,7 +169,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
                   ? { duration: 1 }
                   : {},
         ),
-      } satisfies Pick<MediaMetadataService, 'fromFile'>);
+      });
     }));
     port = (app.getHttpServer().address() as { port: number }).port;
 
@@ -560,6 +596,38 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .get(contextualUrl)
       .set('Authorization', `Bearer ${token2}`);
     expect(bGet.status).toBe(404);
+
+    const thumbnailUrl = contextualUrl.replace('/msg-assets/', '/thumbnails/');
+    const preview = await request(app.getHttpServer())
+      .get(thumbnailUrl)
+      .set('Authorization', `Bearer ${token}`);
+    expect(preview.status).toBe(200);
+    expect(preview.headers['content-type']).toContain('image/webp');
+    expect(preview.headers['x-thumbnail-digest']).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      (
+        await request(app.getHttpServer())
+          .get(thumbnailUrl)
+          .set('Authorization', `Bearer ${token2}`)
+      ).status,
+    ).toBe(404);
+    expect((await request(app.getHttpServer()).get(thumbnailUrl)).status).toBe(
+      401,
+    );
+    expect(
+      (
+        await request(app.getHttpServer())
+          .get(url.replace('/msg-assets/', '/thumbnails/'))
+          .set('Authorization', `Bearer ${token}`)
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await request(app.getHttpServer())
+          .get(`${thumbnailUrl}&seq=${promoted.seq}`)
+          .set('Authorization', `Bearer ${token}`)
+      ).status,
+    ).toBe(404);
   });
 
   it('serves avatars at /uploads/avatars/ to ANY authed user (auth-n only, gate-exempt)', async () => {

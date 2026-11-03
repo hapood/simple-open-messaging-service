@@ -4,6 +4,16 @@
 
 Not backward compatible with draft.1.
 
+- Unify single media files and GALLERY items as `{ digest, name, meta }`.
+  Move media kind, dimensions, and duration under `meta`; single files now
+  explicitly carry `meta.kind`. FILE presentation permits any media kind.
+- Remove `mimeType` from media file content. MIME interpretation is local to
+  the consumer; unrecognized resource formats may use `application/octet-stream`.
+  Original digest/length descriptors and resource transfer remain unchanged.
+  Thumbnail bytes, references, and metadata are not part of media federation.
+  Legacy flat fields are rejected; canonical message payload digests change
+  with the new content structure.
+
 - Move cross-version discovery to `/somfp/discovery` and the versioned wire
   surface to `/somfp/v1/*`. Retired discovery and S2S paths have no aliases;
   communicating nodes must upgrade together. HTTP signature paths and published

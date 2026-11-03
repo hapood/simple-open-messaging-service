@@ -1,6 +1,18 @@
 {
   "vectors": [
     {
+      "name": "media rejects legacy fields, MIME, missing metadata, and kind mismatch",
+      "schema": "urn:somfp:v1:message-content",
+      "values": [
+        { "contentType": "FILE", "content": { "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "file", "mimeType": "application/octet-stream", "meta": { "kind": "FILE" } } },
+        { "contentType": "FILE", "content": { "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "file", "meta": { "kind": "FILE", "mimeType": "application/octet-stream" } } },
+        { "contentType": "FILE", "content": { "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "file" } },
+        { "contentType": "IMAGE", "content": { "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "image", "meta": { "kind": "AUDIO", "duration": 1 } } },
+        { "contentType": "GALLERY", "content": { "items": [{ "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "file", "kind": "FILE", "meta": { "kind": "FILE" } }] } },
+        { "contentType": "FILE", "content": { "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "file", "meta": { "kind": "FILE", "thumbnail": { "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" } } } }
+      ]
+    },
+    {
       "name": "namespace feed excludes the publisher self binding",
       "schema": "urn:somfp:v1:profile-namespace-feed",
       "value": {

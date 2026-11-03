@@ -11,7 +11,9 @@ import fastifyCompress from '@fastify/compress';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
-import { mkdirSync } from 'fs';
+import { mkdirSync, createReadStream } from 'fs';
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
@@ -59,7 +61,7 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
  *  shard path → yes; avatars → no, auth-n-only). No `g` flag: .exec is stateless
  *  across requests, which the shared hook requires. */
 const SHARD_DIGEST_GATE_RE =
-  /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?:\?|$)/;
+  /^\/uploads\/(?:msg-assets|thumbnails)\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?:\?|$)/;
 
 /** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. Used as
  *  the cross-origin fallback for /uploads/* (native <img> can't set headers → they use the
@@ -356,6 +358,7 @@ async function registerStaticServing(
               shard[1],
             ));
           const generationAllowed =
+            !parsed.pathname.startsWith('/uploads/thumbnails/') &&
             generationValues.length === 1 &&
             threadValues.length === 0 &&
             seqValues.length === 0 &&
@@ -376,6 +379,45 @@ async function registerStaticServing(
         }
       },
     );
+
+  // The URL identifies the authorized original; only its verified metadata selects derivative bytes.
+  adapter
+    .getInstance()
+    .get('/uploads/thumbnails/:a/:b/:digest', async (request, reply) => {
+      const { a, b, digest } = request.params as {
+        a: string;
+        b: string;
+        digest: string;
+      };
+      if (
+        !/^[a-f0-9]{64}$/.test(digest) ||
+        a !== digest.slice(0, 2) ||
+        b !== digest.slice(2, 4)
+      )
+        return reply.code(404).send();
+      const thumbnail = await mediaAccess.thumbnail(digest);
+      if (!thumbnail) return reply.code(404).send();
+      const path = join(
+        dataDirectory('thumbnails'),
+        thumbnail.digest.slice(0, 2),
+        thumbnail.digest.slice(2, 4),
+        thumbnail.digest,
+      );
+      const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (!info?.isFile() || info.size !== thumbnail.size)
+        return reply.code(404).send();
+      return reply
+        .type('image/webp')
+        .header('Content-Length', thumbnail.size)
+        .header('X-Thumbnail-Digest', thumbnail.digest)
+        .header('Cache-Control', 'private, no-cache')
+        .header('Vary', 'Cookie, Authorization')
+        .header('X-Content-Type-Options', 'nosniff')
+        .send(createReadStream(path));
+    });
 
   // CAS blobs are immutable, extensionless and presentation-neutral. Message metadata tells clients
   // how to display/save them; this endpoint only transfers authenticated bytes.

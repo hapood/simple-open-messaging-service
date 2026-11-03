@@ -521,10 +521,7 @@ export const durableTask = pgTable(
       'DurableTask_task_type_check',
       sql`${table.taskType} ~ '^[A-Z][A-Z0-9_]*$'`,
     ),
-    check(
-      'DurableTask_actor_user_id_check',
-      sql`${table.actorUserId} > 0`,
-    ),
+    check('DurableTask_actor_user_id_check', sql`${table.actorUserId} > 0`),
     check(
       'DurableTask_payload_check',
       sql`jsonb_typeof(${table.payload}) = 'object'`,
@@ -964,12 +961,23 @@ export const mediaAsset = pgTable(
       .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     digest: varchar({ length: 64 }).primaryKey().notNull(),
     bytes: bigint({ mode: 'bigint' }).notNull(),
+    /** Complete local inspection and derivative descriptors; never a partial processing result. */
+    meta: jsonb().$type<
+      import('../upload/stored-media-metadata.js').StoredMediaMetadata
+    >(),
     isDeleted: boolean().default(false).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
+    check(
+      'MediaAsset_meta_object_check',
+      sql`${table.meta} IS NULL OR jsonb_typeof(${table.meta}) = 'object'`,
+    ),
+    index('MediaAsset_thumbnail_digest_idx')
+      .on(sql`(${table.meta} #>> '{thumbnail,digest}')`)
+      .where(sql`${table.meta} #>> '{thumbnail,digest}' IS NOT NULL`),
     index('MediaAsset_isDeleted_idx').using(
       'btree',
       table.isDeleted.asc().nullsLast().op('bool_ops'),

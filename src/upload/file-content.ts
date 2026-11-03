@@ -306,6 +306,8 @@ export interface OutboundFilePayload {
   h?: number;
   /** Video/audio duration in seconds (client-companion field). */
   duration?: number;
+  /** Local processing result only; never serialized into message or federation content. */
+  localMeta?: import('./stored-media-metadata.js').StoredMediaMetadata;
 }
 
 interface GalleryItem {
@@ -360,6 +362,19 @@ export function assembleOutboundContent(
         name: p.name ?? 'file',
         size: p.size,
         mimeType: p.mimeType ?? 'application/octet-stream',
+        ...(p.localMeta && p.localMeta.kind !== 'FILE'
+          ? {
+              meta: {
+                kind: p.localMeta.kind,
+                ...('width' in p.localMeta
+                  ? { width: p.localMeta.width, height: p.localMeta.height }
+                  : {}),
+                ...('duration' in p.localMeta
+                  ? { duration: p.localMeta.duration }
+                  : {}),
+              },
+            }
+          : {}),
       });
     case ContentType.VIDEO:
       return JSON.stringify({

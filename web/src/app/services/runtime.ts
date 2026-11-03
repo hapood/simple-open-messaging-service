@@ -312,15 +312,9 @@ declare global {
     };
     /** Android Media3 chat-video bridge. Only canonical CAS paths are accepted natively. */
     SomsVideo?: {
-      open: (
-        streamUrl: string,
-        thumbnailUploadUrl: string,
-        digest: string,
-        hasThumbnail: boolean,
-      ) => void;
+      open: (streamUrl: string, digest: string) => void;
     };
     /** Emitted after the native player has persisted the first rendered frame as a local WebP. */
-    __SOMS_VIDEO_THUMBNAIL__?: (digest: string) => void;
     __SOMS_MEDIA_SAVE_RESULT__?: (payload: {
       requestId: string;
       success: boolean;
@@ -575,22 +569,11 @@ export function assetUrl(path: string | null | undefined): string {
   return `${MEDIA_SCHEME}://${MEDIA_HOST}${path}`;
 }
 
-/** Native chat-card image URL. The original `/uploads/*` URL remains the canonical detail/download
- * path; this alternate media-protocol path asks Rust for a 960px cached WebP and falls back to the
- * original bytes when the source cannot be decoded. Browser builds keep using the server URL unchanged. */
+/** Contextual server thumbnail URL; native hosts handle the same request through Rust's cache. */
 export function chatThumbnailUrl(path: string | null | undefined): string {
   if (!path) return '';
-  if (!isTauri() || !path.startsWith('/uploads/')) return assetUrl(path);
-  return assetUrl(`/chat-thumbnails${path}`);
-}
-
-/** Native cache-only chat thumbnail URL. Unlike chatThumbnailUrl(), a miss returns 404 and never fetches
- * the original, so oversized list-card images can probe the local cache without bypassing the size gate. */
-export function cachedChatThumbnailUrl(
-  path: string | null | undefined,
-): string {
-  if (!path || !isTauri() || !path.startsWith('/uploads/')) return '';
-  return assetUrl(`/cached-chat-thumbnails${path}`);
+  if (!path.startsWith('/uploads/msg-assets/')) return assetUrl(path);
+  return assetUrl(path.replace('/uploads/msg-assets/', '/uploads/thumbnails/'));
 }
 
 const VIDEO_CAS_PATH =
@@ -603,26 +586,11 @@ export function videoCasDigest(path: string | null | undefined): string | null {
   return match[3];
 }
 
-/** Local thumbnail URL served by the existing Tauri media protocol. It legitimately returns 404 until
- * Android Media3 has rendered and captured this video's first frame. */
-export function nativeVideoThumbnailUrl(
-  path: string | null | undefined,
-  revision = 0,
-): string {
-  const digest = videoCasDigest(path);
-  if (!digest || !isTauri() || !isAndroid()) return '';
-  return assetUrl(
-    `/video-thumbnails${path}${revision > 0 ? `${path!.includes('?') ? '&' : '?'}v=${revision}` : ''}`,
-  );
-}
-
 /** Kept as a rollback switch while Android uses the WebView player over the Rust loopback stream. */
 export const ANDROID_MEDIA3_ENABLED = false;
 
 export interface LocalVideoStream {
   streamUrl: string;
-  thumbnailUploadUrl: string;
-  hasThumbnail: boolean;
 }
 
 /** Allocate a capability route on the process-wide Rust loopback video server. */
@@ -646,12 +614,7 @@ export async function openNativeVideo(path: string): Promise<boolean> {
   if (!digest) return false;
   const stream = await createLocalVideoStream(path);
   if (!stream) return false;
-  window.SomsVideo.open(
-    stream.streamUrl,
-    stream.thumbnailUploadUrl,
-    digest,
-    stream.hasThumbnail,
-  );
+  window.SomsVideo.open(stream.streamUrl, digest);
   return true;
 }
 

@@ -4,6 +4,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UploadService } from './upload.service.js';
+import { detectMedia } from './media-sig.js';
+import type { StoredMediaMetadata } from './stored-media-metadata.js';
 import { ContentType } from '../database/enums.js';
 
 /** PNG magic bytes + enough trailing length for detectMedia's checks. */
@@ -26,14 +28,44 @@ const metadataProbe = async (_target: unknown, family: string) =>
         ? { w: 640, h: 360, duration: 4 }
         : {};
 
+const thumbnail = {
+  digest: 'a'.repeat(64),
+  size: 10,
+  mimeType: 'image/webp' as const,
+  width: 10,
+  height: 20,
+};
+const metadataAsset = { metadata: vi.fn().mockResolvedValue(null) };
 const mediaMetadata = {
+  detectFile: vi.fn(async (path: string) => detectMedia(await readFile(path))),
+  processFile: vi.fn(async (path: string) => {
+    const detected = await mediaMetadata.detectFile(path);
+    const kind = detected?.family.toUpperCase() ?? 'FILE';
+    const media =
+      kind === 'IMAGE'
+        ? { kind, width: 10, height: 20, thumbnail }
+        : kind === 'VIDEO'
+          ? { kind, width: 640, height: 360, duration: 4, thumbnail }
+          : kind === 'AUDIO'
+            ? { kind, duration: 3 }
+            : { kind: 'FILE' };
+    return {
+      meta: {
+        mimeType: 'application/octet-stream',
+        ...media,
+      } as StoredMediaMetadata,
+    };
+  }),
   fromBuffer: vi.fn(metadataProbe),
   fromFile: vi.fn(metadataProbe),
 };
 
 describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
   function target() {
-    const svc = new UploadService({} as never, mediaMetadata as never);
+    const svc = new UploadService(
+      metadataAsset as never,
+      mediaMetadata as never,
+    );
     vi.spyOn(svc, 'saveAvatar').mockResolvedValue(
       '/uploads/avatars/avatar.png',
     );
@@ -107,7 +139,7 @@ describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
 
 describe('UploadService.saveAvatar — byte-preserving storage', () => {
   let root: string | undefined;
-  const svc = new UploadService({} as never, mediaMetadata as never);
+  const svc = new UploadService(metadataAsset as never, mediaMetadata as never);
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-avatar-'));
@@ -167,7 +199,7 @@ describe('UploadService.saveAvatar — byte-preserving storage', () => {
 
 describe('UploadService.resolveStagedPart — family gating by staged intent', () => {
   let root: string | undefined;
-  const svc = new UploadService({} as never, mediaMetadata as never);
+  const svc = new UploadService(metadataAsset as never, mediaMetadata as never);
   let seq = 0;
 
   beforeEach(async () => {
@@ -220,6 +252,10 @@ describe('UploadService.resolveStagedPart — family gating by staged intent', (
   });
 
   it('accepts EBML/webm under an AUDIO intent as audio/webm (recorder-emitted container)', async () => {
+    mediaMetadata.detectFile.mockResolvedValueOnce({
+      family: 'audio',
+      ext: 'webm',
+    });
     const { payload } = await svc.resolveStagedPart(
       await stage(EBML),
       ContentType.AUDIO,
@@ -256,7 +292,10 @@ describe('UploadService.resolveStagedPart — family gating by staged intent', (
 
 describe('UploadService.landStagedPart — idempotent CAS landing', () => {
   let root: string | undefined;
-  const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+  const mediaAsset = {
+    ...metadataAsset,
+    publishReady: vi.fn().mockResolvedValue(undefined),
+  };
   const svc = new UploadService(mediaAsset as never, mediaMetadata as never);
 
   beforeEach(async () => {
@@ -332,7 +371,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     'rejects object/declared-size violations before publishing: $declaredBytes/$maxFileBytes',
     async ({ declaredBytes, maxFileBytes, body, error }) => {
       root = await mkdtemp(join(tmpdir(), 'soms-cas-size-'));
-      const mediaAsset = { publishReady: vi.fn() };
+      const mediaAsset = { ...metadataAsset, publishReady: vi.fn() };
       const service = new UploadService(
         mediaAsset as never,
         mediaMetadata as never,
@@ -357,7 +396,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
 
   it('rechecks the declared size and object limit on an existing CAS file', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-cached-'));
-    const mediaAsset = { publishReady: publication() };
+    const mediaAsset = { ...metadataAsset, publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -391,7 +430,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
 
   it('retains a completed prefix after transport failure and resumes at its offset', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = { publishReady: publication() };
+    const mediaAsset = { ...metadataAsset, publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -438,12 +477,13 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
       digest,
       BigInt(body.length),
       expect.any(Function),
+      expect.objectContaining({ kind: 'FILE' }),
     );
   });
 
   it('keeps only the continuous verified blocks before the first corrupt resume block', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = { publishReady: publication() };
+    const mediaAsset = { ...metadataAsset, publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -492,7 +532,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
 
   it('automatically restarts from zero when a live partial disappears', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = { publishReady: publication() };
+    const mediaAsset = { ...metadataAsset, publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -531,6 +571,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
   it('deletes untrusted partial state when the final digest mismatches', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
     const mediaAsset = {
+      ...metadataAsset,
       publishReady: vi.fn().mockResolvedValue(undefined),
     };
     const service = new UploadService(

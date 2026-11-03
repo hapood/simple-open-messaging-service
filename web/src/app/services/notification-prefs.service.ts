@@ -9,7 +9,7 @@ const PREVIEW_MODE_KEY = 'notificationPreviewMode';
 /**
  * App-level notification preferences shared with worker-owned browser presentation.
  * Two booleans, both default `true`, persisted device-level via {@link PreferenceStore} — the
- * same shape as {@link MediaSizeThresholdService}.
+ * persisted locally for the current browser profile.
  *
  * These are DEVICE-level (like theme/language): they survive logout. `UserService.clearSession()` only
  * wipes user-scoped keys such as `soms.chat.emojiRecents`, so these are preserved.

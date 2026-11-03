@@ -594,7 +594,6 @@
     "mediaPending": "待下载",
     "mediaDownloading": "下载中…",
     "mediaFailed": "下载失败",
-    "tapToLoad": "点击加载",
     "imageLoading": "图片加载中…",
     "imageLoadRetry": "加载失败，点击重试",
     "unknownSize": "大小未知",
@@ -718,7 +717,7 @@
     "aliasPlaceholder": "输入备注（如：Alice（工作））"
   },
   "gallery": {
-    "loadImage": "加载图片",
+    "loadImage": "查看原图",
     "loadingImage": "正在加载图片",
     "downloadedBytes": "已下载 {{size}}",
     "failed": "图片加载失败",
@@ -1032,7 +1031,6 @@
     "appUpdateTitle": "应用更新",
     "appUpdateManual": "请安装新版应用安装包；应用内下载暂不可用。",
     "media": "媒体",
-    "mediaThresholdHint": "较大的图片显示点击加载占位符。",
     "noLimit": "不限制",
     "devices": "登录设备",
     "devicesHint": "活跃会话"

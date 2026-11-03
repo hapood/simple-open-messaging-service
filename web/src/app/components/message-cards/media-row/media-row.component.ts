@@ -28,7 +28,6 @@ import {
   isTauri,
 } from '../../../services/runtime';
 import { formatBytes, formatDuration } from '../file-meta.util';
-import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { NativeVideoService } from '../../../services/native-video.service';
 
@@ -106,12 +105,11 @@ export class MediaRowComponent {
   readonly cancel = output<number>();
   readonly openImage = output<{ images: AlbumMedia[]; index: number }>();
 
-  constructor(private readonly thresholdSvc: MediaSizeThresholdService) {
+  constructor() {
     // Message rows are imperatively mounted outside ApplicationRef. Observe the app-scoped task store
     // explicitly so progress painted in the gallery/global header also repaints this detached row.
     effect(() => {
       this.downloads.tasks();
-      this.downloads.thumbnailVersion();
       queueMicrotask(() => this.render());
     });
   }
@@ -130,7 +128,6 @@ export class MediaRowComponent {
   readonly galleryIcons = computed(() => {
     const items = this.data().images ?? [];
     this.downloads.tasks();
-    this.downloads.thumbnailVersion();
     const visible = items.length > 6 ? items.slice(0, 5) : items.slice(0, 6);
     const icons: Array<{
       kind: AlbumMedia['kind'] | 'more';
@@ -138,25 +135,16 @@ export class MediaRowComponent {
       localPreview: boolean;
       thumbnail: string;
     }> = visible.map((item, index) => {
-      const task = this.downloads.task(item);
       const localPreview =
         item.src.startsWith('blob:') || item.src.startsWith('data:');
-      const oversized =
-        item.kind === 'image' &&
-        !localPreview &&
-        this.thresholdSvc.shouldDefer(item.size ?? 0) &&
-        !this.thresholdSvc.isLoaded(this.mediaKey(item, index)) &&
-        !task?.blobUrl;
       return {
         kind: item.kind,
         index,
         localPreview,
         thumbnail:
-          item.kind !== 'image'
-            ? ''
-            : oversized
-              ? this.downloads.cachedThumbnailUrl(item)
-              : this.downloads.thumbnailUrl(item),
+          item.kind === 'image' || item.kind === 'video'
+            ? this.downloads.thumbnailUrl(item)
+            : '',
       };
     });
     if (items.length > 6)
@@ -191,15 +179,9 @@ export class MediaRowComponent {
       const m = imgs[i];
       const kind = m?.kind ?? 'image';
       const size = m?.size ?? 0;
-      const mediaKey = this.mediaKey(m, i);
       const task = m ? this.downloads.task(m) : undefined;
       const thumbnail =
-        kind === 'video' && m ? this.nativeVideo.thumbnailUrl(m.src) : '';
-      const gated =
-        kind === 'image' &&
-        this.thresholdSvc.shouldDefer(size) &&
-        !this.thresholdSvc.isLoaded(mediaKey) &&
-        !task?.blobUrl;
+        kind === 'video' && m ? this.downloads.thumbnailUrl(m) : '';
       return {
         rect,
         kind,
@@ -216,10 +198,6 @@ export class MediaRowComponent {
         videoLoaded: this.loadedVideoFrames().has(this.videoResourceKey(i)),
         // Federated media localize status is message-level (all cells share it). Non-media defaults ready.
         status: m?.status ?? this.data().mediaStatus ?? MEDIA_STATUS.READY,
-        // Size-tiered placeholder: only IMAGE over threshold, not yet tapped-to-load. VIDEO/AUDIO are
-        // unaffected (they are a gray cell / first-frame already).
-        placeholder: gated,
-        showGate: gated,
         transferStatus: task?.status,
         transferProgress:
           task && task.total > 0
@@ -287,10 +265,8 @@ export class MediaRowComponent {
     this.render();
   }
 
-  /** Size-tiered lazy load: large images remain an inert card placeholder. Clicking always opens the
-   * gallery; only that surface starts/cancels the shared download task. */
-  /** Cell click: images and videos open the singleton mixed-media viewer (after the optional image
-   *  size gate). Audio owns its interaction inside AudioPlayerComponent. */
+  /** Images and videos open the mixed-media viewer; only the viewer requests original images.
+   * Audio owns its interaction inside AudioPlayerComponent. */
   async onCellClick(i: number): Promise<void> {
     const cell = this.cells()[i];
     if (cell.kind === 'file') {
@@ -335,24 +311,17 @@ export class MediaRowComponent {
   onImageLoad(index: number): void {
     const media = this.data().images?.[index];
     if (!media) return;
-    const key = this.mediaKey(media, index);
-    this.thresholdSvc.markLoaded(key);
     this.render();
   }
 
   onImageError(index: number): void {
     const media = this.data().images?.[index];
     if (!media) return;
-    const key = this.mediaKey(media, index);
     this.render();
   }
 
   private render(): void {
     this.cdr.detectChanges();
-  }
-
-  private mediaKey(media: AlbumMedia | undefined, index: number): string {
-    return `${media?.msgId ?? this.data().msgId}:${media?.src ?? ''}:${index}`;
   }
 
   readonly isAudioOnly = computed(

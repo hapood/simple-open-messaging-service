@@ -6,7 +6,6 @@ import { firstValueFrom } from 'rxjs';
 import { MEDIA_STATUS, type AlbumMedia } from '../message-cards/chat-item';
 import type { ImageDownloadTask } from '../../services/image-download.service';
 import { ImageDownloadService } from '../../services/image-download.service';
-import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { MediaSaveService } from '../../services/media-save.service';
 import { MessageRepository } from '../../services/message-repository.service';
 import { MsgService } from '../../services/message.service';
@@ -45,10 +44,6 @@ describe('GalleryViewerComponent — deferred image actions', () => {
           loader: InlineTranslocoLoader,
         }),
         { provide: ImageDownloadService, useValue: downloads },
-        {
-          provide: MediaSizeThresholdService,
-          useValue: { shouldDefer: (size: number) => size > 1024 },
-        },
         { provide: MsgService, useValue: {} },
         { provide: MessageRepository, useValue: {} },
         {
@@ -79,7 +74,8 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(component.formatBytes(media.size ?? 0)).toBe('1.5 KB');
 
     component.loadCurrent();
-    expect(downloads.start).toHaveBeenCalledWith(media, 7);
+    expect(downloads.start).not.toHaveBeenCalled();
+    expect(component.currentNeedsLoad()).toBe(false);
 
     component.saveCurrent(new MouseEvent('click'));
     expect(downloads.start).toHaveBeenCalledWith(media, 7, true);
@@ -271,8 +267,6 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     Object.defineProperty(component, 'isAndroidApp', { value: true });
     const stream = {
       streamUrl: 'http://localhost:1234/video/capability',
-      thumbnailUploadUrl: '',
-      hasThumbnail: false,
     };
     const internals = component as unknown as {
       nativeVideo: { stream(path: string): Promise<typeof stream> };
@@ -411,6 +405,10 @@ class FakeGalleryDownloads {
   task(): ImageDownloadTask | undefined {
     this.tasks();
     return this.current;
+  }
+
+  thumbnailUrl(media: AlbumMedia): string {
+    return media.src;
   }
 
   displayUrl(media: AlbumMedia): string {

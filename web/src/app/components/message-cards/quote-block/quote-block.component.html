@@ -8,11 +8,6 @@
         [account]="quote.imageIdentity"
         [src]="quote.image"
       />
-    } @else if (quote.image && gated()) {
-      <span
-        class="msg-quote-visual msg-quote-placeholder"
-        aria-hidden="true"
-      ></span>
     } @else if (quote.image) {
       <img class="msg-quote-visual" [src]="thumbnail()" alt="" />
     }

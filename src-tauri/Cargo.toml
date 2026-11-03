@@ -63,9 +63,6 @@ uuid = { version = "1", features = ["v4"] }
 # backend requests and media responses. They are unrelated to frontend application updates.
 sha2 = { version = "0.10", default-features = false }
 base64 = "0.22"
-# Chat-list thumbnails are generated beside the authenticated native media cache. Keep codecs explicit
-# so the shell does not pull image formats the message composer cannot produce.
-image = { version = "0.24.9", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 flate2 = "1"
 futures-util = "0.3"
 tar = "0.4"

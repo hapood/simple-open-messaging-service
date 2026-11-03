@@ -5,13 +5,7 @@ import {
   MediaSaveCancelledError,
   MediaSaveService,
 } from './media-save.service';
-import {
-  assetUrl,
-  cachedChatThumbnailUrl,
-  chatThumbnailUrl,
-  isTauri,
-  listenEvent,
-} from './runtime';
+import { assetUrl, chatThumbnailUrl } from './runtime';
 import {
   IMAGE_DOWNLOAD_ADAPTER,
   type ImageDownloadArtifact,
@@ -63,10 +57,6 @@ export class ImageDownloadService {
     { loaded: number; total: number | null }
   >();
   private readonly lastProgressPaint = new Map<string, number>();
-  private readonly thumbnailRevisions = signal<ReadonlyMap<string, number>>(
-    new Map(),
-  );
-  readonly thumbnailVersion = signal(0);
 
   readonly tasks = computed(() =>
     [...this.taskMap().values()].sort((a, b) => a.startedAt - b.startedAt),
@@ -77,21 +67,6 @@ export class ImageDownloadService {
         (task) => task.status === 'downloading' || task.status === 'saving',
       ).length,
   );
-
-  constructor() {
-    if (!isTauri()) return;
-    void listenEvent<{ sourcePath?: string }>(
-      'chat-thumbnail-ready',
-      ({ payload }) => {
-        const sourcePath = payload?.sourcePath;
-        if (!sourcePath?.startsWith('/uploads/')) return;
-        const next = new Map(this.thumbnailRevisions());
-        next.set(sourcePath, (next.get(sourcePath) ?? 0) + 1);
-        this.thumbnailRevisions.set(next);
-        this.thumbnailVersion.update((value) => value + 1);
-      },
-    );
-  }
 
   key(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
     return `${media.msgId ?? 0}:${media.src}`;
@@ -110,20 +85,7 @@ export class ImageDownloadService {
   /** Lightweight list-card representation. Detail/gallery/save callers deliberately keep displayUrl(),
    * whose contract is the original media. Optimistic blob/data URLs pass through unchanged. */
   thumbnailUrl(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
-    const base = chatThumbnailUrl(media.src);
-    const revision = this.thumbnailRevisions().get(media.src) ?? 0;
-    if (revision === 0 || !base.includes('/chat-thumbnails/')) return base;
-    return `${base}${base.includes('?') ? '&' : '?'}v=${revision}`;
-  }
-
-  /** Returns only already-local bytes: an in-memory completed download or a native cache-only URL. */
-  cachedThumbnailUrl(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
-    const loaded = this.task(media)?.blobUrl;
-    if (loaded) return loaded;
-    const base = cachedChatThumbnailUrl(media.src);
-    const revision = this.thumbnailRevisions().get(media.src) ?? 0;
-    if (!base || revision === 0) return base;
-    return `${base}${base.includes('?') ? '&' : '?'}v=${revision}`;
+    return chatThumbnailUrl(media.src);
   }
 
   isLoaded(media: Pick<AlbumMedia, 'msgId' | 'src'>): boolean {

@@ -10,7 +10,6 @@ import {
   ImageDownloadService,
   type ImageDownloadTask,
 } from '../../../services/image-download.service';
-import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import type {
   AlbumMedia,
   AuthoredContentType,
@@ -36,14 +35,6 @@ describe('MediaRowComponent — deferred image loading', () => {
         }),
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
         { provide: ImageDownloadService, useValue: downloads },
-        {
-          provide: MediaSizeThresholdService,
-          useValue: {
-            shouldDefer: (size: number) => size > 1024,
-            isLoaded: () => false,
-            markLoaded: () => undefined,
-          },
-        },
       ],
     });
   });
@@ -97,11 +88,13 @@ describe('MediaRowComponent — deferred image loading', () => {
         });
         fixture.detectChanges();
         const badge = fixture.nativeElement.querySelector('.msg-status');
-        const animation = badge.getAnimations().find(
-          (entry: Animation) =>
-            entry instanceof CSSAnimation &&
-            entry.animationName.includes('msg-media-sent-badge'),
-        );
+        const animation = badge
+          .getAnimations()
+          .find(
+            (entry: Animation) =>
+              entry instanceof CSSAnimation &&
+              entry.animationName.includes('msg-media-sent-badge'),
+          );
         expect(animation).toBeDefined();
         animation.finish();
         expect(getComputedStyle(badge).opacity).toBe('0');
@@ -127,10 +120,10 @@ describe('MediaRowComponent — deferred image loading', () => {
     const element = fixture.nativeElement.querySelector(
       'video',
     ) as HTMLVideoElement;
-    expect(element).not.toBeNull();
-    element.dispatchEvent(new Event('loadeddata'));
-    fixture.detectChanges();
-    expect(element.style.opacity).toBe('1');
+    expect(element).toBeNull();
+    expect(
+      fixture.nativeElement.querySelector('.msg-media-video--thumbnail'),
+    ).not.toBeNull();
     fixture.destroy();
   });
 
@@ -150,7 +143,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     );
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(fixture.nativeElement.querySelector('video')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('video')).toBeNull();
     expect(fixture.componentInstance.cells()[0].unplayable).toBe(false);
     fixture.destroy();
   });
@@ -164,8 +157,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     const gate = fixture.nativeElement.querySelector(
       '.msg-media-tap',
     ) as HTMLElement;
-    expect(gate).not.toBeNull();
-    expect(gate.textContent?.trim()).toBe('');
+    expect(gate).toBeNull();
 
     (
       fixture.nativeElement.querySelector('.msg-media-cell') as HTMLElement
@@ -202,8 +194,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     const progress = fixture.nativeElement.querySelector(
       '.msg-media-download-progress',
     ) as HTMLElement;
-    expect(progress).not.toBeNull();
-    expect(progress.textContent?.trim()).toBe('40%');
+    expect(progress).toBeNull();
     expect(
       (
         fixture.nativeElement.querySelector(
@@ -232,7 +223,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     ).toBe(3);
     expect(
       fixture.nativeElement.querySelectorAll('.msg-gallery-thumbnail').length,
-    ).toBe(1);
+    ).toBe(2);
     const thumbnail = fixture.nativeElement.querySelector(
       '.msg-gallery-thumbnail',
     ) as HTMLImageElement;
@@ -242,7 +233,7 @@ describe('MediaRowComponent — deferred image loading', () => {
       fixture.nativeElement.querySelector(
         '.msg-gallery-icon--image:not(:has(.msg-gallery-thumbnail)) .msg-gallery-icon-svg',
       ),
-    ).not.toBeNull();
+    ).toBeNull();
     expect(
       fixture.nativeElement.querySelector('.msg-gallery-row mat-icon'),
     ).toBeNull();
@@ -279,7 +270,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     ) as HTMLImageElement;
 
     expect(thumbnail).not.toBeNull();
-    expect(thumbnail.getAttribute('src')).toBe('cache:/uploads/1.jpg');
+    expect(thumbnail.getAttribute('src')).toBe('/uploads/1.jpg');
   });
 
   it('shows an oversized local blob preview without applying the remote cache gate', async () => {
