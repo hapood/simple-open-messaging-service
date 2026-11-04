@@ -19,6 +19,39 @@ class LaunchOverlayViewTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
     @Test
+    fun restoredActivitySkipsBrandEvenAfterLateHandoff() {
+        instrumentation.runOnMainSync {
+            val overlay = LaunchOverlayView(instrumentation.targetContext, false)
+            overlay.showRecovery()
+            overlay.prepareSystemHandoff()
+            overlay.revealBrand()
+            overlay.applyPalette(true)
+            layout(overlay, 1200, 1800)
+            assertEquals(View.INVISIBLE, overlay.logo.visibility)
+            assertEquals(View.INVISIBLE, overlay.brand.visibility)
+            assertEquals(0f, overlay.brand.alpha)
+            assertEquals(View.VISIBLE, overlay.status.visibility)
+        }
+    }
+
+    @Test
+    fun slowRecoveryKeepsOverlayAndOffersSingleRetry() {
+        instrumentation.runOnMainSync {
+            val overlay = LaunchOverlayView(instrumentation.targetContext, false)
+            var retries = 0
+            overlay.showSlowRecovery { retries++ }
+            layout(overlay, 1200, 1800)
+            assertEquals(View.VISIBLE, overlay.visibility)
+            assertEquals(View.VISIBLE, overlay.retry.visibility)
+            assertTrue(overlay.status.bottom < overlay.retry.top)
+            assertTrue(overlay.retry.bottom <= overlay.height)
+            overlay.retry.performClick()
+            assertEquals(1, retries)
+            assertEquals(false, overlay.retry.isEnabled)
+        }
+    }
+
+    @Test
     fun localizedTextKeepsItsFullMeasuredHeightAtNormalAndLargeFontScales() {
         instrumentation.runOnMainSync {
             for (language in listOf("zh-CN", "en")) {

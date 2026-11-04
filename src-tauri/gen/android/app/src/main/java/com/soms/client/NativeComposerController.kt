@@ -497,7 +497,6 @@ class NativeComposerController(
     private var lastEmittedComposerHeightCss: Int? = null
     private var lastEmittedKeyboardHeightCss: Int? = null
     private var imeAnimationRunning = false
-    private var deferredInsetsCommit: Runnable? = null
     private val actionIds = AtomicLong(System.currentTimeMillis() * 1000)
     private var pendingSend: Long? = null
     private var voiceCancelArmed = false
@@ -965,8 +964,6 @@ class NativeComposerController(
     }
 
     fun updateInsets(imeBottomDevicePx: Int, safeBottomDevicePx: Int) {
-        deferredInsetsCommit?.let(root::removeCallbacks)
-        deferredInsetsCommit = null
         committedImeBottomPx = imeBottomDevicePx.coerceAtLeast(0)
         // On Android R+ onApplyWindowInsets is dispatched with the destination inset after onPrepare but
         // before onProgress restarts at the source. Retain that state, but let onProgress own the visual
@@ -979,24 +976,19 @@ class NativeComposerController(
         root.post(::emitGeometry)
     }
 
-    /** Animation progress is native-visual state only. Composer geometry is a final-value protocol and
-     *  must never expose these intermediate IME frames to JS. */
+    /** R+ animation frames move only the native surface. Legacy observations have no reliable
+     *  destination prediction, so publish their measured geometry immediately, with emission deduplication. */
     fun updateImeAnimationProgress(imeBottomDevicePx: Int, safeBottomDevicePx: Int) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            committedImeBottomPx = imeBottomDevicePx.coerceAtLeast(0)
+        }
         updateInsetsState(
             imeBottomDevicePx,
             safeBottomDevicePx,
             updateVisualPosition = true,
         )
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            // Pre-R has no trustworthy predicted endpoint. Some OEMs report the new visible-frame height
-            // from onApplyWindowInsets before the global-layout observer sees it, so scheduling only when
-            // globalLayout detects a delta can miss the commit entirely. Debounce every observed visual
-            // frame here; the last one becomes the single committed geometry value.
-            deferredInsetsCommit?.let(root::removeCallbacks)
-            deferredInsetsCommit = Runnable {
-                deferredInsetsCommit = null
-                updateInsets(imeBottomDevicePx, safeBottomDevicePx)
-            }.also { root.postDelayed(it, PRE_R_INSETS_COMMIT_DELAY_MS) }
+            emitGeometry()
         }
     }
 
@@ -1214,11 +1206,16 @@ class NativeComposerController(
             } else {
                 0
         }
-        params.bottomMargin = keyboardBottom + boundsGap
-        if (hasBounds) {
-            params.leftMargin = boundsLeftPx
-            params.width = boundsWidthPx
-        }
+        val bottomMargin = keyboardBottom + boundsGap
+        val leftMargin = if (hasBounds) boundsLeftPx else params.leftMargin
+        val width = if (hasBounds) boundsWidthPx else params.width
+        // Global-layout observations also refresh IME geometry on pre-R. Reassigning unchanged
+        // LayoutParams requests another layout and unnecessarily feeds that observer again.
+        if (params.bottomMargin == bottomMargin &&
+            params.leftMargin == leftMargin && params.width == width) return
+        params.bottomMargin = bottomMargin
+        params.leftMargin = leftMargin
+        params.width = width
         root.layoutParams = params
     }
 
@@ -1511,8 +1508,8 @@ class NativeComposerController(
             keyboardHeightPx = keyboardHeightPx,
         )
         val occupiedHeightCss = NativeComposerGeometry.toCssPx(occupiedDevicePx, density)
-        // Composer height follows completed Android layout; keyboard height retains the existing final-value
-        // surface policy. Emit when either independent endpoint changes, even when their sum stays constant
+        // Composer height follows completed Android layout. Keyboard height uses the system destination
+        // on R+ and the latest measured height on legacy devices.
         // during an emoji/system handoff.
         if (
             !NativeComposerGeometry.shouldEmit(lastEmittedComposerHeightCss, composerHeightCss) &&
@@ -1743,7 +1740,6 @@ class NativeComposerController(
         private const val DEFAULT_EMOJI_HEIGHT_DP = 280
         private const val EMOJI_GAP_DP = 8
         private const val IME_HANDOFF_FALLBACK_MS = 420L
-        private const val PRE_R_INSETS_COMMIT_DELAY_MS = 80L
         private const val SHOW_DURATION_MS = 140L
         private const val HIDE_DURATION_MS = 90L
         private const val LINK_MARKER_DEBOUNCE_MS = 500L

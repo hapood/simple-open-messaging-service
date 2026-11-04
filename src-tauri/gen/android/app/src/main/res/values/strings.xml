@@ -6,6 +6,8 @@
     <string name="main_activity_title">"SOMS"</string>
     <string name="splash_tagline">Open chat. Simple and instant.</string>
     <string name="splash_preparing">Preparing</string>
+    <string name="splash_recovery_slow">Recovery is taking longer than expected.</string>
+    <string name="splash_retry">Retry interface</string>
     <string name="splash_restoring_session">Restoring session</string>
     <string name="splash_loading_config">Requesting remote configuration</string>
     <string name="splash_preparing_interface">Preparing interface</string>

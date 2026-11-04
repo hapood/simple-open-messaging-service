@@ -237,7 +237,8 @@ export class AppComponent {
   /**
    * Keep Android's native overlay above intermediate auth frames. Logged-out launches wait for the
    * public config (which may redirect password → OTP/QR); returning sessions can go straight to their
-   * already-resolved shell. Two animation frames ensure the final DOM has actually reached the WebView.
+   * already-resolved shell. Two animation frames allow DOM updates to settle; the native host then
+   * confirms WebView visual readiness before removing its overlay.
    */
   private async finishNativeSplashWhenReady(): Promise<void> {
     const shell = window.SomsShell;

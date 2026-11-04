@@ -104,8 +104,8 @@
 @mixin auth-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
-  height: calc(100vh - var(--auth-keyboard-inset, 0px));
-  height: calc(100dvh - var(--auth-keyboard-inset, 0px));
+  height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: auto;
   // border-box + padding-top so the grid's 100dvh height INCLUDES the status-bar safe-area inset:
@@ -114,9 +114,17 @@
   // --soms-safe-top is injected by the native shell (see _tokens.scss).
   box-sizing: border-box;
   padding-top: var(--soms-safe-top, 0px);
-  // Animate keyboard occlusion, never viewport height. Easing 100dvh during a window resize leaves
-  // the page temporarily taller than the WebView and can introduce a scrollbar across a breakpoint.
-  transition: --auth-keyboard-inset 160ms ease-out;
+  // Keep keyboard motion on the content layer, never on the full-screen layout box.
+  &.auth-native-viewport .login-card {
+    transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
+    transition: transform 160ms ease-out;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    &.auth-native-viewport .login-card {
+      transition: none;
+    }
+  }
 
   .form-pane {
     @include neutral-form-controls;
@@ -135,12 +143,6 @@
       var(--app-bg);
   }
 
-  // Android shell only: native WindowInsets gives us authoritative IME geometry. Keep the unchanged form
-  // centered in the visible region. `safe center` falls back to the start edge when the full-size content
-  // is taller than that region, leaving it scroll-reachable without hiding or resizing any page chrome.
-  &.auth-native-keyboard-open .form-pane {
-    justify-content: safe center;
-  }
 
   @media (max-width: 899px) {
     // A bare 1fr retains the content's automatic minimum and can overflow

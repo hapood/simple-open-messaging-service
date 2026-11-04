@@ -4,14 +4,6 @@
 @use './app/assets/tokens';
 @use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
 
-// Auth/setup surfaces animate only keyboard occlusion so viewport resizing never lags behind the window.
-// Engines without registered-property support still track the viewport correctly, without IME easing.
-@property --auth-keyboard-inset {
-  syntax: '<length>';
-  inherits: true;
-  initial-value: 0px;
-}
-
 // Hide native scrollbar chrome without changing overflow or wheel, touch and keyboard scrolling.
 * {
   scrollbar-width: none;

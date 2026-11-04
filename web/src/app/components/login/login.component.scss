@@ -15,11 +15,16 @@
   padding: 32px 28px 24px;
 }
 
-// Android shell only: the auth viewport measures the focused input against the native IME top and
-// publishes the minimum lift needed to retain a comfortable 24px gap (capped by the directive at 80px).
-:host-context(.auth-native-keyboard-open) .login-card {
+// Android shell only: retain a comfortable 24px gap above the native IME without resizing the page.
+:host-context(.auth-native-viewport) .login-card {
   transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
   transition: transform 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host-context(.auth-native-viewport) .login-card {
+    transition: none;
+  }
 }
 
 .progress-slot {

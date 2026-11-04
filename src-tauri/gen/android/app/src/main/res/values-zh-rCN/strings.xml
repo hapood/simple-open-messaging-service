@@ -11,6 +11,8 @@
     <string name="main_activity_title">"SOMS"</string>
     <string name="splash_tagline">开放聊天，简单即时。</string>
     <string name="splash_preparing">准备中</string>
+    <string name="splash_recovery_slow">恢复时间较长，请稍候或重试。</string>
+    <string name="splash_retry">重试界面</string>
     <string name="splash_restoring_session">恢复会话</string>
     <string name="splash_loading_config">请求远端配置</string>
     <string name="splash_preparing_interface">整理界面</string>

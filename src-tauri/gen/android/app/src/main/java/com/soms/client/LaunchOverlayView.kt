@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.animation.DecelerateInterpolator
+import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -53,6 +54,11 @@ internal class LaunchOverlayView(context: Context, dark: Boolean) : ViewGroup(co
         letterSpacing = 0.04f
         maxLines = 1
     }
+    internal val retry = Button(context).apply {
+        setText(R.string.splash_retry)
+        visibility = GONE
+    }
+    private var recoveryPresentation = false
     private var handoffBounds: Rect? = null
     private var revealStarted = false
     /** Bottom system-UI inset (navigation bar / gesture area) so the status line never sinks
@@ -61,11 +67,12 @@ internal class LaunchOverlayView(context: Context, dark: Boolean) : ViewGroup(co
 
     init {
         isClickable = true
-        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
         elevation = dp(16).toFloat()
         addView(logo)
         addView(brand)
         addView(status)
+        addView(retry)
         applyPalette(dark)
     }
 
@@ -91,7 +98,28 @@ internal class LaunchOverlayView(context: Context, dark: Boolean) : ViewGroup(co
         requestLayout()
     }
 
+    /** Activity restoration skips the brand sequence but keeps an opaque native surface. */
+    fun showRecovery() {
+        recoveryPresentation = true
+        cancelAnimations()
+        logo.visibility = INVISIBLE
+        brand.visibility = INVISIBLE
+        status.setText(R.string.splash_restoring_session)
+    }
+
+    fun showSlowRecovery(onRetry: () -> Unit) {
+        status.setText(R.string.splash_recovery_slow)
+        status.maxLines = Int.MAX_VALUE
+        retry.visibility = VISIBLE
+        retry.setOnClickListener {
+            retry.isEnabled = false
+            onRetry()
+        }
+        requestLayout()
+    }
+
     fun prepareSystemHandoff() {
+        if (recoveryPresentation) return
         logo.animate().cancel()
         brand.animate().cancel()
         logo.translationY = 0f
@@ -100,7 +128,7 @@ internal class LaunchOverlayView(context: Context, dark: Boolean) : ViewGroup(co
     }
 
     fun revealBrand() {
-        if (revealStarted) return
+        if (revealStarted || recoveryPresentation) return
         revealStarted = true
         logo.animate().translationY(-dp(24).toFloat()).setDuration(320L)
             .setInterpolator(DecelerateInterpolator()).start()
@@ -141,6 +169,7 @@ internal class LaunchOverlayView(context: Context, dark: Boolean) : ViewGroup(co
         val textHeight = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
         brand.measure(textWidth, textHeight)
         status.measure(textWidth, textHeight)
+        retry.measure(textWidth, textHeight)
     }
 
     private fun centerTaglineInk() {
@@ -167,7 +196,10 @@ internal class LaunchOverlayView(context: Context, dark: Boolean) : ViewGroup(co
         brand.layout(brandLeft, brandTop, brandLeft + brand.measuredWidth, brandTop + brand.measuredHeight)
         centerTaglineInk()
         val statusLeft = if (layoutDirection == LAYOUT_DIRECTION_RTL) width - dp(24) - status.measuredWidth else dp(24)
-        val statusBottom = height - dp(28) - bottomInset
+        val retryHeight = if (retry.visibility == VISIBLE) retry.measuredHeight + dp(12) else 0
+        val bottom = height - dp(28) - bottomInset
+        val statusBottom = bottom - retryHeight
         status.layout(statusLeft, statusBottom - status.measuredHeight, statusLeft + status.measuredWidth, statusBottom)
+        retry.layout(statusLeft, bottom - retry.measuredHeight, statusLeft + retry.measuredWidth, bottom)
     }
 }

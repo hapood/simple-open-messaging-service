@@ -83,9 +83,12 @@ class MainActivity : TauriActivity() {
     private val launchHandoffFallback = Runnable {
         if (!launchSystemExitReceived) launchOverlay?.let { completeLaunchHandoff(it) }
     }
-    private var launchDeadlineMs = 0L
+    private var restoringActivity = false
+    private var launchVisualRequest = 0L
     private var pendingSystemBarDark: Boolean? = null
-    private val launchTimeout = Runnable { dismissLaunchOverlay() }
+    private val launchTimeout = Runnable {
+        launchOverlay?.showSlowRecovery { recreate() }
+    }
     private var currentPipParams: PictureInPictureParams? = null
     private var nativePhotoRequestId: String? = null
     private var nativeFileRequestId: String? = null
@@ -185,12 +188,13 @@ class MainActivity : TauriActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) captureSharedText(intent)
+        restoringActivity = savedInstanceState != null
         installLaunchOverlay()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             splashScreen.setOnExitAnimationListener { systemSplash ->
                 launchSystemExitReceived = true
                 launchOverlay?.removeCallbacks(launchHandoffFallback)
-                if (isDestroyed) {
+                if (isDestroyed || restoringActivity) {
                     systemSplash.remove()
                     return@setOnExitAnimationListener
                 }
@@ -352,13 +356,16 @@ class MainActivity : TauriActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
         ))
         launchOverlay = overlay
+        if (restoringActivity) {
+            overlay.showRecovery()
+            launchHandoffReady = true
+        }
         launchThemeDark = dark
         val controller = WindowInsetsControllerCompat(window, decor)
         controller.isAppearanceLightStatusBars = !dark
         controller.isAppearanceLightNavigationBars = !dark
         // The starting window has captured its drawable; no second mark may remain behind WebView.
         window.setBackgroundDrawable(ColorDrawable(ContextCompat.getColor(this, R.color.splash_background)))
-        launchDeadlineMs = android.os.SystemClock.uptimeMillis() + LAUNCH_TIMEOUT_MS
         overlay.postDelayed(launchTimeout, LAUNCH_TIMEOUT_MS)
     }
 
@@ -401,7 +408,9 @@ class MainActivity : TauriActivity() {
             "interface" -> R.string.splash_preparing_interface
             else -> return
         }
-        launchOverlay?.status?.setText(label)
+        launchOverlay?.let { overlay ->
+            if (overlay.retry.visibility != View.VISIBLE) overlay.status.setText(label)
+        }
     }
 
     private fun applySystemBarTheme(dark: Boolean) {
@@ -414,11 +423,26 @@ class MainActivity : TauriActivity() {
         controller.isAppearanceLightNavigationBars = !dark
     }
 
+    /** Confirm that the current WebView can draw the DOM acknowledged by the web application. */
+    private fun finishLaunchWhenDrawable() {
+        if (isDestroyed || launchOverlay == null) return
+        val webView = SomsBridge.webView ?: return
+        val overlay = launchOverlay
+        val request = ++launchVisualRequest
+        webView.postVisualStateCallback(request, object : WebView.VisualStateCallback() {
+            override fun onComplete(requestId: Long) {
+                if (isDestroyed || requestId != launchVisualRequest ||
+                    SomsBridge.webView !== webView || launchOverlay !== overlay) return
+                dismissLaunchOverlay()
+            }
+        })
+    }
+
     private fun dismissLaunchOverlay() {
         val overlay = launchOverlay ?: return
-        // A readiness signal can arrive before the system exit callback. Keep our first frame
-        // available for the handoff, but never extend the existing startup safety deadline.
-        if (!launchHandoffReady && android.os.SystemClock.uptimeMillis() < launchDeadlineMs) {
+        // Readiness may precede the system splash transfer. The focus fallback completes the
+        // handoff; a slow-start timeout must never expose an unready WebView.
+        if (!launchHandoffReady) {
             launchDismissPending = true
             return
         }
@@ -451,8 +475,24 @@ class MainActivity : TauriActivity() {
     /** Install a WindowInsets listener on the content view that measures the status-bar / gesture-bar
      *  insets (device px), converts to integer CSS px (÷ density), stores them for
      *  SomsShell.getSafeInsets(), and pushes live updates to the webview. Per-device — never hardcoded. */
+    private var disposeLegacyImeObserver: (() -> Unit)? = null
+
     private fun installInsetsListener() {
         val content = findViewById<View>(android.R.id.content) ?: return
+        var legacyObserverDisposed = false
+        // Both legacy callbacks share the same observation path. Publish changed measured heights
+        // immediately; legacy devices cannot predict a reliable animation destination.
+        fun acceptLegacyImeObservation() {
+            if (legacyObserverDisposed) return
+            val derived = computeImeFromVisibleFrame(content, navBottomDevicePx)
+            val css = Math.max(0, Math.round(derived / resources.displayMetrics.density))
+            val visible = derived > 0
+            nativeComposer.updateImeAnimationProgress(derived, navBottomDevicePx)
+            if (css == imeHeightCss && visible == imeVisible) return
+            imeHeightCss = css
+            imeVisible = visible
+            pushImeEvent(phase = "change", targetCss = css, isFinal = true)
+        }
         ViewCompat.setOnApplyWindowInsetsListener(content) { _, insets ->
             val status = insets.getInsets(WindowInsetsCompat.Type.statusBars())
             val nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
@@ -479,10 +519,8 @@ class MainActivity : TauriActivity() {
             val d = resources.displayMetrics.density
             safeInsetTopCss = Math.round(status.top / d)
             safeInsetBottomCss = Math.round(navBottomDevicePx / d)
-            // IME is version-gated here — see imeHeightCss. API 30+ trusts Type.ime() (the WindowInsetsAnimation
-            // callback below tracks it per-frame during the open/close animation). Pre-API 30 ignores Type.ime()
-            // (its Compat backport is unreliable on OEM ROMs) and defers the IME to the OnGlobalLayoutListener
-            // installed below, so it does NOT push here on pre-R.
+            // API 30+ uses native animation geometry. Both pre-R callbacks use the same visible-frame
+            // observer, which atomically updates and publishes changed measurements.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
                 imeHeightCss = Math.max(0, Math.round(ime.bottom / d))
@@ -496,12 +534,7 @@ class MainActivity : TauriActivity() {
                 }
                 nativeComposer.updateInsets(ime.bottom, navBottomDevicePx)
             } else {
-                val derivedIme = computeImeFromVisibleFrame(content, navBottomDevicePx)
-                imeHeightCss = Math.max(0, Math.round(derivedIme / d))
-                imeVisible = derivedIme > 0
-                // Pre-R cannot predict a trustworthy endpoint. Follow the observed frame visually, but
-                // commit geometry only after the global-layout source has remained stable.
-                nativeComposer.updateImeAnimationProgress(derivedIme, navBottomDevicePx)
+                acceptLegacyImeObservation()
             }
             applySafeInsetsToWebView()
             insets
@@ -510,7 +543,7 @@ class MainActivity : TauriActivity() {
         // slides up in sync with the keyboard (DISPATCH_MODE_STOP: we own the lift — the WebView must NOT
         // auto-resize/scroll for the IME during the animation; after the animation onApplyWindowInsets above
         // fires once with the settled inset). Below API 30 this callback is inert; the visible-frame listener
-        // below publishes every observed geometry frame and a debounced final.
+        // below publishes each changed measurement immediately.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             ViewCompat.setWindowInsetsAnimationCallback(content,
                 object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
@@ -600,36 +633,20 @@ class MainActivity : TauriActivity() {
                     }
                 })
         }
-        // Pre-API-30 IME source: a global-layout listener that recomputes the keyboard height from the content
-        // view's visible display frame. Every observed geometry change is still published as progress so the
-        // native protocol loses no information; today's web layout deliberately ignores those old-platform
-        // progress frames and commits only the debounced final. (onApplyWindowInsets also delivers Type.ime()
-        // pre-30, but its Compat backport is unreliable on OEM ROMs — see imeHeightCss.) Gated to pre-R:
-        // on API 30+ Type.ime() plus WindowInsetsAnimation are authoritative.
+        // Pre-API-30 uses visible-frame measurements and publishes each changed height immediately.
+        // The AndroidX IME backport is unreliable on OEM ROMs. API 30+ instead uses Type.ime()
+        // and WindowInsetsAnimation as its authoritative sources.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            var finalRunnable: Runnable? = null
-            content.viewTreeObserver.addOnGlobalLayoutListener {
-                val d = resources.displayMetrics.density
-                val derived = computeImeFromVisibleFrame(content, navBottomDevicePx)
-                val derivedCss = Math.max(0, Math.round(derived / d))
-                if (derivedCss != imeHeightCss) {
-                    imeHeightCss = derivedCss
-                    imeVisible = derivedCss > 0
-                    nativeComposer.updateImeAnimationProgress(derived, navBottomDevicePx)
-                    pushImeEvent(
-                        phase = "progress",
-                        targetCss = derivedCss,
-                        isFinal = false,
-                    )
-                    finalRunnable?.let(content::removeCallbacks)
-                    finalRunnable = Runnable {
-                        pushImeEvent(
-                            phase = "change",
-                            targetCss = imeHeightCss,
-                            isFinal = true,
-                        )
-                    }.also { content.postDelayed(it, 80L) }
+            val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                acceptLegacyImeObservation()
+            }
+            content.viewTreeObserver.addOnGlobalLayoutListener(listener)
+            disposeLegacyImeObserver = {
+                legacyObserverDisposed = true
+                if (content.viewTreeObserver.isAlive) {
+                    content.viewTreeObserver.removeOnGlobalLayoutListener(listener)
                 }
+                ViewCompat.setOnApplyWindowInsetsListener(content, null)
             }
         }
         ViewCompat.requestApplyInsets(content)
@@ -1209,6 +1226,8 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        disposeLegacyImeObserver?.invoke()
+        disposeLegacyImeObserver = null
         launchOverlay?.removeCallbacks(launchTimeout)
         launchOverlay?.removeCallbacks(launchHandoffFallback)
         launchOverlay?.cancelAnimations()
@@ -1960,7 +1979,7 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun finishSplash() {
             val a = activityRef.get() ?: return
-            a.runOnUiThread { a.dismissLaunchOverlay() }
+            a.runOnUiThread { a.finishLaunchWhenDrawable() }
         }
 
         /** Render the shared resolved theme without independently reading or caching preferences. */
