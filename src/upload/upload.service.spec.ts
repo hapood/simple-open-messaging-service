@@ -235,6 +235,39 @@ describe('UploadService.resolveStagedPart — family gating by staged intent', (
     expect(overrideContentType).toBeUndefined();
   });
 
+  it.each([
+    { bytes: PNG, family: ContentType.IMAGE },
+    { bytes: EBML, family: ContentType.VIDEO },
+    { bytes: OGG, family: ContentType.AUDIO },
+  ])(
+    'promotes FILE intent to detected $family regardless of declared MIME',
+    async ({ bytes, family }) => {
+      const { payload, overrideContentType } = await svc.resolveStagedPart(
+        await stage(bytes),
+        ContentType.FILE,
+        'attachment.bin',
+        'application/octet-stream',
+      );
+      expect(payload.family).toBe(family);
+      expect(overrideContentType).toBe(family);
+      if (family === ContentType.IMAGE) {
+        expect(payload.w).toBe(10);
+        expect(payload.h).toBe(20);
+      }
+    },
+  );
+
+  it('keeps unrecognized FILE bytes downloadable despite an image name and MIME', async () => {
+    const { payload, overrideContentType } = await svc.resolveStagedPart(
+      await stage(Buffer.from('not an image')),
+      ContentType.FILE,
+      'photo.png',
+      'image/png',
+    );
+    expect(payload.family).toBe('FILE');
+    expect(overrideContentType).toBeUndefined();
+  });
+
   it('falls an unsupported IMAGE intent back to a downloadable FILE', async () => {
     const heic = Buffer.from('unsupported-image-bytes');
     const { payload, overrideContentType } = await svc.resolveStagedPart(

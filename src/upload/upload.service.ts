@@ -222,6 +222,7 @@ export class UploadService {
    * {@link resolveStagedPart} to gate each part on the staged `intent`:
    *   - IMAGE intent whose bytes are not an inline-renderable image (HEIC/AVIF/…) → downloadable FILE,
    *     signaling `overrideContentType: FILE`;
+   *   - FILE intent adopts the detected media family as the final message type;
    *   - VIDEO/AUDIO intent rejects files without the corresponding actual streams;
    *   - GALLERY detects every member independently, including audio-only MP4/WebM.
    * Returns the detected family, the trusted on-disk ext, the display MIME (omitted for IMAGE), and the
@@ -261,6 +262,9 @@ export class UploadService {
           ? (detected.family.toUpperCase() as OutboundFilePayload['family'])
           : 'FILE';
         ext = detected?.ext ?? (parseFileExt(filename) || 'bin');
+        // The picker entry point is not the final message type. Keep the staged message in sync
+        // with the verified attachment family so clients render media instead of a download card.
+        if (family !== 'FILE') overrideContentType = ContentType[family];
         break;
       case ContentType.VIDEO:
         if (!detected || detected.family !== 'video') {

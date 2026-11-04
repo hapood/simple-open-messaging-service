@@ -934,9 +934,9 @@ export class MessageService {
     return stage.contentType;
   }
 
-  /** Apply the IMAGE→FILE family fallback (HEIC/AVIF bytes that cannot inline-render) to a
-   * single-file staged batch before the batch commit. Valid only for N=1, where no sibling part
-   * can race the contentType swap. */
+  /** Align the staged message type with the detected attachment family, including FILE→media
+   * promotion and IMAGE→FILE fallback for formats that cannot inline-render.
+   * Valid only for N=1, where no sibling part can race the contentType swap. */
   async updateStagedContentType(
     clientMessageId: string,
     userId: number,
