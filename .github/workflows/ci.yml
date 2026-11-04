@@ -54,17 +54,18 @@ jobs:
       - uses: android-actions/setup-android@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
       - name: Install Android NDK
         run: sdkmanager 'ndk;27.1.12297006'
       - name: Install frontend and Tauri tooling
-        run: |
-          npm ci --prefix web
-          cargo install tauri-cli --version 2.12.4 --locked
+        run: npm ci --prefix web
+      - name: Test native build plans
+        run: node --test scripts/native-build-plan.test.mjs
       - name: Build arm64 debug APK
+        # This job intentionally selects one ABI; local builds default to all four.
         run: make -C src-tauri apk-debug ABI=aarch64
       - name: Run Android JVM tests
         working-directory: src-tauri/gen/android
@@ -103,9 +104,7 @@ jobs:
         with:
           workspaces: src-tauri
       - name: Install frontend and Tauri tooling
-        run: |
-          npm ci --prefix web
-          cargo install tauri-cli --version 2.12.4 --locked
+        run: npm ci --prefix web
       - name: Build Linux desktop bundles
         run: make -C src-tauri linux
       - name: Test shared Rust runtime on Linux
@@ -129,9 +128,7 @@ jobs:
         with:
           workspaces: src-tauri
       - name: Install frontend and Tauri tooling
-        run: |
-          npm ci --prefix web
-          cargo install tauri-cli --version 2.12.4 --locked
+        run: npm ci --prefix web
       - name: Build universal macOS bundles
         run: make -C src-tauri macos
       - name: Test shared Rust runtime on macOS
