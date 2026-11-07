@@ -110,6 +110,7 @@ export function AuditPage() {
           {t('audit.action')}
           <Input
             name="action"
+            autoCapitalize="off"
             maxLength={64}
             list="audit-actions"
             defaultValue={params.get('action') ?? ''}
@@ -127,6 +128,7 @@ export function AuditPage() {
           {t('audit.actor')}
           <Input
             name="adminId"
+            autoCapitalize="off"
             type="number"
             min="1"
             max="2147483647"

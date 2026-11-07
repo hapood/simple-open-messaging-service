@@ -132,7 +132,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
         contentRef: () => ({ nativeElement: { querySelector: () => null } }),
         convList: { previewUnreadEntryBoundary: () => null },
         scrollState: { open: vi.fn(), reset: vi.fn() },
-        chatAppearance: { openPosition: () => 'latest' },
         cancelPaste: vi.fn(),
         nativeDraft: { reset: vi.fn() },
         messageInteraction: { reset: vi.fn() },
@@ -434,7 +433,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
       contentRef: () => undefined,
       convList: { previewUnreadEntryBoundary: () => undefined },
       scrollState: { open: vi.fn(), firstUnreadSeq: null },
-      chatAppearance: { openPosition: () => 'latest' },
     });
     lifecycle.bind(6);
     await vi.waitFor(() => expect(component.initialLoadFailed()).toBe(true));

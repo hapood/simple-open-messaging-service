@@ -1,10 +1,7 @@
-#[cfg(desktop)]
-use log::warn;
-
-#[cfg(desktop)]
-use crate::secure_storage;
+#[cfg(not(desktop))]
+use crate::validate_origin;
 use crate::{
-    pick_origin_race, validate_origin, OriginMode, ServerSessionState, DEFAULT_API_ORIGIN,
+    pick_origin_race, OriginMode, ServerSessionState, DEFAULT_API_ORIGIN,
 };
 
 // --- frontend-facing commands (origin + token) --------------------------------------------
@@ -154,6 +151,7 @@ pub(crate) async fn clear_session_token(session_uuid: String) -> Result<(), Stri
     .map_err(|e| format!("join native local end: {e}"))?
 }
 
+#[cfg(not(desktop))]
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LogoutAdmission {
@@ -161,15 +159,24 @@ pub(crate) struct LogoutAdmission {
     local_clear_failed: bool,
 }
 
-/// Capture and detach before the platform adapter clears its secure credential. In particular,
-/// Android's secure-store adapter also clears Rust's token, so it must wait for this acknowledgement.
-/// The bounded remote attempt starts here even if the renderer disappears before waiting for it.
+/// Stop desktop business work while the Rust coordinator retains revocation credentials.
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) async fn begin_logout(
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<(), String> {
+    state.logout.begin_login_logout(&state).await
+}
+
+/// Legacy mobile adapter admission captures revocation credentials before OS storage cleanup.
+#[cfg(not(desktop))]
 #[tauri::command]
 pub(crate) async fn begin_logout(
     origin: String,
     session_uuid: Option<String>,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<LogoutAdmission, String> {
+    let transition = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Logout)?;
     // The renderer captures the active UUID at the logout click; a delayed dispatch of a superseded
     // logout must never end a successor login.
     let expected = session_uuid
@@ -198,29 +205,14 @@ pub(crate) async fn begin_logout(
         .await
         .map_err(|e| format!("join native logout end: {e}"))??;
     }
-    let ticket = token.and_then(|token| {
-        // Never re-read the mutable origin after capturing the ended credential.
-        let origin = validate_origin(&origin)?;
-        Some(
-            state
-                .logout_tasks
-                .start(state.api_client(&origin), origin, token),
-        )
-    });
-
-    #[cfg(desktop)]
-    let local_clear_failed = match expected.as_ref() {
-        Some(id) => match secure_storage::secure_clear_token_internal(&id.to_string()) {
-            Ok(()) => false,
-            Err(error) => {
-                warn!("logout credential clear failed: {error}");
-                true
-            }
-        },
-        None => false,
-    };
-    #[cfg(not(desktop))]
     let local_clear_failed = false;
+
+    let ticket = token.and_then(|token| {
+        let origin = validate_origin(&origin)?;
+        Some(state.logout_tasks.start_in_transition(
+            state.api_client(&origin), origin, token, transition,
+        ))
+    });
 
     Ok(LogoutAdmission {
         ticket,
@@ -228,12 +220,41 @@ pub(crate) async fn begin_logout(
     })
 }
 
+/// Complete desktop logout after confirmed revocation or an explicit local-only decision.
+/// Rust owns the descriptor and OS cleanup; the renderer never supplies deletion identity.
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) async fn finish_logout(
+    app: tauri::AppHandle,
+    local_only: bool,
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<(), String> {
+    state.logout.finish_desktop(app, local_only).await
+}
+
+/// Read the Rust-owned operation projection. No credential is exposed to the renderer.
+#[tauri::command]
+pub(crate) async fn logout_status(
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<crate::native_logout::LogoutStatus, String> {
+    Ok(state.logout.status().await)
+}
+
+/// One explicit attempt against the credential captured by the logout coordinator.
+/// No automatic retry and no credential/cache deletion occurs in this command.
+#[tauri::command]
+pub(crate) async fn try_logout(
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<crate::native_logout::LogoutOutcome, String> {
+    state.logout.revoke().await
+}
+
 /// Waiting has no credential/cache side effects and cannot mutate a successor session.
+#[cfg(not(desktop))]
 #[tauri::command]
 pub(crate) async fn wait_for_logout(
     ticket: String,
     state: tauri::State<'_, ServerSessionState>,
-) -> Result<(), String> {
-    state.logout_tasks.wait(&ticket).await;
-    Ok(())
+) -> Result<crate::native_logout::LogoutOutcome, String> {
+    Ok(state.logout_tasks.wait(&ticket).await)
 }

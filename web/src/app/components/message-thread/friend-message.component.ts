@@ -162,7 +162,6 @@ import { GroupAnnouncementComponent } from '../group-announcement/group-announce
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
-import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import {
   ALL_MENTION_ID,
   escapePlainText,
@@ -170,7 +169,6 @@ import {
 } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
-import { messageOpenOptions } from './message-open-position';
 import {
   applyMessageSelectionState,
   messageMemberIds,
@@ -504,7 +502,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly profileSession = inject(SessionLifecycleService);
   private readonly destroyRef = inject(DestroyRef);
-  private readonly chatAppearance = inject(ChatAppearanceService);
   readonly nativeComposer = inject(NativeComposerService);
   private readonly composerDrafts = inject(ComposerDraftService);
   private readonly linkGenerations = inject(LinkCardGenerationService);
@@ -1273,7 +1270,7 @@ export class MessageThreadComponent implements OnDestroy {
           this.stableRead.noteFullyVisible(entry.item.ids ?? [entry.item.id]);
         }
       },
-      config: { ...this.threadAdapter.scrollerConfig(), deferInitFill: true },
+      config: { ...this.threadAdapter.scrollerConfig(), deferInitFill: true, followBottom: false },
       isFrozen: () => this.layout.reflowFrozen(),
     });
     this.threadAdapter.configureScroller(this.scroller);
@@ -1370,16 +1367,8 @@ export class MessageThreadComponent implements OnDestroy {
     this.initialLoading.set(true);
     this.initialLoadFailed.set(false);
     this.unreadDividerReady.set(false);
-    const initialPosition = this.convList.previewUnreadEntryBoundary(
-      trd.threadId,
-    );
     this.scrollState.open(null);
-    const openOptions =
-      jumpOptions ??
-      messageOpenOptions(
-        this.chatAppearance.openPosition(),
-        initialPosition?.firstUnreadSeq ?? null,
-      );
+    const openOptions = jumpOptions;
     let missedUnreadAnchor = false;
     const source = this.source;
     const scroller = this.scroller;
@@ -1445,6 +1434,10 @@ export class MessageThreadComponent implements OnDestroy {
           // Notify last: the host may synchronously unbind this pane on readiness.
           if (jumpOptions) this.settleWindowJump(true);
           else this.ready.emit(trd.threadId);
+          void source.restoreMediaStages?.().then(async () => {
+            if (this.source === source && this.scroller === scroller)
+              await scroller.reconcilePending();
+          }).catch(() => {});
         }),
         catchError((error) => {
           this.initialLoading.set(false);

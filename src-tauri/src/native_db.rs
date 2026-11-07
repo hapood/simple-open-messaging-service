@@ -11,7 +11,7 @@ pub(crate) mod call_peer;
 pub(crate) mod client_state;
 pub(crate) mod contacts;
 #[cfg(any(target_os = "macos", test))]
-mod desktop_badge;
+pub(crate) mod desktop_badge;
 #[cfg(desktop)]
 pub(crate) mod desktop_notifications;
 mod device_connection;
@@ -28,6 +28,7 @@ pub(crate) mod namespace_feed;
 pub(crate) mod namespace_subscriptions;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod notifications;
+pub(crate) mod unread;
 pub(crate) mod preferences;
 pub(crate) mod profile_avatars;
 pub(crate) mod profile_namespaces;
@@ -1299,10 +1300,9 @@ mod login_cache_tests {
                 Ok(())
             })
             .unwrap();
-        crate::credential_storage::clear(Some(&id.to_string()), || Ok(())).unwrap();
+        crate::credential_storage::clear(|| Ok(())).unwrap();
 
-        // A stale predecessor UUID must not end the successor and the lane keeps refusing it
-        // while the successor is admitted — clearing is not an ownership takeover.
+        // A stale business completion must not end the successor's runtime owner.
         let successor_uuid = prepare_fresh_login(preferences_connection().unwrap()).unwrap();
         let successor = LoginSessionId::try_from(successor_uuid).unwrap();
         let successor_owner = login_connection(&successor).unwrap();
@@ -1317,10 +1317,6 @@ mod login_cache_tests {
             .unwrap();
         end_current_login_if_matching(&id).unwrap(); // mismatched UUID: deliberate no-op
         assert!(successor_owner.assert_active().is_ok());
-        assert!(crate::credential_storage::clear(Some(&id.to_string()), || {
-            panic!("predecessor clear must not delete the successor credential")
-        })
-        .is_err());
         successor_owner.end().unwrap();
         release_login_connection(&successor_owner).unwrap();
 

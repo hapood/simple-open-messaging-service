@@ -8,6 +8,8 @@ import {
 } from '@angular/common/http/testing';
 import { firstValueFrom } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
+import { LogoutDecisionService } from './logout-decision.service';
+import { BROWSER_SESSION } from './browser-session.service';
 import { AuthService } from './auth.service';
 import { REQUEST_SCOPE, RequestScope } from '../request-context';
 import { RouteService } from './route.service';
@@ -21,7 +23,7 @@ import {
   STATE_FEED_WORKER_FACTORY,
 } from './webdb.service';
 import { PreferenceStore } from './preference-store.service';
-import { SESSION_JOURNAL_KEY } from './session/session-journal';
+import { SESSION_STORE_KEY } from './session/session-store';
 import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import { deleteDB } from 'idb';
 
@@ -58,6 +60,7 @@ describe('AuthService (session-token contract, browser path)', () => {
         provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         AuthService,
+        { provide: LogoutDecisionService, useValue: { decide: vi.fn().mockResolvedValue('localOnly') } },
         provideWebdbService(),
         { provide: STATE_FEED_WORKER_FACTORY, useValue: () => null },
         // AuthService resolves i18n keys for its rare keyring-failure toasts; stub the translator (returns
@@ -91,6 +94,7 @@ describe('AuthService (session-token contract, browser path)', () => {
         {
           provide: WebPushService,
           useValue: {
+            unsubscribe: vi.fn().mockResolvedValue(undefined),
             onLogin: vi.fn().mockName('onLogin'),
             unregister: vi.fn().mockName('unregister'),
           },
@@ -111,7 +115,7 @@ describe('AuthService (session-token contract, browser path)', () => {
         },
       ],
     });
-    await TestBed.inject(PreferenceStore).remove('device', SESSION_JOURNAL_KEY);
+    await TestBed.inject(PreferenceStore).remove('device', SESSION_STORE_KEY);
     svc = TestBed.inject(AuthService);
     httpMock = TestBed.inject(HttpTestingController);
   });
@@ -120,7 +124,7 @@ describe('AuthService (session-token contract, browser path)', () => {
     for (const { name } of await indexedDB.databases()) {
       if (name?.startsWith('soms-session-')) await deleteDB(name);
     }
-    await TestBed.inject(PreferenceStore).remove('device', SESSION_JOURNAL_KEY);
+    await TestBed.inject(PreferenceStore).remove('device', SESSION_STORE_KEY);
     await TestBed.inject(PreferenceStore).close();
     TestBed.resetTestingModule();
     vi.restoreAllMocks();
@@ -169,7 +173,9 @@ describe('AuthService (session-token contract, browser path)', () => {
     document.cookie = 'logged_in=1; Path=/';
     expect(svc.isLoggedIn()).toBe(true);
 
-    svc.logout().subscribe();
+    await TestBed.inject(BROWSER_SESSION)!.authenticate((signal) => TestBed.inject(BROWSER_SESSION)!.activate(signal));
+    const done = firstValueFrom(svc.logout());
+    expect(TestBed.inject(WebPushService).unsubscribe).not.toHaveBeenCalled();
     const req = await vi.waitFor(() =>
       httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url)),
     );
@@ -178,13 +184,59 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(req.request.body.sessionToken).toBeUndefined();
     expect(req.request.body.refreshToken).toBeUndefined();
     req.flush({ code: 0, message: 'ok' });
+    await done;
+    expect(TestBed.inject(WebPushService).unsubscribe).toHaveBeenCalledOnce();
 
-    // clearNativeToken() cleared the presence cookie client-side (synchronous on the browser branch).
+    // Presence is cleared only after revocation and local cleanup finish.
     expect(svc.isLoggedIn()).toBe(false);
+  });
+
+  it('waits for explicit local-only consent after HTTP failure before unsubscribing', async () => {
+    const browser = TestBed.inject(BROWSER_SESSION)!;
+    await browser.authenticate((signal) => browser.activate(signal));
+    document.cookie = 'logged_in=1; Path=/';
+    let decide!: (choice: 'localOnly') => void;
+    const decision = vi.spyOn(TestBed.inject(LogoutDecisionService), 'decide')
+      .mockImplementation(() => new Promise((resolve) => { decide = resolve; }));
+    const done = firstValueFrom(svc.logout());
+    const duplicate = firstValueFrom(svc.logout());
+    const req = await vi.waitFor(() => httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url)));
+    req.flush({}, { status: 503, statusText: 'Service Unavailable' });
+    await vi.waitFor(() => expect(decision).toHaveBeenCalledOnce());
+    expect(decision).toHaveBeenCalledWith({ status: 'httpFailure', status_code: 503 });
+    expect(document.cookie).toContain('logged_in=1');
+    expect(TestBed.inject(WebPushService).unsubscribe).not.toHaveBeenCalled();
+    decide('localOnly');
+    await Promise.all([done, duplicate]);
+    expect(TestBed.inject(WebPushService).unsubscribe).toHaveBeenCalledOnce();
+    expect(document.cookie).not.toContain('logged_in=1');
+  });
+
+  it('sends another revocation only after an explicit retry decision', async () => {
+    const browser = TestBed.inject(BROWSER_SESSION)!;
+    await browser.authenticate((signal) => browser.activate(signal));
+    document.cookie = 'logged_in=1; Path=/';
+    let decide!: (choice: 'retry') => void;
+    const decision = vi.spyOn(TestBed.inject(LogoutDecisionService), 'decide')
+      .mockImplementation(() => new Promise((resolve) => { decide = resolve; }));
+    const done = firstValueFrom(svc.logout());
+    const first = await vi.waitFor(() => httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url)));
+    first.flush({}, { status: 503, statusText: 'Service Unavailable' });
+    await vi.waitFor(() => expect(decision).toHaveBeenCalledOnce());
+    httpMock.expectNone((r) => /\/auth\/logout$/.test(r.url));
+    expect(TestBed.inject(WebPushService).unsubscribe).not.toHaveBeenCalled();
+    decide('retry');
+    const retry = await vi.waitFor(() => httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url)));
+    retry.flush({ code: 0, message: 'ok' });
+    await done;
+    expect(decision).toHaveBeenCalledOnce();
+    expect(TestBed.inject(WebPushService).unsubscribe).toHaveBeenCalledOnce();
+    expect(document.cookie).not.toContain('logged_in=1');
   });
 
   it('invalidates immediately, releases handles, and never invokes legacy cache deletion', async () => {
     document.cookie = 'logged_in=1; Path=/';
+    await TestBed.inject(BROWSER_SESSION)!.authenticate((signal) => TestBed.inject(BROWSER_SESSION)!.activate(signal));
     let finishCacheClear!: () => void;
     const cacheClear = new Promise<void>((resolve) => {
       finishCacheClear = resolve;
@@ -199,7 +251,6 @@ describe('AuthService (session-token contract, browser path)', () => {
 
     svc.logout().subscribe(exited);
 
-    expect(svc.isLoggedIn()).toBe(false);
     expect(exited).not.toHaveBeenCalled();
     httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
 
@@ -215,6 +266,7 @@ describe('AuthService (session-token contract, browser path)', () => {
 
   it('stays signed out and reports local resource release failure', async () => {
     document.cookie = 'logged_in=1; Path=/';
+    await TestBed.inject(BROWSER_SESSION)!.authenticate((signal) => TestBed.inject(BROWSER_SESSION)!.activate(signal));
     vi.spyOn(TestBed.inject(WebdbService), 'close').mockRejectedValueOnce(
       new Error('cache busy'),
     );
@@ -224,11 +276,9 @@ describe('AuthService (session-token contract, browser path)', () => {
       expect(TestBed.inject(ToastService).warn).toHaveBeenCalled(),
     );
 
-    expect(svc.isLoggedIn()).toBe(false);
-    const request = await vi.waitFor(() =>
-      httpMock.expectOne((request) => /\/auth\/logout$/.test(request.url)),
-    );
-    request.flush({ code: 0 });
+    // Failure before revocation must preserve the credential and avoid remote dispatch.
+    expect(document.cookie).toContain('logged_in=1');
+    httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
   });
 
   it('preserves the credential but blocks business admission when local-cache initialization fails', async () => {

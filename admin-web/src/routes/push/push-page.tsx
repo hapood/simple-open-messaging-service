@@ -88,6 +88,7 @@ export function PushPage() {
       </div>
 
       <Input
+        autoCapitalize="off"
         value={searchInput}
         onChange={(e) => setSearchInput((e.target as HTMLInputElement).value)}
         placeholder={t('push.searchPlaceholder')}

@@ -92,6 +92,7 @@ export function DurableTaskPage() {
           <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
           <Input
             placeholder={t('durableTasks.searchPlaceholder')}
+            autoCapitalize="off"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
             className="pl-8"

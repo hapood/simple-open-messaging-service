@@ -76,6 +76,7 @@ export function BansPage() {
           className="w-full sm:w-72"
           aria-label={t('bans.search')}
           placeholder={t('bans.search')}
+          autoCapitalize="off"
           value={searchInput}
           onChange={(event) => setSearchInput(event.target.value)}
         />

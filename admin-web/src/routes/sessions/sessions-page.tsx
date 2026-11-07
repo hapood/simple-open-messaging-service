@@ -74,6 +74,7 @@ export function SessionsPage() {
             type="number"
             min={1}
             step={1}
+            autoCapitalize="off"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           />
@@ -81,6 +82,7 @@ export function SessionsPage() {
         <label className="flex flex-col gap-1">
           {t('sessions.searchPlaceholder')}
           <Input
+            autoCapitalize="off"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
           />

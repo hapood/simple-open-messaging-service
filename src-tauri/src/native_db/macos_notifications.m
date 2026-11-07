@@ -5,7 +5,9 @@
 #include <stdbool.h>
 
 typedef void (*SomsCompletion)(void *, const char *);
-extern void soms_macos_notification_tapped(int32_t threadId, int32_t sessionId, const char *origin);
+extern void soms_macos_notification_tapped(int32_t threadId, const char *notificationId);
+extern void soms_macos_notification_dismissed(int32_t threadId, const char *notificationId);
+static NSString *const SomsMessageCategory = @"soms-message";
 static NSString *const SomsPrefix = @"soms-thread-";
 
 @interface SomsNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
@@ -26,24 +28,14 @@ static NSString *const SomsPrefix = @"soms-thread-";
 didReceiveNotificationResponse:(UNNotificationResponse *)response
          withCompletionHandler:(void (^)(void))completion {
     NSString *identifier = response.notification.request.identifier;
-    if ([response.actionIdentifier isEqualToString:UNNotificationDefaultActionIdentifier] &&
-        [identifier hasPrefix:SomsPrefix]) {
-        NSString *suffix = [identifier substringFromIndex:SomsPrefix.length];
-        long long value = suffix.longLongValue;
-        NSDictionary *userInfo = response.notification.request.content.userInfo;
-        NSString *session = userInfo[@"sessionId"];
-        NSString *origin = userInfo[@"origin"];
-        // Notifications from older builds lack session scope and must not navigate.
-        if ([session isKindOfClass:NSString.class] && [origin isKindOfClass:NSString.class]) {
-            long long sessionId = session.longLongValue;
-            if (value > 0 && value <= INT32_MAX &&
-                [suffix isEqualToString:[NSString stringWithFormat:@"%lld", value]] &&
-                sessionId > 0 && sessionId <= INT32_MAX &&
-                [session isEqualToString:[NSString stringWithFormat:@"%lld", sessionId]] &&
-                origin.length > 0 &&
-                [origin rangeOfCharacterFromSet:[NSCharacterSet characterSetWithRange:NSMakeRange(0, 1)]].location == NSNotFound) {
-                soms_macos_notification_tapped((int32_t)value, (int32_t)sessionId, origin.UTF8String);
-            }
+    BOOL tapped = [response.actionIdentifier isEqualToString:UNNotificationDefaultActionIdentifier];
+    BOOL dismissed = [response.actionIdentifier isEqualToString:UNNotificationDismissActionIdentifier];
+    if ((tapped || dismissed) && [identifier hasPrefix:SomsPrefix]) {
+        NSNumber *thread = response.notification.request.content.userInfo[@"threadId"];
+        long long value = [thread isKindOfClass:NSNumber.class] ? thread.longLongValue : 0;
+        if (value > 0 && value <= INT32_MAX) {
+            if (tapped) soms_macos_notification_tapped((int32_t)value, identifier.UTF8String);
+            else soms_macos_notification_dismissed((int32_t)value, identifier.UTF8String);
         }
     }
     completion();
@@ -56,6 +48,11 @@ void soms_macos_notifications_init(void) {
     dispatch_once(&once, ^{
         delegate = [SomsNotificationDelegate new];
         UNUserNotificationCenter.currentNotificationCenter.delegate = delegate;
+        UNNotificationCategory *category = [UNNotificationCategory
+            categoryWithIdentifier:SomsMessageCategory actions:@[] intentIdentifiers:@[]
+            options:UNNotificationCategoryOptionCustomDismissAction];
+        [UNUserNotificationCenter.currentNotificationCenter setNotificationCategories:
+            [NSSet setWithObject:category]];
     });
 }
 
@@ -79,17 +76,17 @@ void soms_macos_notifications_authorize(void *context, SomsCompletion completion
         }];
 }
 
-void soms_macos_notification_post(int32_t threadId, int32_t sessionId, const char *origin,
+void soms_macos_notification_post(int32_t threadId, const char *notificationId,
                                   const char *title, const char *body,
                                   bool silent, void *context, SomsCompletion completion) {
     @autoreleasepool {
         UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+        content.categoryIdentifier = SomsMessageCategory;
         content.title = [NSString stringWithUTF8String:title];
         content.body = [NSString stringWithUTF8String:body];
-        content.userInfo = @{@"sessionId": [NSString stringWithFormat:@"%d", sessionId],
-                             @"origin": [NSString stringWithUTF8String:origin]};
         if (!silent) content.sound = UNNotificationSound.defaultSound;
-        NSString *identifier = [SomsPrefix stringByAppendingFormat:@"%d", threadId];
+        content.userInfo = @{@"threadId": @(threadId)};
+        NSString *identifier = [NSString stringWithUTF8String:notificationId];
         UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier
                                                                            content:content trigger:nil];
         [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request
@@ -99,8 +96,8 @@ void soms_macos_notification_post(int32_t threadId, int32_t sessionId, const cha
     }
 }
 
-void soms_macos_notification_remove(int32_t threadId) {
-    NSString *identifier = [SomsPrefix stringByAppendingFormat:@"%d", threadId];
+void soms_macos_notification_remove(const char *notificationId) {
+    NSString *identifier = [NSString stringWithUTF8String:notificationId];
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     [center removePendingNotificationRequestsWithIdentifiers:@[identifier]];
     [center removeDeliveredNotificationsWithIdentifiers:@[identifier]];

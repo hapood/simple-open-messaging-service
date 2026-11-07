@@ -173,6 +173,7 @@ export function UsersPage() {
               type="search"
               aria-label={t('users.searchPlaceholder')}
               placeholder={t('users.searchPlaceholder')}
+              autoCapitalize="off"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               className="pl-8"

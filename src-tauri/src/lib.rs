@@ -24,6 +24,8 @@ mod call;
 mod client_compat;
 mod credential_storage;
 mod diagnostics;
+#[cfg(desktop)]
+mod launch;
 mod login_connection;
 mod login_request;
 mod login_session_store;
@@ -40,6 +42,7 @@ mod secure_storage;
 mod server_setup;
 mod sse;
 mod upload;
+mod window_lifecycle;
 
 pub(crate) use proxy::{activate_origin, is_network_failure, pick_origin_race, runtime_switch};
 
@@ -61,7 +64,9 @@ use std::time::Duration;
 // the JS errors do (visible via edge://inspect / adb logcat). Previously these were swallowed or silent.
 use log::{error, warn};
 use tauri::http::{Response, StatusCode};
-use tauri::{Emitter, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, UriSchemeResponder};
+#[cfg(not(target_os = "macos"))]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Notify;
 
@@ -170,7 +175,9 @@ pub(crate) struct ServerSessionState {
     /// App-scoped media downloads keyed by the renderer-generated task id. The shared image-download
     /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
     media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    #[cfg(not(desktop))]
     logout_tasks: native_logout::LogoutTasks,
+    logout: Arc<native_logout::LogoutCoordinator>,
 }
 
 impl ServerSessionState {
@@ -212,7 +219,9 @@ impl ServerSessionState {
             #[cfg(not(desktop))]
             native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            #[cfg(not(desktop))]
             logout_tasks: native_logout::LogoutTasks::default(),
+            logout: Arc::new(native_logout::LogoutCoordinator::default()),
         }
     }
 
@@ -366,7 +375,7 @@ pub fn run() {
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = app.get_window("main") {
             let _ = window.unminimize();
             let _ = window.show();
             let _ = window.set_focus();
@@ -400,17 +409,20 @@ pub fn run() {
     // plugin rebinds just above; without this guard the Android build references a configured-out type
     // (E0433 cannot find type `SseSupervisor`).
     #[cfg(desktop)]
-    let builder = builder.manage(sse::SseSupervisor::new());
+    let builder = builder
+        .manage(sse::SseSupervisor::new())
+        .manage(launch::LaunchState::default());
     builder
         .invoke_handler({
             #[cfg(desktop)]
             {
                 tauri::generate_handler![
+                    launch::launch_update,
                     native_db::desktop_notifications::desktop_badge_refresh,
                     native_db::desktop_notifications::desktop_notification_permission,
                     native_db::desktop_notifications::desktop_notification_request_permission,
                     native_db::desktop_notifications::desktop_notification_open_settings,
-                    native_db::desktop_notifications::desktop_notification_update,
+                    native_db::desktop_notifications::desktop_notification_presentation_changed,
                     native_db::profile_namespaces::native_db_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_commit_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_apply_profile_namespace_changes,
@@ -430,7 +442,9 @@ pub fn run() {
                     origin_commands::login_session_for_token,
                     native_db::native_db_begin_login,
                     origin_commands::begin_logout,
-                    origin_commands::wait_for_logout,
+                    origin_commands::logout_status,
+                    origin_commands::try_logout,
+                    origin_commands::finish_logout,
                     secure_storage::secure_get_token,
                     secure_storage::secure_set_token,
                     secure_storage::secure_clear_token,
@@ -527,6 +541,8 @@ pub fn run() {
                     native_db::native_db_begin_login,
                     origin_commands::begin_logout,
                     origin_commands::wait_for_logout,
+                    origin_commands::logout_status,
+                    origin_commands::try_logout,
                     server_setup::begin_server_setup,
                     server_setup::cancel_server_setup,
                     server_setup::check_server_setup,
@@ -605,7 +621,11 @@ pub fn run() {
                 ]
             }
         })
+        .on_window_event(window_lifecycle::on_window_event)
         .setup(move |app| {
+            // First macOS frame is native artwork, before database/keychain work or WebKit creation.
+            #[cfg(target_os = "macos")]
+            let launch_window = launch::create_window(app)?;
             #[cfg(target_os = "windows")]
             native_db::desktop_notifications::initialize_windows_links(app.handle())?;
             #[cfg(target_os = "macos")]
@@ -630,36 +650,59 @@ pub fn run() {
                 error!("panic: {info}");
             }));
 
-            let data_dir = app.path().app_data_dir()?;
-            native_db::location::initialize(&data_dir)?;
-            native_db::initialize_preferences()?;
-            if let Err(error) = native_db::initialize_login_cache() {
-                warn!("login cache initialization requires repair: {error}");
-            }
-            fs::create_dir_all(&data_dir)?;
-            // Android resources were restored by Application; do not overwrite live background state.
-            #[cfg(not(target_os = "android"))]
+            // macOS returns to the event loop immediately so the native launch layer can draw and
+            // animate while storage opens on a worker. WebKit is attached only after runtime setup.
+            #[cfg(target_os = "macos")]
             {
-                let config_path = data_dir.join(CONFIG_FILENAME);
-                *proxy_state.config_path.lock().expect("config_path lock") = config_path;
-                server_setup::restore(&proxy_state).map_err(std::io::Error::other)?;
+                let handle = app.handle().clone();
+                let state = proxy_state.clone();
+                let proxy_state_for_retry = proxy_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let initializer = handle.clone();
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        initialize_client_storage(&initializer, &state)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(())) => {
+                            let errors = handle.clone();
+                            if let Err(error) = handle.run_on_main_thread(move || {
+                                if let Err(error) = launch::attach_webview(&launch_window) {
+                                    launch::failed(&errors, &error.to_string());
+                                }
+                            }) {
+                                launch::failed(&handle, &error.to_string());
+                            }
+                            diagnostics::retry_pending_diagnostics(handle, proxy_state_for_retry)
+                                .await;
+                        }
+                        Ok(Err(error)) => launch::failed(&handle, &error),
+                        Err(error) => launch::failed(&handle, &error.to_string()),
+                    }
+                });
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                initialize_client_storage(app.handle(), &proxy_state)
+                    .map_err(std::io::Error::other)?;
+                // Other hosts retain their existing window/Activity presentation.
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("SOMS")
+                    .on_navigation(navigation::is_allowed)
+                    .inner_size(1200.0, 800.0)
+                    .min_inner_size(390.0, 600.0)
+                    .build()?;
             }
 
-            // The single window loads only the embedded SPA.
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("SOMS")
-                .on_navigation(navigation::is_allowed)
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(390.0, 600.0)
-                .build()?;
-
-            // Offline diagnostics delivery: re-POST any report bundles captured during a prior network
-            // outage (kept under app_cache_dir/pending-*). Fire-and-forget — never blocks app launch.
-            let retry_app = app.handle().clone();
-            let retry_state = proxy_state.clone();
-            tauri::async_runtime::spawn(async move {
-                diagnostics::retry_pending_diagnostics(retry_app, retry_state).await;
-            });
+            // Retry only after storage and origin restoration; macOS starts this in its initializer.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let retry_app = app.handle().clone();
+                let retry_state = proxy_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    diagnostics::retry_pending_diagnostics(retry_app, retry_state).await;
+                });
+            }
 
             // The web APP_INITIALIZER invokes `init_pick_origin` before routing begins. That timing matters:
             // the logged-out login page immediately loads public `/config`, so the active origin must be
@@ -668,6 +711,31 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn initialize_client_storage(
+    app: &tauri::AppHandle,
+    proxy_state: &ServerSessionState,
+) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    native_db::location::initialize(&data_dir)?;
+    native_db::initialize_preferences()?;
+    if let Err(error) = native_db::initialize_login_cache() {
+        warn!("login cache initialization requires repair: {error}");
+    }
+    fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+    // Android resources were restored by Application; do not overwrite live background state.
+    #[cfg(not(target_os = "android"))]
+    {
+        *proxy_state.config_path.lock().expect("config_path lock") = data_dir.join(CONFIG_FILENAME);
+        server_setup::restore(proxy_state)?;
+    }
+    #[cfg(target_os = "android")]
+    let _ = proxy_state;
+    Ok(())
 }
 
 // --- media:// proxy (unchanged) -----------------------------------------------------------

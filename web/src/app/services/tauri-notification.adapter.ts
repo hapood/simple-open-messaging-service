@@ -1,20 +1,15 @@
 import { inject } from '@angular/core';
-import { UserService } from './user.service';
-import { NotificationAdapter } from './notification-adapter';
-import { apiOrigin, tauriInvoke } from './runtime';
-import type { NotificationDescriptor } from './notification-descriptor.model';
+import { SessionLifecycleService } from './session-lifecycle.service';
+import { tauriInvoke } from './runtime';
 
-/** Rust retains notification handles where supported. Android has its own native presentation. */
-export class TauriNotificationAdapter extends NotificationAdapter {
+/** Page-side dismissal only. Native message presentation is owned by Rust. */
+export class TauriNotificationAdapter {
   private queue: Promise<void> = Promise.resolve();
-  private generation = 0;
+  private disposed = false;
 
   constructor(
-    private readonly sessionId: () => number | null = inject(UserService)
-      .sessionId,
-  ) {
-    super();
-  }
+    private readonly lifecycle: Pick<SessionLifecycleService, 'capture' | 'isCurrent'> = inject(SessionLifecycleService),
+  ) {}
 
   private enqueue(operation: () => Promise<void>): Promise<void> {
     this.queue = this.queue.then(operation).catch((error) => {
@@ -23,66 +18,19 @@ export class TauriNotificationAdapter extends NotificationAdapter {
     return this.queue;
   }
 
-  showDescriptor(d: NotificationDescriptor): Promise<void> {
-    const generation = this.generation;
-    const sessionId = this.sessionId();
-    const origin = apiOrigin();
+  presentationChanged(): Promise<void> {
+    const scope = this.lifecycle.capture();
     return this.enqueue(async () => {
-      if (
-        generation !== this.generation ||
-        !origin ||
-        sessionId === null ||
-        !Number.isSafeInteger(sessionId) ||
-        sessionId <= 0 ||
-        sessionId !== this.sessionId() ||
-        origin !== apiOrigin()
-      )
-        return;
-      await tauriInvoke<void>('desktop_notification_update', {
-        notification: {
-          threadId: d.data.threadId,
-          sessionId,
-          origin,
-          title: d.title,
-          body: d.body,
-          count: d.count,
-          silent: !!d.silent,
-        },
-      });
+      if (this.disposed || !scope.sessionId || !this.lifecycle.isCurrent(scope)) return;
+      await tauriInvoke<void>('desktop_notification_presentation_changed');
     });
   }
 
-  clearThread(threadId: number): Promise<void> {
-    const sessionId = this.sessionId();
-    const origin = apiOrigin();
-    if (sessionId === null) return Promise.resolve();
-    return this.enqueue(async () => {
-      if (sessionId !== this.sessionId() || origin !== apiOrigin()) return;
-      await tauriInvoke<void>('desktop_notification_update', {
-        notification: {
-          threadId,
-          sessionId,
-          origin,
-          title: '',
-          body: '',
-          count: 0,
-          silent: true,
-        },
-      });
-    });
-  }
-
-  /** Detach renderer work without dismissing persistent system cards. */
   dispose(): void {
-    ++this.generation;
+    this.disposed = true;
   }
 
   clear(): Promise<void> {
-    ++this.generation;
-    return this.enqueue(() =>
-      tauriInvoke<void>('desktop_notifications_clear', {
-        resetNavigation: false,
-      }),
-    );
+    return this.enqueue(() => tauriInvoke<void>('desktop_notifications_clear', { resetNavigation: false }));
   }
 }

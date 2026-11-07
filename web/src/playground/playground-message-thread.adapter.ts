@@ -67,6 +67,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     vhExtra: 2000,
     initBatch: 100,
     deferInitFill: true,
+    followBottom: true,
   });
 
   private readonly sources = new Map<number, MockItemSource>();

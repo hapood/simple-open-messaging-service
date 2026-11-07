@@ -409,6 +409,7 @@
       <div class="manager-body">
         <input
           class="member-search"
+          autocapitalize="off"
           [ngModel]="memberQuery()"
           (ngModelChange)="memberQuery.set($event)"
           [placeholder]="'group.searchMembers' | transloco"

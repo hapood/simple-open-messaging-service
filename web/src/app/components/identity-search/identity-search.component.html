@@ -1,6 +1,7 @@
 <form class="search-bar" (ngSubmit)="submitted.emit()" role="search">
   <input
     class="search-input"
+    autocapitalize="off"
     [ngModelOptions]="{ standalone: true }"
     [ngModel]="text()"
     (ngModelChange)="text.set($event)"

@@ -14,15 +14,14 @@ extern "C" {
     fn soms_macos_notifications_authorize(context: *mut c_void, completion: Completion);
     fn soms_macos_notification_post(
         thread: i32,
-        session: i32,
-        origin: *const c_char,
+        notification_id: *const c_char,
         title: *const c_char,
         body: *const c_char,
         silent: bool,
         context: *mut c_void,
         completion: Completion,
     );
-    fn soms_macos_notification_remove(thread: i32);
+    fn soms_macos_notification_remove(notification_id: *const c_char);
     fn soms_macos_notifications_clear(context: *mut c_void, completion: Completion);
 }
 
@@ -51,20 +50,45 @@ pub(crate) fn initialize(app: tauri::AppHandle) {
     super::super::desktop_badge::initialize(app.clone());
     let _ = APP.set(app);
     unsafe { soms_macos_notifications_init() };
+    // Ask only on first use; a previous refusal must be changed in System Settings.
+    // Authorization runs without blocking the event loop or holding account locks.
+    tauri::async_runtime::spawn(async {
+        if let Err(error) = request_initial_authorization().await {
+            log::warn!("initial notification authorization failed: {error}");
+        }
+    });
+}
+
+async fn request_initial_authorization() -> Result<(), String> {
+    if !permission().await?.should_request_initial_authorization() {
+        return Ok(());
+    }
+    authorize().await
 }
 
 #[no_mangle]
-extern "C" fn soms_macos_notification_tapped(thread: i32, session: i32, origin: *const c_char) {
-    if thread <= 0 || session <= 0 || origin.is_null() {
-        return;
-    }
-    // The native delegate owns this UTF-8 string for the duration of the callback.
-    let Ok(origin) = (unsafe { CStr::from_ptr(origin) }).to_str() else {
-        return;
-    };
+extern "C" fn soms_macos_notification_tapped(thread: i32, notification_id: *const c_char) {
+    if !retire_instance(thread, notification_id) { return; }
     if let Some(app) = APP.get() {
-        super::tapped(app, thread, session, origin);
+        super::tapped(app, thread);
     }
+}
+
+#[no_mangle]
+extern "C" fn soms_macos_notification_dismissed(thread: i32, notification_id: *const c_char) {
+    retire_instance(thread, notification_id);
+}
+
+fn retire_instance(thread: i32, notification_id: *const c_char) -> bool {
+    if thread <= 0 || notification_id.is_null() { return false; }
+    let Ok(identifier) = (unsafe { CStr::from_ptr(notification_id) }).to_str() else { return false; };
+    let Some(id) = instance_id(identifier) else { return false; };
+    if let Ok(owner) = super::super::active_login() {
+        if let Ok(mut delivery) = owner.notification_delivery.lock() {
+            delivery.dismissed(thread, id);
+        }
+    }
+    true
 }
 
 extern "C" fn status_completed(context: *mut c_void, status: i32) {
@@ -100,19 +124,31 @@ pub(super) async fn authorize() -> Result<(), String> {
     .map_err(|error| format!("notification authorization: {error}"))?
 }
 
+fn instance_id(identifier: &str) -> Option<&str> {
+    let id = identifier.strip_prefix("soms-thread-")?;
+    let parsed = uuid::Uuid::parse_str(id).ok()?;
+    (parsed.to_string() == id).then_some(id)
+}
+
+pub(super) fn identifier(instance: &str) -> String {
+    format!("soms-thread-{instance}")
+}
+
 pub(super) fn update(input: DesktopNotification) -> Result<(), String> {
+    let Some(id) = input.notification_id else {
+        return if input.count == 0 { Ok(()) } else { Err("missing notification instance".into()) };
+    };
+    let id = CString::new(id).map_err(|error| error.to_string())?;
     if input.count == 0 {
-        unsafe { soms_macos_notification_remove(input.thread_id) };
+        unsafe { soms_macos_notification_remove(id.as_ptr()) };
         return Ok(());
     }
-    let origin = CString::new(input.origin).map_err(|error| error.to_string())?;
     let title = CString::new(input.title.replace('\0', "")).map_err(|error| error.to_string())?;
     let body = CString::new(input.body.replace('\0', "")).map_err(|error| error.to_string())?;
     wait_for_completion(|context, completion| unsafe {
         soms_macos_notification_post(
             input.thread_id,
-            input.session_id,
-            origin.as_ptr(),
+            id.as_ptr(),
             title.as_ptr(),
             body.as_ptr(),
             input.silent,
@@ -120,6 +156,20 @@ pub(super) fn update(input: DesktopNotification) -> Result<(), String> {
             completion,
         );
     })
+}
+
+#[cfg(test)]
+mod instance_tests {
+    use super::*;
+
+    #[test]
+    fn system_identifier_roundtrips_only_canonical_instance_ids() {
+        let id = "b70b8f27-293e-42d1-86d4-24055d649480";
+        assert_eq!(instance_id(&identifier(id)), Some(id));
+        for value in ["soms-thread-7", "soms-thread-", "other-card", "soms-thread-B70B8F27-293E-42D1-86D4-24055D649480"] {
+            assert_eq!(instance_id(value), None);
+        }
+    }
 }
 
 pub(super) fn clear() -> Result<(), String> {

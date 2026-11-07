@@ -10,8 +10,8 @@ use std::{
 /// One transition runs at a time. Its worker owns the guard, so a disappearing IPC
 /// waiter neither releases the phase nor admits conflicting work.
 ///
-/// Scope ends at activation: everything after a login is established belongs to the
-/// login-session epoch owned by LoginConnection, never to this machine.
+/// Logout owns a guard through revocation, user decisions, and local cleanup. Storage
+/// deletion itself does not arbitrate login ownership; the transition excludes new logins.
 #[derive(Debug, Default)]
 pub(crate) struct AuthLifecycle(Mutex<State>);
 
@@ -32,6 +32,8 @@ pub(crate) enum Phase {
     ServerSetup,
     /// A login preparation, restoration check, or credential activation is executing.
     Login,
+    /// A complete logout, including time awaiting an explicit revocation decision.
+    Logout,
 }
 
 impl Phase {
@@ -40,6 +42,7 @@ impl Phase {
             Phase::Idle => None,
             Phase::ServerSetup => Some("server setup is in progress"),
             Phase::Login => Some("login is in progress"),
+            Phase::Logout => Some("logout is in progress"),
         }
     }
 }
@@ -131,7 +134,7 @@ mod tests {
     #[test]
     fn a_transition_rejects_every_phase_until_its_guard_drops() {
         let lifecycle = Arc::new(AuthLifecycle::default());
-        for phase in [Phase::ServerSetup, Phase::Login] {
+        for phase in [Phase::ServerSetup, Phase::Login, Phase::Logout] {
             let guard = lifecycle.enter(phase).unwrap();
             assert_eq!(
                 lifecycle.enter(Phase::Login).unwrap_err(),
@@ -141,8 +144,31 @@ mod tests {
                 lifecycle.enter(Phase::ServerSetup).unwrap_err(),
                 phase.busy_message().unwrap()
             );
+            assert_eq!(
+                lifecycle.enter(Phase::Logout).unwrap_err(),
+                phase.busy_message().unwrap()
+            );
             drop(guard);
         }
+        assert!(lifecycle.enter(Phase::Login).is_ok());
+    }
+
+    #[tokio::test]
+    async fn logout_keeps_login_blocked_while_waiting_for_a_decision() {
+        let lifecycle = Arc::new(AuthLifecycle::default());
+        let guard = lifecycle.enter(Phase::Logout).unwrap();
+        let (choose, decision) = tokio::sync::oneshot::channel::<()>();
+        let worker = tokio::spawn(async move {
+            decision.await.unwrap();
+            // Cleanup completes before releasing the transition.
+            drop(guard);
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(lifecycle.enter(Phase::Login).unwrap_err(), "logout is in progress");
+        assert_eq!(lifecycle.enter(Phase::ServerSetup).unwrap_err(), "logout is in progress");
+        assert_eq!(lifecycle.enter(Phase::Logout).unwrap_err(), "logout is in progress");
+        choose.send(()).unwrap();
+        worker.await.unwrap();
         assert!(lifecycle.enter(Phase::Login).is_ok());
     }
 

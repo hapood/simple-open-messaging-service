@@ -314,6 +314,23 @@ describe('MessageRepository', () => {
     });
   });
 
+  it.each([false, true])('localLatest returns immediately without HTTP (cached=%s)', async (cached) => {
+    if (cached) await webdb.commitBrowserMessagePage({
+      threadId: 42,
+      scan: { left: 8, right: 10 },
+      messages: [msg(42, 9), msg(42, 10)],
+      gaps: [],
+      knownNewestSeq: 100,
+    });
+    const result = await repo.queryBrowserMessageHistory(42, { kind: 'localLatest', count: 20 });
+    expect(result.items).toEqual(cached ? [
+      { kind: 'message', message: msg(42, 9) },
+      { kind: 'message', message: msg(42, 10) },
+    ] : []);
+    expect(result).toMatchObject({ hasOlder: true, hasNewer: true, failed: false });
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+  });
+
   it('uses the locally persisted message head for the first browser page', async () => {
     await webdb.commitBrowserMessagePage({
       threadId: 42,

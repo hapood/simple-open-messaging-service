@@ -647,7 +647,7 @@ async fn open_one_stream(
                     continue;
                 }
             };
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", desktop))]
             let feed_work = intent.database_work();
             let state_target = feed_state_target.load(Ordering::Acquire);
             let state_result = tokio::select! {
@@ -667,6 +667,14 @@ async fn open_one_stream(
             }
             match result {
                 Ok(result) => {
+                    #[cfg(target_os = "macos")]
+                    if let Some(handle) = feed_app.app() {
+                        if let Err(error) = crate::native_db::desktop_badge::refresh_owned(
+                            handle.clone(), feed_work.clone(), user_id,
+                        ).await {
+                            warn!("native unread badge refresh failed: {error}");
+                        }
+                    }
                     #[cfg(target_os = "android")]
                     {
                         // Assembly shares the exact cache view captured before the structural barrier.
@@ -676,6 +684,25 @@ async fn open_one_stream(
                         };
                         if let Ok(batch) = batch {
                             feed_app.publish(crate::realtime::Output::Notifications(batch));
+                        }
+                    }
+                    #[cfg(desktop)]
+                    if let Some(handle) = feed_app.app() {
+                        let batch = tokio::select! { biased;
+                            _ = feed_cancel.cancelled() => break,
+                            result = crate::native_db::notifications::from_result(feed_work.clone(), user_id, &result) => result,
+                        };
+                        match batch {
+                            Ok(batch) => {
+                                let delivery = tokio::select! { biased;
+                                    _ = feed_cancel.cancelled() => break,
+                                    result = crate::native_db::desktop_notifications::deliver_batch(handle.clone(), feed_work.clone(), batch) => result,
+                                };
+                                if let Err(error) = delivery {
+                                    warn!("native notification delivery failed: {error}");
+                                }
+                            }
+                            Err(error) => warn!("native notification assembly failed: {error}"),
                         }
                     }
                     if let Some(error) = &result.error {

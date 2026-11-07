@@ -46,6 +46,7 @@ export function GroupsPage() {
           <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
           <Input
             placeholder={t('groups.searchPlaceholder')}
+            autoCapitalize="off"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             className="pl-8"

@@ -1232,6 +1232,45 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller!.getInfo().newestId).toBe(100);
   });
 
+  it.each([false, true])('followBottom=%s controls arrivals without changing initial positioning', async (followBottom) => {
+    const { hooks } = controllableHooks();
+    const source = pushedSource(fakeSource(100));
+    scroller = createKernel({ viewport, content, hooks, source, config: { followBottom, thresholdFloor: 20000 } });
+    await scroller.init();
+    await flush();
+    const before = viewport.scrollTop;
+    source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
+    await flush();
+    expect(scroller.getInfo().newestId).toBe(100);
+    if (followBottom) expect(viewport.scrollTop).toBeGreaterThan(before);
+    else expect(viewport.scrollTop).toBe(before);
+  });
+
+  it('checks followBottom when an in-flight arrival is delivered', async () => {
+    const { hooks } = controllableHooks();
+    const source = pushedSource(fakeSource(100));
+    scroller = createKernel({ viewport, content, hooks, source, config: { thresholdFloor: 20000 } });
+    await scroller.init();
+    await flush();
+    const before = viewport.scrollTop;
+    scroller.setFollowBottom(false);
+    source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
+    await flush();
+    expect(viewport.scrollTop).toBe(before);
+  });
+
+  it('does not follow the first arriving batch after an empty initialization', async () => {
+    const { hooks } = controllableHooks();
+    const source = pushedSource(fakeSource(0));
+    scroller = createKernel({ viewport, content, hooks, source, config: { followBottom: false, thresholdFloor: 20000 } });
+    await scroller.init();
+    await flush();
+    source.pushLive(Array.from({ length: 20 }, (_, id) => ({ id, data: id, ...(id === 19 ? { boundary: 'newest' as const } : {}) })));
+    await flush();
+    expect(scroller.getInfo().newestId).toBe(19);
+    expect(viewport.scrollTop).toBe(0);
+  });
+
   it.each([false, true])(
     'anchored init establishes live demand after settling (fallback=%s)',
     async (fallback) => {
@@ -1413,7 +1452,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   });
 
   // The reported "retry a pending send while a new message arrives → the new message renders UNDER the viewport".
-  // Root cause: a live/newer item's real height settles AFTER pinToBottom already ran — the create-item height path
+  // Root cause: a live/newer item's real height settles AFTER positionAtBottom already ran — the create-item height path
   // is a ResizeObserver that fires post-render (image/data/font settle), so the kernel measured a placeholder height
   // at mount, pinned to that (shorter) bottom, then the late growth extended the content below the fold with no
   // re-pin. Retry worsens the timing (its cb-move/cb-enter holds animating>0, deferring the no-op balance), but the
@@ -1436,7 +1475,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await flush(); // the source demand mounts live-1 and pins to the updated bottom
     expect(scroller.getInfo().atBottom).toBe(true); // pinned at the placeholder bottom right after mount
 
-    // The live item's real height settles asynchronously (RO fire) — AFTER pinToBottom ran.
+    // The live item's real height settles asynchronously (RO fire) — AFTER positionAtBottom ran.
     setHeight(701, 200); // grew by 180
 
     // Without the re-pin, the grown tail sinks below the fold (scrollTop stayed 420 while scrollHeight became 1200).
@@ -2628,7 +2667,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   });
 
   // Regression (first-send scrollTop bug): after a newer demand reconciles the optimistic into its real, the confirmed
-  // real MUST be pinned to the bottom (scrollTop = scrollHeight − vh). The bug: pinToBottom-after-reconcile left the real
+  // real MUST be pinned to the bottom (scrollTop = scrollHeight − vh). The bug: positionAtBottom-after-reconcile left the real
   // below the fold on the FIRST send, subsequent sends correct. This pins both the first and a subsequent send.
   it('a newer source demand pins the confirmed real to the bottom for first and subsequent sends', async () => {
     const { hooks } = controllableHooks();

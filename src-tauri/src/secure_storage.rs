@@ -24,17 +24,17 @@ pub(crate) fn secure_get_token() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub(crate) fn secure_clear_token(session_uuid: String) -> Result<(), String> {
-    secure_clear_token_internal(&session_uuid)
+pub(crate) fn secure_clear_token() -> Result<(), String> {
+    secure_clear_token_internal()
 }
 
-pub(crate) fn secure_clear_token_internal(session_uuid: &str) -> Result<(), String> {
-    crate::credential_storage::clear(Some(session_uuid), delete_credential)
+pub(crate) fn secure_clear_token_internal() -> Result<(), String> {
+    crate::credential_storage::clear(delete_credential)
 }
 
 #[tauri::command]
 pub(crate) fn secure_clear_residual_token() -> Result<(), String> {
-    crate::credential_storage::clear(None, delete_credential)
+    crate::credential_storage::clear(delete_credential)
 }
 
 fn delete_credential() -> Result<(), String> {

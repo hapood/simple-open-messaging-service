@@ -27,6 +27,7 @@ export interface MessageHistoryTarget {
 }
 
 export type NativeMessageHistoryDemand =
+  | { kind: 'localLatest'; count: number }
   | {
       kind: 'latest';
       count: number;
@@ -188,6 +189,21 @@ export class MessageRepository {
     try {
       lifetime.throwIfAborted();
       switch (demand.kind) {
+        case 'localLatest': {
+          if (!Number.isSafeInteger(demand.count) || demand.count < 1 || demand.count > 200)
+            throw new Error('local history count is outside 1..200');
+          const messages = await this.webdb.queryCachedMessages(
+            threadId, 'desc', demand.count, Number.MAX_SAFE_INTEGER,
+          );
+          lifetime.throwIfAborted();
+          return {
+            items: messages.reverse().map((message) => ({ kind: 'message', message })),
+            // Local absence is not evidence of server exhaustion.
+            hasOlder: true,
+            hasNewer: true,
+            failed: false,
+          };
+        }
         case 'latest': {
           const [lower, upper] = await this.initialMessageBounds(
             threadId,

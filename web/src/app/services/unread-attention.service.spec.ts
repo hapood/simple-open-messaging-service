@@ -21,7 +21,6 @@ import type {
   NotificationDescriptor,
 } from './notification-descriptor.model';
 
-
 describe('UnreadAttentionService browser worker bridge', () => {
   const offer = vi.fn();
   const openChat = vi.fn();
@@ -156,7 +155,9 @@ describe('UnreadAttentionService browser worker bridge', () => {
       },
     };
     const lifecycle = TestBed.inject(SessionLifecycleService);
-    lifecycle.bindSession(parseLoginSessionId('11111111-2222-4333-8444-555555555555'));
+    lifecycle.bindSession(
+      parseLoginSessionId('11111111-2222-4333-8444-555555555555'),
+    );
     const scope = lifecycle.capture();
     TestBed.runInInjectionContext(() => new UnreadAttentionService());
     await vi.waitFor(() =>
@@ -165,7 +166,6 @@ describe('UnreadAttentionService browser worker bridge', () => {
           source: 'desktop',
           id: 'tap-1',
           threadId: 7,
-          sessionId: 11,
         }),
         scope,
       ),
@@ -185,20 +185,13 @@ describe('UnreadAttentionService browser worker bridge', () => {
     expect(invoke).toHaveBeenCalledWith('desktop_notification_acknowledge', {
       id: 'tap-1',
       threadId: 7,
-      sessionId: 11,
-      origin: 'https://primary',
     });
     offer.mockClear();
     for (const value of [
       '7',
-      { id: 'legacy', threadId: 7 },
-      { id: 'bad', threadId: 7, sessionId: 0 },
-      {
-        id: 'wrong-origin',
-        threadId: 7,
-        sessionId: 11,
-        origin: 'https://other',
-      },
+      { id: '', threadId: 7 },
+      { id: 'bad', threadId: 0 },
+      { id: 'bad-thread', threadId: '7' },
     ]) {
       pending = value;
       wake();
@@ -224,11 +217,16 @@ describe('UnreadAttentionService browser worker bridge', () => {
   });
 
   it('relays worker-projected notifications without building them on the main thread', async () => {
-    const descriptor = {
-      tag: 'soms-thread-7',
+    const descriptor: NotificationDescriptor = {
+      kind: 'thread-message',
+      title: 'Peer',
+      body: 'Message',
+      lang: 'en',
+      icon: null,
+      renotify: true,
       data: { threadId: 7 },
       count: 2,
-    } as NotificationDescriptor;
+    };
     browserNotifications.next({
       userId: 11,
       entries: [{ feedId: 9, descriptor }],

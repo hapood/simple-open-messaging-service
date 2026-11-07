@@ -667,6 +667,9 @@ pub(crate) struct CommittedMessagePage {
     rename_all_fields = "camelCase"
 )]
 pub(crate) enum NativeHistoryDemand {
+    LocalLatest {
+        count: i64,
+    },
     Latest {
         count: i64,
         known_newest_seq: Option<i64>,
@@ -1536,6 +1539,21 @@ impl NativeHistoryIntent {
             }
         };
         let result = match demand {
+            NativeHistoryDemand::LocalLatest { count } => {
+                let count = validate_count(count)?;
+                let mut messages = query_native_messages(
+                    &work, user_id, thread_id, HistoryDirection::Older,
+                    i64::MAX, 0, count as usize,
+                ).await?;
+                messages.reverse();
+                Ok(NativeHistoryResult {
+                    items: messages.into_iter().map(|message| NativeHistoryItem::Message { message }).collect(),
+                    // Local absence does not establish either server boundary.
+                    has_older: true,
+                    has_newer: true,
+                    failed: false,
+                })
+            }
             NativeHistoryDemand::Latest {
                 count,
                 known_newest_seq,

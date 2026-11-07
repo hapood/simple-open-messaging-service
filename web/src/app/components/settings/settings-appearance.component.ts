@@ -4,6 +4,8 @@ import { MatCardModule } from '@angular/material/card';
 import { MatRadioModule } from '@angular/material/radio';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ThemeService, ThemeMode } from '../../services/theme.service';
+import { ChatAppearanceService } from '../../services/chat-appearance.service';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 
 /**
  * Settings → Appearance sub-page. The theme picker as an M3 radio list (the scalable "choose one of N"
@@ -12,7 +14,7 @@ import { ThemeService, ThemeMode } from '../../services/theme.service';
  */
 @Component({
   selector: 'app-settings-appearance',
-  imports: [MatListModule, MatCardModule, MatRadioModule, TranslocoPipe],
+  imports: [MatListModule, MatCardModule, MatRadioModule, MatSlideToggleModule, TranslocoPipe],
   template: `
     <section class="settings-group">
       <mat-card appearance="outlined" class="settings-card">
@@ -32,11 +34,26 @@ import { ThemeService, ThemeMode } from '../../services/theme.service';
         </mat-list>
       </mat-card>
     </section>
+    <section class="settings-group">
+      <mat-card appearance="outlined" class="settings-card">
+        <mat-list>
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.showSelfAvatar' | transloco }}</span>
+            <span matListItemLine class="hint">{{ 'settings.showSelfAvatarDesc' | transloco }}</span>
+            <mat-slide-toggle matListItemMeta
+              [checked]="chatAppearance.showSelfAvatar()"
+              (change)="chatAppearance.setShowSelfAvatar($event.checked)"
+              [attr.aria-label]="'settings.showSelfAvatar' | transloco" />
+          </mat-list-item>
+        </mat-list>
+      </mat-card>
+    </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
 })
 export class SettingsAppearanceComponent {
+  readonly chatAppearance = inject(ChatAppearanceService);
   private readonly themeSvc = inject(ThemeService);
   /** Current theme preference (system / light / dark). */
   readonly mode = this.themeSvc.mode;

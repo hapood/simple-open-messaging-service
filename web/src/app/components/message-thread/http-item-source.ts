@@ -23,6 +23,7 @@
  */
 import {
   firstValueFrom,
+  take,
   filter,
   Observable,
   type Subscriber,
@@ -379,7 +380,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.lifetime.signal.throwIfAborted();
     const result = await this.queryHistory(
       anchorId === -1
-        ? { kind: 'latest', count: Math.min(olderCount, MAX_PAGE) }
+        ? {
+            kind: this.initializingDb ? 'localLatest' : 'latest',
+            count: Math.min(olderCount, MAX_PAGE),
+          }
         : {
             kind: 'around',
             anchor: anchorId,
@@ -388,7 +392,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           },
     );
     if (result.failed) throw new MessagePageLoadError();
-    await this.wait(this.restoreMediaStages());
     const items = await this.wait(this.historyItemsToCb(result.items));
     this.noOlder = !result.hasOlder;
     this.noNewer = !result.hasNewer;
@@ -567,7 +570,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return this.pending.filter((item) => item.data.status === 'accepted');
   }
 
-  private async restoreMediaStages(): Promise<void> {
+  async restoreMediaStages(): Promise<void> {
     this.lifetime.signal.throwIfAborted();
     let response;
     try {
@@ -1173,7 +1176,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const demand = messageAuthorProfileDemand(message);
         const cached = await (this.profileRepo && demand
           ? firstValueFromAbortable(
-              this.profileRepo.resolve(unevidencedProfileDemand(demand)),
+              this.profileRepo.watch(unevidencedProfileDemand(demand)).pipe(take(1)),
               this.lifetime.signal,
             ).catch(() => undefined)
           : Promise.resolve(undefined));

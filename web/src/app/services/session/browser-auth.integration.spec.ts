@@ -1,4 +1,5 @@
 import '@angular/compiler';
+import { LogoutDecisionService } from '../logout-decision.service';
 import { Injector, runInInjectionContext } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Observable, firstValueFrom } from 'rxjs';
@@ -96,6 +97,7 @@ function client(
   const injector = Injector.create({
     providers: [
       ServerConfigDialogService,
+      { provide: LogoutDecisionService, useValue: { decide: vi.fn().mockResolvedValue('localOnly') } },
       { provide: SessionStateService, useValue: state },
       { provide: SessionLifecycleService, useValue: lifecycle },
       {
@@ -111,7 +113,7 @@ function client(
         http as never,
         route as never,
         { onLogin: vi.fn() } as never,
-        { onLogin: vi.fn() } as never,
+        { onLogin: vi.fn(), unsubscribe: vi.fn().mockResolvedValue(undefined) } as never,
         user as never,
         { translate: (key: string) => key } as never,
         toast as never,
@@ -352,6 +354,8 @@ describe('native logout adapter integration', () => {
       );
       const invoke = vi.fn(async (command: string) => {
         if (command === 'begin_logout') return admission.promise;
+        if (command === 'try_logout') { await remote.promise; return { status: 'revoked' }; }
+        if (command === 'logout_status') return 'awaitingRevocation';
         if (command === 'wait_for_logout') return remote.promise;
         return undefined;
       });
@@ -384,8 +388,10 @@ describe('native logout adapter integration', () => {
         finished = true;
       });
       try {
-        expect(app.auth.isLoggedIn()).toBe(false);
-        expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
+        if (android) {
+          expect(app.auth.isLoggedIn()).toBe(false);
+          expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
+        }
         expect(app.user.clearSession).not.toHaveBeenCalled();
         expect(setToken).not.toHaveBeenCalled();
         expect(finished).toBe(false);
@@ -393,11 +399,10 @@ describe('native logout adapter integration', () => {
           ticket: 'ended-operation',
           localClearFailed: false,
         });
-        await vi.waitFor(() =>
-          expect(invoke).toHaveBeenCalledWith('wait_for_logout', {
-            ticket: 'ended-operation',
-          }),
-        );
+        await vi.waitFor(() => {
+          if (android) expect(invoke).toHaveBeenCalledWith('wait_for_logout', { ticket: 'ended-operation' });
+          else expect(invoke).toHaveBeenCalledWith('try_logout', undefined);
+        });
         if (android)
           expect(setToken).toHaveBeenCalledExactlyOnceWith(
             null,

@@ -10,10 +10,7 @@ import {
   MatSlideToggleModule,
   MatSlideToggleChange,
 } from '@angular/material/slide-toggle';
-import {
-  MatButtonToggleModule,
-  MatButtonToggleChange,
-} from '@angular/material/button-toggle';
+import { MatSelectModule } from '@angular/material/select';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { WebPushService } from '../../services/web-push.service';
 import { NotificationPrefsService } from '../../services/notification-prefs.service';
@@ -47,7 +44,7 @@ import { SettingsPushProbeComponent } from './settings-push-probe.component';
     MatListModule,
     MatCardModule,
     MatSlideToggleModule,
-    MatButtonToggleModule,
+    MatSelectModule,
     TranslocoPipe,
     SettingsPushProbeComponent,
   ],
@@ -119,20 +116,21 @@ import { SettingsPushProbeComponent } from './settings-push-probe.component';
               <span matListItemLine class="hint">{{
                 'settings.notifGroupingDesc' | transloco
               }}</span>
-              <div matListItemMeta>
-                <mat-button-toggle-group
-                  [value]="prefs.previewMode()"
-                  (change)="onPreviewModeChange($event)"
-                  [attr.aria-label]="'settings.notifGrouping' | transloco"
-                >
-                  <mat-button-toggle value="message">{{
-                    'settings.notifGroupingThread' | transloco
-                  }}</mat-button-toggle>
-                  <mat-button-toggle value="private">{{
-                    'settings.notifGroupingAll' | transloco
-                  }}</mat-button-toggle>
-                </mat-button-toggle-group>
-              </div>
+              <mat-select
+                matListItemMeta
+                class="settings-select"
+                [value]="prefs.previewMode()"
+                [disabled]="!prefs.enabled()"
+                [attr.aria-label]="'settings.notifGrouping' | transloco"
+                (selectionChange)="onPreviewModeChange($event.value)"
+              >
+                <mat-option value="message">{{
+                  'settings.notifGroupingThread' | transloco
+                }}</mat-option>
+                <mat-option value="private">{{
+                  'settings.notifGroupingAll' | transloco
+                }}</mat-option>
+              </mat-select>
             </mat-list-item>
           }
         </mat-list>
@@ -193,7 +191,9 @@ export class SettingsNotificationsComponent {
   }
 
   /** Away-notification grouping — persists device-level; the next foreground pull sends it as `grouping`. */
-  onPreviewModeChange(e: MatButtonToggleChange): void {
-    this.prefs.setPreviewMode(e.value as 'message' | 'private');
+  onPreviewModeChange(value: unknown): void {
+    if (value === 'message' || value === 'private') {
+      this.prefs.setPreviewMode(value);
+    }
   }
 }

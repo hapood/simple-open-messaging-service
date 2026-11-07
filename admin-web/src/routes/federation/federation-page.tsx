@@ -138,6 +138,7 @@ export function FederationPage() {
             <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
             <Input
               placeholder={t('federation.searchPlaceholder')}
+              autoCapitalize="off"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               className="pl-8"
@@ -148,6 +149,7 @@ export function FederationPage() {
             inputMode="numeric"
             pattern="[0-9]*"
             placeholder={t('federation.namespaceFilterPlaceholder')}
+            autoCapitalize="off"
             value={namespaceIdParam}
             onChange={(e) => setNamespaceId(e.target.value)}
           />

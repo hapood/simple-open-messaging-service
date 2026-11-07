@@ -130,10 +130,15 @@ async fn end_cancels_the_socket_while_waiting_for_a_body_without_holding_sql() {
             .unwrap();
         headers_sent.send(()).unwrap();
         let mut rest = Vec::new();
-        tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut rest))
+        let closed = tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut rest))
             .await
-            .expect("owner cancellation must close the actual socket")
-            .unwrap();
+            .expect("owner cancellation must close the actual socket");
+        match closed {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("expected EOF or reset after cancellation, got {other:?}"),
+        }
+        assert!(rest.is_empty(), "cancelled request must not send more data");
     });
     let fetching = tokio::spawn(async move { request.get("/silent-body".into()).await });
     tokio::time::timeout(Duration::from_secs(2), ready)

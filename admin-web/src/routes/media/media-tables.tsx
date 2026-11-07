@@ -215,6 +215,7 @@ export function MediaFilesPanel({
           <input
             aria-label={t('media.digestSearch')}
             placeholder={t('media.digestSearch')}
+            autoCapitalize="off"
             value={digest}
             maxLength={64}
             className="h-[36px] rounded-md border bg-background px-3 leading-[20px]"

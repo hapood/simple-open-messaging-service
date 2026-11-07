@@ -9,7 +9,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
 import { MatCardModule } from '@angular/material/card';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
-import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatSelectModule } from '@angular/material/select';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { NotificationPrefsService } from '../../services/notification-prefs.service';
 import { tauriInvoke } from '../../services/runtime';
@@ -30,7 +30,7 @@ type Permission =
     MatListModule,
     MatCardModule,
     MatSlideToggleModule,
-    MatButtonToggleModule,
+    MatSelectModule,
     TranslocoPipe,
   ],
   template: `
@@ -111,29 +111,31 @@ type Permission =
             <span matListItemLine class="hint">{{
               'settings.notifGroupingDesc' | transloco
             }}</span>
-            <mat-button-toggle-group
-              matListItemMeta
-              [value]="prefs.previewMode()"
-              [disabled]="!prefs.enabled()"
-              [attr.aria-label]="'settings.notifGrouping' | transloco"
-              (change)="setPreviewMode($event.value)"
-            >
-              <mat-button-toggle value="message">{{
-                'settings.notifGroupingThread' | transloco
-              }}</mat-button-toggle>
-              <mat-button-toggle value="private">{{
-                'settings.notifGroupingAll' | transloco
-              }}</mat-button-toggle>
-            </mat-button-toggle-group>
+            <div matListItemMeta class="row-actions">
+              <mat-select
+                class="settings-select"
+                [value]="prefs.previewMode()"
+                [disabled]="!prefs.enabled()"
+                [attr.aria-label]="'settings.notifGrouping' | transloco"
+                (selectionChange)="setPreviewMode($event.value)"
+              >
+                <mat-option value="message">{{
+                  'settings.notifGroupingThread' | transloco
+                }}</mat-option>
+                <mat-option value="private">{{
+                  'settings.notifGroupingAll' | transloco
+                }}</mat-option>
+              </mat-select>
+            </div>
           </mat-list-item>
         </mat-list>
-        <p class="hint">{{ 'settings.nativeNotifRuntimeHint' | transloco }}</p>
-        @if (failed()) {
-          <p class="hint" role="alert">
-            {{ 'settings.nativeNotifError' | transloco }}
-          </p>
-        }
       </mat-card>
+      <p class="hint">{{ 'settings.nativeNotifRuntimeHint' | transloco }}</p>
+      @if (failed()) {
+        <p class="hint" role="alert">
+          {{ 'settings.nativeNotifError' | transloco }}
+        </p>
+      }
     </section>
   `,
   styleUrl: './sub-page.scss',

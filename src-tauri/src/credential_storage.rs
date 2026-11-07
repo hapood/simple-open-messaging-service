@@ -28,19 +28,12 @@ pub(crate) fn persist<T>(
 }
 
 pub(crate) fn clear(
-    expected: Option<&str>,
     clear: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     let _storage = STORAGE
         .lock()
         .map_err(|_| "credential storage lane poisoned")?;
-    if let Some(owner) = crate::native_db::current_login()? {
-        if owner.assert_active().is_ok() {
-            return match expected {
-                Some(id) if owner.id().to_string() != id => Err("native login superseded".into()),
-                _ => Err("end the login before clearing its stored credential".into()),
-            };
-        }
-    }
+    // Login transitions serialize logout cleanup before admitting another login.
+    // This storage adapter executes deletion; it is not a second session authority.
     clear()
 }

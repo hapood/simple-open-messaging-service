@@ -5,7 +5,7 @@ import { PreferenceStorage } from './preference-storage';
 import { syncPushThreads } from './push-thread-sync';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { ACTIVE_PAGE_LOCK } from './active-page';
-import { SessionJournal, SESSION_JOURNAL_KEY } from './session/session-journal';
+import { SessionStore, SESSION_STORE_KEY } from './session/session-store';
 import { createSessionCacheDescriptor } from './session/session-identity';
 import { threadStructure } from './thread-feed.test-helper';
 import {
@@ -24,16 +24,22 @@ describe('Push Service Worker entry', () => {
   let openWindow: ReturnType<typeof vi.fn>;
   let fetchSpy: ReturnType<typeof vi.spyOn>;
   let post: ReturnType<typeof vi.fn>;
+  let workerScope: ServiceWorkerGlobalScope;
   let visible: boolean;
+  let windowFocused: boolean;
 
   beforeEach(async () => {
     await resetNotificationSince();
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
-    await preferences.remove('device', SESSION_JOURNAL_KEY);
+    await preferences.remove('device', SESSION_STORE_KEY);
     const cache = createSessionCacheDescriptor();
-    const journal = new SessionJournal(preferences);
-    await journal.prepare(cache);
-    await journal.activate(cache.id);
+    const sessionStore = new SessionStore(preferences);
+    await sessionStore.prepare(cache);
+    await sessionStore.activate(cache.id);
+    await sessionStore.bindIdentity(cache.id, {
+      userId,
+      serverSessionId: sessionId,
+    });
     storage.bindSessionCache(cache);
     await storage.openForUser(String(userId));
     await preferences.set('device', 'soms.lastUserId', userId);
@@ -47,6 +53,7 @@ describe('Push Service Worker entry', () => {
     openWindow = vi.fn().mockResolvedValue(undefined);
     post = vi.fn();
     visible = false;
+    windowFocused = true;
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -95,43 +102,45 @@ describe('Push Service Worker entry', () => {
         }),
       ),
     );
-    installPushWorker({
-      navigator: {
-        language: 'en',
-        locks: {
-          request: async (_name: string, run: () => Promise<void>) => run(),
-          query: async () => ({
-            held: [{ name: ACTIVE_PAGE_LOCK, clientId: 'active-page' }],
-            pending: [],
-          }),
-        },
-      },
-      registration: {
-        showNotification: show,
-        getNotifications: async () => [],
-      },
-      clients: {
-        matchAll: async () => [
-          {
-            id: 'active-page',
-            url: 'https://chat.test/',
-            visibilityState: visible ? 'visible' : 'hidden',
-            focused: visible,
-            postMessage: post,
-            focus,
+    installPushWorker(
+      (workerScope = {
+        navigator: {
+          language: 'en',
+          locks: {
+            request: async (_name: string, run: () => Promise<void>) => run(),
+            query: async () => ({
+              held: [{ name: ACTIVE_PAGE_LOCK, clientId: 'active-page' }],
+              pending: [],
+            }),
           },
-        ],
-        openWindow,
-      },
-      addEventListener: (type: string, handler: (event: unknown) => void) =>
-        handlers.set(type, handler),
-    } as unknown as ServiceWorkerGlobalScope);
+        },
+        registration: {
+          showNotification: show,
+          getNotifications: async () => [],
+        },
+        clients: {
+          matchAll: async () => [
+            {
+              id: 'active-page',
+              url: 'https://chat.test/',
+              visibilityState: visible ? 'visible' : 'hidden',
+              focused: windowFocused,
+              postMessage: post,
+              focus,
+            },
+          ],
+          openWindow,
+        },
+        addEventListener: (type: string, handler: (event: unknown) => void) =>
+          handlers.set(type, handler),
+      } as unknown as ServiceWorkerGlobalScope),
+    );
   });
   afterEach(async () => {
     vi.restoreAllMocks();
     await storage.closeAndDelete(String(userId));
     await preferences.remove('device', 'soms.lastUserId');
-    await preferences.remove('device', SESSION_JOURNAL_KEY);
+    await preferences.remove('device', SESSION_STORE_KEY);
   });
   async function dispatch(type: string, payload: Record<string, unknown>) {
     let pending: Promise<unknown> | undefined;
@@ -144,11 +153,40 @@ describe('Push Service Worker entry', () => {
     await pending;
   }
 
+  it('uses the login store rather than last-user and subscription identity copies', async () => {
+    await preferences.set('device', 'soms.lastUserId', 123456);
+    await preferences.remove('device', 'push-registration:/api/v1');
+    await dispatch('push', {
+      data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
+    });
+    expect(show).toHaveBeenCalledWith(
+      'peer@test',
+      expect.objectContaining({
+        data: expect.objectContaining({ threadId: 7, seq: 1, sessionId }),
+      }),
+    );
+  });
+
+  it('ignores background push while revocation awaits a user decision', async () => {
+    const sessionStore = new SessionStore(preferences);
+    const saved = await sessionStore.read();
+    await sessionStore.beginRevocation(saved!.session!.id);
+    await dispatch('push', {
+      data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
+    });
+    expect(show).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((await sessionStore.read())?.identity).toEqual({
+      userId,
+      serverSessionId: sessionId,
+    });
+  });
+
   it('ignores push work after logout while leaving the old cache on disk', async () => {
-    const journal = new SessionJournal(preferences);
-    const saved = await journal.read();
+    const sessionStore = new SessionStore(preferences);
+    const saved = await sessionStore.read();
     const cache = saved!.session!;
-    await journal.end(cache.id);
+    await sessionStore.end(cache.id);
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
@@ -219,7 +257,7 @@ describe('Push Service Worker entry', () => {
       'peer@test',
       expect.objectContaining({
         body: 'Hello',
-        data: { threadId: 7, seq: 1, sessionId },
+        data: expect.objectContaining({ threadId: 7, seq: 1, sessionId }),
       }),
     );
     expect((await storage.readAccountState()).threadFeedCursor).toBe(1);
@@ -249,6 +287,60 @@ describe('Push Service Worker entry', () => {
       expect(show).toHaveBeenCalledTimes(shouldShow ? 1 : 0);
     },
   );
+  it.each([
+    [true, false],
+    [false, true],
+    [false, false],
+  ])(
+    'allows the open chat when visible=%s and focused=%s',
+    async (isVisible, isFocused) => {
+      visible = isVisible;
+      windowFocused = isFocused;
+      post.mockImplementation(
+        (message: { type: string }, ports?: MessagePort[]) => {
+          if (message.type === SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST)
+            ports?.[0].postMessage({ threadId: 7 });
+        },
+      );
+      await dispatch('push', {
+        data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
+      });
+      expect(show).toHaveBeenCalledOnce();
+      expect(
+        post.mock.calls.some(
+          ([message]) => message.type === SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it('clears the open card in the worker after a presentation observation', async () => {
+    visible = true;
+    windowFocused = true;
+    const close = vi.fn();
+    (
+      workerScope as unknown as {
+        registration: { getNotifications: () => Promise<unknown[]> };
+      }
+    ).registration.getNotifications = vi
+      .fn()
+      .mockResolvedValue([
+        { tag: 'soms-card-current', data: { threadId: 7 }, close },
+      ]);
+    post.mockImplementation(
+      (message: { type: string }, ports?: MessagePort[]) => {
+        if (message.type === SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST)
+          ports?.[0].postMessage({ threadId: 7 });
+      },
+    );
+    await dispatch('message', {
+      data: { type: SOMS_NOTIF_MSG.PRESENTATION_CHANGED },
+      ports: [],
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(show).not.toHaveBeenCalled();
+  });
+
   it('renders worker-projected messages in the service worker without a push wake', async () => {
     await dispatch('message', {
       data: {
@@ -333,7 +425,9 @@ describe('Push Service Worker entry', () => {
     const close = vi.fn();
     const getNotifications = vi
       .fn()
-      .mockResolvedValue([{ tag: 'soms-thread-7', close }]);
+      .mockResolvedValue([
+        { tag: 'soms-card-existing', data: { threadId: 7 }, close },
+      ]);
     const scope = {
       navigator: {
         locks: {
@@ -458,7 +552,7 @@ describe('Push Service Worker entry', () => {
     expect(focus).not.toHaveBeenCalled();
   });
 
-  it('rejects legacy thread/account receipts and absent registration metadata', async () => {
+  it('rejects legacy receipts and receipts without an active login', async () => {
     for (const data of [
       { threadId: 7 },
       { threadId: 7, userId },
@@ -468,7 +562,9 @@ describe('Push Service Worker entry', () => {
         notification: { data, close: vi.fn() },
       });
     }
-    await preferences.remove('device', 'push-registration:/api/v1');
+    const sessionStore = new SessionStore(preferences);
+    const saved = await sessionStore.read();
+    await sessionStore.end(saved!.session!.id);
     await dispatch('notificationclick', {
       notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
     });

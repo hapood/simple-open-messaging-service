@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { BrowserNotificationCards } from './notification-cards';
 import { API_PREFIX } from '../app/services/constants';
 import { SOMS_NOTIF_MSG } from '../app/services/sw-notif-protocol';
 import { WebdbStorage } from '../app/services/webdb-storage';
@@ -12,14 +13,15 @@ import type { BrowserNotificationBatch } from '../app/services/notification-desc
 import en from '../app/i18n/en.json';
 import zh from '../app/i18n/zh-CN.json';
 import { activePageClientId } from '../app/services/active-page';
-import { SessionJournal } from '../app/services/session/session-journal';
+import { SessionStore } from '../app/services/session/session-store';
 
 export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
+  const cards = new BrowserNotificationCards(scope.registration);
   const preferences = new PreferenceStorage();
-  const journal = new SessionJournal(preferences);
+  const sessionStore = new SessionStore(preferences);
 
   async function activeCache() {
-    const saved = await journal.read();
+    const saved = await sessionStore.read();
     return saved?.phase === 'active' ? saved.session : null;
   }
 
@@ -65,6 +67,31 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
     const data = event.data as Partial<BrowserNotificationBatch> & {
       type?: string;
     };
+    if (
+      data?.type === SOMS_NOTIF_MSG.PRESENTATION_CHANGED &&
+      scope.navigator.locks
+    ) {
+      event.waitUntil(
+        scope.navigator.locks.request(
+          'soms-notification-projection',
+          async () => {
+            try {
+              const pages = await scope.clients.matchAll({
+                type: 'window',
+                includeUncontrolled: true,
+              });
+              const { known, threadId } = await visibleChat(pages);
+              if (known && Number.isInteger(threadId) && threadId! > 0)
+                await cards.remove(threadId!);
+              event.ports?.[0]?.postMessage({ ok: true });
+            } catch {
+              event.ports?.[0]?.postMessage({ ok: false });
+            }
+          },
+        ),
+      );
+      return;
+    }
     if (data?.type !== SOMS_NOTIF_MSG.PRESENT || !scope.navigator.locks) return;
     event.waitUntil(
       scope.navigator.locks.request(
@@ -95,35 +122,22 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
               entry.feedId <= since ||
               !Number.isInteger(entry.descriptor?.data?.threadId) ||
               entry.descriptor.data.threadId! <= 0 ||
-              entry.descriptor.tag !==
-                `soms-thread-${entry.descriptor.data.threadId}` ||
               !Number.isInteger(entry.descriptor.count) ||
               entry.descriptor.count < 0
             )
               continue;
-            if (entry.descriptor.count <= 0)
-              await closeCard(entry.descriptor.tag);
-            else if (known && entry.descriptor.data.threadId !== activeChat) {
-              await scope.registration.showNotification(
-                entry.descriptor.title,
-                {
-                  body: entry.descriptor.body,
-                  tag: entry.descriptor.tag,
-                  data: {
-                    ...entry.descriptor.data,
-                    sessionId: postingSessionId,
-                  },
-                  icon: entry.descriptor.icon ?? undefined,
-                  lang: entry.descriptor.lang,
-                  silent: entry.descriptor.silent,
-                  renotify: entry.descriptor.renotify,
-                } as NotificationOptions & { renotify: boolean },
-              );
+            if (
+              entry.descriptor.count <= 0 ||
+              (known && entry.descriptor.data.threadId === activeChat)
+            )
+              await cards.remove(entry.descriptor.data.threadId!);
+            else if (known) {
+              const id = await cards.show(entry.descriptor, postingSessionId);
               if (
                 data.userId !== (await accountId()) ||
                 postingSessionId !== (await sessionId())
               ) {
-                await closeCard(entry.descriptor.tag);
+                await cards.removeInstance(id);
                 return;
               }
             }
@@ -150,32 +164,17 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
   });
 
   async function accountId(): Promise<number | null> {
-    if (!(await activeCache())) return null;
-    const value = await preferences.get<number>('device', 'soms.lastUserId');
-    return Number.isInteger(value) && Number(value) > 0 ? Number(value) : null;
+    const saved = await sessionStore.read();
+    return saved?.phase === 'active' ? (saved.identity?.userId ?? null) : null;
   }
 
-  // Registration recovery already durably records the HELLO session in the shared device store.
+  // Subscription recovery is not an identity authority. Background work uses
+  // the same durable login record as the online runtime.
   async function sessionId(): Promise<number | null> {
-    if (!(await activeCache())) return null;
-    const saved = await preferences.get<{ sessionId: number; phase: string }>(
-      'device',
-      `push-registration:${API_PREFIX}`,
-    );
-    const id = saved?.sessionId;
-    return saved?.phase === 'prepared' &&
-      Number.isInteger(id) &&
-      Number(id) > 0 &&
-      Number(id) <= 2147483647
-      ? Number(id)
+    const saved = await sessionStore.read();
+    return saved?.phase === 'active'
+      ? (saved.identity?.serverSessionId ?? null)
       : null;
-  }
-
-  async function closeCard(tag: string): Promise<void> {
-    for (const notification of await scope.registration.getNotifications({
-      tag,
-    }))
-      notification.close();
   }
 
   scope.addEventListener('push', (event) => {
@@ -302,23 +301,15 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
               const { known, threadId: activeChat } = await visibleChat(pages);
               for (const descriptor of result.notifications) {
                 if (!(await current())) return;
-                if (descriptor.count <= 0) await closeCard(descriptor.tag);
-                else if (known && descriptor.data.threadId !== activeChat) {
-                  const options: NotificationOptions & { renotify: boolean } = {
-                    body: descriptor.body,
-                    tag: descriptor.tag,
-                    data: { ...descriptor.data, sessionId: postingSessionId },
-                    icon: descriptor.icon ?? undefined,
-                    lang: descriptor.lang,
-                    silent: descriptor.silent,
-                    renotify: descriptor.renotify,
-                  };
-                  await scope.registration.showNotification(
-                    descriptor.title,
-                    options,
-                  );
+                if (
+                  descriptor.count <= 0 ||
+                  (known && descriptor.data.threadId === activeChat)
+                )
+                  await cards.remove(descriptor.data.threadId!);
+                else if (known) {
+                  const id = await cards.show(descriptor, postingSessionId);
                   if (!(await current())) {
-                    await closeCard(descriptor.tag);
+                    await cards.removeInstance(id);
                     return;
                   }
                 }

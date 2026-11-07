@@ -126,7 +126,7 @@ impl Sink for Callbacks {
                     if !login_current {
                         return Ok(());
                     }
-                    if let Ok(batch) = crate::android_runtime::notification_object(env, &batch) {
+                    if let Ok(batch) = crate::android_runtime::notification_object(env, &batch, true) {
                         env.call_method(
                             callback,
                             "onNotifications",

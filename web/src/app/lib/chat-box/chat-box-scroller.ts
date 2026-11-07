@@ -145,6 +145,8 @@ export interface CbConfig {
   /** Finish init after the first source page instead of awaiting older-page viewport fill. The caller can
    *  invoke backfillOlder() after revealing the thread, keeping first paint independent of network latency. */
   deferInitFill?: boolean;
+  /** Follow content growth only while at the bottom. Positioning alone never changes this policy. */
+  followBottom?: boolean;
 }
 
 export interface CbOptions<T> {
@@ -273,6 +275,7 @@ export interface ScrollerApi<T = unknown> {
   notifyNewerAvailable?(): void;
   /** Pin to the global newest edge. highlight flashes the newest message once it is reached. */
   scrollToBottom(highlight?: boolean): void;
+  setFollowBottom(enabled: boolean): void;
   scrollToTop(): void;
   /** Jump to id: if mounted, position directly; if not, reset the window around the id (re-seed) then position. anchor defaults to 'center'. highlight adds a one-shot flash to the target. */
   scrollToIndex(
@@ -346,6 +349,7 @@ const DEFAULTS: Required<CbConfig> = {
   vhExtra: 2000,
   initBatch: 100,
   deferInitFill: false,
+  followBottom: true,
 };
 
 /** Safety timeout backing the enter/leave/move CSS animations (cb-enter/cb-leave/cb-move in _cb.scss). Must exceed the
@@ -503,7 +507,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   private vh = 0;
   private shifting = false; // suppresses scroll-direction misdetection + onElHeight compensation caused by programmatic scrollTop writes
-  /** Set after a viewport-resize reflow re-pins to bottom. The programmatic pinToBottom write fires an async scroll
+  /** Set after a viewport-resize reflow re-pins to bottom. The programmatic positionAtBottom write fires an async scroll
    *  event (after `shifting` has already reset synchronously); onNativeScroll consumes this flag once so that scroll
    *  event does not re-arm balance and load/trim at the bottom edge during a viewport shrink (e.g. the soft keyboard
    *  opening/closing). ResizeObserver only fires on a real size change, so the pin's scrollTop write always changes
@@ -654,7 +658,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.mountBatch(merged, 'init');
         // Prime the ghost before the first prepend, and pin before yielding.
         this.updateGhost();
-        this.pinToBottom();
+        this.positionAtBottom();
         return this.fillLatest();
       }),
       tap(() => {
@@ -675,7 +679,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       return this.loadOlderIntoFresh().pipe(
         concatMap((loaded) => {
           if (!loaded) return of(undefined);
-          this.pinToBottom();
+          this.positionAtBottom();
           return this.fillLatest();
         }),
       );
@@ -871,9 +875,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     });
   }
 
+  setFollowBottom(enabled: boolean): void {
+    this.cfg.followBottom = enabled;
+  }
+
   scrollToBottom(highlight = false): void {
     if (this.inactive) return;
-    this.pinToBottom();
+    this.positionAtBottom();
     if (highlight && this.noNewer && this.mounted.length > 0)
       this.flashHighlight(this.mounted.length - 1);
     else if (highlight) this.highlightNewestWhenReached = true;
@@ -882,7 +890,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /** Position the viewport at the content bottom — the bottom {@link Anchor}, applied via {@link applyAnchor}
    *  (compensation-safe via `shifting`; suppresses its own async scroll event). */
-  private pinToBottom(): void {
+  private positionAtBottom(): void {
     this.applyAnchor({ mode: 'bottom' });
   }
 
@@ -917,13 +925,17 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    */
   private captureAnchor(): Anchor {
     if (
+      this.cfg.followBottom &&
       this.steady &&
       this.pendingMeasure.length === 0 &&
       this.viewport.scrollTop + this.vh >= this.totalH() - 1
     )
       return { mode: 'bottom' };
     const idx = this.topVisibleIdx();
-    if (idx < 0) return { mode: 'bottom' };
+    if (idx < 0)
+      return this.cfg.followBottom
+        ? { mode: 'bottom' }
+        : { mode: 'offset', offset: this.viewport.scrollTop };
     return {
       mode: 'item',
       id: this.mounted[idx].item.id,
@@ -935,7 +947,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /**
    * The ONE place `scrollTop` is written for stabilization/positioning. Derives it from the anchor:
-   *  - `bottom` ⇒ content.scrollHeight - vh (LIVE DOM — immune to prefix staleness; matches the old pinToBottom).
+   *  - `bottom` ⇒ content.scrollHeight - vh (LIVE DOM — immune to prefix staleness; matches the old positionAtBottom).
    *  - `item`  ⇒ topOf(id) + offset (prefix[]). If the anchored id was removed, fall back to fallbackId (the successor
    *    that shifted into its slot) with the same offset; if that is gone too, leave scrollTop unchanged.
    * Clamps to [0, content.scrollHeight - vh] (matches the old positionMounted clamp). Guarded against the destroyed state.
@@ -959,6 +971,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     let target: number;
     if (a.mode === 'bottom') {
       target = this.content.scrollHeight - this.vh;
+    } else if (a.mode === 'offset') {
+      target = a.offset;
     } else {
       let idx = this.indexOfId(a.id);
       if (idx < 0 && a.fallbackId != null) idx = this.indexOfId(a.fallbackId);
@@ -2036,7 +2050,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private startNewerDemand(): void {
     const edge = this.newerDemand;
     if (edge.active || edge.error !== null) return;
-    const follow = this.isAtBottom();
     const hasReal = this.mounted.some(
       (entry) =>
         !entry.transient &&
@@ -2048,6 +2061,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     edge.subscribe(
       defer(() => this.source.requestNewer(cursor, this.cfg.mountItem)),
       (result) => {
+        const follow = this.cfg.followBottom && this.isAtBottom();
         const loaded = this.applyNewerResult(result);
         this.updateTailCap();
         if (loaded <= 0) return;
@@ -2061,7 +2075,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           );
         }
         this.trimOlder();
-        if (follow) this.pinToBottom();
+        if (follow) this.positionAtBottom();
         if (
           this.highlightNewestWhenReached &&
           this.noNewer &&
@@ -2279,7 +2293,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   /**
    * Mount a batch of real (non-pending) items before the optimistic/transient tail block, dispatching each by whether
    * it confirms an existing optimistic/transient entry. Insertion point = right after the last real entry (= the cursor);
-   * the optimistic block shifts down (it is at/below the viewport, so no scrollTop compensation is needed — pinToBottom
+   * the optimistic block shifts down (it is at/below the viewport, so no scrollTop compensation is needed — positionAtBottom
    * in the demand callback follows to reveal it). Albums are already merged by the caller.
    *
    * Returns the number of items ABSORBED into existing entries (no new mount). Mounted items are observable via the

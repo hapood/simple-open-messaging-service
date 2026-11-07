@@ -1,5 +1,5 @@
 //! Dock unread projection. Rust reads the login-owned durable projection; the renderer only wakes it.
-use rusqlite::Connection;
+use super::unread::unread_total;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
@@ -25,20 +25,6 @@ impl BadgeRevision {
     fn mark_published(&self, revision: u64) {
         self.published.store(revision, Ordering::SeqCst);
     }
-}
-
-fn unread_total(conn: &Connection, user_id: i64) -> Result<i64, String> {
-    if user_id <= 0 {
-        return Err("invalid badge account".into());
-    }
-    // Match the conversation list's message total, including muted conversations.
-    // These counts already incorporate the local optimistic read projection.
-    conn.query_row(
-        "SELECT COALESCE(SUM(MAX(unread_count, 0)), 0) FROM threads WHERE user_id=?1 AND thread_feed_id>0",
-        [user_id],
-        |row| row.get(0),
-    )
-    .map_err(|error| format!("read Dock unread total: {error}"))
 }
 
 fn badge_label(count: i64) -> Option<String> {
@@ -106,6 +92,15 @@ mod macos {
         if work.owner().id() != &expected {
             return Err("native badge login superseded".into());
         }
+        refresh_owned(app, work, user_id).await
+    }
+
+    pub(crate) async fn refresh_owned(
+        app: tauri::AppHandle,
+        work: crate::login_connection::DatabaseWork,
+        user_id: i64,
+    ) -> Result<(), String> {
+        work.assert_current().map_err(|e| e.to_string())?;
         let revision = REVISION.advance();
         let query_work = work.clone();
         let count = super::super::spawn_owned_database(Ok(query_work), move |conn| {
@@ -126,27 +121,11 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{initialize, refresh, reset};
+pub(crate) use macos::{initialize, refresh, refresh_owned, reset};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unread_total_is_account_scoped_and_counts_muted_threads_without_preview_data() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE threads(user_id INTEGER,thread_feed_id INTEGER,unread_count INTEGER,muted INTEGER);
-             INSERT INTO threads VALUES(1,1,8,0),(1,2,3,1),(2,1,99,0),(1,0,50,0),(1,3,-2,0);",
-        ).unwrap();
-        assert_eq!(unread_total(&conn, 1).unwrap(), 11);
-        assert_eq!(unread_total(&conn, 2).unwrap(), 99);
-        assert_eq!(unread_total(&conn, 3).unwrap(), 0);
-        assert!(unread_total(&conn, 0).is_err());
-        conn.execute("UPDATE threads SET unread_count=0 WHERE user_id=1", [])
-            .unwrap();
-        assert_eq!(unread_total(&conn, 1).unwrap(), 0);
-    }
 
     #[test]
     fn zero_clears_the_label_and_positive_totals_are_not_truncated() {

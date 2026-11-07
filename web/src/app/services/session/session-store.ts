@@ -5,51 +5,80 @@ import {
   type SessionCacheDescriptor,
 } from './session-identity';
 
-export const SESSION_JOURNAL_KEY = 'soms.login-session.v1';
+export const SESSION_STORE_KEY = 'soms.login-session.v1';
 
-export type SessionJournalRecord = Readonly<{
+export interface ServerSessionIdentity {
+  readonly userId: number;
+  readonly serverSessionId: number;
+}
+
+export function parseServerSessionIdentity(
+  value: unknown,
+): ServerSessionIdentity {
+  if (!value || typeof value !== 'object')
+    throw new Error('Invalid server session identity');
+  const identity = value as ServerSessionIdentity;
+  if (
+    !Number.isSafeInteger(identity.userId) ||
+    identity.userId <= 0 ||
+    !Number.isSafeInteger(identity.serverSessionId) ||
+    identity.serverSessionId <= 0
+  ) {
+    throw new Error('Invalid server session identity');
+  }
+  return Object.freeze({
+    userId: identity.userId,
+    serverSessionId: identity.serverSessionId,
+  });
+}
+
+export type SessionStoreRecord = Readonly<{
   version: 1;
-  phase: 'preparing' | 'active' | 'ending' | 'signed-out';
+  phase: 'preparing' | 'active' | 'revoking' | 'ending' | 'signed-out';
   session: SessionCacheDescriptor | null;
+  identity: ServerSessionIdentity | null;
   pendingCleanup: readonly SessionCacheDescriptor[];
 }>;
 
 /** Strict reads must reject on storage failure, rather than return absence. */
-export interface SessionJournalStorage {
+export interface SessionStoreStorage {
   getStrict<T>(scope: 'device', key: string): Promise<T | undefined>;
   set<T>(scope: 'device', key: string, value: T): Promise<void>;
 }
 
 function record(
-  phase: SessionJournalRecord['phase'],
+  phase: SessionStoreRecord['phase'],
   session: SessionCacheDescriptor | null,
   pendingCleanup: readonly SessionCacheDescriptor[],
-): SessionJournalRecord {
+  identity: ServerSessionIdentity | null = null,
+): SessionStoreRecord {
   return Object.freeze({
     version: 1,
     phase,
     session,
+    identity,
     pendingCleanup: Object.freeze([...pendingCleanup]),
   });
 }
 
 /** Validate everything before allowing metadata to select caches for deletion. */
-export function parseSessionJournal(value: unknown): SessionJournalRecord {
+export function parseSessionStore(value: unknown): SessionStoreRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Invalid session journal');
+    throw new Error('Invalid session store');
   }
   const saved = value as Record<string, unknown>;
   if (saved['version'] !== 1 || !Array.isArray(saved['pendingCleanup'])) {
-    throw new Error('Invalid session journal version or cleanup list');
+    throw new Error('Invalid session store version or cleanup list');
   }
   const phase = saved['phase'];
   if (
     phase !== 'preparing' &&
     phase !== 'active' &&
+    phase !== 'revoking' &&
     phase !== 'ending' &&
     phase !== 'signed-out'
   ) {
-    throw new Error('Invalid session journal phase');
+    throw new Error('Invalid session store phase');
   }
   const session =
     saved['session'] === null
@@ -59,7 +88,7 @@ export function parseSessionJournal(value: unknown): SessionJournalRecord {
   if (new Set(pending.map((item) => item.id)).size !== pending.length) {
     throw new Error('Duplicate session cleanup identity');
   }
-  if (phase === 'preparing' || phase === 'active') {
+  if (phase === 'preparing' || phase === 'active' || phase === 'revoking') {
     if (session === null || pending.length !== 0) {
       throw new Error('Live session cannot have pending cleanup');
     }
@@ -69,7 +98,14 @@ export function parseSessionJournal(value: unknown): SessionJournalRecord {
   ) {
     throw new Error('Ended session cannot retain live resources');
   }
-  return record(phase, session, pending);
+  // Older v1 records remain restorable; only a server-confirmed handshake may fill identity.
+  const identity =
+    saved['identity'] == null
+      ? null
+      : parseServerSessionIdentity(saved['identity']);
+  if (identity && phase !== 'active' && phase !== 'revoking')
+    throw new Error('Inactive session retains server identity');
+  return record(phase, session, pending, identity);
 }
 
 /**
@@ -80,16 +116,16 @@ export function parseSessionJournal(value: unknown): SessionJournalRecord {
  * No cached record is trusted after a failed write. Each mutation rereads strict
  * durable state, so retry/restart cannot silently bypass incomplete cleanup.
  */
-export class SessionJournal {
+export class SessionStore {
   private tail: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly storage: SessionJournalStorage) {}
+  constructor(private readonly storage: SessionStoreStorage) {}
 
-  read(): Promise<SessionJournalRecord | null> {
+  read(): Promise<SessionStoreRecord | null> {
     return this.serialize(() => this.load());
   }
 
-  prepare(descriptor: SessionCacheDescriptor): Promise<SessionJournalRecord> {
+  prepare(descriptor: SessionCacheDescriptor): Promise<SessionStoreRecord> {
     // Snapshot before enqueueing so a caller cannot mutate resource names later.
     const session = restoreSessionCacheDescriptor(descriptor);
     return this.serialize(async () => {
@@ -109,7 +145,7 @@ export class SessionJournal {
     });
   }
 
-  activate(id: LoginSessionId): Promise<SessionJournalRecord> {
+  activate(id: LoginSessionId): Promise<SessionStoreRecord> {
     return this.serialize(async () => {
       const previous = await this.load();
       if (previous?.session?.id !== id) throw new SessionSupersededError();
@@ -119,8 +155,45 @@ export class SessionJournal {
     });
   }
 
+  /** Bind a server-confirmed identity to the original login, never a mutable current account. */
+  bindIdentity(
+    id: LoginSessionId,
+    value: ServerSessionIdentity,
+  ): Promise<SessionStoreRecord> {
+    const identity = parseServerSessionIdentity(value);
+    return this.serialize(async () => {
+      const previous = await this.load();
+      if (previous?.phase !== 'active' || previous.session?.id !== id) {
+        throw new SessionSupersededError();
+      }
+      if (previous.identity) {
+        if (
+          previous.identity.userId !== identity.userId ||
+          previous.identity.serverSessionId !== identity.serverSessionId
+        ) {
+          throw new SessionSupersededError();
+        }
+        return previous;
+      }
+      return this.save(record('active', previous.session, [], identity));
+    });
+  }
+
+  /** Disable background admission while retaining the original login for explicit revocation. */
+  beginRevocation(id: LoginSessionId): Promise<SessionStoreRecord> {
+    return this.serialize(async () => {
+      const previous = await this.load();
+      if (previous?.session?.id !== id ||
+          (previous.phase !== 'active' && previous.phase !== 'revoking')) {
+        throw new SessionSupersededError();
+      }
+      if (previous.phase === 'revoking') return previous;
+      return this.save(record('revoking', previous.session, [], previous.identity));
+    });
+  }
+
   /** Call after synchronous in-memory invalidation, before deleting resources. */
-  end(id: LoginSessionId | null): Promise<SessionJournalRecord> {
+  end(id: LoginSessionId | null): Promise<SessionStoreRecord> {
     return this.serialize(async () => {
       const previous = await this.load();
       if (previous?.phase === 'ending') {
@@ -145,7 +218,7 @@ export class SessionJournal {
   }
 
   /** Invoke only after all stores/resources for this descriptor were removed. */
-  completeCleanup(id: LoginSessionId): Promise<SessionJournalRecord> {
+  completeCleanup(id: LoginSessionId): Promise<SessionStoreRecord> {
     return this.serialize(async () => {
       const previous = await this.load();
       if (
@@ -161,18 +234,16 @@ export class SessionJournal {
     });
   }
 
-  private async load(): Promise<SessionJournalRecord | null> {
+  private async load(): Promise<SessionStoreRecord | null> {
     const value = await this.storage.getStrict<unknown>(
       'device',
-      SESSION_JOURNAL_KEY,
+      SESSION_STORE_KEY,
     );
-    return value === undefined ? null : parseSessionJournal(value);
+    return value === undefined ? null : parseSessionStore(value);
   }
 
-  private async save(
-    value: SessionJournalRecord,
-  ): Promise<SessionJournalRecord> {
-    await this.storage.set('device', SESSION_JOURNAL_KEY, value);
+  private async save(value: SessionStoreRecord): Promise<SessionStoreRecord> {
+    await this.storage.set('device', SESSION_STORE_KEY, value);
     return value;
   }
 

@@ -178,9 +178,17 @@
     "qrRetry": "Retry",
     "trustThisDevice": "Trust this device",
     "trustThisDeviceHint": "Stay signed in on this device until you sign out.",
+    "logoutDecision": {
+      "title": "Session revocation not confirmed",
+      "timeout": "The server did not confirm revocation within 10 seconds. Retry, or sign out only on this device? The server session may remain valid.",
+      "failed": "The server did not confirm session revocation. Retry, or sign out only on this device? The server session may remain valid.",
+      "retry": "Retry revocation",
+      "localOnly": "Sign out on this device"
+    },
     "notice": {
       "trustPersistFailed": "This device's secure storage couldn't be reached, so the trusted sign-in wasn't saved. You've been signed out — please sign in again (if it keeps happening, leave \"Trust this device\" unchecked).",
       "logoutClearFailed": "You've been signed out, but this device's secure storage was locked, so it may briefly appear signed in until the next check. You can revoke the session from Settings → Devices.",
+      "pushUnsubscribeFailed": "Push subscription cancellation failed. You may still receive notifications; disable this site's notifications in browser settings if needed.",
       "logoutCacheClearFailed": "Local cache deletion failed. You have not been signed out; please try again.",
       "localCacheUnavailable": "Local cache could not be initialized. Your sign-in state was kept.",
       "keepPersistFailed": "This device's secure storage couldn't be reached, so your sign-in wasn't saved — you'll be signed out when the app closes. Sign in again after restarting."
@@ -873,16 +881,11 @@
   "settings": {
     "title": "Settings",
     "appearance": "Appearance",
-    "chat": "Chat",
     "themeSystem": "System",
     "themeLight": "Light",
     "themeDark": "Dark",
     "showSelfAvatar": "Show my avatar",
     "showSelfAvatarDesc": "Show your avatar beside the first message in each group.",
-    "chatOpenLatest": "Show latest messages",
-    "chatOpenLatestDesc": "Open conversations at the newest message.",
-    "chatOpenLastRead": "Continue from last read",
-    "chatOpenLastReadDesc": "When unread messages exist, start at the first unread message.",
     "language": "Language",
     "uploadConcurrency": "Concurrent uploads",
     "uploadConcurrencyCount": "{{count}} uploads",

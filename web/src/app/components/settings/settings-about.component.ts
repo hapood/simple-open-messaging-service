@@ -19,8 +19,7 @@ import type {
 } from '../../services/model';
 import { personalQuotaStatus } from '../profile-editor/personal-quota-status';
 
-/** Settings → About. App and server versions plus a future installation-package update affordance.
- * The progress bar is reserved for package downloads; the button is disabled until supported. */
+/** Settings → About. App/server identity, diagnostics controls, and account quota. */
 @Component({
   selector: 'app-settings-about',
   imports: [MatButtonModule, TranslocoPipe],
@@ -36,33 +35,6 @@ import { personalQuotaStatus } from '../profile-editor/personal-quota-status';
           >v{{ appVersion }}</span
         >
       </header>
-
-      @if (showBackend) {
-        <section class="update-card" aria-live="polite">
-          <div class="update-heading">
-            <div class="update-copy">
-              <h3>{{ 'settings.appUpdateTitle' | transloco }}</h3>
-              <p>{{ 'settings.appUpdateManual' | transloco }}</p>
-            </div>
-          </div>
-          <!-- TODO: Connect package-download byte progress when an app release endpoint exists. -->
-          @if (downloading()) {
-            <div
-              class="progress-track"
-              role="progressbar"
-              [attr.aria-label]="'settings.updateDownloading' | transloco"
-              aria-valuemin="0"
-              aria-valuemax="100"
-              [attr.aria-valuenow]="downloadPercent()"
-            >
-              <span [style.width.%]="downloadPercent()"></span>
-            </div>
-          }
-          <button mat-flat-button color="primary" type="button" disabled>
-            {{ 'settings.updateBtn' | transloco }}
-          </button>
-        </section>
-      }
 
       <section class="details-card">
         <h3>{{ 'settings.versionDetails' | transloco }}</h3>
@@ -163,12 +135,9 @@ export class SettingsAboutComponent {
   readonly debug = inject(DebugToolsService);
 
   readonly appVersion = appVersion;
-  /** The version + update rows are only meaningful under Tauri (where the origin/server is configured). */
+  /** Server identity is meaningful under Tauri, where the server is configured. */
   readonly showBackend = isTauri();
   private readonly status = this.clientCompat.status;
-  // TODO: Drive these from the future native package download, not a web bundle.
-  readonly downloading = signal(false);
-  readonly downloadPercent = signal(0);
   readonly quota = signal<PersonalQuotaState | null>(null);
   readonly quotaLoading = signal(true);
   readonly quotaCategories: QuotaCountDimension[] = [

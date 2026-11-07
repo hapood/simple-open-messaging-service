@@ -79,6 +79,7 @@ export function ConnectionsPage() {
           className="w-64"
           aria-label={t('connections.userFilter')}
           placeholder={t('connections.userFilter')}
+          autoCapitalize="off"
           value={searchInput}
           onChange={(event) => setSearchInput(event.target.value)}
         />

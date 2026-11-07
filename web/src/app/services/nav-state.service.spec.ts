@@ -79,7 +79,7 @@ describe('NavStateMachineService', () => {
     });
     TestBed.inject(ApplicationRef).tick();
     expect(location.pathname).toBe('/');
-    expect(nav.bootstrapNotificationIntent?.sessionId).toBe(31);
+    expect(nav.bootstrapNotificationIntent).toMatchObject({ sessionId: 31 });
   });
 
   it.each([

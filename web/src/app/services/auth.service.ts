@@ -35,6 +35,8 @@ import { CALL_SESSION_ENDING_EVENT } from './web-call.adapter';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 
 import { SessionStateService } from './session-state.service';
+import type { LogoutOutcome } from './session/logout-outcome';
+import { LogoutDecisionService } from './logout-decision.service';
 import { BROWSER_SESSION } from './browser-session.service';
 import { sessionRequest } from './session/session-request';
 import {
@@ -119,6 +121,7 @@ export class AuthService {
    *  from the cookie on browser so a page refresh while signed in starts `true`; native starts `false` and
    *  {@link restoreSession} flips it after re-establishing the session from secure storage. */
   private readonly sessionState = inject(SessionStateService);
+  private readonly logoutDecision = inject(LogoutDecisionService);
   private readonly browserSession = inject(BROWSER_SESSION);
   private readonly lifecycle = inject(SessionLifecycleService);
   private readonly serverConfigDialog = inject(ServerConfigDialogService);
@@ -402,7 +405,7 @@ export class AuthService {
   redoLoginAuth(_reason?: string) {
     this.announceSessionEnding();
     if (!isTauri()) {
-      void this.endBrowserSession(false).catch((error) =>
+      void this.endBrowserSession().catch((error) =>
         console.warn('[session] local termination failed', error),
       );
       this.routeService.redirect(RoutePage.AUTH_LOGIN);
@@ -608,7 +611,7 @@ export class AuthService {
     } else if (isTauri()) {
       // Desktop storage failure cannot revive the already-ended Rust owner.
       try {
-        await tauriInvoke('secure_clear_token', { sessionUuid });
+        await tauriInvoke('secure_clear_token');
       } catch {
         nativeOk = false;
       } // idempotent: NoEntry → Ok
@@ -625,46 +628,118 @@ export class AuthService {
    *  where NO authenticated request follows, so the native token can be cleared at once. */
   async clearToken(): Promise<boolean> {
     if (!isTauri()) {
-      await this.endBrowserSession(false);
+      await this.endBrowserSession();
       return true;
     }
     return this.endNativeSession(false);
   }
 
-  /** One browser teardown path for explicit logout, forced logout and local token clear. */
-  private async endBrowserSession(remote: boolean): Promise<void> {
+  /** Forced invalidation and explicit local token clear do not attempt remote revocation. */
+  private async endBrowserSession(): Promise<void> {
+    if (this.browserLogout) return this.browserLogout;
     const browser = this.requireBrowserSession();
     this.clearLocalSessionState();
     this.clearPresenceCookie();
     this.sendOutbox.clear();
-    const ending = remote
-      ? browser.logout((signal) =>
-          sessionRequest(
-            this.http.post<LogoutRes>(
-              `${apiPrefix()}/auth/logout`,
-              {},
-              {
-                context: new HttpContext()
-                  .set(REQUEST_SCOPE, RequestScope.Authentication)
-                  .set(SUPPRESS_HTTP_ERROR_TOAST, true),
-              },
-            ),
-            signal,
-          ).then(() => undefined),
-        )
-      : browser.end();
+    const ending = browser.end();
     await Promise.all([
       ending,
+      this.webPush.unsubscribe().catch((error) => {
+        console.warn('[push] logout unsubscribe failed', error);
+        this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), {
+          duration: IMPORTANT_NOTICE_MS,
+        });
+      }),
       clearSessionNotifications().catch((error) =>
         console.warn('[notification] logout cleanup failed', error),
       ),
     ]);
   }
 
+  private browserLogout: Promise<void> | null = null;
+
+  private requestBrowserLogout(): Promise<void> {
+    if (this.browserLogout) return this.browserLogout;
+    const pending = this.performBrowserLogout();
+    this.browserLogout = pending;
+    // Clear the single-flight slot on either outcome without creating an unhandled rejection.
+    void pending.then(
+      () => { if (this.browserLogout === pending) this.browserLogout = null; },
+      () => { if (this.browserLogout === pending) this.browserLogout = null; },
+    );
+    return pending;
+  }
+
+  private async performBrowserLogout(): Promise<void> {
+    this.sendOutbox.clear();
+    const completion = await this.requireBrowserSession().logoutWithDecision(
+      (signal) => sessionRequest(
+        this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, {}, {
+          context: new HttpContext()
+            .set(REQUEST_SCOPE, RequestScope.Authentication)
+            .set(SUPPRESS_HTTP_ERROR_TOAST, true),
+        }), signal,
+      ).then(() => undefined),
+      (outcome) => this.logoutDecision.decide(outcome),
+      async () => {
+        await this.webPush.unsubscribe().catch((error) => {
+          console.warn('[push] logout unsubscribe failed', error);
+          this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), { duration: IMPORTANT_NOTICE_MS });
+        });
+        this.clearLocalSessionState();
+        this.clearPresenceCookie();
+        await clearSessionNotifications().catch((error) =>
+          console.warn('[notification] logout cleanup failed', error),
+        );
+      },
+    );
+    if (completion === 'superseded') throw new SessionSupersededError();
+  }
+
+  private desktopLogout: Promise<void> | null = null;
+
+  private requestDesktopLogout(): Promise<void> {
+    if (this.desktopLogout) return this.desktopLogout;
+    const pending = this.performDesktopLogout();
+    this.desktopLogout = pending;
+    void pending.then(
+      () => { this.desktopLogout = null; },
+      () => { this.desktopLogout = null; },
+    );
+    return pending;
+  }
+
+  private async performDesktopLogout(): Promise<void> {
+    // Rust retains the credential and auth transition, including between IPC commands.
+    await tauriInvoke('begin_logout');
+    this.sendOutbox.clear();
+    await this.userService.releaseSession();
+    const status = await tauriInvoke<string>('logout_status');
+    let localOnly = false;
+    if (status !== 'awaitingCleanup') {
+      while (true) {
+        const outcome = await tauriInvoke<LogoutOutcome>('try_logout');
+        if (outcome.status === 'revoked') break;
+        if (outcome.status === 'superseded') throw new Error('Logout interrupted');
+        const decision = await this.logoutDecision.decide(outcome);
+        if (decision === 'localOnly') {
+          localOnly = true;
+          break;
+        }
+      }
+    }
+    await tauriInvoke('finish_logout', { localOnly });
+    this.nativeLoginUuid = null;
+    this.clearLocalSessionState();
+    await clearSessionNotifications().catch((error) =>
+      console.warn('[notification] logout cleanup failed', error),
+    );
+  }
+
   logout() {
     if (!isTauri()) {
-      this.announceSessionEnding();
-      return from(this.endBrowserSession(true)).pipe(
+      if (!this.browserLogout) this.announceSessionEnding();
+      return from(this.requestBrowserLogout()).pipe(
         tap({
           error: () =>
             this.toast.warn(
@@ -673,6 +748,14 @@ export class AuthService {
             ),
         }),
       );
+    }
+    if (!isAndroidNative()) {
+      if (!this.desktopLogout) this.announceSessionEnding();
+      return from(this.requestDesktopLogout()).pipe(tap({
+        error: () => this.toast.warn(this.t('auth.notice.logoutClearFailed'), {
+          duration: IMPORTANT_NOTICE_MS,
+        }),
+      }));
     }
     if (!this.isLoggedIn()) return EMPTY;
     // Renderer-owned WebRTC must end while this session credential is still usable. Android ignores this
@@ -698,6 +781,10 @@ export class AuthService {
   }
 
   private async endNativeSession(remote: boolean): Promise<boolean> {
+    if (this.desktopLogout) {
+      await this.desktopLogout;
+      return true;
+    }
     const origin = apiOrigin();
     const endedLogin = this.nativeLoginUuid;
     this.nativeLoginUuid = null;

@@ -1,5 +1,6 @@
 export type ViewportAnchor =
   | { mode: 'bottom' }
+  | { mode: 'offset'; offset: number }
   | { mode: 'item'; id: number; offset: number; fallbackId: number | null };
 
 export function alignedItemOffset(

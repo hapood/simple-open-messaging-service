@@ -42,13 +42,23 @@ fn persistence_is_not_a_second_authentication_or_realtime_activation() {
         persist(&owner.id().to_string(), "wrong", || Ok(())).unwrap_err(),
         "credential mismatch"
     );
-    assert!(clear(None, || panic!("active login cannot be cleared")).is_err());
     owner.end().unwrap();
     assert!(persist::<()>(&owner.id().to_string(), "token", || panic!(
         "ended owner cannot persist"
     ))
     .is_err());
-    clear(Some(&owner.id().to_string()), || Ok(())).unwrap();
+    clear(|| Ok(())).unwrap();
+    native_db::release_login_connection(&owner).unwrap();
+}
+
+#[test]
+fn credential_deletion_executes_the_coordinators_command() {
+    let _filesystem = native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
+    let owner = install("token");
+    let mut deleted = false;
+    clear(|| { deleted = true; Ok(()) }).unwrap();
+    assert!(deleted);
+    owner.end().unwrap();
     native_db::release_login_connection(&owner).unwrap();
 }
 
@@ -86,10 +96,6 @@ fn slow_old_os_write_does_not_block_logout_and_cannot_overwrite_successor() {
     assert!(writer.join().unwrap().is_err());
     next_writer.join().unwrap().unwrap();
     assert_eq!(&*stored.lock().unwrap(), "next");
-    assert!(clear(Some(&old.id().to_string()), || panic!(
-        "late clear cannot delete successor"
-    ))
-    .is_err());
     assert!(persist::<()>(&old.id().to_string(), "old", || panic!(
         "late write cannot overwrite successor"
     ))

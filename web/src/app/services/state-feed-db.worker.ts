@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { LoginConnection } from './session/login-connection';
 import { WebdbStorage } from './webdb-storage';
 import { BusinessCode } from './biz-code';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
@@ -11,7 +12,6 @@ import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
 import { PreferenceStorage } from './preference-storage';
 import {
   restoreSessionCacheDescriptor,
-  type LoginSessionId,
   type SessionCacheDescriptor,
 } from './session/session-identity';
 import { apiPrefix } from './constants';
@@ -46,7 +46,7 @@ storage.profileWake$.subscribe((wake) =>
 );
 let openedUserId: string | null = null;
 // A worker is assigned once. It can never be rebound to a successor session.
-let workerCacheId: LoginSessionId | null | undefined;
+let workerLogin: LoginConnection | undefined;
 let storageLifecycle = Promise.resolve();
 let activeStorageUsers = 0;
 const idleWaiters: Array<() => void> = [];
@@ -82,11 +82,15 @@ function notifyStorageIdle(): void {
 }
 
 async function acquireUserStorage(userId: string): Promise<StorageRelease> {
+  const login = workerLogin;
+  if (!login) throw new Error('database worker login is not initialized');
+  login.assertAccount(userId);
   const acquire = storageLifecycle.then(async () => {
+    login.assertAccount(userId);
     if (openedUserId !== userId) {
       await waitForStorageIdle();
       if (openedUserId !== null) await storage.close();
-      if (workerCacheId) await storage.openExistingForUser(userId);
+      if (workerLogin?.id) await storage.openExistingForUser(userId);
       else await storage.openForUser(userId);
       openThreadId = null;
       openedUserId = userId;
@@ -344,13 +348,14 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           ? null
           : restoreSessionCacheDescriptor(data.cacheDescriptor);
       const id = descriptor?.id ?? null;
-      if (workerCacheId !== undefined && workerCacheId !== id) {
+      if (workerLogin && workerLogin.id !== id) {
         throw new Error('database worker belongs to a different login session');
       }
-      if (workerCacheId === undefined) {
+      if (!workerLogin) {
         if (descriptor) storage.bindSessionCache(descriptor);
-        workerCacheId = id;
+        workerLogin = new LoginConnection(id);
       }
+      workerLogin.bindAccount(data.userId);
       const release = await acquireUserStorage(data.userId);
       try {
         if (data.type === 'bind-thread-feed') {

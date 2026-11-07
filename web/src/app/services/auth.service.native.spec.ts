@@ -99,6 +99,8 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           return Promise.resolve(
             keyringToken ? '22222222-3333-4444-8555-666666666666' : null,
           );
+        if (cmd === 'try_logout') return Promise.resolve({ status: 'revoked' });
+        if (cmd === 'logout_status') return Promise.resolve('awaitingRevocation');
         if (cmd === 'begin_logout')
           return Promise.resolve({
             ticket: 'logout-operation',
@@ -126,6 +128,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
             'native_db_recreate_cache',
             'desktop_notifications_clear',
             'wait_for_logout',
+            'finish_logout',
           ].includes(cmd)
         )
           return Promise.resolve(undefined);
@@ -244,6 +247,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         {
           provide: WebPushService,
           useValue: {
+            unsubscribe: vi.fn().mockResolvedValue(undefined),
             onLogin: vi.fn().mockName('onLogin'),
           },
         },
@@ -608,9 +612,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       await passwordLogin('st-x');
       await svc.clearToken();
       // secure_clear_token idempotently drops the keyring entry; clear_session_token drops ProxyState.token.
-      expect(invokeSpy).toHaveBeenCalledWith('secure_clear_token', {
-        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
-      });
+      expect(invokeSpy).toHaveBeenCalledWith('secure_clear_token', undefined);
       expect(invokeSpy).toHaveBeenCalledWith('clear_session_token', {
         sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
@@ -625,7 +627,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.loggedIn()).toBe(false);
     });
 
-    it('logout detaches the native token with begin_logout and does not issue a JS HTTP revoke', async () => {
+    it('logout retains native credentials until Rust confirms revocation and finishes cleanup', async () => {
       desktopGlobals();
       await passwordLogin('st-logout');
       invokeSpy.mockClear();
@@ -641,13 +643,9 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(commands.indexOf('begin_logout')).toBeLessThan(
         commands.indexOf('desktop_notifications_clear'),
       );
-      expect(invokeSpy).toHaveBeenCalledWith('wait_for_logout', {
-        ticket: 'logout-operation',
-      });
-      expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
-        origin: '',
-        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
-      });
+      expect(invokeSpy).toHaveBeenCalledWith('try_logout', undefined);
+      expect(invokeSpy).toHaveBeenCalledWith('finish_logout', { localOnly: false });
+      expect(invokeSpy).toHaveBeenCalledWith('begin_logout', undefined);
       httpMock.expectNone((r) => /\/auth\/logout$/.test(r.url));
     });
 
@@ -732,6 +730,22 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         token: 'st-android',
         sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
+    });
+
+    it('retains secure credentials when native revocation awaits an explicit decision', async () => {
+      const { set, discard } = androidGlobals('st-revoking');
+      invokeSpy.mockImplementation((cmd: string) =>
+        cmd === 'login_session_for_token'
+          ? Promise.reject(new Error('native session revocation requires an explicit decision'))
+          : Promise.resolve(undefined),
+      );
+      await svc.restoreSession();
+      expect(discard).not.toHaveBeenCalled();
+      expect(set).not.toHaveBeenCalled();
+      expect(svc.loggedIn()).toBe(false);
+      expect(invokeSpy.mock.calls.some(([command]) =>
+        ['set_session_token', 'clear_session_token', 'secure_clear_token', 'secure_clear_residual_token'].includes(command),
+      )).toBe(false);
     });
 
     it('a residual credential whose login was ended locally is discarded, never restored', async () => {

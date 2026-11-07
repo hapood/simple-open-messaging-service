@@ -4,11 +4,53 @@ use jni::JNIEnv;
 use std::sync::OnceLock;
 
 #[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationPresentationChanged(
+    env: JNIEnv,
+    _receiver: JObject,
+    visible: jni::sys::jboolean,
+    focused: jni::sys::jboolean,
+    thread_id: jni::sys::jint,
+) -> jstring {
+    use crate::native_db::notifications::content::{visible_thread, PresentationFacts};
+    let target = visible_thread(PresentationFacts {
+        visible: visible != 0,
+        focused: focused != 0,
+        open_thread: Some(thread_id),
+    });
+    let mut id = None;
+    if let Some(thread) = target {
+        if let Ok(owner) = crate::native_db::active_login() {
+            id = owner.remove_notification_instance(thread).ok().flatten();
+        }
+    }
+    id.and_then(|id| env.new_string(id).ok()).map(|id| id.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+/// A dismissal is an OS observation, not a read receipt or a removal request.
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationDismissed(
+    mut env: JNIEnv,
+    _receiver: JObject,
+    thread_id: jni::sys::jint,
+    notification_id: JString,
+) {
+    if thread_id <= 0 {
+        return;
+    }
+    let Ok(id) = env.get_string(&notification_id) else { return };
+    let id: String = id.into();
+    if let Ok(owner) = crate::native_db::active_login() {
+        let _ = owner.notification_instance_dismissed(thread_id, &id);
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryNotifications(
     mut env: JNIEnv,
     _receiver: JObject,
     user_id: jni::sys::jint,
     target: jni::sys::jint,
+    allow_alert: jni::sys::jboolean,
 ) -> jni::sys::jobject {
     let result = (|| -> Result<jni::sys::jobject, String> {
         let proxy = proxy_state()?;
@@ -23,7 +65,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryNotifications
         if !crate::native_db::is_login_session_current(&login_id) {
             return Err("notification session expired".into());
         }
-        notification_object(&mut env, &batch).map(|object| object.into_raw())
+        notification_object(&mut env, &batch, allow_alert != 0).map(|object| object.into_raw())
     })();
     match result {
         Ok(result) => result,
@@ -136,16 +178,52 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryCallPeer(
 pub(crate) fn notification_object<'local>(
     env: &mut JNIEnv<'local>,
     batch: &crate::native_db::notifications::NotificationBatch,
+    allow_alert: bool,
 ) -> Result<JObject<'local>, String> {
-    let metadata = JObject::from(env.new_string(&batch.metadata).map_err(|e| e.to_string())?);
+    use crate::native_db::notifications::{content, presentation};
+    let work = batch.work.as_ref().ok_or("notification batch has no captured work")?;
+    work.assert_current().map_err(|e| e.to_string())?;
+    let preferences = crate::native_db::preferences::notification_preferences()?;
+    let language = crate::native_db::preferences::notification_language()?;
+    let visible = env.call_static_method(
+        "com/soms/client/SomsMessagingService", "notificationVisible", "()Z", &[],
+    ).and_then(|value| value.z()).map_err(|e| e.to_string())?;
+    let focused = env.call_static_method(
+        "com/soms/client/SomsMessagingService", "notificationFocused", "()Z", &[],
+    ).and_then(|value| value.z()).map_err(|e| e.to_string())?;
+    let open_thread = env.call_static_method(
+        "com/soms/client/SomsMessagingService", "notificationOpenThread", "()I", &[],
+    ).and_then(|value| value.i()).map_err(|e| e.to_string())?;
+    let facts = content::PresentationFacts {
+        visible,
+        focused,
+        open_thread: (open_thread > 0).then_some(open_thread),
+    };
+    let commands = batch.threads.iter()
+        .map(|thread| content::command_with_facts(thread, &preferences, facts, content::localized_copy(&language)))
+        .collect();
+    let mut projected = presentation::package(commands, batch.unread_total, &batch.avatars)?;
+    let policy = crate::native_db::preferences::read_notification_preference("notificationAlertPolicy")?;
+    let policy = crate::native_db::notifications::alert::AlertPolicy::from_preference(policy.as_deref())?;
+    work.assert_current().map_err(|e| e.to_string())?;
+    let ids = work.owner().prepare_notification_instances(&mut projected.commands, policy, allow_alert)
+        .map_err(|e| e.to_string())?;
+    let original: serde_json::Value = serde_json::from_str(&batch.metadata).map_err(|e| e.to_string())?;
+    let mut metadata = serde_json::to_value(&projected).map_err(|e| e.to_string())?;
+    for (command, id) in metadata["commands"].as_array_mut().ok_or("invalid command batch")?.iter_mut().zip(ids) {
+        command["notification"]["notificationId"] = serde_json::json!(id);
+    }
+    metadata["commitEvent"] = original["commitEvent"].clone();
+    metadata["error"] = original["error"].clone();
+    let metadata = JObject::from(env.new_string(metadata.to_string()).map_err(|e| e.to_string())?);
     let login_id = JObject::from(
         env.new_string(&batch.login_session_id)
             .map_err(|e| e.to_string())?,
     );
     let images = env
-        .new_object_array(batch.avatars.len() as i32, "[B", JObject::null())
+        .new_object_array(projected.avatars.len() as i32, "[B", JObject::null())
         .map_err(|e| e.to_string())?;
-    for (index, bytes) in batch.avatars.iter().enumerate() {
+    for (index, bytes) in projected.avatars.iter().enumerate() {
         let image = env
             .byte_array_from_slice(bytes)
             .map_err(|e| e.to_string())?;
@@ -279,12 +357,12 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_persistSessionToke
                 // Server-forced teardown (FORCE_LOGOUT) arrives while the login may still be
                 // admitted. The platform adapter cannot drive the renderer logout flow, so end
                 // the matching epoch with the same semantics as the clear_session_token command
-                // before entering the storage lane; the lane still refuses a mismatched
-                // (superseded) active login and keeps the residual path gated.
+                // before entering the storage lane. Credential deletion only executes the
+                // coordinator's command; it does not arbitrate session ownership.
                 let id =
                     crate::login_session_store::LoginSessionId::try_from(session_uuid.clone())?;
                 crate::native_db::end_current_login_if_matching(&id)?;
-                crate::credential_storage::clear(Some(&session_uuid), store)
+                crate::credential_storage::clear(store)
             }
         }
     })();
@@ -301,7 +379,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_clearResidualToken
     _receiver: JObject,
     storage: JObject,
 ) {
-    let result = crate::credential_storage::clear(None, || {
+    let result = crate::credential_storage::clear(|| {
         env.call_method(&storage, "run", "()V", &[])
             .map(|_| ())
             .map_err(|e| e.to_string())

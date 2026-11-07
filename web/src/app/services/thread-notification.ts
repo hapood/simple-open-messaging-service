@@ -11,11 +11,7 @@ export async function threadNotificationIcon(
 ): Promise<string> {
   if (item.profileRev < 1) return '/icons/icon-192.png';
   const profile = await storage.getProfile(
-    homeProfileDemand(
-      item.account,
-      item.publisherNamespaceId,
-      item.profileRev,
-    ),
+    homeProfileDemand(item.account, item.publisherNamespaceId, item.profileRev),
   );
   const blob = profile?.avatarDigest
     ? await storage.getProfileAvatarBlob(profile.avatarDigest)
@@ -52,10 +48,8 @@ export function threadNotificationDescriptor(
   const fallback = preview?.sender.account ?? 'Unknown';
   const title =
     state.alias ||
-    (item.profile.name ||
-      (displayDomain
-        ? `${item.account}@${displayDomain}`
-        : item.account));
+    item.profile.name ||
+    (displayDomain ? `${item.account}@${displayDomain}` : item.account);
   const textFor = (
     preview: NonNullable<ThreadFeedSnapshot['previews']>[number],
   ) =>
@@ -73,7 +67,6 @@ export function threadNotificationDescriptor(
       ? textFor(preview)
       : copy.privateBody;
   return {
-    tag: `soms-thread-${item.threadId}`,
     kind: 'thread-message',
     title,
     body: previewMode === 'private' ? copy.privateBody : text,

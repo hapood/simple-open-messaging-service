@@ -41,6 +41,7 @@
           <input
             matInput
             name="account"
+            autocapitalize="off"
             autocomplete="username"
             enterkeyhint="next"
             autofocus
@@ -54,6 +55,7 @@
           <input
             matInput
             name="password"
+            autocapitalize="off"
             autocomplete="current-password"
             enterkeyhint="go"
             [type]="showPassword() ? 'text' : 'password'"
@@ -95,6 +97,7 @@
           <input
             matInput
             name="otpAccount"
+            autocapitalize="off"
             autocomplete="username"
             enterkeyhint="next"
             [ngModel]="account()"
@@ -107,6 +110,7 @@
           <input
             matInput
             name="code"
+            autocapitalize="off"
             inputmode="numeric"
             maxlength="6"
             autocomplete="one-time-code"

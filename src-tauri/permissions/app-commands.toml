@@ -7,6 +7,11 @@
 # packaging. tauri-build reads this file to generate the capability schema.
 
 [[permission]]
+identifier = "allow-launch-update"
+description = "Reports primary renderer launch presentation facts to the Rust launch owner."
+commands.allow = ["launch_update"]
+
+[[permission]]
 identifier = "allow-server-setup"
 description = "Runs cancellable signed-out server verification and commits the verified server configuration."
 commands.allow = ["begin_server_setup", "cancel_server_setup", "check_server_setup", "commit_server_setup"]
@@ -264,6 +269,7 @@ commands.allow = ["desktop_notification_update", "desktop_notifications_clear", 
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
 permissions = [
+  "allow-launch-update",
   "allow-server-setup",
   "allow-desktop-notifications",
   "allow-get-api-origin",

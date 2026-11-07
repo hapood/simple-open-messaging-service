@@ -38,6 +38,7 @@ export function QuotaOverviewPage() {
           className="w-64"
           aria-label={t('quotaCenter.search')}
           placeholder={t('quotaCenter.search')}
+          autoCapitalize="off"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />

@@ -371,6 +371,8 @@ class MainActivity : TauriActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        SomsMessagingService.windowFocused = hasFocus
+        SomsMessagingService.presentationChanged(this)
         if (!hasFocus || launchHandoffReady || launchSystemExitReceived) return
         val overlay = launchOverlay ?: return
         // Focus arrives BEFORE the system transfers its splash view; it is not a handoff signal.
@@ -1187,6 +1189,8 @@ class MainActivity : TauriActivity() {
         // a no-op because onWebViewCreate has already set SomsBridge.webView.
         captureWebView()
         SomsMessagingService.appInForeground = true
+        SomsMessagingService.windowFocused = hasWindowFocus()
+        SomsMessagingService.presentationChanged(this)
         SomsLog.i("Ui") { "onResume → appInForeground=true" }
         // App visible: start the realtime service and, if background realtime is enabled, promote it
         // BEFORE leaving the activity. The persistent FGS notification stays visible across fg/bg;
@@ -1214,6 +1218,7 @@ class MainActivity : TauriActivity() {
     override fun onStop() {
         super.onStop()
         SomsMessagingService.appInForeground = false
+        SomsMessagingService.windowFocused = false
         SomsLog.i("Ui") {
             "onStop → appInForeground=false fgsEnabled=${SomsSecureStore.getForegroundServiceEnabled(this)} tokenPresent=${SomsSecureStore.getSessionToken(this) != null}"
         }
@@ -1650,8 +1655,7 @@ class MainActivity : TauriActivity() {
             val a = activityRef.get() ?: return
             val selected = threadId.takeIf { it > 0 } ?: -1
             SomsMessagingService.activeThreadId = selected
-            if (selected > 0 && SomsMessagingService.appInForeground)
-                a.runOnUiThread { SomsMessagingService.clearThreadNotification(a, selected) }
+            a.runOnUiThread { SomsMessagingService.presentationChanged(a) }
         }
 
         /** Push the session token (POST /auth/login, app client) into encrypted storage so the Kotlin-owned

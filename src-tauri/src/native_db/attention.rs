@@ -173,7 +173,7 @@ static THREAD_FEED_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(
 // page commit, then stops. `None` means no thread is open (stop signal).
 static OPEN_THREAD_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-fn open_thread_id() -> Option<i64> {
+pub(crate) fn open_thread_id() -> Option<i64> {
     let value = OPEN_THREAD_ID.load(std::sync::atomic::Ordering::Acquire);
     (value > 0).then_some(value)
 }
@@ -316,6 +316,10 @@ pub(crate) async fn native_db_drain_thread_misc(
     }
     OPEN_THREAD_ID.store(thread_id, std::sync::atomic::Ordering::Release);
     let intent = FeedIntent::capture(&proxy, user_id)?;
+    #[cfg(desktop)]
+    if let Err(error) = super::desktop_notifications::desktop_notification_presentation_changed(app.clone()).await {
+        log::warn!("notification presentation refresh failed: {error}");
+    }
     // Same-thread drains coalesce (one in-flight round plus one trailing
     // round); different threads run concurrently. Rounds read their targets
     // from storage, and both flights share the `OPEN_THREAD_ID` guard.
@@ -1994,7 +1998,10 @@ fn merge_states(
                 state.local_read_seq = Some(snapshot.last_read_seq);
             }
             let notification_changed = state.server.as_ref().is_none_or(|old| {
-                old.message_end_seq != snapshot.message_end_seq
+                // Blocking removes an existing card. Unblocking alone must not replay
+                // historical messages; another message/read change can refresh normally.
+                (!old.blocked && snapshot.blocked)
+                    || old.message_end_seq != snapshot.message_end_seq
                     || old.tombstone_end_seq != snapshot.tombstone_end_seq
                     || old.last_read_seq != snapshot.last_read_seq
                     || old.unread_count != snapshot.unread_count
@@ -2978,6 +2985,19 @@ mod tests {
         let decoded: ThreadFeedSnapshot = serde_json::from_value(value).unwrap();
         assert_eq!(decoded.announcement_read_feed_id, 4);
         assert!(validate_snapshot(&decoded).is_ok());
+    }
+
+    #[test]
+    fn blocking_removes_notification_but_unblocking_does_not_realert_history() {
+        let mut conn = db();
+        let mut value = snapshot(1, 0);
+        merge_states(&mut conn, 1, vec![value.clone()], None).unwrap();
+        value.thread_feed_id = 2;
+        value.blocked = true;
+        assert!(merge_states(&mut conn, 1, vec![value.clone()], None).unwrap()[0].notification_changed);
+        value.thread_feed_id = 3;
+        value.blocked = false;
+        assert!(!merge_states(&mut conn, 1, vec![value], None).unwrap()[0].notification_changed);
     }
 
     #[test]

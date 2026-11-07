@@ -58,6 +58,7 @@ export interface MessageThreadSource extends CbSource<ChatItemData> {
   discardPending(clientMessageId: string): boolean;
   markPendingAccepted(clientMessageId: string): boolean;
   acceptedPending?(): CbItem<ChatItemData>[];
+  restoreMediaStages?(): Promise<void>;
   finishLocalInit?(
     liveLatestSeq: number | undefined,
     persistedLatestSeq?: number | null,

@@ -7,6 +7,13 @@ fn main() {
                 .flag("-fobjc-arc")
                 .flag("-fblocks")
                 .compile("soms_notifications");
+            cc::Build::new()
+                .file("src/launch/macos.m")
+                .flag("-fobjc-arc")
+                .flag("-fblocks")
+                .compile("soms_launch");
+            println!("cargo:rustc-link-lib=framework=QuartzCore");
+            println!("cargo:rerun-if-changed=src/launch/macos.m");
             println!("cargo:rustc-link-lib=framework=Foundation");
             println!("cargo:rustc-link-lib=framework=AppKit");
             println!("cargo:rustc-link-lib=framework=UserNotifications");

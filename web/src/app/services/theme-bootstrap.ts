@@ -1,4 +1,5 @@
 import { PreferenceStorage } from './preference-storage';
+import { setLaunchTheme } from './native-launch';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type EffectiveTheme = 'light' | 'dark';
@@ -43,7 +44,7 @@ export async function prepareTheme(): Promise<void> {
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute('content', META_THEME_COLOR[theme]);
   // Native adapters render this resolved decision; they must not read a second preference store.
-  window.SomsShell?.setSplashTheme?.(theme === 'dark');
+  await setLaunchTheme(theme === 'dark');
   window.SomsShell?.setSystemBarTheme?.(theme === 'dark');
   document.documentElement.removeAttribute('data-theme-pending');
 }

@@ -80,6 +80,7 @@ export function HistoryPanel() {
         </Select>
         <Input
           placeholder={t('logs.searchPlaceholder')}
+          autoCapitalize="off"
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
           className="h-8 w-64"

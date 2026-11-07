@@ -197,6 +197,13 @@ async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connectio
     .unwrap();
     assert_eq!(sequences(result), [1, 2, 3]);
     serving.await.unwrap();
+    // The local-only opening path must work even with an unreachable origin.
+    let local = intent(&owner, &proxy)
+        .get(NativeHistoryDemand::LocalLatest { count: 2 })
+        .await
+        .unwrap();
+    assert!(local.has_older && local.has_newer);
+    assert_eq!(sequences(local), [2, 3]);
     // Both legs now use the same cached ranges without contacting the unreachable new origin.
     let result = intent(&owner, &proxy)
         .get(NativeHistoryDemand::Around {
@@ -220,6 +227,20 @@ async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connectio
             Ok(())
         })
         .unwrap();
+}
+
+#[tokio::test]
+async fn local_latest_empty_does_not_bootstrap_or_claim_exhaustion() {
+    let proxy = ServerSessionState::new();
+    origins(&proxy, "http://127.0.0.1:1");
+    let owner = owner();
+    let result = intent(&owner, &proxy)
+        .get(NativeHistoryDemand::LocalLatest { count: 20 })
+        .await
+        .unwrap();
+    assert!(result.items.is_empty());
+    assert!(result.has_older && result.has_newer);
+    assert!(!result.failed);
 }
 
 #[tokio::test]
@@ -285,13 +306,14 @@ async fn cancellation_drops_history_body(repair: bool) {
             .unwrap();
         ready.send(()).unwrap();
         let mut byte = [0];
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte))
-                .await
-                .unwrap()
-                .unwrap(),
-            0
-        );
+        let closed = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte))
+            .await
+            .expect("cancelled history request must terminate its transport");
+        match closed {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("expected EOF or reset after cancellation, got {other:?}"),
+        }
     });
     let fetching = tokio::spawn(history.get(NativeHistoryDemand::Latest {
         count: 1,

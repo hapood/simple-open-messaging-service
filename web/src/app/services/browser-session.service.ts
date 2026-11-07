@@ -1,6 +1,6 @@
 import { Injectable, InjectionToken, inject } from '@angular/core';
 import { BrowserSessionOwner } from './session/browser-session-owner';
-import { SessionJournal } from './session/session-journal';
+import { SessionStore } from './session/session-store';
 import { deleteBrowserSessionCache } from './session/browser-session-cache';
 import { PreferenceStore } from './preference-store.service';
 import { WebdbService } from './webdb.service';
@@ -22,7 +22,7 @@ export class BrowserSessionService extends BrowserSessionOwner {
   ) {
     let previousUserId: number | undefined;
     super(
-      new SessionJournal(preferences),
+      new SessionStore(preferences),
       {
         close: () => database.close(),
         initialize: async (session) => {
@@ -50,6 +50,7 @@ export class BrowserSessionService extends BrowserSessionOwner {
       },
       (session) => lifecycle.bindSession(session.id),
     );
+
   }
 }
 

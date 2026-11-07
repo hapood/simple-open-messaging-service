@@ -1,3 +1,8 @@
+pub(crate) mod alert;
+pub(crate) mod content;
+pub(crate) mod delivery;
+pub(crate) mod presentation;
+
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
@@ -9,22 +14,28 @@ use crate::login_connection::DatabaseWork;
 /// Metadata and image bytes travel separately across JNI. Images are encoded files, not pixels.
 /// `login_session_id` is the immutable owner that assembled this batch.
 pub(crate) struct NotificationBatch {
+    /// In-process cancellation context, never serialized into an OS notification.
+    pub(crate) work: Option<DatabaseWork>,
     pub(crate) login_session_id: String,
     pub(crate) metadata: String,
     pub(crate) avatars: Vec<Vec<u8>>,
+    /// Native consumers reuse the assembled projection without decoding the JNI envelope.
+    pub(crate) threads: Vec<NotificationThread>,
+    /// Complete account total, not the sum of this delta's notification cards.
+    pub(crate) unread_total: i64,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct NotificationThread {
-    thread_id: i32,
-    thread_feed_id: i32,
-    unread_count: i64,
-    last_read_seq: i32,
-    has_unread_mention: bool,
-    muted: bool,
-    title: String,
-    previews: Vec<Value>,
+pub(crate) struct NotificationThread {
+    pub(crate) thread_id: i32,
+    pub(crate) thread_feed_id: i32,
+    pub(crate) unread_count: i64,
+    pub(crate) last_read_seq: i32,
+    pub(crate) has_unread_mention: bool,
+    pub(crate) muted: bool,
+    pub(crate) title: String,
+    pub(crate) previews: Vec<Value>,
 }
 
 fn projected_count(
@@ -90,7 +101,7 @@ pub(crate) fn synchronize(
     }
 }
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", desktop, test))]
 pub(crate) async fn from_result(
     work: DatabaseWork,
     user_id: i64,
@@ -135,6 +146,7 @@ async fn from_result_at(
         );
         batch.metadata = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
         batch.login_session_id = String::from(work.owner().id().clone());
+        batch.work = Some(work);
         Ok(batch)
     })
     .await
@@ -300,6 +312,30 @@ mod tests {
     }
 
     #[test]
+    fn assembly_projects_rfc3339_timestamps_for_native_consumers() {
+        let _filesystem = avatar_store();
+        for (timestamp, expected) in [
+            ("2026-01-01T00:00:00Z", 1767225600000_i64),
+            ("2026-01-01T00:00:00.123Z", 1767225600123_i64),
+            ("2026-01-01T08:00:00+08:00", 1767225600000_i64),
+        ] {
+            let mut conn = db();
+            let mut delivered = state(2);
+            let mut value = serde_json::to_value(preview(6, 1, "LIVE", Some("hello"))).unwrap();
+            value["createdAt"] = serde_json::json!(timestamp);
+            delivered.server.as_mut().unwrap().previews =
+                vec![serde_json::from_value(value).unwrap()];
+            save(&conn, &delivered);
+            let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();
+            let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+            let preview = &metadata["threads"][0]["previews"][0];
+            assert_eq!(preview["timestamp"].as_i64(), Some(expected));
+            assert!(preview.get("createdAt").is_none());
+            assert_eq!(batch.threads[0].previews[0]["timestamp"].as_i64(), Some(expected));
+        }
+    }
+
+    #[test]
     fn preview_sender_revision_wins_over_stale_thread_peer_avatar() {
         let mut conn = db();
         let mut delivered = state(2);
@@ -383,6 +419,8 @@ mod tests {
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"][0]["title"], "Private name");
+        assert_eq!(batch.threads[0].title, "Private name");
+        assert_eq!(serde_json::to_value(&batch.threads).unwrap(), metadata["threads"]);
         delivered.server.as_mut().unwrap().alias = None;
         save(&conn, &delivered);
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
@@ -410,13 +448,34 @@ mod tests {
     }
 
     #[test]
+    fn blocked_notification_clears_card_without_changing_account_badge_total() {
+        let mut conn = db();
+        let mut blocked = state(2);
+        blocked.server.as_mut().unwrap().blocked = true;
+        save(&conn, &blocked);
+        conn.execute("UPDATE threads SET unread_count=8 WHERE user_id=1", []).unwrap();
+        let batch = assemble(&mut conn, 1, vec![blocked], None).unwrap();
+        assert_eq!(batch.unread_total, 8);
+        assert_eq!(batch.threads.len(), 1);
+        assert_eq!(batch.threads[0].unread_count, 0);
+        assert!(batch.threads[0].previews.is_empty());
+        assert!(batch.avatars.is_empty());
+        let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+        assert_eq!(metadata["threads"][0]["unreadCount"], 0);
+        assert_eq!(metadata["unreadTotal"], 8);
+    }
+
+    #[test]
     fn no_consumed_states_means_no_notification_even_if_database_has_unread() {
         let mut conn = db();
         save(&conn, &state(2));
+        conn.execute("UPDATE threads SET unread_count=17 WHERE user_id=1", []).unwrap();
         let batch = assemble(&mut conn, 1, vec![], None).unwrap();
+        assert_eq!(batch.unread_total, 17);
         assert_eq!(batch.login_session_id, "");
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"], serde_json::json!([]));
+        assert_eq!(metadata["unreadTotal"], 17);
         assert!(batch.avatars.is_empty());
     }
 
@@ -451,8 +510,12 @@ mod tests {
             "LOCAL_THREAD_FEED_COMMITTED"
         );
         assert_eq!(metadata["commitEvent"]["data"], metadata["commit"]);
+        let captured = batch.work.as_ref().expect("runtime batch retains its work");
+        assert!(std::sync::Arc::ptr_eq(captured.owner(), &owner));
+        captured.assert_current().unwrap();
         let stale = owner.capture_database_work().unwrap();
         owner.end().unwrap();
+        assert!(captured.assert_current().is_err());
         match from_result(stale, 1, &result).await {
             Err(error) => assert_eq!(error, "native login superseded"),
             Ok(_) => panic!("an ended login assembled a notification batch"),
@@ -509,7 +572,10 @@ fn assemble(
             continue;
         }
         let local = current.local_read_seq.unwrap_or(server.last_read_seq);
-        let count = projected_count(&tx, user_id, &current, owner.as_ref())?;
+        // Blocking suppresses notification presentation, not the shared unread total.
+        let count = if server.blocked { 0 } else {
+            projected_count(&tx, user_id, &current, owner.as_ref())?
+        };
         let mut thread = super::thread_store::read(&tx, user_id, i64::from(current.thread_id))?
             .unwrap_or(Value::Null);
         if !thread.is_null() {
@@ -527,7 +593,7 @@ fn assemble(
             .ok_or("missing delivered notification snapshot")?
             .previews
             .iter()
-            .filter(|preview| preview.seq > local)
+            .filter(|preview| !server.blocked && preview.seq > local)
             .take(5)
         {
             let preview = serde_json::to_value(preview)
@@ -567,6 +633,13 @@ fn assemble(
                     None => account.to_owned(),
                 });
             let mut value = preview.clone();
+            let timestamp = preview["createdAt"].as_str()
+                .ok_or("missing notification timestamp")?
+                .parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .map_err(|e| format!("invalid notification timestamp: {e}"))?
+                .timestamp_millis();
+            value.as_object_mut().ok_or("invalid notification preview")?.remove("createdAt");
+            value["timestamp"] = serde_json::json!(timestamp);
             value["senderName"] = Value::String(name);
             if let Some(digest) = profile
                 .as_ref()
@@ -604,11 +677,15 @@ fn assemble(
             previews,
         });
     }
+    let unread_total = super::unread::unread_total(&tx, user_id)?;
     let metadata =
-        serde_json::to_string(&serde_json::json!({ "threads": notifications, "error": error }))
+        serde_json::to_string(&serde_json::json!({ "threads": &notifications, "unreadTotal": unread_total, "error": error }))
             .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(NotificationBatch {
+        work: None,
+        unread_total,
+        threads: notifications,
         metadata,
         avatars: avatars.bytes,
         login_session_id: String::new(),

@@ -6,6 +6,8 @@ import {
   untracked,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { BROWSER_SESSION } from './browser-session.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { AuthService } from './auth.service';
 import { PushRegistrationService } from './push-registration.service';
 import { WebsocketService } from './websocket.service';
@@ -16,6 +18,8 @@ import { apiOrigin, isTauri } from './runtime';
  * Browser foreground recovery lives here; native connection owners keep their foreground lifecycle. */
 @Injectable({ providedIn: 'root' })
 export class SseLifecycleService {
+  private readonly browserSession = inject(BROWSER_SESSION);
+  private readonly lifecycle = inject(SessionLifecycleService);
   private readonly auth = inject(AuthService);
   private readonly ws = inject(WebsocketService);
   // Android may replay cached HELLO synchronously from connect(), before the home route mounts.
@@ -31,9 +35,26 @@ export class SseLifecycleService {
       .subscribe((reason) => this.auth.redoLoginAuth(reason));
     this.ws.eventSubject
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe((message) =>
-        this.pushRegistration.onEvent(message.event, message.data),
-      );
+      .subscribe((message) => {
+        if (message.event !== 'HELLO' || !this.browserSession) {
+          this.pushRegistration.onEvent(message.event, message.data);
+          return;
+        }
+        const data = message.data as { userId?: number; sessionId?: number } | undefined;
+        if (!Number.isSafeInteger(data?.userId) || (data?.userId ?? 0) <= 0 ||
+            !Number.isSafeInteger(data?.sessionId) || (data?.sessionId ?? 0) <= 0) return;
+        const scope = this.lifecycle.capture();
+        if (!scope.sessionId || this.browserSession.currentSession?.id !== scope.sessionId) return;
+        void this.browserSession.bindIdentity({ userId: data!.userId!, serverSessionId: data!.sessionId! })
+          .then(() => {
+            if (this.lifecycle.isCurrent(scope))
+              this.pushRegistration.onEvent(message.event, message.data);
+          })
+          .catch((error) => {
+            if (this.lifecycle.isCurrent(scope))
+              console.warn('[session] server identity binding failed', error);
+          });
+      });
 
     let previousOrigin: string | undefined;
     effect(() => {

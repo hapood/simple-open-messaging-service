@@ -1,5 +1,6 @@
-/** The push worker owns browser notification rendering and click routing. The page may only
- * dismiss cards when a chat becomes visible or the account session ends. */
+import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
+
+/** The push worker owns rendering and thread removal decisions. The page reports facts. */
 const SW_SCOPE = '/push/';
 const SOMS_TAG_PREFIX = 'soms-';
 
@@ -22,14 +23,9 @@ export class BrowserNotificationAdapter {
     }
   }
 
-  async clearThread(threadId: number): Promise<void> {
-    await this.withProjectionLock(async () => {
-      const reg = await navigator.serviceWorker?.getRegistration(SW_SCOPE);
-      const tag = `soms-thread-${threadId}`;
-      for (const notification of (await reg?.getNotifications({ tag })) ?? []) {
-        if (notification.tag === tag) notification.close();
-      }
-    });
+  async presentationChanged(): Promise<void> {
+    const reg = await navigator.serviceWorker?.getRegistration(SW_SCOPE);
+    reg?.active?.postMessage({ type: SOMS_NOTIF_MSG.PRESENTATION_CHANGED });
   }
 
   async clear(): Promise<void> {

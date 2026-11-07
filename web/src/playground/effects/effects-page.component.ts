@@ -536,6 +536,7 @@ interface DemoThreadItem {
                   <input
                     type="text"
                     class="search-input"
+                    autocapitalize="off"
                     placeholder="Search keywords in messages..."
                     [(ngModel)]="searchQuery"
                     (ngModelChange)="onSearchChange()"

@@ -1,3 +1,4 @@
+import { threadNotificationChanged, type ThreadFeedSnapshot } from '../../../../shared/thread-attention';
 import { createP2PConversation, createGroupConversation } from './model';
 import {
   threadNotificationDescriptor,
@@ -5,6 +6,13 @@ import {
 } from './thread-notification';
 
 describe('thread notification presentation', () => {
+  it('refreshes on blocking but not on unblocking alone', () => {
+    const previous = { ...update().state, blocked: false } as ThreadFeedSnapshot;
+    const blocked = { ...previous, blocked: true, threadFeedId: previous.threadFeedId + 1 };
+    expect(threadNotificationChanged(previous, blocked)).toBe(true);
+    expect(threadNotificationChanged(blocked, { ...blocked, blocked: false, threadFeedId: blocked.threadFeedId + 1 })).toBe(false);
+  });
+
   const copy = {
     lang: 'en',
     privateBody: 'New message',

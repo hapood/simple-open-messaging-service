@@ -7,7 +7,7 @@ import {
   inject,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { ThemeService } from './services/theme.service';
 import { LanguageService } from './services/language.service';
 import { UpdateService } from './services/update.service';
@@ -20,7 +20,14 @@ import { NavStateMachineService } from './services/nav-state.service';
 import { ClientCompatService } from './services/client-compat.service';
 import { RouteService, PopupType } from './services/route.service';
 import { DebugLogFabComponent } from './components/debug-log/debug-log-fab.component';
-import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
+import { isTauri, isAndroid } from './services/runtime';
+import {
+  failNativeLaunch,
+  finishNativeLaunch,
+  hasNativeLaunch,
+  setLaunchStage,
+  waitForLaunchPaint,
+} from './services/native-launch';
 import { CallEventService } from './services/call-event.service';
 import { CallOverlayService } from './services/call-overlay.service';
 import { CallPresentationService } from './services/call-presentation.service';
@@ -34,7 +41,7 @@ import { MsgService } from './services/message.service';
 import { ToastService } from './services/toast.service';
 import { SnackbarGeometryService } from './services/snackbar-geometry.service';
 import { TranslocoService } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { filter, firstValueFrom, take } from 'rxjs';
 import { uuid } from './lib/uuid';
 import { stringifyTextMessageContent } from '../../../shared/text-message-content';
 import { MaterialDialogComponent } from './components/material-dialog/material-dialog.component';
@@ -99,6 +106,7 @@ export class AppComponent {
   // backend is too new for this shell.
   private readonly route = inject(RouteService);
   private readonly applicationRef = inject(ApplicationRef);
+  private readonly router = inject(Router);
   private readonly auth = inject(AuthService);
   private readonly config = inject(ConfigService);
   // CallEventService: routes CALL_EVENT SSE frames + the native __SOMS_CALL_EVENT__ snapshot push into the
@@ -179,14 +187,10 @@ export class AppComponent {
       );
     });
     void this.webPush.init();
-    // afterNextRender: the SPA has painted — probe the connected server and surface an
-    // incompatibility prompt if this shell is too old for the backend. The `spa-ready` emit is a
-    // historical leftover from the old two-window shell (single-window now → no Rust listener); kept
-    // harmless. Everything here no-ops outside the Tauri shell.
+    // A root render is not route readiness: asynchronous guards can still leave its outlet empty.
     afterNextRender(() => {
-      emitTauriEvent('spa-ready');
       void this.clientCompat.check().then(() => this.maybePromptIncompatible());
-      void this.finishNativeSplashWhenReady();
+      void this.finishNativeSplashWhenReady().catch(failNativeLaunch);
     });
   }
 
@@ -235,24 +239,28 @@ export class AppComponent {
   }
 
   /**
-   * Keep Android's native overlay above intermediate auth frames. Logged-out launches wait for the
-   * public config (which may redirect password → OTP/QR); returning sessions can go straight to their
-   * already-resolved shell. Two animation frames allow DOM updates to settle; the native host then
-   * confirms WebView visual readiness before removing its overlay.
+   * Keep native presentation above the first routed frame, including asynchronous config guards.
+   * First-run setup must not request remote login configuration from an unconfigured server.
+   * Paint waits let DOM updates settle; the native host confirms WebView visual readiness
+   * before removing its overlay.
    */
   private async finishNativeSplashWhenReady(): Promise<void> {
-    const shell = window.SomsShell;
-    if (!isTauri() || !isAndroid() || !shell?.finishSplash) return;
-    if (!this.auth.isLoggedIn()) {
-      shell.setSplashStage?.('config');
+    if (!hasNativeLaunch()) return;
+    if (!this.router.navigated) {
+      await firstValueFrom(
+        this.router.events.pipe(
+          filter((event) => event instanceof NavigationEnd),
+          take(1),
+        ),
+      );
+    }
+    if (!this.auth.isLoggedIn() && this.router.url.startsWith('/auth/')) {
+      setLaunchStage('config');
       await this.config.ensureLoaded();
     }
-    shell.setSplashStage?.('interface');
-    await this.applicationRef.whenStable();
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
-    shell.finishSplash();
+    setLaunchStage('interface');
+    await waitForLaunchPaint(() => this.applicationRef.whenStable());
+    await finishNativeLaunch();
   }
 
   /** Surface a once-per-launch dialog when the probe found this shell is incompatible with the backend.

@@ -1,6 +1,7 @@
 /** Shared, validated Push Service Worker -> page protocol. */
 export const SOMS_NOTIF_MSG = {
   ACTIVE_CHAT_REQUEST: 'soms-active-chat-request',
+  PRESENTATION_CHANGED: 'soms-notification-presentation-changed',
   PRESENT: 'soms-notification-present',
   OPEN: 'soms-notif-open',
   COMMITTED: 'soms-thread-feed-committed',
@@ -25,7 +26,8 @@ export function parseSwNotifMessage(value: unknown): SwNotifMessage | null {
     coordinate(message['sessionId'], 1)
   )
     return {
-      type: SOMS_NOTIF_MSG.OPEN, threadId: message['threadId'],
+      type: SOMS_NOTIF_MSG.OPEN,
+      threadId: message['threadId'],
       sessionId: message['sessionId'],
     };
   if (

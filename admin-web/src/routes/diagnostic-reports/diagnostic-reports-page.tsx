@@ -103,6 +103,7 @@ export function DiagnosticReportsPage() {
           <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
           <Input
             placeholder={t('diagnosticReports.searchPlaceholder')}
+            autoCapitalize="off"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             className="pl-8"

@@ -7,8 +7,6 @@ export interface BrowserNotificationBatch {
 }
 
 export interface NotificationDescriptor {
-  /** Stable per-thread id; posting the same tag replaces that conversation's prior notification. */
-  tag: string;
   /** Template/action discriminator: `'thread-message'` today; extensible for future notification kinds. */
   kind: string;
   title: string;

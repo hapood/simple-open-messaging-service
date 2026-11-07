@@ -85,6 +85,7 @@ h3 {
   padding: 16px;
 }
 .terminate-heading {
+  min-width: 0;
   display: flex;
   flex: 1 1 auto;
   align-items: center;
@@ -104,35 +105,5 @@ h3 {
   line-height: 18px;
 }
 .terminate-select {
-  flex: 0 0 150px;
-  box-sizing: border-box;
-  height: 40px;
-  padding: 0 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md);
-  color: var(--app-text);
-  background: var(--app-surface);
-
-  ::ng-deep .mat-mdc-select-trigger {
-    height: 38px;
-  }
-
-  ::ng-deep .mat-mdc-select-value-text {
-    font-size: 14px;
-    line-height: 20px;
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--app-brand);
-    outline-offset: 2px;
-  }
-}
-@media (max-width: 719px) {
-  .terminate-card mat-card-content {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .terminate-select {
-    align-self: flex-end;
-  }
+  align-self: center;
 }

@@ -215,7 +215,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         async (
           _threadId: number,
           demand:
-            | { kind: 'latest'; count: number }
+            | { kind: 'latest' | 'localLatest'; count: number }
             | {
                 kind: 'around';
                 anchor: number;
@@ -257,7 +257,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
           }
           const orderBy = demand.kind === 'newer' ? 'asc' : 'desc';
           const page = await run({
-            skip: demand.kind === 'latest' ? 0 : 1,
+            skip: demand.kind === 'latest' || demand.kind === 'localLatest' ? 0 : 1,
             take: demand.count,
             ...(demand.kind === 'older'
               ? { lastSeq: demand.before }
@@ -358,9 +358,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         ),
     };
     const profileRepo = {
-      resolve: vi
+      watch: vi
         .fn()
-        .mockName('resolve')
+        .mockName('watch')
         // Accepts both the bare demand and the unevidenced {demand, evidence}
         // wrapper that batch shaping resolves.
         .mockImplementation(
@@ -585,13 +585,12 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       }),
     );
     const binding = new AbortController();
-    const pending = src.init(-1, 10, 0, { signal: binding.signal });
-    const rejected = expect(pending).rejects.toMatchObject({
-      name: 'AbortError',
-    });
+    await src.init(-1, 10, 0, { signal: binding.signal });
+    expect(subscribed).not.toHaveBeenCalled();
+    const pending = src.restoreMediaStages();
     await vi.waitFor(() => expect(subscribed).toHaveBeenCalledOnce());
     binding.abort();
-    await rejected;
+    await pending;
     expect(unsubscribed).toHaveBeenCalledOnce();
     src.resumeLiveUpdates();
     src.finishLocalInit(10);
@@ -614,7 +613,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         avatarBlob: null,
       }),
     );
-    const accountProfiles = { resolve } as unknown as ProfileRepository;
+    const accountProfiles = { watch: resolve } as unknown as ProfileRepository;
     const { src } = setup(
       { code: 0, message: 'ok', data: [remoteGroupMessage(1)] },
       42,
@@ -647,7 +646,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
   it('degrades a profileRev 0 author to the account identity without resolving a demand', async () => {
     const resolve = vi.fn().mockName('resolve');
-    const accountProfiles = { resolve } as unknown as ProfileRepository;
+    const accountProfiles = { watch: resolve } as unknown as ProfileRepository;
     const message = {
       ...remoteGroupMessage(1),
       profileRev: 0,
@@ -691,7 +690,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
                 avatarBlob: null,
               }),
       );
-    const accountProfiles = { resolve } as unknown as ProfileRepository;
+    const accountProfiles = { watch: resolve } as unknown as ProfileRepository;
     const { src } = setup(
       { code: 0, message: 'ok', data: [row(1, 2), remoteGroupMessage(2)] },
       42,
@@ -734,7 +733,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   it('puts message evidence on the rendered item without resolving on the source', async () => {
     const repository = {
       getProfile: vi.fn().mockResolvedValue(undefined),
-      resolve: vi.fn().mockReturnValue(of(undefined)),
+      watch: vi.fn().mockReturnValue(of(undefined)),
     };
     const { src } = setup(
       { code: 0, message: 'ok', data: [row(10, 2)], hasMore: false },
@@ -755,7 +754,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         },
       },
     });
-    expect(repository.resolve).toHaveBeenCalledWith({
+    expect(repository.watch).toHaveBeenCalledWith({
       demand: {
         publisherNamespaceId: 0,
         lookup: 'ACCOUNT_PROFILE',
@@ -772,7 +771,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   it('renders the system sender without requesting a sender profile and supplies thread context', async () => {
     const repository = {
       getProfile: vi.fn().mockResolvedValue(undefined),
-      resolve: vi.fn().mockReturnValue(of(undefined)),
+      watch: vi.fn().mockReturnValue(of(undefined)),
     };
     const notification = {
       ...row(10, 2),
@@ -805,7 +804,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       threadId: 42,
       isSelf: false,
     });
-    expect(repository.resolve).not.toHaveBeenCalled();
+    expect(repository.watch).not.toHaveBeenCalled();
     src.destroy();
   });
 
@@ -1532,7 +1531,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(src.markPendingAccepted('cid-image')).toBe(true);
   });
 
-  it('restores durable media stages as failed pending attachments on init', async () => {
+  it('restores durable media stages after local initialization', async () => {
     const { src, messages } = setup(
       { code: 0, message: 'ok', data: [], hasMore: false },
       42,
@@ -1556,6 +1555,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     );
 
     await src.init(-1, 50, 0);
+    expect(messages.queryMediaStages).not.toHaveBeenCalled();
+    await src.restoreMediaStages();
 
     expect(messages.queryMediaStages).toHaveBeenCalledWith(42);
     expect(src.getPending()).toEqual([
@@ -1594,6 +1595,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     );
 
     await src.init(-1, 50, 0);
+    await src.restoreMediaStages();
 
     expect(src.discardPending('cid-stage-discard')).toBe(true);
     expect(messages.cancelUploadBatch).toHaveBeenCalledWith(

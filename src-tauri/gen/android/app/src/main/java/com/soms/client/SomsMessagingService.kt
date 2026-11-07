@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
@@ -104,12 +103,7 @@ class SomsMessagingService : FirebaseMessagingService() {
         const val THREAD_NOTIF_BASE = 0x10000
 
 
-        /** Process-local sound/vibration throttle. It does not participate in message visibility or cursors. */
-        private val alertThrottle2s = AlertThrottle(2_000L, SystemClock::elapsedRealtime)
-        private val alertThrottle5s = AlertThrottle(5_000L, SystemClock::elapsedRealtime)
 
-        /** Derive the stable notification id for a per-thread card from its threadId. */
-        private fun threadNotifId(threadId: Int): Int = NotifThreadLogic.notifId(THREAD_NOTIF_BASE, threadId)
 
 
         /** True while MainActivity is visible. Set from MainActivity.onResume/onStop — the
@@ -118,7 +112,22 @@ class SomsMessagingService : FirebaseMessagingService() {
         var appInForeground: Boolean = false
 
         @Volatile
+        var windowFocused: Boolean = false
+
+        @Volatile
         var activeThreadId: Int = -1
+
+        @androidx.annotation.Keep
+        @JvmStatic
+        fun notificationVisible(): Boolean = appInForeground
+
+        @androidx.annotation.Keep
+        @JvmStatic
+        fun notificationFocused(): Boolean = windowFocused
+
+        @androidx.annotation.Keep
+        @JvmStatic
+        fun notificationOpenThread(): Int = activeThreadId
 
         private val HTTP: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -166,27 +175,19 @@ class SomsMessagingService : FirebaseMessagingService() {
         /** Execute an already synchronized Rust batch. No network/projection work is scheduled here. */
         fun renderNativeBatch(ctx: Context, batch: NativeNotificationBatch, isCurrent: () -> Boolean) {
             if (!isCurrent()) return
-            val descriptors = batch.descriptors(ClientStateDb.getNotificationPreviewMode(),
-                ctx.getString(R.string.notif_private_body), ctx.getString(R.string.notif_message_retracted),
-                ctx.getString(R.string.notif_message_removed))
-            renderDescriptors(ctx, if (appInForeground) descriptors.filter {
-                it.data.optInt("threadId", -1) != activeThreadId
-            } else descriptors, allowAlert = true, isCurrent = isCurrent)
+            val descriptors = batch.descriptors()
+            renderDescriptors(ctx, descriptors, isCurrent = isCurrent)
         }
 
         private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean, target: Int) {
             val userId = SomsSecureStore.getCurrentUserId(ctx) ?: return
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
-            val batch = RustRuntimeBridge.synchronizeNotifications(userId, target)
-            val descriptors = batch.descriptors(ClientStateDb.getNotificationPreviewMode(),
-                ctx.getString(R.string.notif_private_body), ctx.getString(R.string.notif_message_retracted),
-                ctx.getString(R.string.notif_message_removed))
+            val batch = RustRuntimeBridge.synchronizeNotifications(userId, target, allowAlert)
+            val descriptors = batch.descriptors()
             RustRuntimeBridge.withCurrentSession(batch.loginSessionId) {
                 if (SomsSecureStore.getCurrentUserId(ctx) == userId &&
                     SomsSecureStore.getSessionToken(ctx) == token) {
-                    renderDescriptors(ctx, if (appInForeground) descriptors.filter {
-                        it.data.optInt("threadId", -1) != activeThreadId
-                    } else descriptors, allowAlert)
+                    renderDescriptors(ctx, descriptors)
                     if (appInForeground) {
                         val committed = JSONObject(batch.metadata).getJSONObject("commitEvent")
                         SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__($committed);")
@@ -195,9 +196,8 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        /** Apply a notification delta. Every background entry point uses the same process-wide alert
-         * throttle; threads absent from the delta remain unchanged. */
-        fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>, allowAlert: Boolean,
+        /** Execute Rust's notification delta; absent threads remain unchanged. */
+        private fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>,
                               isCurrent: () -> Boolean = { true }) {
             if (descriptors.isEmpty() || !isCurrent()) return
             ensureChannel(ctx)
@@ -210,8 +210,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             renderThreadDescriptors(
                 ctx,
                 nm,
-                descriptors.filter { it.kind == "thread-message" },
-                allowAlert,
+                descriptors,
                 isCurrent,
             )
         }
@@ -221,36 +220,25 @@ class SomsMessagingService : FirebaseMessagingService() {
             ctx: Context,
             nm: NotificationManager,
             descriptors: List<NotifDescriptor>,
-            allowAlert: Boolean,
             isCurrent: () -> Boolean,
         ) {
             // Stable IDs replace named conversations; absent threads remain untouched.
-            val policy = ClientStateDb.getNotificationAlertPolicy()
-            var alertSlot = allowAlert && when (policy) {
-                "cooldown_2s" -> alertThrottle2s.tryClaim()
-                "cooldown_5s" -> alertThrottle5s.tryClaim()
-                else -> true
-            }
             for (d in descriptors) {
                 if (!isCurrent()) return
-                val tid = d.data.optInt("threadId", -1)
-                if (tid < 0) continue
-                val id = threadNotifId(tid)
+                val tid = d.threadId
+                if (tid <= 0) continue
+                val id = THREAD_NOTIF_BASE
                 if (d.count == 0) {
-                    nm.cancel(id)
+                    nm.cancel(d.tag, id)
                     continue
                 }
-                val alertThisCard = if (policy == "once_per_thread") allowAlert else alertSlot
                 postThreadNotification(
                     ctx,
                     nm,
                     id,
                     d,
-                    alertThisCard,
-                    onlyAlertOnce = policy == "once_per_thread",
                     isCurrent = isCurrent,
                 )
-                if (policy != "once_per_thread") alertSlot = false
             }
             if (!isCurrent()) return
             nm.cancel(LEGACY_GROUP_SUMMARY_ID)
@@ -263,26 +251,32 @@ class SomsMessagingService : FirebaseMessagingService() {
             nm: NotificationManager,
             id: Int,
             d: NotifDescriptor,
-            allowAlert: Boolean,
-            onlyAlertOnce: Boolean,
             isCurrent: () -> Boolean,
         ) {
             val sessionId = SomsSecureStore.getSessionId(ctx) ?: return
             val origin = SomsSecureStore.getApiOrigin(ctx) ?: return
             val avatarImages = NotificationAvatars.resolve(ctx, d.messages)
-            val tid = d.data.optInt("threadId", -1)
+            val tid = d.threadId
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 if (tid > 0) putExtra(EXTRA_THREAD_ID, tid.toString())
                 putExtra(EXTRA_SESSION_ID, sessionId)
                 putExtra(EXTRA_API_ORIGIN, origin)
-                // Account-specific identity keeps a later account's card from rewriting this tap.
-                data = android.net.Uri.parse("soms-notification://session/$sessionId/thread/$tid?origin=${android.net.Uri.encode(origin)}")
+                // Each card instance has a distinct PendingIntent identity; updates reuse it.
+                data = android.net.Uri.parse("soms-notification://card/${d.tag}")
             }
             val pendingIntent = PendingIntent.getActivity(
                 ctx, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
+            val dismissed = PendingIntent.getBroadcast(
+                ctx, id,
+                Intent(ctx, NotificationDismissedReceiver::class.java)
+                    .setData(android.net.Uri.parse("soms-notification://card/${d.tag}"))
+                    .putExtra("threadId", tid).putExtra("notificationId", d.tag),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
             val builder = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+                .setDeleteIntent(dismissed)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
                 .setContentText(d.body)
@@ -292,13 +286,13 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setNumber(NotifThreadLogic.badgeNumber(d.count))
                 .setBadgeIconType(NotificationCompat.BADGE_ICON_NONE)
                 .setAutoCancel(true)
-                .setOnlyAlertOnce(onlyAlertOnce)
+                .setOnlyAlertOnce(false)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setContentIntent(pendingIntent)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setPublicVersion(buildPublicVersion(ctx, pendingIntent))
-            if (d.previewMode == "private") {
+            if (d.messages.isEmpty()) {
                 builder.setStyle(NotificationCompat.BigTextStyle().bigText(d.body))
             } else {
                 val self = Person.Builder().setName(ctx.getString(R.string.app_name)).build()
@@ -319,10 +313,10 @@ class SomsMessagingService : FirebaseMessagingService() {
                 }
                 builder.setStyle(style)
             }
-            if (!allowAlert || d.silent == true) builder.setSilent(true)
+            if (d.silent == true) builder.setSilent(true)
             // Avatar decoding/platform preparation can outlive the runtime that issued this command.
             // Never publish its card after that instance/account has been invalidated.
-            if (isCurrent()) nm.notify(id, builder.build())
+            if (isCurrent()) nm.notify(d.tag, id, builder.build())
         }
 
         private fun buildPublicVersion(ctx: Context, contentIntent: PendingIntent): Notification =
@@ -337,21 +331,21 @@ class SomsMessagingService : FirebaseMessagingService() {
         /** Remove notifications posted by the retired Android group implementation. */
         private fun cancelThreadGroup(nm: NotificationManager) {
             val active = try { nm.activeNotifications } catch (e: Exception) { return }
-            for (sbn in active) if (sbn.notification.group == LEGACY_GROUP_KEY) nm.cancel(sbn.id)
+            for (sbn in active) if (sbn.notification.group == LEGACY_GROUP_KEY) nm.cancel(sbn.tag, sbn.id)
         }
 
         private fun cancelThreadNotificationsExcept(nm: NotificationManager, keepIds: Set<Int>) {
             val active = try { nm.activeNotifications } catch (e: Exception) { return }
             for (sbn in active) {
-                if (sbn.id >= THREAD_NOTIF_BASE && sbn.id !in keepIds) nm.cancel(sbn.id)
+                if (sbn.id >= THREAD_NOTIF_BASE && sbn.id !in keepIds) nm.cancel(sbn.tag, sbn.id)
             }
         }
 
-        /** Close just the chat that the foreground UI is currently displaying. */
-        fun clearThreadNotification(ctx: Context, threadId: Int) {
-            if (threadId <= 0) return
+        /** Report current host observations and execute Rust's optional removal target. */
+        fun presentationChanged(ctx: Context) {
+            val id = RustRuntimeBridge.notificationPresentationChanged(appInForeground, windowFocused, activeThreadId) ?: return
             ContextCompat.getSystemService(ctx, NotificationManager::class.java)
-                ?.cancel(threadNotifId(threadId))
+                ?.cancel(id, THREAD_NOTIF_BASE)
         }
 
         /** Close message notifications when the foreground UI takes over. */

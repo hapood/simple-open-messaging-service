@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
@@ -15,31 +14,14 @@ mod linux_registry;
 pub(crate) struct PendingTap {
     id: String,
     thread_id: i32,
-    session_id: i32,
-    origin: String,
+
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn parse_activation(url: &str) -> Option<(i32, i32, String)> {
-    let (route, _) = url.split_once('?')?;
-    let parsed = reqwest::Url::parse(url).ok()?;
-    if parsed.fragment().is_some() {
-        return None;
-    }
-    let pairs: Vec<_> = parsed.query_pairs().collect();
-    if pairs.len() != 1 || pairs[0].0 != "origin" || pairs[0].1.is_empty() {
-        return None;
-    }
-    let origin = pairs[0].1.to_string();
-    let path = route.strip_prefix("soms-notification://session/")?;
-    let (session, thread) = path.split_once("/thread/")?;
-    let session_id = session.parse::<i32>().ok()?;
-    let thread_id = thread.parse::<i32>().ok()?;
-    (session_id > 0
-        && thread_id > 0
-        && session == session_id.to_string()
-        && thread == thread_id.to_string())
-    .then_some((session_id, thread_id, origin))
+fn parse_activation(url: &str) -> Option<i32> {
+    let thread = url.strip_prefix("soms-notification://thread/")?;
+    let id = thread.parse::<i32>().ok()?;
+    (id > 0 && thread == id.to_string()).then_some(id)
 }
 
 static PENDING_TAP: Mutex<Option<PendingTap>> = Mutex::new(None);
@@ -54,9 +36,8 @@ fn next_tap_id() -> String {
 pub(crate) fn initialize_windows_links(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_deep_link::DeepLinkExt;
     fn consume(app: &tauri::AppHandle, url: &str) {
-        // Reject old account/unscoped links; only the exact session-scoped route is accepted.
-        if let Some((session_id, thread_id, origin)) = parse_activation(url) {
-            tapped(app, thread_id, session_id, &origin);
+        if let Some(thread_id) = parse_activation(url) {
+            tapped(app, thread_id);
         }
     }
     let target = app.clone();
@@ -77,17 +58,8 @@ pub(crate) fn initialize_windows_links(app: &tauri::AppHandle) -> Result<(), Str
     Ok(())
 }
 
-fn tapped(app: &tauri::AppHandle, thread_id: i32, session_id: i32, origin: &str) {
-    if thread_id <= 0 || session_id <= 0 || origin.is_empty() {
-        return;
-    }
-    let state = app.state::<crate::ServerSessionState>();
-    if *state
-        .api_origin_primary
-        .lock()
-        .expect("primary origin lock")
-        != origin
-    {
+fn tapped(app: &tauri::AppHandle, thread_id: i32) {
+    if thread_id <= 0 {
         return;
     }
     let Ok(mut pending) = PENDING_TAP.lock() else {
@@ -96,8 +68,6 @@ fn tapped(app: &tauri::AppHandle, thread_id: i32, session_id: i32, origin: &str)
     *pending = Some(PendingTap {
         id: next_tap_id(),
         thread_id,
-        session_id,
-        origin: origin.to_string(),
     });
     drop(pending);
     if let Some(window) = app.get_webview_window("main") {
@@ -120,13 +90,12 @@ pub(crate) fn desktop_notification_pending() -> Result<Option<PendingTap>, Strin
 pub(crate) fn desktop_notification_acknowledge(
     id: String,
     thread_id: i32,
-    session_id: i32,
 ) -> Result<(), String> {
     let mut pending = PENDING_TAP
         .lock()
         .map_err(|_| "notification tap state poisoned")?;
     if pending.as_ref().is_some_and(|tap| {
-        tap.id == id && tap.thread_id == thread_id && tap.session_id == session_id
+        tap.id == id && tap.thread_id == thread_id
     }) {
         *pending = None;
     }
@@ -138,15 +107,13 @@ mod navigation_tests {
     use super::*;
 
     #[test]
-    fn activation_requires_exact_session_scope() {
-        assert_eq!(
-            parse_activation(
-                "soms-notification://session/11/thread/7?origin=https%3A%2F%2Fprimary"
-            ),
-            Some((11, 7, "https://primary".into()))
-        );
+    fn activation_requires_a_canonical_thread_target() {
+        assert_eq!(parse_activation("soms-notification://thread/7"), Some(7));
         for url in [
-            "soms-notification://thread/7",
+            "soms-notification://thread/0",
+            "soms-notification://thread/07",
+            "soms-notification://thread/7?x=1",
+            "soms-notification://thread/7#fragment",
             "soms-notification://account/11/thread/7?origin=https%3A%2F%2Fprimary",
             "soms-notification://session/11/thread/7",
             "soms-notification://session/0/thread/7?origin=https%3A%2F%2Fprimary",
@@ -168,29 +135,19 @@ mod navigation_tests {
         *PENDING_TAP.lock().unwrap() = Some(PendingTap {
             id: new_id.clone(),
             thread_id: 7,
-            session_id: 11,
-            origin: "https://primary".into(),
         });
-        desktop_notification_acknowledge(old_id, 7, 11).unwrap();
+        desktop_notification_acknowledge(old_id, 7).unwrap();
         assert_eq!(desktop_notification_pending().unwrap().unwrap().id, new_id);
-        desktop_notification_acknowledge(new_id.clone(), 9, 11).unwrap();
+        desktop_notification_acknowledge(new_id.clone(), 9).unwrap();
         assert!(desktop_notification_pending().unwrap().is_some());
-        desktop_notification_acknowledge(new_id.clone(), 7, 12).unwrap();
-        assert_eq!(
-            desktop_notification_pending().unwrap().unwrap().session_id,
-            11
-        );
-        desktop_notification_acknowledge(new_id, 7, 11).unwrap();
+        desktop_notification_acknowledge(new_id, 7).unwrap();
         assert!(desktop_notification_pending().unwrap().is_none());
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct DesktopNotification {
+    notification_id: Option<String>,
     thread_id: i32,
-    session_id: i32,
-    origin: String,
     title: String,
     body: String,
     count: i64,
@@ -251,13 +208,11 @@ mod platform {
         }
         let waiting = Arc::clone(&handle);
         let thread_id = input.thread_id;
-        let session_id = input.session_id;
-        let origin = input.origin;
         let listener = tauri::async_runtime::spawn(async move {
             waiting
                 .wait_for_action_async(|response| {
                     if matches!(response, NotificationResponse::Default) {
-                        super::tapped(&app, thread_id, session_id, &origin);
+                        super::tapped(&app, thread_id);
                     }
                 })
                 .await;
@@ -335,14 +290,7 @@ mod windows_platform {
             return ToastNotificationManager::History()?
                 .RemoveGroupedTagWithId(&tag, &group, &app_id);
         }
-        let mut activation = reqwest::Url::parse(&format!(
-            "soms-notification://session/{}/thread/{}",
-            input.session_id, input.thread_id
-        ))
-        .expect("notification URL");
-        activation
-            .query_pairs_mut()
-            .append_pair("origin", &input.origin);
+        let activation = format!("soms-notification://thread/{}", input.thread_id);
         let xml = XmlDocument::new()?;
         xml.LoadXml(&HSTRING::from(format!(
             "<toast activationType=\"protocol\" launch=\"{}\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{}</toast>",
@@ -392,6 +340,13 @@ pub(crate) enum DesktopNotificationPermission {
     Authorized,
     Provisional,
     Unknown,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl DesktopNotificationPermission {
+    fn should_request_initial_authorization(self) -> bool {
+        matches!(self, Self::NotDetermined)
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -465,6 +420,19 @@ mod permission_tests {
     use super::*;
 
     #[test]
+    fn initial_authorization_only_requests_an_undetermined_permission() {
+        use DesktopNotificationPermission::*;
+
+        assert!(NotDetermined.should_request_initial_authorization());
+        for permission in [Unsupported, Denied, Authorized, Provisional, Unknown] {
+            assert!(
+                !permission.should_request_initial_authorization(),
+                "must not request initial authorization for {permission:?}"
+            );
+        }
+    }
+
+    #[test]
     fn macos_permission_states_are_explicit_and_unknown_is_not_authorized() {
         assert_eq!(
             permission_from_macos_status(0),
@@ -494,29 +462,143 @@ mod permission_tests {
 }
 
 #[tauri::command]
-pub(crate) async fn desktop_notification_update(
+pub(crate) async fn desktop_notification_presentation_changed(
     app: tauri::AppHandle,
+) -> Result<(), String> {
+    let facts = presentation_facts(&app);
+    let Some(thread_id) = super::notifications::content::visible_thread(facts) else {
+        return Ok(());
+    };
+    let work = super::capture_database_work()?;
+    #[cfg(not(target_os = "macos"))]
+    work.owner().notification_dismissed(thread_id).map_err(|e| e.to_string())?;
+    deliver_command(app, work, super::notifications::content::NotificationCommand::Remove { thread_id }).await
+}
+
+/// Native synchronization supplies the captured work and its assembled thread projections.
+pub(crate) async fn deliver_batch(
+    app: tauri::AppHandle,
+    work: crate::login_connection::DatabaseWork,
+    batch: super::notifications::NotificationBatch,
+) -> Result<(), String> {
+    let presentation = super::notifications::presentation::prepare_batch(
+        work.clone(), &batch, presentation_facts(&app), true,
+    ).await?;
+    let mut failures = Vec::new();
+    for command in presentation.commands {
+        work.assert_current().map_err(|e| e.to_string())?;
+        if let Err(error) = deliver_command(app.clone(), work.clone(), command).await {
+            failures.push(error);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("notification batch delivery failed: {}", failures.join("; ")))
+    }
+}
+
+/// Observe OS window state and reuse the existing native open-thread fact. This
+/// adapter reports facts only; shared Rust policy decides notification suppression.
+pub(crate) fn presentation_facts(
+    app: &tauri::AppHandle,
+) -> super::notifications::content::PresentationFacts {
+    use tauri::Manager;
+    let window = app.get_webview_window("main");
+    super::notifications::content::PresentationFacts {
+        visible: window.as_ref().is_some_and(|window| {
+            window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true)
+        }),
+        focused: window.as_ref().is_some_and(|window| window.is_focused().unwrap_or(false)),
+        open_thread: super::attention::open_thread_id().and_then(|id| i32::try_from(id).ok()),
+    }
+}
+
+/// Execute an already-decided native notification command. Platforms do not rebuild
+/// previews, inspect unread state, or make privacy/sound decisions here.
+pub(crate) async fn deliver_command(
+    app: tauri::AppHandle,
+    work: crate::login_connection::DatabaseWork,
+    command: super::notifications::content::NotificationCommand,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    return execute_command(app, work, command, None).await;
+    #[cfg(target_os = "macos")]
+    {
+        // The task owns execution through acknowledgement even if its caller stops waiting.
+        tauri::async_runtime::spawn(async move {
+            use super::notifications::{alert::AlertPolicy, content::NotificationCommand, delivery::{DeliveryResult, PlatformHandle}};
+            let owner = work.owner().clone();
+            let _lane = owner.notification_delivery_lane.lock().await;
+            work.assert_current().map_err(|e| e.to_string())?;
+            let policy = super::preferences::read_notification_preference("notificationAlertPolicy")?;
+            let policy = AlertPolicy::from_preference(policy.as_deref())?;
+            let command = super::notifications::content::observe_before_delivery(command, presentation_facts(&app));
+            let prepared = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?
+                .prepare(command, policy, true, std::time::Instant::now()).map_err(str::to_owned)?;
+            let os_identifier = match &prepared.previous_handle {
+                Some(PlatformHandle::Macos { identifier }) => Some(identifier.clone()),
+                Some(_) => return Err("unexpected macOS notification handle".into()),
+                None => prepared.notification_id.as_deref().map(macos_platform::identifier),
+            };
+            let handle = match &prepared.command {
+                NotificationCommand::Show(_) => Some(PlatformHandle::Macos {
+                    identifier: os_identifier.clone().ok_or("missing notification instance")?,
+                }),
+                _ => None,
+            };
+            let result = execute_command(app, work, prepared.command, os_identifier).await;
+            let outcome = match &result {
+                Ok(()) => DeliveryResult::Accepted { handle },
+                Err(error) if error.starts_with("join desktop notification:") => DeliveryResult::Uncertain,
+                Err(_) => DeliveryResult::Rejected,
+            };
+            owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?
+                .complete(&prepared.operation_id, outcome, std::time::Instant::now()).map_err(str::to_owned)?;
+            result
+        }).await.map_err(|e| format!("join notification transaction: {e}"))?
+    }
+}
+
+async fn execute_command(
+    app: tauri::AppHandle,
+    work: crate::login_connection::DatabaseWork,
+    command: super::notifications::content::NotificationCommand,
+    notification_id: Option<String>,
+) -> Result<(), String> {
+    use super::notifications::content::NotificationCommand;
+    let request = match command {
+        NotificationCommand::Remove { thread_id } => DesktopNotification {
+            notification_id,
+            thread_id,
+            title: String::new(),
+            body: String::new(),
+            count: 0,
+            silent: true,
+        },
+        NotificationCommand::Show(content) => DesktopNotification {
+            notification_id,
+            thread_id: content.thread_id,
+            title: content.title,
+            body: content.body,
+            count: content.count,
+            silent: content.silent,
+        },
+    };
+    deliver_notification(app, work, request).await
+}
+
+/// Host-owned delivery uses the original database work captured by synchronization.
+/// It never reconstructs ownership from mutable renderer or global session state.
+async fn deliver_notification(
+    app: tauri::AppHandle,
+    work: crate::login_connection::DatabaseWork,
     notification: DesktopNotification,
 ) -> Result<(), String> {
-    if notification.thread_id <= 0
-        || notification.count < 0
-        || (notification.count > 0
-            && (notification.session_id <= 0 || notification.origin.is_empty()))
-    {
+    if notification.thread_id <= 0 || notification.count < 0 {
         return Err("invalid desktop notification coordinates".into());
     }
-    // Share the admitted login's cache view: queued work cannot post after its login ends.
-    let work = super::capture_database_work()?;
-    if notification.count > 0
-        && *app
-            .state::<crate::ServerSessionState>()
-            .api_origin_primary
-            .lock()
-            .expect("primary origin lock")
-            != notification.origin
-    {
-        return Err("notification origin expired".into());
-    }
+    work.assert_current().map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     if notification.count > 0 {
         macos_platform::authorize().await?;
@@ -545,27 +627,33 @@ pub(crate) async fn desktop_notifications_clear(
     app: tauri::AppHandle,
     reset_navigation: bool,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        if reset_navigation {
-            *PENDING_TAP
-                .lock()
-                .map_err(|_| "notification tap state poisoned")? = None;
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = app;
-            platform::clear()
-        }
-        #[cfg(target_os = "windows")]
-        {
-            windows_platform::clear(&app)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = app;
-            macos_platform::clear()
-        }
-    })
-    .await
-    .map_err(|error| format!("join desktop notification clear: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || clear_notifications(&app, reset_navigation))
+        .await
+        .map_err(|error| format!("join desktop notification clear: {error}"))?
+}
+
+/// Called by the logout cleanup task before releasing authentication admission.
+pub(crate) fn clear_notifications(
+    app: &tauri::AppHandle,
+    reset_navigation: bool,
+) -> Result<(), String> {
+    if reset_navigation {
+        *PENDING_TAP
+            .lock()
+            .map_err(|_| "notification tap state poisoned")? = None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        platform::clear()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows_platform::clear(app)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        macos_platform::clear()
+    }
 }

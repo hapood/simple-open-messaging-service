@@ -16,7 +16,6 @@ import { LanguageService } from '../../services/language.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
 import { WebPushService } from '../../services/web-push.service';
 import { WebsocketService } from '../../services/websocket.service';
-import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import {
   buildSettingsCategories,
   type SettingsCategory,
@@ -83,12 +82,10 @@ export class SettingsComponent {
   private readonly bgSync = inject(BackgroundSyncService);
   private readonly webPush = inject(WebPushService);
   private readonly ws = inject(WebsocketService);
-  private readonly chatAppearance = inject(ChatAppearanceService);
 
   /** The shared category registry (built once; the same array drives the desktop/tablet dialog too). */
   readonly categories = buildSettingsCategories({
     theme: this.theme,
-    chatAppearance: this.chatAppearance,
     language: this.language,
     bgSync: this.bgSync,
     webPush: this.webPush,
