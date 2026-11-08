@@ -7,6 +7,7 @@ const SOMS_TAG_PREFIX = 'soms-';
 export async function clearBrowserMessageNotifications(): Promise<void> {
   if (!('serviceWorker' in navigator)) return;
   const reg = await navigator.serviceWorker.getRegistration(SW_SCOPE);
+  reg?.active?.postMessage({ type: SOMS_NOTIF_MSG.RESET });
   for (const notification of (await reg?.getNotifications()) ?? []) {
     if (notification.tag.startsWith(SOMS_TAG_PREFIX)) notification.close();
   }

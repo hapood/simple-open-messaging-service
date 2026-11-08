@@ -5,7 +5,7 @@ describe('required session notification identity', () => {
   let coordinator: ThreadNavigationIntentCoordinator;
   const acknowledge = vi.fn();
   const open = vi.fn(() => true);
-  const tap = (extra: Partial<ThreadNavigationIntent> = {}): ThreadNavigationIntent => ({ source: 'android', id: 'tap', threadId: 7, sessionId: 11, acknowledge, ...extra });
+  const tap = (extra: Partial<ThreadNavigationIntent> = {}): ThreadNavigationIntent => ({ source: 'web', id: 'tap', threadId: 7, sessionId: 11, acknowledge, ...extra });
   beforeEach(() => { coordinator = new ThreadNavigationIntentCoordinator(); acknowledge.mockClear(); open.mockClear(); });
   it('waits for authoritative HELLO and hydration', () => {
     coordinator.offer(tap());

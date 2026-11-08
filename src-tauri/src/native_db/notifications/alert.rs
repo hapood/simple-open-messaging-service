@@ -32,19 +32,16 @@ pub(crate) struct AlertState {
 }
 
 impl AlertState {
+    /// OS presence is not evidence of an audible alert or its acceptance time.
+    pub(crate) fn import_instance(&mut self, thread_id: i32, id: String) {
+        self.cards.insert(thread_id, NotificationCard { id, last_alert: None });
+    }
+
     pub(crate) fn accepted_alert_at(&mut self, thread_id: i32, at: Instant) {
         self.last_alert = Some(at);
         if let Some(card) = self.cards.get_mut(&thread_id) {
             card.last_alert = Some(at);
         }
-    }
-
-    pub(crate) fn remove(&mut self, thread_id: i32) -> Option<String> {
-        self.cards.remove(&thread_id).map(|card| card.id)
-    }
-
-    pub(crate) fn dismissed(&mut self, thread_id: i32) {
-        self.remove(thread_id);
     }
 
     pub(crate) fn dismissed_instance(&mut self, thread_id: i32, notification_id: &str) {
@@ -138,8 +135,9 @@ mod tests {
         let policy = AlertPolicy::Cooldown(Duration::from_secs(5));
         state.apply(&mut [show(7, false)], policy, true, now);
         let old = state.notification_id(7).unwrap().to_owned();
-        assert_eq!(state.remove(7), Some(old.clone()));
-        assert_eq!(state.remove(7), None);
+        state.dismissed_instance(7, &old);
+        assert_eq!(state.notification_id(7), None);
+        state.dismissed_instance(7, &old);
         let mut next = [show(7, false)];
         state.apply(&mut next, policy, true, now);
         assert!(silent(&next[0]));
@@ -246,12 +244,14 @@ mod tests {
         let mut state = AlertState::default();
         let now = Instant::now();
         state.apply(&mut [show(1, false), show(2, false)], AlertPolicy::OncePerThread, true, now);
-        state.dismissed(1);
+        let id = state.notification_id(1).unwrap().to_owned();
+        state.dismissed_instance(1, &id);
         let mut cards = [show(1, false), show(2, false)];
         state.apply(&mut cards, AlertPolicy::OncePerThread, true, now);
         assert!(!silent(&cards[0]));
         assert!(silent(&cards[1]));
-        state.dismissed(1);
+        let id = state.notification_id(1).unwrap().to_owned();
+        state.dismissed_instance(1, &id);
         let mut next = [show(3, false)];
         state.apply(&mut next, AlertPolicy::Cooldown(Duration::from_secs(5)), true, now);
         assert!(silent(&next[0]));

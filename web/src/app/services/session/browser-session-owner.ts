@@ -99,10 +99,15 @@ export class BrowserSessionOwner {
     });
   }
 
+  /** Hosts enter notification recovery before local restoration and HELLO. */
+  protected withRestoration<T>(restore: () => Promise<T>): Promise<T> {
+    return restore();
+  }
+
   /** Presence cookies cannot authorize restoration without a recoverable durable login record. */
   restore(hasCredential: boolean): Promise<boolean> {
     const signal = this.beginTransition();
-    return this.serializeTransition(async () => {
+    return this.serializeTransition(() => this.withRestoration(async () => {
       this.check(signal);
       const saved = await this.sessionStore.read();
       this.check(signal);
@@ -136,7 +141,7 @@ export class BrowserSessionOwner {
       this.active = descriptor;
       this.publish(descriptor);
       return true;
-    });
+    }));
   }
 
   /** Interactive logout keeps the original durable login until revocation is confirmed

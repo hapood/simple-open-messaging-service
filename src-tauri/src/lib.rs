@@ -18,6 +18,10 @@
 mod android_realtime;
 #[cfg(target_os = "android")]
 mod android_runtime;
+#[cfg(target_os = "android")]
+mod android_notifications;
+#[cfg(any(target_os = "android", test))]
+mod android_notification_receipt;
 mod auth_lifecycle;
 #[cfg(any(target_os = "android", test))]
 mod call;
@@ -375,7 +379,7 @@ pub fn run() {
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-        if let Some(window) = app.get_window("main") {
+        if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.show();
             let _ = window.set_focus();
@@ -725,6 +729,19 @@ fn initialize_client_storage(
     native_db::initialize_preferences()?;
     if let Err(error) = native_db::initialize_login_cache() {
         warn!("login cache initialization requires repair: {error}");
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Some(owner) = native_db::current_login()? {
+        #[cfg(target_os = "macos")]
+        let cards = native_db::desktop_notifications::macos_platform::restore_cards()?;
+        #[cfg(target_os = "windows")]
+        let cards = native_db::desktop_notifications::restore_windows_cards(app, owner.clone())?;
+        let candidates = {
+            let mut delivery = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?;
+            delivery.import_cards(cards).map_err(str::to_owned)?;
+            delivery.reconstruction_candidates()
+        };
+        *owner.notification_reconstruction.try_lock().map_err(|_| "notification restoration already running")? = Some(candidates);
     }
     fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
     // Android resources were restored by Application; do not overwrite live background state.

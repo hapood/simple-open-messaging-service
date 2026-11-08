@@ -12,7 +12,7 @@ import {
   threadNotificationDescriptor,
   threadNotificationIcon,
 } from './thread-notification';
-import type { User } from './model';
+import type { LocalThreadAttention } from '../../../../shared/thread-attention';
 import type { NotificationDescriptor } from './notification-descriptor.model';
 
 export interface PushThreadResult extends ThreadFeedSyncResult {
@@ -45,25 +45,73 @@ export async function syncPushThreads(
   const notifications: NotificationDescriptor[] = [];
   if (!result.states.length)
     return { ...result, consumed: false, userId, notifications };
-  const [rows, states, self, enabled, sound, mode] = await Promise.all([
+  return {
+    ...result,
+    userId,
+    consumed: true,
+    notifications: await projectNotificationDelta(
+      storage, userId, preferences, copy, result.states, previous,
+    ),
+  };
+}
+
+/** Delta selection is explicit and never falls back to a complete reconstruction. */
+async function projectNotificationDelta(
+  storage: WebdbStorage,
+  userId: number,
+  preferences: Pick<PreferenceStorage, 'get'>,
+  copy: Parameters<typeof threadNotificationDescriptor>[2],
+  delivered: readonly LocalThreadAttention[],
+  previous: ReadonlyMap<number, ReturnType<typeof attentionSnapshot>>,
+): Promise<NotificationDescriptor[]> {
+  const current = new Map((await storage.getThreadStates()).map((state) => [state.threadId, state]));
+  const selected = delivered.flatMap((item) => {
+    const state = current.get(item.threadId);
+    const snapshot = attentionSnapshot(state);
+    const deliveredSnapshot = attentionSnapshot(item);
+    return state && snapshot && deliveredSnapshot &&
+      snapshot.threadFeedId === deliveredSnapshot.threadFeedId &&
+      threadNotificationChanged(previous.get(state.threadId), snapshot)
+      // The database deliberately retains only the latest preview. This round's
+      // notification may use all delivered previews while retaining current read state.
+      ? [{ ...state, previews: item.previews }]
+      : [];
+  });
+  return projectNotificationThreads(storage, userId, preferences, copy, selected);
+}
+
+/** Call only with the complete state read after a successful fetch/merge, under
+ * restoration exclusion. An incremental page is not a complete reconstruction. */
+export function projectNotificationReconstruction(
+  storage: WebdbStorage,
+  userId: number,
+  preferences: Pick<PreferenceStorage, 'get'>,
+  copy: Parameters<typeof threadNotificationDescriptor>[2],
+  mergedStates: readonly LocalThreadAttention[],
+): Promise<NotificationDescriptor[]> {
+  return projectNotificationThreads(storage, userId, preferences, copy, mergedStates);
+}
+
+/** Shared content projection; selection belongs to the explicit callers above. */
+async function projectNotificationThreads(
+  storage: WebdbStorage,
+  userId: number,
+  preferences: Pick<PreferenceStorage, 'get'>,
+  copy: Parameters<typeof threadNotificationDescriptor>[2],
+  states: readonly LocalThreadAttention[],
+): Promise<NotificationDescriptor[]> {
+  const notifications: NotificationDescriptor[] = [];
+  const [rows, self, enabled, sound, mode] = await Promise.all([
     storage.getThreads(),
-    storage.getThreadStates(),
     storage.readAccountState().then((state) => state.selfProfile),
     preferences.get<boolean>('device', 'notificationEnabled'),
     preferences.get<boolean>('device', 'notificationSound'),
     preferences.get<string>('device', 'notificationPreviewMode'),
   ]);
   const owner = self;
-  const current = new Map(states.map((state) => [state.threadId, state]));
-  for (const delivered of result.states) {
-    const state = current.get(delivered.threadId);
+  for (const state of states) {
     const snapshot = attentionSnapshot(state);
-    const deliveredSnapshot = attentionSnapshot(delivered);
-    if (!state || !snapshot || !deliveredSnapshot ||
-      snapshot.threadFeedId !== deliveredSnapshot.threadFeedId)
-      continue;
-    if (!threadNotificationChanged(previous.get(state.threadId), snapshot))
-      continue;
+    if (!snapshot) continue;
     const range = attentionCountRange(state);
     if (!range) continue;
     let count = 0;
@@ -96,7 +144,7 @@ export async function syncPushThreads(
           unreadCount: projection.unreadCount,
           mentionUnread: projection.hasUnreadMention ? ['me'] : [],
         },
-        state: { ...snapshot, previews: deliveredSnapshot.previews },
+        state: snapshot,
       },
       mode === 'private' ? 'private' : 'message',
       copy,
@@ -109,12 +157,5 @@ export async function syncPushThreads(
       notifications.push(descriptor);
     }
   }
-  return {
-    ...result,
-    userId,
-    consumed: true,
-    cursor: result.cursor,
-    notifications,
-    ...(result.error ? { error: result.error } : {}),
-  };
+  return notifications;
 }

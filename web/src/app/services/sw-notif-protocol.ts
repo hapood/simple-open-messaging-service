@@ -3,6 +3,8 @@ export const SOMS_NOTIF_MSG = {
   ACTIVE_CHAT_REQUEST: 'soms-active-chat-request',
   PRESENTATION_CHANGED: 'soms-notification-presentation-changed',
   PRESENT: 'soms-notification-present',
+  RESTORE: 'soms-notification-restore',
+  RESET: 'soms-notification-reset',
   OPEN: 'soms-notif-open',
   COMMITTED: 'soms-thread-feed-committed',
 } as const;

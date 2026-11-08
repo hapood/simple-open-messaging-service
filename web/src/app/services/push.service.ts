@@ -1,5 +1,5 @@
 import { Injectable, Injector, inject, isDevMode } from '@angular/core';
-import { apiOrigin, isAndroidNative, isTauri } from './runtime';
+import { isAndroidNative, isTauri } from './runtime';
 import { ThreadNavigationIntentService } from './thread-navigation-intent.service';
 import {
   PushRegistrationService,
@@ -175,13 +175,11 @@ export class PushService {
     const pending = bridge?.getPendingThreadId();
     if (!pending) return;
     try {
-      const tap = JSON.parse(pending) as { id: string; threadId: number; sessionId: number; origin: string } | null;
+      const tap = JSON.parse(pending) as { id: string; threadId: number } | null;
       if (!tap || typeof tap.id !== 'string' || !tap.id.trim() ||
-          !Number.isSafeInteger(tap.threadId) || tap.threadId <= 0 ||
-          !Number.isSafeInteger(tap.sessionId) || tap.sessionId <= 0 ||
-          !tap.origin || tap.origin !== apiOrigin()) return;
+          !Number.isSafeInteger(tap.threadId) || tap.threadId <= 0) return;
       this.injector.get(ThreadNavigationIntentService).offer({
-        source: 'android', id: tap.id, threadId: tap.threadId, sessionId: tap.sessionId,
+        source: 'android', id: tap.id, threadId: tap.threadId,
         acknowledge: () => bridge!.acknowledgeThreadId(pending),
       });
     } catch {

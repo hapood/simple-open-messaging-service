@@ -53,12 +53,12 @@ pub(crate) struct LoginConnection {
     database: Mutex<Option<Connection>>,
     cache_available: AtomicBool,
     credential: Mutex<Option<String>>,
-    #[cfg(target_os = "macos")]
+    /// Serializes notification batches while the first post-fetch reconstruction is pending.
+    /// None means ordinary delivery; Some retains the original candidates across retries.
+    pub(crate) notification_reconstruction: tokio::sync::Mutex<Option<Vec<(i32, String)>>>,
     pub(crate) notification_delivery_lane: tokio::sync::Mutex<()>,
-    #[cfg(target_os = "macos")]
     pub(crate) notification_delivery: Mutex<crate::native_db::notifications::delivery::DeliveryState>,
-    #[cfg(not(target_os = "macos"))]
-    notification_alerts: Mutex<crate::native_db::notifications::alert::AlertState>,
+
 }
 
 impl LoginConnection {
@@ -82,66 +82,11 @@ impl LoginConnection {
             database: Mutex::new(database),
             cache_available,
             credential: Mutex::new(None),
-            #[cfg(target_os = "macos")]
+            notification_reconstruction: tokio::sync::Mutex::new(None),
             notification_delivery_lane: tokio::sync::Mutex::new(()),
-            #[cfg(target_os = "macos")]
             notification_delivery: Mutex::new(Default::default()),
-            #[cfg(not(target_os = "macos"))]
-            notification_alerts: Mutex::new(Default::default()),
+
         })
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) fn apply_notification_alerts(
-        &self,
-        commands: &mut [crate::native_db::notifications::content::NotificationCommand],
-        policy: crate::native_db::notifications::alert::AlertPolicy,
-        allow_alert: bool,
-    ) -> Result<(), ConnectionError> {
-        self.assert_active()?;
-        let mut alerts = self.notification_alerts.lock().map_err(|_| ConnectionError::Poisoned)?;
-        self.assert_active()?;
-        alerts.apply(commands, policy, allow_alert, std::time::Instant::now());
-        Ok(())
-    }
-
-    #[cfg(target_os = "android")]
-    pub(crate) fn prepare_notification_instances(
-        &self,
-        commands: &mut [crate::native_db::notifications::content::NotificationCommand],
-        policy: crate::native_db::notifications::alert::AlertPolicy,
-        allow_alert: bool,
-    ) -> Result<Vec<Option<String>>, ConnectionError> {
-        self.assert_active()?;
-        let mut cards = self.notification_alerts.lock().map_err(|_| ConnectionError::Poisoned)?;
-        self.assert_active()?;
-        Ok(cards.apply_with_instances(commands, policy, allow_alert, std::time::Instant::now()))
-    }
-
-    #[cfg(target_os = "android")]
-    pub(crate) fn notification_instance_dismissed(&self, thread_id: i32, id: &str) -> Result<(), ConnectionError> {
-        self.assert_active()?;
-        let mut cards = self.notification_alerts.lock().map_err(|_| ConnectionError::Poisoned)?;
-        cards.dismissed_instance(thread_id, id);
-        Ok(())
-    }
-
-    #[cfg(target_os = "android")]
-    pub(crate) fn remove_notification_instance(&self, thread_id: i32) -> Result<Option<String>, ConnectionError> {
-        self.assert_active()?;
-        let mut cards = self.notification_alerts.lock().map_err(|_| ConnectionError::Poisoned)?;
-        self.assert_active()?;
-        Ok(cards.remove(thread_id))
-    }
-
-    /// A system dismissal is an observation, never a read receipt or removal request.
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) fn notification_dismissed(&self, thread_id: i32) -> Result<(), ConnectionError> {
-        self.assert_active()?;
-        let mut alerts = self.notification_alerts.lock().map_err(|_| ConnectionError::Poisoned)?;
-        self.assert_active()?;
-        alerts.dismissed(thread_id);
-        Ok(())
     }
 
     pub(crate) fn id(&self) -> &LoginSessionId {

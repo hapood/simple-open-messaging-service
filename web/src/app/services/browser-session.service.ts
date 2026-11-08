@@ -9,6 +9,7 @@ import { SessionLifecycleService } from './session-lifecycle.service';
 import { SessionStateService } from './session-state.service';
 import { isTauri } from './runtime';
 import { resetNotificationSince } from './browser-notification-checkpoint';
+import { withNotificationRestoration } from './notification-session';
 
 /** Browser host adapter; no duplicate lifecycle or physical cleanup in UserService. */
 @Injectable({ providedIn: 'root' })
@@ -51,6 +52,10 @@ export class BrowserSessionService extends BrowserSessionOwner {
       (session) => lifecycle.bindSession(session.id),
     );
 
+  }
+
+  protected override withRestoration<T>(restore: () => Promise<T>): Promise<T> {
+    return withNotificationRestoration(restore);
   }
 }
 

@@ -1,8 +1,6 @@
 //! One native notification policy entry point, independent of the OS renderer.
 use crate::login_connection::DatabaseWork;
 use super::{NotificationBatch, content::{NotificationCommand, PresentationFacts, command_with_facts, localized_copy}};
-#[cfg(not(target_os = "macos"))]
-use super::alert::AlertPolicy;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,19 +53,14 @@ pub(crate) async fn prepare_batch(
         .map(|thread| command_with_facts(thread, &preferences, facts, copy))
         .collect();
     let presentation = package(commands, batch.unread_total, &batch.avatars)?;
-    #[cfg(not(target_os = "macos"))]
-    let presentation = {
-        let policy = super::super::spawn_owned_work(work.clone(), || {
-            let value = super::super::preferences::read_notification_preference("notificationAlertPolicy")?;
-            AlertPolicy::from_preference(value.as_deref())
-        }).await.map_err(|e| format!("join notification alert preference: {e}"))??;
-        let mut presentation = presentation;
-        work.owner().apply_notification_alerts(&mut presentation.commands, policy, allow_alert)
-            .map_err(|e| e.to_string())?;
-        presentation
-    };
-    #[cfg(target_os = "macos")]
-    let _ = allow_alert;
+    let mut presentation = presentation;
+    if !allow_alert {
+        for command in &mut presentation.commands {
+            if let NotificationCommand::Show(content) = command {
+                content.silent = true;
+            }
+        }
+    }
     Ok(presentation)
 }
 

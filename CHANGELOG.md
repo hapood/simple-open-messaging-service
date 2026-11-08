@@ -1,12 +1,14 @@
 # Changelog
 
-## Unreleased
-
 ## 0.1.0-alpha.2
 
 ### Clients
 
 - Add macOS and Linux alpha clients, desktop notifications, and a macOS Dock unread badge.
+- Unify native notification policy in Rust and align Web delivery, cooldowns, and
+  click navigation. Silently restore surviving cards on restart where supported;
+  Linux starts fresh without clearing old cards. Warn on uncertain delivery results
+  without blocking later notifications.
 - Fix Android startup hangs and native login restoration by making Rust the single
   owner of credential activation and session transitions.
 - Fix native profile and avatar updates, account cache initialization, and namespace

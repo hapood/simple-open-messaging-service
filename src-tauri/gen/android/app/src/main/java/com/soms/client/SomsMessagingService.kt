@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
@@ -17,6 +18,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -133,7 +135,6 @@ class SomsMessagingService : FirebaseMessagingService() {
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
-        private val notificationProjectionGate = NotificationProjectionGate()
 
         private fun acknowledgePushProbe(ctx: Context, probeId: String) {
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
@@ -154,17 +155,9 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        /** SSE, FCM and scheduled polls share one single-flight Rust projection lane.
-         * A newer target replaces the pending end id; -1 requests a full catch-up poll. */
+        /** FCM and scheduled polls wake the shared Rust feed lane; -1 requests a catch-up poll. */
         fun renderAwayNotification(ctx: Context, allowAlert: Boolean, threadFeedEndId: Int = -1) {
-            if (!notificationProjectionGate.tryStart(allowAlert, threadFeedEndId)) return
-            var next: NotificationProjectionGate.Wake? = NotificationProjectionGate.Wake(allowAlert, threadFeedEndId)
-            while (next != null) {
-                val wake = next
-                runCatching { renderAwayNotificationOnce(ctx, wake.allowAlert, wake.target) }
-                    .onFailure { e -> SomsLog.w("Notif", e) { "native notification synchronization failed" } }
-                next = notificationProjectionGate.nextOrFinish()
-            }
+            renderAwayNotificationOnce(ctx, allowAlert, threadFeedEndId)
         }
 
         /** Foreground wakes use the same coalescing lane as FCM and background SSE. */
@@ -172,77 +165,76 @@ class SomsMessagingService : FirebaseMessagingService() {
             renderAwayNotification(ctx, allowAlert = true, threadFeedEndId = threadFeedEndId)
         }
 
-        /** Execute an already synchronized Rust batch. No network/projection work is scheduled here. */
-        fun renderNativeBatch(ctx: Context, batch: NativeNotificationBatch, isCurrent: () -> Boolean) {
-            if (!isCurrent()) return
-            val descriptors = batch.descriptors()
-            renderDescriptors(ctx, descriptors, isCurrent = isCurrent)
+        /** Query OS facts only. A failed enumeration must never look like an empty panel. */
+        @androidx.annotation.Keep
+        @JvmStatic
+        fun currentMessageNotifications(): String {
+            val ctx = SomsApplication.appContext
+            val nm = requireNotNull(ContextCompat.getSystemService(ctx, NotificationManager::class.java))
+            val cards = JSONArray()
+            for (sbn in nm.activeNotifications) {
+                val notification = sbn.notification
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && notification.channelId != CHANNEL_MESSAGES) continue
+                if (!notification.extras.containsKey(EXTRA_THREAD_ID)) continue
+                cards.put(JSONObject()
+                    .put("threadId", notification.extras.getInt(EXTRA_THREAD_ID))
+                    .put("tag", sbn.tag ?: JSONObject.NULL)
+                    .put("id", sbn.id))
+            }
+            return cards.toString()
+        }
+
+        /** Synchronous OS execution: no queue may discard an accepted invocation. */
+        @androidx.annotation.Keep
+        @JvmStatic
+        fun executeNotification(metadata: String, avatars: Array<ByteArray>): String {
+            val request = JSONObject(metadata)
+            val result = JSONObject().put("operationId", request.getString("operationId"))
+            var submitted = false
+            return try {
+                val ctx = SomsApplication.appContext
+                require(request.getJSONArray("commands").length() == 1) { "Expected one notification command" }
+                val platformId = request.getInt("platformId")
+                val descriptors = NativeNotificationBatch(metadata, avatars).descriptors()
+                val descriptor = descriptors.singleOrNull()
+                if (descriptor == null) {
+                    result.put("status", "accepted").toString()
+                } else {
+                    ensureChannel(ctx)
+                    val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java)
+                        ?: return result.put("status", "notExecuted").toString()
+                    if (descriptor.count > 0 && (!NotificationManagerCompat.from(ctx).areNotificationsEnabled() ||
+                            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                                nm.getNotificationChannel(CHANNEL_MESSAGES)?.importance == NotificationManager.IMPORTANCE_NONE))) {
+                        return result.put("status", "rejected").toString()
+                    }
+                    if (descriptor.count == 0) {
+                        submitted = true
+                        nm.cancel(descriptor.tag, platformId)
+                    } else {
+                        postThreadNotification(ctx, nm, platformId, descriptor) { submitted = true }
+                        result.put("tag", descriptor.tag).put("id", platformId)
+                    }
+                    result.put("status", "accepted").toString()
+                }
+            } catch (_: SecurityException) {
+                result.put("status", "rejected").toString()
+            } catch (_: Exception) {
+                result.put("status", if (submitted) "uncertain" else "notExecuted").toString()
+            }
         }
 
         private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean, target: Int) {
             val userId = SomsSecureStore.getCurrentUserId(ctx) ?: return
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
-            val batch = RustRuntimeBridge.synchronizeNotifications(userId, target, allowAlert)
-            val descriptors = batch.descriptors()
-            RustRuntimeBridge.withCurrentSession(batch.loginSessionId) {
-                if (SomsSecureStore.getCurrentUserId(ctx) == userId &&
+            val metadata = RustRuntimeBridge.synchronizeNotifications(userId, target, allowAlert) ?: return
+            val committed = JSONObject(metadata).getJSONObject("commitEvent")
+            RustRuntimeBridge.withCurrentSession(committed.getString("loginSessionId")) {
+                if (appInForeground && SomsSecureStore.getCurrentUserId(ctx) == userId &&
                     SomsSecureStore.getSessionToken(ctx) == token) {
-                    renderDescriptors(ctx, descriptors)
-                    if (appInForeground) {
-                        val committed = JSONObject(batch.metadata).getJSONObject("commitEvent")
-                        SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__($committed);")
-                    }
+                    SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__($committed);")
                 }
             }
-        }
-
-        /** Execute Rust's notification delta; absent threads remain unchanged. */
-        private fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>,
-                              isCurrent: () -> Boolean = { true }) {
-            if (descriptors.isEmpty() || !isCurrent()) return
-            ensureChannel(ctx)
-            val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: run {
-                SomsLog.w("Notif") { "renderDescriptors: NotificationManager unavailable → skip" }
-                return
-            }
-            if (!isCurrent()) return
-            nm.cancel(AWAY_NOTIF_ID)
-            renderThreadDescriptors(
-                ctx,
-                nm,
-                descriptors,
-                isCurrent,
-            )
-        }
-
-        /** One independent MessagingStyle card per conversation, without Android notification grouping. */
-        private fun renderThreadDescriptors(
-            ctx: Context,
-            nm: NotificationManager,
-            descriptors: List<NotifDescriptor>,
-            isCurrent: () -> Boolean,
-        ) {
-            // Stable IDs replace named conversations; absent threads remain untouched.
-            for (d in descriptors) {
-                if (!isCurrent()) return
-                val tid = d.threadId
-                if (tid <= 0) continue
-                val id = THREAD_NOTIF_BASE
-                if (d.count == 0) {
-                    nm.cancel(d.tag, id)
-                    continue
-                }
-                postThreadNotification(
-                    ctx,
-                    nm,
-                    id,
-                    d,
-                    isCurrent = isCurrent,
-                )
-            }
-            if (!isCurrent()) return
-            nm.cancel(LEGACY_GROUP_SUMMARY_ID)
-            SomsLog.i("Notif") { "renderDescriptors: ${descriptors.size} conversation cards appInFg=$appInForeground" }
         }
 
         /** Post one conversation card. Tap deep-links into the thread. */
@@ -251,17 +243,14 @@ class SomsMessagingService : FirebaseMessagingService() {
             nm: NotificationManager,
             id: Int,
             d: NotifDescriptor,
-            isCurrent: () -> Boolean,
+            beforeSubmit: () -> Unit,
         ) {
-            val sessionId = SomsSecureStore.getSessionId(ctx) ?: return
-            val origin = SomsSecureStore.getApiOrigin(ctx) ?: return
             val avatarImages = NotificationAvatars.resolve(ctx, d.messages)
             val tid = d.threadId
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 if (tid > 0) putExtra(EXTRA_THREAD_ID, tid.toString())
-                putExtra(EXTRA_SESSION_ID, sessionId)
-                putExtra(EXTRA_API_ORIGIN, origin)
+                putExtra("notificationId", d.tag)
                 // Each card instance has a distinct PendingIntent identity; updates reuse it.
                 data = android.net.Uri.parse("soms-notification://card/${d.tag}")
             }
@@ -276,6 +265,9 @@ class SomsMessagingService : FirebaseMessagingService() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             val builder = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+                // Enumeration cannot inspect PendingIntent extras. Expose the same
+                // Rust-owned thread target on the card for restart reconstruction.
+                .addExtras(Bundle().apply { putInt(EXTRA_THREAD_ID, tid) })
                 .setDeleteIntent(dismissed)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
@@ -314,9 +306,9 @@ class SomsMessagingService : FirebaseMessagingService() {
                 builder.setStyle(style)
             }
             if (d.silent == true) builder.setSilent(true)
-            // Avatar decoding/platform preparation can outlive the runtime that issued this command.
-            // Never publish its card after that instance/account has been invalidated.
-            if (isCurrent()) nm.notify(d.tag, id, builder.build())
+            val notification = builder.build()
+            beforeSubmit()
+            nm.notify(d.tag, id, notification)
         }
 
         private fun buildPublicVersion(ctx: Context, contentIntent: PendingIntent): Notification =
@@ -341,11 +333,9 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        /** Report current host observations and execute Rust's optional removal target. */
-        fun presentationChanged(ctx: Context) {
-            val id = RustRuntimeBridge.notificationPresentationChanged(appInForeground, windowFocused, activeThreadId) ?: return
-            ContextCompat.getSystemService(ctx, NotificationManager::class.java)
-                ?.cancel(id, THREAD_NOTIF_BASE)
+        /** Report facts; Rust owns the resulting command and its execution receipt. */
+        fun presentationChanged() {
+            RustRuntimeBridge.notificationPresentationChanged(appInForeground, windowFocused, activeThreadId)
         }
 
         /** Close message notifications when the foreground UI takes over. */
@@ -368,7 +358,7 @@ class SomsMessagingService : FirebaseMessagingService() {
 
         /** Build the foreground-service persistent notification (minimal, IMPORTANCE_LOW, ongoing) — the
          *  FGS-required "a notification must exist" surface, deliberately NOT a message surface (messages
-         *  go to [renderDescriptors]). Tap → opens the app. */
+         *  go to [executeNotification]). Tap → opens the app. */
         fun buildForegroundNotification(ctx: Context): Notification {
             ensureChannel(ctx)
             val intent = Intent(ctx, MainActivity::class.java).apply {

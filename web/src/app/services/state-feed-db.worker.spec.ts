@@ -118,6 +118,25 @@ describe('database worker Group Meta completion', () => {
     } as MessageEvent);
   }
 
+  it('posts explicit notification completion for an empty HELLO feed wake', async () => {
+    vi.spyOn(WebdbStorage.prototype, 'getThreadStates').mockResolvedValue([]);
+    vi.spyOn(WebdbStorage.prototype, 'readAccountState').mockResolvedValue({
+      schemaVersion: 1, selfProfile: null, selfIdentity: null, composerDrafts: [],
+      threadFeedCursor: 0, stateFeedId: null, stateFeedFullThrough: null,
+      profileNamespaceChangeEndId: null, intentRequestEndId: null,
+      intentRequestReadId: null, intentRequestOptimisticReadId: null,
+    });
+    vi.spyOn(WebdbStorage.prototype, 'withThreadFeedLock').mockImplementation(async (run) => run());
+    const port = { onmessage: null, start: vi.fn(), close: vi.fn() };
+    receive({ data: { id: 100, type: 'bind-thread-feed', userId: '42', port } } as unknown as MessageEvent);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ id: 100, ok: true }));
+    (port.onmessage as unknown as (event: { data: { target: number } }) => void)({ data: { target: 0 } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({
+      type: 'notification-batch', userId: 42, entries: [], syncComplete: true,
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('posts fact completion before the drain reply without requesting member profiles', async () => {
     fetch.mockResolvedValue({ ok: true, json: async () => page('3', false) });
     drain(1);

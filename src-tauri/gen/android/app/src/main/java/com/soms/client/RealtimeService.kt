@@ -150,12 +150,6 @@ class RealtimeService : Service(), RealtimeCallbacks {
             SomsSecureStore.setHelloIdentity(this, SomsSecureStore.getSessionToken(this), sessionId.toInt(), userId)
     }
 
-    override fun onNotifications(generation: Long, batch: NativeNotificationBatch) = dispatch(generation) {
-        SomsMessagingService.renderNativeBatch(this, batch) {
-            adapter.isAlive && RustRuntimeBridge.realtimeIsCurrent(generation) && RustRuntimeBridge.isLoginSessionCurrent(batch.loginSessionId)
-        }
-    }
-
     /** Execute Rust's explicit recovery command; do not re-derive ringing/caller policy from HELLO. */
     override fun onIncomingCall(generation: Long, dataJson: String) = dispatch(generation) {
         val command = JSONObject(dataJson)

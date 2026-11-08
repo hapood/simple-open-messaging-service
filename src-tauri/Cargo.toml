@@ -94,8 +94,7 @@ jni = "0.21"
 tauri = { version = "=2.12.5", features = ["unstable"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Retain desktop notification handles for replacement and dismissal.
-notify-rust = "4.18"
+# Address the exact notification daemon for submission, replacement and callbacks.
 zbus = "5.16"
 
 [target.'cfg(target_os = "windows")'.dependencies]

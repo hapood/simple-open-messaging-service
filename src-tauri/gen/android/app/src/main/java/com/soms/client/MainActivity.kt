@@ -372,7 +372,7 @@ class MainActivity : TauriActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         SomsMessagingService.windowFocused = hasFocus
-        SomsMessagingService.presentationChanged(this)
+        SomsMessagingService.presentationChanged()
         if (!hasFocus || launchHandoffReady || launchSystemExitReceived) return
         val overlay = launchOverlay ?: return
         // Focus arrives BEFORE the system transfers its splash view; it is not a handoff signal.
@@ -1190,7 +1190,7 @@ class MainActivity : TauriActivity() {
         captureWebView()
         SomsMessagingService.appInForeground = true
         SomsMessagingService.windowFocused = hasWindowFocus()
-        SomsMessagingService.presentationChanged(this)
+        SomsMessagingService.presentationChanged()
         SomsLog.i("Ui") { "onResume → appInForeground=true" }
         // App visible: start the realtime service and, if background realtime is enabled, promote it
         // BEFORE leaving the activity. The persistent FGS notification stays visible across fg/bg;
@@ -1413,13 +1413,14 @@ class MainActivity : TauriActivity() {
 
     /** Navigate the web app to a thread. Calls window.__SOMS_DEEP_LINK__ if registered; the web app
      *  installs that handler at boot (PushService.init), so warm-start routing lands immediately. */
-    private fun offerNotificationTap(intent: Intent): Boolean = SomsBridge.DeepLink.offer(
-        intent.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID),
-        intent.getIntExtra(SomsMessagingService.EXTRA_SESSION_ID, -1),
-        intent.getStringExtra(SomsMessagingService.EXTRA_API_ORIGIN),
-        SomsSecureStore.getSessionId(this),
-        SomsSecureStore.getApiOrigin(this),
-    )
+    private fun offerNotificationTap(intent: Intent): Boolean {
+        val thread = intent.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID)
+        val instance = intent.getStringExtra("notificationId")
+        if (instance != null) {
+            thread?.toIntOrNull()?.let { RustRuntimeBridge.notificationDismissed(it, instance) }
+        }
+        return SomsBridge.DeepLink.offer(thread)
+    }
 
     /** Fetch the current FCM registration token asynchronously and stash it for the JS bridge. Delegates to
      *  [SomsFirebase] — under the dynamic-config model FirebaseApp is initialized from the server-fetched
@@ -1655,7 +1656,7 @@ class MainActivity : TauriActivity() {
             val a = activityRef.get() ?: return
             val selected = threadId.takeIf { it > 0 } ?: -1
             SomsMessagingService.activeThreadId = selected
-            a.runOnUiThread { SomsMessagingService.presentationChanged(a) }
+            a.runOnUiThread { SomsMessagingService.presentationChanged() }
         }
 
         /** Push the session token (POST /auth/login, app client) into encrypted storage so the Kotlin-owned

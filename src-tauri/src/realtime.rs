@@ -448,7 +448,6 @@ impl Supervisor {
 mod native_event_owner_tests;
 
 /// Serialize an event owned by an already captured login; adapters must preserve this envelope.
-#[cfg(any(target_os = "android", test))]
 pub(crate) fn login_event_payload(
     login: &crate::login_session_store::LoginSessionId,
     event: &str,

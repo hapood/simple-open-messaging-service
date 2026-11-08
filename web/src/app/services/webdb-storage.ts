@@ -527,6 +527,7 @@ type StateFeedWorkerEvent =
       type: 'notification-batch';
       userId: number;
       entries: BrowserNotificationBatch['entries'];
+      syncComplete: boolean;
     }
   | { type: 'profile-wake'; wake: ProfileWake }
   | {
@@ -2159,6 +2160,7 @@ export class WebdbStorage implements AccountStateStorage {
             this.browserNotifications.next({
               userId: data.userId,
               entries: data.entries,
+              syncComplete: data.syncComplete,
             });
           return;
         }

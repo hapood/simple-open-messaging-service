@@ -4,8 +4,8 @@ export type ThreadNavigationIntent = {
   threadId: number;
   acknowledge?: () => void | Promise<void>;
 } & (
-  | { source: 'desktop' }
-  | { source: 'android' | 'web'; sessionId: number }
+  | { source: 'desktop' | 'android' }
+  | { source: 'web'; sessionId: number }
 );
 
 export function validThreadNavigationId(value: unknown): value is number {
@@ -22,7 +22,7 @@ export class ThreadNavigationIntentCoordinator {
 
   offer(intent: ThreadNavigationIntent): void {
     if (!validThreadNavigationId(intent.threadId) || !intent.id ||
-        (intent.source !== 'desktop' && !validThreadNavigationId(intent.sessionId)) ||
+        (intent.source === 'web' && !validThreadNavigationId(intent.sessionId)) ||
         this.retired.has(this.key(intent))) return;
     if (this.pending && this.key(this.pending.intent) === this.key(intent)) return;
     if (this.pending) this.retired.add(this.key(this.pending.intent));
@@ -37,7 +37,7 @@ export class ThreadNavigationIntentCoordinator {
   select(sessionId: number | null, ready: boolean, open: (threadId: number) => boolean): void {
     const pending = this.pending;
     if (!pending || sessionId === null) return;
-    if (pending.intent.source !== 'desktop' && pending.intent.sessionId !== sessionId) {
+    if (pending.intent.source === 'web' && pending.intent.sessionId !== sessionId) {
       this.invalidate();
       return;
     }

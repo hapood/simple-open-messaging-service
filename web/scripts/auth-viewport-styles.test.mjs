@@ -6,10 +6,12 @@ for (const [surface, path] of [
   ['authentication', '../src/app/assets/utils.scss'],
   ['server setup', '../src/app/pages/server-config-page/server-config-page.component.scss'],
 ]) {
-  test(`${surface} follows viewport height immediately and animates only keyboard occlusion`, () => {
+  test(`${surface} follows viewport height immediately and animates only focused-field lift`, () => {
     const styles = readFileSync(new URL(path, import.meta.url), 'utf8');
-    assert.match(styles, /height:\s*calc\(100dvh - var\(--auth-keyboard-inset, 0px\)\)/);
-    assert.match(styles, /transition:\s*--auth-keyboard-inset 160ms ease-out\s*;/);
+    assert.match(styles, /height:\s*100dvh\s*;/);
+    assert.match(styles, /transform:\s*translateY\(calc\(-1 \* var\(--auth-focused-lift, 0px\)\)\)\s*;/);
+    assert.match(styles, /transition:\s*transform 160ms ease-out\s*;/);
+    assert.doesNotMatch(styles, /--auth-keyboard-inset/);
     assert.doesNotMatch(
       styles,
       /transition(?:-property)?\s*:[^;]*(?:\bheight\b|\ball\b)/,
@@ -32,11 +34,10 @@ test('server card and fields may shrink below their intrinsic widths', () => {
   assert.match(styles, /\.cfg-field\s*\{[^}]*width: 100%;[^}]*min-width: 0;/);
 });
 
-test('keyboard occlusion is registered globally as an interpolatable inherited length', () => {
+test('focused-field lift replaces the global keyboard-height animation property', () => {
   const styles = readFileSync(new URL('../src/styles.scss', import.meta.url), 'utf8');
-  const [, registration] = styles.match(/@property\s+--auth-keyboard-inset\s*\{([^}]+)\}/) ?? [];
-  assert.ok(registration, 'A custom-property transition needs a global @property registration');
-  assert.match(registration, /syntax:\s*['"]<length>['"]\s*;/);
-  assert.match(registration, /inherits:\s*true\s*;/);
-  assert.match(registration, /initial-value:\s*0px\s*;/);
+  assert.doesNotMatch(styles, /--auth-keyboard-inset/);
+  const login = readFileSync(new URL('../src/app/components/login/login.component.scss', import.meta.url), 'utf8');
+  assert.match(login, /transform:\s*translateY\(calc\(-1 \* var\(--auth-focused-lift, 0px\)\)\)\s*;/);
+  assert.match(login, /transition:\s*transform 160ms ease-out\s*;/);
 });

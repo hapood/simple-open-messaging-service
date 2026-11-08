@@ -26,7 +26,6 @@ pub(crate) mod mentions;
 pub(crate) mod messages;
 pub(crate) mod namespace_feed;
 pub(crate) mod namespace_subscriptions;
-#[cfg(any(target_os = "android", test))]
 pub(crate) mod notifications;
 pub(crate) mod unread;
 pub(crate) mod preferences;

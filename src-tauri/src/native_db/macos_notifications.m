@@ -103,6 +103,23 @@ void soms_macos_notification_remove(const char *notificationId) {
     [center removeDeliveredNotificationsWithIdentifiers:@[identifier]];
 }
 
+// Return delivered message facts only. Rust owns validation and duplicate selection.
+void soms_macos_notifications_current(void *context, void (*completion)(void *, const char *, const char *)) {
+    [UNUserNotificationCenter.currentNotificationCenter getDeliveredNotificationsWithCompletionHandler:^(NSArray<UNNotification *> *notifications) {
+        NSMutableArray *cards = [NSMutableArray new];
+        for (UNNotification *notification in notifications) {
+            UNNotificationRequest *request = notification.request;
+            if (![request.identifier hasPrefix:SomsPrefix]) continue;
+            [cards addObject:@{@"identifier": request.identifier,
+                               @"threadId": request.content.userInfo[@"threadId"] ?: NSNull.null}];
+        }
+        NSError *error = nil;
+        NSData *data = [NSJSONSerialization dataWithJSONObject:cards options:0 error:&error];
+        NSString *json = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        completion(context, json.UTF8String, error ? error.localizedDescription.UTF8String : NULL);
+    }];
+}
+
 void soms_macos_notifications_clear(void *context, SomsCompletion completion) {
     UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
     [center getPendingNotificationRequestsWithCompletionHandler:^(NSArray<UNNotificationRequest *> *requests) {

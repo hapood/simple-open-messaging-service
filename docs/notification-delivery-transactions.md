@@ -8,7 +8,7 @@ A card is keyed by thread and contains an instance ID, platform handle, publishe
 
 Notification instance identity must not be confused with a login UUID, service session, origin, or operation identity.
 
-## Current implementation is not transactional
+## Historical failure mode before migration
 
 `AlertState::apply` changes the live map and global cooldown before delivery. Android `notification_object` calls this while serializing JNI output. Java object allocation, queue admission, descriptor decoding, permission checks, avatar conversion, and OS submission all happen afterward. Therefore failures can leave a card recorded without a successful submission.
 
@@ -33,7 +33,7 @@ Results are explicit:
 - Accepted: OS API accepted submission, with its actual handle where applicable.
 - Rejected: OS API reported failure or known notification permission/channel denial.
 - Not executed: adapter closed or cancelled before OS submission.
-- Uncertain: interruption prevents proving whether submission happened; requires reconciliation, not blind retry.
+- Uncertain: interruption prevents proving whether submission happened. Log a content-free warning and finish the attempt as unsuccessful, without committing alert/card changes. Release pending state so subsequent delivery can proceed. This deliberately tolerates possible OS side effects and duplicate cards/alerts on later attempts; no automatic reconciliation is required.
 
 Accepted does not mean the user saw a notification or heard sound. Focus Assist, Do Not Disturb, launcher behavior, device state, and OS delivery policies remain authoritative. Name stored timestamps accordingly (for example, last accepted alert), not actual sound playback.
 
@@ -47,7 +47,7 @@ A notification ID alone cannot correlate results: two replacements have the same
 4. Submit through the adapter. Every accepted adapter invocation must settle to an explicit result, including exceptions and cancellation before execution.
 5. On accepted show, commit that operation's card state and alert history. On accepted removal, retire that exact instance. On definite failure, leave the previous committed card intact and do not consume alert eligibility.
 6. Only then prepare the next command. This allows another eligible card to claim an alert when the previous submission failed, and makes global cooldown decisions consistent across SSE/FCM/lifecycle triggers.
-7. Unknown delivery outcomes must be reconciled with OS notifications; do not assume failure and allocate a duplicate instance.
+7. Unknown delivery outcomes log a warning and release the pending attempt without committing. Later delivery may allocate a new instance; possible duplicates are an accepted tradeoff.
 
 A separate pending-operation record is legitimate, but must not be represented as an already published card. It must retain the original operation/owner until completion and be bounded by lifecycle shutdown. Do not add a Kotlin business queue or another notification identity epoch.
 
@@ -65,9 +65,9 @@ Clicks and Android auto-cancel need explicit lifecycle treatment. Click navigati
 
 Logout/new-login must stop admission, settle or reconcile outstanding OS work, clear notifications, then release authentication admission. Avoid bolting login-field checks onto notification display/click payloads.
 
-On process/worker restart, recover the set of current cards from platform notifications or a durable ledger reconciled with OS state. An empty memory map must not coexist indefinitely with cards still on the OS panel. Linux recovery must validate the daemon owner before reusing numeric handles.
+On process/worker restart, recover current cards where the platform supports enumeration. A new browser Worker starts a new recovery round. Linux deliberately starts with empty in-process card state: do not clear, enumerate, import, or reuse persisted handles during startup. New deliveries without an accepted current-process handle use Notify with replaces_id = 0, tolerating old cards remaining on the OS panel. Replacement of a known current-process handle still validates the daemon identity. Explicit login/logout cleanup remains separate from startup behavior.
 
-Web must choose one authoritative card owner. The existing Service Worker receives both online-worker presentation and push wakes under `soms-notification-projection`; do not duplicate the map in the online business worker. Service Worker termination requires durable state/reconciliation. Browser success means the showNotification promise resolves, not user visibility.
+Web must choose one authoritative card owner. The existing Service Worker receives both online-worker presentation and push wakes under `soms-notification-projection`; do not duplicate the map in the online business worker. Each new Service Worker lifetime reconstructs from currently delivered OS cards; no additional durable card ledger is required. Browser success means the showNotification promise resolves, not user visibility.
 
 ## Implementation slices and removal gates
 
@@ -95,4 +95,6 @@ Web must choose one authoritative card owner. The existing Service Worker receiv
 
 ## Validation status
 
-This document records the required transaction design; it does not claim the transaction is implemented. Android target compilation remains blocked by incomplete generated Gradle settings/toolchain setup. Existing passing host tests cover map identity and policy, not JNI delivery outcomes or OS acceptance.
+The migration wires the shared transaction into native delivery and removes the eager paths described in the historical section. See the latest checkpoint in [native-notification-handoff.md](native-notification-handoff.md) for validation and remaining gaps. Host Rust tests, Android ARM64 library checking, and Windows target test-code checking have passed. Linux empty-state startup and warning-only uncertain-result settlement are approved behavior, not outstanding recovery work. macOS target validation and real OS acceptance remain unverified locally; compile checks and simulated lifecycle tests do not establish real OS behavior.
+
+An OS acceptance receipt and local registry persistence are separate outcomes. Linux retains a successful show/remove receipt when subsequent bookkeeping persistence fails, keeps the latest live handle snapshot, and logs the persistence error. Later writes retry the snapshot. This protects subsequent operations in the same process from stale disk handles, but does not provide crash recovery. Android accepted show receipts must match the operation ID and the submitted tag/integer ID; malformed or mismatched post-invocation receipts remain uncertain.

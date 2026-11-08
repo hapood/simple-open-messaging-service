@@ -3,7 +3,7 @@ import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import type { SessionCacheDescriptor } from './session/session-identity';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { syncThreadFeed } from './thread-feed-sync';
-import { syncPushThreads } from './push-thread-sync';
+import { projectNotificationReconstruction, syncPushThreads } from './push-thread-sync';
 import type { Message } from './model';
 import {
   attentionSnapshot,
@@ -115,6 +115,10 @@ describe('Push thread-feed synchronization', () => {
         (p) => p.seq,
       ),
     ).toEqual([7]);
+    const reconstruction = await projectNotificationReconstruction(
+      storage, userId, preferences, copy, await storage.getThreadStates(),
+    );
+    expect(reconstruction[0]).toMatchObject({ count: 7, body: '[Removed]' });
     request.mockClear();
     expect(
       await syncPushThreads(storage, userId, 1, request, preferences, copy),

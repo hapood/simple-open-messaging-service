@@ -7,11 +7,9 @@ import java.util.UUID
 class PendingThreadNavigation {
     private var pending: String? = null
 
-    @Synchronized fun offer(value: String?, sessionId: Int?, origin: String?, currentSessionId: Int?, currentOrigin: String?): Boolean {
+    @Synchronized fun offer(value: String?): Boolean {
         val id = value?.toIntOrNull()?.takeIf { it > 0 } ?: return false
-        val binding = NotificationSessionBinding.fromValues(sessionId, origin) ?: return false
-        if (!binding.isCurrent(currentSessionId, currentOrigin)) return false
-        pending = "{\"id\":\"${UUID.randomUUID()}\",\"threadId\":$id,\"sessionId\":$sessionId,\"origin\":${org.json.JSONObject.quote(origin)}}"
+        pending = "{\"id\":\"${UUID.randomUUID()}\",\"threadId\":$id}"
         return true
     }
     @Synchronized fun peek(): String? = pending

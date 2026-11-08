@@ -4,6 +4,8 @@
 export interface BrowserNotificationBatch {
   userId: number;
   entries: { feedId: number; descriptor: NotificationDescriptor }[];
+  /** Explicit successful full feed-drain signal, including an empty delta. */
+  syncComplete?: boolean;
 }
 
 export interface NotificationDescriptor {
@@ -18,7 +20,6 @@ export interface NotificationDescriptor {
   /** Client-selected notification icon; null lets the platform use its default. */
   icon: string | null;
   /** Re-alert on replace (false = silent update after the first post). */
-  renotify: boolean;
   /** Optional attention reason for platform-specific emphasis. */
   attention?: 'mention';
   /** Quiet update (no sound). */

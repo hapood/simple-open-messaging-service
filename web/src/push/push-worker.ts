@@ -4,7 +4,7 @@ import { API_PREFIX } from '../app/services/constants';
 import { SOMS_NOTIF_MSG } from '../app/services/sw-notif-protocol';
 import { WebdbStorage } from '../app/services/webdb-storage';
 import { PreferenceStorage } from '../app/services/preference-storage';
-import { syncPushThreads } from '../app/services/push-thread-sync';
+import { projectNotificationReconstruction, syncPushThreads } from '../app/services/push-thread-sync';
 import {
   advanceNotificationSince,
   readNotificationSince,
@@ -16,9 +16,19 @@ import { activePageClientId } from '../app/services/active-page';
 import { SessionStore } from '../app/services/session/session-store';
 
 export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
-  const cards = new BrowserNotificationCards(scope.registration);
   const preferences = new PreferenceStorage();
+  const cards = new BrowserNotificationCards(scope.registration, async () =>
+    (await preferences.get<string>('device', 'notificationAlertPolicy')) ?? undefined,
+  );
   const sessionStore = new SessionStore(preferences);
+  // Resource restoration belongs to this Worker lifetime and the existing cache owner.
+  // Keep the original candidates on failure; recapturing could admit new instances.
+  let reconstruction: {
+    cacheId: string;
+    candidates: Map<string, number>;
+    complete: boolean;
+    pageClientId?: string;
+  } | undefined;
 
   async function activeCache() {
     const saved = await sessionStore.read();
@@ -67,6 +77,32 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
     const data = event.data as Partial<BrowserNotificationBatch> & {
       type?: string;
     };
+    if (data?.type === SOMS_NOTIF_MSG.RESET) {
+      reconstruction = undefined;
+      cards.reset();
+      return;
+    }
+    if (data?.type === SOMS_NOTIF_MSG.RESTORE) {
+      event.waitUntil((async () => {
+        try {
+          const cache = await activeCache();
+          if (cache) {
+            // Publish offline admission before enumeration. Do not wait for in-flight push work.
+            const restoring = reconstruction = {
+              cacheId: cache.id,
+              candidates: new Map<string, number>(),
+              complete: false,
+              pageClientId: (event.source as Client | null)?.id,
+            };
+            restoring.candidates = await cards.reconstructionCandidates();
+          }
+          event.ports?.[0]?.postMessage({ ok: true });
+        } catch {
+          event.ports?.[0]?.postMessage({ ok: false });
+        }
+      })());
+      return;
+    }
     if (
       data?.type === SOMS_NOTIF_MSG.PRESENTATION_CHANGED &&
       scope.navigator.locks
@@ -110,8 +146,50 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
             includeUncontrolled: true,
           });
           const { known, threadId: activeChat } = await visibleChat(pages);
+          const cache = await activeCache();
+          // A new Worker lifetime starts a new recovery round from current OS cards.
+          // This also applies when the first wake is an empty online sync result.
+          if (cache && reconstruction?.cacheId !== cache.id) {
+            reconstruction = {
+              cacheId: cache.id,
+              candidates: await cards.reconstructionCandidates(),
+              complete: false,
+              pageClientId: (event.source as Client | null)?.id,
+            };
+          }
+          const restoring = reconstruction?.cacheId === cache?.id && !reconstruction?.complete
+            ? reconstruction : undefined;
+          const candidateThreads = new Set(restoring?.candidates.values());
+          if (restoring && data.syncComplete === true && known && cache) {
+            const storage = new WebdbStorage();
+            storage.bindSessionCache(cache);
+            try {
+              await storage.openExistingForUser(String(data.userId));
+              const language = (await preferences.get<string>('global', 'language')) ?? scope.navigator.language;
+              const locale = language.startsWith('zh') ? zh : en;
+              const projection = await projectNotificationReconstruction(
+                storage, data.userId!, preferences, {
+                  lang: language,
+                  privateBody: locale.settings.notifNewMessage,
+                  retracted: '[' + locale.chat.messageRetracted + ']',
+                  removed: '[' + locale.chat.messageRemovedByAdmin + ']',
+                }, await storage.getThreadStates(),
+              );
+              if ((await activeCache())?.id !== cache.id) return;
+              await cards.reconstruct(restoring.candidates, projection.map((descriptor) =>
+                descriptor.data.threadId === activeChat ? { ...descriptor, count: 0 } : descriptor,
+              ), postingSessionId);
+              restoring.complete = true;
+            } finally {
+              await storage.close();
+            }
+          }
           let end = since;
           for (const entry of data.entries) {
+            if (candidateThreads.has(entry.descriptor?.data?.threadId!)) {
+              if (Number.isInteger(entry.feedId)) end = Math.max(end, entry.feedId);
+              continue;
+            }
             if (
               data.userId !== (await accountId()) ||
               postingSessionId !== (await sessionId())
@@ -242,6 +320,9 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
           target > 2147483647
         )
           return;
+        // Admission only: a push already past this point is allowed to finish.
+        if (reconstruction?.pageClientId && !reconstruction.complete &&
+            await scope.clients.get(reconstruction.pageClientId)) return;
         await scope.navigator.locks.request(
           'soms-notification-projection',
           async () => {
@@ -250,6 +331,14 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
             if (userId === null || postingSessionId === null) return;
             const cache = await activeCache();
             if (!cache) return;
+            if (reconstruction?.cacheId !== cache.id) {
+              reconstruction = {
+                cacheId: cache.id,
+                candidates: await cards.reconstructionCandidates(),
+                complete: false,
+              };
+            }
+            const restoring = reconstruction.complete ? undefined : reconstruction;
             const storage = new WebdbStorage();
             storage.bindSessionCache(cache);
             try {
@@ -264,6 +353,12 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                 (await preferences.get<string>('global', 'language')) ??
                 scope.navigator.language;
               const locale = language?.startsWith('zh') ? zh : en;
+              const copy = {
+                lang: language,
+                privateBody: locale.settings.notifNewMessage,
+                retracted: '[' + locale.chat.messageRetracted + ']',
+                removed: '[' + locale.chat.messageRemovedByAdmin + ']',
+              };
               const result = await syncPushThreads(
                 storage,
                 userId,
@@ -285,12 +380,7 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                   return response.json();
                 },
                 preferences,
-                {
-                  lang: language,
-                  privateBody: locale.settings.notifNewMessage,
-                  retracted: '[' + locale.chat.messageRetracted + ']',
-                  removed: '[' + locale.chat.messageRemovedByAdmin + ']',
-                },
+                copy,
               );
               if (!(await current())) return;
               const pages = await scope.clients.matchAll({
@@ -299,7 +389,27 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
               });
               // Query the page at render time; a timeout suppresses visible-page alerts.
               const { known, threadId: activeChat } = await visibleChat(pages);
+              if (restoring && !result.error && known) {
+                const mergedStates = await storage.getThreadStates();
+                const projection = await projectNotificationReconstruction(
+                  storage, userId, preferences, copy, mergedStates,
+                );
+                if (!(await current())) return;
+                await cards.reconstruct(
+                  restoring.candidates,
+                  projection.map((descriptor) => descriptor.data.threadId === activeChat
+                    ? { ...descriptor, count: 0 }
+                    : descriptor),
+                  postingSessionId,
+                );
+                if (!(await current())) return;
+                restoring.complete = true;
+              }
+              const candidateThreads = new Set(restoring?.candidates.values());
               for (const descriptor of result.notifications) {
+                // Candidate updates belong exclusively to intersection reconstruction.
+                // In particular, a candidate clicked during fetch cannot re-enter here.
+                if (candidateThreads.has(descriptor.data.threadId!)) continue;
                 if (!(await current())) return;
                 if (
                   descriptor.count <= 0 ||
@@ -335,7 +445,12 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
     );
   });
 
+  scope.addEventListener('notificationclose', (event) => {
+    cards.dismissed(event.notification.tag);
+  });
+
   scope.addEventListener('notificationclick', (event) => {
+    cards.dismissed(event.notification.tag);
     const threadId = event.notification.data?.threadId;
     const tapSessionId = event.notification.data?.sessionId;
     event.notification.close();

@@ -5,25 +5,21 @@ use std::sync::OnceLock;
 
 #[no_mangle]
 pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationPresentationChanged(
-    env: JNIEnv,
+    _env: JNIEnv,
     _receiver: JObject,
     visible: jni::sys::jboolean,
     focused: jni::sys::jboolean,
     thread_id: jni::sys::jint,
-) -> jstring {
+) {
     use crate::native_db::notifications::content::{visible_thread, PresentationFacts};
     let target = visible_thread(PresentationFacts {
         visible: visible != 0,
         focused: focused != 0,
         open_thread: Some(thread_id),
     });
-    let mut id = None;
-    if let Some(thread) = target {
-        if let Ok(owner) = crate::native_db::active_login() {
-            id = owner.remove_notification_instance(thread).ok().flatten();
-        }
+    if target.is_some() {
+        crate::android_notifications::presentation_changed();
     }
-    id.and_then(|id| env.new_string(id).ok()).map(|id| id.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
 /// A dismissal is an OS observation, not a read receipt or a removal request.
@@ -40,7 +36,9 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationDismis
     let Ok(id) = env.get_string(&notification_id) else { return };
     let id: String = id.into();
     if let Ok(owner) = crate::native_db::active_login() {
-        let _ = owner.notification_instance_dismissed(thread_id, &id);
+        if let Ok(mut state) = owner.notification_delivery.lock() {
+            state.dismissed(thread_id, &id);
+        }
     }
 }
 
@@ -54,18 +52,16 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryNotifications
 ) -> jni::sys::jobject {
     let result = (|| -> Result<jni::sys::jobject, String> {
         let proxy = proxy_state()?;
-        let batch = tauri::async_runtime::block_on(crate::native_db::notifications::synchronize(
+        let Some(batch) = tauri::async_runtime::block_on(crate::native_db::notifications::synchronize(
             proxy,
             i64::from(user_id),
             target,
-        ))?;
-        let login_id =
-            crate::login_session_store::LoginSessionId::try_from(batch.login_session_id.clone())
-                .map_err(|e| e.to_string())?;
-        if !crate::native_db::is_login_session_current(&login_id) {
-            return Err("notification session expired".into());
-        }
-        notification_object(&mut env, &batch, allow_alert != 0).map(|object| object.into_raw())
+        ))? else {
+            return Ok(std::ptr::null_mut());
+        };
+        let metadata = batch.metadata.clone();
+        tauri::async_runtime::block_on(crate::android_notifications::deliver_batch(batch, allow_alert != 0))?;
+        env.new_string(metadata).map(|value| value.into_raw()).map_err(|e| e.to_string())
     })();
     match result {
         Ok(result) => result,
@@ -175,75 +171,6 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryCallPeer(
     }
 }
 
-pub(crate) fn notification_object<'local>(
-    env: &mut JNIEnv<'local>,
-    batch: &crate::native_db::notifications::NotificationBatch,
-    allow_alert: bool,
-) -> Result<JObject<'local>, String> {
-    use crate::native_db::notifications::{content, presentation};
-    let work = batch.work.as_ref().ok_or("notification batch has no captured work")?;
-    work.assert_current().map_err(|e| e.to_string())?;
-    let preferences = crate::native_db::preferences::notification_preferences()?;
-    let language = crate::native_db::preferences::notification_language()?;
-    let visible = env.call_static_method(
-        "com/soms/client/SomsMessagingService", "notificationVisible", "()Z", &[],
-    ).and_then(|value| value.z()).map_err(|e| e.to_string())?;
-    let focused = env.call_static_method(
-        "com/soms/client/SomsMessagingService", "notificationFocused", "()Z", &[],
-    ).and_then(|value| value.z()).map_err(|e| e.to_string())?;
-    let open_thread = env.call_static_method(
-        "com/soms/client/SomsMessagingService", "notificationOpenThread", "()I", &[],
-    ).and_then(|value| value.i()).map_err(|e| e.to_string())?;
-    let facts = content::PresentationFacts {
-        visible,
-        focused,
-        open_thread: (open_thread > 0).then_some(open_thread),
-    };
-    let commands = batch.threads.iter()
-        .map(|thread| content::command_with_facts(thread, &preferences, facts, content::localized_copy(&language)))
-        .collect();
-    let mut projected = presentation::package(commands, batch.unread_total, &batch.avatars)?;
-    let policy = crate::native_db::preferences::read_notification_preference("notificationAlertPolicy")?;
-    let policy = crate::native_db::notifications::alert::AlertPolicy::from_preference(policy.as_deref())?;
-    work.assert_current().map_err(|e| e.to_string())?;
-    let ids = work.owner().prepare_notification_instances(&mut projected.commands, policy, allow_alert)
-        .map_err(|e| e.to_string())?;
-    let original: serde_json::Value = serde_json::from_str(&batch.metadata).map_err(|e| e.to_string())?;
-    let mut metadata = serde_json::to_value(&projected).map_err(|e| e.to_string())?;
-    for (command, id) in metadata["commands"].as_array_mut().ok_or("invalid command batch")?.iter_mut().zip(ids) {
-        command["notification"]["notificationId"] = serde_json::json!(id);
-    }
-    metadata["commitEvent"] = original["commitEvent"].clone();
-    metadata["error"] = original["error"].clone();
-    let metadata = JObject::from(env.new_string(metadata.to_string()).map_err(|e| e.to_string())?);
-    let login_id = JObject::from(
-        env.new_string(&batch.login_session_id)
-            .map_err(|e| e.to_string())?,
-    );
-    let images = env
-        .new_object_array(projected.avatars.len() as i32, "[B", JObject::null())
-        .map_err(|e| e.to_string())?;
-    for (index, bytes) in projected.avatars.iter().enumerate() {
-        let image = env
-            .byte_array_from_slice(bytes)
-            .map_err(|e| e.to_string())?;
-        env.set_object_array_element(&images, index as i32, &image)
-            .map_err(|e| e.to_string())?;
-        env.delete_local_ref(image).map_err(|e| e.to_string())?;
-    }
-    let images = JObject::from(images);
-    env.new_object(
-        "com/soms/client/NativeNotificationBatch",
-        "(Ljava/lang/String;[[BLjava/lang/String;)V",
-        &[
-            jni::objects::JValue::Object(&metadata),
-            jni::objects::JValue::Object(&images),
-            jni::objects::JValue::Object(&login_id),
-        ],
-    )
-    .map_err(|e| e.to_string())
-}
-
 static PROXY: OnceLock<crate::ServerSessionState> = OnceLock::new();
 
 #[no_mangle]
@@ -280,6 +207,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
             .get_string(&data_directory)
             .map_err(|e| format!("read database directory: {e}"))?
             .into();
+        crate::android_notifications::initialize(&mut env)?;
         let path = crate::native_db::location::initialize(std::path::Path::new(&directory))?;
         crate::native_db::initialize_preferences()?;
         if let Err(error) = crate::native_db::initialize_login_cache() {
@@ -294,6 +222,15 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
         let state = crate::ServerSessionState::new();
         // Eagerly start the same async runtime Tauri uses later; this performs no network I/O.
         let _ = tauri::async_runtime::handle();
+        if token.is_some() {
+            if let Some(owner) = crate::native_db::current_login()? {
+                let cards = crate::android_notifications::restore_cards()?;
+                let mut state = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?;
+                state.import_cards(cards).map_err(str::to_owned)?;
+                let candidates = state.reconstruction_candidates();
+                *owner.notification_reconstruction.try_lock().map_err(|_| "notification restoration already running")? = Some(candidates);
+            }
+        }
         if let Some(token) = token {
             crate::native_db::restore_login_credential(&token)?;
         }

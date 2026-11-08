@@ -16,7 +16,7 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
   const acknowledge = vi.fn();
   let service: ThreadNavigationIntentService;
   let lifecycle: SessionLifecycleService;
-  const offer = (id = 'tap') => service.offer({ source: 'android', id, threadId: 7, sessionId: 11, acknowledge });
+  const offer = (id = 'tap') => service.offer({ source: 'android', id, threadId: 7, acknowledge });
   beforeEach(() => {
     apiOrigin.set('https://primary');
     sessionId.set(null); navigationReady.set(false); items.set([{ threadId: 7 }]); navigationRevision.set(0);
@@ -66,7 +66,8 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
     expect(openExternalChat).not.toHaveBeenCalled(); expect(acknowledge).not.toHaveBeenCalled();
   });
   it('rejects another session on the same account', () => {
-    offer(); sessionId.set(12); navigationReady.set(true); TestBed.tick();
+    service.offer({ source: 'web', id: 'tap', threadId: 7, sessionId: 11, acknowledge });
+    sessionId.set(12); navigationReady.set(true); TestBed.tick();
     expect(openExternalChat).not.toHaveBeenCalled(); expect(acknowledge).not.toHaveBeenCalled();
   });
 });

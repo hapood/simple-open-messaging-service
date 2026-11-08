@@ -73,7 +73,6 @@ export function threadNotificationDescriptor(
     count: item.blocked ? 0 : item.unreadCount,
     lang: copy.lang,
     icon: '/icons/icon-192.png',
-    renotify: true,
     silent: item.muted,
     ...(item.mentionUnread.length ? { attention: 'mention' as const } : {}),
     previewMode,

@@ -3089,7 +3089,7 @@ fn read_cursor(conn: &Connection, user_id: i64) -> Result<i32, String> {
     Ok(cursor as i32)
 }
 
-fn read_states(conn: &Connection, user_id: i64) -> Result<Vec<LocalThreadAttention>, String> {
+pub(super) fn read_states(conn: &Connection, user_id: i64) -> Result<Vec<LocalThreadAttention>, String> {
     let mut query = conn
         .prepare("SELECT thread_id FROM threads WHERE user_id=?1 ORDER BY thread_id")
         .map_err(|e| format!("prepare attention query: {e}"))?;

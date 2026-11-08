@@ -188,6 +188,23 @@ pub(super) async fn verify_owned_local_commands() {
         &login_connections::LOGIN_CONNECTIONS.capture().unwrap()
     ));
 
+    // Offline notification admission is sampled before scheduling. A pending or
+    // executing reconstruction skips new wakes without waiting or touching the feed.
+    let proxy = crate::ServerSessionState::new();
+    *owner.notification_reconstruction.lock().await = Some(vec![]);
+    let skipped = notifications::synchronize(&proxy, 42, 0);
+    *owner.notification_reconstruction.lock().await = None;
+    assert!(skipped.await.unwrap().is_none());
+    *owner.notification_reconstruction.lock().await = Some(vec![]);
+    let held = owner.notification_reconstruction.lock().await;
+    assert!(notifications::synchronize(&proxy, 42, 0).await.unwrap().is_none());
+    drop(held);
+    *owner.notification_reconstruction.lock().await = None;
+    let admitted = notifications::synchronize(&proxy, 42, 0);
+    *owner.notification_reconstruction.lock().await = Some(vec![]);
+    assert!(admitted.await.unwrap().is_some());
+    *owner.notification_reconstruction.lock().await = None;
+
     let before_clear = owner.capture_database_work().unwrap();
     let delayed_thread_feed =
         attention::NativeThreadFeedIntent::capture(None, &crate::ServerSessionState::new(), 42, 0)

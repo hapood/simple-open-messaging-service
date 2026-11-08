@@ -70,8 +70,8 @@ commands.allow = ["native_db_begin_login"]
 
 [[permission]]
 identifier = "allow-begin-logout"
-description = "Detaches the native session and waits for its bounded remote revocation."
-commands.allow = ["begin_logout", "wait_for_logout"]
+description = "Begins, observes, retries, and finishes native logout and its bounded remote revocation."
+commands.allow = ["begin_logout", "wait_for_logout", "try_logout", "logout_status", "finish_logout"]
 
 [[permission]]
 identifier = "allow-init-check-compat"
@@ -264,7 +264,7 @@ commands.allow = [
 [[permission]]
 identifier = "allow-desktop-notifications"
 description = "Updates or clears desktop message notifications through the native manager."
-commands.allow = ["desktop_notification_update", "desktop_notifications_clear", "desktop_notification_pending", "desktop_notification_acknowledge", "desktop_notification_permission", "desktop_notification_request_permission", "desktop_notification_open_settings", "desktop_badge_refresh"]
+commands.allow = ["desktop_notifications_clear", "desktop_notification_pending", "desktop_notification_acknowledge", "desktop_notification_permission", "desktop_notification_request_permission", "desktop_notification_open_settings", "desktop_notification_presentation_changed", "desktop_badge_refresh"]
 
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."

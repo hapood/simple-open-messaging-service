@@ -8,7 +8,6 @@ import org.json.JSONObject
 class NativeNotificationBatch(
     val metadata: String,
     val avatars: Array<ByteArray>,
-    val loginSessionId: String,
 ) {
     fun descriptors(): List<NotifDescriptor> {
         val payload = JSONObject(metadata)

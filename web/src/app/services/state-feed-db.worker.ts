@@ -149,7 +149,7 @@ async function synchronizeNotifications(
       removed: '[' + locale.chat.messageRemovedByAdmin + ']',
     },
   );
-  if (result.notifications.length && openedUserId === userId) {
+  if (openedUserId === userId) {
     const feedIds = new Map(
       result.states.flatMap((state) =>
         state.threadFeedId !== null
@@ -160,6 +160,7 @@ async function synchronizeNotifications(
     postMessage({
       type: 'notification-batch',
       userId: Number(userId),
+      syncComplete: !result.error,
       entries: result.notifications.flatMap((descriptor) => {
         const feedId = feedIds.get(descriptor.data.threadId ?? -1);
         return feedId === undefined ? [] : [{ feedId, descriptor }];

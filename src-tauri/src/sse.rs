@@ -696,7 +696,7 @@ async fn open_one_stream(
                             Ok(batch) => {
                                 let delivery = tokio::select! { biased;
                                     _ = feed_cancel.cancelled() => break,
-                                    result = crate::native_db::desktop_notifications::deliver_batch(handle.clone(), feed_work.clone(), batch) => result,
+                                    result = crate::native_db::desktop_notifications::deliver_batch(handle.clone(), batch) => result,
                                 };
                                 if let Err(error) = delivery {
                                     warn!("native notification delivery failed: {error}");

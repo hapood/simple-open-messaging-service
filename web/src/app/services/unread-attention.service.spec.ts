@@ -223,7 +223,6 @@ describe('UnreadAttentionService browser worker bridge', () => {
       body: 'Message',
       lang: 'en',
       icon: null,
-      renotify: true,
       data: { threadId: 7 },
       count: 2,
     };
@@ -240,6 +239,13 @@ describe('UnreadAttentionService browser worker bridge', () => {
     );
     updates.next([]);
     expect(postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('relays successful empty synchronization so startup reconstruction can finish', async () => {
+    browserNotifications.next({ userId: 11, entries: [], syncComplete: true });
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith({
+      type: SOMS_NOTIF_MSG.PRESENT, userId: 11, entries: [], syncComplete: true,
+    }));
   });
 
   it('does not relay a completed worker registration after session invalidation', async () => {

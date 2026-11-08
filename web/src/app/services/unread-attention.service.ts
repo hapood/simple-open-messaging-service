@@ -111,7 +111,7 @@ export class UnreadAttentionService {
     if (!isTauri()) {
       this.webdb.browserNotifications$
         .pipe(takeUntilDestroyed())
-        .subscribe(({ userId, entries }) => {
+        .subscribe((batch) => {
           const scope = this.lifecycle.capture();
           void this.webPush
             .worker()
@@ -119,8 +119,7 @@ export class UnreadAttentionService {
               if (this.lifecycle.isCurrent(scope))
                 registration?.active?.postMessage({
                   type: SOMS_NOTIF_MSG.PRESENT,
-                  userId,
-                  entries,
+                  ...batch,
                 });
             })
             .catch((error) =>

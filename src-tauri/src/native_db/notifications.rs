@@ -2,6 +2,9 @@ pub(crate) mod alert;
 pub(crate) mod content;
 pub(crate) mod delivery;
 pub(crate) mod presentation;
+pub(crate) mod runtime;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod macos_observation;
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -16,6 +19,9 @@ use crate::login_connection::DatabaseWork;
 pub(crate) struct NotificationBatch {
     /// In-process cancellation context, never serialized into an OS notification.
     pub(crate) work: Option<DatabaseWork>,
+    pub(crate) user_id: i64,
+    /// A partial feed drain must not authorize full notification reconstruction.
+    pub(crate) sync_error: Option<String>,
     pub(crate) login_session_id: String,
     pub(crate) metadata: String,
     pub(crate) avatars: Vec<Vec<u8>>,
@@ -86,18 +92,33 @@ fn sender_profile(
     )
 }
 
+/// Background notification wake. `None` is an intentional pre-sync admission skip,
+/// not a failed feed drain or an empty projection. Online SSE uses `from_result`.
 #[cfg(any(target_os = "android", test))]
 pub(crate) fn synchronize(
     proxy: &crate::ServerSessionState,
     user_id: i64,
     target: i32,
-) -> impl std::future::Future<Output = Result<NotificationBatch, String>> + Send + 'static {
-    let captured = super::attention::NativeThreadFeedIntent::capture(None, proxy, user_id, target);
+) -> impl std::future::Future<Output = Result<Option<NotificationBatch>, String>> + Send + 'static {
+    // Offline admission is decided once, before any asynchronous synchronization.
+    // Do not wait for reconstruction to finish and then admit a stale background wake.
+    let captured: Result<_, String> = (|| {
+        let intent = super::attention::NativeThreadFeedIntent::capture(None, proxy, user_id, target)?;
+        let work = intent.database_work();
+        let paused = match work.owner().notification_reconstruction.try_lock() {
+            Ok(restoration) => restoration.is_some(),
+            Err(_) => true,
+        };
+        if paused {
+            return Ok(None);
+        }
+        Ok(Some(intent))
+    })();
     async move {
-        let intent = captured?;
+        let Some(intent) = captured? else { return Ok(None) };
         let work = intent.database_work();
         let result = intent.synchronize().await?;
-        from_result_at(work, user_id, result.states, result.cursor, result.error).await
+        from_result_at(work, user_id, result.states, result.cursor, result.error).await.map(Some)
     }
 }
 
@@ -115,6 +136,33 @@ pub(crate) async fn from_result(
         result.error.clone(),
     )
     .await
+}
+
+/// Project an explicit complete post-merge state set, including unchanged cards.
+/// The caller must finish synchronization before invoking this; a page/delta is
+/// never interpreted as the complete set of eligible notification threads.
+pub(crate) async fn for_reconstruction(
+    work: DatabaseWork,
+    user_id: i64,
+    merged_states: Vec<LocalThreadAttention>,
+) -> Result<NotificationBatch, String> {
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
+        let mut batch = assemble_selected(conn, user_id, merged_states, None)?;
+        batch.login_session_id = String::from(work.owner().id().clone());
+        batch.work = Some(work);
+        Ok(batch)
+    })
+    .await
+    .map_err(|e| format!("join notification reconstruction projection: {e}"))?
+}
+
+/// Read the complete merged set explicitly; never substitute a feed delta.
+pub(crate) async fn reconstruction_states(
+    work: DatabaseWork,
+    user_id: i64,
+) -> Result<Vec<LocalThreadAttention>, String> {
+    super::spawn_owned_database(Ok(work), move |conn| super::attention::read_states(conn, user_id))
+        .await.map_err(|e| format!("join notification reconstruction states: {e}"))?
 }
 
 async fn from_result_at(
@@ -271,6 +319,24 @@ mod tests {
             projected_count(&conn, 1, &rollback, Some(&owner)).unwrap(),
             10
         );
+    }
+
+    #[test]
+    fn reconstruction_includes_unchanged_state_without_changing_delta_selection() {
+        let _filesystem = avatar_store();
+        let mut conn = db();
+        let mut merged = state(2);
+        merged.notification_changed = false;
+        save(&conn, &merged);
+        assert!(assemble(&mut conn, 1, vec![merged.clone()], None).unwrap().threads.is_empty());
+        let rebuilt = assemble_selected(&mut conn, 1, vec![merged.clone()], None).unwrap();
+        assert_eq!(rebuilt.threads.len(), 1);
+        assert_eq!(rebuilt.threads[0].thread_id, merged.thread_id);
+        assert!(!merged.notification_changed);
+        assert!(assemble_selected(&mut conn, 1, vec![], None).unwrap().threads.is_empty());
+        merged.notification_changed = true;
+        let delta = assemble(&mut conn, 1, vec![merged], None).unwrap();
+        assert_eq!(serde_json::to_value(&rebuilt.threads).unwrap(), serde_json::to_value(&delta.threads).unwrap());
     }
 
     #[test]
@@ -529,6 +595,18 @@ fn assemble(
     states: Vec<LocalThreadAttention>,
     error: Option<String>,
 ) -> Result<NotificationBatch, String> {
+    let selected = states.into_iter().filter(|state| state.notification_changed).collect();
+    assemble_selected(conn, user_id, selected, error)
+}
+
+/// Content assembly is shared; incremental selection is done by `assemble` and
+/// reconstruction passes its explicitly supplied complete state set directly.
+fn assemble_selected(
+    conn: &mut Connection,
+    user_id: i64,
+    states: Vec<LocalThreadAttention>,
+    error: Option<String>,
+) -> Result<NotificationBatch, String> {
     // Avatar reads touch last_render, so reserve the writer before taking the read snapshot.
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -556,9 +634,6 @@ fn assemble(
     let mut notifications = Vec::new();
     let mut avatars = super::profile_avatars::AvatarBatch::default();
     for delivered in states {
-        if !delivered.notification_changed {
-            continue;
-        }
         // UI reads may have advanced since the page commit. Reconcile against the current local position.
         let current = read_state(&tx, user_id, delivered.thread_id)?;
         let Some(server) = current.server.as_ref() else {
@@ -684,6 +759,8 @@ fn assemble(
     tx.commit().map_err(|e| e.to_string())?;
     Ok(NotificationBatch {
         work: None,
+        user_id,
+        sync_error: error,
         unread_total,
         threads: notifications,
         metadata,

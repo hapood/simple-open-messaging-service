@@ -148,6 +148,33 @@ describe('browser session owner', () => {
     expect(resources.restore).not.toHaveBeenCalled();
   });
 
+  it('cancels restoration waiting for notification drain before logout can publish stale resources', async () => {
+    const original = setup();
+    await login(original.owner);
+    const { sessionStore, resources, invalidate, publish } = setup(original.storage);
+    const entered = deferred();
+    const drained = deferred();
+    class DrainingOwner extends BrowserSessionOwner {
+      protected override async withRestoration<T>(restore: () => Promise<T>): Promise<T> {
+        entered.resolve();
+        await drained.promise;
+        return restore();
+      }
+    }
+    const owner = new DrainingOwner(sessionStore, resources, invalidate, publish);
+    const restoring = owner.restore(true);
+    const rejected = expect(restoring).rejects.toBeInstanceOf(SessionSupersededError);
+    await entered.promise;
+    expect(resources.restore).not.toHaveBeenCalled();
+    const ending = owner.end();
+    drained.resolve();
+    await rejected;
+    await ending;
+    expect(resources.restore).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(owner.currentSession).toBeNull();
+  });
+
   it('restores the same UUID without initializing or deleting its cache', async () => {
     const original = setup();
     const session = await login(original.owner);

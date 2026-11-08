@@ -1,5 +1,47 @@
+use super::notifications::delivery::{DeliveryResult, PlatformHandle};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
+
+/// Adapter failures carry an explicit execution boundary, never a message prefix.
+#[derive(Debug)]
+pub(super) enum ExecutionFailure {
+    NotExecuted(String),
+    Rejected(String),
+    Uncertain(String),
+}
+
+impl From<String> for ExecutionFailure {
+    fn from(error: String) -> Self {
+        Self::NotExecuted(error)
+    }
+}
+
+impl From<&str> for ExecutionFailure {
+    fn from(error: &str) -> Self {
+        Self::NotExecuted(error.into())
+    }
+}
+
+impl std::fmt::Display for ExecutionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotExecuted(error) | Self::Rejected(error) | Self::Uncertain(error) => {
+                error.fmt(f)
+            }
+        }
+    }
+}
+
+impl ExecutionFailure {
+    fn into_result(self) -> DeliveryResult {
+        log::warn!("notification execution failed: {self}");
+        match self {
+            Self::NotExecuted(_) => DeliveryResult::NotExecuted,
+            Self::Rejected(_) => DeliveryResult::Rejected,
+            Self::Uncertain(_) => DeliveryResult::Uncertain,
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 #[path = "macos_notifications.rs"]
@@ -14,14 +56,34 @@ mod linux_registry;
 pub(crate) struct PendingTap {
     id: String,
     thread_id: i32,
-
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn parse_activation(url: &str) -> Option<i32> {
-    let thread = url.strip_prefix("soms-notification://thread/")?;
+fn parse_activation(url: &str) -> Option<(i32, String)> {
+    let target = url.strip_prefix("soms-notification://thread/")?;
+    let (thread, instance) = target.split_once("/card/")?;
     let id = thread.parse::<i32>().ok()?;
-    (id > 0 && thread == id.to_string()).then_some(id)
+    let uuid = uuid::Uuid::parse_str(instance).ok()?;
+    (id > 0 && thread == id.to_string() && instance == uuid.to_string())
+        .then(|| (id, instance.to_owned()))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_observed_card(launch: &str, tag: String, group: String) -> Result<super::notifications::delivery::ObservedCard, String> {
+    let (thread_id, notification_id) = parse_activation(launch).ok_or("invalid Windows notification activation")?;
+    if tag != notification_id || group != "soms-messages" {
+        return Err("Windows notification handle does not match activation".into());
+    }
+    Ok(super::notifications::delivery::ObservedCard {
+        thread_id, notification_id,
+        handle: PlatformHandle::Windows { tag, group },
+    })
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn restore_windows_cards(app: &tauri::AppHandle, owner: std::sync::Arc<crate::login_connection::LoginConnection>)
+    -> Result<Vec<super::notifications::delivery::ObservedCard>, String> {
+    windows_platform::restore_cards(app, owner)
 }
 
 static PENDING_TAP: Mutex<Option<PendingTap>> = Mutex::new(None);
@@ -36,7 +98,13 @@ fn next_tap_id() -> String {
 pub(crate) fn initialize_windows_links(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_deep_link::DeepLinkExt;
     fn consume(app: &tauri::AppHandle, url: &str) {
-        if let Some(thread_id) = parse_activation(url) {
+        if let Some((thread_id, instance)) = parse_activation(url) {
+            if let Ok(owner) = super::active_login() {
+                if let Ok(mut state) = owner.notification_delivery.lock() {
+                    state.dismissed(thread_id, &instance);
+                }
+            }
+            windows_platform::retire_subscription(&instance);
             tapped(app, thread_id);
         }
     }
@@ -87,19 +155,51 @@ pub(crate) fn desktop_notification_pending() -> Result<Option<PendingTap>, Strin
 }
 
 #[tauri::command]
-pub(crate) fn desktop_notification_acknowledge(
-    id: String,
-    thread_id: i32,
-) -> Result<(), String> {
+pub(crate) fn desktop_notification_acknowledge(id: String, thread_id: i32) -> Result<(), String> {
     let mut pending = PENDING_TAP
         .lock()
         .map_err(|_| "notification tap state poisoned")?;
-    if pending.as_ref().is_some_and(|tap| {
-        tap.id == id && tap.thread_id == thread_id
-    }) {
+    if pending
+        .as_ref()
+        .is_some_and(|tap| tap.id == id && tap.thread_id == thread_id)
+    {
         *pending = None;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::*;
+
+    #[test]
+    fn failure_classification_does_not_depend_on_diagnostic_text() {
+        assert!(matches!(
+            ExecutionFailure::NotExecuted("uncertain notification: allocation failed".into())
+                .into_result(),
+            DeliveryResult::NotExecuted,
+        ));
+        assert!(matches!(
+            ExecutionFailure::Rejected("join desktop notification: denied".into()).into_result(),
+            DeliveryResult::Rejected,
+        ));
+        assert!(matches!(
+            ExecutionFailure::Uncertain("connection lost".into()).into_result(),
+            DeliveryResult::Uncertain,
+        ));
+    }
+
+    #[test]
+    fn preparation_errors_are_not_platform_rejections() {
+        assert!(matches!(
+            ExecutionFailure::from("owner ended").into_result(),
+            DeliveryResult::NotExecuted
+        ));
+        assert!(matches!(
+            ExecutionFailure::from(String::from("invalid coordinates")).into_result(),
+            DeliveryResult::NotExecuted
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -107,8 +207,44 @@ mod navigation_tests {
     use super::*;
 
     #[test]
+    fn history_observation_requires_the_exact_activation_handle() {
+        let instance = uuid::Uuid::new_v4().to_string();
+        let launch = format!("soms-notification://thread/7/card/{instance}");
+        let card = windows_observed_card(&launch, instance.clone(), "soms-messages".into()).unwrap();
+        assert_eq!(card.thread_id, 7);
+        assert_eq!(card.notification_id, instance);
+        assert_eq!(card.handle, PlatformHandle::Windows { tag: instance.clone(), group: "soms-messages".into() });
+        assert!(windows_observed_card(&launch, uuid::Uuid::new_v4().to_string(), "soms-messages".into()).is_err());
+        assert!(windows_observed_card(&launch, instance.clone(), "other".into()).is_err());
+        assert!(windows_observed_card("soms-notification://thread/7", instance, "soms-messages".into()).is_err());
+    }
+
+    #[test]
     fn activation_requires_a_canonical_thread_target() {
-        assert_eq!(parse_activation("soms-notification://thread/7"), Some(7));
+        let instance = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(
+            parse_activation(&format!("soms-notification://thread/7/card/{instance}")),
+            Some((7, instance.into()))
+        );
+        for suffix in ["", "?x=1", "#fragment", "/extra"] {
+            let invalid = if suffix.is_empty() {
+                "bad".to_owned()
+            } else {
+                format!("{instance}{suffix}")
+            };
+            assert_eq!(
+                parse_activation(&format!("soms-notification://thread/7/card/{invalid}")),
+                None
+            );
+        }
+        for thread in ["0", "07", "-1", "2147483648"] {
+            assert_eq!(
+                parse_activation(&format!(
+                    "soms-notification://thread/{thread}/card/{instance}"
+                )),
+                None
+            );
+        }
         for url in [
             "soms-notification://thread/0",
             "soms-notification://thread/07",
@@ -146,7 +282,9 @@ mod navigation_tests {
 }
 
 pub(crate) struct DesktopNotification {
+    operation_id: String,
     notification_id: Option<String>,
+    previous_handle: Option<super::notifications::delivery::PlatformHandle>,
     thread_id: i32,
     title: String,
     body: String,
@@ -157,12 +295,11 @@ pub(crate) struct DesktopNotification {
 #[cfg(target_os = "linux")]
 mod platform {
     use super::DesktopNotification;
-    use notify_rust::{Hint, Notification, NotificationHandle, NotificationResponse};
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Mutex, OnceLock};
 
     struct Card {
-        _handle: Arc<NotificationHandle>,
+        operation_id: String,
         listener: tauri::async_runtime::JoinHandle<()>,
     }
 
@@ -171,62 +308,114 @@ mod platform {
         CARDS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
-    pub(super) fn update(app: tauri::AppHandle, input: DesktopNotification) -> Result<(), String> {
+    pub(super) fn update(
+        app: tauri::AppHandle,
+        input: DesktopNotification,
+        owner: std::sync::Arc<crate::login_connection::LoginConnection>,
+    ) -> Result<
+        Option<super::super::notifications::delivery::PlatformHandle>,
+        super::ExecutionFailure,
+    > {
         let mut cards = cards().lock().map_err(|_| "notification state poisoned")?;
         let session = super::linux_registry::Session::connect()?;
         let mut registry = session.load()?;
         if input.count == 0 {
-            if let Some(id) = registry.ids.get(&input.thread_id) {
-                session.close(*id)?;
+            let target = match &input.previous_handle {
+                Some(super::super::notifications::delivery::PlatformHandle::Linux {
+                    daemon,
+                    id,
+                }) if daemon == &session.identity() => Some(*id),
+                Some(super::super::notifications::delivery::PlatformHandle::Linux { .. }) => None,
+                Some(_) => return Err("unexpected Linux notification handle".into()),
+                // Startup does not adopt persisted handles: their OS presence is unknown.
+                None => None,
+            };
+            if let Some(id) = target {
+                session.close(id)?;
             }
             if let Some(card) = cards.remove(&input.thread_id) {
                 card.listener.abort();
             }
             registry.ids.remove(&input.thread_id);
-            return session.save(&registry);
+            session.save(&registry);
+            return Ok(None);
         }
-        let mut notification = Notification::new();
-        notification
-            .appname("SOMS")
-            .summary(&input.title)
-            .body(&input.body)
-            .action("default", "")
-            .hint(Hint::SuppressSound(input.silent));
-        if let Some(id) = registry.ids.get(&input.thread_id) {
-            // Close through the unique daemon owner. Never send an old ID as replaces_id
-            // to a well-known name that could have changed owners immediately before Notify.
-            session.close(*id)?;
-        }
-        let handle = Arc::new(notification.show().map_err(|error| error.to_string())?);
-        if !session.unchanged()? {
-            return Err("notification service changed while posting".into());
-        }
-        registry.ids.insert(input.thread_id, handle.id());
-        if let Err(error) = session.save(&registry) {
-            let _ = session.close(handle.id());
-            return Err(error);
-        }
-        let waiting = Arc::clone(&handle);
+        let previous_id = match &input.previous_handle {
+            Some(super::super::notifications::delivery::PlatformHandle::Linux { daemon, id })
+                if daemon == &session.identity() =>
+            {
+                *id
+            }
+            Some(super::super::notifications::delivery::PlatformHandle::Linux { .. }) => 0,
+            Some(_) => return Err("unexpected Linux notification handle".into()),
+            // No accepted handle in this process means a new OS notification.
+            None => 0,
+        };
+        let instance = input
+            .notification_id
+            .clone()
+            .ok_or("missing notification instance")?;
+        let signals = session.signals()?;
+        // A successful reply from the captured unique daemon establishes acceptance.
+        // Later daemon changes or local persistence failures do not undo that fact.
+        let handle = session.notify(previous_id, &input.title, &input.body, input.silent)?;
+        registry.ids.insert(input.thread_id, handle);
+        session.save(&registry);
+        let published_handle = super::super::notifications::delivery::PlatformHandle::Linux {
+            daemon: session.identity(),
+            id: handle,
+        };
         let thread_id = input.thread_id;
-        let listener = tauri::async_runtime::spawn(async move {
-            waiting
-                .wait_for_action_async(|response| {
-                    if matches!(response, NotificationResponse::Default) {
-                        super::tapped(&app, thread_id);
+        let daemon = session.identity();
+        let operation_id = input.operation_id.clone();
+        let resource_operation = operation_id.clone();
+        let listener = session.listen(signals, handle, move |clicked| {
+            if clicked {
+                super::tapped(&app, thread_id);
+            } else {
+                if let Ok(mut state) = owner.notification_delivery.lock() {
+                    state.dismissed_operation(thread_id, &instance, &operation_id);
+                }
+                let daemon = daemon.clone();
+                let operation = operation_id.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    // Numeric IDs are reusable. Retire only this daemon's exact handle.
+                    let Ok(mut resources) = self::cards().lock() else {
+                        return;
+                    };
+                    if !resources
+                        .get(&thread_id)
+                        .is_some_and(|resource| resource.operation_id == operation)
+                    {
+                        return;
                     }
-                })
-                .await;
+                    let Ok(session) = super::linux_registry::Session::connect() else {
+                        return;
+                    };
+                    if session.identity() != daemon {
+                        return;
+                    }
+                    let Ok(mut registry) = session.load() else {
+                        return;
+                    };
+                    if registry.ids.get(&thread_id) == Some(&handle) {
+                        registry.ids.remove(&thread_id);
+                        session.save(&registry);
+                    }
+                    resources.remove(&thread_id);
+                });
+            }
         });
         if let Some(previous) = cards.insert(
             thread_id,
             Card {
-                _handle: handle,
+                operation_id: resource_operation,
                 listener,
             },
         ) {
             previous.listener.abort();
         }
-        Ok(())
+        Ok(Some(published_handle))
     }
 
     pub(super) fn clear() -> Result<(), String> {
@@ -240,11 +429,11 @@ mod platform {
         registry.ids.retain(|_, id| match session.close(*id) {
             Ok(()) => false,
             Err(failure) => {
-                error = Some(failure);
+                error = Some(failure.to_string());
                 true
             }
         });
-        session.save(&registry)?;
+        session.save(&registry);
         error.map_or(Ok(()), Err)
     }
 }
@@ -255,10 +444,93 @@ mod windows_platform {
     use windows::{
         core::HSTRING,
         Data::Xml::Dom::XmlDocument,
-        UI::Notifications::{ToastNotification, ToastNotificationManager},
+        Foundation::TypedEventHandler,
+        UI::Notifications::{
+            ToastDismissalReason, ToastDismissedEventArgs, ToastNotification,
+            ToastNotificationManager,
+        },
     };
 
     const GROUP: &str = "soms-messages";
+
+    pub(super) fn restore_cards(
+        app: &tauri::AppHandle,
+        owner: std::sync::Arc<crate::login_connection::LoginConnection>,
+    ) -> Result<Vec<super::super::notifications::delivery::ObservedCard>, String> {
+        let app_id = HSTRING::from(app.config().identifier.as_str());
+        let history = ToastNotificationManager::History().map_err(|e| e.to_string())?;
+        let items = history.GetHistoryWithId(&app_id).map_err(|e| e.to_string())?;
+        let mut cards = Vec::new();
+        let mut toasts = std::collections::HashMap::new();
+        for index in 0..items.Size().map_err(|e| e.to_string())? {
+            let toast = items.GetAt(index).map_err(|e| e.to_string())?;
+            let group = toast.Group().map_err(|e| e.to_string())?.to_string();
+            if group != GROUP { continue; }
+            let tag = toast.Tag().map_err(|e| e.to_string())?.to_string();
+            let launch = toast.Content().and_then(|xml| xml.DocumentElement())
+                .and_then(|root| root.GetAttribute(&HSTRING::from("launch")))
+                .map_err(|e| e.to_string())?.to_string();
+            let card = super::windows_observed_card(&launch, tag, group)?;
+            toasts.insert(card.notification_id.clone(), toast);
+            cards.push(card);
+        }
+        let (retained, surplus) = super::super::notifications::delivery::select_restored_cards(cards);
+        for card in surplus {
+            let super::super::notifications::delivery::PlatformHandle::Windows { tag, group } = card.handle else {
+                return Err("unexpected Windows notification handle".into());
+            };
+            history.RemoveGroupedTagWithId(&HSTRING::from(tag), &HSTRING::from(group), &app_id)
+                .map_err(|e| e.to_string())?;
+        }
+        for card in &retained {
+            let toast = toasts.remove(&card.notification_id).ok_or("missing captured Windows notification")?;
+            let instance = card.notification_id.clone();
+            let thread = card.thread_id;
+            let observer = owner.clone();
+            let dismissed = toast.Dismissed(&TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(move |_, args| {
+                if let Some(args) = args.as_ref() {
+                    if args.Reason()? == ToastDismissalReason::UserCanceled {
+                        if let Ok(mut state) = observer.notification_delivery.lock() {
+                            state.dismissed_imported(thread, &instance);
+                        }
+                    }
+                }
+                Ok(())
+            })).map_err(|e| e.to_string())?;
+            let previous = subscriptions().lock().unwrap_or_else(|e| e.into_inner()).insert(
+                card.notification_id.clone(), Subscription { toast, dismissed, operation_id: None },
+            );
+            drop(previous);
+        }
+        Ok(retained)
+    }
+
+    // Retain WinRT event subscriptions only; all card and alert policy stays in Rust's owner.
+    struct Subscription {
+        toast: ToastNotification,
+        dismissed: i64,
+        operation_id: Option<String>,
+    }
+    impl Drop for Subscription {
+        fn drop(&mut self) {
+            let _ = self.toast.RemoveDismissed(self.dismissed);
+        }
+    }
+    fn subscriptions() -> &'static std::sync::Mutex<std::collections::HashMap<String, Subscription>>
+    {
+        static SUBSCRIPTIONS: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<String, Subscription>>,
+        > = std::sync::OnceLock::new();
+        SUBSCRIPTIONS.get_or_init(Default::default)
+    }
+
+    pub(super) fn retire_subscription(instance: &str) {
+        let retired = subscriptions()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(instance);
+        drop(retired);
+    }
 
     fn xml_text(value: &str) -> String {
         value
@@ -275,22 +547,73 @@ mod windows_platform {
             .replace('>', "&gt;")
     }
 
-    pub(super) fn update(app: tauri::AppHandle, input: DesktopNotification) -> Result<(), String> {
-        update_inner(app, input).map_err(|error| error.to_string())
+    pub(super) fn update(
+        app: tauri::AppHandle,
+        input: DesktopNotification,
+        owner: std::sync::Arc<crate::login_connection::LoginConnection>,
+    ) -> Result<
+        Option<super::super::notifications::delivery::PlatformHandle>,
+        super::ExecutionFailure,
+    > {
+        let handle = if input.count > 0 {
+            Some(
+                super::super::notifications::delivery::PlatformHandle::Windows {
+                    tag: input
+                        .notification_id
+                        .clone()
+                        .ok_or("missing notification instance")?,
+                    group: GROUP.into(),
+                },
+            )
+        } else {
+            None
+        };
+        if input.notification_id.is_none() {
+            return Ok(None);
+        }
+        let mut submitted = false;
+        update_inner(app, input, owner, &mut submitted).map_err(|error| {
+            if submitted {
+                super::ExecutionFailure::Uncertain(error.to_string())
+            } else {
+                super::ExecutionFailure::NotExecuted(error.to_string())
+            }
+        })?;
+        Ok(handle)
     }
 
     fn update_inner(
         app: tauri::AppHandle,
         input: DesktopNotification,
+        owner: std::sync::Arc<crate::login_connection::LoginConnection>,
+        submitted: &mut bool,
     ) -> windows::core::Result<()> {
         let app_id = HSTRING::from(app.config().identifier.as_str());
-        let tag = HSTRING::from(input.thread_id.to_string());
-        let group = HSTRING::from(GROUP);
+        let (tag, group) = match &input.previous_handle {
+            Some(super::super::notifications::delivery::PlatformHandle::Windows { tag, group }) => {
+                (HSTRING::from(tag.as_str()), HSTRING::from(group.as_str()))
+            }
+            _ => (
+                HSTRING::from(input.notification_id.as_deref().unwrap_or_default()),
+                HSTRING::from(GROUP),
+            ),
+        };
         if input.count == 0 {
-            return ToastNotificationManager::History()?
-                .RemoveGroupedTagWithId(&tag, &group, &app_id);
+            let history = ToastNotificationManager::History()?;
+            *submitted = true;
+            history.RemoveGroupedTagWithId(&tag, &group, &app_id)?;
+            let retired = subscriptions()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(input.notification_id.as_deref().unwrap_or_default());
+            drop(retired);
+            return Ok(());
         }
-        let activation = format!("soms-notification://thread/{}", input.thread_id);
+        let activation = format!(
+            "soms-notification://thread/{}/card/{}",
+            input.thread_id,
+            input.notification_id.as_deref().unwrap_or_default()
+        );
         let xml = XmlDocument::new()?;
         xml.LoadXml(&HSTRING::from(format!(
             "<toast activationType=\"protocol\" launch=\"{}\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{}</toast>",
@@ -300,7 +623,66 @@ mod windows_platform {
         let toast = ToastNotification::CreateToastNotification(&xml)?;
         toast.SetTag(&tag)?;
         toast.SetGroup(&group)?;
-        ToastNotificationManager::CreateToastNotifierWithId(&app_id)?.Show(&toast)
+        let instance = input.notification_id.clone().unwrap_or_default();
+        let callback_instance = instance.clone();
+        let thread_id = input.thread_id;
+        let operation_id = input.operation_id;
+        let resource_operation = operation_id.clone();
+        let retired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback_retired = retired.clone();
+        let dismissed = toast.Dismissed(&TypedEventHandler::<
+            ToastNotification,
+            ToastDismissedEventArgs,
+        >::new(move |_, args| {
+            // A timed-out banner can remain in Action Center. Only an explicit user
+            // dismissal establishes that this card has been removed.
+            if let Some(args) = args.as_ref() {
+                if args.Reason()? == ToastDismissalReason::UserCanceled {
+                    callback_retired.store(true, std::sync::atomic::Ordering::Release);
+                    if let Ok(mut state) = owner.notification_delivery.lock() {
+                        state.dismissed_operation(thread_id, &callback_instance, &operation_id);
+                    }
+                    let instance = callback_instance.clone();
+                    let operation = operation_id.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let retired = {
+                            let mut resources =
+                                subscriptions().lock().unwrap_or_else(|e| e.into_inner());
+                            if resources
+                                .get(&instance)
+                                .is_some_and(|r| r.operation_id.as_deref() == Some(operation.as_str()))
+                            {
+                                resources.remove(&instance)
+                            } else {
+                                None
+                            }
+                        };
+                        drop(retired);
+                    });
+                }
+            }
+            Ok(())
+        }))?;
+        let subscription = Subscription {
+            toast,
+            dismissed,
+            operation_id: Some(resource_operation),
+        };
+        let notifier = ToastNotificationManager::CreateToastNotifierWithId(&app_id)?;
+        *submitted = true;
+        notifier.Show(&subscription.toast)?;
+        let previous = {
+            let mut resources = subscriptions().lock().unwrap_or_else(|e| e.into_inner());
+            if retired.load(std::sync::atomic::Ordering::Acquire) {
+                // A callback may run inside Show, before resource registration.
+                drop(resources);
+                drop(subscription);
+                return Ok(());
+            }
+            resources.insert(instance, subscription)
+        };
+        drop(previous);
+        Ok(())
     }
 
     pub(super) fn clear(app: &tauri::AppHandle) -> Result<(), String> {
@@ -308,7 +690,11 @@ mod windows_platform {
             ToastNotificationManager::History()?.RemoveGroupWithId(
                 &HSTRING::from(GROUP),
                 &HSTRING::from(app.config().identifier.as_str()),
-            )
+            )?;
+            let retired =
+                std::mem::take(&mut *subscriptions().lock().unwrap_or_else(|e| e.into_inner()));
+            drop(retired);
+            Ok(())
         })()
         .map_err(|error| error.to_string())
     }
@@ -470,32 +856,37 @@ pub(crate) async fn desktop_notification_presentation_changed(
         return Ok(());
     };
     let work = super::capture_database_work()?;
-    #[cfg(not(target_os = "macos"))]
-    work.owner().notification_dismissed(thread_id).map_err(|e| e.to_string())?;
-    deliver_command(app, work, super::notifications::content::NotificationCommand::Remove { thread_id }).await
+    deliver_command(
+        app,
+        work,
+        super::notifications::content::NotificationCommand::Remove { thread_id },
+    )
+    .await
 }
 
 /// Native synchronization supplies the captured work and its assembled thread projections.
 pub(crate) async fn deliver_batch(
     app: tauri::AppHandle,
-    work: crate::login_connection::DatabaseWork,
     batch: super::notifications::NotificationBatch,
 ) -> Result<(), String> {
-    let presentation = super::notifications::presentation::prepare_batch(
-        work.clone(), &batch, presentation_facts(&app), true,
-    ).await?;
-    let mut failures = Vec::new();
-    for command in presentation.commands {
-        work.assert_current().map_err(|e| e.to_string())?;
-        if let Err(error) = deliver_command(app.clone(), work.clone(), command).await {
-            failures.push(error);
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("notification batch delivery failed: {}", failures.join("; ")))
-    }
+    let work = batch.work.clone().ok_or("notification batch has no captured work")?;
+    let observed_app = app.clone();
+    super::notifications::runtime::deliver_batch(
+        batch,
+        true,
+        super::notifications::runtime::Platform {
+            facts: move || Ok(presentation_facts(&observed_app)),
+            execute: move |prepared, _avatars| {
+                // Shared orchestration calls adapters on its blocking execution thread.
+                Ok(match tauri::async_runtime::block_on(execute_command(
+                    app.clone(), work.clone(), prepared,
+                )) {
+                    Ok(handle) => super::notifications::delivery::DeliveryResult::Accepted { handle },
+                    Err(error) => error.into_result(),
+                })
+            },
+        },
+    ).await
 }
 
 /// Observe OS window state and reuse the existing native open-thread fact. This
@@ -509,7 +900,9 @@ pub(crate) fn presentation_facts(
         visible: window.as_ref().is_some_and(|window| {
             window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true)
         }),
-        focused: window.as_ref().is_some_and(|window| window.is_focused().unwrap_or(false)),
+        focused: window
+            .as_ref()
+            .is_some_and(|window| window.is_focused().unwrap_or(false)),
         open_thread: super::attention::open_thread_id().and_then(|id| i32::try_from(id).ok()),
     }
 }
@@ -521,54 +914,50 @@ pub(crate) async fn deliver_command(
     work: crate::login_connection::DatabaseWork,
     command: super::notifications::content::NotificationCommand,
 ) -> Result<(), String> {
-    #[cfg(not(target_os = "macos"))]
-    return execute_command(app, work, command, None).await;
-    #[cfg(target_os = "macos")]
     {
-        // The task owns execution through acknowledgement even if its caller stops waiting.
-        tauri::async_runtime::spawn(async move {
-            use super::notifications::{alert::AlertPolicy, content::NotificationCommand, delivery::{DeliveryResult, PlatformHandle}};
-            let owner = work.owner().clone();
-            let _lane = owner.notification_delivery_lane.lock().await;
-            work.assert_current().map_err(|e| e.to_string())?;
-            let policy = super::preferences::read_notification_preference("notificationAlertPolicy")?;
-            let policy = AlertPolicy::from_preference(policy.as_deref())?;
-            let command = super::notifications::content::observe_before_delivery(command, presentation_facts(&app));
-            let prepared = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?
-                .prepare(command, policy, true, std::time::Instant::now()).map_err(str::to_owned)?;
-            let os_identifier = match &prepared.previous_handle {
-                Some(PlatformHandle::Macos { identifier }) => Some(identifier.clone()),
-                Some(_) => return Err("unexpected macOS notification handle".into()),
-                None => prepared.notification_id.as_deref().map(macos_platform::identifier),
-            };
-            let handle = match &prepared.command {
-                NotificationCommand::Show(_) => Some(PlatformHandle::Macos {
-                    identifier: os_identifier.clone().ok_or("missing notification instance")?,
-                }),
-                _ => None,
-            };
-            let result = execute_command(app, work, prepared.command, os_identifier).await;
-            let outcome = match &result {
-                Ok(()) => DeliveryResult::Accepted { handle },
-                Err(error) if error.starts_with("join desktop notification:") => DeliveryResult::Uncertain,
-                Err(_) => DeliveryResult::Rejected,
-            };
-            owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?
-                .complete(&prepared.operation_id, outcome, std::time::Instant::now()).map_err(str::to_owned)?;
-            result
-        }).await.map_err(|e| format!("join notification transaction: {e}"))?
+        use super::notifications::{
+            alert::AlertPolicy,
+            delivery::{self, DeliveryResult},
+        };
+        let policy = super::preferences::read_notification_preference("notificationAlertPolicy")?;
+        let policy = AlertPolicy::from_preference(policy.as_deref())?;
+        let observed_app = app.clone();
+        delivery::deliver(
+            work.clone(),
+            command,
+            policy,
+            true,
+            move || Ok(presentation_facts(&observed_app)),
+            move |prepared| async move {
+                Ok(match execute_command(app, work, prepared).await {
+                    Ok(handle) => DeliveryResult::Accepted { handle },
+                    Err(error) => error.into_result(),
+                })
+            },
+        )
+        .await
     }
 }
 
 async fn execute_command(
     app: tauri::AppHandle,
     work: crate::login_connection::DatabaseWork,
-    command: super::notifications::content::NotificationCommand,
-    notification_id: Option<String>,
-) -> Result<(), String> {
+    prepared: super::notifications::delivery::PreparedDelivery,
+) -> Result<Option<PlatformHandle>, ExecutionFailure> {
     use super::notifications::content::NotificationCommand;
-    let request = match command {
+    let notification_id = prepared.notification_id;
+    #[cfg(target_os = "macos")]
+    let notification_id = match &prepared.previous_handle {
+        Some(super::notifications::delivery::PlatformHandle::Macos { identifier }) => {
+            Some(identifier.clone())
+        }
+        Some(_) => return Err("unexpected macOS notification handle".into()),
+        None => notification_id.as_deref().map(macos_platform::identifier),
+    };
+    let request = match prepared.command {
         NotificationCommand::Remove { thread_id } => DesktopNotification {
+            operation_id: prepared.operation_id,
+            previous_handle: prepared.previous_handle,
             notification_id,
             thread_id,
             title: String::new(),
@@ -577,6 +966,8 @@ async fn execute_command(
             silent: true,
         },
         NotificationCommand::Show(content) => DesktopNotification {
+            operation_id: prepared.operation_id,
+            previous_handle: prepared.previous_handle,
             notification_id,
             thread_id: content.thread_id,
             title: content.title,
@@ -594,7 +985,7 @@ async fn deliver_notification(
     app: tauri::AppHandle,
     work: crate::login_connection::DatabaseWork,
     notification: DesktopNotification,
-) -> Result<(), String> {
+) -> Result<Option<PlatformHandle>, ExecutionFailure> {
     if notification.thread_id <= 0 || notification.count < 0 {
         return Err("invalid desktop notification coordinates".into());
     }
@@ -603,23 +994,35 @@ async fn deliver_notification(
     if notification.count > 0 {
         macos_platform::authorize().await?;
     }
-    super::spawn_owned_work(work, move || {
+    tauri::async_runtime::spawn_blocking(move || {
+        work.assert_current().map_err(|e| e.to_string())?;
         #[cfg(target_os = "linux")]
         {
-            platform::update(app, notification)
+            platform::update(app, notification, work.owner().clone())
         }
         #[cfg(target_os = "windows")]
         {
-            windows_platform::update(app, notification)
+            windows_platform::update(app, notification, work.owner().clone())
         }
         #[cfg(target_os = "macos")]
         {
             let _ = app;
-            macos_platform::update(notification)
+            let handle = if notification.count > 0 {
+                Some(super::notifications::delivery::PlatformHandle::Macos {
+                    identifier: notification
+                        .notification_id
+                        .clone()
+                        .ok_or("missing notification instance")?,
+                })
+            } else {
+                None
+            };
+            macos_platform::update(notification)?;
+            Ok(handle)
         }
     })
     .await
-    .map_err(|error| format!("join desktop notification: {error}"))?
+    .map_err(|error| ExecutionFailure::Uncertain(format!("join desktop notification: {error}")))?
 }
 
 #[tauri::command]

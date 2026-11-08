@@ -56,6 +56,15 @@ impl LoginConnections {
     /// Called after synchronous end, off the runtime executor. No slot lock is held while SQL
     /// drains. A close failure leaves the ended owner installed for an explicit retry.
     pub(super) fn release(&self, owner: &Arc<LoginConnection>) -> Result<(), String> {
+        // The existing credential/notification cleanup follows owner release. Drain
+        // submitted platform commands first so none can publish after that cleanup.
+        let _notifications = match owner.notification_delivery_lane.try_lock() {
+            Ok(lane) => lane,
+            Err(_) if tokio::runtime::Handle::try_current().is_ok() => {
+                return Err("notification delivery must drain off the async executor".into());
+            }
+            Err(_) => owner.notification_delivery_lane.blocking_lock(),
+        };
         owner.close().map_err(|e| e.to_string())?;
         let mut slot = self
             .0
@@ -103,6 +112,23 @@ mod tests {
         slot.release(&old).unwrap();
         assert!(Arc::ptr_eq(&next, &slot.capture().unwrap()));
         assert!(old.credential().is_err());
+    }
+
+    #[tokio::test]
+    async fn release_waits_for_submitted_notification_before_removing_owner() {
+        let slot = std::sync::Arc::new(LoginConnections::new());
+        let old = install(&slot);
+        let in_flight = old.notification_delivery_lane.lock().await;
+        old.end().unwrap();
+        // A runtime caller must never block its executor while the operation drains.
+        assert!(slot.release(&old).is_err());
+        assert!(slot.current().unwrap().is_some());
+        let releasing_slot = slot.clone();
+        let releasing_owner = old.clone();
+        let released = tokio::task::spawn_blocking(move || releasing_slot.release(&releasing_owner));
+        drop(in_flight);
+        released.await.unwrap().unwrap();
+        assert!(slot.current().unwrap().is_none());
     }
 
     #[test]
