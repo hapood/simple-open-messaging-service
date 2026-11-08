@@ -45,7 +45,7 @@ extern "C" fn completed(context: *mut c_void, error: *const c_char) {
 fn wait_for_completion(
     start: impl FnOnce(*mut c_void, Completion),
 ) -> Result<(), ExecutionFailure> {
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::channel::<Result<(), String>>();
     start(Box::into_raw(Box::new(sender)).cast(), completed);
     receiver
         .recv()
