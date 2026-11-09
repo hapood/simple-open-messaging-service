@@ -1,4 +1,3 @@
-import { parseRequestSnapshot } from '../../shared/request-snapshot.js';
 import { assertGroupNameLength } from './group-profile-validation.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import {
@@ -292,36 +291,6 @@ export class GroupService {
               columns: { account: true, defaultProfileRev: true },
             });
             if (!owner) throw new Error('group creator account is unavailable');
-            const ownerProfile =
-              owner.defaultProfileRev > 0
-                ? await tx.query.profileTable.findFirst({
-                    where: and(
-                      eq(profileTable.account, owner.account),
-                      eq(profileTable.publisherNamespaceId, 0),
-                      eq(profileTable.profileNamespaceId, 0),
-                      eq(profileTable.profileRev, owner.defaultProfileRev),
-                    ),
-                    columns: { displayName: true, avatar: true },
-                  })
-                : null;
-            if (owner.defaultProfileRev > 0 && !ownerProfile)
-              throw new Error('group creator profile is unavailable');
-            // Creation authors a founding invitation before the owner accepts it.
-            // A revision-zero owner has account-name presentation, not a stored profile.
-            const snapshot = parseRequestSnapshot({
-              displayName: ownerProfile?.displayName ?? owner.account,
-              avatar: ownerProfile?.avatar ? ownerProfile.avatar : null,
-            });
-            await this.relationshipMutations.writeGroupRelationshipIntentInTx(
-              tx,
-              thread.id,
-              params.owner,
-              '',
-              'REQUESTED',
-              clientFeedUpdates,
-              undefined,
-              { snapshot },
-            );
             // The creation notice is authority-local history: federation message
             // feeds exclude SYSTEM rows. Write it before owner activation so the
             // new participant's read boundary initializes at this sequence.
@@ -334,21 +303,10 @@ export class GroupService {
                 profileRev: owner.defaultProfileRev,
               },
             });
-            await this.relationshipMutations.writeMemberRelationshipIntentInTx(
+            await this.relationshipMutations.initializeFoundingMembershipInTx(
               tx,
               thread.id,
               params.owner,
-              'ACCEPTED',
-              clientFeedUpdates,
-              '',
-              { initialRole: GroupRole.OWNER },
-            );
-            await this.relationshipMutations.writeGroupRelationshipIntentInTx(
-              tx,
-              thread.id,
-              params.owner,
-              '',
-              'ACCEPTED',
               clientFeedUpdates,
             );
             return {
