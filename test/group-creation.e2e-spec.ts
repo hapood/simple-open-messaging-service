@@ -292,6 +292,15 @@ describe('group creation', () => {
       .mockImplementation(async (tx, params) => {
         const result = await lock(tx, params);
         if (params.feedAllocatorUserIds?.includes(owner.id)) {
+          // Founding-owner initialization also takes this lock, but its new
+          // thread is not visible outside that transaction yet. Only pause the
+          // profile transaction, after the founding transaction has committed.
+          const committedThread =
+            await database.db.query.messageThread.findFirst({
+              where: eq(messageThread.id, params.threadId),
+              columns: { id: true },
+            });
+          if (!committedThread) return result;
           const backend = await tx.execute<{ pid: number }>(
             sql`SELECT pg_backend_pid() AS pid`,
           );
