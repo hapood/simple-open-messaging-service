@@ -10,7 +10,9 @@ const defaultDirectory = resolve(
 );
 
 export function verifyNativeBuild(directory = defaultDirectory) {
-  const stats = JSON.parse(readFileSync(join(directory, 'stats.json'), 'utf8'));
+  const stats = JSON.parse(
+    readFileSync(join(directory, 'browser-stats.json'), 'utf8'),
+  );
   if (!stats.inputs || !stats.outputs) {
     throw new Error('Native build is missing Angular bundle metadata.');
   }

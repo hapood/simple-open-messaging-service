@@ -16,7 +16,7 @@ function fixture(
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   mkdirSync(join(directory, 'browser'));
   writeFileSync(
-    join(directory, 'stats.json'),
+    join(directory, 'browser-stats.json'),
     JSON.stringify({ inputs, outputs }),
   );
   writeFileSync(
@@ -52,8 +52,15 @@ for (const compiler of [
 
 test('rejects missing metadata instead of trusting an arbitrary Web build', (t) => {
   const directory = fixture(t);
-  rmSync(join(directory, 'stats.json'));
-  assert.throws(() => verifyNativeBuild(directory), /stats\.json/);
+  rmSync(join(directory, 'browser-stats.json'));
+  // Server-only or legacy metadata must not satisfy the browser AOT check.
+  const metadata = JSON.stringify({
+    inputs: {},
+    outputs: { 'main-ABC.js': { entryPoint: 'src/main.ts' } },
+  });
+  writeFileSync(join(directory, 'server-stats.json'), metadata);
+  writeFileSync(join(directory, 'stats.json'), metadata);
+  assert.throws(() => verifyNativeBuild(directory), /browser-stats\.json/);
 });
 
 test('rejects metadata without the application entry point', (t) => {
