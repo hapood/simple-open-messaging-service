@@ -1,4 +1,6 @@
 //! One native notification policy entry point, independent of the OS renderer.
+#[cfg(test)]
+use crate::native_db::notifications::NotificationTarget;
 use crate::login_connection::DatabaseWork;
 use super::{NotificationBatch, content::{NotificationCommand, PresentationFacts, command_with_facts, localized_copy}};
 
@@ -49,9 +51,14 @@ pub(crate) async fn prepare_batch(
     }).await.map_err(|e| format!("join notification preferences: {e}"))??;
     work.assert_current().map_err(|e| e.to_string())?;
     let copy = localized_copy(&language);
-    let commands: Vec<_> = batch.threads.iter()
+    let mut commands: Vec<_> = batch.threads.iter()
         .map(|thread| command_with_facts(thread, &preferences, facts, copy))
         .collect();
+    let current = &batch.requests;
+    let live: Vec<_> = work.owner().notification_delivery.lock().map_err(|_| "notification state poisoned")?
+        .reconstruction_candidates().into_iter().map(|(target,_)| target).collect();
+    let previous = work.owner().notification_requests.lock().map_err(|_| "request notification state poisoned")?.clone().unwrap_or_default();
+    commands.extend(super::requests::selected(&current, &previous, &live, batch.reconstruction, &preferences, &language));
     let presentation = package(commands, batch.unread_total, &batch.avatars)?;
     let mut presentation = presentation;
     if !allow_alert {
@@ -71,7 +78,7 @@ mod tests {
 
     fn show(indices: &[u64]) -> NotificationCommand {
         NotificationCommand::Show(NotificationContent {
-            thread_id: 7, title: "Peer".into(), body: "Message".into(),
+            target: NotificationTarget::Thread { thread_id: 7 }, title: "Peer".into(), body: "Message".into(),
             count: 1, silent: false, has_unread_mention: false,
             messages: indices.iter().map(|index| NotificationMessage {
                 seq: 1, sender_name: "Peer".into(), sender_key: None,
@@ -96,7 +103,7 @@ mod tests {
 
     #[test]
     fn removal_and_private_content_do_not_forward_unused_avatars() {
-        let batch = package(vec![NotificationCommand::Remove { thread_id: 7 }, show(&[])],
+        let batch = package(vec![NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } }, show(&[])],
             8, &[vec![1, 2, 3]]).unwrap();
         assert!(batch.avatars.is_empty());
         assert_eq!(batch.unread_total, 8);

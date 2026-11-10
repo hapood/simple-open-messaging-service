@@ -13,7 +13,7 @@ extern "C" {
     );
     fn soms_macos_notifications_authorize(context: *mut c_void, completion: Completion);
     fn soms_macos_notification_post(
-        thread: i32,
+        target: *const c_char,
         notification_id: *const c_char,
         title: *const c_char,
         body: *const c_char,
@@ -116,36 +116,28 @@ async fn request_initial_authorization() -> Result<(), String> {
 }
 
 #[no_mangle]
-extern "C" fn soms_macos_notification_tapped(thread: i32, notification_id: *const c_char) {
-    if !retire_instance(thread, notification_id) {
-        return;
-    }
+extern "C" fn soms_macos_notification_tapped(target: *const c_char, notification_id: *const c_char) {
+    let Some(target) = retire_instance(target, notification_id) else { return };
     if let Some(app) = APP.get() {
-        super::tapped(app, thread);
+        super::tapped(app, target);
     }
 }
 
 #[no_mangle]
-extern "C" fn soms_macos_notification_dismissed(thread: i32, notification_id: *const c_char) {
-    retire_instance(thread, notification_id);
+extern "C" fn soms_macos_notification_dismissed(target: *const c_char, notification_id: *const c_char) {
+    retire_instance(target, notification_id);
 }
 
-fn retire_instance(thread: i32, notification_id: *const c_char) -> bool {
-    if thread <= 0 || notification_id.is_null() {
-        return false;
-    }
-    let Ok(identifier) = (unsafe { CStr::from_ptr(notification_id) }).to_str() else {
-        return false;
-    };
-    let Some(id) = instance_id(identifier) else {
-        return false;
-    };
-    if let Ok(owner) = super::super::active_login() {
-        if let Ok(mut delivery) = owner.notification_delivery.lock() {
-            delivery.dismissed(thread, id);
-        }
-    }
-    true
+fn retire_instance(target: *const c_char, notification_id: *const c_char) -> Option<super::super::notifications::NotificationTarget> {
+    if target.is_null() || notification_id.is_null() { return None; }
+    let raw = unsafe { CStr::from_ptr(target) }.to_str().ok()?;
+    let target: super::super::notifications::NotificationTarget = serde_json::from_str(raw).ok()?;
+    if !target.valid() { return None; }
+    let identifier = unsafe { CStr::from_ptr(notification_id) }.to_str().ok()?;
+    let id = instance_id(identifier)?;
+    let owner = super::super::active_login().ok()?;
+    if let Ok(mut delivery) = owner.notification_delivery.lock() { delivery.dismissed(target, id); }
+    Some(target)
 }
 
 extern "C" fn status_completed(context: *mut c_void, status: i32) {
@@ -205,11 +197,12 @@ pub(super) fn update(input: DesktopNotification) -> Result<(), ExecutionFailure>
         unsafe { soms_macos_notification_remove(id.as_ptr()) };
         return Ok(());
     }
+    let target = CString::new(serde_json::to_string(&input.target).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let title = CString::new(input.title.replace('\0', "")).map_err(|error| error.to_string())?;
     let body = CString::new(input.body.replace('\0', "")).map_err(|error| error.to_string())?;
     wait_for_completion(|context, completion| unsafe {
         soms_macos_notification_post(
-            input.thread_id,
+            target.as_ptr(),
             id.as_ptr(),
             title.as_ptr(),
             body.as_ptr(),

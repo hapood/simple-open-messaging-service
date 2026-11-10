@@ -486,6 +486,12 @@ export class MirrorGroupMembershipIntentService {
         authorityNamespaceId: group.namespaceId,
         threadLock,
       });
+      // Mirror-group members are always plain MEMBERs (the remote authority
+      // holds the manager roles), so a departure never carries request
+      // convergence here; only the thread-head hint refreshes the client.
+      clientUpdates.push(
+        ...(await captureThreadStateUpdatesInTx(tx, [memberId])),
+      );
       peers.add(group.namespaceId);
       await this.concludeMemberDirectionInTx(
         tx,

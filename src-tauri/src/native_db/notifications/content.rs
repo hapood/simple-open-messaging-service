@@ -1,4 +1,4 @@
-use super::NotificationThread;
+use super::{NotificationThread, NotificationTarget};
 
 #[derive(Clone, Copy)]
 pub(crate) struct NotificationCopy<'a> {
@@ -39,7 +39,7 @@ pub(crate) struct NotificationMessage {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NotificationContent {
-    pub(crate) thread_id: i32,
+    pub(crate) target: NotificationTarget,
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) count: i64,
@@ -51,8 +51,8 @@ pub(crate) struct NotificationContent {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "operation", content = "notification", rename_all = "camelCase")]
 pub(crate) enum NotificationCommand {
-    Remove { #[serde(rename = "threadId")] thread_id: i32 },
-    /// Upsert the card identified by thread_id; never append a duplicate card.
+    Remove { target: NotificationTarget },
+    /// Upsert the card identified by its typed target; never append a duplicate card.
     Show(NotificationContent),
 }
 
@@ -76,8 +76,8 @@ pub(crate) fn observe_before_delivery(
     facts: PresentationFacts,
 ) -> NotificationCommand {
     match command {
-        NotificationCommand::Show(content) if visible_thread(facts) == Some(content.thread_id) => {
-            NotificationCommand::Remove { thread_id: content.thread_id }
+        NotificationCommand::Show(content) if visible_thread(facts).map(NotificationTarget::from) == Some(content.target) => {
+            NotificationCommand::Remove { target: content.target }
         }
         other => other,
     }
@@ -92,7 +92,7 @@ pub(crate) fn command_with_facts(
     copy: NotificationCopy<'_>,
 ) -> NotificationCommand {
     if visible_thread(facts) == Some(thread.thread_id) {
-        return NotificationCommand::Remove { thread_id: thread.thread_id };
+        return NotificationCommand::Remove { target: thread.thread_id.into() };
     }
     command(thread, preferences, copy)
 }
@@ -105,7 +105,7 @@ pub(crate) fn command(
     copy: NotificationCopy<'_>,
 ) -> NotificationCommand {
     if !preferences.enabled || thread.unread_count <= 0 {
-        return NotificationCommand::Remove { thread_id: thread.thread_id };
+        return NotificationCommand::Remove { target: thread.thread_id.into() };
     }
     let mut notification = content(thread, preferences.private_preview, copy);
     notification.silent |= !preferences.sound;
@@ -147,7 +147,7 @@ fn content(
             }).collect()
     };
     NotificationContent {
-        thread_id: thread.thread_id,
+        target: thread.thread_id.into(),
         title: thread.title.clone(),
         body: if messages.is_empty() { copy.private_body.to_owned() } else {
             messages.iter().map(|message| message.text.as_str()).collect::<Vec<_>>().join("\n")
@@ -235,12 +235,12 @@ mod tests {
 
     #[test]
     fn wire_commands_contain_decisions_not_raw_message_events() {
-        let remove = serde_json::to_value(NotificationCommand::Remove { thread_id: 7 }).unwrap();
-        assert_eq!(remove, json!({"operation":"remove","notification":{"threadId":7}}));
+        let remove = serde_json::to_value(NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } }).unwrap();
+        assert_eq!(remove, json!({"operation":"remove","notification":{"target":{"kind":"thread","threadId":7}}}));
         let show = NotificationCommand::Show(content(&thread(), true, copy()));
         let wire = serde_json::to_value(show).unwrap();
         assert_eq!(wire["operation"], "show");
-        assert_eq!(wire["notification"]["threadId"], 7);
+        assert_eq!(wire["notification"]["target"]["threadId"], 7);
         assert_eq!(wire["notification"]["body"], "New message");
         assert_eq!(wire["notification"]["messages"], json!([]));
         assert!(wire["notification"].get("previews").is_none());
@@ -281,11 +281,11 @@ mod tests {
         let mut preferences = super::super::super::preferences::NotificationPreferences {
             enabled: false, sound: true, private_preview: false,
         };
-        assert_eq!(command(&thread(), &preferences, copy()), NotificationCommand::Remove { thread_id: 7 });
+        assert_eq!(command(&thread(), &preferences, copy()), NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } });
         preferences.enabled = true;
         let mut read = thread();
         read.unread_count = 0;
-        assert_eq!(command(&read, &preferences, copy()), NotificationCommand::Remove { thread_id: 7 });
+        assert_eq!(command(&read, &preferences, copy()), NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } });
     }
 
     #[test]
@@ -306,9 +306,9 @@ mod tests {
     fn queued_show_is_removed_when_its_thread_becomes_active() {
         let show = NotificationCommand::Show(content(&thread(), false, copy()));
         let facts = PresentationFacts { visible: true, focused: true, open_thread: Some(7) };
-        assert_eq!(observe_before_delivery(show, facts), NotificationCommand::Remove { thread_id: 7 });
-        assert_eq!(observe_before_delivery(NotificationCommand::Remove { thread_id: 7 },
-            PresentationFacts::default()), NotificationCommand::Remove { thread_id: 7 });
+        assert_eq!(observe_before_delivery(show, facts), NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } });
+        assert_eq!(observe_before_delivery(NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } },
+            PresentationFacts::default()), NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } });
     }
 
     #[test]

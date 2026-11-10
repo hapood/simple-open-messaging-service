@@ -39,6 +39,22 @@ describe('RouteService adaptive account surfaces', () => {
     service = TestBed.inject(RouteService);
   });
 
+  it.each(['add', 'pending'] as const)(
+    'shares the friend request popup contract for %s',
+    (initialTab) => {
+      expect(service.openFriendRequests(initialTab)).toEqual({ id: 42 });
+      expect(nav.pushPane).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'dialog',
+          inputs: { initialTab },
+          presentation: 'page',
+          desktopHeight: 'workspace',
+          component: expect.any(Function),
+        }),
+      );
+    },
+  );
+
   it('opens Profile as a page dialog in compact mode', () => {
     const popupDlg = vi.spyOn(service, 'popupDlg').mockReturnValue({ id: 42 });
     service.openProfile();

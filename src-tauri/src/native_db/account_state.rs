@@ -160,7 +160,8 @@ pub(crate) async fn native_db_advance_intent_request_read(
     observed_end_id: String,
 ) -> Result<AccountState, String> {
     let target = request_id_to_sqlite(&observed_end_id)?;
-    super::spawn_login_database(move |conn| {
+    let work = super::capture_database_work()?;
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|error| format!("begin request read intent: {error}"))?;
@@ -178,6 +179,7 @@ pub(crate) async fn native_db_advance_intent_request_read(
         let state = read(&tx, user_id)?;
         tx.commit()
             .map_err(|error| format!("commit request read intent: {error}"))?;
+        super::notifications::refresh_requests(work, user_id);
         Ok(state)
     })
     .await

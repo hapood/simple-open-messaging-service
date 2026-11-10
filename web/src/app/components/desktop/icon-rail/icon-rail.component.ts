@@ -188,9 +188,9 @@ export class IconRailComponent {
   }
 
   friendRequests() {
-    this.routeService.popupDlg(PopupType.FRIEND_REQUESTS, {
-      initialTab: this.friendReqBadge() ? 'pending' : 'add',
-    });
+    this.routeService.openFriendRequests(
+      this.friendReqBadge() ? 'pending' : 'add',
+    );
   }
 
   editProfile() {

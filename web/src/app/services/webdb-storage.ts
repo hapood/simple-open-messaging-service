@@ -527,6 +527,7 @@ type StateFeedWorkerEvent =
       type: 'notification-batch';
       userId: number;
       entries: BrowserNotificationBatch['entries'];
+      stream?: BrowserNotificationBatch['stream'];
       syncComplete: boolean;
     }
   | { type: 'profile-wake'; wake: ProfileWake }
@@ -1561,6 +1562,23 @@ export class WebdbStorage implements AccountStateStorage {
   }
 
   /** Serialize cursor consumers across page workers and the Push Service Worker. */
+  async withStateFeedLock<T>(run: () => Promise<T>): Promise<T> {
+    const epoch = this.cacheEpoch;
+    const userId = this.currentUserId;
+    const guarded = () => {
+      if (
+        epoch !== this.cacheEpoch ||
+        userId === null ||
+        this.accountMaintenance
+      )
+        throw new Error('account cache lifetime expired');
+      return run();
+    };
+    return typeof navigator !== 'undefined' && navigator.locks
+      ? navigator.locks.request('soms-state-feed-' + userId, guarded)
+      : guarded();
+  }
+
   async withThreadFeedLock<T>(run: () => Promise<T>): Promise<T> {
     const epoch = this.cacheEpoch;
     const userId = this.currentUserId;
@@ -1793,6 +1811,12 @@ export class WebdbStorage implements AccountStateStorage {
         state.intentRequestOptimisticReadId = observedEndId;
       await tx.store.put(state, 'account');
       await tx.done;
+      this.browserNotifications.next({
+        userId: Number(this.currentUserId),
+        entries: [],
+        stream: 'state',
+        requestReadChanged: true,
+      });
       return state;
     });
   }
@@ -2016,6 +2040,12 @@ export class WebdbStorage implements AccountStateStorage {
       if (!row) throw new Error('cannot patch thread before feed state exists');
       await tx.store.put(applyLocalThreadPatch(row, patch));
       await tx.done;
+      if (patch.joinRequestReadFeedId !== undefined)
+        this.browserNotifications.next({
+          userId: Number(this.currentUserId),
+          entries: [],
+          groupRequestReadChanged: threadId,
+        });
     });
   }
 
@@ -2047,6 +2077,11 @@ export class WebdbStorage implements AccountStateStorage {
       member = await member.continue();
     }
     await tx.done;
+    this.browserNotifications.next({
+      userId: Number(this.currentUserId),
+      entries: [],
+      groupRequestReadChanged: threadId,
+    });
   }
 
   /** Apply one compacted state-feed page and its cursor atomically. */
@@ -2161,6 +2196,7 @@ export class WebdbStorage implements AccountStateStorage {
               userId: data.userId,
               entries: data.entries,
               syncComplete: data.syncComplete,
+              stream: data.stream,
             });
           return;
         }

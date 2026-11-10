@@ -116,13 +116,16 @@ pub(crate) async fn native_db_patch_thread(
     thread_id: i64,
     patch: Value,
 ) -> Result<(), String> {
-    super::spawn_login_database(move |conn| {
+    let work = super::capture_database_work()?;
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin local thread patch: {e}"))?;
         super::thread_patch::apply(&tx, user_id, thread_id, &patch)?;
         tx.commit()
-            .map_err(|e| format!("commit local thread patch: {e}"))
+            .map_err(|e| format!("commit local thread patch: {e}"))?;
+        super::notifications::refresh_requests(work, user_id);
+        Ok(())
     })
     .await
     .map_err(|e| format!("join local thread patch: {e}"))?
@@ -130,7 +133,12 @@ pub(crate) async fn native_db_patch_thread(
 
 #[tauri::command]
 pub(crate) async fn native_db_delete_thread(user_id: i64, thread_id: i64) -> Result<(), String> {
-    super::spawn_login_database(move |conn| delete_thread(conn, user_id, thread_id))
+    let work = super::capture_database_work()?;
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
+        delete_thread(conn, user_id, thread_id)?;
+        super::notifications::refresh_requests(work, user_id);
+        Ok(())
+    })
         .await
         .map_err(|e| format!("join delete thread: {e}"))?
 }

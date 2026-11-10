@@ -627,6 +627,7 @@ pub fn run() {
         })
         .on_window_event(window_lifecycle::on_window_event)
         .setup(move |app| {
+            native_db::notifications::initialize(app.handle().clone());
             // First macOS frame is native artwork, before database/keychain work or WebKit creation.
             #[cfg(target_os = "macos")]
             let launch_window = launch::create_window(app)?;

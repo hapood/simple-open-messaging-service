@@ -946,6 +946,8 @@
     "notifGroupingThread": "显示消息",
     "notifGroupingAll": "隐私模式",
     "notifNewMessage": "新消息",
+    "notifNewRequests": "新的收到请求",
+    "notifJoinRequests": "新的入群申请",
     "notifAlertFrequency": "提醒频率",
     "notifAlertFrequencyDesc": "连续收到消息时，限制声音和震动的频率。",
     "notifAlert2s": "2 秒",

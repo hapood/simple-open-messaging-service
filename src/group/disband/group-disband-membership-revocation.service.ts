@@ -18,7 +18,7 @@ import {
   type ThreadContentLock,
 } from '../../common/locks/thread-content-lock.js';
 import { lockAccountFeedAllocatorsInTx } from '../../common/locks/account-feed-allocator-lock.js';
-import { captureThreadStateUpdatesInTx } from '../../client-state-feed/capture-thread-state-updates.js';
+import { captureGroupDepartureUpdatesInTx } from '../shared/capture-group-departure-updates.js';
 import type {
   ClientStateFeedService,
   PendingClientStateFeedUpdate,
@@ -310,9 +310,11 @@ export class GroupDisbandMembershipRevocationService {
     if (!row) throw new Error('disband revocation update disappeared');
     if (row.pairChanged && context.localMemberId !== null)
       clientUpdates.push(
-        ...(await captureThreadStateUpdatesInTx(context.tx, [
+        ...(await captureGroupDepartureUpdatesInTx(
+          context.tx,
+          context.input.threadId,
           context.localMemberId,
-        ])),
+        )),
       );
     // Only a remote member leaves a peer feed to notify; the publisher
     // namespace is the wake key.

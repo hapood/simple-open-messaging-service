@@ -44,14 +44,16 @@ class SomsMessagingService : FirebaseMessagingService() {
                 if (appInForeground) return
                 notifyAdminTest(this, data["title"] ?: "Test", data["body"] ?: "")
             }
-            "NEW_MESSAGE" -> {
+            "NEW_MESSAGE", "REQUEST_ATTENTION" -> {
                 // Keep FCM as a wake even in the foreground: SSE can be temporarily disconnected.
                 // Both wakes synchronize through Rust's cursor, so only the winner projects cards.
-                val target = data["threadFeedEndId"]?.toIntOrNull()?.takeIf { it >= 0 } ?: return
+                val target = data["threadFeedEndId"]?.toIntOrNull()?.takeIf { it >= 0 } ?: -1
+                val stateTarget = data["stateFeedEndId"]?.toLongOrNull()?.takeIf { it >= 0 } ?: 0L
+                if (target < 0 && stateTarget == 0L) return
                 // Firebase's callback has a short lifetime; network + SQLite projection belongs in
                 // expedited work, which may finish even if this process is reclaimed after the callback.
                 try {
-                    NotificationPushWorker.enqueue(this, target)
+                    NotificationPushWorker.enqueue(this, target, stateTarget)
                 } catch (e: RuntimeException) {
                     SomsLog.w("Notif", e) { "could not enqueue push projection" }
                 }
@@ -86,7 +88,7 @@ class SomsMessagingService : FirebaseMessagingService() {
         // vibration) can be changed post-release by minting a _v2 id and deleting the old channel.
         const val CHANNEL_BACKGROUND = "background_sync_v1"
         const val CHANNEL_DIAGNOSTICS = "diagnostics_v1"
-        const val EXTRA_THREAD_ID = "soms_thread_id"
+        const val EXTRA_TARGET = "soms_notification_target"
         const val EXTRA_SESSION_ID = "soms_session_id"
         const val EXTRA_API_ORIGIN = "soms_api_origin"
 
@@ -156,8 +158,8 @@ class SomsMessagingService : FirebaseMessagingService() {
         }
 
         /** FCM and scheduled polls wake the shared Rust feed lane; -1 requests a catch-up poll. */
-        fun renderAwayNotification(ctx: Context, allowAlert: Boolean, threadFeedEndId: Int = -1) {
-            renderAwayNotificationOnce(ctx, allowAlert, threadFeedEndId)
+        fun renderAwayNotification(ctx: Context, allowAlert: Boolean, threadFeedEndId: Int = -1, stateFeedEndId: Long = 0L) {
+            renderAwayNotificationOnce(ctx, allowAlert, threadFeedEndId, stateFeedEndId)
         }
 
         /** Foreground wakes use the same coalescing lane as FCM and background SSE. */
@@ -175,9 +177,9 @@ class SomsMessagingService : FirebaseMessagingService() {
             for (sbn in nm.activeNotifications) {
                 val notification = sbn.notification
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && notification.channelId != CHANNEL_MESSAGES) continue
-                if (!notification.extras.containsKey(EXTRA_THREAD_ID)) continue
+                val target = notification.extras.getString(EXTRA_TARGET) ?: continue
                 cards.put(JSONObject()
-                    .put("threadId", notification.extras.getInt(EXTRA_THREAD_ID))
+                    .put("target", JSONObject(target))
                     .put("tag", sbn.tag ?: JSONObject.NULL)
                     .put("id", sbn.id))
             }
@@ -224,10 +226,10 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean, target: Int) {
+        private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean, target: Int, stateTarget: Long) {
             val userId = SomsSecureStore.getCurrentUserId(ctx) ?: return
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
-            val metadata = RustRuntimeBridge.synchronizeNotifications(userId, target, allowAlert) ?: return
+            val metadata = RustRuntimeBridge.synchronizeNotifications(userId, target, allowAlert, stateTarget) ?: return
             val committed = JSONObject(metadata).getJSONObject("commitEvent")
             RustRuntimeBridge.withCurrentSession(committed.getString("loginSessionId")) {
                 if (appInForeground && SomsSecureStore.getCurrentUserId(ctx) == userId &&
@@ -246,10 +248,9 @@ class SomsMessagingService : FirebaseMessagingService() {
             beforeSubmit: () -> Unit,
         ) {
             val avatarImages = NotificationAvatars.resolve(ctx, d.messages)
-            val tid = d.threadId
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                if (tid > 0) putExtra(EXTRA_THREAD_ID, tid.toString())
+                putExtra(EXTRA_TARGET, d.target)
                 putExtra("notificationId", d.tag)
                 // Each card instance has a distinct PendingIntent identity; updates reuse it.
                 data = android.net.Uri.parse("soms-notification://card/${d.tag}")
@@ -261,13 +262,13 @@ class SomsMessagingService : FirebaseMessagingService() {
                 ctx, id,
                 Intent(ctx, NotificationDismissedReceiver::class.java)
                     .setData(android.net.Uri.parse("soms-notification://card/${d.tag}"))
-                    .putExtra("threadId", tid).putExtra("notificationId", d.tag),
+                    .putExtra(EXTRA_TARGET, d.target).putExtra("notificationId", d.tag),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             val builder = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
                 // Enumeration cannot inspect PendingIntent extras. Expose the same
                 // Rust-owned thread target on the card for restart reconstruction.
-                .addExtras(Bundle().apply { putInt(EXTRA_THREAD_ID, tid) })
+                .addExtras(Bundle().apply { putString(EXTRA_TARGET, d.target) })
                 .setDeleteIntent(dismissed)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })

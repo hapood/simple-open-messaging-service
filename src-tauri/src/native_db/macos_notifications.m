@@ -5,8 +5,8 @@
 #include <stdbool.h>
 
 typedef void (*SomsCompletion)(void *, const char *);
-extern void soms_macos_notification_tapped(int32_t threadId, const char *notificationId);
-extern void soms_macos_notification_dismissed(int32_t threadId, const char *notificationId);
+extern void soms_macos_notification_tapped(const char *target, const char *notificationId);
+extern void soms_macos_notification_dismissed(const char *target, const char *notificationId);
 static NSString *const SomsMessageCategory = @"soms-message";
 static NSString *const SomsPrefix = @"soms-thread-";
 
@@ -31,11 +31,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     BOOL tapped = [response.actionIdentifier isEqualToString:UNNotificationDefaultActionIdentifier];
     BOOL dismissed = [response.actionIdentifier isEqualToString:UNNotificationDismissActionIdentifier];
     if ((tapped || dismissed) && [identifier hasPrefix:SomsPrefix]) {
-        NSNumber *thread = response.notification.request.content.userInfo[@"threadId"];
-        long long value = [thread isKindOfClass:NSNumber.class] ? thread.longLongValue : 0;
-        if (value > 0 && value <= INT32_MAX) {
-            if (tapped) soms_macos_notification_tapped((int32_t)value, identifier.UTF8String);
-            else soms_macos_notification_dismissed((int32_t)value, identifier.UTF8String);
+        NSDictionary *info = response.notification.request.content.userInfo;
+        NSDictionary *target = info[@"target"];
+        if (!target && info[@"threadId"]) target = @{@"kind": @"thread", @"threadId": info[@"threadId"]};
+        NSData *data = target ? [NSJSONSerialization dataWithJSONObject:target options:0 error:nil] : nil;
+        NSString *json = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        if (json) {
+            if (tapped) soms_macos_notification_tapped(json.UTF8String, identifier.UTF8String);
+            else soms_macos_notification_dismissed(json.UTF8String, identifier.UTF8String);
         }
     }
     completion();
@@ -76,7 +79,7 @@ void soms_macos_notifications_authorize(void *context, SomsCompletion completion
         }];
 }
 
-void soms_macos_notification_post(int32_t threadId, const char *notificationId,
+void soms_macos_notification_post(const char *target, const char *notificationId,
                                   const char *title, const char *body,
                                   bool silent, void *context, SomsCompletion completion) {
     @autoreleasepool {
@@ -85,7 +88,8 @@ void soms_macos_notification_post(int32_t threadId, const char *notificationId,
         content.title = [NSString stringWithUTF8String:title];
         content.body = [NSString stringWithUTF8String:body];
         if (!silent) content.sound = UNNotificationSound.defaultSound;
-        content.userInfo = @{@"threadId": @(threadId)};
+        NSData *targetData = [[NSString stringWithUTF8String:target] dataUsingEncoding:NSUTF8StringEncoding];
+        content.userInfo = @{@"target": [NSJSONSerialization JSONObjectWithData:targetData options:0 error:nil]};
         NSString *identifier = [NSString stringWithUTF8String:notificationId];
         UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier
                                                                            content:content trigger:nil];
@@ -111,7 +115,8 @@ void soms_macos_notifications_current(void *context, void (*completion)(void *, 
             UNNotificationRequest *request = notification.request;
             if (![request.identifier hasPrefix:SomsPrefix]) continue;
             [cards addObject:@{@"identifier": request.identifier,
-                               @"threadId": request.content.userInfo[@"threadId"] ?: NSNull.null}];
+                               @"threadId": request.content.userInfo[@"threadId"] ?: NSNull.null,
+                               @"target": request.content.userInfo[@"target"] ?: NSNull.null}];
         }
         NSError *error = nil;
         NSData *data = [NSJSONSerialization dataWithJSONObject:cards options:0 error:&error];

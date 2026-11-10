@@ -863,8 +863,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   openInvitesAndRequests(): void {
-    if (!this.isAdmin() || this.readOnly()) return;
-    this.nav.pushAside('group-join-requests');
+    this.nav.openGroupJoinRequests(this.userMsgTrd());
   }
 
   openMemberManager(): void {

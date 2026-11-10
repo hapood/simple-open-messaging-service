@@ -19,6 +19,8 @@ import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
 import { readCurrentGroupMemberInTx } from '../src/group/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
 import { createTestApp } from './support/app.js';
+import { PushService } from '../src/push/push.service.js';
+import { RequestAttentionService } from '../src/relationship/request/request-attention.service.js';
 
 type Actor = Awaited<ReturnType<typeof seedUserWithSession>>;
 interface GroupFixture {
@@ -216,6 +218,60 @@ describe('permanent group request history and online visibility', () => {
     expect(rows).toHaveLength(1);
     return rows[0];
   }
+
+  it('wakes request-only manager attention and converges after the applications page is read', async () => {
+    const owner = await seedUserWithSession(app, 'join-notification-owner');
+    const applicant = await seedUserWithSession(
+      app,
+      'join-notification-applicant',
+    );
+    const group = await createGroup(owner, 'Request notification');
+    const wake = vi.spyOn(app.get(PushService), 'enqueueForRequestAttention');
+    const attention = app.get(RequestAttentionService);
+    try {
+      await apply(applicant, group, 'join request without a chat message');
+      await vi.waitFor(
+        async () => {
+          expect(
+            await attention.hasUnread(owner.id, {
+              personal: false,
+              managedGroups: true,
+            }),
+          ).toBe(true);
+          expect(wake).toHaveBeenCalledWith([
+            expect.objectContaining({
+              userId: owner.id,
+              threadFeedEndId: expect.any(Number),
+              convergence: false,
+            }),
+          ]);
+        },
+        { timeout: 10_000 },
+      );
+      const page = await groupPage(owner, group);
+      wake.mockClear();
+      const result = await post(owner, 'group/join-requests/read', {
+        groupId: group.threadId,
+        joinRequestReadFeedId: page.joinRequestEndFeedId,
+      });
+      expect(result.body.code).toBe(BusinessCode.OK);
+      expect(wake).toHaveBeenCalledWith([
+        expect.objectContaining({
+          userId: owner.id,
+          threadFeedEndId: expect.any(Number),
+          convergence: true,
+        }),
+      ]);
+      expect(
+        await attention.hasUnread(owner.id, {
+          personal: false,
+          managedGroups: true,
+        }),
+      ).toBe(false);
+    } finally {
+      wake.mockRestore();
+    }
+  });
 
   it('hides old rejections from online pages without deleting history, even after participation deletion', async () => {
     const owner = await seedUserWithSession(app, 'join-history-owner');
@@ -563,10 +619,29 @@ describe('permanent group request history and online visibility', () => {
         ),
       }),
     ).toBeDefined();
-    const demoted = await setRole('MEMBER');
-    expect(demoted.body.code, JSON.stringify(demoted.body)).toBe(
-      BusinessCode.OK,
+    const demotionWake = vi.spyOn(
+      app.get(PushService),
+      'enqueueForRequestAttention',
     );
+    try {
+      const demoted = await setRole('MEMBER');
+      expect(demoted.body.code, JSON.stringify(demoted.body)).toBe(
+        BusinessCode.OK,
+      );
+      expect(demotionWake).toHaveBeenCalledWith([
+        expect.objectContaining({
+          userId: admin.id,
+          threadFeedEndId: expect.any(Number),
+          convergence: true,
+        }),
+      ]);
+      const target = demotionWake.mock.calls
+        .flatMap(([targets]) => targets)
+        .find((target) => target.userId === admin.id);
+      expect(target).not.toHaveProperty('stateFeedEndId');
+    } finally {
+      demotionWake.mockRestore();
+    }
     expect(await stored(group, applicant)).toEqual(history);
     const denied = await post(admin, 'group/join-requests', {
       groupId: group.threadId,

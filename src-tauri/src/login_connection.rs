@@ -55,8 +55,9 @@ pub(crate) struct LoginConnection {
     credential: Mutex<Option<String>>,
     /// Serializes notification batches while the first post-fetch reconstruction is pending.
     /// None means ordinary delivery; Some retains the original candidates across retries.
-    pub(crate) notification_reconstruction: tokio::sync::Mutex<Option<Vec<(i32, String)>>>,
+    pub(crate) notification_reconstruction: tokio::sync::Mutex<Option<Vec<(crate::native_db::notifications::NotificationTarget, String)>>>,
     pub(crate) notification_delivery_lane: tokio::sync::Mutex<()>,
+    pub(crate) notification_requests: Mutex<Option<crate::native_db::notifications::requests::RequestBaseline>>,
     pub(crate) notification_delivery: Mutex<crate::native_db::notifications::delivery::DeliveryState>,
 
 }
@@ -84,6 +85,7 @@ impl LoginConnection {
             credential: Mutex::new(None),
             notification_reconstruction: tokio::sync::Mutex::new(None),
             notification_delivery_lane: tokio::sync::Mutex::new(()),
+            notification_requests: Mutex::new(Default::default()),
             notification_delivery: Mutex::new(Default::default()),
 
         })

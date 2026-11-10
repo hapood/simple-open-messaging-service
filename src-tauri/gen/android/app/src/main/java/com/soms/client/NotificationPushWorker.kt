@@ -22,11 +22,8 @@ class NotificationPushWorker(appContext: Context, params: WorkerParameters) :
 
     override suspend fun doWork(): Result {
         val target = inputData.getInt(KEY_TARGET, -1)
-        if (target < 0) return Result.success()
-        if (SomsMessagingService.appInForeground)
-            SomsMessagingService.renderForegroundNotification(applicationContext, target)
-        else
-            SomsMessagingService.renderAwayNotification(applicationContext, allowAlert = true, threadFeedEndId = target)
+        val stateTarget = inputData.getLong("stateFeedEndId", 0L)
+        SomsMessagingService.renderAwayNotification(applicationContext, allowAlert = true, threadFeedEndId = target, stateFeedEndId = stateTarget)
         return Result.success()
     }
 
@@ -34,9 +31,9 @@ class NotificationPushWorker(appContext: Context, params: WorkerParameters) :
         private const val KEY_TARGET = "threadFeedEndId"
         private const val PUSH_WORK_NOTIF_ID = 0x9
 
-        fun enqueue(ctx: Context, target: Int) {
+        fun enqueue(ctx: Context, target: Int, stateTarget: Long = 0L) {
             val request = OneTimeWorkRequestBuilder<NotificationPushWorker>()
-                .setInputData(Data.Builder().putInt(KEY_TARGET, target).build())
+                .setInputData(Data.Builder().putInt(KEY_TARGET, target).putLong("stateFeedEndId", stateTarget).build())
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .build()
             WorkManager.getInstance(ctx).enqueue(request)

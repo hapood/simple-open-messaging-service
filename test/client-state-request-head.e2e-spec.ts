@@ -1,4 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { PushService } from '../src/push/push.service.js';
+import { RequestTransactionCapabilityImpl } from '../src/relationship/request/request-transaction-capability.impl.js';
+import { RelationshipRequestServiceImpl } from '../src/relationship/request/relationship-request.service.impl.js';
+import { RequestAttentionService } from '../src/relationship/request/request-attention.service.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import { account, clientStateFeed } from '../src/database/schema.js';
@@ -14,11 +18,14 @@ describe('ClientStateFeed request-head transport', () => {
   let feed: ClientStateFeedService;
   let sse: SseService;
   let sequence = 0;
+  const enqueueForRequestAttention = vi.fn().mockResolvedValue(undefined);
 
   beforeAll(() => {
     database = new DatabaseService();
     sse = new SseService(database, new CallStateRegistry());
-    feed = new ClientStateFeedService(database, sse);
+    feed = new ClientStateFeedService(database, sse, {
+      enqueueForRequestAttention,
+    } as unknown as PushService);
   });
 
   afterAll(async () => {
@@ -79,6 +86,78 @@ describe('ClientStateFeed request-head transport', () => {
       },
     ]);
     expect(await feed.readEndId(user.id)).toBe(2);
+  });
+
+  it('publishes committed personal reads through the state feed and request convergence wake', async () => {
+    const user = await owner();
+    await publish(user, 9007199254740993n, 0n);
+    const attention = new RequestAttentionService(database);
+    expect(
+      await attention.hasUnread(user.id, {
+        personal: true,
+        managedGroups: false,
+      }),
+    ).toBe(true);
+    expect(
+      await attention.hasUnread(user.id, {
+        personal: false,
+        managedGroups: true,
+      }),
+    ).toBe(false);
+    const service = new RelationshipRequestServiceImpl(
+      database,
+      new RequestTransactionCapabilityImpl(feed),
+      feed,
+    );
+    const stateHint = vi.spyOn(sse, 'onStateFeedUpdated');
+    const threadHint = vi.spyOn(sse, 'onThreadFeedUpdated');
+    enqueueForRequestAttention.mockClear();
+    try {
+      expect(await service.markRead(user.id, '9007199254740993')).toEqual({
+        requestEndId: '9007199254740993',
+        requestReadId: '9007199254740993',
+      });
+      expect(enqueueForRequestAttention).toHaveBeenCalledWith([
+        expect.objectContaining({
+          userId: user.id,
+          stateFeedEndId: 2,
+          convergence: true,
+        }),
+      ]);
+      expect(await feed.query(user.id, 'delta', 1, 2)).toEqual([
+        expect.objectContaining({
+          feedId: 2,
+          body: {
+            requestEndId: '9007199254740993',
+            requestReadId: '9007199254740993',
+          },
+        }),
+      ]);
+      await vi.waitFor(
+        () => {
+          expect(stateHint).toHaveBeenCalledWith(user.id, { feedId: 2 });
+        },
+        { timeout: 2_500 },
+      );
+      expect(threadHint).not.toHaveBeenCalled();
+      expect(
+        await attention.hasUnread(user.id, {
+          personal: true,
+          managedGroups: false,
+        }),
+      ).toBe(false);
+      enqueueForRequestAttention.mockClear();
+      await service.markRead(user.id, '9007199254740993');
+      expect(enqueueForRequestAttention).not.toHaveBeenCalled();
+      await expect(
+        service.markRead(user.id, '9007199254740994'),
+      ).rejects.toThrow('requestReadId exceeds incoming requestEndId');
+      expect(enqueueForRequestAttention).not.toHaveBeenCalled();
+      expect(await feed.readEndId(user.id)).toBe(2);
+    } finally {
+      stateHint.mockRestore();
+      threadHint.mockRestore();
+    }
   });
 
   it('keeps heads older than seven days and honors a fixed range boundary', async () => {

@@ -464,6 +464,15 @@ fn merge_cached_hello(
                 }
             }
         }
+        "REQUEST_ATTENTION" => {
+            for key in ["stateFeedEndId", "threadFeedEndId"] {
+                if let Some(head) = data[key].as_i64().filter(|head| *head >= 0) {
+                    if obj.get(key).and_then(|value| value.as_i64()).is_none_or(|old| head >= old) {
+                        obj.insert(key.into(), head.into());
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -485,10 +494,10 @@ impl StateFeedHead {
                 .get("userId")
                 .and_then(|value| value.as_i64())
                 .filter(|id| *id > 0);
-        } else if event != "STATE_FEED_UPDATED" {
+        } else if event != "STATE_FEED_UPDATED" && event != "REQUEST_ATTENTION" {
             return None;
         }
-        let key = if event == "HELLO" {
+        let key = if event == "HELLO" || event == "REQUEST_ATTENTION" {
             "stateFeedEndId"
         } else {
             "feedId"
@@ -502,6 +511,24 @@ impl StateFeedHead {
     }
 }
 
+#[cfg(test)]
+mod request_wake_tests {
+    use super::*;
+    #[test]
+    fn independent_request_heads_never_require_the_other_feed() {
+        let mut state = StateFeedHead::default();
+        let mut thread = ThreadFeedHead::default();
+        let hello = serde_json::json!({"userId":1,"stateFeedEndId":2,"threadFeedEndId":3});
+        state.accept("HELLO",&hello); thread.accept("HELLO",&hello);
+        let personal = serde_json::json!({"stateFeedEndId":4});
+        assert_eq!(state.accept("REQUEST_ATTENTION",&personal),Some((1,4)));
+        assert_eq!(thread.accept("REQUEST_ATTENTION",&personal),None);
+        let group = serde_json::json!({"threadFeedEndId":5});
+        assert_eq!(state.accept("REQUEST_ATTENTION",&group),None);
+        assert_eq!(thread.accept("REQUEST_ATTENTION",&group),Some((1,5)));
+    }
+}
+
 #[derive(Default)]
 struct ThreadFeedHead {
     user_id: Option<i64>,
@@ -510,7 +537,7 @@ struct ThreadFeedHead {
 
 impl ThreadFeedHead {
     fn accept(&mut self, event: &str, data: &serde_json::Value) -> Option<(i64, i32)> {
-        if event != "HELLO" && event != "THREAD_FEED_UPDATED" {
+        if event != "HELLO" && event != "THREAD_FEED_UPDATED" && event != "REQUEST_ATTENTION" {
             return None;
         }
         if event == "HELLO" {
@@ -717,6 +744,7 @@ async fn open_one_stream(
     let state_app = app.clone();
     let state_events = crate::realtime::NativeEvents::capture(app.app());
     let state_proxy = proxy.clone();
+    let state_feed_wakes = feed_wakes.clone();
     let state_cancel = cancel.child_token();
     let _state_guard = state_cancel.clone().drop_guard();
     crate::realtime::spawn(app.clone(), async move {
@@ -740,6 +768,8 @@ async fn open_one_stream(
             }
             match result {
                 Ok(cursor) => {
+                    // State-only request changes still enter the shared notification lane.
+                    state_feed_wakes.send_replace(Some((user_id, -1)));
                     let _ = state_events.emit(
                         "soms-sse-event",
                         SseEventPayload {

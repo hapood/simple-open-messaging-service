@@ -9,7 +9,7 @@ const descriptor: NotificationDescriptor = {
   count: 1,
   lang: 'en',
   icon: null,
-  data: { threadId: 7 },
+  data: { target: { kind: 'thread', threadId: 7 } },
 };
 
 function system() {
@@ -40,39 +40,85 @@ function system() {
 }
 
 describe('Browser notification instances', () => {
+  it('separates request and message instances and never recreates a read-only update', async () => {
+    const os = system();
+    const cards = new BrowserNotificationCards(os.registration);
+    const request = {
+      ...descriptor,
+      data: {
+        target: { kind: 'group-join-requests', threadId: 7 },
+      },
+    };
+    const messageId = (await cards.show(descriptor, 11))!;
+    const requestId = (await cards.show(request, 11))!;
+    expect(requestId).not.toBe(messageId);
+    await cards.remove(7);
+    expect([...os.active.keys()]).toEqual([requestId]);
+    os.active.get(requestId)!.close();
+    await cards.show(
+      { ...request, updateExistingOnly: true, silent: true },
+      11,
+    );
+    expect(os.active.size).toBe(0);
+    await cards.show(request, 11);
+    expect(os.active.size).toBe(1);
+  });
   it('reconstructs only the live intersection without allocating or alerting', async () => {
     const os = system();
     const cards = new BrowserNotificationCards(os.registration);
     const first = await cards.show(descriptor, 11);
-    const expired = await cards.show({ ...descriptor, data: { threadId: 8 } }, 11);
+    const expired = await cards.show(
+      { ...descriptor, data: { target: { kind: 'thread', threadId: 8 } } },
+      11,
+    );
     const candidates = await cards.reconstructionCandidates();
     os.registration.getNotifications.mockClear();
     os.showNotification.mockClear();
-    await cards.reconstruct(candidates, [
-      { ...descriptor, body: 'Merged' },
-      { ...descriptor, data: { threadId: 9 } },
-    ], 11);
+    await cards.reconstruct(
+      candidates,
+      [
+        { ...descriptor, body: 'Merged' },
+        { ...descriptor, data: { target: { kind: 'thread', threadId: 9 } } },
+      ],
+      11,
+    );
     expect([...os.active.keys()]).toEqual([first]);
-    expect(os.active.has(expired)).toBe(false);
-    expect(os.active.get(first)?.body).toBe('Merged');
+    expect(os.active.has(expired!)).toBe(false);
+    expect(os.active.get(first!)?.body).toBe('Merged');
     expect(os.showNotification).toHaveBeenCalledTimes(1);
-    expect(os.showNotification.mock.lastCall?.[1]).toMatchObject({ tag: first, silent: true, renotify: false });
+    expect(os.showNotification.mock.lastCall?.[1]).toMatchObject({
+      tag: first,
+      silent: true,
+      renotify: false,
+    });
     expect(os.registration.getNotifications).not.toHaveBeenCalled();
   });
 
   it('keeps one stable candidate per thread and closes only duplicate message cards', async () => {
-    for (const order of [['b', 'a'], ['a', 'b']]) {
+    for (const order of [
+      ['b', 'a'],
+      ['a', 'b'],
+    ]) {
       const os = system();
       for (const suffix of order) {
         await os.registration.showNotification('Peer', {
-          tag: `soms-card-${suffix}`, data: { threadId: 7 },
+          tag: `soms-card-${suffix}`,
+          data: { target: { kind: 'thread', threadId: 7 } },
         });
       }
-      await os.registration.showNotification('Other', { tag: 'soms-card-c', data: { threadId: 8 } });
-      await os.registration.showNotification('Probe', { tag: 'soms-push-probe' });
+      await os.registration.showNotification('Other', {
+        tag: 'soms-card-c',
+        data: { target: { kind: 'thread', threadId: 8 } },
+      });
+      await os.registration.showNotification('Probe', {
+        tag: 'soms-push-probe',
+      });
       const cards = new BrowserNotificationCards(os.registration);
       const candidates = await cards.reconstructionCandidates();
-      expect([...candidates]).toEqual([['soms-card-a', 7], ['soms-card-c', 8]]);
+      expect([...candidates]).toEqual([
+        ['soms-card-a', 'thread:7'],
+        ['soms-card-c', 'thread:8'],
+      ]);
       expect(os.active.has('soms-card-b')).toBe(false);
       expect(os.active.has('soms-push-probe')).toBe(true);
       os.active.get('soms-card-a')!.close();
@@ -90,10 +136,11 @@ describe('Browser notification instances', () => {
     const first = await cards.show(descriptor, 11);
     const candidates = await cards.reconstructionCandidates();
     await os.registration.showNotification('Other', {
-      tag: 'soms-card-other', data: { threadId: 7, sessionId: 11 },
+      tag: 'soms-card-other',
+      data: { target: { kind: 'thread', threadId: 7 }, sessionId: 11 },
     });
     await cards.reconstruct(candidates, [descriptor], 11);
-    expect(os.active.has(first)).toBe(true);
+    expect(os.active.has(first!)).toBe(true);
     expect(os.active.has('soms-card-other')).toBe(true);
   });
 
@@ -102,8 +149,8 @@ describe('Browser notification instances', () => {
     const cards = new BrowserNotificationCards(os.registration);
     const first = await cards.show(descriptor, 11);
     const candidates = await cards.reconstructionCandidates();
-    os.active.get(first)!.close();
-    cards.dismissed(first);
+    os.active.get(first!)!.close();
+    cards.dismissed(first!);
     await cards.reconstruct(candidates, [descriptor], 11);
     expect(os.active.size).toBe(0);
     const next = await cards.show(descriptor, 11);
@@ -120,11 +167,13 @@ describe('Browser notification instances', () => {
     const id = await cards.show(descriptor, 11);
     const candidates = await cards.reconstructionCandidates();
     os.showNotification.mockRejectedValueOnce(new Error('unavailable'));
-    await expect(cards.reconstruct(candidates, [descriptor], 11)).rejects.toThrow('unavailable');
-    expect(os.active.has(id)).toBe(true);
+    await expect(
+      cards.reconstruct(candidates, [descriptor], 11),
+    ).rejects.toThrow('unavailable');
+    expect(os.active.has(id!)).toBe(true);
     policy.mockImplementationOnce(async () => {
-      os.active.get(id)!.close();
-      cards.dismissed(id);
+      os.active.get(id!)!.close();
+      cards.dismissed(id!);
       return 'cooldown_5s';
     });
     os.showNotification.mockClear();
@@ -157,7 +206,11 @@ describe('Browser notification instances', () => {
   it('starts cooldown at acceptance and does not extend it on silent updates or failures', async () => {
     const os = system();
     let now = 10000;
-    const cards = new BrowserNotificationCards(os.registration, async () => 'cooldown_5s', () => now);
+    const cards = new BrowserNotificationCards(
+      os.registration,
+      async () => 'cooldown_5s',
+      () => now,
+    );
     await cards.show(descriptor, 11);
     expect(os.showNotification.mock.lastCall?.[1]?.silent).toBe(false);
     now += 4999;
@@ -172,11 +225,14 @@ describe('Browser notification instances', () => {
 
   it('once-per-thread survives updates but dismissal creates fresh eligibility', async () => {
     const os = system();
-    const cards = new BrowserNotificationCards(os.registration, async () => 'once_per_thread');
+    const cards = new BrowserNotificationCards(
+      os.registration,
+      async () => 'once_per_thread',
+    );
     const id = await cards.show(descriptor, 11);
     await cards.show(descriptor, 11);
     expect(os.showNotification.mock.lastCall?.[1]?.silent).toBe(true);
-    os.active.get(id)!.close();
+    os.active.get(id!)!.close();
     await cards.show(descriptor, 11);
     expect(os.showNotification.mock.lastCall?.[1]?.silent).toBe(false);
   });
@@ -193,18 +249,18 @@ describe('Browser notification instances', () => {
     );
     expect(second).toBe(first);
     expect(os.active.size).toBe(1);
-    expect(os.active.get(first)?.body).toBe('Updated');
+    expect(os.active.get(first!)?.body).toBe('Updated');
   });
 
   it('dismissal and business removal recreate a fresh instance; old removal is harmless', async () => {
     const os = system();
     const cards = new BrowserNotificationCards(os.registration);
     const first = await cards.show(descriptor, 11);
-    os.active.get(first)!.close();
+    os.active.get(first!)!.close();
     const second = await cards.show(descriptor, 11);
     expect(second).not.toBe(first);
     await cards.removeInstance(first);
-    expect(os.active.has(second)).toBe(true);
+    expect(os.active.has(second!)).toBe(true);
     await cards.remove(7);
     expect(os.active.size).toBe(0);
     expect(await cards.show(descriptor, 11)).not.toBe(second);
@@ -221,6 +277,6 @@ describe('Browser notification instances', () => {
     await expect(
       cards.show({ ...descriptor, body: 'Updated' }, 11),
     ).rejects.toThrow('failed update');
-    expect(os.active.get(id)?.body).toBe('First');
+    expect(os.active.get(id!)?.body).toBe('First');
   });
 });

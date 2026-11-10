@@ -21,5 +21,5 @@ data class NotifDescriptor(
     val attention: String?,
     val silent: Boolean?,
     val messages: List<NotifMessage>,
-    val threadId: Int,
+    val target: String,
 )

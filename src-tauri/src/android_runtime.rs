@@ -22,22 +22,39 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationPresen
     }
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_validateNotificationTarget(
+    mut env: JNIEnv, _receiver: JObject, value: JString,
+) -> jstring {
+    let result = (|| {
+        crate::native_db::active_login().ok()?;
+        let raw: String = env.get_string(&value).ok()?.into();
+        let target = serde_json::from_str::<crate::native_db::notifications::NotificationTarget>(&raw).ok()
+            .or_else(|| raw.parse::<i32>().ok().map(Into::into))?;
+        if !target.valid() { return None; }
+        env.new_string(serde_json::to_string(&target).ok()?).ok().map(|value| value.into_raw())
+    })();
+    result.unwrap_or(std::ptr::null_mut())
+}
+
 /// A dismissal is an OS observation, not a read receipt or a removal request.
 #[no_mangle]
 pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationDismissed(
     mut env: JNIEnv,
     _receiver: JObject,
-    thread_id: jni::sys::jint,
+    target: JString,
     notification_id: JString,
 ) {
-    if thread_id <= 0 {
-        return;
-    }
+    let Ok(raw) = env.get_string(&target) else { return };
+    let raw: String = raw.into();
+    let target = serde_json::from_str::<crate::native_db::notifications::NotificationTarget>(&raw)
+        .ok().or_else(|| raw.parse::<i32>().ok().map(Into::into));
+    let Some(target) = target.filter(|target| target.valid()) else { return };
     let Ok(id) = env.get_string(&notification_id) else { return };
     let id: String = id.into();
     if let Ok(owner) = crate::native_db::active_login() {
         if let Ok(mut state) = owner.notification_delivery.lock() {
-            state.dismissed(thread_id, &id);
+            state.dismissed(target, &id);
         }
     }
 }
@@ -49,13 +66,15 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryNotifications
     user_id: jni::sys::jint,
     target: jni::sys::jint,
     allow_alert: jni::sys::jboolean,
+    state_target: jni::sys::jlong,
 ) -> jni::sys::jobject {
     let result = (|| -> Result<jni::sys::jobject, String> {
         let proxy = proxy_state()?;
-        let Some(batch) = tauri::async_runtime::block_on(crate::native_db::notifications::synchronize(
+        let Some(batch) = tauri::async_runtime::block_on(crate::native_db::notifications::synchronize_heads(
             proxy,
             i64::from(user_id),
             target,
+            if state_target == 0 { -1 } else { state_target },
         ))? else {
             return Ok(std::ptr::null_mut());
         };

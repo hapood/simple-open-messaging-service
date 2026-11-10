@@ -7,6 +7,11 @@ import {
   type Type,
 } from '@angular/core';
 import { UserService } from './user.service';
+import type { ConversationItem } from './model';
+import {
+  notificationTargetKey,
+  parseNotificationTarget,
+} from '../../../../shared/notification-target';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import {
@@ -37,6 +42,10 @@ export type ChatOpenTransition = 'standard' | 'group-joined';
 export interface AsideEntry {
   readonly id: number;
   readonly panel: AsidePanel;
+  readonly payload?: {
+    readonly threadId: number;
+    readonly initialTab?: 'invitations' | 'applications';
+  };
 }
 
 /** Transient pane kinds stacked above the chat/aside layers. The host template renders each by `kind`. */
@@ -160,18 +169,28 @@ export class NavStateMachineService {
       const match = location.pathname.match(/^\/chat\/([1-9]\d*)$/);
       const threadId = match ? Number(match[1]) : undefined;
       const query = new URLSearchParams(location.search);
-      if (query.has('notificationSessionId')) {
-        const raw = query.get('notificationSessionId')!;
+      if (
+        query.has('notificationSessionId') ||
+        query.has('notificationTarget')
+      ) {
+        const raw = query.get('notificationSessionId') ?? '';
         const sessionId = /^[1-9]\d*$/.test(raw) ? Number(raw) : undefined;
-        if (
-          validThreadNavigationId(threadId) &&
-          validThreadNavigationId(sessionId)
-        )
+        const rawThread = query.get('threadId');
+        const target = parseNotificationTarget({
+          kind: query.get('notificationTarget') ?? 'thread',
+          threadId:
+            rawThread === null
+              ? threadId
+              : /^[1-9]\d*$/.test(rawThread)
+                ? Number(rawThread)
+                : undefined,
+        });
+        if (target && validThreadNavigationId(sessionId))
           this.bootstrapNotificationIntent = {
             source: 'web',
-            id: `bootstrap:${sessionId}:${threadId}`,
+            id: `bootstrap:${sessionId}:${notificationTargetKey(target)}`,
             sessionId,
-            threadId,
+            target,
           };
       } else if (validThreadNavigationId(threadId)) {
         this.chatThreadId.set(threadId);
@@ -218,19 +237,20 @@ export class NavStateMachineService {
   openChat(
     threadId: number,
     transition: ChatOpenTransition = 'standard',
-  ): void {
+  ): boolean {
     this._navigationRevision.update((value) => value + 1);
-    this.closeAllPanes();
+    const revision = this.navigationRevision();
     if (this.chatThreadId() !== threadId) this.aside.set([]);
     this.searchOpen.set(false);
     this.pendingChatTransition.set({ threadId, kind: transition });
     this.chatThreadId.set(threadId);
+    this.cancelPanes();
+    return this.navigationRevision() === revision;
   }
-  /** External taps reveal Chats even when Settings/Profile currently covers it. */
+  /** Every notification starts at Home, even a repeated tap on the same thread. */
   openExternalChat(threadId: number): boolean {
-    this.setTopSection('chats');
-    this.openChat(threadId);
-    return this.chatThreadId() === threadId;
+    if (!this.returnToThreadList()) return false;
+    return this.openChat(threadId);
   }
 
   /** Consume the transition intent exactly once when ChatPane is ready to reveal the requested thread. */
@@ -241,43 +261,77 @@ export class NavStateMachineService {
     return pending.kind;
   }
   /** Leave the chat → home. Also closes the aside + search and clears the pane stack. */
-  closeChat(): void {
+  closeChat(): boolean {
     this._navigationRevision.update((value) => value + 1);
-    this.closeAllPanes();
+    const revision = this.navigationRevision();
     this.pendingChatTransition.set(undefined);
     this.chatThreadId.set(undefined);
     this.aside.set([]);
     this.searchOpen.set(false);
+    this.cancelPanes();
+    return this.navigationRevision() === revision;
   }
 
   /** Return to the thread list and discard every chat/settings descendant. Cache maintenance uses this
    * before replacing the message database so destroying ChatBox instances cancels their subscriptions and
    * prevents a hidden pane from immediately issuing new reads against the replacement cache. */
-  returnToThreadList(): void {
-    this.closeChat();
+  returnToThreadList(): boolean {
     this.settingsCategoryStack.set([]);
     this.topSection.set('chats');
+    return this.closeChat();
   }
 
   // --- aside layer ---
   /** Open a root chat-scoped overlay panel, replacing any current aside hierarchy. */
-  openAside(panel: AsidePanel): void {
-    this.aside.set([{ id: nextAsideId++, panel }]);
+  openAside(panel: AsidePanel, payload?: AsideEntry['payload']): void {
+    this._navigationRevision.update((value) => value + 1);
+    this.aside.set([
+      { id: nextAsideId++, panel, ...(payload ? { payload } : {}) },
+    ]);
   }
+  /** Shared manual/notification entry: requests remain a writable manager-only chat aside. */
+  openGroupJoinRequests(
+    thread: ConversationItem | undefined,
+    initialTab?: 'invitations' | 'applications',
+  ): boolean {
+    if (
+      !thread ||
+      thread.type !== 'GROUP' ||
+      (thread.role !== 'OWNER' && thread.role !== 'ADMIN') ||
+      thread.conversationState === 'READ_ONLY' ||
+      this.chatThreadId() !== thread.threadId
+    )
+      return false;
+    this._navigationRevision.update((value) => value + 1);
+    this.aside.update((stack) => [
+      ...stack,
+      {
+        id: nextAsideId++,
+        panel: 'group-join-requests',
+        payload: { threadId: thread.threadId, initialTab },
+      },
+    ]);
+    return true;
+  }
+
   /** Drill into a child of the current aside so Back can restore its parent. */
   pushAside(panel: AsidePanel): void {
+    this._navigationRevision.update((value) => value + 1);
     this.aside.update((stack) => [...stack, { id: nextAsideId++, panel }]);
   }
   /** Close the aside (bound to the desktop scrim click). */
   closeAside(): void {
+    this._navigationRevision.update((value) => value + 1);
     this.aside.set([]);
   }
 
   // --- in-chat search layer ---
   openSearch(): void {
+    this._navigationRevision.update((value) => value + 1);
     this.searchOpen.set(true);
   }
   closeSearch(): void {
+    this._navigationRevision.update((value) => value + 1);
     this.searchOpen.set(false);
   }
 
@@ -285,6 +339,7 @@ export class NavStateMachineService {
   /** Drill one level deeper into Settings (pushes onto {@link settingsCategoryStack}). Multi-level: root →
    *  category → sub-category → …; {@link back} pops one level at a time. */
   openSettingsCategory(categoryId: string): void {
+    this._navigationRevision.update((value) => value + 1);
     this.settingsCategoryStack.update((s) => [...s, categoryId]);
   }
 
@@ -296,8 +351,7 @@ export class NavStateMachineService {
   /** Switch the active mobile section. Clears the aside + settings drill-down so each section starts
    *  clean. */
   setTopSection(section: TopSection): void {
-    if (section !== 'chats')
-      this._navigationRevision.update((value) => value + 1);
+    this._navigationRevision.update((value) => value + 1);
     this.topSection.set(section);
     this.aside.set([]);
     this.settingsCategoryStack.set([]);
@@ -306,6 +360,7 @@ export class NavStateMachineService {
   // --- transient pane layer ---
   /** Push a pane; returns its id (pass to {@link closePane}). */
   pushPane(entry: Omit<PaneEntry, 'id'>): number {
+    this._navigationRevision.update((value) => value + 1);
     const id = nextPaneId++;
     this.paneStack.update((s) => [...s, { ...entry, id }]);
     return id;
@@ -316,6 +371,7 @@ export class NavStateMachineService {
     const stack = this.paneStack();
     const idx = stack.findIndex((p) => p.id === id);
     if (idx === -1) return;
+    this._navigationRevision.update((value) => value + 1);
     const removed = stack.slice(idx); // target + everything above
     this.paneStack.set(stack.slice(0, idx));
     for (let i = removed.length - 1; i >= 0; i--)
@@ -325,6 +381,13 @@ export class NavStateMachineService {
   /** Clear the entire pane stack (each onResult gets `undefined` = cancel). Called by openChat/closeChat
    *  so a thread switch or going home dismisses any open dialog/overlay. */
   closeAllPanes(): void {
+    this._navigationRevision.update((value) => value + 1);
+    this.cancelPanes();
+  }
+
+  /** Publish the completed transition before callbacks. Reentrant navigation is
+   * a newer intent, never part of the transition that cancelled these panes. */
+  private cancelPanes(): void {
     const stack = this.paneStack();
     if (stack.length === 0) return;
     this.paneStack.set([]);
@@ -361,6 +424,7 @@ export class NavStateMachineService {
    * desktop/PWA browser-back has already exited (history is flat).
    */
   back(): boolean {
+    this._navigationRevision.update((value) => value + 1);
     const stack = this.paneStack();
     if (stack.length > 0) {
       const removed = stack[stack.length - 1];

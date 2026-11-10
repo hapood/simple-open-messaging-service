@@ -34,7 +34,8 @@ object RustRuntimeBridge {
     // The account cache uses Rust's bundled SQLite. Android's platform SQLite can be too old
     // to parse its schema, so background Kotlin components must never open that file directly.
     external fun notificationPresentationChanged(visible: Boolean, focused: Boolean, threadId: Int)
-    external fun notificationDismissed(threadId: Int, notificationId: String)
+    external fun notificationDismissed(target: String, notificationId: String)
+    external fun validateNotificationTarget(target: String): String?
     external fun getNotificationPreference(key: String): String?
     external fun setNotificationPreference(key: String, value: String)
     external fun queryCallPeer(userId: Int, threadId: Int, account: String, namespaceId: Int): String?
@@ -71,10 +72,10 @@ object RustRuntimeBridge {
     private external fun persistSessionToken(token: String?, sessionUuid: String, storage: Runnable)
     private external fun clearResidualToken(storage: Runnable)
 
-    fun synchronizeNotifications(userId: Int, threadFeedEndId: Int, allowAlert: Boolean): String? {
+    fun synchronizeNotifications(userId: Int, threadFeedEndId: Int, allowAlert: Boolean, stateFeedEndId: Long = 0L): String? {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Notification synchronization must run off the main thread" }
         checkNotNull(databasePath) { "Rust runtime is not initialized" }
-        return queryNotifications(userId, threadFeedEndId, allowAlert)
+        return queryNotifications(userId, threadFeedEndId, allowAlert, stateFeedEndId)
     }
 
     fun synchronizeStateFeed(userId: Int, stateFeedEndId: Long): JSONObject {
@@ -84,7 +85,7 @@ object RustRuntimeBridge {
     }
 
     private external fun syncStateFeed(userId: Int, target: Long): String
-    private external fun queryNotifications(userId: Int, threadFeedEndId: Int, allowAlert: Boolean): String?
+    private external fun queryNotifications(userId: Int, threadFeedEndId: Int, allowAlert: Boolean, stateFeedEndId: Long): String?
     private external fun getServerOrigins(): String
     private external fun initializeRuntime(dataDirectory: String, token: String?): String
 }

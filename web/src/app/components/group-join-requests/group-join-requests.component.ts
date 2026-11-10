@@ -12,6 +12,8 @@ import {
   Component,
   DestroyRef,
   inject,
+  Input,
+  OnInit,
   OnDestroy,
   signal,
 } from '@angular/core';
@@ -74,7 +76,11 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
   styleUrl: './group-join-requests.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class GroupJoinRequestsComponent implements OnDestroy {
+export class GroupJoinRequestsComponent implements OnInit, OnDestroy {
+  @Input() threadId?: number;
+  @Input() initialTab?: 'invitations' | 'applications';
+  /** Frozen on mount: compact chat animations may retain the previous openThreadId. */
+  private groupThreadId?: number;
   readonly UserAvatarType = UserAvatarType;
   private readonly groups = inject(GroupService);
   private readonly http = inject(HttpClient);
@@ -104,16 +110,37 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   readonly inviting = signal<ReadonlySet<string>>(new Set());
   readonly searchText = signal('');
 
+  private readonly mountSession = this.sessionLifecycle.capture();
+  private readonly loadedTabs = new Set<RequestListKind>();
+
+  private isCurrent(): boolean {
+    return (
+      !this.destroyRef.destroyed &&
+      this.sessionLifecycle.isCurrent(this.mountSession)
+    );
+  }
+
+  private scoped<T>(source: Observable<T>): Observable<T> {
+    return source.pipe(
+      takeUntil(fromEvent(this.mountSession.signal, 'abort')),
+      takeUntilDestroyed(this.destroyRef),
+    );
+  }
+
   private invitationBefore?: string;
   private applicationBefore?: string;
 
-  constructor() {
-    const threadId = this.conversations.openThreadId();
+  ngOnInit(): void {
+    const threadId = this.threadId ?? this.conversations.openThreadId();
+    this.groupThreadId = threadId;
     const thread = this.conversations
       .items()
       .find((item) => item.threadId === threadId);
     const hasUnreadApplications = hasUnreadGroupJoinRequests(thread);
-    if (hasUnreadApplications) {
+    if (
+      this.initialTab === 'applications' ||
+      (this.initialTab === undefined && hasUnreadApplications)
+    ) {
       this.activeTab.set(1);
       void this.loadRequests('APPLICATION', false);
     } else {
@@ -150,9 +177,8 @@ export class GroupJoinRequestsComponent implements OnDestroy {
 
   setTab(index: number): void {
     this.activeTab.set(index);
-    if (index === 1 && this.applications().length === 0) {
-      void this.loadRequests('APPLICATION', false);
-    }
+    const kind = index === 1 ? 'APPLICATION' : 'INVITATION';
+    if (!this.loadedTabs.has(kind)) void this.loadRequests(kind, false);
   }
 
   search(): void {
@@ -180,22 +206,26 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     application: RequestRecord,
     accept: boolean,
   ): Promise<void> {
-    const groupId = this.conversations.openThreadId();
+    const groupId = this.groupThreadId;
     const key = this.requestKey(application);
-    if (groupId === undefined || this.acting().has(key)) return;
+    if (!this.isCurrent() || groupId === undefined || this.acting().has(key))
+      return;
     this.addActing(key);
     try {
       const res = await firstValueFrom(
-        accept
-          ? this.groups.acceptJoinRequest({
-              groupId,
-              requestId: application.id,
-            })
-          : this.groups.rejectJoinRequest({
-              groupId,
-              requestId: application.id,
-            }),
+        this.scoped(
+          accept
+            ? this.groups.acceptJoinRequest({
+                groupId,
+                requestId: application.id,
+              })
+            : this.groups.rejectJoinRequest({
+                groupId,
+                requestId: application.id,
+              }),
+        ),
       );
+      if (!this.isCurrent()) return;
       if (res.code !== 0) return this.showBusinessError(res);
       if (res.data?.status !== 'OK') {
         this.toast.warn(
@@ -216,24 +246,28 @@ export class GroupJoinRequestsComponent implements OnDestroy {
         ),
       );
     } catch {
-      this.showNetworkError();
+      if (this.isCurrent()) this.showNetworkError();
     } finally {
-      this.removeActing(key);
+      if (this.isCurrent()) this.removeActing(key);
     }
   }
 
   async revokeInvitation(invitation: RequestRecord): Promise<void> {
-    const groupId = this.conversations.openThreadId();
+    const groupId = this.groupThreadId;
     const key = this.requestKey(invitation);
-    if (groupId === undefined || this.acting().has(key)) return;
+    if (!this.isCurrent() || groupId === undefined || this.acting().has(key))
+      return;
     this.addActing(key);
     try {
       const res = await firstValueFrom(
-        this.groups.revokeInvitation({
-          groupId,
-          requestId: invitation.id,
-        }),
+        this.scoped(
+          this.groups.revokeInvitation({
+            groupId,
+            requestId: invitation.id,
+          }),
+        ),
       );
+      if (!this.isCurrent()) return;
       if (res.code !== 0) return this.showBusinessError(res);
       if (res.data?.status !== 'OK') {
         this.toast.warn(
@@ -259,9 +293,9 @@ export class GroupJoinRequestsComponent implements OnDestroy {
         return next;
       });
     } catch {
-      this.showNetworkError();
+      if (this.isCurrent()) this.showNetworkError();
     } finally {
-      this.removeActing(key);
+      if (this.isCurrent()) this.removeActing(key);
     }
   }
 
@@ -281,9 +315,10 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   }
 
   invite(candidate: User): void {
-    const groupId = this.conversations.openThreadId();
+    const groupId = this.groupThreadId;
     const key = this.candidateKey(candidate);
-    if (groupId === undefined || this.inviting().has(key)) return;
+    if (!this.isCurrent() || groupId === undefined || this.inviting().has(key))
+      return;
     const session = this.sessionLifecycle.capture();
     this.inviting.update((ids) => new Set(ids).add(key));
     // Lookup endpoints supply display data directly; the send boundary is the
@@ -329,6 +364,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       )
       .subscribe({
         next: (res) => {
+          if (!this.isCurrent()) return;
           if (res.code !== 0) return this.showBusinessError(res);
           const rejection = res.data?.skipped[0];
           if (rejection) {
@@ -357,7 +393,9 @@ export class GroupJoinRequestsComponent implements OnDestroy {
           this.sentInvitations.update((keys) => new Set(keys).add(key));
           void this.loadRequests('INVITATION', false);
         },
-        error: () => this.showNetworkError(),
+        error: () => {
+          if (this.isCurrent()) this.showNetworkError();
+        },
       });
   }
 
@@ -396,8 +434,8 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     kind: RequestListKind,
     append: boolean,
   ): Promise<void> {
-    const groupId = this.conversations.openThreadId();
-    if (groupId === undefined) return;
+    const groupId = this.groupThreadId;
+    if (!this.isCurrent() || groupId === undefined) return;
     const loading =
       kind === 'INVITATION'
         ? this.loadingInvitations
@@ -415,22 +453,26 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       const before =
         kind === 'INVITATION' ? this.invitationBefore : this.applicationBefore;
       const res = await firstValueFrom(
-        kind === 'INVITATION'
-          ? this.groups.queryInvitations({
-              groupId,
-              before: append ? before : undefined,
-              take: 20,
-            })
-          : this.groups.queryJoinRequests({
-              groupId,
-              before: append ? before : undefined,
-              take: 20,
-            }),
+        this.scoped(
+          kind === 'INVITATION'
+            ? this.groups.queryInvitations({
+                groupId,
+                before: append ? before : undefined,
+                take: 20,
+              })
+            : this.groups.queryJoinRequests({
+                groupId,
+                before: append ? before : undefined,
+                take: 20,
+              }),
+        ),
       );
+      if (!this.isCurrent()) return;
       if (res.code !== 0 || !res.data) {
         error.set(true);
         return this.showBusinessError(res);
       }
+      this.loadedTabs.add(kind);
       const target =
         kind === 'INVITATION' ? this.invitations : this.applications;
       target.update((rows) =>
@@ -446,42 +488,48 @@ export class GroupJoinRequestsComponent implements OnDestroy {
           this.markApplicationsRead(res.data.joinRequestEndFeedId);
       }
     } catch {
-      error.set(true);
-      this.showNetworkError();
+      if (this.isCurrent()) {
+        error.set(true);
+        this.showNetworkError();
+      }
     } finally {
-      loading.set(false);
+      if (this.isCurrent()) loading.set(false);
     }
   }
 
   private markApplicationsRead(joinRequestReadFeedId: number): void {
-    const threadId = this.conversations.openThreadId();
+    const threadId = this.groupThreadId;
     const thread = this.conversations
       .items()
       .find((item) => item.threadId === threadId);
     if (
+      !this.isCurrent() ||
       threadId === undefined ||
       !thread ||
       !hasUnreadGroupJoinRequests(thread)
     )
       return;
-    this.groups
-      .markJoinRequestsRead({
+    this.scoped(
+      this.groups.markJoinRequestsRead({
         groupId: threadId,
         joinRequestReadFeedId,
-      })
-      .subscribe({
-        next: (result) => {
-          if (result.code === 0) {
-            this.conversations.markJoinRequestsReadLocally(
-              threadId,
-              joinRequestReadFeedId,
-            );
-          } else {
-            this.showBusinessError(result);
-          }
-        },
-        error: () => this.showNetworkError(),
-      });
+      }),
+    ).subscribe({
+      next: (result) => {
+        if (!this.isCurrent()) return;
+        if (result.code === 0) {
+          this.conversations.markJoinRequestsReadLocally(
+            threadId,
+            joinRequestReadFeedId,
+          );
+        } else {
+          this.showBusinessError(result);
+        }
+      },
+      error: () => {
+        if (this.isCurrent()) this.showNetworkError();
+      },
+    });
   }
 
   private addActing(id: string): void {

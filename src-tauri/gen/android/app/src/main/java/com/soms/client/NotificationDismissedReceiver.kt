@@ -8,6 +8,7 @@ import android.content.Intent
 class NotificationDismissedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getStringExtra("notificationId") ?: return
-        RustRuntimeBridge.notificationDismissed(intent.getIntExtra("threadId", -1), id)
+        val target = intent.getStringExtra(SomsMessagingService.EXTRA_TARGET) ?: return
+        RustRuntimeBridge.notificationDismissed(target, id)
     }
 }

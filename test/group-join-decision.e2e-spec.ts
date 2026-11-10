@@ -2192,7 +2192,11 @@ describe('group join decision', () => {
     // projection fan-out task's per-manager watermark advance.
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify.mock.calls[0][0]).toEqual([
-      { userId: invitee.id, feedId: feed!.feedId },
+      {
+        kind: 'personal-request-arrival',
+        userId: invitee.id,
+        feedId: feed!.feedId,
+      },
     ]);
   });
 

@@ -356,6 +356,11 @@ export class RouteService {
     return { id };
   }
 
+  /** Shared entry for header, rail and notification taps; the component owns loading/read state. */
+  openFriendRequests(initialTab: 'add' | 'pending'): DlgRef {
+    return this.popupDlg(PopupType.FRIEND_REQUESTS, { initialTab });
+  }
+
   /** Open the current user's profile editor as a shared page dialog on every layout. */
   openProfile(): void {
     this.popupDlg(PopupType.EDIT_PROFILE);

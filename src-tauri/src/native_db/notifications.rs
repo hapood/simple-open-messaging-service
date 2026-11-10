@@ -1,10 +1,37 @@
 pub(crate) mod alert;
+pub(crate) mod target;
+pub(crate) mod requests;
+pub(crate) use target::NotificationTarget;
 pub(crate) mod content;
 pub(crate) mod delivery;
 pub(crate) mod presentation;
 pub(crate) mod runtime;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod macos_observation;
+
+static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+pub(crate) fn initialize(app: tauri::AppHandle) { let _ = APP.set(app); }
+
+/// Local reads update OS cards without waiting for the next server wake.
+pub(crate) fn refresh_requests(work: DatabaseWork, user_id: i64) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = refresh_requests_owned(work, user_id).await { log::warn!("request notification refresh failed: {error}"); }
+    });
+}
+async fn refresh_requests_owned(work: DatabaseWork, user_id: i64) -> Result<(), String> {
+    let mut batch = from_result_at(work, user_id, vec![], 0, None).await?;
+    batch.requests_existing_only = true;
+    #[cfg(target_os = "android")]
+    { crate::android_notifications::deliver_batch(batch, false).await }
+    #[cfg(not(target_os = "android"))]
+    {
+        #[cfg(desktop)]
+        if let Some(app) = APP.get() {
+            return super::desktop_notifications::deliver_batch(app.clone(), batch).await;
+        }
+        Ok(())
+    }
+}
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -29,6 +56,9 @@ pub(crate) struct NotificationBatch {
     pub(crate) threads: Vec<NotificationThread>,
     /// Complete account total, not the sum of this delta's notification cards.
     pub(crate) unread_total: i64,
+    pub(crate) requests: Vec<requests::RequestAttention>,
+    pub(crate) reconstruction: bool,
+    pub(crate) requests_existing_only: bool,
 }
 
 #[derive(Serialize)]
@@ -100,6 +130,16 @@ pub(crate) fn synchronize(
     user_id: i64,
     target: i32,
 ) -> impl std::future::Future<Output = Result<Option<NotificationBatch>, String>> + Send + 'static {
+    synchronize_heads(proxy, user_id, target, if target < 0 { -1 } else { 0 })
+}
+
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn synchronize_heads(
+    proxy: &crate::ServerSessionState,
+    user_id: i64,
+    target: i32,
+    state_target: i64,
+) -> impl std::future::Future<Output = Result<Option<NotificationBatch>, String>> + Send + 'static {
     // Offline admission is decided once, before any asynchronous synchronization.
     // Do not wait for reconstruction to finish and then admit a stale background wake.
     let captured: Result<_, String> = (|| {
@@ -117,6 +157,8 @@ pub(crate) fn synchronize(
     async move {
         let Some(intent) = captured? else { return Ok(None) };
         let work = intent.database_work();
+        // Background polls and push wakes must also consume personal request heads.
+        intent.state_barrier(state_target).await?;
         let result = intent.synchronize().await?;
         from_result_at(work, user_id, result.states, result.cursor, result.error).await.map(Some)
     }
@@ -148,6 +190,7 @@ pub(crate) async fn for_reconstruction(
 ) -> Result<NotificationBatch, String> {
     super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let mut batch = assemble_selected(conn, user_id, merged_states, None)?;
+        batch.reconstruction = true;
         batch.login_session_id = String::from(work.owner().id().clone());
         batch.work = Some(work);
         Ok(batch)
@@ -752,6 +795,7 @@ fn assemble_selected(
             previews,
         });
     }
+    let requests = requests::read(&tx, user_id)?;
     let unread_total = super::unread::unread_total(&tx, user_id)?;
     let metadata =
         serde_json::to_string(&serde_json::json!({ "threads": &notifications, "unreadTotal": unread_total, "error": error }))
@@ -763,6 +807,9 @@ fn assemble_selected(
         sync_error: error,
         unread_total,
         threads: notifications,
+        requests,
+        reconstruction: false,
+        requests_existing_only: false,
         metadata,
         avatars: avatars.bytes,
         login_session_id: String::new(),

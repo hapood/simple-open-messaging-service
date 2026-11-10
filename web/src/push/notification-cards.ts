@@ -1,4 +1,5 @@
 import type { NotificationDescriptor } from '../app/services/notification-descriptor.model';
+import { notificationKey } from '../app/services/notification-routing';
 
 const CARD_PREFIX = 'soms-card-';
 
@@ -18,7 +19,9 @@ export class BrowserNotificationCards {
   dismissed(id: string): void {
     if (typeof id !== 'string' || !id.startsWith(CARD_PREFIX)) return;
     if (!this.reconstructionCards.delete(id))
-      console.warn('[notification] removal observation has no matching reconstruction instance');
+      console.warn(
+        '[notification] removal observation has no matching reconstruction instance',
+      );
   }
 
   constructor(
@@ -26,52 +29,55 @@ export class BrowserNotificationCards {
       ServiceWorkerRegistration,
       'getNotifications' | 'showNotification'
     >,
-    private readonly alertPolicy: () => Promise<string | undefined> = async () => undefined,
+    private readonly alertPolicy: () => Promise<
+      string | undefined
+    > = async () => undefined,
     private readonly now: () => number = Date.now,
   ) {}
 
-  private async cards(threadId: number): Promise<Notification[]> {
+  private async cards(key: string): Promise<Notification[]> {
     return (await this.registration.getNotifications()).filter(
       (card) =>
-        card.tag.startsWith('soms-') && card.data?.threadId === threadId,
+        card.tag.startsWith('soms-') && notificationKey(card.data) === key,
     );
   }
 
-  async remove(threadId: number): Promise<void> {
-    for (const card of await this.cards(threadId)) {
+  async remove(target: number | string): Promise<void> {
+    const key = typeof target === 'number' ? `thread:${target}` : target;
+    for (const card of await this.cards(key)) {
       this.reconstructionCards.delete(card.tag);
       card.close();
     }
   }
 
-  async removeInstance(id: string): Promise<void> {
+  async removeInstance(id: string | undefined): Promise<void> {
+    if (!id) return;
     this.reconstructionCards.delete(id);
     for (const card of await this.registration.getNotifications({ tag: id })) {
       if (card.tag === id) card.close();
     }
   }
 
-  /** Capture only message instances, never probe/call cards. Page restoration
-   * disables new offline delivery first; already in-flight work is not drained. */
-  async reconstructionCandidates(): Promise<Map<string, number>> {
-    const observed = (await this.registration.getNotifications()).filter((card) => {
-      const threadId = card.data?.threadId;
-      return card.tag.startsWith(CARD_PREFIX) && Number.isInteger(threadId) && threadId > 0;
-    });
-    // Match native restoration: select deterministically, without treating an
-    // opaque instance ID as a timestamp or depending on OS enumeration order.
-    observed.sort((a, b) => a.data.threadId - b.data.threadId ||
-      (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+  /** Capture routable application instances only, never probe/call cards. */
+  async reconstructionCandidates(): Promise<Map<string, string>> {
+    const observed = (await this.registration.getNotifications()).filter(
+      (card) =>
+        card.tag.startsWith(CARD_PREFIX) && notificationKey(card.data) !== null,
+    );
+    observed.sort(
+      (a, b) =>
+        notificationKey(a.data)!.localeCompare(notificationKey(b.data)!) ||
+        (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0),
+    );
     this.reconstructionCards.clear();
-    const retained = new Map<string, number>();
-    const threads = new Set<number>();
+    const retained = new Map<string, string>();
+    const targets = new Set<string>();
     for (const card of observed) {
-      const threadId: number = card.data.threadId;
-      if (threads.has(threadId)) {
-        card.close();
-      } else {
-        threads.add(threadId);
-        retained.set(card.tag, threadId);
+      const key = notificationKey(card.data)!;
+      if (targets.has(key)) card.close();
+      else {
+        targets.add(key);
+        retained.set(card.tag, key);
         this.reconstructionCards.set(card.tag, card);
       }
     }
@@ -81,13 +87,18 @@ export class BrowserNotificationCards {
   /** `merged` must cover the complete current projection, not a feed delta.
    * No new instances are allocated and a failed update can retry with the same candidates. */
   async reconstruct(
-    candidates: ReadonlyMap<string, number>,
+    candidates: ReadonlyMap<string, string>,
     merged: readonly NotificationDescriptor[],
     sessionId: number,
   ): Promise<void> {
-    const projection = new Map(merged.map((descriptor) => [descriptor.data.threadId, descriptor]));
-    for (const [id, threadId] of candidates) {
-      const descriptor = projection.get(threadId);
+    const projection = new Map(
+      merged.map((descriptor) => [
+        notificationKey(descriptor.data),
+        descriptor,
+      ]),
+    );
+    for (const [id, target] of candidates) {
+      const descriptor = projection.get(target);
       if (!descriptor || descriptor.count <= 0) {
         const card = this.reconstructionCards.get(id);
         this.reconstructionCards.delete(id);
@@ -97,39 +108,51 @@ export class BrowserNotificationCards {
       }
     }
     // Only a fully completed reconstruction releases the retained OS resources.
-    this.reconstructionCards.clear();
+    for (const id of candidates.keys()) this.reconstructionCards.delete(id);
   }
 
-  show(descriptor: NotificationDescriptor, sessionId: number): Promise<string>;
-  show(descriptor: NotificationDescriptor, sessionId: number, existingInstance: string): Promise<string | undefined>;
+  show(
+    descriptor: NotificationDescriptor,
+    sessionId: number,
+  ): Promise<string | undefined>;
+  show(
+    descriptor: NotificationDescriptor,
+    sessionId: number,
+    existingInstance: string,
+  ): Promise<string | undefined>;
   async show(
     descriptor: NotificationDescriptor,
     sessionId: number,
     existingInstance?: string,
   ): Promise<string | undefined> {
-    const threadId = descriptor.data.threadId;
-    if (!Number.isInteger(threadId) || threadId! <= 0)
-      throw new Error('Invalid notification thread');
+    const key = notificationKey(descriptor.data);
+    if (!key) throw new Error('Invalid notification target');
     const policy = (await this.alertPolicy()) ?? 'cooldown_5s';
-    const previous = existingInstance ? [] : await this.cards(threadId!);
+    const previous = existingInstance ? [] : await this.cards(key);
     const current = existingInstance
       ? this.reconstructionCards.get(existingInstance)
       : previous.find((card) => card.tag.startsWith(CARD_PREFIX));
     // Reconstruction uses the event-maintained candidate set, not repeated OS queries.
-    if (existingInstance && (!current || current.data?.threadId !== threadId)) return undefined;
+    if (existingInstance && (!current || notificationKey(current.data) !== key))
+      return undefined;
+    if (!current && descriptor.updateExistingOnly) return undefined;
     const id = current?.tag ?? CARD_PREFIX + crypto.randomUUID();
     if (!['cooldown_2s', 'cooldown_5s', 'once_per_thread'].includes(policy))
       throw new Error('Invalid notification alert policy');
-    const eligible = policy === 'once_per_thread'
-      ? current?.data?.hasAcceptedAlert !== true
-      : this.lastAcceptedAlert === undefined ||
-        this.now() - this.lastAcceptedAlert >= (policy === 'cooldown_2s' ? 2000 : 5000);
+    const eligible =
+      policy === 'once_per_thread'
+        ? current?.data?.hasAcceptedAlert !== true
+        : this.lastAcceptedAlert === undefined ||
+          this.now() - this.lastAcceptedAlert >=
+            (policy === 'cooldown_2s' ? 2000 : 5000);
     const alert = !descriptor.silent && eligible;
     await this.registration.showNotification(descriptor.title, {
       body: descriptor.body,
       tag: id,
       data: {
-        ...descriptor.data, sessionId, notificationId: id,
+        ...descriptor.data,
+        sessionId,
+        notificationId: id,
         hasAcceptedAlert: current?.data?.hasAcceptedAlert === true || alert,
       },
       icon: descriptor.icon ?? undefined,

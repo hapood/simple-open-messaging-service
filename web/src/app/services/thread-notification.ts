@@ -76,6 +76,9 @@ export function threadNotificationDescriptor(
     silent: item.muted,
     ...(item.mentionUnread.length ? { attention: 'mention' as const } : {}),
     previewMode,
-    data: { threadId: item.threadId, seq: preview?.seq },
+    data: {
+      target: { kind: 'thread', threadId: item.threadId },
+      seq: preview?.seq,
+    },
   };
 }

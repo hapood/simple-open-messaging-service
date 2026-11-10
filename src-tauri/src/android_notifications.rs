@@ -76,7 +76,7 @@ pub(crate) fn restore_cards() -> Result<Vec<delivery::ObservedCard>, String> {
             operation_id: uuid::Uuid::new_v4().to_string(),
             notification_id: Some(card.notification_id),
             command: NotificationCommand::Remove {
-                thread_id: card.thread_id,
+                target: card.target,
             },
             previous_handle: Some(card.handle),
         };
@@ -223,7 +223,7 @@ pub(crate) fn presentation_changed() {
             {
                 deliver_command(
                     work,
-                    NotificationCommand::Remove { thread_id },
+                    NotificationCommand::Remove { target: thread_id.into() },
                     vec![],
                     false,
                 )

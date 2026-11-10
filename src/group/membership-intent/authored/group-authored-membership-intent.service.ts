@@ -35,6 +35,7 @@ import { lockGroupMemberIntentRowsInTx } from '../shared/group-member-intent-loc
 import { Logger } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
+import { captureGroupDepartureUpdatesInTx } from '../../shared/capture-group-departure-updates.js';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
 import type { RequestDecision } from '../../../../shared/relationship-request.js';
@@ -1007,6 +1008,14 @@ export class GroupAuthoredMembershipIntentService {
     }>(groupMembershipRevocationSql(context.input));
     const row = result.rows[0];
     if (!row) throw new Error('group membership revocation update disappeared');
+    if (row.pairChanged && context.localMemberId !== null)
+      clientUpdates.push(
+        ...(await captureGroupDepartureUpdatesInTx(
+          tx,
+          context.params.threadId,
+          context.localMemberId,
+        )),
+      );
     // Explicit manager-side terminal actions:
     // - REJECT: rejects a pending application (request -> REJECTED)
     // - WITHDRAW: cancels the group's own live invitation (request -> WITHDRAWN)

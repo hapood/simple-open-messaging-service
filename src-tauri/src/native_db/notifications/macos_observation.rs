@@ -5,23 +5,27 @@ pub(crate) fn decode(json: &str) -> Result<Vec<ObservedCard>, String> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Card {
-        thread_id: i32,
+        #[serde(default)]
+        thread_id: Option<i32>,
+        #[serde(default)]
+        target: Option<crate::native_db::notifications::NotificationTarget>,
         identifier: String,
     }
     serde_json::from_str::<Vec<Card>>(json)
         .map_err(|error| error.to_string())?
         .into_iter()
         .map(|card| {
+            let target = card.target.or_else(|| card.thread_id.map(Into::into)).filter(|t| t.valid()).ok_or("invalid notification target")?;
             let instance = card
                 .identifier
                 .strip_prefix("soms-thread-")
                 .ok_or("invalid macOS notification identifier")?;
             let parsed = uuid::Uuid::parse_str(instance).map_err(|error| error.to_string())?;
-            if card.thread_id <= 0 || parsed.to_string() != instance {
+            if parsed.to_string() != instance {
                 return Err("invalid macOS notification coordinates".into());
             }
             Ok(ObservedCard {
-                thread_id: card.thread_id,
+                target,
                 notification_id: instance.to_owned(),
                 handle: PlatformHandle::Macos {
                     identifier: card.identifier,

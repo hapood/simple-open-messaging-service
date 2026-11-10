@@ -946,6 +946,8 @@
     "notifGroupingThread": "Show messages",
     "notifGroupingAll": "Private",
     "notifNewMessage": "New message",
+    "notifNewRequests": "New incoming requests",
+    "notifJoinRequests": "New group join requests",
     "notifAlertFrequency": "Alert frequency",
     "notifAlertFrequencyDesc": "Limit sound and vibration when messages arrive continuously.",
     "notifAlert2s": "2 seconds",

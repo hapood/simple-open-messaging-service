@@ -1,3 +1,4 @@
+use crate::native_db::notifications::NotificationTarget;
 use super::notifications::delivery::{DeliveryResult, PlatformHandle};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -55,27 +56,26 @@ mod linux_registry;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingTap {
     id: String,
-    thread_id: i32,
+    target: NotificationTarget,
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn parse_activation(url: &str) -> Option<(i32, String)> {
-    let target = url.strip_prefix("soms-notification://thread/")?;
-    let (thread, instance) = target.split_once("/card/")?;
-    let id = thread.parse::<i32>().ok()?;
+fn parse_activation(url: &str) -> Option<(NotificationTarget, String)> {
+    let path = url.strip_prefix("soms-notification://")?;
+    let (key, instance) = path.split_once("/card/")?;
+    let target = NotificationTarget::from_key(key)?;
     let uuid = uuid::Uuid::parse_str(instance).ok()?;
-    (id > 0 && thread == id.to_string() && instance == uuid.to_string())
-        .then(|| (id, instance.to_owned()))
+    (instance == uuid.to_string()).then(|| (target, instance.to_owned()))
 }
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_observed_card(launch: &str, tag: String, group: String) -> Result<super::notifications::delivery::ObservedCard, String> {
-    let (thread_id, notification_id) = parse_activation(launch).ok_or("invalid Windows notification activation")?;
+    let (target, notification_id) = parse_activation(launch).ok_or("invalid Windows notification activation")?;
     if tag != notification_id || group != "soms-messages" {
         return Err("Windows notification handle does not match activation".into());
     }
     Ok(super::notifications::delivery::ObservedCard {
-        thread_id, notification_id,
+        target, notification_id,
         handle: PlatformHandle::Windows { tag, group },
     })
 }
@@ -98,14 +98,14 @@ fn next_tap_id() -> String {
 pub(crate) fn initialize_windows_links(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_deep_link::DeepLinkExt;
     fn consume(app: &tauri::AppHandle, url: &str) {
-        if let Some((thread_id, instance)) = parse_activation(url) {
+        if let Some((target, instance)) = parse_activation(url) {
             if let Ok(owner) = super::active_login() {
                 if let Ok(mut state) = owner.notification_delivery.lock() {
-                    state.dismissed(thread_id, &instance);
+                    state.dismissed(target, &instance);
                 }
             }
             windows_platform::retire_subscription(&instance);
-            tapped(app, thread_id);
+            tapped(app, target);
         }
     }
     let target = app.clone();
@@ -126,8 +126,8 @@ pub(crate) fn initialize_windows_links(app: &tauri::AppHandle) -> Result<(), Str
     Ok(())
 }
 
-fn tapped(app: &tauri::AppHandle, thread_id: i32) {
-    if thread_id <= 0 {
+fn tapped(app: &tauri::AppHandle, target: NotificationTarget) {
+    if !target.valid() || super::active_login().is_err() {
         return;
     }
     let Ok(mut pending) = PENDING_TAP.lock() else {
@@ -135,7 +135,7 @@ fn tapped(app: &tauri::AppHandle, thread_id: i32) {
     };
     *pending = Some(PendingTap {
         id: next_tap_id(),
-        thread_id,
+        target,
     });
     drop(pending);
     if let Some(window) = app.get_webview_window("main") {
@@ -155,13 +155,13 @@ pub(crate) fn desktop_notification_pending() -> Result<Option<PendingTap>, Strin
 }
 
 #[tauri::command]
-pub(crate) fn desktop_notification_acknowledge(id: String, thread_id: i32) -> Result<(), String> {
+pub(crate) fn desktop_notification_acknowledge(id: String, target: NotificationTarget) -> Result<(), String> {
     let mut pending = PENDING_TAP
         .lock()
         .map_err(|_| "notification tap state poisoned")?;
     if pending
         .as_ref()
-        .is_some_and(|tap| tap.id == id && tap.thread_id == thread_id)
+        .is_some_and(|tap| tap.id == id && tap.target == target)
     {
         *pending = None;
     }
@@ -211,7 +211,7 @@ mod navigation_tests {
         let instance = uuid::Uuid::new_v4().to_string();
         let launch = format!("soms-notification://thread/7/card/{instance}");
         let card = windows_observed_card(&launch, instance.clone(), "soms-messages".into()).unwrap();
-        assert_eq!(card.thread_id, 7);
+        assert_eq!(card.target, 7.into());
         assert_eq!(card.notification_id, instance);
         assert_eq!(card.handle, PlatformHandle::Windows { tag: instance.clone(), group: "soms-messages".into() });
         assert!(windows_observed_card(&launch, uuid::Uuid::new_v4().to_string(), "soms-messages".into()).is_err());
@@ -220,11 +220,21 @@ mod navigation_tests {
     }
 
     #[test]
+    fn request_activations_roundtrip_without_thread_aliases() {
+        let instance = uuid::Uuid::new_v4().to_string();
+        for target in [NotificationTarget::FriendRequests {}, NotificationTarget::GroupJoinRequests { thread_id: 7 }] {
+            let url = format!("soms-notification://{}/card/{instance}",target.key());
+            assert_eq!(parse_activation(&url),Some((target,instance.clone())));
+            assert_eq!(windows_observed_card(&url,instance.clone(),"soms-messages".into()).unwrap().target,target);
+        }
+    }
+
+    #[test]
     fn activation_requires_a_canonical_thread_target() {
         let instance = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(
             parse_activation(&format!("soms-notification://thread/7/card/{instance}")),
-            Some((7, instance.into()))
+            Some((7.into(), instance.into()))
         );
         for suffix in ["", "?x=1", "#fragment", "/extra"] {
             let invalid = if suffix.is_empty() {
@@ -270,13 +280,13 @@ mod navigation_tests {
         assert_ne!(old_id, new_id);
         *PENDING_TAP.lock().unwrap() = Some(PendingTap {
             id: new_id.clone(),
-            thread_id: 7,
+            target: NotificationTarget::Thread { thread_id: 7 },
         });
-        desktop_notification_acknowledge(old_id, 7).unwrap();
+        desktop_notification_acknowledge(old_id, 7.into()).unwrap();
         assert_eq!(desktop_notification_pending().unwrap().unwrap().id, new_id);
-        desktop_notification_acknowledge(new_id.clone(), 9).unwrap();
+        desktop_notification_acknowledge(new_id.clone(), 9.into()).unwrap();
         assert!(desktop_notification_pending().unwrap().is_some());
-        desktop_notification_acknowledge(new_id, 7).unwrap();
+        desktop_notification_acknowledge(new_id, 7.into()).unwrap();
         assert!(desktop_notification_pending().unwrap().is_none());
     }
 }
@@ -285,7 +295,7 @@ pub(crate) struct DesktopNotification {
     operation_id: String,
     notification_id: Option<String>,
     previous_handle: Option<super::notifications::delivery::PlatformHandle>,
-    thread_id: i32,
+    target: NotificationTarget,
     title: String,
     body: String,
     count: i64,
@@ -294,7 +304,7 @@ pub(crate) struct DesktopNotification {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use super::DesktopNotification;
+    use super::{DesktopNotification, NotificationTarget};
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
 
@@ -303,8 +313,8 @@ mod platform {
         listener: tauri::async_runtime::JoinHandle<()>,
     }
 
-    fn cards() -> &'static Mutex<HashMap<i32, Card>> {
-        static CARDS: OnceLock<Mutex<HashMap<i32, Card>>> = OnceLock::new();
+    fn cards() -> &'static Mutex<HashMap<NotificationTarget, Card>> {
+        static CARDS: OnceLock<Mutex<HashMap<NotificationTarget, Card>>> = OnceLock::new();
         CARDS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
@@ -333,10 +343,10 @@ mod platform {
             if let Some(id) = target {
                 session.close(id)?;
             }
-            if let Some(card) = cards.remove(&input.thread_id) {
+            if let Some(card) = cards.remove(&input.target) {
                 card.listener.abort();
             }
-            registry.ids.remove(&input.thread_id);
+            registry.ids.remove(&input.target.key());
             session.save(&registry);
             return Ok(None);
         }
@@ -359,22 +369,23 @@ mod platform {
         // A successful reply from the captured unique daemon establishes acceptance.
         // Later daemon changes or local persistence failures do not undo that fact.
         let handle = session.notify(previous_id, &input.title, &input.body, input.silent)?;
-        registry.ids.insert(input.thread_id, handle);
+        registry.ids.insert(input.target.key(), handle);
         session.save(&registry);
         let published_handle = super::super::notifications::delivery::PlatformHandle::Linux {
             daemon: session.identity(),
             id: handle,
         };
-        let thread_id = input.thread_id;
+        let target = input.target;
         let daemon = session.identity();
         let operation_id = input.operation_id.clone();
         let resource_operation = operation_id.clone();
         let listener = session.listen(signals, handle, move |clicked| {
             if clicked {
-                super::tapped(&app, thread_id);
+                if owner.capture_database_work().is_err() { return; }
+                super::tapped(&app, target);
             } else {
                 if let Ok(mut state) = owner.notification_delivery.lock() {
-                    state.dismissed_operation(thread_id, &instance, &operation_id);
+                    state.dismissed_operation(target, &instance, &operation_id);
                 }
                 let daemon = daemon.clone();
                 let operation = operation_id.clone();
@@ -384,7 +395,7 @@ mod platform {
                         return;
                     };
                     if !resources
-                        .get(&thread_id)
+                        .get(&target)
                         .is_some_and(|resource| resource.operation_id == operation)
                     {
                         return;
@@ -398,16 +409,16 @@ mod platform {
                     let Ok(mut registry) = session.load() else {
                         return;
                     };
-                    if registry.ids.get(&thread_id) == Some(&handle) {
-                        registry.ids.remove(&thread_id);
+                    if registry.ids.get(&target.key()) == Some(&handle) {
+                        registry.ids.remove(&target.key());
                         session.save(&registry);
                     }
-                    resources.remove(&thread_id);
+                    resources.remove(&target);
                 });
             }
         });
         if let Some(previous) = cards.insert(
-            thread_id,
+            target,
             Card {
                 operation_id: resource_operation,
                 listener,
@@ -440,7 +451,7 @@ mod platform {
 
 #[cfg(target_os = "windows")]
 mod windows_platform {
-    use super::DesktopNotification;
+    use super::{DesktopNotification, NotificationTarget};
     use windows::{
         core::HSTRING,
         Data::Xml::Dom::XmlDocument,
@@ -485,7 +496,7 @@ mod windows_platform {
         for card in &retained {
             let toast = toasts.remove(&card.notification_id).ok_or("missing captured Windows notification")?;
             let instance = card.notification_id.clone();
-            let thread = card.thread_id;
+            let thread = card.target;
             let observer = owner.clone();
             let dismissed = toast.Dismissed(&TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(move |_, args| {
                 if let Some(args) = args.as_ref() {
@@ -610,8 +621,8 @@ mod windows_platform {
             return Ok(());
         }
         let activation = format!(
-            "soms-notification://thread/{}/card/{}",
-            input.thread_id,
+            "soms-notification://{}/card/{}",
+            input.target.key(),
             input.notification_id.as_deref().unwrap_or_default()
         );
         let xml = XmlDocument::new()?;
@@ -625,7 +636,7 @@ mod windows_platform {
         toast.SetGroup(&group)?;
         let instance = input.notification_id.clone().unwrap_or_default();
         let callback_instance = instance.clone();
-        let thread_id = input.thread_id;
+        let target = input.target;
         let operation_id = input.operation_id;
         let resource_operation = operation_id.clone();
         let retired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -640,7 +651,7 @@ mod windows_platform {
                 if args.Reason()? == ToastDismissalReason::UserCanceled {
                     callback_retired.store(true, std::sync::atomic::Ordering::Release);
                     if let Ok(mut state) = owner.notification_delivery.lock() {
-                        state.dismissed_operation(thread_id, &callback_instance, &operation_id);
+                        state.dismissed_operation(target, &callback_instance, &operation_id);
                     }
                     let instance = callback_instance.clone();
                     let operation = operation_id.clone();
@@ -852,14 +863,14 @@ pub(crate) async fn desktop_notification_presentation_changed(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let facts = presentation_facts(&app);
-    let Some(thread_id) = super::notifications::content::visible_thread(facts) else {
+    let Some(target) = super::notifications::content::visible_thread(facts) else {
         return Ok(());
     };
     let work = super::capture_database_work()?;
     deliver_command(
         app,
         work,
-        super::notifications::content::NotificationCommand::Remove { thread_id },
+        super::notifications::content::NotificationCommand::Remove { target: target.into() },
     )
     .await
 }
@@ -955,11 +966,11 @@ async fn execute_command(
         None => notification_id.as_deref().map(macos_platform::identifier),
     };
     let request = match prepared.command {
-        NotificationCommand::Remove { thread_id } => DesktopNotification {
+        NotificationCommand::Remove { target } => DesktopNotification {
             operation_id: prepared.operation_id,
             previous_handle: prepared.previous_handle,
             notification_id,
-            thread_id,
+            target,
             title: String::new(),
             body: String::new(),
             count: 0,
@@ -969,7 +980,7 @@ async fn execute_command(
             operation_id: prepared.operation_id,
             previous_handle: prepared.previous_handle,
             notification_id,
-            thread_id: content.thread_id,
+            target: content.target,
             title: content.title,
             body: content.body,
             count: content.count,
@@ -986,7 +997,7 @@ async fn deliver_notification(
     work: crate::login_connection::DatabaseWork,
     notification: DesktopNotification,
 ) -> Result<Option<PlatformHandle>, ExecutionFailure> {
-    if notification.thread_id <= 0 || notification.count < 0 {
+    if !notification.target.valid() || notification.count < 0 {
         return Err("invalid desktop notification coordinates".into());
     }
     work.assert_current().map_err(|e| e.to_string())?;

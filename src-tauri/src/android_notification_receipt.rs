@@ -43,7 +43,7 @@ pub(crate) fn decode_cards(text: &str) -> Result<Vec<ObservedCard>, String> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Card {
-        thread_id: i32,
+        target: crate::native_db::notifications::NotificationTarget,
         tag: String,
         id: i32,
     }
@@ -53,16 +53,21 @@ pub(crate) fn decode_cards(text: &str) -> Result<Vec<ObservedCard>, String> {
     cards
         .into_iter()
         .map(|card| {
+            let target = card
+                .target
+                .valid()
+                .then_some(card.target)
+                .ok_or("invalid notification target")?;
             let instance =
                 uuid::Uuid::parse_str(&card.tag).map_err(|_| "invalid notification instance")?;
-            if card.thread_id <= 0 || instance.to_string() != card.tag {
+            if instance.to_string() != card.tag {
                 return Err("invalid notification observation".into());
             }
             if !handles.insert((card.tag.clone(), card.id)) {
                 return Err("duplicate notification handle".into());
             }
             Ok(ObservedCard {
-                thread_id: card.thread_id,
+                target,
                 notification_id: card.tag.clone(),
                 handle: PlatformHandle::Android {
                     tag: card.tag,
@@ -81,9 +86,12 @@ mod tests {
     fn enumeration_preserves_real_handles_and_multiple_instances_for_one_thread() {
         let first = "550e8400-e29b-41d4-a716-446655440000";
         let second = "550e8400-e29b-41d4-a716-446655440001";
-        let cards = decode_cards(&format!(r#"[{{"threadId":7,"tag":"{first}","id":65536}},{{"threadId":7,"tag":"{second}","id":9}}]"#)).unwrap();
+        let cards = decode_cards(&format!(r#"[{{"target":{{"kind":"thread","threadId":7}},"tag":"{first}","id":65536}},{{"target":{{"kind":"thread","threadId":7}},"tag":"{second}","id":9}}]"#)).unwrap();
         assert_eq!(cards.len(), 2);
-        assert_eq!(cards[0].thread_id, 7);
+        assert_eq!(
+            cards[0].target,
+            crate::native_db::notifications::NotificationTarget::Thread { thread_id: 7 }
+        );
         assert_eq!(cards[0].notification_id, first);
         assert_eq!(
             cards[1].handle,
@@ -102,13 +110,14 @@ mod tests {
             "null",
             "{}",
             r#"[{"threadId":7,"tag":null,"id":1}]"#,
-            r#"[{"threadId":0,"tag":"550e8400-e29b-41d4-a716-446655440000","id":1}]"#,
-            r#"[{"threadId":7,"tag":"bad","id":1}]"#,
-            r#"[{"threadId":7,"tag":"550e8400-e29b-41d4-a716-446655440000","id":4294967296}]"#,
+            r#"[{"target":null,"tag":"550e8400-e29b-41d4-a716-446655440000","id":1}]"#,
+            r#"[{"target":{"kind":"thread","threadId":0},"tag":"550e8400-e29b-41d4-a716-446655440000","id":1}]"#,
+            r#"[{"target":{"kind":"thread","threadId":7},"tag":"bad","id":1}]"#,
+            r#"[{"target":{"kind":"thread","threadId":7},"tag":"550e8400-e29b-41d4-a716-446655440000","id":4294967296}]"#,
         ] {
             assert!(decode_cards(text).is_err(), "{text}");
         }
-        let entry = r#"{"threadId":7,"tag":"550e8400-e29b-41d4-a716-446655440000","id":1}"#;
+        let entry = r#"{"target":{"kind":"thread","threadId":7},"tag":"550e8400-e29b-41d4-a716-446655440000","id":1}"#;
         assert!(decode_cards(&format!("[{entry},{entry}]")).is_err());
     }
 

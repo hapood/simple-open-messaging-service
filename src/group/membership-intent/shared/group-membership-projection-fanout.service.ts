@@ -1,10 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
-import {
-  ClientStateFeedService,
-  type PendingClientStateFeedUpdate,
-} from '../../../client-state-feed/client-state-feed.service.js';
+import type { GroupRequestArrivalEvent } from '../../../client-state-feed/client-state-feed.service.js';
+import { ClientStateFeedService } from '../../../client-state-feed/client-state-feed.service.js';
 import { DatabaseService } from '../../../database/database.service.js';
 import { saveTaskCheckpointInTx } from '../../../durable-task/task-checkpoint.js';
 import type { DurableTask } from '../../../durable-task/durable-task.types.js';
@@ -13,7 +11,7 @@ import { requireThreadContentLockInTx } from '../../../common/locks/thread-conte
 
 interface MembershipProjectionManagerEffect {
   processed: boolean;
-  clientUpdates: PendingClientStateFeedUpdate[];
+  clientUpdates: GroupRequestArrivalEvent[];
 }
 
 /** Syncs one group's join-request projection watermark and unread head for
@@ -135,10 +133,13 @@ export class GroupMembershipProjectionFanoutService {
             OR s."groupInviteEndFeedId" < ends."invitationEndId")
         RETURNING s."accountId" AS "accountId"
       `);
+      // The projection advanced this manager's request heads, so capture the
+      // state directly as join-request arrivals, not plain thread heads.
       const clientUpdates = updated.rows.length
         ? await captureThreadStateUpdatesInTx(
             tx,
             updated.rows.map((row) => row.accountId),
+            'group-request-arrival',
           )
         : [];
       await saveTaskCheckpointInTx(tx, task.id, {

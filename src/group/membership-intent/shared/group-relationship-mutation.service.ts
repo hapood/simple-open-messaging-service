@@ -15,6 +15,7 @@ import {
 } from '../../../../shared/request-snapshot.js';
 import { Injectable } from '@nestjs/common';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
+import { captureGroupDepartureUpdatesInTx } from '../../shared/capture-group-departure-updates.js';
 import { and, eq, sql } from 'drizzle-orm';
 import {
   ClientStateFeedService,
@@ -341,7 +342,9 @@ export class GroupRelationshipMutationService {
         .where(eq(tables.messageThread.id, threadId));
     if (clientFeedUpdates && membership.pairChanged)
       clientFeedUpdates.push(
-        ...(await captureThreadStateUpdatesInTx(tx, [memberUserId])),
+        ...(status === 'REVOKED'
+          ? await captureGroupDepartureUpdatesInTx(tx, threadId, memberUserId)
+          : await captureThreadStateUpdatesInTx(tx, [memberUserId])),
       );
     if (membership.changed) {
       const effects = await this.writeGroupRequestEffectsInTx(
@@ -496,7 +499,13 @@ export class GroupRelationshipMutationService {
         throw new Error('local invitation recipient is missing');
       if (membership.pairChanged)
         clientFeedUpdates.push(
-          ...(await captureThreadStateUpdatesInTx(tx, [localAccount.id])),
+          ...(status === 'REVOKED'
+            ? await captureGroupDepartureUpdatesInTx(
+                tx,
+                threadId,
+                localAccount.id,
+              )
+            : await captureThreadStateUpdatesInTx(tx, [localAccount.id])),
         );
       return new Map();
     }

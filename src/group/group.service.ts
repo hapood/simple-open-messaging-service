@@ -30,8 +30,12 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
+import type {
+  GroupRequestReadEvent,
+  PendingClientStateFeedUpdate,
+} from '../client-state-feed/client-state-feed.service.js';
 import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
+import type { CapturedThreadStateUpdate } from '../client-state-feed/capture-thread-state-updates.js';
 import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allocator-lock.js';
 import { GroupRelationshipMutationService } from './membership-intent/shared/group-relationship-mutation.service.js';
 import { GroupMetaFeedService } from './meta/group-meta-feed.service.js';
@@ -149,7 +153,7 @@ export class GroupService {
     managerUserId: number,
     joinRequestReadFeedId: number,
   ): Promise<void> {
-    let pending: PendingClientStateFeedUpdate | undefined;
+    let pending: GroupRequestReadEvent | undefined;
     await this.database.db.transaction(async (tx) => {
       await lockAccountFeedAllocatorsInTx(tx, [managerUserId]);
       const [updated] = await tx
@@ -168,7 +172,11 @@ export class GroupService {
         )
         .returning({ accountId: accountThreadState.accountId });
       if (!updated) return;
-      [pending] = await captureThreadStateUpdatesInTx(tx, [updated.accountId]);
+      [pending] = await captureThreadStateUpdatesInTx(
+        tx,
+        [updated.accountId],
+        'group-request-read',
+      );
     });
     if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
   }
@@ -517,7 +525,7 @@ export class GroupService {
     accountId: number;
     feedId: number;
   }): Promise<{ announcementReadFeedId: number }> {
-    let pending: PendingClientStateFeedUpdate | undefined;
+    let pending: CapturedThreadStateUpdate | undefined;
     const result = await this.database.db.transaction(async (tx) => {
       await lockAccountFeedAllocatorsInTx(tx, [params.accountId]);
       const updated = await tx.execute<{ announcementReadFeedId: number }>(sql`

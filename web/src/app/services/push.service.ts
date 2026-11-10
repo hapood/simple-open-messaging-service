@@ -6,6 +6,7 @@ import {
   type PushRegistration,
 } from './push-registration.service';
 import { uuid } from '../lib/uuid';
+import { notificationTarget } from './notification-routing';
 
 /** Android FCM adapter and notification navigation. The shared session coordinator owns registration. */
 /** The Firebase client config payload (folded into /client/compat). `{configured:false}` when the server has
@@ -175,11 +176,17 @@ export class PushService {
     const pending = bridge?.getPendingThreadId();
     if (!pending) return;
     try {
-      const tap = JSON.parse(pending) as { id: string; threadId: number } | null;
-      if (!tap || typeof tap.id !== 'string' || !tap.id.trim() ||
-          !Number.isSafeInteger(tap.threadId) || tap.threadId <= 0) return;
+      const tap = JSON.parse(pending) as {
+        id: string;
+        target?: unknown;
+      } | null;
+      const target = notificationTarget(tap);
+      if (!tap || typeof tap.id !== 'string' || !tap.id.trim() || !target)
+        return;
       this.injector.get(ThreadNavigationIntentService).offer({
-        source: 'android', id: tap.id, threadId: tap.threadId,
+        source: 'android',
+        id: tap.id,
+        target,
         acknowledge: () => bridge!.acknowledgeThreadId(pending),
       });
     } catch {

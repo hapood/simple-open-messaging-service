@@ -159,6 +159,10 @@ export class HomeShellComponent {
   readonly asideActive = computed(() => this.navState.aside().length > 0);
   /** The aside panel kind (template @switch), or undefined when no aside is open. Drawn from the topmost
    *  aside stack entry — drilling into a sub-page keeps the same `panel`, only the entry's `params` change. */
+  readonly asideEntry = this.navState.asideTop;
+  readonly asideThreadId = computed(
+    () => this.asideEntry()?.payload?.threadId ?? this.navState.chatThreadId(),
+  );
   readonly asidePanel = computed<AsidePanel | undefined>(
     () => this.navState.asideTop()?.panel,
   );

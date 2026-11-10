@@ -54,7 +54,7 @@ import java.util.concurrent.TimeUnit
  *
  *  - Foreground flag: onResume/onStop flip [SomsMessagingService.appInForeground] so the FCM service
  *    suppresses system notifications while the user is already looking at the chat (SSE has it).
- *  - Deep links: a notification tap carries EXTRA_THREAD_ID. Cold start captures it before the webview
+ *  - Deep links: a notification tap carries EXTRA_TARGET (a validated target JSON document). Cold start captures it before the webview
  *    exists (SomsBridge.DeepLink); onWebViewCreate consumes it. Warm start (app already running) routes
  *    it straight to the live webview via window.__SOMS_DEEP_LINK__.
  *  - Token bridge: kicks off the Firebase token task in onCreate and exposes the result to JS via the
@@ -1414,10 +1414,10 @@ class MainActivity : TauriActivity() {
     /** Navigate the web app to a thread. Calls window.__SOMS_DEEP_LINK__ if registered; the web app
      *  installs that handler at boot (PushService.init), so warm-start routing lands immediately. */
     private fun offerNotificationTap(intent: Intent): Boolean {
-        val thread = intent.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID)
+        val thread = intent.getStringExtra(SomsMessagingService.EXTRA_TARGET)
         val instance = intent.getStringExtra("notificationId")
         if (instance != null) {
-            thread?.toIntOrNull()?.let { RustRuntimeBridge.notificationDismissed(it, instance) }
+            thread?.let { RustRuntimeBridge.notificationDismissed(it, instance) }
         }
         return SomsBridge.DeepLink.offer(thread)
     }

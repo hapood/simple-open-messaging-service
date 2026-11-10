@@ -7,6 +7,7 @@ import {
   relationshipRequest,
 } from '../../database/schema.js';
 import { ClientStateFeedService } from '../../client-state-feed/client-state-feed.service.js';
+import type { PendingClientStateFeedUpdate } from '../../client-state-feed/client-state-feed.service.js';
 import type {
   AuthorizedRequestPageScope,
   ConcludeRequestCommand,
@@ -171,7 +172,7 @@ export class RequestTransactionCapabilityImpl extends RequestTransactionCapabili
         ),
       );
 
-    const clientUpdates: { userId: number; feedId: number }[] = [];
+    const clientUpdates: PendingClientStateFeedUpdate[] = [];
 
     // Advance recipient's requestEndId and publish request head if receiver is a local user
     if (
@@ -198,7 +199,11 @@ export class RequestTransactionCapabilityImpl extends RequestTransactionCapabili
           localUser.id,
         );
         if (feedId !== null) {
-          clientUpdates.push({ userId: localUser.id, feedId });
+          clientUpdates.push({
+            userId: localUser.id,
+            feedId,
+            kind: 'personal-request-arrival',
+          });
         }
       }
     }
@@ -505,7 +510,10 @@ export class RequestTransactionCapabilityImpl extends RequestTransactionCapabili
       tx,
       userId,
     );
-    const clientUpdates = feedId !== null ? [{ userId, feedId }] : [];
+    const clientUpdates =
+      feedId !== null
+        ? [{ userId, feedId, kind: 'personal-request-read' as const }]
+        : [];
 
     return {
       status: 'CHANGED',

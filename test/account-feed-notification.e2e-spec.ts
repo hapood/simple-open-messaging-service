@@ -20,7 +20,9 @@ import { ClientStateFeedService } from '../src/client-state-feed/client-state-fe
 describe('account feed notification delivery', () => {
   const database = new DatabaseService();
   const sse = new SseService(database, new CallStateRegistry());
-  const clientFeed = new ClientStateFeedService(database, sse);
+  const clientFeed = new ClientStateFeedService(database, sse, {
+    enqueueForRequestAttention: vi.fn().mockResolvedValue(undefined),
+  } as never);
   const feed = new ThreadFeedService(database);
   const readPositions = new ThreadReadPositionService(database, sse);
   const participants = new AccountThreadStateService(database, clientFeed);

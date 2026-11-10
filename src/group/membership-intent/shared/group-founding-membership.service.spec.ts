@@ -45,7 +45,9 @@ function harness() {
     fold as never,
   );
   const effects = vi.spyOn(service, 'writeGroupRequestEffectsInTx');
-  const pending = [{ userId: 11, feedId: 8, threadFeedEndId: 9 }];
+  const pending = [
+    { kind: 'thread-feed' as const, userId: 11, feedId: 8, threadFeedEndId: 9 },
+  ];
   vi.mocked(captureThreadStateUpdatesInTx)
     .mockReset()
     .mockResolvedValue(pending);

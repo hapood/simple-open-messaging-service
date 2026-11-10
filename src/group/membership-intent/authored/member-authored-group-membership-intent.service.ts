@@ -36,6 +36,7 @@ import { admitGroupMembershipProjectionFanoutInTx } from '../shared/group-member
 import { Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
+import { captureGroupDepartureUpdatesInTx } from '../../shared/capture-group-departure-updates.js';
 import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
 import type { RequestDecision } from '../../../../shared/relationship-request.js';
 import { BusinessCode } from '../../../common/business-code.js';
@@ -857,6 +858,14 @@ export class MemberAuthoredGroupMembershipIntentService {
       }>(groupMembershipRevocationSql(context.input));
       const row = result.rows[0];
       if (!row) throw new Error('membership revocation update disappeared');
+      if (row.pairChanged)
+        clientUpdates.push(
+          ...(await captureGroupDepartureUpdatesInTx(
+            context.tx,
+            context.params.threadId,
+            context.params.memberUserId,
+          )),
+        );
       // Explicit member-side terminal actions:
       // - WITHDRAW: member withdraws application (request -> WITHDRAWN)
       // - DECLINE: member declines group invitation (request -> REJECTED)

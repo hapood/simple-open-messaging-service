@@ -1,4 +1,5 @@
 //! Shared native alert eligibility; OS adapters receive an already-decided silent flag.
+use crate::native_db::notifications::NotificationTarget;
 use std::time::{Duration, Instant};
 use super::content::NotificationCommand;
 
@@ -28,30 +29,30 @@ struct NotificationCard {
 #[derive(Clone, Default)]
 pub(crate) struct AlertState {
     last_alert: Option<Instant>,
-    cards: std::collections::HashMap<i32, NotificationCard>,
+    cards: std::collections::HashMap<NotificationTarget, NotificationCard>,
 }
 
 impl AlertState {
     /// OS presence is not evidence of an audible alert or its acceptance time.
-    pub(crate) fn import_instance(&mut self, thread_id: i32, id: String) {
-        self.cards.insert(thread_id, NotificationCard { id, last_alert: None });
+    pub(crate) fn import_instance(&mut self, target: NotificationTarget, id: String) {
+        self.cards.insert(target, NotificationCard { id, last_alert: None });
     }
 
-    pub(crate) fn accepted_alert_at(&mut self, thread_id: i32, at: Instant) {
+    pub(crate) fn accepted_alert_at(&mut self, target: NotificationTarget, at: Instant) {
         self.last_alert = Some(at);
-        if let Some(card) = self.cards.get_mut(&thread_id) {
+        if let Some(card) = self.cards.get_mut(&target) {
             card.last_alert = Some(at);
         }
     }
 
-    pub(crate) fn dismissed_instance(&mut self, thread_id: i32, notification_id: &str) {
-        if self.cards.get(&thread_id).is_some_and(|card| card.id == notification_id) {
-            self.cards.remove(&thread_id);
+    pub(crate) fn dismissed_instance(&mut self, target: NotificationTarget, notification_id: &str) {
+        if self.cards.get(&target).is_some_and(|card| card.id == notification_id) {
+            self.cards.remove(&target);
         }
     }
 
-    pub(crate) fn notification_id(&self, thread_id: i32) -> Option<&str> {
-        self.cards.get(&thread_id).map(|card| card.id.as_str())
+    pub(crate) fn notification_id(&self, target: NotificationTarget) -> Option<&str> {
+        self.cards.get(&target).map(|card| card.id.as_str())
     }
 
     pub(crate) fn apply_with_instances(
@@ -63,12 +64,12 @@ impl AlertState {
     ) -> Vec<Option<String>> {
         commands.iter_mut().map(|command| {
             let removed = match command {
-                NotificationCommand::Remove { thread_id } => self.notification_id(*thread_id).map(str::to_owned),
+                NotificationCommand::Remove { target } => self.notification_id(*target).map(str::to_owned),
                 _ => None,
             };
             self.apply(std::slice::from_mut(command), policy, allow_alert, now);
             match command {
-                NotificationCommand::Show(content) => self.notification_id(content.thread_id).map(str::to_owned),
+                NotificationCommand::Show(content) => self.notification_id(content.target).map(str::to_owned),
                 NotificationCommand::Remove { .. } => removed,
             }
         }).collect()
@@ -85,11 +86,11 @@ impl AlertState {
     ) {
         for command in commands {
             match command {
-                NotificationCommand::Remove { thread_id } => {
-                    self.cards.remove(thread_id);
+                NotificationCommand::Remove { target } => {
+                    self.cards.remove(target);
                 }
                 NotificationCommand::Show(content) => {
-                    let card = self.cards.entry(content.thread_id).or_insert_with(|| NotificationCard {
+                    let card = self.cards.entry(content.target).or_insert_with(|| NotificationCard {
                         id: uuid::Uuid::new_v4().to_string(),
                         last_alert: None,
                     });
@@ -121,7 +122,7 @@ mod tests {
 
     fn show(id: i32, silent: bool) -> NotificationCommand {
         NotificationCommand::Show(NotificationContent {
-            thread_id: id, title: String::new(), body: String::new(), count: 1,
+            target: id.into(), title: String::new(), body: String::new(), count: 1,
             silent, messages: vec![], has_unread_mention: false,
         })
     }
@@ -134,30 +135,30 @@ mod tests {
         let now = Instant::now();
         let policy = AlertPolicy::Cooldown(Duration::from_secs(5));
         state.apply(&mut [show(7, false)], policy, true, now);
-        let old = state.notification_id(7).unwrap().to_owned();
-        state.dismissed_instance(7, &old);
-        assert_eq!(state.notification_id(7), None);
-        state.dismissed_instance(7, &old);
+        let old = state.notification_id(7.into()).unwrap().to_owned();
+        state.dismissed_instance(7.into(), &old);
+        assert_eq!(state.notification_id(7.into()), None);
+        state.dismissed_instance(7.into(), &old);
         let mut next = [show(7, false)];
         state.apply(&mut next, policy, true, now);
         assert!(silent(&next[0]));
-        assert_ne!(state.notification_id(7), Some(old.as_str()));
+        assert_ne!(state.notification_id(7.into()), Some(old.as_str()));
     }
 
     #[test]
     fn batch_ids_follow_each_operation_not_the_final_thread_state() {
         let mut state = AlertState::default();
         let mut commands = [show(7, false), show(7, false),
-            NotificationCommand::Remove { thread_id: 7 }, show(7, false),
-            NotificationCommand::Remove { thread_id: 8 }];
+            NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } }, show(7, false),
+            NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 8 } }];
         let ids = state.apply_with_instances(&mut commands, AlertPolicy::OncePerThread, true, Instant::now());
         assert!(ids[0].is_some());
         assert_eq!(ids[0], ids[1]);
         assert_eq!(ids[0], ids[2]);
         assert_ne!(ids[0], ids[3]);
         assert_eq!(ids[4], None);
-        state.dismissed_instance(7, ids[0].as_deref().unwrap());
-        assert_eq!(state.notification_id(7), ids[3].as_deref());
+        state.dismissed_instance(7.into(), ids[0].as_deref().unwrap());
+        assert_eq!(state.notification_id(7.into()), ids[3].as_deref());
     }
 
     #[test]
@@ -165,18 +166,18 @@ mod tests {
         let mut state = AlertState::default();
         let now = Instant::now();
         state.apply(&mut [show(7, false)], AlertPolicy::OncePerThread, true, now);
-        let first = state.notification_id(7).unwrap().to_owned();
+        let first = state.notification_id(7.into()).unwrap().to_owned();
         state.apply(&mut [show(7, false)], AlertPolicy::OncePerThread, true, now);
-        assert_eq!(state.notification_id(7), Some(first.as_str()));
-        state.dismissed_instance(7, &first);
-        assert!(state.notification_id(7).is_none());
+        assert_eq!(state.notification_id(7.into()), Some(first.as_str()));
+        state.dismissed_instance(7.into(), &first);
+        assert!(state.notification_id(7.into()).is_none());
         let mut replacement = [show(7, false)];
         state.apply(&mut replacement, AlertPolicy::OncePerThread, true, now);
         assert!(!silent(&replacement[0]));
-        let second = state.notification_id(7).unwrap().to_owned();
+        let second = state.notification_id(7.into()).unwrap().to_owned();
         assert_ne!(first, second);
-        state.dismissed_instance(7, &first);
-        assert_eq!(state.notification_id(7), Some(second.as_str()));
+        state.dismissed_instance(7.into(), &first);
+        assert_eq!(state.notification_id(7.into()), Some(second.as_str()));
     }
 
     #[test]
@@ -184,11 +185,11 @@ mod tests {
         let mut state = AlertState::default();
         let now = Instant::now();
         state.apply(&mut [show(7, true)], AlertPolicy::OncePerThread, true, now);
-        let id = state.notification_id(7).unwrap().to_owned();
+        let id = state.notification_id(7.into()).unwrap().to_owned();
         let mut update = [show(7, false)];
         state.apply(&mut update, AlertPolicy::OncePerThread, true, now);
         assert!(!silent(&update[0]));
-        assert_eq!(state.notification_id(7), Some(id.as_str()));
+        assert_eq!(state.notification_id(7.into()), Some(id.as_str()));
     }
 
     #[test]
@@ -221,7 +222,7 @@ mod tests {
     #[test]
     fn removal_and_muted_cards_do_not_consume_cooldown() {
         let mut state = AlertState::default();
-        let mut commands = [NotificationCommand::Remove { thread_id: 1 }, show(2, true), show(3, false), show(4, false)];
+        let mut commands = [NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 1 } }, show(2, true), show(3, false), show(4, false)];
         state.apply(&mut commands, AlertPolicy::Cooldown(Duration::from_secs(5)), true, Instant::now());
         assert!(!silent(&commands[2]));
         assert!(silent(&commands[3]));
@@ -244,14 +245,14 @@ mod tests {
         let mut state = AlertState::default();
         let now = Instant::now();
         state.apply(&mut [show(1, false), show(2, false)], AlertPolicy::OncePerThread, true, now);
-        let id = state.notification_id(1).unwrap().to_owned();
-        state.dismissed_instance(1, &id);
+        let id = state.notification_id(1.into()).unwrap().to_owned();
+        state.dismissed_instance(1.into(), &id);
         let mut cards = [show(1, false), show(2, false)];
         state.apply(&mut cards, AlertPolicy::OncePerThread, true, now);
         assert!(!silent(&cards[0]));
         assert!(silent(&cards[1]));
-        let id = state.notification_id(1).unwrap().to_owned();
-        state.dismissed_instance(1, &id);
+        let id = state.notification_id(1.into()).unwrap().to_owned();
+        state.dismissed_instance(1.into(), &id);
         let mut next = [show(3, false)];
         state.apply(&mut next, AlertPolicy::Cooldown(Duration::from_secs(5)), true, now);
         assert!(silent(&next[0]));
@@ -260,7 +261,7 @@ mod tests {
     #[test]
     fn once_per_thread_replacement_is_silent_until_card_is_removed() {
         let mut state = AlertState::default();
-        let mut commands = [show(1, false), show(1, false), NotificationCommand::Remove { thread_id: 1 }, show(1, false)];
+        let mut commands = [show(1, false), show(1, false), NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 1 } }, show(1, false)];
         state.apply(&mut commands, AlertPolicy::OncePerThread, true, Instant::now());
         assert!(!silent(&commands[0]));
         assert!(silent(&commands[1]));

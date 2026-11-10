@@ -25,6 +25,8 @@ import { WebdbService } from './webdb.service';
 import { WebPushService } from './web-push.service';
 import { ThreadNavigationIntentService } from './thread-navigation-intent.service';
 import { uuid } from '../lib/uuid';
+import { notificationTarget } from './notification-routing';
+import { UserService } from './user.service';
 import { DesktopBadgeService } from './desktop-badge.service';
 
 /** Browser: bridge worker-projected updates to the push service worker, and answer active-chat
@@ -37,6 +39,7 @@ export class UnreadAttentionService {
   private readonly lifecycle = inject(SessionLifecycleService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly webdb = inject(WebdbService);
+  private readonly user = inject(UserService);
   private readonly webPush = inject(WebPushService);
   private readonly baseTitle =
     typeof document !== 'undefined' ? document.title : 'SOMS';
@@ -68,12 +71,16 @@ export class UnreadAttentionService {
       this.nativeAdapter = new TauriNotificationAdapter();
       inject(DesktopBadgeService);
     }
-    if (!this.nativeAdapter) this.browserAdapter = new BrowserNotificationAdapter();
+    if (!this.nativeAdapter)
+      this.browserAdapter = new BrowserNotificationAdapter();
     if (isTauri()) this.installDesktopNavigation();
     const blur = () => this.onFocusChange(false);
-    const focus = () => this.onFocusChange(document.visibilityState === 'visible');
+    const focus = () =>
+      this.onFocusChange(document.visibilityState === 'visible');
     const visibility = () =>
-      this.onFocusChange(document.visibilityState === 'visible' && document.hasFocus());
+      this.onFocusChange(
+        document.visibilityState === 'visible' && document.hasFocus(),
+      );
     visibility();
     const message = (event: MessageEvent) => this.onSwMessage(event);
     window.addEventListener('blur', blur);
@@ -143,25 +150,28 @@ export class UnreadAttentionService {
           if (destroyed || !this.lifecycle.isCurrent(scope)) return;
           const tap = await tauriInvoke<{
             id: string;
-            threadId: number;
+            target?: unknown;
           } | null>('desktop_notification_pending');
+          const target = notificationTarget(tap);
           if (
             !tap ||
             destroyed ||
             !this.lifecycle.isCurrent(scope) ||
             typeof tap.id !== 'string' ||
             !tap.id.trim() ||
-            !Number.isSafeInteger(tap.threadId) ||
-            tap.threadId <= 0
+            !target
           )
             return;
           this.navigation.offer(
             {
               source: 'desktop',
               id: tap.id,
-              threadId: tap.threadId,
+              target,
               acknowledge: () =>
-                tauriInvoke<void>('desktop_notification_acknowledge', { id: tap.id, threadId: tap.threadId }),
+                tauriInvoke<void>('desktop_notification_acknowledge', {
+                  id: tap.id,
+                  target,
+                }),
             },
             scope,
           );
@@ -210,18 +220,17 @@ export class UnreadAttentionService {
       typeof data.userId === 'number'
     ) {
       void this.convList.refreshBackgroundThreadFeed(data.userId);
-    } else if (
-      data.type === SOMS_NOTIF_MSG.OPEN &&
-      typeof data.threadId === 'number'
-    ) {
+      if (data.stateCommitted) void this.user.refreshCommittedStateFeed();
+    } else if (data.type === SOMS_NOTIF_MSG.OPEN) {
+      const target = notificationTarget(data);
+      if (!target) return;
       window.focus();
       this.navigation.offer({
         source: 'web',
         id: uuid(),
-        threadId: data.threadId,
+        target,
         sessionId: data.sessionId,
       });
     }
   }
-
 }

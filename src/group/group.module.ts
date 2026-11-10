@@ -105,13 +105,20 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         database: DatabaseService,
         groupMeta: GroupMetaFeedService,
         messages: MessageService,
+        clientFeed: ClientStateFeedService,
       ) =>
         new GroupRosterRoleService({
           database,
           groupMeta,
           messages,
+          clientFeed,
         }),
-      inject: [DatabaseService, GroupMetaFeedService, MessageService],
+      inject: [
+        DatabaseService,
+        GroupMetaFeedService,
+        MessageService,
+        ClientStateFeedService,
+      ],
     },
     // The disband revocation owns post-commit feed wakes through its explicit
     // dependency object, so the module wires that object through a factory.

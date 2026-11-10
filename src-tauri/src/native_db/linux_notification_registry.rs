@@ -29,7 +29,7 @@ fn submission_failure(error: zbus::Error) -> ExecutionFailure {
 pub(super) struct Registry {
     bus: String,
     owner: String,
-    pub(super) ids: BTreeMap<i32, u32>,
+    pub(super) ids: BTreeMap<String, u32>,
 }
 
 // Once loaded, live handles are authoritative for this process. A failed disk
@@ -96,16 +96,16 @@ mod tests {
     fn failed_delete_persistence_does_not_reload_retired_handle() {
         let mut cache = RegistryCache::default();
         let mut registry = Registry::default();
-        registry.ids.insert(7, 42);
+        registry.ids.insert("7".into(), 42);
         cache.load(|| Ok(registry.clone())).unwrap();
-        registry.ids.remove(&7);
+        registry.ids.remove("7");
         assert!(cache
             .save(&registry, |_| Err("disk unavailable".into()))
             .is_err());
         let live = cache
             .load(|| panic!("must not reload stale disk state"))
             .unwrap();
-        assert!(!live.ids.contains_key(&7));
+        assert!(!live.ids.contains_key("7"));
         cache
             .save(&live, |saved| {
                 assert!(saved.ids.is_empty());
@@ -118,17 +118,17 @@ mod tests {
     fn failed_show_persistence_keeps_the_accepted_platform_handle() {
         let mut cache = RegistryCache::default();
         let mut registry = Registry::default();
-        registry.ids.insert(7, 42);
+        registry.ids.insert("7".into(), 42);
         assert!(cache
             .save(&registry, |_| Err("disk unavailable".into()))
             .is_err());
         let mut live = cache.load(|| panic!("must use accepted handle")).unwrap();
-        assert_eq!(live.ids.get(&7), Some(&42));
-        live.ids.insert(8, 43);
+        assert_eq!(live.ids.get("7"), Some(&42));
+        live.ids.insert("8".into(), 43);
         cache
             .save(&live, |saved| {
-                assert_eq!(saved.ids.get(&7), Some(&42));
-                assert_eq!(saved.ids.get(&8), Some(&43));
+                assert_eq!(saved.ids.get("7"), Some(&42));
+                assert_eq!(saved.ids.get("8"), Some(&43));
                 Ok(())
             })
             .unwrap();

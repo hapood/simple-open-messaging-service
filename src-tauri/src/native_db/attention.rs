@@ -1558,6 +1558,7 @@ async fn sync_thread_feed_intent(
     target: i32,
 ) -> Result<ThreadFeedSyncResult, String> {
     let user_id = intent.user_id;
+    super::notifications::requests::capture_baseline(intent.work.clone(), user_id).await?;
     let cancellation = intent.work.cancellation();
     let _sync = tokio::select! {
         biased;

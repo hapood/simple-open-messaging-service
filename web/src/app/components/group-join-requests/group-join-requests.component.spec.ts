@@ -101,6 +101,10 @@ describe('GroupJoinRequestsComponent', () => {
   function create(
     queryJoinRequests: ReturnType<typeof vi.fn>,
     unreadApplications = false,
+    inputs: {
+      threadId?: number;
+      initialTab?: 'invitations' | 'applications';
+    } = {},
   ) {
     const thread = {
       threadId: 7,
@@ -158,10 +162,13 @@ describe('GroupJoinRequestsComponent', () => {
         },
       ],
     });
+    const component = TestBed.runInInjectionContext(
+      () => new GroupJoinRequestsComponent(),
+    );
+    Object.assign(component, inputs);
+    component.ngOnInit();
     return {
-      component: TestBed.runInInjectionContext(
-        () => new GroupJoinRequestsComponent(),
-      ),
+      component,
       groups,
       users,
       http,
@@ -169,6 +176,120 @@ describe('GroupJoinRequestsComponent', () => {
       markJoinRequestsReadLocally,
     };
   }
+
+  it('lazy-loads Invitations after an Applications notification, including empty pages only once', async () => {
+    const query = vi.fn(() => of(response()));
+    const { component, groups } = create(query, false, {
+      initialTab: 'applications',
+    });
+    await Promise.resolve();
+    component.setTab(0);
+    await Promise.resolve();
+    expect(groups.queryInvitations).toHaveBeenCalledTimes(1);
+    component.setTab(1);
+    component.setTab(0);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(groups.queryInvitations).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['destroy', 'session'])(
+    'drops delayed application pages after %s without marking read',
+    async (boundary) => {
+      const pending = new Subject<ReturnType<typeof response>>();
+      const { component, groups, markJoinRequestsReadLocally } = create(
+        vi.fn(() => pending),
+        true,
+      );
+      const toast = TestBed.inject(ToastService);
+      expect(pending.observed).toBe(true);
+      if (boundary === 'destroy') TestBed.resetTestingModule();
+      else TestBed.inject(SessionLifecycleService).invalidateSession();
+      expect(pending.observed).toBe(false);
+      pending.next(response(applicationRow('late')));
+      await Promise.resolve();
+      expect(component.applications()).toEqual([]);
+      expect(groups.markJoinRequestsRead).not.toHaveBeenCalled();
+      expect(markJoinRequestsReadLocally).not.toHaveBeenCalled();
+      expect(toast.warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('ignores a resolved page whose continuation runs after destruction', async () => {
+    const { component, groups, markJoinRequestsReadLocally } = create(
+      vi.fn(() => of(response(applicationRow('queued')))),
+      true,
+    );
+    TestBed.resetTestingModule();
+    await Promise.resolve();
+    expect(component.applications()).toEqual([]);
+    expect(groups.markJoinRequestsRead).not.toHaveBeenCalled();
+    expect(markJoinRequestsReadLocally).not.toHaveBeenCalled();
+  });
+
+  it.each(['accept', 'reject', 'revoke'])(
+    'cancels delayed %s on destroy without reload or toast',
+    async (action) => {
+      const query = vi.fn(() => of(response()));
+      const { component, groups } = create(query);
+      await Promise.resolve();
+      const pending = new Subject<StandardResponse<RequestDecisionResult>>();
+      const method =
+        action === 'accept'
+          ? groups.acceptJoinRequest
+          : action === 'reject'
+            ? groups.rejectJoinRequest
+            : groups.revokeInvitation;
+      method.mockReturnValue(pending);
+      const work =
+        action === 'revoke'
+          ? component.revokeInvitation(invitationRow('a'))
+          : component.handleApplication(
+              applicationRow('a'),
+              action === 'accept',
+            );
+      const toast = TestBed.inject(ToastService);
+      TestBed.resetTestingModule();
+      expect(pending.observed).toBe(false);
+      pending.next(
+        decisionResponse({ status: 'EXPIRED' } as RequestDecisionResult),
+      );
+      await work;
+      expect(query).not.toHaveBeenCalled();
+      expect(groups.queryInvitations).toHaveBeenCalledTimes(1);
+      expect(toast.warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('opens Applications explicitly with no unread badge, bound to the target rather than the old chat', async () => {
+    const query = vi.fn(() => of(response()));
+    const { component, groups, openThreadId } = create(query, false, {
+      threadId: 42,
+      initialTab: 'applications',
+    });
+    expect(component.activeTab()).toBe(1);
+    expect(query).toHaveBeenCalledWith({
+      groupId: 42,
+      before: undefined,
+      take: 20,
+    });
+    expect(groups.queryInvitations).not.toHaveBeenCalled();
+    openThreadId.set(99);
+    await component.handleApplication(applicationRow('a'), true);
+    expect(groups.acceptJoinRequest).toHaveBeenCalledWith({
+      groupId: 42,
+      requestId: 'a',
+    });
+  });
+
+  it('lets an explicit Invitations tab override unread Applications', () => {
+    const query = vi.fn(() => of(response()));
+    const { component, groups } = create(query, true, {
+      initialTab: 'invitations',
+    });
+    expect(component.activeTab()).toBe(0);
+    expect(groups.queryInvitations).toHaveBeenCalledTimes(1);
+    expect(query).not.toHaveBeenCalled();
+  });
 
   it.each(['friend@remote.test', 'friend@local.test'])(
     'routes %s to exact lookup, without fuzzy search',
@@ -314,12 +435,10 @@ describe('GroupJoinRequestsComponent', () => {
 
   it('loads applications when the application tab opens', async () => {
     const queryJoinRequests = vi.fn(() => of(response(applicationRow('2'))));
-    const { groups, markJoinRequestsReadLocally } = create(
+    const { component, groups, markJoinRequestsReadLocally } = create(
       queryJoinRequests,
       true,
-    );
-    const component = TestBed.runInInjectionContext(
-      () => new GroupJoinRequestsComponent(),
+      { initialTab: 'invitations' },
     );
     component.setTab(1);
     await Promise.resolve();

@@ -16,7 +16,7 @@ class NativeNotificationBatch(
         return (0 until commands.length()).mapNotNull { index ->
             val command = commands.getJSONObject(index)
             val content = command.getJSONObject("notification")
-            val tid = content.getInt("threadId")
+            val target = content.getJSONObject("target")
             val remove = when (command.getString("operation")) {
                 "remove" -> true
                 "show" -> false
@@ -43,7 +43,7 @@ class NativeNotificationBatch(
                 count = if (remove) 0 else content.getInt("count"),
                 attention = if (!remove && content.getBoolean("hasUnreadMention")) "mention" else null,
                 silent = remove || content.getBoolean("silent"), messages = messages,
-                threadId = tid,
+                target = target.toString(),
             )
         }
     }

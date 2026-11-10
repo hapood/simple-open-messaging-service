@@ -1,4 +1,5 @@
 //! Native batch orchestration. OS adapters supply facts and execute commands only.
+use crate::native_db::notifications::NotificationTarget;
 use super::{
     alert::AlertPolicy,
     content::{NotificationCommand, PresentationFacts},
@@ -118,7 +119,7 @@ where
 }
 
 async fn deliver_batch_owned<F, E>(
-    batch: NotificationBatch,
+    mut batch: NotificationBatch,
     allow_alert: bool,
     platform: Platform<F, E>,
 ) -> Result<(), String>
@@ -136,6 +137,25 @@ where
     let owner = work.owner().clone();
     let mut restoration = owner.notification_reconstruction.lock().await;
     work.assert_current().map_err(|e| e.to_string())?;
+    // Re-read under the serial presentation lane: later local reads or feed commits
+    // must not be undone by an older queued batch.
+    let user = batch.user_id;
+    batch.requests = super::super::spawn_owned_database(Ok(work.clone()), move |conn| super::requests::read(conn, user))
+        .await.map_err(|e| e.to_string())??;
+    if batch.requests_existing_only {
+        if restoration.is_some() { return Ok(()); }
+        // Reuse exact-instance reconstruction for a local refresh. Dismissal while
+        // preparing content cannot resurrect a card that was only just observed.
+        let candidates = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?
+            .reconstruction_candidates().into_iter().filter(|(target,_)| !matches!(target, NotificationTarget::Thread { .. })).collect();
+        batch.reconstruction = true;
+        let projected = presentation::prepare_batch(work.clone(), &batch, (platform.facts)()?, false).await?;
+        let execution_work = work.clone();
+        let execution_platform = platform.clone();
+        return delivery::reconstruct(work, candidates, projected.commands, policy()?, platform.facts.clone(), move |prepared| {
+            execute(execution_work.clone(), prepared, projected.avatars.clone(), execution_platform.clone())
+        }).await;
+    }
     let candidate_threads: std::collections::HashSet<_> = restoration
         .as_ref()
         .into_iter()
@@ -171,14 +191,28 @@ where
         .await?;
         *restoration = None;
     }
+    let request_candidates = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?.reconstruction_candidates();
+    let previous_requests = owner.notification_requests.lock().map_err(|_| "request notification state poisoned")?.clone().unwrap_or_default();
     let projected =
         presentation::prepare_batch(work.clone(), &batch, (platform.facts)()?, allow_alert).await?;
     for command in projected.commands {
         let thread = match &command {
-            NotificationCommand::Show(content) => content.thread_id,
-            NotificationCommand::Remove { thread_id } => *thread_id,
+            NotificationCommand::Show(content) => content.target,
+            NotificationCommand::Remove { target } => *target,
         };
         if candidate_threads.contains(&thread) {
+            continue;
+        }
+        let arrival = batch.requests.iter().find(|value| value.target == thread)
+            .is_some_and(|value| previous_requests.get(&thread).is_some_and(|old| value.end > old.end));
+        if !matches!(thread, NotificationTarget::Thread { .. }) && !arrival {
+            let candidates = request_candidates.iter().filter(|(target,_)| *target == thread).cloned().collect();
+            let execution_work = work.clone();
+            let execution_platform = platform.clone();
+            let avatars = projected.avatars.clone();
+            delivery::reconstruct(work.clone(), candidates, vec![command], policy()?, platform.facts.clone(), move |prepared| {
+                execute(execution_work.clone(), prepared, avatars.clone(), execution_platform.clone())
+            }).await?;
             continue;
         }
         deliver_admitted_command(
@@ -189,6 +223,9 @@ where
             platform.clone(),
         )
         .await?;
+    }
+    if !batch.requests_existing_only {
+        *owner.notification_requests.lock().map_err(|_| "request notification state poisoned")? = Some(batch.requests.into_iter().map(|value| (value.target, value)).collect());
     }
     Ok(())
 }
@@ -209,12 +246,39 @@ mod tests {
                     // delta below must never resurrect this candidate after removal.
                     assert!(matches!(
                         prepared.command,
-                        NotificationCommand::Remove { thread_id: 7 }
+                        NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } }
                     ));
                     Ok(DeliveryResult::Accepted { handle: None })
                 }
             },
         }
+    }
+
+    #[tokio::test]
+    async fn local_refresh_only_updates_live_request_instances_and_preserves_arrival_baseline() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
+        crate::native_db::shared_test_location();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::native_db::create_cache_schema(&conn).unwrap();
+        conn.execute("INSERT INTO account_state(user_id,intent_request_end_id,intent_request_read_id) VALUES(1,200,0)",[]).unwrap();
+        let owner = crate::login_connection::LoginConnection::preparing(crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string()).unwrap(),conn);
+        owner.begin_activation().unwrap().commit("token".into()).unwrap();
+        let work = owner.capture_database_work().unwrap();
+        super::super::requests::capture_baseline(work.clone(),1).await.unwrap();
+        let original = owner.notification_requests.lock().unwrap().clone();
+        let mut batch = super::super::from_result(work.clone(),1,&crate::native_db::attention::ThreadFeedSyncResult { states:vec![],cursor:0,error:None }).await.unwrap();
+        batch.requests_existing_only = true;
+        deliver_batch(batch,false,Platform { facts: || Ok(Default::default()), execute: |_,_| panic!("local refresh must not recreate dismissed requests") }).await.unwrap();
+        assert_eq!(*owner.notification_requests.lock().unwrap(),original);
+        let id = uuid::Uuid::new_v4().to_string();
+        owner.notification_delivery.lock().unwrap().import_cards(vec![ObservedCard { target:NotificationTarget::FriendRequests {}, notification_id:id.clone(),handle:PlatformHandle::Android { tag:id,id:65536 } }]).unwrap();
+        let mut batch = super::super::from_result(work,1,&crate::native_db::attention::ThreadFeedSyncResult { states:vec![],cursor:0,error:None }).await.unwrap();
+        batch.requests_existing_only = true;
+        deliver_batch(batch,true,Platform { facts: || Ok(Default::default()), execute: |prepared: PreparedDelivery,_| {
+            assert!(matches!(prepared.command,NotificationCommand::Show(value) if value.silent));
+            Ok(DeliveryResult::Accepted { handle:prepared.previous_handle })
+        } }).await.unwrap();
+        assert_eq!(*owner.notification_requests.lock().unwrap(),original);
     }
 
     #[tokio::test]
@@ -235,7 +299,7 @@ mod tests {
             .lock()
             .unwrap()
             .import_cards(vec![ObservedCard {
-                thread_id: 7,
+                target: NotificationTarget::Thread { thread_id: 7 },
                 notification_id: instance.clone(),
                 handle: PlatformHandle::Android {
                     tag: instance.clone(),
@@ -243,7 +307,7 @@ mod tests {
                 },
             }])
             .unwrap();
-        *owner.notification_reconstruction.lock().await = Some(vec![(7, instance.clone())]);
+        *owner.notification_reconstruction.lock().await = Some(vec![(7.into(), instance.clone())]);
         let never = Platform {
             facts: || panic!("paused command must not prepare presentation"),
             execute: |_, _| panic!("paused command must not execute"),
@@ -251,7 +315,7 @@ mod tests {
         assert_eq!(
             deliver_command(
                 owner.capture_database_work().unwrap(),
-                NotificationCommand::Remove { thread_id: 7 },
+                NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } },
                 vec![],
                 false,
                 never
@@ -266,7 +330,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .reconstruction_candidates(),
-            vec![(7, instance.clone())]
+            vec![(7.into(), instance.clone())]
         );
         // OS observations remain independent of admission and do not wait for the lane.
         let _restoring = owner.notification_reconstruction.lock().await;
@@ -274,7 +338,7 @@ mod tests {
             .notification_delivery
             .lock()
             .unwrap()
-            .dismissed(7, &instance);
+            .dismissed(7.into(), &instance);
         assert!(owner
             .notification_delivery
             .lock()
@@ -303,12 +367,12 @@ mod tests {
             .lock()
             .unwrap()
             .import_cards(vec![ObservedCard {
-                thread_id: 7,
+                target: NotificationTarget::Thread { thread_id: 7 },
                 notification_id: instance.clone(),
                 handle: handle.clone(),
             }])
             .unwrap();
-        *owner.notification_reconstruction.lock().await = Some(vec![(7, instance)]);
+        *owner.notification_reconstruction.lock().await = Some(vec![(7.into(), instance)]);
         assert!(owner.capture_database_work().is_err());
         owner
             .begin_activation()
@@ -336,7 +400,7 @@ mod tests {
                 execute: move |prepared: PreparedDelivery, _| {
                     assert!(matches!(
                         prepared.command,
-                        NotificationCommand::Remove { thread_id: 7 }
+                        NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } }
                     ));
                     assert_eq!(prepared.previous_handle, Some(handle.clone()));
                     observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -378,7 +442,7 @@ mod tests {
             .lock()
             .unwrap()
             .import_cards(vec![ObservedCard {
-                thread_id: 7,
+                target: NotificationTarget::Thread { thread_id: 7 },
                 notification_id: instance.clone(),
                 handle: PlatformHandle::Android {
                     tag: instance.clone(),
@@ -386,7 +450,7 @@ mod tests {
                 },
             }])
             .unwrap();
-        let candidates = vec![(7, instance)];
+        let candidates = vec![(7.into(), instance)];
         *owner.notification_reconstruction.lock().await = Some(candidates.clone());
         let work = owner.capture_database_work().unwrap();
 

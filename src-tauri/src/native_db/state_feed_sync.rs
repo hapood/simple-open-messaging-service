@@ -78,7 +78,7 @@ pub(crate) fn synchronize(
 ) -> impl std::future::Future<Output = Result<i64, String>> + Send + 'static {
     // Capture before returning a future: callers may schedule/poll it after the login changes.
     let intent = (|| {
-        if user_id <= 0 || target < 0 {
+        if user_id <= 0 || target < -1 {
             return Err("invalid state-feed target".to_string());
         }
         let (work, request) = match crate::realtime::WORK_RUN.try_with(|run| run.login_request()) {
@@ -105,11 +105,12 @@ pub(crate) async fn synchronize_owned(
     user_id: i64,
     target: i64,
 ) -> Result<i64, String> {
-    if user_id <= 0 || target < 0 {
+    if user_id <= 0 || target < -1 {
         return Err("invalid state-feed target".into());
     }
     work.assert_current().map_err(|e| e.to_string())?;
     request.assert_owner(work.owner())?;
+    super::notifications::requests::capture_baseline(work.clone(), user_id).await?;
     let cancellation = work.cancellation();
     let _lane = tokio::select! {
         biased;
@@ -125,6 +126,20 @@ pub(crate) async fn synchronize_owned(
             .await
             .map_err(|e| format!("join state-feed cursor read: {e}"))??;
     let mut target = target;
+    // A headless poll discovers the current boundary without inventing a feed
+    // coordinate or treating a cached cursor as evidence that the server is caught up.
+    if target == -1 {
+        let response = tokio::select! { biased;
+            _ = cancellation.cancelled() => return Err("native login superseded".into()),
+            response = request.get("/api/v1/user/state-feed?mode=delta&after=0&through=0&take=1".into()) => response?,
+        };
+        if !(200..300).contains(&response.status) { return Err(format!("state-feed head HTTP {}", response.status)); }
+        let envelope: Envelope = serde_json::from_str(&response.body).map_err(|e| e.to_string())?;
+        if envelope.code != 0 { return Err(format!("state-feed head business code {}", envelope.code)); }
+        let page: Page = serde_json::from_value(envelope.data.ok_or("missing state-feed head")?).map_err(|e| e.to_string())?;
+        if page.state_feed_end_id < 0 || page.scanned_through != 0 || !page.items.is_empty() || page.has_more { return Err("invalid state-feed head".into()); }
+        target = page.state_feed_end_id;
+    }
     let mut full_through = persisted_full.or_else(|| (after == 0 && target > 0).then_some(target));
     target = target.max(full_through.unwrap_or(0));
     let mut recovery_attempted = false;

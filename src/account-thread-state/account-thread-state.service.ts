@@ -168,7 +168,12 @@ export class AccountThreadStateService {
         notification:
           feedId === null
             ? null
-            : { userId, feedId, threadFeedEndId: head.rows[0].threadFeedEndId },
+            : {
+                kind: 'thread-feed' as const,
+                userId,
+                feedId,
+                threadFeedEndId: head.rows[0].threadFeedEndId,
+              },
       };
     });
     if (pending?.notification)

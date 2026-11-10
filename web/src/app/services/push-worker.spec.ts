@@ -2,7 +2,10 @@ import { installPushWorker } from '../../push/push-worker';
 import { WebdbStorage } from './webdb-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { PreferenceStorage } from './preference-storage';
-import { projectNotificationReconstruction, syncPushThreads } from './push-thread-sync';
+import {
+  projectNotificationReconstruction,
+  syncPushThreads,
+} from './push-thread-sync';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { ACTIVE_PAGE_LOCK } from './active-page';
 import { SessionStore, SESSION_STORE_KEY } from './session/session-store';
@@ -153,6 +156,302 @@ describe('Push Service Worker entry', () => {
     await pending;
   }
 
+  it('drains request-only wakes via GET and independently advances the state checkpoint', async () => {
+    await storage.applyStateFeedPage(
+      [
+        {
+          feedId: 1,
+          body: {
+            requestEndId: '90071992547409930',
+            requestReadId: '90071992547409930',
+          },
+        },
+      ],
+      1,
+    );
+    fetchSpy.mockImplementation(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(url)).toBe(
+          '/api/v1/user/state-feed?mode=delta&after=1&through=2&take=100',
+        );
+        expect(init?.method ?? 'GET').toBe('GET');
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              mode: 'delta',
+              items: [
+                {
+                  feedId: 2,
+                  body: {
+                    requestEndId: '90071992547409931',
+                    requestReadId: '90071992547409930',
+                  },
+                },
+              ],
+              scannedThrough: 2,
+              stateFeedEndId: 2,
+              hasMore: false,
+            },
+          }),
+        );
+      },
+    );
+    await dispatch('push', {
+      data: { json: () => ({ type: 'REQUEST_ATTENTION', stateFeedEndId: 2 }) },
+    });
+    expect(show).toHaveBeenCalledWith(
+      'New incoming requests',
+      expect.objectContaining({
+        data: expect.objectContaining({ target: { kind: 'friend-requests' } }),
+        silent: false,
+      }),
+    );
+    expect(await readNotificationSince('state')).toBe(2);
+    expect(await readNotificationSince()).toBe(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not deliver historical personal requests from an unobserved baseline', async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            mode: 'full',
+            items: [
+              { feedId: 1, body: { requestEndId: '99', requestReadId: '0' } },
+            ],
+            scannedThrough: 1,
+            stateFeedEndId: 1,
+            hasMore: false,
+          },
+        }),
+      ),
+    );
+    await dispatch('push', {
+      data: { json: () => ({ type: 'REQUEST_ATTENTION', stateFeedEndId: 1 }) },
+    });
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it('removes a personal card from the durable optimistic-read event', async () => {
+    await storage.applyStateFeedPage(
+      [{ feedId: 1, body: { requestEndId: '8', requestReadId: '0' } }],
+      1,
+    );
+    const close = vi.fn();
+    workerScope.registration.getNotifications = vi.fn(async () => [
+      {
+        tag: 'soms-card-personal',
+        data: { target: { kind: 'friend-requests' } },
+        close,
+      } as unknown as Notification,
+    ]);
+    const batches: unknown[] = [];
+    const subscription = storage.browserNotifications$.subscribe((batch) =>
+      batches.push(batch),
+    );
+    await storage.advanceIntentRequestRead('8');
+    expect(batches).toHaveLength(1);
+    await dispatch('message', {
+      data: { type: SOMS_NOTIF_MSG.PRESENT, ...(batches[0] as object) },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(show).not.toHaveBeenCalled();
+    subscription.unsubscribe();
+  });
+
+  it('delivers group requests with the chat open and clears the card on a durable local read', async () => {
+    const original = await (await fetchSpy('/fixture')).json();
+    const state = {
+      ...original.data.items[0],
+      type: 'GROUP',
+      role: 'ADMIN',
+      messageEndSeq: 0,
+      unreadCount: 0,
+      previews: [],
+      joinRequestEndFeedId: 1,
+      joinRequestReadFeedId: 0,
+    };
+    fetchSpy.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...original,
+          data: { ...original.data, items: [state] },
+        }),
+      ),
+    );
+    await dispatch('push', {
+      data: { json: () => ({ type: 'REQUEST_ATTENTION', threadFeedEndId: 1 }) },
+    });
+    show.mockClear();
+    visible = true;
+    post.mockImplementation((message, ports) => {
+      if (message.type === SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST)
+        ports[0].postMessage({ threadId: 7 });
+    });
+    fetchSpy.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            items: [{ ...state, threadFeedId: 2, joinRequestEndFeedId: 2 }],
+            through: 2,
+            scannedThrough: 2,
+            threadFeedEndId: 2,
+            hasMore: false,
+          },
+        }),
+      ),
+    );
+    await dispatch('push', {
+      data: { json: () => ({ type: 'REQUEST_ATTENTION', threadFeedEndId: 2 }) },
+    });
+    expect(show).toHaveBeenCalledWith(
+      'peer@test',
+      expect.objectContaining({
+        data: expect.objectContaining({
+          target: { kind: 'group-join-requests', threadId: 7 },
+        }),
+        silent: false,
+      }),
+    );
+    const close = vi.fn();
+    workerScope.registration.getNotifications = vi.fn(async () => [
+      {
+        tag: 'soms-card-group',
+        data: { target: { kind: 'group-join-requests', threadId: 7 } },
+        close,
+      } as unknown as Notification,
+    ]);
+    const batches: unknown[] = [];
+    const subscription = storage.browserNotifications$.subscribe((batch) =>
+      batches.push(batch),
+    );
+    await storage.patchThread(7, { joinRequestReadFeedId: 2 });
+    expect(batches).toHaveLength(1);
+    await dispatch('message', {
+      data: { type: SOMS_NOTIF_MSG.PRESENT, ...(batches[0] as object) },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    subscription.unsubscribe();
+  });
+
+  it('removes a deleted group request through its durable reconciliation event without recreating it', async () => {
+    const close = vi.fn();
+    workerScope.registration.getNotifications = vi.fn(async () => [
+      {
+        tag: 'soms-card-deleted',
+        data: { target: { kind: 'group-join-requests', threadId: 7 } },
+        close,
+      } as unknown as Notification,
+    ]);
+    const batches: unknown[] = [];
+    const subscription = storage.browserNotifications$.subscribe((batch) =>
+      batches.push(batch),
+    );
+    await storage.deleteThread(7);
+    expect(batches).toHaveLength(1);
+    await dispatch('message', {
+      data: { type: SOMS_NOTIF_MSG.PRESENT, ...(batches[0] as object) },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    await dispatch('message', {
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [],
+        syncComplete: true,
+      },
+    });
+    expect(show).not.toHaveBeenCalled();
+    subscription.unsubscribe();
+  });
+
+  it('lets a completed state stream remove a card while thread reconstruction is pending', async () => {
+    await storage.applyStateFeedPage(
+      [{ feedId: 1, body: { requestEndId: '8', requestReadId: '0' } }],
+      1,
+    );
+    const close = vi.fn();
+    workerScope.registration.getNotifications = vi.fn(
+      async () =>
+        [
+          {
+            tag: 'soms-card-personal',
+            data: { target: { kind: 'friend-requests' } },
+            close,
+          },
+          {
+            tag: 'soms-card-chat',
+            data: { target: { kind: 'thread', threadId: 7 } },
+            close: vi.fn(),
+          },
+        ] as unknown as Notification[],
+    );
+    await dispatch('message', {
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        stream: 'state',
+        syncComplete: true,
+        entries: [],
+      },
+    });
+    expect(show).toHaveBeenCalledOnce();
+    await storage.applyStateFeedPage(
+      [{ feedId: 2, body: { requestEndId: '8', requestReadId: '8' } }],
+      2,
+    );
+    await dispatch('message', {
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        stream: 'state',
+        syncComplete: true,
+        entries: [
+          {
+            feedId: 2,
+            descriptor: {
+              kind: 'friend-requests',
+              title: 'Requests',
+              body: 'Requests',
+              count: 0,
+              lang: 'en',
+              icon: null,
+              data: { target: { kind: 'friend-requests' } },
+            },
+          },
+        ],
+      },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(show).toHaveBeenCalledOnce();
+  });
+
+  it('routes request taps to warm targets and the cold request URL', async () => {
+    const target = { kind: 'group-join-requests', threadId: 7 };
+    await dispatch('notificationclick', {
+      notification: { data: { target, sessionId }, close: vi.fn() },
+    });
+    expect(post).toHaveBeenCalledWith({
+      type: SOMS_NOTIF_MSG.OPEN,
+      target,
+      sessionId,
+    });
+    workerScope.clients.matchAll = vi.fn().mockResolvedValue([]);
+    await dispatch('notificationclick', {
+      notification: {
+        data: { target: { kind: 'friend-requests' }, sessionId },
+        close: vi.fn(),
+      },
+    });
+    expect(openWindow).toHaveBeenCalledWith(
+      '/?notificationSessionId=72&notificationTarget=friend-requests',
+    );
+  });
+
   it('uses the login store rather than last-user and subscription identity copies', async () => {
     await preferences.set('device', 'soms.lastUserId', 123456);
     await preferences.remove('device', 'push-registration:/api/v1');
@@ -162,7 +461,11 @@ describe('Push Service Worker entry', () => {
     expect(show).toHaveBeenCalledWith(
       'peer@test',
       expect.objectContaining({
-        data: expect.objectContaining({ threadId: 7, seq: 1, sessionId }),
+        data: expect.objectContaining({
+          target: { kind: 'thread', threadId: 7 },
+          seq: 1,
+          sessionId,
+        }),
       }),
     );
   });
@@ -257,7 +560,11 @@ describe('Push Service Worker entry', () => {
       'peer@test',
       expect.objectContaining({
         body: 'Hello',
-        data: expect.objectContaining({ threadId: 7, seq: 1, sessionId }),
+        data: expect.objectContaining({
+          target: { kind: 'thread', threadId: 7 },
+          seq: 1,
+          sessionId,
+        }),
       }),
     );
     expect((await storage.readAccountState()).threadFeedCursor).toBe(1);
@@ -325,7 +632,11 @@ describe('Push Service Worker entry', () => {
     ).registration.getNotifications = vi
       .fn()
       .mockResolvedValue([
-        { tag: 'soms-card-current', data: { threadId: 7 }, close },
+        {
+          tag: 'soms-card-current',
+          data: { target: { kind: 'thread', threadId: 7 } },
+          close,
+        },
       ]);
     post.mockImplementation(
       (message: { type: string }, ports?: MessagePort[]) => {
@@ -354,7 +665,7 @@ describe('Push Service Worker entry', () => {
               title: 'Peer',
               body: 'Hello',
               count: 1,
-              data: { threadId: 7 },
+              data: { target: { kind: 'thread', threadId: 7 } },
             },
           },
         ],
@@ -378,7 +689,7 @@ describe('Push Service Worker entry', () => {
               title: 'Peer',
               body: 'Hello',
               count: 1,
-              data: { threadId: 7 },
+              data: { target: { kind: 'thread', threadId: 7 } },
             },
           },
         ],
@@ -411,7 +722,7 @@ describe('Push Service Worker entry', () => {
                 title: 'Peer',
                 body: 'Hello',
                 count: 1,
-                data: { threadId: 7 },
+                data: { target: { kind: 'thread', threadId: 7 } },
               },
             },
           ],
@@ -426,7 +737,11 @@ describe('Push Service Worker entry', () => {
     const getNotifications = vi
       .fn()
       .mockResolvedValue([
-        { tag: 'soms-card-existing', data: { threadId: 7 }, close },
+        {
+          tag: 'soms-card-existing',
+          data: { target: { kind: 'thread', threadId: 7 } },
+          close,
+        },
       ]);
     const scope = {
       navigator: {
@@ -455,7 +770,7 @@ describe('Push Service Worker entry', () => {
               title: 'Peer',
               body: '',
               count: 0,
-              data: { threadId: 7 },
+              data: { target: { kind: 'thread', threadId: 7 } },
             },
           },
         ],
@@ -477,7 +792,7 @@ describe('Push Service Worker entry', () => {
               title: 'Peer',
               body: 'Hello',
               count: 1,
-              data: { threadId: 7 },
+              data: { target: { kind: 'thread', threadId: 7 } },
             },
           },
         ],
@@ -491,22 +806,40 @@ describe('Push Service Worker entry', () => {
     const add = (threadId: number, suffix = String(threadId)) => {
       const tag = `soms-card-${suffix}`;
       const card = {
-        tag, data: { threadId, sessionId, hasAcceptedAlert: true }, body: 'Before fetch',
-        close: () => { if (active.get(tag) === card) active.delete(tag); },
+        tag,
+        data: {
+          target: { kind: 'thread', threadId },
+          sessionId,
+          hasAcceptedAlert: true,
+        },
+        body: 'Before fetch',
+        close: () => {
+          if (active.get(tag) === card) active.delete(tag);
+        },
       } as Notification;
       active.set(tag, card);
       return card;
     };
     threads.forEach((thread) => add(thread));
-    vi.spyOn(workerScope.registration, 'getNotifications').mockImplementation(async (options) =>
-      [...active.values()].filter((card) => !options?.tag || card.tag === options.tag));
-    show.mockImplementation(async (_title: string, options: NotificationOptions) => {
-      const card = {
-        tag: options.tag!, data: options.data, body: options.body,
-        close: () => { if (active.get(card.tag) === card) active.delete(card.tag); },
-      } as Notification;
-      active.set(card.tag, card);
-    });
+    vi.spyOn(workerScope.registration, 'getNotifications').mockImplementation(
+      async (options) =>
+        [...active.values()].filter(
+          (card) => !options?.tag || card.tag === options.tag,
+        ),
+    );
+    show.mockImplementation(
+      async (_title: string, options: NotificationOptions) => {
+        const card = {
+          tag: options.tag!,
+          data: options.data,
+          body: options.body,
+          close: () => {
+            if (active.get(card.tag) === card) active.delete(card.tag);
+          },
+        } as Notification;
+        active.set(card.tag, card);
+      },
+    );
     return { active, add };
   }
 
@@ -516,7 +849,8 @@ describe('Push Service Worker entry', () => {
     workerScope.clients.get = vi.fn().mockResolvedValue({ id: 'active-page' });
     await dispatch('message', {
       data: { type: SOMS_NOTIF_MSG.RESTORE },
-      source: { id: 'active-page' }, ports: [{ postMessage: reply }],
+      source: { id: 'active-page' },
+      ports: [{ postMessage: reply }],
     });
     expect(reply).toHaveBeenCalledWith({ ok: true });
     expect(workerScope.registration.getNotifications).toHaveBeenCalledOnce();
@@ -528,25 +862,50 @@ describe('Push Service Worker entry', () => {
     // HELLO has now started the online database worker; incomplete synchronization
     // cannot retire candidates. Its complete merge may have no notification delta.
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.PRESENT, userId, entries: [], syncComplete: false },
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [],
+        syncComplete: false,
+      },
     });
     expect(active.size).toBe(2);
-    await syncPushThreads(storage, userId, 1,
-      async () => (await fetch('/api/v1/thread-feed')).json(), preferences,
-      { lang: 'en', privateBody: 'New message', retracted: '[Retracted]', removed: '[Removed]' });
+    await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => (await fetch('/api/v1/thread-feed')).json(),
+      preferences,
+      {
+        lang: 'en',
+        privateBody: 'New message',
+        retracted: '[Retracted]',
+        removed: '[Removed]',
+      },
+    );
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.PRESENT, userId, entries: [], syncComplete: true },
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [],
+        syncComplete: true,
+      },
     });
     expect([...active.keys()]).toEqual(['soms-card-7']);
     expect(active.get('soms-card-7')?.body).toContain('Hello');
     expect(show).toHaveBeenCalledOnce();
-    expect(show.mock.lastCall?.[1]).toMatchObject({ tag: 'soms-card-7', silent: true });
+    expect(show.mock.lastCall?.[1]).toMatchObject({
+      tag: 'soms-card-7',
+      silent: true,
+    });
     expect(workerScope.registration.getNotifications).toHaveBeenCalledOnce();
     fetchSpy.mockClear();
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: 1 }) },
     });
-    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: SOMS_NOTIF_MSG.COMMITTED }));
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ type: SOMS_NOTIF_MSG.COMMITTED }),
+    );
     expect(show).toHaveBeenCalledOnce();
   });
 
@@ -554,7 +913,8 @@ describe('Push Service Worker entry', () => {
     const { active } = installSystemCards([7, 8]);
     workerScope.clients.get = vi.fn().mockResolvedValue({ id: 'active-page' });
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.RESTORE }, source: { id: 'active-page' },
+      data: { type: SOMS_NOTIF_MSG.RESTORE },
+      source: { id: 'active-page' },
     });
     // Replace event handlers with a fresh Worker lifetime while keeping the same
     // registration, OS cards and live document. No second RESTORE is sent by the page.
@@ -564,7 +924,10 @@ describe('Push Service Worker entry', () => {
     });
     expect(fetchSpy).toHaveBeenCalledOnce();
     expect(show).toHaveBeenCalledOnce();
-    expect(show.mock.lastCall?.[1]).toMatchObject({ tag: 'soms-card-7', silent: true });
+    expect(show.mock.lastCall?.[1]).toMatchObject({
+      tag: 'soms-card-7',
+      silent: true,
+    });
     expect([...active.keys()]).toEqual(['soms-card-7']);
     expect(workerScope.registration.getNotifications).toHaveBeenCalledTimes(2);
   });
@@ -572,20 +935,41 @@ describe('Push Service Worker entry', () => {
   it('starts fresh reconstruction on an empty online batch after worker restart', async () => {
     const { active } = installSystemCards([7, 8]);
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.RESTORE }, source: { id: 'active-page' },
+      data: { type: SOMS_NOTIF_MSG.RESTORE },
+      source: { id: 'active-page' },
     });
     installPushWorker(workerScope);
-    await syncPushThreads(storage, userId, 1,
-      async () => (await fetch('/api/v1/thread-feed')).json(), preferences,
-      { lang: 'en', privateBody: 'New message', retracted: '[Retracted]', removed: '[Removed]' });
+    await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => (await fetch('/api/v1/thread-feed')).json(),
+      preferences,
+      {
+        lang: 'en',
+        privateBody: 'New message',
+        retracted: '[Retracted]',
+        removed: '[Removed]',
+      },
+    );
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.PRESENT, userId, entries: [], syncComplete: true },
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [],
+        syncComplete: true,
+      },
     });
     expect([...active.keys()]).toEqual(['soms-card-7']);
     expect(active.get('soms-card-7')?.body).toContain('Hello');
     expect(workerScope.registration.getNotifications).toHaveBeenCalledTimes(2);
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.PRESENT, userId, entries: [], syncComplete: true },
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [],
+        syncComplete: true,
+      },
     });
     expect(workerScope.registration.getNotifications).toHaveBeenCalledTimes(2);
     expect(show).toHaveBeenCalledOnce();
@@ -594,12 +978,18 @@ describe('Push Service Worker entry', () => {
   it('keeps the fresh online recovery round pending after partial sync without recapturing', async () => {
     const { active } = installSystemCards([7, 8]);
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.RESTORE }, source: { id: 'active-page' },
+      data: { type: SOMS_NOTIF_MSG.RESTORE },
+      source: { id: 'active-page' },
     });
     installPushWorker(workerScope);
     workerScope.clients.get = vi.fn().mockResolvedValue({ id: 'active-page' });
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.PRESENT, userId, entries: [], syncComplete: false },
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [],
+        syncComplete: false,
+      },
       source: { id: 'active-page' },
     });
     expect(active.size).toBe(2);
@@ -607,30 +997,64 @@ describe('Push Service Worker entry', () => {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: 1 }) },
     });
     expect(fetchSpy).not.toHaveBeenCalled();
-    await syncPushThreads(storage, userId, 1,
-      async () => (await fetch('/api/v1/thread-feed')).json(), preferences,
-      { lang: 'en', privateBody: 'New message', retracted: '[Retracted]', removed: '[Removed]' });
+    await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => (await fetch('/api/v1/thread-feed')).json(),
+      preferences,
+      {
+        lang: 'en',
+        privateBody: 'New message',
+        retracted: '[Retracted]',
+        removed: '[Removed]',
+      },
+    );
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.PRESENT, userId, entries: [], syncComplete: true },
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [],
+        syncComplete: true,
+      },
       source: { id: 'active-page' },
     });
     expect([...active.keys()]).toEqual(['soms-card-7']);
-    expect(show.mock.lastCall?.[1]).toMatchObject({ tag: 'soms-card-7', silent: true });
+    expect(show.mock.lastCall?.[1]).toMatchObject({
+      tag: 'soms-card-7',
+      silent: true,
+    });
     expect(workerScope.registration.getNotifications).toHaveBeenCalledTimes(2);
   });
 
   it('excludes cards closed while the worker was stopped from the new recovery round', async () => {
     const { active } = installSystemCards([7, 8]);
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.RESTORE }, source: { id: 'active-page' },
+      data: { type: SOMS_NOTIF_MSG.RESTORE },
+      source: { id: 'active-page' },
     });
     active.get('soms-card-7')!.close();
     installPushWorker(workerScope);
-    await syncPushThreads(storage, userId, 1,
-      async () => (await fetch('/api/v1/thread-feed')).json(), preferences,
-      { lang: 'en', privateBody: 'New message', retracted: '[Retracted]', removed: '[Removed]' });
+    await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => (await fetch('/api/v1/thread-feed')).json(),
+      preferences,
+      {
+        lang: 'en',
+        privateBody: 'New message',
+        retracted: '[Retracted]',
+        removed: '[Removed]',
+      },
+    );
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.PRESENT, userId, entries: [], syncComplete: true },
+      data: {
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId,
+        entries: [],
+        syncComplete: true,
+      },
     });
     expect(active.size).toBe(0);
     expect(show).not.toHaveBeenCalled();
@@ -641,14 +1065,32 @@ describe('Push Service Worker entry', () => {
     const { active } = installSystemCards([7]);
     workerScope.clients.get = vi.fn().mockResolvedValue({ id: 'active-page' });
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.RESTORE }, source: { id: 'active-page' },
+      data: { type: SOMS_NOTIF_MSG.RESTORE },
+      source: { id: 'active-page' },
     });
-    await syncPushThreads(storage, userId, 1,
-      async () => (await fetch('/api/v1/thread-feed')).json(), preferences,
-      { lang: 'en', privateBody: 'New message', retracted: '[Retracted]', removed: '[Removed]' });
+    await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => (await fetch('/api/v1/thread-feed')).json(),
+      preferences,
+      {
+        lang: 'en',
+        privateBody: 'New message',
+        retracted: '[Retracted]',
+        removed: '[Removed]',
+      },
+    );
     show.mockRejectedValueOnce(new Error('OS unavailable'));
-    const completed = { type: SOMS_NOTIF_MSG.PRESENT, userId, entries: [], syncComplete: true };
-    await expect(dispatch('message', { data: completed })).rejects.toThrow('OS unavailable');
+    const completed = {
+      type: SOMS_NOTIF_MSG.PRESENT,
+      userId,
+      entries: [],
+      syncComplete: true,
+    };
+    await expect(dispatch('message', { data: completed })).rejects.toThrow(
+      'OS unavailable',
+    );
     fetchSpy.mockClear();
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: 2 }) },
@@ -668,7 +1110,8 @@ describe('Push Service Worker entry', () => {
     installSystemCards([]);
     workerScope.clients.get = vi.fn().mockResolvedValue({ id: 'active-page' });
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.RESTORE }, source: { id: 'active-page' },
+      data: { type: SOMS_NOTIF_MSG.RESTORE },
+      source: { id: 'active-page' },
     });
     await dispatch('message', { data: { type: SOMS_NOTIF_MSG.RESET } });
     await dispatch('push', {
@@ -682,7 +1125,8 @@ describe('Push Service Worker entry', () => {
     const { active } = installSystemCards([7]);
     workerScope.clients.get = vi.fn().mockResolvedValue(undefined);
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.RESTORE }, source: { id: 'closed-page' },
+      data: { type: SOMS_NOTIF_MSG.RESTORE },
+      source: { id: 'closed-page' },
     });
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: 1 }) },
@@ -694,17 +1138,25 @@ describe('Push Service Worker entry', () => {
 
   it('does not wait for an already admitted push when entering page restoration', async () => {
     installSystemCards([7]);
-    const response = await fetchSpy.getMockImplementation()!('/api/v1/thread-feed');
+    const response = await fetchSpy.getMockImplementation()!(
+      '/api/v1/thread-feed',
+    );
     let finish!: () => void;
-    const pending = new Promise<void>((resolve) => { finish = resolve; });
-    fetchSpy.mockImplementationOnce(async () => { await pending; return response; });
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    fetchSpy.mockImplementationOnce(async () => {
+      await pending;
+      return response;
+    });
     const pushing = dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: 1 }) },
     });
     await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
     const reply = vi.fn();
     await dispatch('message', {
-      data: { type: SOMS_NOTIF_MSG.RESTORE }, source: { id: 'active-page' },
+      data: { type: SOMS_NOTIF_MSG.RESTORE },
+      source: { id: 'active-page' },
       ports: [{ postMessage: reply }],
     });
     expect(reply).toHaveBeenCalledWith({ ok: true });
@@ -720,7 +1172,11 @@ describe('Push Service Worker entry', () => {
     expect([...active.keys()]).toEqual(['soms-card-7']);
     expect(active.get('soms-card-7')?.body).toContain('Hello');
     expect(show).toHaveBeenCalledOnce();
-    expect(show.mock.lastCall?.[1]).toMatchObject({ tag: 'soms-card-7', silent: true, renotify: false });
+    expect(show.mock.lastCall?.[1]).toMatchObject({
+      tag: 'soms-card-7',
+      silent: true,
+      renotify: false,
+    });
     show.mockClear();
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: 1 }) },
@@ -731,7 +1187,9 @@ describe('Push Service Worker entry', () => {
   it('deduplicates before fetching and reconstructs only the retained instance', async () => {
     const { active, add } = installSystemCards([7]);
     add(7, 'duplicate');
-    const response = await fetchSpy.getMockImplementation()!('/api/v1/thread-feed');
+    const response = await fetchSpy.getMockImplementation()!(
+      '/api/v1/thread-feed',
+    );
     fetchSpy.mockImplementationOnce(async () => {
       expect([...active.keys()]).toEqual(['soms-card-7']);
       return response;
@@ -740,15 +1198,22 @@ describe('Push Service Worker entry', () => {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: 1 }) },
     });
     expect(show).toHaveBeenCalledOnce();
-    expect(show.mock.lastCall?.[1]).toMatchObject({ tag: 'soms-card-7', silent: true });
+    expect(show.mock.lastCall?.[1]).toMatchObject({
+      tag: 'soms-card-7',
+      silent: true,
+    });
     expect([...active.keys()]).toEqual(['soms-card-7']);
   });
 
   it('does not recreate a candidate clicked during fetch through the ordinary delta path', async () => {
     const { active } = installSystemCards([7]);
-    const response = await fetchSpy.getMockImplementation()!('/api/v1/thread-feed');
+    const response = await fetchSpy.getMockImplementation()!(
+      '/api/v1/thread-feed',
+    );
     fetchSpy.mockImplementationOnce(async () => {
-      await dispatch('notificationclick', { notification: active.get('soms-card-7')! });
+      await dispatch('notificationclick', {
+        notification: active.get('soms-card-7')!,
+      });
       return response;
     });
     await dispatch('push', {
@@ -797,22 +1262,62 @@ describe('Push Service Worker entry', () => {
 
   it('explicit reconstruction includes unchanged merged states while an empty delta stays empty', async () => {
     const copy = {
-      lang: 'en', privateBody: 'New message', retracted: '[Retracted]', removed: '[Removed]',
+      lang: 'en',
+      privateBody: 'New message',
+      retracted: '[Retracted]',
+      removed: '[Removed]',
     };
-    const first = await syncPushThreads(storage, userId, 1,
-      async () => (await fetch('/api/v1/thread-feed')).json(), preferences, copy);
+    const first = await syncPushThreads(
+      storage,
+      userId,
+      1,
+      async () => (await fetch('/api/v1/thread-feed')).json(),
+      preferences,
+      copy,
+    );
     expect(first.notifications).toHaveLength(1);
-    const noRequest = vi.fn(async () => { throw new Error('already synchronized'); });
-    const delta = await syncPushThreads(storage, userId, 1, noRequest, preferences, copy);
+    const noRequest = vi.fn(async () => {
+      throw new Error('already synchronized');
+    });
+    const delta = await syncPushThreads(
+      storage,
+      userId,
+      1,
+      noRequest,
+      preferences,
+      copy,
+    );
     expect(delta.notifications).toEqual([]);
     expect(noRequest).not.toHaveBeenCalled();
     const merged = await storage.getThreadStates();
-    const rebuilt = await projectNotificationReconstruction(storage, userId, preferences, copy, merged);
+    const rebuilt = await projectNotificationReconstruction(
+      storage,
+      userId,
+      preferences,
+      copy,
+      merged,
+    );
     expect(rebuilt).toEqual(first.notifications);
-    expect(await projectNotificationReconstruction(storage, userId, preferences, copy, [])).toEqual([]);
+    expect(
+      await projectNotificationReconstruction(
+        storage,
+        userId,
+        preferences,
+        copy,
+        [],
+      ),
+    ).toEqual([]);
     await preferences.set('device', 'notificationEnabled', false);
     try {
-      expect(await projectNotificationReconstruction(storage, userId, preferences, copy, merged)).toEqual([]);
+      expect(
+        await projectNotificationReconstruction(
+          storage,
+          userId,
+          preferences,
+          copy,
+          merged,
+        ),
+      ).toEqual([]);
     } finally {
       await preferences.remove('device', 'notificationEnabled');
     }
@@ -865,11 +1370,14 @@ describe('Push Service Worker entry', () => {
   });
   it('carries the required notification session to an existing page', async () => {
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
+      notification: {
+        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        close: vi.fn(),
+      },
     });
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
-      threadId: 7,
+      target: { kind: 'thread', threadId: 7 },
       sessionId,
     });
   });
@@ -877,7 +1385,10 @@ describe('Push Service Worker entry', () => {
   it('does not navigate a notification belonging to a previous session on the same account', async () => {
     await dispatch('notificationclick', {
       notification: {
-        data: { threadId: 7, sessionId: sessionId + 1 },
+        data: {
+          target: { kind: 'thread', threadId: 7 },
+          sessionId: sessionId + 1,
+        },
         close: vi.fn(),
       },
     });
@@ -900,7 +1411,10 @@ describe('Push Service Worker entry', () => {
     const saved = await sessionStore.read();
     await sessionStore.end(saved!.session!.id);
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
+      notification: {
+        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        close: vi.fn(),
+      },
     });
     expect(post).not.toHaveBeenCalled();
     expect(openWindow).not.toHaveBeenCalled();
@@ -909,11 +1423,14 @@ describe('Push Service Worker entry', () => {
   it('routes a body tap without an action request', async () => {
     const close = vi.fn();
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7, sessionId }, close },
+      notification: {
+        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        close,
+      },
     });
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
-      threadId: 7,
+      target: { kind: 'thread', threadId: 7 },
       sessionId,
     });
     expect(focus).toHaveBeenCalled();
@@ -957,12 +1474,15 @@ describe('Push Service Worker entry', () => {
     installPushWorker(scope);
 
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
+      notification: {
+        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        close: vi.fn(),
+      },
     });
 
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
-      threadId: 7,
+      target: { kind: 'thread', threadId: 7 },
       sessionId,
     });
     expect(focus).toHaveBeenCalled();
@@ -1022,14 +1542,17 @@ describe('Push Service Worker entry', () => {
     installPushWorker(scope);
 
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
+      notification: {
+        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        close: vi.fn(),
+      },
     });
 
     expect(adminPost).not.toHaveBeenCalled();
     expect(adminFocus).not.toHaveBeenCalled();
     expect(chatPost).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
-      threadId: 7,
+      target: { kind: 'thread', threadId: 7 },
       sessionId,
     });
     expect(chatFocus).toHaveBeenCalled();
@@ -1065,7 +1588,10 @@ describe('Push Service Worker entry', () => {
     installPushWorker(scope);
 
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
+      notification: {
+        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        close: vi.fn(),
+      },
     });
 
     expect(openWindow).toHaveBeenCalledWith(

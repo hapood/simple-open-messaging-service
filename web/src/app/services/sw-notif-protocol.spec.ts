@@ -7,23 +7,35 @@ describe('Push worker message boundaries', () => {
     expect(parseSwNotifMessage({ type: message.type, userId: 1 })).toBeNull();
     expect(parseSwNotifMessage({ ...message, cursor: -1 })).toBeNull();
   });
-  it('requires positive thread and session IDs, without legacy payload fallback', () => {
-    const message = { type: SOMS_NOTIF_MSG.OPEN, threadId: 7, sessionId: 11 };
+  it('requires a validated target and positive session ID, never a flattened thread ID', () => {
+    const message = {
+      type: SOMS_NOTIF_MSG.OPEN,
+      target: { kind: 'thread', threadId: 7 },
+      sessionId: 11,
+    };
     expect(parseSwNotifMessage(message)).toEqual(message);
     for (const invalid of [undefined, 0, '7', 0.5, 2147483648]) {
-      expect(parseSwNotifMessage({ ...message, threadId: invalid })).toBeNull();
+      expect(
+        parseSwNotifMessage({
+          ...message,
+          target: { kind: 'thread', threadId: invalid },
+        }),
+      ).toBeNull();
       expect(
         parseSwNotifMessage({ ...message, sessionId: invalid }),
       ).toBeNull();
     }
     expect(
-      parseSwNotifMessage({ type: SOMS_NOTIF_MSG.OPEN, threadId: 7 }),
+      parseSwNotifMessage({
+        type: SOMS_NOTIF_MSG.OPEN,
+        threadId: 7,
+        sessionId: 11,
+      }),
     ).toBeNull();
     expect(
       parseSwNotifMessage({
         type: SOMS_NOTIF_MSG.OPEN,
-        threadId: 7,
-        userId: 1,
+        target: { kind: 'friend-requests' },
       }),
     ).toBeNull();
     expect(parseSwNotifMessage({ type: 'unknown' })).toBeNull();

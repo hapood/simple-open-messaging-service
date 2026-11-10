@@ -5,9 +5,10 @@ import { WebdbStorage } from './webdb-storage';
 import { BusinessCode } from './biz-code';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
+import { parseNotificationTarget } from '../../../../shared/notification-target';
 import { GroupMetaSyncError, syncGroupMetaThread } from './group-meta-sync';
 import { syncTombstoneThread } from './tombstone-sync';
-import { synchronizeStateFeed } from './worker-state-feed-sync';
+import { syncPushState } from './push-state-sync';
 import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
 import { PreferenceStorage } from './preference-storage';
 import {
@@ -162,7 +163,9 @@ async function synchronizeNotifications(
       userId: Number(userId),
       syncComplete: !result.error,
       entries: result.notifications.flatMap((descriptor) => {
-        const feedId = feedIds.get(descriptor.data.threadId ?? -1);
+        const target = parseNotificationTarget(descriptor.data.target);
+        const feedId =
+          target?.kind === 'thread' ? feedIds.get(target.threadId) : undefined;
         return feedId === undefined ? [] : [{ feedId, descriptor }];
       }),
     });
@@ -394,16 +397,33 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             async (target) => {
               if (feedPort !== port) return;
               try {
-                const cursor = await synchronizeStateFeed(
+                const language =
+                  (await preferences.get<string>('global', 'language')) ??
+                  navigator.language;
+                const result = await syncPushState(
                   storage,
                   target,
                   requestStateFeed,
+                  preferences,
+                  language,
                 );
-                if (feedPort === port)
+                if (feedPort === port) {
+                  postMessage({
+                    type: 'notification-batch',
+                    userId: Number(data.userId),
+                    stream: 'state',
+                    syncComplete: !result.error,
+                    entries: result.notifications.map((descriptor) => ({
+                      feedId: result.cursor,
+                      descriptor,
+                    })),
+                  });
                   postMessage({
                     type: 'state-feed-committed',
                     userId: Number(data.userId),
                   });
+                }
+                if (result.error) throw result.error;
               } catch (error) {
                 console.warn(
                   '[state-feed] wake failed; next wake retries',
