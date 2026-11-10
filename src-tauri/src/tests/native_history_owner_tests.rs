@@ -10,6 +10,7 @@ use tokio::net::{TcpListener, TcpStream};
 fn owner() -> Arc<LoginConnection> {
     let database = Connection::open_in_memory().unwrap();
     crate::native_db::create_cache_schema(&database).unwrap();
+    crate::native_db::thread_store::insert_test_thread(&database, 42, 7, 3);
     database
         .execute_batch(
             "CREATE TEMP TABLE message_writes(seq INTEGER);
@@ -244,21 +245,14 @@ async fn local_latest_empty_does_not_bootstrap_or_claim_exhaustion() {
 }
 
 #[tokio::test]
-async fn deletion_only_sync_state_has_no_known_head() {
+async fn newly_created_thread_has_no_known_head() {
     let owner = owner();
-    owner
-        .with_database(|conn| {
-            conn.execute(
-                "INSERT INTO thread_sync_state(user_id,thread_id,deleted_hwm) VALUES(42,7,3)",
-                [],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
-        .unwrap();
     let work = owner.capture_database_work().unwrap();
     assert_eq!(read_native_message_head(&work, 42, 7).await.unwrap(), None);
-    assert_eq!(read_native_message_head(&work, 42, 8).await.unwrap(), None);
+    assert_eq!(
+        read_native_message_head(&work, 42, 8).await.unwrap_err(),
+        "thread message progress is not initialized"
+    );
 }
 
 #[tokio::test]

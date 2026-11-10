@@ -317,7 +317,9 @@ pub(crate) async fn native_db_drain_thread_misc(
     OPEN_THREAD_ID.store(thread_id, std::sync::atomic::Ordering::Release);
     let intent = FeedIntent::capture(&proxy, user_id)?;
     #[cfg(desktop)]
-    if let Err(error) = super::desktop_notifications::desktop_notification_presentation_changed(app.clone()).await {
+    if let Err(error) =
+        super::desktop_notifications::desktop_notification_presentation_changed(app.clone()).await
+    {
         log::warn!("notification presentation refresh failed: {error}");
     }
     // Same-thread drains coalesce (one in-flight round plus one trailing
@@ -1338,35 +1340,17 @@ async fn sync_tombstone_thread(
 ) -> Result<Vec<Value>, String> {
     let user_id = intent.user_id;
     let mut committed = Vec::new();
-    // The target is the thread-feed-advertised boundary already committed to
-    // the threads table; a missing row means there is nothing to drain.
-    let target = intent
+    // Read the advertised bound and client progress from one account-thread row.
+    let (target, mut hwm) = intent
         .db(move |conn| {
-            let target: Option<i64> = conn
-                .query_row(
-                    "SELECT tombstone_end_seq FROM threads WHERE user_id=?1 AND thread_id=?2",
-                    rusqlite::params![user_id, thread_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| format!("read tombstone target: {e}"))?;
-            Ok::<_, String>(target)
-        })
-        .await?;
-    let Some(target) = target else {
-        return Ok(committed);
-    };
-    let mut hwm = intent
-        .db(move |conn| {
-            let hwm: Option<i64> = conn
-                .query_row(
-                    "SELECT deleted_hwm FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
-                    rusqlite::params![user_id, thread_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| format!("get deleted hwm: {e}"))?;
-            Ok::<_, String>(hwm.unwrap_or(0))
+            conn.query_row(
+                "SELECT tombstone_end_seq,deleted_hwm FROM threads WHERE user_id=?1 AND thread_id=?2",
+                rusqlite::params![user_id, thread_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|e| format!("read tombstone progress: {e}"))?
+            .ok_or_else(|| "thread deletion progress is not initialized".to_string())
         })
         .await?;
     loop {
@@ -2088,7 +2072,7 @@ fn attention_count_range(state: &LocalThreadAttention) -> Result<(i32, i32), Str
     ))
 }
 
-fn preview_timestamp_millis(value: &str) -> Option<i64> {
+pub(super) fn preview_timestamp_millis(value: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|time| time.timestamp_millis())
@@ -2170,9 +2154,7 @@ fn project_attention(
     )?;
     let projection = project_thread_attention(&state, count)?;
     tx.execute(
-        "UPDATE threads SET unread_count=?3,last_read_seq=?4,mention_me=?5,mention_all=0,
-             last_message_preview=?6,last_message_at=?7,
-             last_message_sender_account=?8,last_message_sender_namespace_id=?9
+        "UPDATE threads SET unread_count=?3,last_read_seq=?4,mention_me=?5,mention_all=0
          WHERE user_id=?1 AND thread_id=?2",
         params![
             user_id,
@@ -2180,10 +2162,6 @@ fn project_attention(
             projection.unread_count,
             projection.last_read_seq,
             projection.mention_unread.contains(&"me"),
-            projection.last_message_preview,
-            projection.last_message_at,
-            projection.last_message_sender_account,
-            projection.last_message_sender_namespace_id,
         ],
     )
     .map_err(|e| format!("write attention projection: {e}"))?;
@@ -2258,6 +2236,46 @@ mod drain_owner_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creation_seeds_deletion_baseline_but_updates_do_not_initialize_or_rebase() {
+        let mut conn = db();
+        let mut first = snapshot(1, 0);
+        first.tombstone_end_seq = 17;
+        merge_states(&mut conn, 1, vec![first.clone()], Some(1)).unwrap();
+        assert_eq!(
+            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
+            Some(17),
+        );
+        let mut next = first.clone();
+        next.thread_feed_id = 2;
+        next.tombstone_end_seq = 23;
+        merge_states(&mut conn, 1, vec![next.clone()], Some(2)).unwrap();
+        assert_eq!(
+            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
+            Some(17),
+        );
+        super::super::client_state::delete_thread(&mut conn, 1, 7).unwrap();
+        assert_eq!(
+            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
+            None,
+        );
+        merge_states(&mut conn, 1, vec![next.clone()], Some(2)).unwrap();
+        assert_eq!(
+            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
+            Some(23),
+        );
+        assert!(conn
+            .execute("UPDATE threads SET deleted_hwm=NULL", [])
+            .is_err());
+        next.thread_feed_id = 3;
+        next.tombstone_end_seq = 30;
+        merge_states(&mut conn, 1, vec![next], Some(3)).unwrap();
+        assert_eq!(
+            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
+            Some(23),
+        );
+    }
 
     #[test]
     fn polling_accepts_an_empty_current_head_but_not_a_stalled_incremental_page() {
@@ -2435,8 +2453,7 @@ mod tests {
         super::super::validate_cache_schema(&conn).unwrap();
         merge_states(&mut conn, 1, vec![snapshot(1, 0)], Some(1)).unwrap();
         advance_read(&mut conn, 1, 7, 105).unwrap();
-        super::super::drop_cache_schema(&conn).unwrap();
-        super::super::create_cache_schema(&conn).unwrap();
+        super::super::recreate_cache_schema(&mut conn).unwrap();
         super::super::validate_cache_schema(&conn).unwrap();
         assert_eq!(read_state(&conn, 1, 7).unwrap().local_read_seq, None);
     }
@@ -2995,7 +3012,9 @@ mod tests {
         merge_states(&mut conn, 1, vec![value.clone()], None).unwrap();
         value.thread_feed_id = 2;
         value.blocked = true;
-        assert!(merge_states(&mut conn, 1, vec![value.clone()], None).unwrap()[0].notification_changed);
+        assert!(
+            merge_states(&mut conn, 1, vec![value.clone()], None).unwrap()[0].notification_changed
+        );
         value.thread_feed_id = 3;
         value.blocked = false;
         assert!(!merge_states(&mut conn, 1, vec![value], None).unwrap()[0].notification_changed);
@@ -3090,7 +3109,10 @@ fn read_cursor(conn: &Connection, user_id: i64) -> Result<i32, String> {
     Ok(cursor as i32)
 }
 
-pub(super) fn read_states(conn: &Connection, user_id: i64) -> Result<Vec<LocalThreadAttention>, String> {
+pub(super) fn read_states(
+    conn: &Connection,
+    user_id: i64,
+) -> Result<Vec<LocalThreadAttention>, String> {
     let mut query = conn
         .prepare("SELECT thread_id FROM threads WHERE user_id=?1 ORDER BY thread_id")
         .map_err(|e| format!("prepare attention query: {e}"))?;

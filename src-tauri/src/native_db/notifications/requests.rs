@@ -132,6 +132,7 @@ pub(crate) fn command(
     };
     NotificationCommand::Show(NotificationContent {
         target: value.target,
+        latest_seq: None,
         title: if preferences.private_preview || personal || value.title.is_empty() {
             "SOMS".into()
         } else {
@@ -338,6 +339,8 @@ mod tests {
             panic!()
         };
         assert_eq!(c.title, "SOMS");
+        assert!(c.latest_seq.is_none());
+        assert!(serde_json::to_value(&c).unwrap().get("latestSeq").is_none());
         assert!(c.silent);
         assert!(c.messages.is_empty());
     }

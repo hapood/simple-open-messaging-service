@@ -1,5 +1,6 @@
 pub(crate) mod alert;
 pub(crate) mod target;
+pub(crate) mod opening;
 pub(crate) mod requests;
 pub(crate) use target::NotificationTarget;
 pub(crate) mod content;
@@ -66,6 +67,7 @@ pub(crate) struct NotificationBatch {
 pub(crate) struct NotificationThread {
     pub(crate) thread_id: i32,
     pub(crate) thread_feed_id: i32,
+    pub(crate) message_end_seq: i32,
     pub(crate) unread_count: i64,
     pub(crate) last_read_seq: i32,
     pub(crate) has_unread_mention: bool,
@@ -338,11 +340,18 @@ mod tests {
     }
 
     #[test]
-    fn notification_count_rebases_known_slots_including_tombs_and_excluding_self() {
+    fn notification_count_rebases_live_non_self_slots_but_not_deletion_markers() {
         let conn = db();
         for (seq, account) in [(3, "peer"), (4, "me"), (5, "peer")] {
-            conn.execute("INSERT INTO messages(user_id,thread_id,seq,created_at,payload_json) VALUES(1,7,?1,0,?2)", params![seq,
-                serde_json::json!({"isDeleted":true,"creator":{"account":account,"namespaceId":0}}).to_string()]).unwrap();
+            let payload = if seq == 5 {
+                serde_json::json!({"threadId":7,"seq":seq,"contentType":"TOMB",
+                    "isDeleted":true,"deletionType":"USER_RETRACTION"})
+            } else {
+                serde_json::json!({"threadId":7,"seq":seq,"contentType":"TEXT",
+                    "isDeleted":false,"creator":{"account":account,"namespaceId":0}})
+            };
+            conn.execute("INSERT INTO messages(user_id,thread_id,seq,created_at,payload_json) VALUES(1,7,?1,0,?2)",
+                params![seq, payload.to_string()]).unwrap();
         }
         let owner = MessageCountOwner {
             account: "me".into(),
@@ -350,17 +359,17 @@ mod tests {
         };
         assert_eq!(
             projected_count(&conn, 1, &state(5), Some(&owner)).unwrap(),
-            6
+            7
         );
         assert_eq!(
             projected_count(&conn, 1, &state(20), Some(&owner)).unwrap(),
-            6
+            7
         );
         let mut rollback = state(2);
         rollback.server.as_mut().unwrap().last_read_seq = 5;
         assert_eq!(
             projected_count(&conn, 1, &rollback, Some(&owner)).unwrap(),
-            10
+            9
         );
     }
 
@@ -375,6 +384,7 @@ mod tests {
         let rebuilt = assemble_selected(&mut conn, 1, vec![merged.clone()], None).unwrap();
         assert_eq!(rebuilt.threads.len(), 1);
         assert_eq!(rebuilt.threads[0].thread_id, merged.thread_id);
+        assert_eq!(rebuilt.threads[0].message_end_seq, merged.server.as_ref().unwrap().message_end_seq);
         assert!(!merged.notification_changed);
         assert!(assemble_selected(&mut conn, 1, vec![], None).unwrap().threads.is_empty());
         merged.notification_changed = true;
@@ -787,6 +797,7 @@ fn assemble_selected(
         notifications.push(NotificationThread {
             thread_id: current.thread_id,
             thread_feed_id: server.thread_feed_id,
+            message_end_seq: server.message_end_seq,
             unread_count: count,
             last_read_seq: local,
             has_unread_mention: server.last_mention_seq.is_some_and(|seq| seq > local),

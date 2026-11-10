@@ -78,7 +78,7 @@ mod tests {
 
     fn show(indices: &[u64]) -> NotificationCommand {
         NotificationCommand::Show(NotificationContent {
-            target: NotificationTarget::Thread { thread_id: 7 }, title: "Peer".into(), body: "Message".into(),
+            target: NotificationTarget::Thread { thread_id: 7 }, latest_seq: Some(42), title: "Peer".into(), body: "Message".into(),
             count: 1, silent: false, has_unread_mention: false,
             messages: indices.iter().map(|index| NotificationMessage {
                 seq: 1, sender_name: "Peer".into(), sender_key: None,

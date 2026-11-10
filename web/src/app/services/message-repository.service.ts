@@ -14,7 +14,7 @@ import {
 } from './message.service';
 import { UserService } from './user.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { Message, MediaStatus, type MessageQueryRow } from './model';
+import { Message, MediaStatus } from './model';
 import { isTauri } from './runtime';
 import { nativeHistoryRequest } from './native-history';
 import { historyAnchorRequest, type HistoryAnchor } from './history-anchor';
@@ -54,7 +54,7 @@ export type NativeMessageHistoryDemand =
     };
 
 export type MessageHistorySourceItem =
-  | { kind: 'message'; message: MessageQueryRow }
+  | { kind: 'message'; message: Message }
   | {
       kind: 'serverGap';
       left: number;
@@ -110,6 +110,12 @@ export class MessageRepository {
    */
   private readonly signal$ = new Subject<{ threadId: number; seq: number }>();
   readonly liveSignal$ = this.signal$.asObservable();
+  /** Every authoritative ceiling advance wakes history, including silent HELLO hydration. */
+  private readonly historyHeadSignal = new Subject<{
+    threadId: number;
+    seq: number;
+  }>();
+  readonly historyHead$ = this.historyHeadSignal.asObservable();
   private readonly deletedSignal$ = new Subject<{
     threadId: number;
     deletions: Array<{
@@ -190,14 +196,23 @@ export class MessageRepository {
       lifetime.throwIfAborted();
       switch (demand.kind) {
         case 'localLatest': {
-          if (!Number.isSafeInteger(demand.count) || demand.count < 1 || demand.count > 200)
+          if (
+            !Number.isSafeInteger(demand.count) ||
+            demand.count < 1 ||
+            demand.count > 200
+          )
             throw new Error('local history count is outside 1..200');
           const messages = await this.webdb.queryCachedMessages(
-            threadId, 'desc', demand.count, Number.MAX_SAFE_INTEGER,
+            threadId,
+            'desc',
+            demand.count,
+            Number.MAX_SAFE_INTEGER,
           );
           lifetime.throwIfAborted();
           return {
-            items: messages.reverse().map((message) => ({ kind: 'message', message })),
+            items: messages
+              .reverse()
+              .map((message) => ({ kind: 'message', message })),
             // Local absence is not evidence of server exhaustion.
             hasOlder: true,
             hasNewer: true,
@@ -558,7 +573,7 @@ export class MessageRepository {
     cursor: number,
     boundary: number,
     take: number,
-  ): Promise<MessageQueryRow[]> {
+  ): Promise<Message[]> {
     const messages = await this.webdb.queryCachedMessages(
       threadId,
       direction === 'older' ? 'desc' : 'asc',
@@ -588,7 +603,7 @@ export class MessageRepository {
   private projectCommittedHistoryPage(
     direction: HistoryDirection,
     scan: { left: number; right: number },
-    messages: MessageQueryRow[],
+    messages: Message[],
     gaps: Array<{
       left: number;
       right: number;
@@ -680,6 +695,10 @@ export class MessageRepository {
     this.newerTruncateSeq.clear();
   }
 
+  newestKnownSeq(threadId: number): number {
+    return this.maxSeenSeq.get(threadId) ?? 0;
+  }
+
   /** Reconcile conversation metadata/live init state into the shared per-thread ceiling. */
   retainNewestSeq(threadId: number, seq: number): void {
     if (Number.isSafeInteger(seq) && seq >= 0)
@@ -725,6 +744,7 @@ export class MessageRepository {
     if (seq <= cur) return false;
     this.maxSeenSeq.set(threadId, seq);
     if (persist) void this.webdb.putMessageHead(threadId, seq);
+    this.historyHeadSignal.next({ threadId, seq });
     return true;
   }
 
@@ -780,8 +800,19 @@ export class MessageRepository {
     return this.webdb.getMessageByOrigin(threadId, namespaceId, originSeq);
   }
 
-  getDeletedMessageSeqs(threadId: number, seqs: number[]): Promise<number[]> {
-    return this.webdb.getDeletedMessageSeqs(threadId, seqs);
+  async getMessageDeletions(
+    threadId: number,
+    seqs: number[],
+  ): Promise<
+    Array<{
+      seq: number;
+      type: import('../../../../shared/message-tomb').MessageDeletionType;
+    }>
+  > {
+    const scope = this.sessionLifecycle.capture();
+    const facts = await this.webdb.getMessageDeletions(threadId, seqs);
+    this.sessionLifecycle.assertCurrent(scope);
+    return facts;
   }
 
   /** Read one cached message by its composite key [threadId, seq] (best-effort; undefined when IDB is

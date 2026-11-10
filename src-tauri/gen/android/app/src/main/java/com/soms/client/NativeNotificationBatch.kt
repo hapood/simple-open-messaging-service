@@ -44,6 +44,11 @@ class NativeNotificationBatch(
                 attention = if (!remove && content.getBoolean("hasUnreadMention")) "mention" else null,
                 silent = remove || content.getBoolean("silent"), messages = messages,
                 target = target.toString(),
+                latestSeq = if (!remove && target.getString("kind") == "thread") {
+                    val seq = content.get("latestSeq")
+                    require(seq is Int && seq >= 0) { "Invalid Rust notification refresh ceiling" }
+                    seq
+                } else null,
             )
         }
     }

@@ -63,7 +63,7 @@ describe('NavStateMachineService', () => {
 
   it('captures a scoped notification URL without opening it before session validation', () => {
     TestBed.resetTestingModule();
-    history.replaceState(null, '', '/chat/5?notificationSessionId=31');
+    history.replaceState(null, '', '/chat/5?notificationSessionId=31&latestSeq=13');
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -76,6 +76,7 @@ describe('NavStateMachineService', () => {
       source: 'web',
       id: 'bootstrap:31:thread:5',
       target: { kind: 'thread', threadId: 5 },
+      latestSeq: 13,
       sessionId: 31,
     });
     TestBed.inject(ApplicationRef).tick();
@@ -92,7 +93,7 @@ describe('NavStateMachineService', () => {
     history.replaceState(
       null,
       '',
-      `/?notificationSessionId=31&notificationTarget=${kind}${threadId ? `&threadId=${threadId}` : ''}`,
+      `/?notificationSessionId=31&notificationTarget=${kind}${threadId ? `&threadId=${threadId}` : ''}${kind === 'thread' ? '&latestSeq=13' : ''}`,
     );
     TestBed.configureTestingModule({
       providers: [
@@ -145,18 +146,22 @@ describe('NavStateMachineService', () => {
     expect(svc.aside()).toEqual([]);
   });
 
-  it('resets every virtual layer before even a same-thread notification', () => {
+  it('dismisses descendants while retaining the same-thread surface and refresh target', () => {
     svc.openChat(7);
     svc.openAside('group-info');
     svc.pushAside('group-join-requests');
     svc.openSearch();
     svc.setTopSection('settings');
     svc.openSettingsCategory('account');
-    const cancel = vi.fn(() => expect(svc.chatThreadId()).toBeUndefined());
+    const cancel = vi.fn(() => expect(svc.chatThreadId()).toBe(7));
     svc.pushPane({ kind: 'dialog', onResult: cancel });
     const home = vi.spyOn(svc, 'returnToThreadList');
-    expect(svc.openExternalChat(7)).toBe(true);
-    expect(home).toHaveBeenCalledOnce();
+    expect(svc.openExternalChat(7, 13)).toBe(true);
+    expect(home).not.toHaveBeenCalled();
+    expect(svc.chatOpening()).toEqual({ threadId: 7, latestSeq: 13 });
+    const previousOpening = svc.chatOpening();
+    expect(svc.openExternalChat(7, 13)).toBe(true);
+    expect(svc.chatOpening()).not.toBe(previousOpening);
     expect(cancel).toHaveBeenCalledOnce();
     expect(svc.aside()).toEqual([]);
     expect(svc.paneStack()).toEqual([]);
@@ -326,13 +331,13 @@ describe('NavStateMachineService', () => {
   });
 
   it('consumes a group-joined transition once and does not replay it', () => {
-    svc.openChat(22, 'group-joined');
+    svc.openChat(22, { transition: 'group-joined' });
     expect(svc.consumeChatTransition(22)).toBe('group-joined');
     expect(svc.consumeChatTransition(22)).toBe('standard');
   });
 
   it('does not leak a group-joined transition into a later ordinary open', () => {
-    svc.openChat(22, 'group-joined');
+    svc.openChat(22, { transition: 'group-joined' });
     svc.openChat(23);
     expect(svc.consumeChatTransition(22)).toBe('standard');
     expect(svc.consumeChatTransition(23)).toBe('standard');

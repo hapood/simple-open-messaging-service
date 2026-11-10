@@ -6,15 +6,14 @@ import org.json.JSONObject
 /** Latest notification tap survives WebView creation until the navigation handler accepts it.
  * The bridge reads/acks this opaque JSON value, not a thread ID: repeated taps are distinct. */
 class PendingThreadNavigation(
-    private val validate: (String) -> String? = RustRuntimeBridge::validateNotificationTarget,
+    private val validate: (String) -> String? = RustRuntimeBridge::validateNotificationOpening,
 ) {
     private var pending: String? = null
 
     @Synchronized fun offer(value: String?): Boolean {
         val raw = value ?: return false
         val admitted = validate(raw) ?: return false
-        val target = JSONObject(admitted)
-        pending = JSONObject().put("id", UUID.randomUUID().toString()).put("target", target).toString()
+        pending = JSONObject(admitted).put("id", UUID.randomUUID().toString()).toString()
         return true
     }
     @Synchronized fun peek(): String? = pending

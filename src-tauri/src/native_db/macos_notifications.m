@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 typedef void (*SomsCompletion)(void *, const char *);
-extern void soms_macos_notification_tapped(const char *target, const char *notificationId);
+extern void soms_macos_notification_tapped(const char *opening, const char *notificationId);
 extern void soms_macos_notification_dismissed(const char *target, const char *notificationId);
 static NSString *const SomsMessageCategory = @"soms-message";
 static NSString *const SomsPrefix = @"soms-thread-";
@@ -32,9 +32,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     BOOL dismissed = [response.actionIdentifier isEqualToString:UNNotificationDismissActionIdentifier];
     if ((tapped || dismissed) && [identifier hasPrefix:SomsPrefix]) {
         NSDictionary *info = response.notification.request.content.userInfo;
-        NSDictionary *target = info[@"target"];
-        if (!target && info[@"threadId"]) target = @{@"kind": @"thread", @"threadId": info[@"threadId"]};
-        NSData *data = target ? [NSJSONSerialization dataWithJSONObject:target options:0 error:nil] : nil;
+        NSDictionary *payload = tapped ? info : info[@"target"];
+        NSData *data = payload ? [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil] : nil;
         NSString *json = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
         if (json) {
             if (tapped) soms_macos_notification_tapped(json.UTF8String, identifier.UTF8String);
@@ -79,7 +78,7 @@ void soms_macos_notifications_authorize(void *context, SomsCompletion completion
         }];
 }
 
-void soms_macos_notification_post(const char *target, const char *notificationId,
+void soms_macos_notification_post(const char *opening, const char *notificationId,
                                   const char *title, const char *body,
                                   bool silent, void *context, SomsCompletion completion) {
     @autoreleasepool {
@@ -88,8 +87,8 @@ void soms_macos_notification_post(const char *target, const char *notificationId
         content.title = [NSString stringWithUTF8String:title];
         content.body = [NSString stringWithUTF8String:body];
         if (!silent) content.sound = UNNotificationSound.defaultSound;
-        NSData *targetData = [[NSString stringWithUTF8String:target] dataUsingEncoding:NSUTF8StringEncoding];
-        content.userInfo = @{@"target": [NSJSONSerialization JSONObjectWithData:targetData options:0 error:nil]};
+        NSData *openingData = [[NSString stringWithUTF8String:opening] dataUsingEncoding:NSUTF8StringEncoding];
+        content.userInfo = [NSJSONSerialization JSONObjectWithData:openingData options:0 error:nil];
         NSString *identifier = [NSString stringWithUTF8String:notificationId];
         UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier
                                                                            content:content trigger:nil];
@@ -115,7 +114,6 @@ void soms_macos_notifications_current(void *context, void (*completion)(void *, 
             UNNotificationRequest *request = notification.request;
             if (![request.identifier hasPrefix:SomsPrefix]) continue;
             [cards addObject:@{@"identifier": request.identifier,
-                               @"threadId": request.content.userInfo[@"threadId"] ?: NSNull.null,
                                @"target": request.content.userInfo[@"target"] ?: NSNull.null}];
         }
         NSError *error = nil;

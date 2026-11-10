@@ -629,15 +629,13 @@ describe('Push Service Worker entry', () => {
       workerScope as unknown as {
         registration: { getNotifications: () => Promise<unknown[]> };
       }
-    ).registration.getNotifications = vi
-      .fn()
-      .mockResolvedValue([
-        {
-          tag: 'soms-card-current',
-          data: { target: { kind: 'thread', threadId: 7 } },
-          close,
-        },
-      ]);
+    ).registration.getNotifications = vi.fn().mockResolvedValue([
+      {
+        tag: 'soms-card-current',
+        data: { target: { kind: 'thread', threadId: 7 } },
+        close,
+      },
+    ]);
     post.mockImplementation(
       (message: { type: string }, ports?: MessagePort[]) => {
         if (message.type === SOMS_NOTIF_MSG.ACTIVE_CHAT_REQUEST)
@@ -734,15 +732,13 @@ describe('Push Service Worker entry', () => {
   );
   it('closes only the affected card when the worker reports no unread messages', async () => {
     const close = vi.fn();
-    const getNotifications = vi
-      .fn()
-      .mockResolvedValue([
-        {
-          tag: 'soms-card-existing',
-          data: { target: { kind: 'thread', threadId: 7 } },
-          close,
-        },
-      ]);
+    const getNotifications = vi.fn().mockResolvedValue([
+      {
+        tag: 'soms-card-existing',
+        data: { target: { kind: 'thread', threadId: 7 } },
+        close,
+      },
+    ]);
     const scope = {
       navigator: {
         language: 'en',
@@ -1371,13 +1367,18 @@ describe('Push Service Worker entry', () => {
   it('carries the required notification session to an existing page', async () => {
     await dispatch('notificationclick', {
       notification: {
-        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        data: {
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
+          sessionId,
+        },
         close: vi.fn(),
       },
     });
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
       target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       sessionId,
     });
   });
@@ -1387,6 +1388,7 @@ describe('Push Service Worker entry', () => {
       notification: {
         data: {
           target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
           sessionId: sessionId + 1,
         },
         close: vi.fn(),
@@ -1402,6 +1404,11 @@ describe('Push Service Worker entry', () => {
       { threadId: 7 },
       { threadId: 7, userId },
       { threadId: 7, sessionId: 0 },
+      ...[undefined, null, -1, '8', 0.5, 2147483648].map((latestSeq) => ({
+        target: { kind: 'thread', threadId: 7 },
+        latestSeq,
+        sessionId,
+      })),
     ]) {
       await dispatch('notificationclick', {
         notification: { data, close: vi.fn() },
@@ -1412,7 +1419,11 @@ describe('Push Service Worker entry', () => {
     await sessionStore.end(saved!.session!.id);
     await dispatch('notificationclick', {
       notification: {
-        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        data: {
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
+          sessionId,
+        },
         close: vi.fn(),
       },
     });
@@ -1424,13 +1435,18 @@ describe('Push Service Worker entry', () => {
     const close = vi.fn();
     await dispatch('notificationclick', {
       notification: {
-        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        data: {
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
+          sessionId,
+        },
         close,
       },
     });
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
       target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       sessionId,
     });
     expect(focus).toHaveBeenCalled();
@@ -1475,7 +1491,11 @@ describe('Push Service Worker entry', () => {
 
     await dispatch('notificationclick', {
       notification: {
-        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        data: {
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
+          sessionId,
+        },
         close: vi.fn(),
       },
     });
@@ -1483,6 +1503,7 @@ describe('Push Service Worker entry', () => {
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
       target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       sessionId,
     });
     expect(focus).toHaveBeenCalled();
@@ -1543,7 +1564,11 @@ describe('Push Service Worker entry', () => {
 
     await dispatch('notificationclick', {
       notification: {
-        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        data: {
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
+          sessionId,
+        },
         close: vi.fn(),
       },
     });
@@ -1553,6 +1578,7 @@ describe('Push Service Worker entry', () => {
     expect(chatPost).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
       target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       sessionId,
     });
     expect(chatFocus).toHaveBeenCalled();
@@ -1589,13 +1615,17 @@ describe('Push Service Worker entry', () => {
 
     await dispatch('notificationclick', {
       notification: {
-        data: { target: { kind: 'thread', threadId: 7 }, sessionId },
+        data: {
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
+          sessionId,
+        },
         close: vi.fn(),
       },
     });
 
     expect(openWindow).toHaveBeenCalledWith(
-      '/chat/7?notificationSessionId=' + sessionId,
+      '/chat/7?notificationSessionId=' + sessionId + '&latestSeq=8',
     );
     expect(adminPost).not.toHaveBeenCalled();
     expect(adminFocus).not.toHaveBeenCalled();

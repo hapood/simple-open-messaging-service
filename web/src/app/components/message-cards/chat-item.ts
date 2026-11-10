@@ -159,7 +159,7 @@ export interface SystemMessageItem extends ChatMessageBase {
   contentType: 'SYSTEM';
   /** Local-only per-participant revision corrections from this cached message row. */
   localSystemProfileRevs?: Record<string, number>;
-  /** Presentation of a retained message coordinate whose body was erased. */
+  /** Ephemeral replacement of a mounted message, never reconstructed from persisted deletion stubs. */
   deletionType?: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
 }
 
@@ -184,8 +184,8 @@ type ChatTextSegment =
     };
 
 /**
- * Virtual-scroll item data. Durable authored/system messages and tombstone placeholders all project to
- * ChatMsgData; date separators are derived at createItem mount time by detecting day boundaries between
+ * Virtual-scroll item data. Durable authored/system messages and ephemeral mounted deletion notices project to
+ * ChatMsgData; persisted deletion stubs are excluded. Date separators detect day boundaries between
  * adjacent items (see date-format.ts). The ChatItemData alias is kept for interface stability.
  */
 export type ChatItemData = ChatMsgData;

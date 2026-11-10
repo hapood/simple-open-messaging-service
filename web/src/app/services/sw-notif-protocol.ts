@@ -1,5 +1,4 @@
-import type { NotificationTarget } from '../../../../shared/notification-target';
-import { notificationTarget } from './notification-routing';
+import { parseNotificationOpening, type NotificationOpening } from '../../../../shared/notification-opening';
 
 /** Shared, validated Push Service Worker -> page protocol. */
 export const SOMS_NOTIF_MSG = {
@@ -13,11 +12,10 @@ export const SOMS_NOTIF_MSG = {
 } as const;
 
 export type SwNotifMessage =
-  | {
+  | (NotificationOpening & {
       type: typeof SOMS_NOTIF_MSG.OPEN;
-      target: NotificationTarget;
       sessionId: number;
-    }
+    })
   | {
       type: typeof SOMS_NOTIF_MSG.COMMITTED;
       userId: number;
@@ -34,14 +32,15 @@ const coordinate = (value: unknown, minimum: number): value is number =>
 export function parseSwNotifMessage(value: unknown): SwNotifMessage | null {
   if (!value || typeof value !== 'object') return null;
   const message = value as Record<string, unknown>;
+  const opening = parseNotificationOpening(message);
   if (
     message['type'] === SOMS_NOTIF_MSG.OPEN &&
-    notificationTarget(message) &&
+    opening &&
     coordinate(message['sessionId'], 1)
   )
     return {
       type: SOMS_NOTIF_MSG.OPEN,
-      target: notificationTarget(message)!,
+      ...opening,
       sessionId: message['sessionId'],
     };
   if (

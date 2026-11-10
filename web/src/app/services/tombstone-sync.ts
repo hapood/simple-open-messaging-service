@@ -60,6 +60,10 @@ export async function syncTombstoneThread(
 ): Promise<DeletedMessageItem[]> {
   const committed: DeletedMessageItem[] = [];
   let hwm = await storage.getDeletedHwm(threadId);
+  if (!Number.isSafeInteger(hwm) || hwm < 0)
+    throw new Error('missing or invalid deleted-message HWM');
+  if (!Number.isSafeInteger(target) || target < 0)
+    throw new Error('invalid tombstone target');
   let recoveryState = recovery;
   for (;;) {
     if (guard && !guard()) return committed;
@@ -79,9 +83,7 @@ export async function syncTombstoneThread(
       ...(recoveryState ? { maxMessageSeq: recoveryState.maxMessageSeq } : {}),
     })) as TombstoneEnvelope;
     if (envelope?.code === CLIENT_FEED_CURSOR_UNAVAILABLE) {
-      // Server-directed recovery window. Reset HWM and retry once.
-      // The browser endpoint currently returns a plain page; this branch keeps
-      // the contract symmetric with group-meta for a future server change.
+      // A missing server cursor is an error, never permission to reset progress.
       throw new Error('tombstone recovery window is unavailable');
     }
     const data = envelope?.code === 0 ? pageFrom(envelope.data) : null;
@@ -98,6 +100,7 @@ export async function syncTombstoneThread(
     const page = data as TombstonePage;
     if (
       page.scannedThrough < hwm ||
+      page.scannedThrough > currentTarget ||
       (page.scannedThrough === hwm && page.hasMore)
     )
       throw new Error('tombstone query returned an invalid boundary');

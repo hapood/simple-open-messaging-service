@@ -1,3 +1,4 @@
+import { parseNotificationOpening } from '../../../../shared/notification-opening';
 import { Injectable, Injector, inject, isDevMode } from '@angular/core';
 import { isAndroidNative, isTauri } from './runtime';
 import { ThreadNavigationIntentService } from './thread-navigation-intent.service';
@@ -179,14 +180,15 @@ export class PushService {
       const tap = JSON.parse(pending) as {
         id: string;
         target?: unknown;
+            latestSeq?: unknown;
       } | null;
-      const target = notificationTarget(tap);
-      if (!tap || typeof tap.id !== 'string' || !tap.id.trim() || !target)
+      const opening = parseNotificationOpening(tap);
+      if (!tap || typeof tap.id !== 'string' || !tap.id.trim() || !opening)
         return;
       this.injector.get(ThreadNavigationIntentService).offer({
         source: 'android',
         id: tap.id,
-        target,
+        ...opening,
         acknowledge: () => bridge!.acknowledgeThreadId(pending),
       });
     } catch {

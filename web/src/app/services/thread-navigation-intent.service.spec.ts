@@ -34,7 +34,7 @@ describe('notification navigation with real navigation and route services', () =
           provide: ConversationListService,
           useValue: {
             navigationReady: ready,
-            items: signal([{ threadId: 7 }]),
+            items: signal([{ threadId: 7, messageEndSeq: 10 }]),
           },
         },
       ],
@@ -63,7 +63,8 @@ describe('notification navigation with real navigation and route services', () =
     service.offer({
       source: 'android',
       id: 'waiting',
-      threadId: 7,
+      target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       acknowledge,
     });
     TestBed.tick();
@@ -104,6 +105,29 @@ describe('notification navigation with real navigation and route services', () =
     expect(nav.navigationRevision()).toBe(revision);
   });
 
+  it('refreshes repeated same-thread openings without unbinding the warm chat', () => {
+    ready.set(true);
+    const setThread = vi.spyOn(nav.chatThreadId, 'set');
+    for (const [id, latestSeq, ceiling] of [
+      ['first', 8, 10],
+      ['second', 14, 14],
+    ] as const) {
+      service.offer({
+        source: 'android',
+        id,
+        target: { kind: 'thread', threadId: 7 },
+        latestSeq,
+        acknowledge,
+      });
+      TestBed.tick();
+      expect(nav.chatThreadId()).toBe(7);
+      expect(nav.chatOpening()).toEqual({ threadId: 7, latestSeq: ceiling });
+    }
+    expect(acknowledge).toHaveBeenCalledTimes(2);
+    expect(setThread).not.toHaveBeenCalledWith(undefined);
+    setThread.mockRestore();
+  });
+
   it('does not override manual navigation while a friend dialog import is pending', async () => {
     ready.set(true);
     service.offer({
@@ -129,12 +153,14 @@ describe('notification navigation with real navigation and route services', () =
     service.offer({
       source: 'android',
       id: 'reentrant',
-      threadId: 7,
+      target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       acknowledge,
     });
     ready.set(true);
     TestBed.tick();
-    expect(nav.chatThreadId()).toBeUndefined();
+    // The manual dialog supersedes the tap without unbinding the warm chat.
+    expect(nav.chatThreadId()).toBe(7);
     expect(nav.paneStack()).toHaveLength(1);
     expect(nav.paneStack()[0].inputs).toEqual({ initialTab: 'add' });
     expect(acknowledge).not.toHaveBeenCalled();
@@ -146,9 +172,14 @@ describe('notification navigation with real navigation and route services', () =
 describe('ThreadNavigationIntentService session readiness and fencing', () => {
   const sessionId = signal<number | null>(null);
   const navigationReady = signal(false);
-  const items = signal<{ threadId: number; type?: string; role?: string }[]>([
-    { threadId: 7 },
-  ]);
+  const items = signal<
+    {
+      threadId: number;
+      messageEndSeq: number;
+      type?: string;
+      role?: string;
+    }[]
+  >([{ threadId: 7, messageEndSeq: 10 }]);
   const navigationRevision = signal(0);
   const openExternalChat = vi.fn(() => true);
   const acknowledge = vi.fn();
@@ -161,12 +192,18 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
   let service: ThreadNavigationIntentService;
   let lifecycle: SessionLifecycleService;
   const offer = (id = 'tap') =>
-    service.offer({ source: 'android', id, threadId: 7, acknowledge });
+    service.offer({
+      source: 'android',
+      id,
+      target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
+      acknowledge,
+    });
   beforeEach(() => {
     apiOrigin.set('https://primary');
     sessionId.set(null);
     navigationReady.set(false);
-    items.set([{ threadId: 7 }]);
+    items.set([{ threadId: 7, messageEndSeq: 10 }]);
     navigationRevision.set(0);
     openExternalChat.mockClear();
     acknowledge.mockClear();
@@ -211,7 +248,9 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
   it('uses the shared group entry with Applications and acknowledges before deferred mount', () => {
     sessionId.set(11);
     navigationReady.set(true);
-    items.set([{ threadId: 7, type: 'GROUP', role: 'ADMIN' }]);
+    items.set([
+      { threadId: 7, messageEndSeq: 10, type: 'GROUP', role: 'ADMIN' },
+    ]);
     openExternalChat.mockImplementationOnce(() => {
       navigationRevision.update((v) => v + 2);
       return true;
@@ -223,7 +262,7 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
       acknowledge,
     });
     TestBed.tick();
-    expect(openExternalChat).toHaveBeenCalledExactlyOnceWith(7);
+    expect(openExternalChat).toHaveBeenCalledExactlyOnceWith(7, 10);
     expect(openAside).toHaveBeenCalledExactlyOnceWith(
       items()[0],
       'applications',
@@ -267,9 +306,31 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
     expect(openExternalChat).not.toHaveBeenCalled();
     navigationReady.set(true);
     TestBed.tick();
-    expect(openExternalChat).toHaveBeenCalledExactlyOnceWith(7);
+    expect(openExternalChat).toHaveBeenCalledExactlyOnceWith(7, 10);
     expect(acknowledge).toHaveBeenCalledTimes(1);
   });
+  it.each([
+    [8, 10],
+    [14, 14],
+    [0, 10],
+  ])(
+    'opens with max(notification %i, thread head) = %i',
+    (latestSeq, ceiling) => {
+      sessionId.set(11);
+      navigationReady.set(true);
+      service.offer({
+        source: 'android',
+        id: 'ceiling',
+        target: { kind: 'thread', threadId: 7 },
+        latestSeq,
+        acknowledge,
+      });
+      TestBed.tick();
+      expect(openExternalChat).toHaveBeenCalledExactlyOnceWith(7, ceiling);
+      expect(acknowledge).toHaveBeenCalledOnce();
+    },
+  );
+
   it('waits for the projected target', () => {
     sessionId.set(11);
     navigationReady.set(true);
@@ -277,9 +338,9 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
     offer();
     TestBed.tick();
     expect(acknowledge).not.toHaveBeenCalled();
-    items.set([{ threadId: 7 }]);
+    items.set([{ threadId: 7, messageEndSeq: 10 }]);
     TestBed.tick();
-    expect(openExternalChat).toHaveBeenCalledExactlyOnceWith(7);
+    expect(openExternalChat).toHaveBeenCalledExactlyOnceWith(7, 10);
   });
   it('does not override newer manual navigation', () => {
     offer();
@@ -298,7 +359,13 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
     sessionId.set(11);
     navigationReady.set(true);
     service.offer(
-      { source: 'desktop', id: 'late', threadId: 7, acknowledge },
+      {
+        source: 'desktop',
+        id: 'late',
+        target: { kind: 'thread', threadId: 7 },
+        latestSeq: 8,
+        acknowledge,
+      },
       scope,
     );
     TestBed.tick();
@@ -326,7 +393,8 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
     service.offer({
       source: 'web',
       id: 'tap',
-      threadId: 7,
+      target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       sessionId: 11,
       acknowledge,
     });

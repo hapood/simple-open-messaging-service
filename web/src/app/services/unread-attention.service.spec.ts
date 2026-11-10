@@ -125,6 +125,7 @@ describe('UnreadAttentionService browser worker bridge', () => {
         data: {
           type: SOMS_NOTIF_MSG.OPEN,
           target: { kind: 'thread', threadId: 42 },
+          latestSeq: 8,
           sessionId: 11,
         },
       }),
@@ -133,6 +134,7 @@ describe('UnreadAttentionService browser worker bridge', () => {
       expect.objectContaining({
         source: 'web',
         target: { kind: 'thread', threadId: 42 },
+        latestSeq: 8,
         sessionId: 11,
       }),
     );
@@ -144,6 +146,7 @@ describe('UnreadAttentionService browser worker bridge', () => {
     let pending: unknown = {
       id: 'tap-1',
       target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       sessionId: 11,
       origin: 'https://primary',
     };
@@ -174,6 +177,7 @@ describe('UnreadAttentionService browser worker bridge', () => {
           source: 'desktop',
           id: 'tap-1',
           target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
         }),
         scope,
       ),
@@ -193,6 +197,7 @@ describe('UnreadAttentionService browser worker bridge', () => {
     expect(invoke).toHaveBeenCalledWith('desktop_notification_acknowledge', {
       id: 'tap-1',
       target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
     });
     offer.mockClear();
     for (const value of [
@@ -200,6 +205,13 @@ describe('UnreadAttentionService browser worker bridge', () => {
       { id: '', target: { kind: 'thread', threadId: 7 } },
       { id: 'bad', target: { kind: 'thread', threadId: 0 } },
       { id: 'bad-thread', target: { kind: 'thread', threadId: '7' } },
+      ...[undefined, null, -1, '8', 0.5, 2147483648].map((latestSeq) => ({
+        id: 'bad-ceiling',
+        target: { kind: 'thread', threadId: 7 },
+        latestSeq,
+        sessionId: 11,
+        origin: 'https://primary',
+      })),
     ]) {
       pending = value;
       wake();
@@ -231,7 +243,7 @@ describe('UnreadAttentionService browser worker bridge', () => {
       body: 'Message',
       lang: 'en',
       icon: null,
-      data: { target: { kind: 'thread', threadId: 7 } },
+      data: { target: { kind: 'thread', threadId: 7 }, latestSeq: 8 },
       count: 2,
     };
     browserNotifications.next({

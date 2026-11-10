@@ -35,7 +35,7 @@ object RustRuntimeBridge {
     // to parse its schema, so background Kotlin components must never open that file directly.
     external fun notificationPresentationChanged(visible: Boolean, focused: Boolean, threadId: Int)
     external fun notificationDismissed(target: String, notificationId: String)
-    external fun validateNotificationTarget(target: String): String?
+    external fun validateNotificationOpening(opening: String): String?
     external fun getNotificationPreference(key: String): String?
     external fun setNotificationPreference(key: String, value: String)
     external fun queryCallPeer(userId: Int, threadId: Int, account: String, namespaceId: Int): String?

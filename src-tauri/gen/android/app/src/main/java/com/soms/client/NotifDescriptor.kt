@@ -22,4 +22,6 @@ data class NotifDescriptor(
     val silent: Boolean?,
     val messages: List<NotifMessage>,
     val target: String,
+    /** Explicit Rust message refresh ceiling; absent on requests and removals. */
+    val latestSeq: Int?,
 )

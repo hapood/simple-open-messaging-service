@@ -3,8 +3,8 @@ import { createGroupConversation, createGroupMeta } from './model';
 import {
   restoreThread,
   applyLocalThreadPatch,
-  createStoredThread,
-  type StoredThread,
+  createLocalThreadState,
+  type LocalThreadState,
 } from './thread-record';
 import { threadFeedSnapshot } from './thread-feed.test-helper';
 
@@ -23,7 +23,7 @@ const group = () =>
     },
   });
 
-function row(): StoredThread {
+function row(): LocalThreadState {
   const { previews: _, ...state } = threadFeedSnapshot(7, {
     type: 'GROUP',
     publisherNamespaceId: 4,
@@ -31,7 +31,7 @@ function row(): StoredThread {
     profileRev: 3,
     groupMetaFeedEndId: '8',
   });
-  return createStoredThread({ ...state, localReadSeq: 0 });
+  return createLocalThreadState({ ...state, localReadSeq: 0 });
 }
 
 describe('field-scoped local thread writes', () => {
@@ -74,16 +74,14 @@ describe('separate thread and group meta records', () => {
       publisherNamespaceId: 0,
       profileRev: 1,
     });
-    expect(createStoredThread({ ...state, localReadSeq: 0 })).toEqual({
+    expect(createLocalThreadState({ ...state, localReadSeq: 0 })).toEqual({
       ...state,
       localReadSeq: 0,
-      lastMessageAt: null,
+      deletedHwm: 0,
+      messageHead: null,
       muted: false,
       pinned: false,
       pinnedAt: null,
-      lastMessagePreview: null,
-      lastMessageSenderAccount: null,
-      lastMessageSenderNamespaceId: null,
       projectedUnreadCount: 0,
       mentionMe: false,
       mentionAll: false,
@@ -111,6 +109,7 @@ describe('separate thread and group meta records', () => {
     const restored = restoreThread(
       row(),
       { profile: item.profile },
+      undefined,
       { threadId: item.threadId, ...item.meta },
     );
     expect(restored.account).toBe('!room');
@@ -121,7 +120,52 @@ describe('separate thread and group meta records', () => {
     expect(restored.meta).toEqual(item.meta);
   });
 
+  it.each([
+    ['LIVE', 'Hello', 'Hello'],
+    ['LIVE', null, ''],
+    ['USER_RETRACTION', 'Old text', '[Message retracted]'],
+    ['MODERATION_REMOVAL', 'Old text', '[Message removed by administrator]'],
+  ] as const)(
+    'projects %s previews from the independent record',
+    (status, text, expected) => {
+      const current = row();
+      const restored = restoreThread(
+        current,
+        {},
+        {
+          createdAt: '2026-01-02T03:04:05Z',
+          senderAccount: 'sender',
+          senderProfileNamespaceId: 9,
+          status,
+          text,
+        },
+        { threadId: current.threadId, ...createGroupMeta() },
+      );
+      expect(restored).toMatchObject({
+        lastMessagePreview: expected,
+        lastMessageAt: Date.parse('2026-01-02T03:04:05Z'),
+        lastMessageSenderAccount: 'sender',
+        lastMessageSenderNamespaceId: 9,
+      });
+      expect(current).not.toHaveProperty('lastMessagePreview');
+      expect(current).not.toHaveProperty('lastMessageAt');
+      expect(current).not.toHaveProperty('lastMessageSenderAccount');
+      expect(current).not.toHaveProperty('lastMessageSenderNamespaceId');
+    },
+  );
+
+  it('restores null preview fields when the independent record is absent', () => {
+    expect(restoreThread({ ...row(), type: 'P2P' }, {}, undefined)).toMatchObject({
+      lastMessagePreview: null,
+      lastMessageAt: null,
+      lastMessageSenderAccount: null,
+      lastMessageSenderNamespaceId: null,
+    });
+  });
+
   it('rejects a missing meta row rather than fabricating a recovered group', () => {
-    expect(() => restoreThread(row(), {})).toThrow('missing its meta row');
+    expect(() => restoreThread(row(), {}, undefined)).toThrow(
+      'missing its meta row',
+    );
   });
 });

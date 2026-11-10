@@ -196,12 +196,28 @@ describe('SystemRowComponent', () => {
   });
 
   it.each([
-    ['USER_RETRACTION', '消息已撤回'],
-    ['MODERATION_REMOVAL', '消息已被管理员删除'],
-  ] as const)('renders a deletion tombstone: %s', (deletionType, expected) => {
-    expect(
-      render(null, { text: '', deletionType }).nativeElement.textContent,
-    ).toContain(expected);
+    ['USER_RETRACTION', '消息已撤回', 'Message retracted'],
+    ['MODERATION_REMOVAL', '消息已被管理员删除', 'Message removed by administrator'],
+  ] as const)('renders an anonymous deletion slot: %s', (deletionType, expected, english) => {
+    // Even stale display inputs must not reveal a sender, event participant, or time.
+    const fixture = render({ type: 'GROUP_CREATED', creator: alice }, {
+      name: 'Alice',
+      deletionType,
+    });
+    const host = fixture.nativeElement as HTMLElement;
+    expect(host.textContent?.trim()).toBe(expected);
+    expect(host.querySelector('time')).toBeNull();
+    expect(host.querySelector('app-msg-date-row')).toBeNull();
+    expect(host.querySelector('app-user-avatar')).toBeNull();
+    expect(resolveProfile).not.toHaveBeenCalled();
+    expect(TestBed.inject(ProfileNamespaceRepository).resolve).not.toHaveBeenCalled();
+    const style = getComputedStyle(host.querySelector('.system-message')!);
+    expect(style.textAlign).toBe('center');
+    expect(style.lineHeight).toBe('18px');
+    language.setLang('en');
+    TestBed.flushEffects();
+    fixture.detectChanges();
+    expect(host.textContent?.trim()).toBe(english);
   });
 
   it.each([

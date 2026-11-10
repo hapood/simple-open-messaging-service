@@ -241,7 +241,7 @@ commands.allow = [
   "native_db_get_profile_avatar",
   "native_db_query_messages",
   "native_db_get_message",
-  "native_db_get_deleted_message_seqs",
+  "native_db_get_message_deletions",
   "native_db_newest_messages",
   "native_db_delete_messages_by_thread",
   "native_db_get_message_by_origin",

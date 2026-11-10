@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { parseNotificationOpening } from '../../../shared/notification-opening';
 import { BrowserNotificationCards } from './notification-cards';
 import { API_PREFIX } from '../app/services/constants';
 import { SOMS_NOTIF_MSG } from '../app/services/sw-notif-protocol';
@@ -21,7 +22,6 @@ import {
   isActiveMessage,
   notificationClickUrl,
   notificationKey,
-  notificationTarget,
 } from '../app/services/notification-routing';
 import { syncPushState } from '../app/services/push-state-sync';
 import {
@@ -700,12 +700,12 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
 
   scope.addEventListener('notificationclick', (event) => {
     cards.dismissed(event.notification.tag);
-    const target = notificationTarget(event.notification.data);
+    const opening = parseNotificationOpening(event.notification.data);
     const tapSessionId = event.notification.data?.sessionId;
     event.notification.close();
     event.waitUntil(
       (async () => {
-        if (!target) return;
+        if (!opening) return;
         if (
           !Number.isInteger(tapSessionId) ||
           tapSessionId <= 0 ||
@@ -751,14 +751,14 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
             );
           page.postMessage({
             type: SOMS_NOTIF_MSG.OPEN,
-            target,
+            ...opening,
             sessionId: tapSessionId,
           });
           await page.focus();
           return;
         }
         await scope.clients.openWindow(
-          notificationClickUrl(target, tapSessionId),
+          notificationClickUrl(opening, tapSessionId),
         );
       })(),
     );

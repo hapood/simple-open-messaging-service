@@ -267,7 +267,7 @@ export class HomeShellComponent {
       this.navState.closeChat();
       return;
     }
-    this.navState.openChat(item.threadId);
+    this.navState.openChat(item.threadId, { latestSeq: item.messageEndSeq });
   }
 
   /** Close the aside drawer (desktop drawer-mask click). The state machine clears the aside signal. */

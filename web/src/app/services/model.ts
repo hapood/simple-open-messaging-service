@@ -69,16 +69,8 @@ export type Message = Omit<
    * service reconciles mount, reconnect and media-status updates. */
   mediaStatus?: MediaStatus;
 };
+/** History transport rows; wire tombs are not persisted or rendered as messages. */
 export type MessageQueryRow = Message | MessageTomb;
-
-/** A tomb can enter the cache before its message identity. Only identified tombs are timeline rows. */
-export function isRenderableMessageTomb(
-  row:
-    | MessageQueryRow
-    | import('../../../../shared/message-tomb').MessageDeletionMarker,
-): row is MessageTomb {
-  return row.contentType === 'TOMB' && 'creator' in row;
-}
 
 /** Identity coordinates are already canonical. Locality is determined only by namespace zero;
  * the domain always remains the real federation domain supplied by the server. */

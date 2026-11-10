@@ -1,4 +1,9 @@
-import { Subject } from 'rxjs';
+import { NEVER, of, Subject } from 'rxjs';
+import {
+  ChatBoxScroller,
+  type CbItem,
+} from '../../lib/chat-box/chat-box-scroller';
+import type { ChatItemData } from '../message-cards/chat-item';
 import {
   ApplicationRef,
   effect,
@@ -27,6 +32,8 @@ describe('MessageThreadComponent binding lifecycle', () => {
     const lifecycle = new ChatSurfaceLifecycle();
     Object.assign(component, {
       lifecycle,
+      nav: { chatOpening: signal(null) },
+      convList: { latestSeq: () => undefined },
       windowJumpState: signal('idle'),
       presentation: signal('unbound'),
       userMsgTrd: thread,
@@ -46,6 +53,331 @@ describe('MessageThreadComponent binding lifecycle', () => {
     lifecycle.state$.subscribe((state) => component.applyLifecycle(state));
     return { component, thread, lifecycle };
   }
+
+  it.each(['USER_RETRACTION', 'MODERATION_REMOVAL'] as const)(
+    'erases sender and payload while preserving date context when a mounted message becomes %s',
+    (deletionType) => {
+      const { component } = pane();
+      const item = {
+        id: 12,
+        clientMessageId: 'old-send',
+        data: {
+          threadId: 6,
+          isGroupConversation: true,
+          creator: 'alice',
+          name: 'Alice',
+          sender: { account: 'alice' },
+          text: 'erased text',
+          time: '12:30',
+          createdAtMs: 1700000000000,
+          quote: { seq: 3, body: 'erased quote' },
+        },
+      };
+      expect(component.deletedPlaceholder(item, 12, deletionType)).toEqual({
+        id: 12,
+        data: {
+          type: 'system',
+          contentType: 'SYSTEM',
+          threadId: 6,
+          msgId: 12,
+          isGroupConversation: true,
+          isSelf: false,
+          name: '',
+          text: '',
+          time: '',
+          createdAtMs: 1700000000000,
+          images: null,
+          file: null,
+          deletionType,
+        },
+      });
+    },
+  );
+
+  it('mutates a mounted album exactly once while the thread subscription cleans detached surfaces', async () => {
+    const { component } = pane();
+    const deletedLive$ = new Subject<{
+      threadId: number;
+      deletions: { seq: number; type: 'MODERATION_REMOVAL' }[];
+    }>();
+    let mounted: any[] = [
+      {
+        id: 10,
+        ids: [10, 11, 12],
+        boundary: 'both',
+        data: {
+          type: 'msg',
+          contentType: 'IMAGE',
+          msgId: 10,
+          threadId: 6,
+          creator: 'alice',
+          name: 'Alice',
+          text: '',
+          time: '12:30',
+          createdAtMs: 1234,
+          images: [10, 11, 12].map((msgId) => ({
+            msgId,
+            kind: 'image',
+            src: `/${msgId}`,
+            w: 10,
+            h: 10,
+          })),
+        },
+      },
+    ];
+    Object.assign(component, {
+      msgRepo: { deletedLive$, getMessageDeletions: vi.fn().mockResolvedValue([]) },
+      galleryViewer: { closeIfDeleted: vi.fn() },
+      fileDetail: { closeIfDeleted: vi.fn() },
+      messageInteraction: { removeMessage: vi.fn() },
+      openMessageWindow: vi.fn(),
+      reload: vi.fn(),
+    });
+    component.scroller.mutateItem = vi.fn((id, mutate) => {
+      const index = mounted.findIndex(
+        (item) => item.id === id || item.ids?.includes(id),
+      );
+      if (index < 0) return false;
+      const replacement = mutate(mounted[index]);
+      mounted.splice(
+        index,
+        1,
+        ...(Array.isArray(replacement) ? replacement : [replacement]),
+      );
+      return true;
+    });
+    component.bind();
+    delete component.initScroller;
+    component.initScroller(component.userMsgTrd());
+    const rendered = { el: document.createElement('div'), update: vi.fn(), destroy: vi.fn() };
+    component.scroller.getMountedGeometry = (seq: number) =>
+      mounted.some((item) => item.id === seq || item.ids?.includes(seq)) ? { el: rendered.el } : null;
+    component.bindMessageDeletion(rendered, mounted[0]);
+    deletedLive$.next({
+      threadId: 99,
+      deletions: [{ seq: 11, type: 'MODERATION_REMOVAL' }],
+    });
+    expect(component.scroller.mutateItem).not.toHaveBeenCalled();
+    deletedLive$.next({
+      threadId: 6,
+      deletions: [{ seq: 11, type: 'MODERATION_REMOVAL' }],
+    });
+    // Cleanup is synchronous, but only the mounted observer may mutate the row.
+    expect(component.scroller.mutateItem).not.toHaveBeenCalled();
+    expect(component.galleryViewer.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(6, 11);
+    expect(component.fileDetail.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(6, 11);
+    expect(component.messageInteraction.removeMessage).toHaveBeenCalledExactlyOnceWith(11);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(component.scroller.mutateItem).toHaveBeenCalledTimes(1);
+    expect(mounted.map((item) => item.id)).toEqual([10, 11, 12]);
+    expect(mounted[1].data).toMatchObject({
+      type: 'system',
+      name: '',
+      text: '',
+      time: '',
+      createdAtMs: 1234,
+      deletionType: 'MODERATION_REMOVAL',
+    });
+    expect(mounted[1].data.creator).toBeUndefined();
+    expect(mounted[0].boundary).toBe('oldest');
+    expect(mounted[2].boundary).toBe('newest');
+    expect(component.reload).not.toHaveBeenCalled();
+    rendered.destroy();
+    mounted = [];
+    component.scroller.mutateItem.mockClear();
+    component.galleryViewer.closeIfDeleted.mockClear();
+    component.fileDetail.closeIfDeleted.mockClear();
+    component.messageInteraction.removeMessage.mockClear();
+    // An open gallery/file/menu can still own an unmounted message.
+    deletedLive$.next({
+      threadId: 6,
+      deletions: [{ seq: 12, type: 'MODERATION_REMOVAL' }],
+    });
+    await Promise.resolve();
+    expect(mounted).toEqual([]);
+    expect(component.scroller.mutateItem).not.toHaveBeenCalled();
+    expect(component.galleryViewer.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(6, 12);
+    expect(component.fileDetail.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(6, 12);
+    expect(component.messageInteraction.removeMessage).toHaveBeenCalledExactlyOnceWith(12);
+    component.deletionSurfaceSubscription.unsubscribe();
+    expect(deletedLive$.observed).toBe(false);
+  });
+
+  it('does not run a second deletion path from a withdrawal HTTP acknowledgement', () => {
+    const { component } = pane();
+    Object.assign(component, {
+      threadAdapter: { withdrawMessage: vi.fn(() => of({ code: BusinessCode.OK })) },
+      replaceMountedDeletedMessage: vi.fn(),
+      closeDeletedMessageSurfaces: vi.fn(),
+    });
+    component.withdrawMessage(6, 10);
+    expect(component.threadAdapter.withdrawMessage).toHaveBeenCalledExactlyOnceWith({ threadId: 6, seq: 10 });
+    expect(component.replaceMountedDeletedMessage).not.toHaveBeenCalled();
+    expect(component.closeDeletedMessageSurfaces).not.toHaveBeenCalled();
+  });
+
+  it('rechecks after real scroller mounting when deletion raced an earlier body read', async () => {
+    const { component } = pane();
+    component.bind();
+    const deletedLive$ = new Subject<{
+      threadId: number;
+      deletions: { seq: number; type: 'MODERATION_REMOVAL' }[];
+    }>();
+    const fact = { seq: 10, type: 'MODERATION_REMOVAL' } as const;
+    const stale = {
+      id: 10,
+      boundary: 'both',
+      data: {
+        type: 'msg',
+        msgId: 10,
+        threadId: 6,
+        name: 'Alice',
+        text: 'private',
+        createdAtMs: 1234,
+      },
+    } as CbItem<ChatItemData>;
+    const viewport = document.createElement('div');
+    const content = document.createElement('div');
+    viewport.appendChild(content);
+    document.body.appendChild(viewport);
+    Object.defineProperty(viewport, 'clientHeight', { get: () => 600 });
+    const getMessageDeletions = vi.fn(async () => {
+      expect(scroller.getMountedGeometry(10)?.el.parentNode).toBe(content);
+      // A duplicate event racing the durable result must not revive or reapply the body.
+      deletedLive$.next({ threadId: 6, deletions: [fact] });
+      return [fact];
+    });
+    Object.assign(component, {
+      msgRepo: { deletedLive$, getMessageDeletions },
+      galleryViewer: { closeIfDeleted: vi.fn() },
+      fileDetail: { closeIfDeleted: vi.fn() },
+      messageInteraction: { removeMessage: vi.fn() },
+    });
+    const scroller = new ChatBoxScroller<ChatItemData>({
+      viewport,
+      content,
+      config: { deferInitFill: true, followBottom: false },
+      hooks: {
+        createItem: () => {
+          const el = document.createElement('div');
+          Object.defineProperty(el, 'offsetHeight', { get: () => 24 });
+          return {
+            el,
+            update: () => {},
+            destroy: () => {},
+            onHeightChange: () => () => {},
+          };
+        },
+      },
+      onItemMounted: (item, element) =>
+        component.bindMessageDeletion(element, item),
+    });
+    component.scroller = scroller;
+    let firstRead = true;
+    const source = () => ({
+      init: async () => {
+        if (!firstRead) return [];
+        firstRead = false;
+        // The body has been read, but the DOM has not mounted and misses this signal.
+        deletedLive$.next({ threadId: 6, deletions: [fact] });
+        return [stale];
+      },
+      requestOlder: () => of({ kind: 'boundary' as const }),
+      requestNewer: () => NEVER,
+      getPending: () => [],
+      pushLive: () => {},
+      destroy: () => {},
+    });
+    try {
+      scroller.bind(source());
+      await scroller.init();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(getMessageDeletions).toHaveBeenCalledExactlyOnceWith(6, [10]);
+      expect(scroller.getMountedGeometry(10)?.item.data).toMatchObject({
+        type: 'system',
+        deletionType: 'MODERATION_REMOVAL',
+        name: '',
+        text: '',
+        time: '',
+      });
+      // The mounted observer owns only the row, not detached UI surfaces.
+      expect(component.messageInteraction.removeMessage).not.toHaveBeenCalled();
+      scroller.unbind();
+      scroller.bind(source());
+      await scroller.init();
+      expect(scroller.getInfo().mounted).toBe(0);
+      expect(deletedLive$.observed).toBe(false);
+    } finally {
+      scroller.destroy();
+      viewport.remove();
+    }
+  });
+
+  it('rechecks the mounted body and rejects a stale result after DOM ownership changes', async () => {
+    const { component } = pane();
+    component.bind();
+    const deletedLive$ = new Subject();
+    let resolve!: (value: unknown) => void;
+    component.msgRepo = {
+      deletedLive$,
+      getMessageDeletions: vi.fn(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      ),
+    };
+    component.replaceMountedDeletedMessage = vi.fn();
+    const rendered = {
+      el: document.createElement('div'),
+      update: vi.fn(),
+      destroy: vi.fn(),
+    };
+    const item = { id: 10, data: { type: 'msg' } };
+    let mountedEl = rendered.el;
+    component.scroller.getMountedGeometry = () => ({ el: mountedEl });
+    component.bindMessageDeletion(rendered, item);
+    resolve([{ seq: 10, type: 'MODERATION_REMOVAL' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(component.replaceMountedDeletedMessage).toHaveBeenCalledExactlyOnceWith(
+      10,
+      'MODERATION_REMOVAL',
+    );
+    rendered.destroy();
+    component.replaceMountedDeletedMessage.mockClear();
+    const replacement = {
+      el: document.createElement('div'),
+      update: vi.fn(),
+      destroy: vi.fn(),
+    };
+    mountedEl = replacement.el;
+    component.bindMessageDeletion(replacement, item);
+    const staleResolve = resolve;
+    replacement.destroy();
+    const successor = {
+      el: document.createElement('div'),
+      update: vi.fn(),
+      destroy: vi.fn(),
+    };
+    mountedEl = successor.el;
+    component.bindMessageDeletion(successor, item);
+    staleResolve([{ seq: 10, type: 'MODERATION_REMOVAL' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(component.replaceMountedDeletedMessage).not.toHaveBeenCalled();
+    resolve([{ seq: 10, type: 'USER_RETRACTION' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(component.replaceMountedDeletedMessage).toHaveBeenCalledExactlyOnceWith(
+      10,
+      'USER_RETRACTION',
+    );
+    successor.destroy();
+    expect(deletedLive$.observed).toBe(false);
+  });
 
   it('does not bind from reactive metadata, even when a different thread arrives', async () => {
     TestBed.configureTestingModule({
@@ -72,6 +404,40 @@ describe('MessageThreadComponent binding lifecycle', () => {
       component.bind();
       expect(component.initScroller).toHaveBeenCalledTimes(2);
       expect(lifecycle.binding?.threadId).toBe(7);
+    } finally {
+      TestBed.resetTestingModule();
+    }
+  });
+
+  it('refreshes a warm source from reactive opening and live heads without remounting or scrolling', async () => {
+    TestBed.configureTestingModule({
+      providers: [provideZonelessChangeDetection()],
+    });
+    try {
+      const { component, thread } = pane();
+      const latest = signal(10);
+      component.convList.latestSeq = () => latest();
+      const refreshLatest = vi.fn();
+      component.source = { refreshLatest };
+      component.scroller.scrollToBottom = vi.fn();
+      component.bind();
+      thread.update((value) => ({ ...value, messageEndSeq: 10 }));
+      TestBed.runInInjectionContext(() =>
+        effect(() => component.synchronizeKernel()),
+      );
+      await TestBed.inject(ApplicationRef).whenStable();
+      expect(refreshLatest).toHaveBeenLastCalledWith(10);
+      latest.set(13);
+      await TestBed.inject(ApplicationRef).whenStable();
+      expect(refreshLatest).toHaveBeenLastCalledWith(13);
+      component.nav.chatOpening.set({ threadId: 6, latestSeq: 15 });
+      await TestBed.inject(ApplicationRef).whenStable();
+      expect(refreshLatest).toHaveBeenLastCalledWith(15);
+      component.nav.chatOpening.set({ threadId: 7, latestSeq: 100 });
+      await TestBed.inject(ApplicationRef).whenStable();
+      expect(refreshLatest).toHaveBeenLastCalledWith(13);
+      expect(component.initScroller).toHaveBeenCalledTimes(1);
+      expect(component.scroller.scrollToBottom).not.toHaveBeenCalled();
     } finally {
       TestBed.resetTestingModule();
     }
@@ -309,17 +675,15 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(component.initScroller).toHaveBeenCalledTimes(1);
   });
 
-  it('teardown cancels deletion/re-anchor timers and releases the deletion subscription', () => {
+  it('teardown cancels the re-anchor timer and releases the deletion subscription', () => {
     vi.useFakeTimers();
     try {
       const { component } = pane();
       delete component.teardown;
-      const reload = vi.fn();
       const reanchor = vi.fn();
       const unsubscribe = vi.fn();
       Object.assign(component, {
-        deletionSubscription: { unsubscribe },
-        deletionReloadTimer: setTimeout(reload, 0),
+        deletionSurfaceSubscription: { unsubscribe },
         unreadReanchorTimer: setTimeout(reanchor, 0),
         cancelPaste: vi.fn(),
         nativeDraft: { reset: vi.fn() },
@@ -331,11 +695,9 @@ describe('MessageThreadComponent binding lifecycle', () => {
       });
       component.teardown();
       expect(unsubscribe).toHaveBeenCalledOnce();
-      expect(component.deletionSubscription).toBeUndefined();
-      expect(component.deletionReloadTimer).toBeUndefined();
+      expect(component.deletionSurfaceSubscription).toBeUndefined();
       expect(component.unreadReanchorTimer).toBeUndefined();
       vi.runAllTimers();
-      expect(reload).not.toHaveBeenCalled();
       expect(reanchor).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -375,7 +737,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     const initRelease = vi.fn();
     Object.assign(component, {
       initializationSubscription: { unsubscribe: initRelease },
-      deletionSubscription: { unsubscribe: deletionRelease },
+      deletionSurfaceSubscription: { unsubscribe: deletionRelease },
       cancelPaste,
       nativeDraft: { reset: resetDraft },
       stableRead: { flush: vi.fn(), reset: vi.fn() },

@@ -97,7 +97,10 @@ function client(
   const injector = Injector.create({
     providers: [
       ServerConfigDialogService,
-      { provide: LogoutDecisionService, useValue: { decide: vi.fn().mockResolvedValue('localOnly') } },
+      {
+        provide: LogoutDecisionService,
+        useValue: { decide: vi.fn().mockResolvedValue('localOnly') },
+      },
       { provide: SessionStateService, useValue: state },
       { provide: SessionLifecycleService, useValue: lifecycle },
       {
@@ -113,7 +116,10 @@ function client(
         http as never,
         route as never,
         { onLogin: vi.fn() } as never,
-        { onLogin: vi.fn(), unsubscribe: vi.fn().mockResolvedValue(undefined) } as never,
+        {
+          onLogin: vi.fn(),
+          unsubscribe: vi.fn().mockResolvedValue(undefined),
+        } as never,
         user as never,
         { translate: (key: string) => key } as never,
         toast as never,
@@ -207,7 +213,6 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     expect(app.auth.loggedIn()).toBe(true);
     const names = (await indexedDB.databases()).map((item) => item.name);
     expect(names).toContain(session.indexedDbName);
-    expect(names).toContain(session.messageIndexedDbName);
     expect(app.user.clearSession).not.toHaveBeenCalled();
     expect(app.user.prepareFreshCache).not.toHaveBeenCalled();
     expect(app.requests[0].body).toMatchObject({
@@ -354,7 +359,10 @@ describe('native logout adapter integration', () => {
       );
       const invoke = vi.fn(async (command: string) => {
         if (command === 'begin_logout') return admission.promise;
-        if (command === 'try_logout') { await remote.promise; return { status: 'revoked' }; }
+        if (command === 'try_logout') {
+          await remote.promise;
+          return { status: 'revoked' };
+        }
         if (command === 'logout_status') return 'awaitingRevocation';
         if (command === 'wait_for_logout') return remote.promise;
         return undefined;
@@ -400,7 +408,10 @@ describe('native logout adapter integration', () => {
           localClearFailed: false,
         });
         await vi.waitFor(() => {
-          if (android) expect(invoke).toHaveBeenCalledWith('wait_for_logout', { ticket: 'ended-operation' });
+          if (android)
+            expect(invoke).toHaveBeenCalledWith('wait_for_logout', {
+              ticket: 'ended-operation',
+            });
           else expect(invoke).toHaveBeenCalledWith('try_logout', undefined);
         });
         if (android)

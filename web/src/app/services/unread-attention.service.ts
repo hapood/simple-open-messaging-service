@@ -1,3 +1,4 @@
+import { parseNotificationOpening } from '../../../../shared/notification-opening';
 import {
   Injectable,
   computed,
@@ -151,26 +152,27 @@ export class UnreadAttentionService {
           const tap = await tauriInvoke<{
             id: string;
             target?: unknown;
+            latestSeq?: unknown;
           } | null>('desktop_notification_pending');
-          const target = notificationTarget(tap);
+          const opening = parseNotificationOpening(tap);
           if (
             !tap ||
             destroyed ||
             !this.lifecycle.isCurrent(scope) ||
             typeof tap.id !== 'string' ||
             !tap.id.trim() ||
-            !target
+            !opening
           )
             return;
           this.navigation.offer(
             {
               source: 'desktop',
               id: tap.id,
-              target,
+              ...opening,
               acknowledge: () =>
                 tauriInvoke<void>('desktop_notification_acknowledge', {
                   id: tap.id,
-                  target,
+                  ...opening,
                 }),
             },
             scope,
@@ -222,13 +224,13 @@ export class UnreadAttentionService {
       void this.convList.refreshBackgroundThreadFeed(data.userId);
       if (data.stateCommitted) void this.user.refreshCommittedStateFeed();
     } else if (data.type === SOMS_NOTIF_MSG.OPEN) {
-      const target = notificationTarget(data);
-      if (!target) return;
+      const opening = parseNotificationOpening(data);
+      if (!opening) return;
       window.focus();
       this.navigation.offer({
         source: 'web',
         id: uuid(),
-        target,
+        ...opening,
         sessionId: data.sessionId,
       });
     }

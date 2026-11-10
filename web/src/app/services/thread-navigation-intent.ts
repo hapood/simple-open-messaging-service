@@ -1,14 +1,11 @@
-import {
-  parseNotificationTarget,
-  type NotificationTarget,
-} from '../../../../shared/notification-target';
+import type { NotificationTarget } from '../../../../shared/notification-target';
+import { parseNotificationOpening } from '../../../../shared/notification-opening';
 
 /** A tap identity is distinct from a thread identity (including repeated taps on one thread). */
 export type ThreadNavigationIntent = {
   id: string;
-  target?: NotificationTarget;
-  /** Legacy native and browser adapters are normalized to a thread target. */
-  threadId?: number;
+  target: NotificationTarget;
+  latestSeq?: number;
   acknowledge?: () => void | Promise<void>;
 } & ({ source: 'desktop' | 'android' } | { source: 'web'; sessionId: number });
 
@@ -33,11 +30,7 @@ export class ThreadNavigationIntentCoordinator {
   }
 
   offer(intent: ThreadNavigationIntent): void {
-    const target = parseNotificationTarget(
-      intent.target === undefined
-        ? { kind: 'thread', threadId: intent.threadId }
-        : intent.target,
-    );
+    const target = parseNotificationOpening(intent)?.target;
     if (
       !target ||
       !intent.id ||
@@ -59,7 +52,7 @@ export class ThreadNavigationIntentCoordinator {
   select(
     sessionId: number | null,
     ready: boolean,
-    open: (target: NotificationTarget) => boolean,
+    open: (target: NotificationTarget, latestSeq?: number) => boolean,
   ): void {
     const pending = this.pending;
     if (!pending || sessionId === null) return;
@@ -70,7 +63,7 @@ export class ThreadNavigationIntentCoordinator {
       this.invalidate();
       return;
     }
-    if (!ready || !open(pending.target)) return;
+    if (!ready || !open(pending.target, pending.intent.latestSeq)) return;
     // Synchronous callbacks in the navigator may invalidate/replace the intent.
     if (this.pending !== pending) return;
     this.retired.add(this.key(pending.intent));

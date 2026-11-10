@@ -23,16 +23,14 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationPresen
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_validateNotificationTarget(
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_validateNotificationOpening(
     mut env: JNIEnv, _receiver: JObject, value: JString,
 ) -> jstring {
     let result = (|| {
         crate::native_db::active_login().ok()?;
         let raw: String = env.get_string(&value).ok()?.into();
-        let target = serde_json::from_str::<crate::native_db::notifications::NotificationTarget>(&raw).ok()
-            .or_else(|| raw.parse::<i32>().ok().map(Into::into))?;
-        if !target.valid() { return None; }
-        env.new_string(serde_json::to_string(&target).ok()?).ok().map(|value| value.into_raw())
+        let opening = crate::native_db::notifications::opening::NotificationOpening::parse(&raw)?;
+        env.new_string(serde_json::to_string(&opening).ok()?).ok().map(|value| value.into_raw())
     })();
     result.unwrap_or(std::ptr::null_mut())
 }
@@ -48,7 +46,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationDismis
     let Ok(raw) = env.get_string(&target) else { return };
     let raw: String = raw.into();
     let target = serde_json::from_str::<crate::native_db::notifications::NotificationTarget>(&raw)
-        .ok().or_else(|| raw.parse::<i32>().ok().map(Into::into));
+        .ok();
     let Some(target) = target.filter(|target| target.valid()) else { return };
     let Ok(id) = env.get_string(&notification_id) else { return };
     let id: String = id.into();

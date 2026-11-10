@@ -122,7 +122,7 @@ mod tests {
 
     fn show(id: i32, silent: bool) -> NotificationCommand {
         NotificationCommand::Show(NotificationContent {
-            target: id.into(), title: String::new(), body: String::new(), count: 1,
+            target: id.into(), latest_seq: Some(42), title: String::new(), body: String::new(), count: 1,
             silent, messages: vec![], has_unread_mention: false,
         })
     }

@@ -56,7 +56,7 @@ export class ThreadNavigationIntentService {
           this.offeredOrigin = origin;
           return;
         }
-        this.coordinator.select(sessionId, ready, (target) => {
+        this.coordinator.select(sessionId, ready, (target, latestSeq) => {
           if (target.kind === 'friend-requests') {
             if (!friendPopup) {
               this.loadFriendPopup();
@@ -72,7 +72,7 @@ export class ThreadNavigationIntentService {
               (item) => item.threadId === target.threadId,
             );
             if (!thread) return false;
-            if (!this.nav.openExternalChat(target.threadId)) {
+            if (!this.nav.openExternalChat(target.threadId, Math.max(thread.messageEndSeq, latestSeq ?? 0))) {
               return false;
             }
             if (target.kind === 'group-join-requests') {

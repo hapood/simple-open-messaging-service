@@ -6,8 +6,6 @@ pub(crate) fn decode(json: &str) -> Result<Vec<ObservedCard>, String> {
     #[serde(rename_all = "camelCase")]
     struct Card {
         #[serde(default)]
-        thread_id: Option<i32>,
-        #[serde(default)]
         target: Option<crate::native_db::notifications::NotificationTarget>,
         identifier: String,
     }
@@ -15,7 +13,7 @@ pub(crate) fn decode(json: &str) -> Result<Vec<ObservedCard>, String> {
         .map_err(|error| error.to_string())?
         .into_iter()
         .map(|card| {
-            let target = card.target.or_else(|| card.thread_id.map(Into::into)).filter(|t| t.valid()).ok_or("invalid notification target")?;
+            let target = card.target.filter(|t| t.valid()).ok_or("invalid notification target")?;
             let instance = card
                 .identifier
                 .strip_prefix("soms-thread-")
@@ -44,8 +42,8 @@ mod tests {
         let id = uuid::Uuid::new_v4().to_string();
         let identifier = format!("soms-thread-{id}");
         let json = serde_json::json!([
-            {"threadId": 7, "identifier": identifier},
-            {"threadId": 7, "identifier": identifier},
+            {"target": {"kind": "thread", "threadId": 7}, "identifier": identifier},
+            {"target": {"kind": "thread", "threadId": 7}, "identifier": identifier},
         ])
         .to_string();
         let cards = decode(&json).unwrap();
@@ -60,7 +58,8 @@ mod tests {
             "null",
             "{}",
             r#"[{"threadId":7,"identifier":"soms-thread-not-a-uuid"}]"#,
-            r#"[{"threadId":0,"identifier":"soms-thread-00000000-0000-0000-0000-000000000001"}]"#,
+            r#"[{"threadId":7,"identifier":"soms-thread-00000000-0000-0000-0000-000000000001"}]"#,
+            r#"[{"target":{"kind":"thread","threadId":0},"identifier":"soms-thread-00000000-0000-0000-0000-000000000001"}]"#,
         ] {
             assert!(decode(json).is_err());
         }

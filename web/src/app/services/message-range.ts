@@ -73,7 +73,7 @@ function validateCurrent(
   }
 }
 
-function validateResponse(
+export function validateMessageResponse(
   scan: MessageInterval | null,
   gaps: readonly ServerMessageRange[],
   messageSeqs: readonly number[],
@@ -84,6 +84,8 @@ function validateResponse(
 
   let previous: ServerMessageRange | undefined;
   for (const gap of gaps) {
+    if (gap.state !== 'SERVER_PENDING' && gap.state !== 'SERVER_UNAVAILABLE')
+      throw new Error('invalid server gap state');
     assertInterval(gap, 'server gap');
     if (!scan || !overlaps(gap, scan))
       throw new Error('server gap does not intersect the actual scan');
@@ -127,7 +129,7 @@ export function reduceMessageRanges(
   input: ReduceMessageRangesInput,
 ): MessageRange[] {
   validateCurrent(input.threadId, input.current);
-  validateResponse(input.scan, input.gaps, input.messageSeqs);
+  validateMessageResponse(input.scan, input.gaps, input.messageSeqs);
   if (!input.scan) return input.current.map((range) => ({ ...range }));
 
   const boundaries = new Set<number>([input.scan.left, input.scan.right]);

@@ -33,18 +33,16 @@ afterEach(async () => {
 });
 
 describe('UUID-bound browser cache', () => {
-  it('uses UUID names for both databases and deletes both at logout', async () => {
+  it('uses one UUID account database and deletes it at logout', async () => {
     const cache = storage();
     const descriptor = createSessionCacheDescriptor();
     cache.bindSessionCache(descriptor);
     expect((await cache.openForUser('1'))?.name).toBe(descriptor.indexedDbName);
     const names = (await indexedDB.databases()).map((item) => item.name);
     expect(names).toContain(descriptor.indexedDbName);
-    expect(names).toContain(descriptor.messageIndexedDbName);
     await cache.closeAndDelete('1');
     const remaining = (await indexedDB.databases()).map((item) => item.name);
     expect(remaining).not.toContain(descriptor.indexedDbName);
-    expect(remaining).not.toContain(descriptor.messageIndexedDbName);
   });
 
   it('initializes UUID tables before HELLO without publishing a user handle', async () => {
@@ -120,7 +118,7 @@ describe('UUID-bound browser cache', () => {
     );
     expect(await readProbe(cache)).toBeUndefined();
     expect((await indexedDB.databases()).map((item) => item.name)).toContain(
-      descriptor.messageIndexedDbName,
+      descriptor.indexedDbName,
     );
   });
 

@@ -5,19 +5,38 @@ import type {
   LocalThreadPatch,
 } from './model';
 
-export type StoredThreadAttention = Omit<LocalThreadAttention, 'previews'>;
-
-/** Flat thread row: coordinates, feed state, and read positions. Group-owned
- * state lives in StoredGroupMeta; profile content only in the revision-keyed
- * profile store. */
-export type StoredThread = StoredThreadAttention & {
-  lastMessageAt: number | null;
+/** Complete durable local thread state, not a wire snapshot or a UI item.
+ * Preview payloads, group metadata, and revision-keyed profiles have separate stores. */
+export interface LocalThreadState {
+  threadId: number;
+  threadFeedId: number;
+  type: 'P2P' | 'GROUP';
+  publisherNamespaceId: number;
+  selfMentionNamespaceId: number | null;
+  profileAccount: string;
+  profileRev: number;
+  conversationState: 'ACTIVE' | 'READ_ONLY';
+  blocked: boolean;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
+  alias: string | null;
+  messageEndSeq: number;
+  tombstoneEndSeq: number;
+  groupMetaFeedEndId: string | null;
+  joinRequestEndFeedId: number;
+  joinRequestReadFeedId: number;
+  groupInviteEndFeedId: number;
+  lastReadSeq: number;
+  localReadSeq: number;
+  announcementReadFeedId: number;
+  unreadCount: number;
+  lastMentionSeq: number | null;
+  /** Durable deletion progress, initialized only when this thread is created. */
+  deletedHwm: number;
+  /** Known history ceiling; null until learned by the message source. */
+  messageHead: number | null;
   muted: boolean;
   pinned: boolean;
   pinnedAt: number | null;
-  lastMessagePreview: string | null;
-  lastMessageSenderAccount: string | null;
-  lastMessageSenderNamespaceId: number | null;
   projectedUnreadCount: number;
   mentionMe: boolean;
   mentionAll: boolean;
@@ -25,9 +44,9 @@ export type StoredThread = StoredThreadAttention & {
 
 /** Apply only operation-supplied fields to the latest row in the write transaction. */
 export function applyLocalThreadPatch(
-  row: StoredThread,
+  row: LocalThreadState,
   patch: LocalThreadPatch,
-): StoredThread {
+): LocalThreadState {
   const next = { ...row };
   if (patch.muted !== undefined) next.muted = patch.muted;
   if (patch.pinned !== undefined) next.pinned = patch.pinned;
@@ -54,17 +73,43 @@ export function applyLocalThreadPatch(
 /** Dedicated group_meta row mirrored by GroupMetaSlot. */
 export type StoredGroupMeta = GroupMetaSlot & { threadId: number };
 
-/** Initialize local columns once. Feed updates must preserve the latest stored values. */
-export function createStoredThread(state: StoredThreadAttention): StoredThread {
+/** Explicit boundary: never spread transport-only preview payloads into a thread row. */
+export function threadAttentionFields(state: LocalThreadAttention) {
   return {
-    ...state,
-    lastMessageAt: null,
+    threadId: state.threadId,
+    threadFeedId: state.threadFeedId,
+    type: state.type,
+    publisherNamespaceId: state.publisherNamespaceId,
+    selfMentionNamespaceId: state.selfMentionNamespaceId,
+    profileAccount: state.profileAccount,
+    profileRev: state.profileRev,
+    conversationState: state.conversationState,
+    blocked: state.blocked,
+    role: state.role,
+    alias: state.alias,
+    messageEndSeq: state.messageEndSeq,
+    tombstoneEndSeq: state.tombstoneEndSeq,
+    groupMetaFeedEndId: state.groupMetaFeedEndId,
+    joinRequestEndFeedId: state.joinRequestEndFeedId,
+    joinRequestReadFeedId: state.joinRequestReadFeedId,
+    groupInviteEndFeedId: state.groupInviteEndFeedId,
+    lastReadSeq: state.lastReadSeq,
+    localReadSeq: state.localReadSeq,
+    announcementReadFeedId: state.announcementReadFeedId,
+    unreadCount: state.unreadCount,
+    lastMentionSeq: state.lastMentionSeq,
+  };
+}
+
+/** Initialize local columns once. Feed updates must preserve the latest stored values. */
+export function createLocalThreadState(state: LocalThreadAttention): LocalThreadState {
+  return {
+    ...threadAttentionFields(state),
+    deletedHwm: state.tombstoneEndSeq,
+    messageHead: null,
     muted: false,
     pinned: false,
     pinnedAt: null,
-    lastMessagePreview: null,
-    lastMessageSenderAccount: null,
-    lastMessageSenderNamespaceId: null,
     projectedUnreadCount: 0,
     mentionMe: false,
     mentionAll: false,
@@ -75,11 +120,35 @@ export interface RestoredThreadSubject {
   profile?: { name: string; bio: string; avatarDigest?: string | null };
 }
 
-/** Restore a thread row (plus its group meta row for groups) into a
- * presentation object without mutable display domains. */
+/** Preview-owned fields joined from the independent preview record. */
+export interface ThreadPreviewView {
+  createdAt: string;
+  senderAccount: string;
+  senderProfileNamespaceId: number;
+  status: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+  text: string | null;
+}
+
+export function projectThreadPreview(preview: ThreadPreviewView | undefined) {
+  return {
+    lastMessagePreview: preview
+      ? preview.status === 'LIVE'
+        ? (preview.text ?? '')
+        : preview.status === 'USER_RETRACTION'
+          ? '[Message retracted]'
+          : '[Message removed by administrator]'
+      : null,
+    lastMessageAt: preview ? Date.parse(preview.createdAt) : null,
+    lastMessageSenderAccount: preview?.senderAccount ?? null,
+    lastMessageSenderNamespaceId: preview?.senderProfileNamespaceId ?? null,
+  };
+}
+
+/** Join independent thread, preview, profile, and group meta records for display. */
 export function restoreThread(
-  row: StoredThread,
+  row: LocalThreadState,
   subject: RestoredThreadSubject,
+  preview: ThreadPreviewView | undefined,
   meta?: StoredGroupMeta,
 ): ConversationItem {
   const common = {
@@ -89,7 +158,7 @@ export function restoreThread(
     visible: true,
     threadFeedId: row.threadFeedId,
     role: row.role,
-    lastMessageAt: row.lastMessageAt,
+    ...projectThreadPreview(preview),
     messageEndSeq: row.messageEndSeq,
     groupMetaFeedEndId: row.groupMetaFeedEndId,
     muted: row.muted,
@@ -101,9 +170,6 @@ export function restoreThread(
     lastReadSeq: row.localReadSeq,
     announcementReadFeedId: row.announcementReadFeedId,
     unreadCount: row.projectedUnreadCount,
-    lastMessagePreview: row.lastMessagePreview,
-    lastMessageSenderAccount: row.lastMessageSenderAccount,
-    lastMessageSenderNamespaceId: row.lastMessageSenderNamespaceId,
     mentionUnread: [
       ...(row.mentionMe ? ['me' as const] : []),
       ...(row.mentionAll ? ['all' as const] : []),

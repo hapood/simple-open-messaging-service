@@ -10,7 +10,11 @@ describe('PushService native navigation receipt', () => {
   let pending: string | null;
   let service: PushService;
   const receipt = (id: string) =>
-    JSON.stringify({ id, target: { kind: 'thread', threadId: 7 } });
+    JSON.stringify({
+      id,
+      target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
+    });
   beforeEach(() => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       configurable: true,
@@ -56,6 +60,7 @@ describe('PushService native navigation receipt', () => {
         source: 'android',
         id: 'tap-1',
         target: { kind: 'thread', threadId: 7 },
+        latestSeq: 8,
       }),
     );
     expect(acknowledgeThreadId).not.toHaveBeenCalled();
@@ -70,6 +75,7 @@ describe('PushService native navigation receipt', () => {
         source: 'android',
         id: 'tap-2',
         target: { kind: 'thread', threadId: 7 },
+        latestSeq: 8,
       }),
     );
   });
@@ -83,10 +89,22 @@ describe('PushService native navigation receipt', () => {
         JSON.stringify({
           id: 'tap',
           target: { kind: 'thread', threadId },
+          latestSeq: 8,
+        }),
+      ),
+      ...[undefined, null, -1, '8', 1.5, 2147483648].map((latestSeq) =>
+        JSON.stringify({
+          id: 'tap',
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq,
         }),
       ),
       ...['', ' ', 123].map((id) =>
-        JSON.stringify({ id, target: { kind: 'thread', threadId: 7 } }),
+        JSON.stringify({
+          id,
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
+        }),
       ),
     ]) {
       pending = value;

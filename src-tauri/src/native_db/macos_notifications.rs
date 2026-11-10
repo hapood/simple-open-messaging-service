@@ -13,7 +13,7 @@ extern "C" {
     );
     fn soms_macos_notifications_authorize(context: *mut c_void, completion: Completion);
     fn soms_macos_notification_post(
-        target: *const c_char,
+        opening: *const c_char,
         notification_id: *const c_char,
         title: *const c_char,
         body: *const c_char,
@@ -116,10 +116,13 @@ async fn request_initial_authorization() -> Result<(), String> {
 }
 
 #[no_mangle]
-extern "C" fn soms_macos_notification_tapped(target: *const c_char, notification_id: *const c_char) {
-    let Some(target) = retire_instance(target, notification_id) else { return };
+extern "C" fn soms_macos_notification_tapped(opening: *const c_char, notification_id: *const c_char) {
+    if opening.is_null() { return; }
+    let Ok(raw) = (unsafe { CStr::from_ptr(opening) }).to_str() else { return };
+    let Some(opening) = super::NotificationOpening::parse(raw) else { return };
+    if retire_target(opening.target, notification_id).is_none() { return; }
     if let Some(app) = APP.get() {
-        super::tapped(app, target);
+        super::tapped(app, opening);
     }
 }
 
@@ -132,7 +135,11 @@ fn retire_instance(target: *const c_char, notification_id: *const c_char) -> Opt
     if target.is_null() || notification_id.is_null() { return None; }
     let raw = unsafe { CStr::from_ptr(target) }.to_str().ok()?;
     let target: super::super::notifications::NotificationTarget = serde_json::from_str(raw).ok()?;
-    if !target.valid() { return None; }
+    retire_target(target, notification_id)
+}
+
+fn retire_target(target: super::super::notifications::NotificationTarget, notification_id: *const c_char) -> Option<super::super::notifications::NotificationTarget> {
+    if !target.valid() || notification_id.is_null() { return None; }
     let identifier = unsafe { CStr::from_ptr(notification_id) }.to_str().ok()?;
     let id = instance_id(identifier)?;
     let owner = super::super::active_login().ok()?;
@@ -197,12 +204,14 @@ pub(super) fn update(input: DesktopNotification) -> Result<(), ExecutionFailure>
         unsafe { soms_macos_notification_remove(id.as_ptr()) };
         return Ok(());
     }
-    let target = CString::new(serde_json::to_string(&input.target).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let opening = super::NotificationOpening::new(input.target, input.latest_seq)
+        .ok_or("invalid notification opening")?;
+    let opening = CString::new(serde_json::to_string(&opening).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let title = CString::new(input.title.replace('\0', "")).map_err(|error| error.to_string())?;
     let body = CString::new(input.body.replace('\0', "")).map_err(|error| error.to_string())?;
     wait_for_completion(|context, completion| unsafe {
         soms_macos_notification_post(
-            target.as_ptr(),
+            opening.as_ptr(),
             id.as_ptr(),
             title.as_ptr(),
             body.as_ptr(),

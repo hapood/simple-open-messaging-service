@@ -3,7 +3,7 @@
  * ChatThreadController).
  *
  * Owns DB cursor pagination (oldestMsgId/newestMsgId) + SSE. Returns one timeline item per durable
- * message slot, projecting tombstones as body-free system rows. Album merging is a presentation decision
+ * live message slot; persistent deletion markers never enter the timeline. Album merging is a presentation decision
  * done by the kernel's `mergeItems` hook (per batch, before createItem). Date separators are likewise
  * derived by the createItem render layer based on adjacent messages crossing a day boundary (see
  * message-cards/date-format.ts).
@@ -49,12 +49,10 @@ import { messageAuthorProfileDemand } from '../../services/profile-demand';
 import { unevidencedProfileDemand } from '../../../../../shared/profile-demand';
 import { MsgService } from '../../services/message.service';
 import {
-  isRenderableMessageTomb,
   messageCreatorKey,
   parseUserIdentityKey,
   type Message,
   type ConversationItem,
-  type MessageQueryRow,
 } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type {
@@ -166,6 +164,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   >();
   private initializingDb = true;
   private loadedSeq = -1;
+  private notifiedNewestSeq = -1;
   /** Newer-edge demands are long-lived: at the current newest they remain pending until a real item exists. */
   private readonly newerWaiters = new Set<{
     cursorId: number;
@@ -216,8 +215,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           }
           for (const item of this.pending) {
             if (item.data.quote?.seq !== seq) continue;
-            // Coordinate-only quote: content is gone, but the tombstone row
-            // stays in the thread, so the quote keeps jumping to it.
+            // Erase the preview. A jump can still resolve an ephemeral mounted
+            // notice; after it is unmounted the deleted target is unavailable.
             item.data.quote = { seq };
             live.onQuoteDeleted?.(item.id, seq);
           }
@@ -249,25 +248,46 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   resumeLiveUpdates(latestSeq?: number): void {
     if (this.lifetime.signal.aborted) return;
-    if (this.sseSub) return;
+    if (this.sseSub) {
+      this.refreshLatest(latestSeq);
+      return;
+    }
     this.livePaused = false;
-    this.sseSub = this.repo.liveSignal$
+    this.sseSub = this.repo.historyHead$
       .pipe(filter((s) => s.threadId === this.conv.threadId))
       .subscribe((s) => {
-        if (!this.initializingDb && s.seq > this.loadedSeq)
-          this.onNewerAvailable(s.seq);
+        this.noteNewerAvailable(s.seq);
         this.requestNewerPump();
       });
     this.reconnectSub = this.repo.reconnectSignal$.subscribe(() =>
       this.requestNewerPump(),
     );
-    // Subjects do not replay frames missed while paused. Seed the kernel's newer
-    // demand from the authoritative feed ceiling before pumping the parked cursor.
-    if (latestSeq !== undefined && latestSeq > this.loadedSeq) {
-      this.repo.retainNewestSeq(this.conv.threadId, latestSeq);
-      this.onNewerAvailable(latestSeq);
-    }
+    this.refreshLatest(latestSeq);
+  }
+
+  /** Opening and resuming reuse the same history lane; they never change the viewport anchor. */
+  refreshLatest(latestSeq?: number): void {
+    if (this.lifetime.signal.aborted) return;
+    const target = Math.max(
+      this.repo.newestKnownSeq(this.conv.threadId),
+      latestSeq ?? 0,
+    );
+    this.repo.retainNewestSeq(this.conv.threadId, target);
+    this.noteNewerAvailable(target);
     this.requestNewerPump();
+  }
+
+  private noteNewerAvailable(seq: number): void {
+    if (
+      this.initializingDb ||
+      this.livePaused ||
+      seq <= Math.max(0, this.loadedSeq, this.notifiedNewestSeq)
+    )
+      return;
+    // Retaining a ceiling can synchronously emit historyHead$. Repeated entry and
+    // resume must wake demand, but must not count the same head as another arrival.
+    this.notifiedNewestSeq = seq;
+    this.onNewerAvailable(seq);
   }
 
   /**
@@ -326,11 +346,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       replies.add(replySeq);
       this.repliesByQuote.set(seq, replies);
       const deleted = await this.wait(
-        this.repo.getDeletedMessageSeqs(this.conv.threadId, [seq]),
+        this.repo.getMessageDeletions(this.conv.threadId, [seq]),
       );
       if (deleted.length || this.deletedQuoteSeqs.has(seq))
-        // Coordinate-only quote: the tombstone row stays jumpable via the
-        // local seq, so keep no preview content and no origin re-resolve.
+        // Keep only a local jump coordinate for a possible mounted notice;
+        // never re-resolve an erased preview through its origin.
         quote = { seq };
     }
     if (this.mountedQuotes.get(replySeq) !== entry || entry.version !== version)
@@ -781,7 +801,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * row. It is deliberately independent from the messages cache: after a fresh install, storage migration,
    * or cache eviction the thread can truthfully say "latest = 258" while the local messages table is empty.
    * `liveLatestSeq` covers a newer content head observed after that thread snapshot. Whichever is greater is
-   * the remote target; if it leads `loadedSeq`, signal the kernel to perform its forced newest-page pull.
+   * the remote target; if it leads `loadedSeq`, wake history demand without changing the reading anchor.
    */
   finishLocalInit(
     liveLatestSeq: number | undefined,
@@ -789,12 +809,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   ): void {
     if (this.lifetime.signal.aborted) return;
     this.initializingDb = false;
-    const targetSeq = Math.max(liveLatestSeq ?? 0, persistedLatestSeq);
-    if (targetSeq > 0 && targetSeq > this.loadedSeq) {
-      this.repo.retainNewestSeq(this.conv.threadId, targetSeq);
-      this.onNewerAvailable(targetSeq);
-    }
-    this.requestNewerPump();
+    this.refreshLatest(Math.max(liveLatestSeq ?? 0, persistedLatestSeq));
   }
 
   // ---------- rawToItems (shape every queried message + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------
@@ -839,8 +854,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     await this.wait(this.ensureProfiles(msgs));
     if (quoteSeqs.size) {
-      for (const seq of await this.wait(
-        this.repo.getDeletedMessageSeqs(this.conv.threadId, [...quoteSeqs]),
+      for (const { seq } of await this.wait(
+        this.repo.getMessageDeletions(this.conv.threadId, [...quoteSeqs]),
       )) {
         this.deletedQuoteSeqs.add(seq);
       }
@@ -932,24 +947,23 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           item.kind === 'message',
       )
       .map((item) => item.message);
-    const messages = slots.filter(
-      (slot): slot is Message => !isRenderableMessageTomb(slot),
-    );
+    // Persisted tombs are suppression metadata, never timeline rows. Only the
+    // mounted deletion notification may replace an existing row with a notice.
+    const messages = slots.filter((slot) => !slot.isDeleted);
     const shaped = new Map(
       (await this.wait(this.rawToItems(messages))).map((item) => [
         item.id,
         item,
       ]),
     );
-    for (const slot of slots) {
-      if (!isRenderableMessageTomb(slot)) continue;
-      shaped.set(slot.seq, this.tombstoneToItem(slot));
-    }
     const out: CbItem<ChatItemData>[] = [];
     for (const item of sourceItems) {
       if (item.kind === 'message') {
         const message = shaped.get(item.message.seq);
-        if (message) out.push(message);
+        // A deletion may arrive while profiles/quotes are being resolved. Never
+        // publish that older body after the live notice has already erased it.
+        if (message && !this.deletedQuoteSeqs.has(item.message.seq))
+          out.push(message);
         continue;
       }
       const gapKey = `${item.state}:${item.left}:${item.right}`;
@@ -985,29 +999,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       });
     }
     return out;
-  }
-
-  private tombstoneToItem(
-    tomb: Extract<MessageQueryRow, { contentType: 'TOMB' }>,
-  ): CbItem<ChatItemData> {
-    return {
-      id: tomb.seq,
-      data: {
-        type: 'system',
-        contentType: 'SYSTEM',
-        msgId: tomb.seq,
-        threadId: tomb.threadId,
-        isSelf: false,
-        isGroupConversation: this.conv.type === 'GROUP',
-        name: '',
-        text: '',
-        time: dayjs(tomb.createdAt).format('HH:mm'),
-        images: null,
-        file: null,
-        createdAtMs: tomb.createdAt,
-        deletionType: tomb.deletionType,
-      },
-    };
   }
 
   private async wait<T>(work: Promise<T>): Promise<T> {
@@ -1176,7 +1167,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const demand = messageAuthorProfileDemand(message);
         const cached = await (this.profileRepo && demand
           ? firstValueFromAbortable(
-              this.profileRepo.watch(unevidencedProfileDemand(demand)).pipe(take(1)),
+              this.profileRepo
+                .watch(unevidencedProfileDemand(demand))
+                .pipe(take(1)),
               this.lifetime.signal,
             ).catch(() => undefined)
           : Promise.resolve(undefined));

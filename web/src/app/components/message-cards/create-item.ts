@@ -73,7 +73,7 @@ export function computeRowFlags(
   showDate: boolean;
   groupPosition: 'single' | 'head' | 'body' | 'tail';
 } {
-  let isShowHead = true;
+  let isShowHead = item.data.type === 'msg';
   let isGroupStart = false;
   let showDate = false;
   let groupPosition: 'single' | 'head' | 'body' | 'tail' = 'single';
@@ -107,13 +107,13 @@ export function computeRowFlags(
       : groupFlags.isDateShrink
         ? 'body'
         : 'tail';
-    // date separator: derived per-window from the prev message's createdAtMs (date lives outside the source). The
-    // oldest boundary always shows date above; a non-oldest prev==null (trim re-mount) does not (anti-flicker).
-    // The label text itself is computed by DateRowComponent from the timestamp + active language, so the factory
-    // only needs the show/hide decision here.
+  }
+  // Date context survives a mounted message's anonymous deletion replacement.
+  // It uses only that original message's timestamp, never persisted deletion stubs.
+  if (!item.data.serverGap) {
     showDate = shouldShowDateSeparator(
-      prevMsg?.createdAtMs ?? null,
-      msg.createdAtMs,
+      prev && !prev.data.serverGap ? prev.data.createdAtMs : null,
+      item.data.createdAtMs,
       item.boundary === 'oldest' || item.boundary === 'both',
     );
   }

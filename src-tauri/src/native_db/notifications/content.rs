@@ -40,6 +40,8 @@ pub(crate) struct NotificationMessage {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NotificationContent {
     pub(crate) target: NotificationTarget,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latest_seq: Option<i32>,
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) count: i64,
@@ -148,6 +150,7 @@ fn content(
     };
     NotificationContent {
         target: thread.thread_id.into(),
+        latest_seq: Some(thread.message_end_seq),
         title: thread.title.clone(),
         body: if messages.is_empty() { copy.private_body.to_owned() } else {
             messages.iter().map(|message| message.text.as_str()).collect::<Vec<_>>().join("\n")
@@ -166,7 +169,7 @@ mod tests {
 
     fn thread() -> NotificationThread {
         NotificationThread {
-            thread_id: 7, thread_feed_id: 9, unread_count: 3,
+            thread_id: 7, thread_feed_id: 9, message_end_seq: 42, unread_count: 3,
             last_read_seq: 2, has_unread_mention: false, muted: true,
             title: "Alice".into(),
             previews: vec![
@@ -188,6 +191,7 @@ mod tests {
         assert_eq!(result.body, "hello\nRetracted\nRemoved");
         assert_eq!(result.title, "Alice");
         assert_eq!(result.count, 3);
+        assert_eq!(result.latest_seq, Some(42));
         assert!(result.silent);
     }
 
@@ -241,6 +245,8 @@ mod tests {
         let wire = serde_json::to_value(show).unwrap();
         assert_eq!(wire["operation"], "show");
         assert_eq!(wire["notification"]["target"]["threadId"], 7);
+        // The authoritative ceiling is independent of truncated or private previews.
+        assert_eq!(wire["notification"]["latestSeq"], 42);
         assert_eq!(wire["notification"]["body"], "New message");
         assert_eq!(wire["notification"]["messages"], json!([]));
         assert!(wire["notification"].get("previews").is_none());
@@ -367,5 +373,6 @@ mod tests {
         let mut thread = thread();
         thread.last_read_seq = 5;
         assert_eq!(content(&thread, false, copy()).body, "New message");
+        assert_eq!(content(&thread, false, copy()).latest_seq, Some(42));
     }
 }

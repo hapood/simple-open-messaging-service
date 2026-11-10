@@ -16,7 +16,8 @@ describe('required session notification identity', () => {
   ): ThreadNavigationIntent => ({
     source: 'web',
     id: 'tap',
-    threadId: 7,
+    target: { kind: 'thread', threadId: 7 },
+    latestSeq: 13,
     sessionId: 11,
     acknowledge,
     ...extra,
@@ -35,11 +36,12 @@ describe('required session notification identity', () => {
     expect(notificationTargetKey(target)).toBe(
       target.kind === 'friend-requests' ? target.kind : `${target.kind}:9`,
     );
-    coordinator.offer(tap({ target }));
+    const latestSeq = target.kind === 'thread' ? 13 : undefined;
+    coordinator.offer(tap({ target, latestSeq }));
     coordinator.select(11, true, open);
-    expect(open).toHaveBeenCalledExactlyOnceWith(target);
+    expect(open).toHaveBeenCalledExactlyOnceWith(target, latestSeq);
   });
-  it('rejects an invalid explicit target rather than falling back to the legacy thread', () => {
+  it('rejects an invalid target', () => {
     for (const target of [
       null,
       {},
@@ -64,7 +66,7 @@ describe('required session notification identity', () => {
     expect(open).toHaveBeenCalledExactlyOnceWith({
       kind: 'thread',
       threadId: 7,
-    });
+    }, 13);
     expect(acknowledge).toHaveBeenCalledTimes(1);
   });
   it('rejects another session even on the same account', () => {
@@ -104,7 +106,7 @@ describe('required session notification identity', () => {
       userId: 11,
     } as unknown as ThreadNavigationIntent);
     for (const threadId of [0, -1, 1.5, NaN, 2147483648])
-      coordinator.offer(tap({ threadId }));
+      coordinator.offer(tap({ target: { kind: 'thread', threadId } }));
     coordinator.select(11, true, open);
     expect(open).not.toHaveBeenCalled();
   });

@@ -65,6 +65,7 @@ export interface MessageThreadSource extends CbSource<ChatItemData> {
   ): void;
   pauseLiveUpdates?(): void;
   resumeLiveUpdates?(latestSeq?: number): void;
+  refreshLatest?(latestSeq: number): void;
 }
 
 export interface SendTextRequest {

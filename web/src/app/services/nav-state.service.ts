@@ -1,3 +1,4 @@
+import { parseNotificationOpening } from '../../../../shared/notification-opening';
 import {
   computed,
   effect,
@@ -117,6 +118,8 @@ export class NavStateMachineService {
 
   /** The open chat thread id, or `undefined` at the conversation list (home). */
   readonly chatThreadId = signal<number | undefined>(undefined);
+  /** Each explicit entry is observable even when the existing chat stays mounted. */
+  readonly chatOpening = signal<{ threadId: number; latestSeq: number } | undefined>(undefined);
   private readonly _navigationRevision = signal(0);
   readonly navigationRevision = this._navigationRevision.asReadonly();
   /** A notification cold URL is scoped, unlike an ordinary user-entered deep link.
@@ -185,12 +188,14 @@ export class NavStateMachineService {
                 ? Number(rawThread)
                 : undefined,
         });
-        if (target && validThreadNavigationId(sessionId))
+        const rawSeq = query.get('latestSeq') ?? '';
+        const opening = parseNotificationOpening({ target, latestSeq: /^(0|[1-9]\d*)$/.test(rawSeq) ? Number(rawSeq) : undefined });
+        if (opening && validThreadNavigationId(sessionId))
           this.bootstrapNotificationIntent = {
             source: 'web',
-            id: `bootstrap:${sessionId}:${notificationTargetKey(target)}`,
+            id: `bootstrap:${sessionId}:${notificationTargetKey(opening.target)}`,
             sessionId,
-            target,
+            ...opening,
           };
       } else if (validThreadNavigationId(threadId)) {
         this.chatThreadId.set(threadId);
@@ -236,21 +241,25 @@ export class NavStateMachineService {
    *  dialog/overlay/search. */
   openChat(
     threadId: number,
-    transition: ChatOpenTransition = 'standard',
+    options: { transition?: ChatOpenTransition; latestSeq?: number } = {},
   ): boolean {
+    const { transition = 'standard', latestSeq = 0 } = options;
     this._navigationRevision.update((value) => value + 1);
     const revision = this.navigationRevision();
     if (this.chatThreadId() !== threadId) this.aside.set([]);
     this.searchOpen.set(false);
     this.pendingChatTransition.set({ threadId, kind: transition });
     this.chatThreadId.set(threadId);
+    this.chatOpening.set({ threadId, latestSeq });
     this.cancelPanes();
     return this.navigationRevision() === revision;
   }
-  /** Every notification starts at Home, even a repeated tap on the same thread. */
-  openExternalChat(threadId: number): boolean {
-    if (!this.returnToThreadList()) return false;
-    return this.openChat(threadId);
+  /** Dismiss descendants without unbinding a warm same-thread message surface. */
+  openExternalChat(threadId: number, latestSeq = 0): boolean {
+    this.settingsCategoryStack.set([]);
+    this.topSection.set('chats');
+    this.aside.set([]);
+    return this.openChat(threadId, { latestSeq });
   }
 
   /** Consume the transition intent exactly once when ChatPane is ready to reveal the requested thread. */
@@ -266,6 +275,7 @@ export class NavStateMachineService {
     const revision = this.navigationRevision();
     this.pendingChatTransition.set(undefined);
     this.chatThreadId.set(undefined);
+    this.chatOpening.set(undefined);
     this.aside.set([]);
     this.searchOpen.set(false);
     this.cancelPanes();
@@ -412,6 +422,7 @@ export class NavStateMachineService {
     this.closeAllPanes();
     this.pendingChatTransition.set(undefined);
     this.chatThreadId.set(undefined);
+    this.chatOpening.set(undefined);
     this.aside.set([]);
     this.searchOpen.set(false);
     this.settingsCategoryStack.set([]);

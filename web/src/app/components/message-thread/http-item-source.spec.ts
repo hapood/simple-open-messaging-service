@@ -160,6 +160,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       threadId: number;
       seq: number;
     }>();
+    const historyHead$ = new Subject<{ threadId: number; seq: number }>();
     const deletedLive$ = new Subject<{
       threadId: number;
       deletions: Array<{
@@ -167,7 +168,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
       }>;
     }>();
-    const getDeletedMessageSeqs = vi.fn().mockResolvedValue([]);
+    const getMessageDeletions = vi.fn().mockResolvedValue([]);
     const onQuoteDeleted = vi.fn();
     const onQuoteUpdated = vi.fn();
     const slotsChanged$ = new Subject<number>();
@@ -177,10 +178,15 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     const reconnectSignal$ = new Subject<void>();
     let truncateSeq: number | undefined;
-    liveSignal$.subscribe((signal) => {
-      if (signal.threadId === tid)
-        truncateSeq = Math.max(truncateSeq ?? -1, signal.seq);
-    });
+    let newestSeq = 0;
+    const advance = (signal: { threadId: number; seq: number }) => {
+      if (signal.threadId !== tid) return;
+      truncateSeq = Math.max(truncateSeq ?? -1, signal.seq);
+      if (signal.seq <= newestSeq) return;
+      newestSeq = signal.seq;
+      historyHead$.next(signal);
+    };
+    liveSignal$.subscribe(advance);
     reconnectSignal$.subscribe(() => (truncateSeq = undefined));
     // The constructor also subscribes to repo.mediaStatusLive$ (a MEDIA_STATUS re-render signal); the stub
     // must expose it or new HttpItemSource throws "Cannot read properties of undefined (reading 'pipe')".
@@ -257,7 +263,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
           }
           const orderBy = demand.kind === 'newer' ? 'asc' : 'desc';
           const page = await run({
-            skip: demand.kind === 'latest' || demand.kind === 'localLatest' ? 0 : 1,
+            skip:
+              demand.kind === 'latest' || demand.kind === 'localLatest' ? 0 : 1,
             take: demand.count,
             ...(demand.kind === 'older'
               ? { lastSeq: demand.before }
@@ -287,18 +294,20 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       slotsChanged$,
       getMessageByOrigin,
       deletedLive$,
-      getDeletedMessageSeqs,
+      getMessageDeletions,
       queryNativeMessageHistory,
       queryBrowserMessageHistory,
       liveSignal$,
+      historyHead$,
       reconnectSignal$,
       mediaStatusLive$,
       syncDeleted: vi.fn().mockResolvedValue(undefined),
+      newestKnownSeq: () => newestSeq,
       retainNewestSeq: vi
         .fn()
         .mockName('retainNewestSeq')
-        .mockImplementation((_threadId: number, seq: number) => {
-          truncateSeq = Math.max(truncateSeq ?? -1, seq);
+        .mockImplementation((threadId: number, seq: number) => {
+          advance({ threadId, seq });
         }),
     } as unknown as MessageRepository & { queryMessages: Mock };
     const users: User[] = [
@@ -403,13 +412,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       src,
       createSource,
       deletedLive$,
-      getDeletedMessageSeqs,
+      getMessageDeletions,
       onQuoteDeleted,
       onQuoteUpdated,
       slotsChanged$,
       getMessageByOrigin,
       repo,
       liveSignal$,
+      historyHead$,
       reconnectSignal$,
       mediaStatusLive$,
       onMediaStatus,
@@ -424,6 +434,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const {
       src,
       liveSignal$,
+      historyHead$,
       reconnectSignal$,
       mediaStatusLive$,
       deletedLive$,
@@ -809,42 +820,49 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   });
 
   it.each(['USER_RETRACTION', 'MODERATION_REMOVAL'] as const)(
-    'projects an identified %s tombstone as a readable system row at the original sequence',
+    'never projects persisted %s tombs on initial load or reload',
     async (deletionType) => {
-      const tomb: MessageQueryRow = {
+      const tomb = {
         threadId: 42,
         seq: 10,
-        creator: { account: 'alice', namespaceId: 0 },
-        profileRev: 1,
-        createdAt: 1700000000000,
-        updatedAt: 1700000000100,
-        contentType: 'TOMB',
-        isDeleted: true,
+        contentType: 'TOMB' as const,
+        isDeleted: true as const,
         deletionType,
       };
+      // Defend against both coordinate-only stubs and legacy identified tombs.
+      const legacy = { ...row(11, 2), ...tomb, seq: 11 };
       const { src } = setup({
         code: 0,
         message: 'ok',
-        data: [tomb],
+        data: [row(12, 2), legacy, tomb as MessageQueryRow, row(9, 2)],
         hasMore: false,
       });
-
-      const items = await src.init(-1, 50, 0);
-
-      expect(items).toHaveLength(1);
-      expect(items[0]).toMatchObject({
-        id: 10,
-        data: {
-          type: 'system',
-          contentType: 'SYSTEM',
-          msgId: 10,
-          deletionType,
-          createdAtMs: 1700000000000,
-        },
-      });
+      expect((await src.init(-1, 50, 0)).map((item) => item.id)).toEqual([
+        9, 12,
+      ]);
+      expect((await src.init(-1, 50, 0)).map((item) => item.id)).toEqual([
+        9, 12,
+      ]);
       src.destroy();
     },
   );
+
+  it('does not rehydrate a body after its mounted deletion notification', async () => {
+    const { src, deletedLive$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(10, 2)],
+      hasMore: false,
+    });
+    expect((await src.init(-1, 50, 0)).map((item) => item.id)).toEqual([10]);
+    deletedLive$.next({
+      threadId: 42,
+      deletions: [{ seq: 10, type: 'USER_RETRACTION' }],
+    });
+    // Even an in-flight/stale source result cannot reintroduce the old body.
+    expect(await src.init(-1, 50, 0)).toEqual([]);
+    src.destroy();
+  });
 
   it('liveSignal$ does not issue HTTP when no newer demand is mounted', async () => {
     const { src, repo, liveSignal$ } = setup({
@@ -1715,12 +1733,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   });
 
   it('rechecks persisted tombs after mounting', async () => {
-    const { src, getDeletedMessageSeqs, onQuoteUpdated } = setup({
+    const { src, getMessageDeletions, onQuoteUpdated } = setup({
       code: 0,
       message: 'ok',
       data: [],
     });
-    getDeletedMessageSeqs.mockResolvedValue([44]);
+    getMessageDeletions.mockResolvedValue([
+      { seq: 44, type: 'MODERATION_REMOVAL' },
+    ]);
     src.mountQuote(101, {
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
       seq: 44,
@@ -1790,7 +1810,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   }
 
   it('destroy stops quote shaping before deletion lookup or profile work resumes', async () => {
-    const { src, getMessageByOrigin, getDeletedMessageSeqs } = setup({
+    const { src, getMessageByOrigin, getMessageDeletions } = setup({
       code: 0,
       message: 'ok',
       data: [quotedReply()],
@@ -1810,18 +1830,20 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     await rejected;
     complete(row(44, 1));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(getDeletedMessageSeqs).not.toHaveBeenCalled();
+    expect(getMessageDeletions).not.toHaveBeenCalled();
   });
 
   it('suppresses cached previews when the local target is a tombstone', async () => {
-    const { src, getDeletedMessageSeqs } = setup({
+    const { src, getMessageDeletions } = setup({
       code: 0,
       message: 'ok',
       data: [quotedReply()],
     });
-    getDeletedMessageSeqs.mockResolvedValue([44]);
+    getMessageDeletions.mockResolvedValue([
+      { seq: 44, type: 'MODERATION_REMOVAL' },
+    ]);
     const items = await src.init(-1, 50, 0);
-    expect(getDeletedMessageSeqs).toHaveBeenCalledWith(42, [44]);
+    expect(getMessageDeletions).toHaveBeenCalledWith(42, [44]);
     expect(items[0].data.quote).toEqual({ seq: 44 });
     expect(items[0].data.text).toBe('reply');
     src.destroy();
@@ -1856,12 +1878,12 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   });
 
   it('keeps a deletion received during a local lookup authoritative', async () => {
-    const { src, getDeletedMessageSeqs, deletedLive$ } = setup({
+    const { src, getMessageDeletions, deletedLive$ } = setup({
       code: 0,
       message: 'ok',
       data: [quotedReply()],
     });
-    getDeletedMessageSeqs.mockImplementation(async () => {
+    getMessageDeletions.mockImplementation(async () => {
       deletedLive$.next({
         threadId: 42,
         deletions: [{ seq: 44, type: 'USER_RETRACTION' }],

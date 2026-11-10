@@ -169,6 +169,7 @@ import {
 } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
+import { watchMountedMessageDeletions } from './mounted-message-deletion';
 import {
   applyMessageSelectionState,
   messageMemberIds,
@@ -957,55 +958,63 @@ export class MessageThreadComponent implements OnDestroy {
     });
   }
 
-  private onMessageDeleted(
-    threadId: number,
-    seq: number,
-    deletionType: 'USER_RETRACTION' | 'MODERATION_REMOVAL',
-    reinitializeAlbum = true,
-  ): void {
+  private closeDeletedMessageSurfaces(threadId: number, seq: number): void {
+    // These surfaces can outlive the message's mounted row.
     this.galleryViewer.closeIfDeleted(threadId, seq);
     this.fileDetail.closeIfDeleted(threadId, seq);
     this.messageInteraction.removeMessage(seq);
-    let deletedAlbumMember = false;
+  }
+
+  private replaceMountedDeletedMessage(
+    seq: number,
+    deletionType: 'USER_RETRACTION' | 'MODERATION_REMOVAL',
+  ): void {
+    // Only mutate a currently mounted body. The source/cache never retain these
+    // notices, so trimming, reloading or reopening cannot resurrect a deletion.
     this.scroller?.mutateItem(seq, (item) => {
       if (item.data.type !== 'msg') return item;
       const images = item.data.images;
-      if (!images || images.length < 2)
+      if (!images || !item.ids || item.ids.length < 2)
         return this.deletedPlaceholder(item, seq, deletionType);
-      deletedAlbumMember = true;
-      const remaining = images.filter((image) => image.msgId !== seq);
-      if (remaining.length === images.length) return null;
-      if (remaining.length === 0) return null;
-      const head = remaining[0];
-      const headId = head.msgId;
-      if (headId === undefined) return null;
-      const ids = remaining
-        .map((image) => image.msgId)
-        .filter((id): id is number => id !== undefined);
-      return {
-        ...item,
-        id: headId,
-        ids: ids.length > 1 ? ids : undefined,
-        data: {
-          ...item.data,
-          msgId: headId,
-          contentType: head.kind === 'video' ? 'VIDEO' : 'IMAGE',
-          images: remaining,
-        },
+      const index = images.findIndex((image) => image.msgId === seq);
+      if (index < 0) return item;
+      const data = item.data;
+      const replacements: CbItem<ChatItemData>[] = [];
+      const appendMedia = (members: typeof images) => {
+        if (!members.length) return;
+        const head = members[0];
+        const ids = [...new Set(members.map((image) => image.msgId!))];
+        replacements.push({
+          id: ids[0],
+          ids: ids.length > 1 ? ids : undefined,
+          data: {
+            ...data,
+            msgId: ids[0],
+            contentType: head.kind === 'video' ? 'VIDEO' : 'IMAGE',
+            images: members,
+          },
+        });
       };
+      appendMedia(images.slice(0, index));
+      replacements.push(
+        this.deletedPlaceholder(
+          { ...item, boundary: undefined },
+          seq,
+          deletionType,
+        ),
+      );
+      appendMedia(
+        images.slice(index + 1).filter((image) => image.msgId !== seq),
+      );
+      if (item.boundary === 'oldest' || item.boundary === 'both')
+        replacements[0].boundary = 'oldest';
+      if (item.boundary === 'newest' || item.boundary === 'both')
+        replacements[replacements.length - 1].boundary =
+          replacements.length === 1 && item.boundary === 'both'
+            ? 'both'
+            : 'newest';
+      return replacements;
     });
-    // One source album can represent several durable coordinates. Rebuild it from the now-authoritative
-    // cache so the deleted coordinate becomes its own tombstone row and the remaining media regroup around it.
-    if (deletedAlbumMember && reinitializeAlbum) {
-      if (this.lifecycle.binding) {
-        // Do not destroy the source while its deletion notification is on stack.
-        clearTimeout(this.deletionReloadTimer);
-        this.deletionReloadTimer = setTimeout(() => {
-          this.deletionReloadTimer = undefined;
-          this.reload();
-        }, 0);
-      }
-    }
   }
 
   private deletedPlaceholder(
@@ -1015,6 +1024,7 @@ export class MessageThreadComponent implements OnDestroy {
   ): CbItem<ChatItemData> {
     return {
       id: seq,
+      ...(item.boundary ? { boundary: item.boundary } : {}),
       data: {
         type: 'system',
         contentType: 'SYSTEM',
@@ -1024,7 +1034,7 @@ export class MessageThreadComponent implements OnDestroy {
         isGroupConversation: item.data.isGroupConversation,
         name: '',
         text: '',
-        time: item.data.time,
+        time: '',
         images: null,
         file: null,
         createdAtMs: item.data.createdAtMs,
@@ -1185,6 +1195,7 @@ export class MessageThreadComponent implements OnDestroy {
     const vp = this.viewportRef();
     const ct = this.contentRef();
     const trd = this.userMsgTrd();
+    const opening = this.nav.chatOpening();
     if (!vp || !ct) return;
     if (!this.scroller)
       this.prepareScroller(vp.nativeElement, ct.nativeElement);
@@ -1206,6 +1217,13 @@ export class MessageThreadComponent implements OnDestroy {
     // Native delivery can outlive the WebView projection. Mount from live thread state;
     // the foreground drain need not finish before the cached page can be presented.
     if (isAndroidNative() && !this.appVisible()) return;
+    // Metadata advances and repeated entries feed the existing source, never a new window.
+    const latestSeq = Math.max(
+      trd.messageEndSeq,
+      this.convList.latestSeq(trd.threadId) ?? 0,
+      opening?.threadId === trd.threadId ? opening.latestSeq : 0,
+    );
+    untracked(() => this.source?.refreshLatest?.(latestSeq));
     if (this.resumeAfterBackground && this.currentTrdId === trd.threadId) {
       if (!this.kernelReady) {
         this.initialLoading();
@@ -1264,13 +1282,22 @@ export class MessageThreadComponent implements OnDestroy {
       onWindowJump: (options) => this.replaceMessageWindow(options),
       onScroll: (info) => this.onScroll(info),
       onViewportPaint: () => this.updateStickyOverlays(),
+      onItemMounted: (item, rendered) =>
+        this.bindMessageDeletion(rendered, item),
       onFullyVisibleEnter: (entries) => {
         for (const entry of entries) {
           this.pulseVisibleMention(entry.item, entry.el);
           this.stableRead.noteFullyVisible(entry.item.ids ?? [entry.item.id]);
         }
       },
-      config: { ...this.threadAdapter.scrollerConfig(), deferInitFill: true, followBottom: false },
+      // History availability only authorizes loading. Demand delivery and later
+      // measurements must preserve the reading anchor, including initial catch-up.
+      // Initial positioning and explicit send/go-to-bottom commands remain separate.
+      config: {
+        ...this.threadAdapter.scrollerConfig(),
+        deferInitFill: true,
+        followBottom: false,
+      },
       isFrozen: () => this.layout.reflowFrozen(),
     });
     this.threadAdapter.configureScroller(this.scroller);
@@ -1278,18 +1305,19 @@ export class MessageThreadComponent implements OnDestroy {
 
   private initializationSubscription?: Subscription;
   private backfillSubscription?: Subscription;
-  private deletionSubscription?: Subscription;
-  private deletionReloadTimer?: ReturnType<typeof setTimeout>;
+  private deletionSurfaceSubscription?: Subscription;
   private unreadReanchorTimer?: ReturnType<typeof setTimeout>;
 
   private initScroller(trd: ConversationItem): void {
     const binding = this.lifecycle.binding;
     if (!binding || !this.scroller) return;
-    this.deletionSubscription = this.msgRepo.deletedLive$.subscribe({
+    this.deletionSurfaceSubscription = this.msgRepo.deletedLive$.subscribe({
       next: ({ threadId, deletions }) => {
         if (threadId !== binding.threadId) return;
-        for (const { seq, type } of deletions)
-          this.onMessageDeleted(threadId, seq, type);
+        // The thread subscription owns detached surfaces only. Each mounted body
+        // owns its own row mutation, including the durable post-mount recheck.
+        for (const { seq } of deletions)
+          this.closeDeletedMessageSurfaces(threadId, seq);
       },
     });
     this.openMessageWindow(trd);
@@ -1421,7 +1449,12 @@ export class MessageThreadComponent implements OnDestroy {
           // the thread row can say messageEndSeq=258 while the local messages table is legitimately empty.
           source.finishLocalInit?.(
             this.convList.latestSeq(trd.threadId),
-            trd.messageEndSeq,
+            Math.max(
+              trd.messageEndSeq,
+              this.nav.chatOpening()?.threadId === trd.threadId
+                ? this.nav.chatOpening()!.latestSeq
+                : 0,
+            ),
           );
           // A missed-message sync commonly leaves exactly one preview body in IDB after login. Backfill one
           // older page only after the pane is ready; the kernel preserves the bottom/current-item anchor.
@@ -1434,10 +1467,13 @@ export class MessageThreadComponent implements OnDestroy {
           // Notify last: the host may synchronously unbind this pane on readiness.
           if (jumpOptions) this.settleWindowJump(true);
           else this.ready.emit(trd.threadId);
-          void source.restoreMediaStages?.().then(async () => {
-            if (this.source === source && this.scroller === scroller)
-              await scroller.reconcilePending();
-          }).catch(() => {});
+          void source
+            .restoreMediaStages?.()
+            .then(async () => {
+              if (this.source === source && this.scroller === scroller)
+                await scroller.reconcilePending();
+            })
+            .catch(() => {});
         }),
         catchError((error) => {
           this.initialLoading.set(false);
@@ -1525,6 +1561,54 @@ export class MessageThreadComponent implements OnDestroy {
       };
     }
     return rendered;
+  }
+
+  private bindMessageDeletion(
+    rendered: CbElement<ChatItemData>,
+    initialItem: CbItem<ChatItemData>,
+  ): void {
+    const binding = this.lifecycle.binding;
+    const scroller = this.scroller;
+    if (!binding || !scroller) return;
+    let unregister: (() => void) | undefined;
+    let key = '';
+    const sync = (item: CbItem<ChatItemData>) => {
+      const seqs =
+        item.data.type === 'msg'
+          ? (item.ids ?? [item.id]).filter((seq) => seq >= 0)
+          : [];
+      const nextKey = JSON.stringify(seqs);
+      if (nextKey === key) return;
+      key = nextKey;
+      unregister?.();
+      unregister = undefined;
+      if (!seqs.length) return;
+      unregister = watchMountedMessageDeletions(
+        this.msgRepo,
+        binding.threadId,
+        seqs,
+        binding.signal,
+        ({ seq, type }) => {
+          if (this.lifecycle.binding !== binding || this.scroller !== scroller)
+            return;
+          // A replaced row with the same coordinate belongs to a new registration.
+          if (scroller.getMountedGeometry(seq)?.el !== rendered.el) return;
+          this.replaceMountedDeletedMessage(seq, type);
+        },
+        (error) => console.error('[chat] mounted deletion check failed', error),
+      );
+    };
+    sync(initialItem);
+    const update = rendered.update.bind(rendered);
+    rendered.update = (item, prev) => {
+      update(item, prev);
+      sync(item);
+    };
+    const destroy = rendered.destroy.bind(rendered);
+    rendered.destroy = () => {
+      unregister?.();
+      destroy();
+    };
   }
 
   private bindMediaAvailability(
@@ -1895,7 +1979,8 @@ export class MessageThreadComponent implements OnDestroy {
           this.toast.warn(translateBizResult(res, this.transloco));
           return;
         }
-        this.onMessageDeleted(threadId, seq, 'USER_RETRACTION', false);
+        // Row replacement and detached-surface cleanup are owned by the
+        // authoritative deletion notification, not this HTTP acknowledgement.
         // The backend enqueues a thread-content fan-out that pushes a
         // THREAD_FEED_UPDATED wake; the SSE → DB-worker pipeline advances
         // tombstoneEndSeq and re-drains the tombstone stream. No eager pull.
@@ -3131,8 +3216,8 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
-    this.deletionSubscription?.unsubscribe();
-    this.deletionSubscription = undefined;
+    this.deletionSurfaceSubscription?.unsubscribe();
+    this.deletionSurfaceSubscription = undefined;
     this.cancelPaste();
     this.nativeDraft.reset();
     this.messageInteraction.reset();
@@ -3151,8 +3236,6 @@ export class MessageThreadComponent implements OnDestroy {
     this.initializationSubscription = undefined;
     this.backfillSubscription?.unsubscribe();
     this.backfillSubscription = undefined;
-    clearTimeout(this.deletionReloadTimer);
-    this.deletionReloadTimer = undefined;
     clearTimeout(this.unreadReanchorTimer);
     this.unreadReanchorTimer = undefined;
     this.stableRead.flush();

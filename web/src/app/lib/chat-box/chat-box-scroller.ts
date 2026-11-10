@@ -157,6 +157,10 @@ export interface CbOptions<T> {
   onWindowJump?: (options: CbInitOpts) => Promise<boolean>;
   config?: CbConfig;
   onScroll?: (info: CbScrollInfo) => void;
+  /** Runs after a rendered body is inserted and registered in the mounted window.
+   * Deferred until the synchronous mount batch completes; discarded if the body
+   * is replaced/unmounted first. Hosts may attach body-scoped observers here. */
+  onItemMounted?: (item: CbItem<T>, element: CbElement<T>) => void;
   /** Paint-only viewport work coalesced into the kernel's scroll RAF before onScroll is emitted. */
   onViewportPaint?: () => void;
   /** Fires on the rising edge from not-fully-visible to fully visible. Visibility uses the kernel's measured
@@ -299,10 +303,11 @@ export interface ScrollerApi<T = unknown> {
    *  unmount is deferred to animationend. Returns the count of entries scheduled for removal (0 = none mounted). */
   removeItem(ids: number | number[]): number;
   /** Transform one mounted item (album-aware) while preserving the viewport anchor. Returning null uses
-   * the normal animated removal path; returning an item rebuilds/re-measures the row in place. */
+   * the normal animated removal path; returning an item rebuilds/re-measures the row in place.
+   * An array atomically splits the mounted entry into ordered source-coordinate rows. */
   mutateItem(
     id: number,
-    mutate: (item: CbItem<T>) => CbItem<T> | null,
+    mutate: (item: CbItem<T>) => CbItem<T> | CbItem<T>[] | null,
   ): boolean;
   /** Re-sync the mounted optimistic/pending entries to the source's current `getPending()` snapshot — the entry point
    *  the caller uses after mutating the pending store (e.g. marking a send failed and sinking it to the end). For each
@@ -446,6 +451,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private readonly onScroll?: (info: CbScrollInfo) => void;
   private readonly onViewportPaint?: () => void;
   private readonly onFullyVisibleEnter?: CbOptions<T>['onFullyVisibleEnter'];
+  private readonly onItemMounted?: CbOptions<T>['onItemMounted'];
   private fullyVisibleIds = new Set<number>();
   private readonly isFrozen: () => boolean;
 
@@ -559,6 +565,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.onScroll = opts.onScroll;
     this.onViewportPaint = opts.onViewportPaint;
     this.onFullyVisibleEnter = opts.onFullyVisibleEnter;
+    this.onItemMounted = opts.onItemMounted;
     this.isFrozen = opts.isFrozen ?? (() => false);
     this.cfg = { ...DEFAULTS, ...opts.config };
     this.viewportObs = new ResizeObserver(() => this.onViewportResize());
@@ -817,16 +824,35 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   mutateItem(
     id: number,
-    mutate: (item: CbItem<T>) => CbItem<T> | null,
+    mutate: (item: CbItem<T>) => CbItem<T> | CbItem<T>[] | null,
   ): boolean {
-    if (!this.steady) return false;
+    // A mounted view can finish an asynchronous correction during initial fill.
+    // It owns no loading policy: mutate only if its entry is still mounted.
+    if (this.inactive) return false;
     const idx = this.indexOfId(id);
     if (idx < 0) return false;
     const entry = this.mounted[idx];
     const next = mutate(entry.item);
     if (next === null) return this.removeItem(id) > 0;
+    const replacements = Array.isArray(next) ? next : [next];
+    if (!replacements.length) return this.removeItem(id) > 0;
     const anchor = this.captureAnchor();
-    this.rebuildEntry(entry, next);
+    this.rebuildEntry(entry, replacements[0]);
+    const successor = this.mounted[idx + 1];
+    for (let offset = 1; offset < replacements.length; offset++) {
+      const replacement = this.createEntry(
+        replacements[offset],
+        replacements[offset - 1],
+        replacements[offset + 1] ?? successor?.item ?? null,
+        successor?.el ?? null,
+        false,
+      );
+      this.mounted.splice(idx + offset, 0, replacement);
+    }
+    this.mounted[idx - 1]?.vs.updateNext?.(replacements[0]);
+    entry.vs.updateNext?.(replacements[1] ?? successor?.item ?? null);
+    if (successor) this.rebuildEntry(successor);
+    this.dirtyPrefix = true;
     this.measurePending();
     this.applyAnchor(anchor);
     this.updateTailCap();
@@ -931,7 +957,18 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.viewport.scrollTop + this.vh >= this.totalH() - 1
     )
       return { mode: 'bottom' };
-    const idx = this.topVisibleIdx();
+    let idx = this.topVisibleIdx();
+    // The oldest slot can be a loading placeholder, not readable message content.
+    // Revealing it may change its height; anchor the next visible message instead
+    // so an older backfill does not move that message by the placeholder delta.
+    if (idx >= 0 && this.mounted[idx] === this.ghostEntry) {
+      const next = idx + 1;
+      if (
+        next < this.mounted.length &&
+        this.topOf(next) < this.viewport.scrollTop + this.vh
+      )
+        idx = next;
+    }
     if (idx < 0)
       return this.cfg.followBottom
         ? { mode: 'bottom' }
@@ -1594,7 +1631,22 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.mounting = true; // suppress the first report (same as id-based)
     entry.unsub = vs.onHeightChange((h) => this.onElHeight(entry, h));
     this.mounting = false;
+    this.notifyItemMounted(entry);
     return entry;
+  }
+
+  private notifyItemMounted(entry: Entry<T>): void {
+    if (!this.onItemMounted) return;
+    const element = entry.vs;
+    queueMicrotask(() => {
+      if (
+        this.inactive ||
+        entry.vs !== element ||
+        !this.mounted.includes(entry)
+      )
+        return;
+      this.onItemMounted?.(entry.item, element);
+    });
   }
 
   /**
@@ -1625,6 +1677,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.content.insertBefore(newEl, entry.el);
     this.content.removeChild(entry.el);
     entry.unsub();
+    entry.vs.destroy();
     entry.vs = newVs;
     entry.el = newEl;
     entry.item = newItem; // no-op for ghost reveal (same ref); replaces item for settle
@@ -1635,6 +1688,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     entry.unsub = newVs.onHeightChange((h) => this.onElHeight(entry, h));
     this.mounting = false;
     this.dirtyPrefix = true;
+    this.notifyItemMounted(entry);
   }
 
   /** Unmount the oldest (mounted[0], DOM top). Does not compensate scrollTop (the caller trimOlder compensates inside `shifting`). */

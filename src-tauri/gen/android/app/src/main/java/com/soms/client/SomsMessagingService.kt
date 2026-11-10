@@ -89,6 +89,7 @@ class SomsMessagingService : FirebaseMessagingService() {
         const val CHANNEL_BACKGROUND = "background_sync_v1"
         const val CHANNEL_DIAGNOSTICS = "diagnostics_v1"
         const val EXTRA_TARGET = "soms_notification_target"
+        const val EXTRA_LATEST_SEQ = "soms_notification_latest_seq"
         const val EXTRA_SESSION_ID = "soms_session_id"
         const val EXTRA_API_ORIGIN = "soms_api_origin"
 
@@ -251,6 +252,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra(EXTRA_TARGET, d.target)
+                d.latestSeq?.let { putExtra(EXTRA_LATEST_SEQ, it) }
                 putExtra("notificationId", d.tag)
                 // Each card instance has a distinct PendingIntent identity; updates reuse it.
                 data = android.net.Uri.parse("soms-notification://card/${d.tag}")

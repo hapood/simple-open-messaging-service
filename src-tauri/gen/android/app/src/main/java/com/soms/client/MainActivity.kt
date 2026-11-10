@@ -1419,7 +1419,12 @@ class MainActivity : TauriActivity() {
         if (instance != null) {
             thread?.let { RustRuntimeBridge.notificationDismissed(it, instance) }
         }
-        return SomsBridge.DeepLink.offer(thread)
+        if (thread == null) return false
+        val target = runCatching { org.json.JSONObject(thread) }.getOrNull() ?: return false
+        val opening = org.json.JSONObject().put("target", target)
+        // Preserve absence and type: Rust validates the opening, never invent a zero ceiling.
+        intent.extras?.get(SomsMessagingService.EXTRA_LATEST_SEQ)?.let { opening.put("latestSeq", it) }
+        return SomsBridge.DeepLink.offer(opening.toString())
     }
 
     /** Fetch the current FCM registration token asynchronously and stash it for the JS bridge. Delegates to

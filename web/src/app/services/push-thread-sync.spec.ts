@@ -178,7 +178,7 @@ describe('Push thread-feed synchronization', () => {
     expect((await storage.getThreads())[0].alias).toBeNull();
   });
 
-  it('rebases the server count using local read progress, counting tomb slots and excluding own messages', async () => {
+  it('rebases the server count using local read progress, excluding deletion markers and own messages', async () => {
     const message: Message = {
       profileNamespaceId: 1,
       publisherNamespaceId: 0,
@@ -195,6 +195,14 @@ describe('Push thread-feed synchronization', () => {
       isDeleted: false,
       localState: 'READY',
     };
+    await storage.mergeThreadStates([
+      {
+        ...snapshot(1),
+        messageEndSeq: 2,
+        unreadCount: 2,
+        lastMentionSeq: null,
+      },
+    ]);
     await storage.putCachedMessages([
       message,
       {
@@ -217,20 +225,12 @@ describe('Push thread-feed synchronization', () => {
       ],
       1,
     );
-    await storage.mergeThreadStates([
-      {
-        ...snapshot(1),
-        messageEndSeq: 2,
-        unreadCount: 2,
-        lastMentionSeq: null,
-      },
-    ]);
     await storage.advanceThreadRead(7, 2);
     const result = await syncPushThreads(storage, userId, 2, async () => page(snapshot(2)), preferences, copy);
     expect(result.error).toBeUndefined();
     expect(result.states).toHaveLength(1);
     expect(result.notifications[0]).toMatchObject({
-      count: 6,
+      count: 7,
       attention: 'mention',
     });
     expect((await storage.getThreadStates())[0]).toMatchObject({

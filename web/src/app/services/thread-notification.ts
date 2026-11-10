@@ -78,6 +78,7 @@ export function threadNotificationDescriptor(
     previewMode,
     data: {
       target: { kind: 'thread', threadId: item.threadId },
+      latestSeq: item.messageEndSeq,
       seq: preview?.seq,
     },
   };

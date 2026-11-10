@@ -60,13 +60,19 @@ fn fixture(proxy: &ServerSessionState, group: bool) -> FeedIntent {
             )
             .unwrap();
     } else {
-        seed_p2p_thread(&mut database, 42, 5);
+        seed_p2p_thread(&mut database, 42, 0);
+        database
+            .execute(
+                "UPDATE threads SET tombstone_end_seq=5 WHERE user_id=42 AND thread_id=?1",
+                [THREAD_ID],
+            )
+            .unwrap();
         database
             .execute_batch(
                 "CREATE TEMP TABLE tombstone_proof(kind TEXT);
                  CREATE TEMP TRIGGER tombstone_message_proof AFTER INSERT ON main.messages
                  BEGIN INSERT INTO tombstone_proof VALUES('message'); END;
-                 CREATE TEMP TRIGGER tombstone_hwm_proof AFTER INSERT ON main.thread_sync_state
+                 CREATE TEMP TRIGGER tombstone_hwm_proof AFTER UPDATE OF deleted_hwm ON main.threads
                  BEGIN INSERT INTO tombstone_proof VALUES('hwm'); END;",
             )
             .unwrap();
@@ -399,7 +405,7 @@ async fn a_queued_tombstone_page_commit_rejects_end_or_repair() {
                 .with_database(|conn| {
                     let hwm: Option<i64> = conn
                         .query_row(
-                            "SELECT deleted_hwm FROM thread_sync_state
+                            "SELECT deleted_hwm FROM threads
                              WHERE user_id=42 AND thread_id=?1",
                             [THREAD_ID],
                             |row| row.get(0),
@@ -413,9 +419,9 @@ async fn a_queued_tombstone_page_commit_rejects_end_or_repair() {
                 })
                 .unwrap()
         };
-        assert_eq!(drained(successor.work.owner()), (None, 0));
+        assert_eq!(drained(successor.work.owner()), (Some(0), 0));
         if repair {
-            assert_eq!(drained(intent.work.owner()), (None, 0));
+            assert_eq!(drained(intent.work.owner()), (Some(0), 0));
         }
         close(&intent);
         close(&successor);
@@ -652,6 +658,49 @@ async fn failed_profile_warming_keeps_committed_group_meta_pages() {
     close(&intent);
 }
 
+#[tokio::test]
+async fn uninitialized_deletion_progress_is_rejected_without_replay() {
+    let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = ServerSessionState::new();
+    origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
+    let mut intent = fixture(&proxy, false);
+    intent
+        .work
+        .owner()
+        .with_database(|conn| {
+            conn.execute(
+                "DELETE FROM threads WHERE user_id=42 AND thread_id=?1",
+                [THREAD_ID],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO message_ranges VALUES(42,?1,0,3,'LOCAL_COVERED')",
+                [THREAD_ID],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+    OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
+    let error = sync_tombstone_thread(&mut intent, THREAD_ID)
+        .await
+        .unwrap_err();
+    assert_eq!(error, "thread deletion progress is not initialized");
+    assert!(server.accept().now_or_never().is_none());
+    intent
+        .work
+        .owner()
+        .with_database(|conn| {
+            assert_eq!(
+                super::super::messages::read_deleted_hwm(conn, 42, THREAD_ID)?,
+                None
+            );
+            Ok(())
+        })
+        .unwrap();
+    close(&intent);
+}
+
 /// A tombstone drain commits its tombs and high-water mark through the captured physical
 /// connection, retaining the original endpoint and bearer across the POST.
 #[tokio::test]
@@ -700,7 +749,7 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
         .with_database(|conn| {
             let hwm: Option<i64> = conn
                 .query_row(
-                    "SELECT deleted_hwm FROM thread_sync_state
+                    "SELECT deleted_hwm FROM threads
                      WHERE user_id=42 AND thread_id=?1",
                     [THREAD_ID],
                     |row| row.get(0),

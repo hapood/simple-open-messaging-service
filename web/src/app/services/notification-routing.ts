@@ -4,6 +4,8 @@ import {
   type NotificationTarget,
 } from '../../../../shared/notification-target';
 
+import type { NotificationOpening } from '../../../../shared/notification-opening';
+
 /** Targets are the only navigation contract; there is no flattened fallback. */
 export function notificationTarget(
   data: { target?: unknown } | null | undefined,
@@ -19,11 +21,12 @@ export function notificationKey(
 }
 
 export function notificationClickUrl(
-  target: NotificationTarget,
+  opening: NotificationOpening,
   sessionId: number,
 ): string {
+  const { target } = opening;
   if (target.kind === 'thread')
-    return `/chat/${target.threadId}?notificationSessionId=${sessionId}`;
+    return `/chat/${target.threadId}?notificationSessionId=${sessionId}&latestSeq=${opening.latestSeq}`;
   return (
     `/?notificationSessionId=${sessionId}&notificationTarget=${target.kind}` +
     (target.kind === 'group-join-requests'

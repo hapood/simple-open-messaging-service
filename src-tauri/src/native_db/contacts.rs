@@ -389,8 +389,8 @@ mod search_tests {
           user_id,thread_id,kind,authority_namespace_id,subject_account,thread_feed_id,
           conversation_state,blocked,thread_profile_rev,message_end_seq,tombstone_end_seq,
           join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
-          server_last_read_seq,announcement_read_feed_id,server_unread_count,local_read_seq)
-          VALUES(1,9,'GROUP',7,'!team',1,'ACTIVE',0,0,0,0,0,0,0,0,0,0,0);
+          server_last_read_seq,announcement_read_feed_id,server_unread_count,local_read_seq,deleted_hwm)
+          VALUES(1,9,'GROUP',7,'!team',1,'ACTIVE',0,0,0,0,0,0,0,0,0,0,0,0);
           INSERT INTO members(user_id,thread_id,member_account,namespace_id,role,profile_rev)
           VALUES(1,9,'self',0,'OWNER',1),(1,9,'alice',12,'MEMBER',3),
                 (1,9,'bob',12,'MEMBER',1);

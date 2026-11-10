@@ -1,4 +1,4 @@
-use crate::native_db::notifications::NotificationTarget;
+use crate::native_db::notifications::{NotificationTarget, opening::NotificationOpening};
 use super::notifications::delivery::{DeliveryResult, PlatformHandle};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -56,26 +56,43 @@ mod linux_registry;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingTap {
     id: String,
-    target: NotificationTarget,
+    #[serde(flatten)]
+    opening: NotificationOpening,
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn parse_activation(url: &str) -> Option<(NotificationTarget, String)> {
+fn parse_activation(url: &str) -> Option<(NotificationOpening, String)> {
     let path = url.strip_prefix("soms-notification://")?;
-    let (key, instance) = path.split_once("/card/")?;
+    let (key, tail) = path.split_once("/card/")?;
     let target = NotificationTarget::from_key(key)?;
+    let (instance, latest_seq) = match tail.split_once("?latestSeq=") {
+        Some((instance, seq)) => {
+            let value = seq.parse::<i32>().ok()?;
+            if value.to_string() != seq { return None; }
+            (instance, Some(value))
+        }
+        None => (tail, None),
+    };
+    let opening = NotificationOpening::new(target, latest_seq)?;
     let uuid = uuid::Uuid::parse_str(instance).ok()?;
-    (instance == uuid.to_string()).then(|| (target, instance.to_owned()))
+    (instance == uuid.to_string()).then(|| (opening, instance.to_owned()))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn activation_url(opening: NotificationOpening, instance: &str) -> String {
+    let mut url = format!("soms-notification://{}/card/{instance}", opening.target.key());
+    if let Some(seq) = opening.latest_seq { url.push_str(&format!("?latestSeq={seq}")); }
+    url
 }
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_observed_card(launch: &str, tag: String, group: String) -> Result<super::notifications::delivery::ObservedCard, String> {
-    let (target, notification_id) = parse_activation(launch).ok_or("invalid Windows notification activation")?;
+    let (opening, notification_id) = parse_activation(launch).ok_or("invalid Windows notification activation")?;
     if tag != notification_id || group != "soms-messages" {
         return Err("Windows notification handle does not match activation".into());
     }
     Ok(super::notifications::delivery::ObservedCard {
-        target, notification_id,
+        target: opening.target, notification_id,
         handle: PlatformHandle::Windows { tag, group },
     })
 }
@@ -98,14 +115,14 @@ fn next_tap_id() -> String {
 pub(crate) fn initialize_windows_links(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_deep_link::DeepLinkExt;
     fn consume(app: &tauri::AppHandle, url: &str) {
-        if let Some((target, instance)) = parse_activation(url) {
+        if let Some((opening, instance)) = parse_activation(url) {
             if let Ok(owner) = super::active_login() {
                 if let Ok(mut state) = owner.notification_delivery.lock() {
-                    state.dismissed(target, &instance);
+                    state.dismissed(opening.target, &instance);
                 }
             }
             windows_platform::retire_subscription(&instance);
-            tapped(app, target);
+            tapped(app, opening);
         }
     }
     let target = app.clone();
@@ -126,8 +143,8 @@ pub(crate) fn initialize_windows_links(app: &tauri::AppHandle) -> Result<(), Str
     Ok(())
 }
 
-fn tapped(app: &tauri::AppHandle, target: NotificationTarget) {
-    if !target.valid() || super::active_login().is_err() {
+fn tapped(app: &tauri::AppHandle, opening: NotificationOpening) {
+    if NotificationOpening::new(opening.target, opening.latest_seq).is_none() || super::active_login().is_err() {
         return;
     }
     let Ok(mut pending) = PENDING_TAP.lock() else {
@@ -135,7 +152,7 @@ fn tapped(app: &tauri::AppHandle, target: NotificationTarget) {
     };
     *pending = Some(PendingTap {
         id: next_tap_id(),
-        target,
+        opening,
     });
     drop(pending);
     if let Some(window) = app.get_webview_window("main") {
@@ -161,7 +178,7 @@ pub(crate) fn desktop_notification_acknowledge(id: String, target: NotificationT
         .map_err(|_| "notification tap state poisoned")?;
     if pending
         .as_ref()
-        .is_some_and(|tap| tap.id == id && tap.target == target)
+        .is_some_and(|tap| tap.id == id && tap.opening.target == target)
     {
         *pending = None;
     }
@@ -209,7 +226,7 @@ mod navigation_tests {
     #[test]
     fn history_observation_requires_the_exact_activation_handle() {
         let instance = uuid::Uuid::new_v4().to_string();
-        let launch = format!("soms-notification://thread/7/card/{instance}");
+        let launch = activation_url(NotificationOpening::new(7.into(), Some(42)).unwrap(), &instance);
         let card = windows_observed_card(&launch, instance.clone(), "soms-messages".into()).unwrap();
         assert_eq!(card.target, 7.into());
         assert_eq!(card.notification_id, instance);
@@ -224,7 +241,7 @@ mod navigation_tests {
         let instance = uuid::Uuid::new_v4().to_string();
         for target in [NotificationTarget::FriendRequests {}, NotificationTarget::GroupJoinRequests { thread_id: 7 }] {
             let url = format!("soms-notification://{}/card/{instance}",target.key());
-            assert_eq!(parse_activation(&url),Some((target,instance.clone())));
+            assert_eq!(parse_activation(&url),Some((NotificationOpening::new(target, None).unwrap(),instance.clone())));
             assert_eq!(windows_observed_card(&url,instance.clone(),"soms-messages".into()).unwrap().target,target);
         }
     }
@@ -233,8 +250,8 @@ mod navigation_tests {
     fn activation_requires_a_canonical_thread_target() {
         let instance = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(
-            parse_activation(&format!("soms-notification://thread/7/card/{instance}")),
-            Some((7.into(), instance.into()))
+            parse_activation(&format!("soms-notification://thread/7/card/{instance}?latestSeq=42")),
+            Some((NotificationOpening::new(7.into(), Some(42)).unwrap(), instance.into()))
         );
         for suffix in ["", "?x=1", "#fragment", "/extra"] {
             let invalid = if suffix.is_empty() {
@@ -274,14 +291,34 @@ mod navigation_tests {
     }
 
     #[test]
+    fn activation_ceiling_is_explicit_bounded_and_not_part_of_card_identity() {
+        let instance = uuid::Uuid::new_v4().to_string();
+        for seq in [0, 42, i32::MAX] {
+            let opening = NotificationOpening::new(7.into(), Some(seq)).unwrap();
+            let url = activation_url(opening, &instance);
+            assert_eq!(parse_activation(&url), Some((opening, instance.clone())));
+            let card = windows_observed_card(&url, instance.clone(), "soms-messages".into()).unwrap();
+            assert_eq!(card.target.key(), "thread/7");
+            assert_eq!(card.notification_id, instance);
+        }
+        for suffix in ["", "?latestSeq=-1", "?latestSeq=2147483648", "?latestSeq=01", "?latestSeq=1.5", "?latestSeq=1&latestSeq=2"] {
+            assert_eq!(parse_activation(&format!("soms-notification://thread/7/card/{instance}{suffix}")), None);
+        }
+        assert_eq!(parse_activation(&format!("soms-notification://friend-requests/card/{instance}?latestSeq=42")), None);
+    }
+
+    #[test]
     fn acknowledgement_is_exact_even_for_repeated_taps_on_one_thread() {
         let old_id = next_tap_id();
         let new_id = next_tap_id();
         assert_ne!(old_id, new_id);
         *PENDING_TAP.lock().unwrap() = Some(PendingTap {
             id: new_id.clone(),
-            target: NotificationTarget::Thread { thread_id: 7 },
+            opening: NotificationOpening::new(7.into(), Some(42)).unwrap(),
         });
+        let wire = serde_json::to_value(desktop_notification_pending().unwrap().unwrap()).unwrap();
+        assert_eq!(wire["latestSeq"], 42);
+        assert_eq!(wire["target"]["threadId"], 7);
         desktop_notification_acknowledge(old_id, 7.into()).unwrap();
         assert_eq!(desktop_notification_pending().unwrap().unwrap().id, new_id);
         desktop_notification_acknowledge(new_id.clone(), 9.into()).unwrap();
@@ -296,6 +333,7 @@ pub(crate) struct DesktopNotification {
     notification_id: Option<String>,
     previous_handle: Option<super::notifications::delivery::PlatformHandle>,
     target: NotificationTarget,
+    latest_seq: Option<i32>,
     title: String,
     body: String,
     count: i64,
@@ -365,6 +403,8 @@ mod platform {
             .notification_id
             .clone()
             .ok_or("missing notification instance")?;
+        let opening = super::NotificationOpening::new(input.target, input.latest_seq)
+            .ok_or("invalid notification opening")?;
         let signals = session.signals()?;
         // A successful reply from the captured unique daemon establishes acceptance.
         // Later daemon changes or local persistence failures do not undo that fact.
@@ -382,7 +422,7 @@ mod platform {
         let listener = session.listen(signals, handle, move |clicked| {
             if clicked {
                 if owner.capture_database_work().is_err() { return; }
-                super::tapped(&app, target);
+                super::tapped(&app, opening);
             } else {
                 if let Ok(mut state) = owner.notification_delivery.lock() {
                     state.dismissed_operation(target, &instance, &operation_id);
@@ -620,11 +660,9 @@ mod windows_platform {
             drop(retired);
             return Ok(());
         }
-        let activation = format!(
-            "soms-notification://{}/card/{}",
-            input.target.key(),
-            input.notification_id.as_deref().unwrap_or_default()
-        );
+        let opening = super::NotificationOpening::new(input.target, input.latest_seq)
+            .ok_or_else(|| windows::core::Error::from(windows::core::HRESULT(0x80070057_u32 as i32)))?;
+        let activation = super::activation_url(opening, input.notification_id.as_deref().unwrap_or_default());
         let xml = XmlDocument::new()?;
         xml.LoadXml(&HSTRING::from(format!(
             "<toast activationType=\"protocol\" launch=\"{}\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{}</toast>",
@@ -971,6 +1009,7 @@ async fn execute_command(
             previous_handle: prepared.previous_handle,
             notification_id,
             target,
+            latest_seq: None,
             title: String::new(),
             body: String::new(),
             count: 0,
@@ -981,6 +1020,7 @@ async fn execute_command(
             previous_handle: prepared.previous_handle,
             notification_id,
             target: content.target,
+            latest_seq: content.latest_seq,
             title: content.title,
             body: content.body,
             count: content.count,

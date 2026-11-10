@@ -39,7 +39,10 @@ import { DateRowComponent } from '../date-row/date-row.component';
       <app-msg-date-row [ms]="data().createdAtMs" />
     }
     <div class="system-message" role="status">
-      {{ label() }} <time>{{ data().time }}</time>
+      {{ label() }}
+      @if (!isDeletion() && data().time) {
+        <time>{{ data().time }}</time>
+      }
     </div>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -85,8 +88,12 @@ export class SystemRowComponent {
   private readonly users = inject(UserService);
   private readonly profileName = signal('');
   private readonly namespaceDomain = signal<string | null>(null);
+  readonly isDeletion = computed(() => {
+    const data = this.data();
+    return data.type === 'system' && data.deletionType !== undefined;
+  });
   private readonly event = computed(() =>
-    parseSystemMessageContent(this.data().text),
+    this.isDeletion() ? null : parseSystemMessageContent(this.data().text),
   );
   private readonly displayIdentity = computed(
     (): SystemEventAddress | undefined => {

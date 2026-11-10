@@ -130,6 +130,56 @@ describe('shared background storage', () => {
     });
   });
 
+  it('joins preview display fields on reads without duplicating them in thread projections', async () => {
+    await storage.openForUser(userId);
+    const state = threadFeedSnapshot(7, {
+      profileAccount: 'peer',
+      publisherNamespaceId: 0,
+      profileRev: 1,
+      messageEndSeq: 1,
+      previews: [
+        {
+          seq: 1,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sender: { account: 'peer', profileNamespaceId: 0, profileRev: 1 },
+          status: 'LIVE',
+          text: 'Independent preview',
+        },
+      ],
+    });
+    await storage.mergeThreadStates([state], 1);
+    const expected = {
+      lastMessagePreview: 'Independent preview',
+      lastMessageAt: Date.parse('2026-01-01T00:00:00.000Z'),
+      lastMessageSenderAccount: 'peer',
+      lastMessageSenderNamespaceId: 0,
+    };
+    // Reads must not depend on a prior attention projection.
+    expect((await storage.getThreads())[0]).toMatchObject(expected);
+    expect(
+      await storage.projectThreadAttention(7, {
+        account: 'self',
+        namespaceId: 0,
+      }),
+    ).toMatchObject(expected);
+    const db = await storage.db();
+    const stored = await db.get('threads', 7);
+    for (const field of Object.keys(expected))
+      expect(stored).not.toHaveProperty(field);
+    expect((await storage.getThreads())[0]).toMatchObject(expected);
+
+    await storage.mergeThreadStates(
+      [{ ...state, threadFeedId: 2, previews: [] }],
+      2,
+    );
+    expect((await storage.getThreads())[0]).toMatchObject({
+      lastMessagePreview: null,
+      lastMessageAt: null,
+      lastMessageSenderAccount: null,
+      lastMessageSenderNamespaceId: null,
+    });
+  });
+
   it('does not publish a partial page when a required preview array is absent', async () => {
     await storage.openForUser(userId);
     const snapshot = threadFeedSnapshot(7, {

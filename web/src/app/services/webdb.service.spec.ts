@@ -2,7 +2,10 @@ import { TestBed } from '@angular/core/testing';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { openDB } from 'idb';
-import { messageTomb } from '../../../../shared/message-tomb';
+import {
+  createMessageDeletionMarker,
+  messageTomb,
+} from '../../../../shared/message-tomb';
 import {
   advanceLocalAttentionRead,
   attentionCountRange,
@@ -21,7 +24,6 @@ import type { ClientStateFeedItem } from './user.service';
 import {
   CACHE_SCHEMA_VERSION,
   LocalCacheVersionMismatchError,
-  MESSAGE_CACHE_SCHEMA_VERSION,
   STATE_FEED_WORKER_FACTORY,
   WebdbService,
   provideWebdbService,
@@ -620,6 +622,13 @@ describe('WebdbService', () => {
 
     it('distinguishes tombstones from missing bodies and scopes them to the thread', async () => {
       await webdb.openForUser('1');
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(42, {
+          publisherNamespaceId: 0,
+          profileAccount: 'alice',
+          profileRev: 1,
+        }),
+      ]);
       await webdb.applyDeletedMessages(
         42,
         [
@@ -634,25 +643,33 @@ describe('WebdbService', () => {
         ],
         1,
       );
-      const db = await webdb.messageDb();
+      const db = await webdb.db();
       await db.put('messages', {
         threadId: 42,
         seq: 5,
         isDeleted: false,
         content: 'body',
       } as Message);
-      await db.put('messages', {
-        threadId: 42,
-        seq: 6,
-        isDeleted: true,
-        contentType: 'TOMB',
-        deletionType: 'MODERATION_REMOVAL',
-      });
-      expect(await webdb.getDeletedMessageSeqs(42, [4, 4, 5, 6, 7])).toEqual([
-        4, 6,
+      await webdb.applyDeletedMessages(
+        42,
+        [
+          {
+            threadId: 42,
+            messageSeq: 6,
+            deletionSeq: 2,
+            type: 'MODERATION_REMOVAL',
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        ],
+        2,
+      );
+      expect(await webdb.getMessageDeletions(42, [4, 4, 5, 6, 7])).toEqual([
+        { seq: 4, type: 'USER_RETRACTION' },
+        { seq: 6, type: 'MODERATION_REMOVAL' },
       ]);
-      expect(await webdb.getDeletedMessageSeqs(99, [4, 6])).toEqual([]);
-      expect(await webdb.getDeletedMessageSeqs(42, [])).toEqual([]);
+      expect(await webdb.getMessageDeletions(99, [4, 6])).toEqual([]);
+      expect(await webdb.getMessageDeletions(42, [])).toEqual([]);
     });
 
     it.each(['USER_RETRACTION', 'MODERATION_REMOVAL'] as const)(
@@ -677,6 +694,13 @@ describe('WebdbService', () => {
         };
         const later = { ...message, seq: 5 };
         await webdb.putCachedMessages([message]);
+        await webdb.mergeThreadStates([
+          threadFeedSnapshot(42, {
+            publisherNamespaceId: 0,
+            profileAccount: 'alice',
+            profileRev: 1,
+          }),
+        ]);
         await webdb.applyDeletedMessages(
           42,
           [4, 5].map((seq, i) => ({
@@ -690,16 +714,19 @@ describe('WebdbService', () => {
           2,
         );
         await webdb.putCachedMessages([message, later]);
-        const db = await webdb.messageDb();
+        const db = await webdb.db();
         expect(await db.get('messages', [42, 4])).toEqual(
-          messageTomb(message, type),
+          createMessageDeletionMarker(42, 4, type),
         );
         expect(await db.get('messages', [42, 5])).toEqual(
-          messageTomb(later, type),
+          createMessageDeletionMarker(42, 5, type),
         );
         expect(await webdb.getMessage(42, 4)).toBeUndefined();
         expect(await webdb.getMessage(42, 5)).toBeUndefined();
-        expect(await webdb.getDeletedMessageSeqs(42, [4, 5])).toEqual([4, 5]);
+        expect(await webdb.getMessageDeletions(42, [4, 5])).toEqual([
+          { seq: 4, type },
+          { seq: 5, type },
+        ]);
       },
     );
 
@@ -732,6 +759,13 @@ describe('WebdbService', () => {
       expect(await webdb.getMessageByOrigin(42, 9, 4)).toBeUndefined();
       expect(await webdb.getMessageByOrigin(42, 0, 104)).toEqual(message);
       sub.unsubscribe();
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(42, {
+          publisherNamespaceId: 0,
+          profileAccount: 'alice',
+          profileRev: 1,
+        }),
+      ]);
       await webdb.applyDeletedMessages(
         42,
         [
@@ -747,10 +781,12 @@ describe('WebdbService', () => {
         1,
       );
       expect(await webdb.getMessageByOrigin(42, 3, 4)).toBeUndefined();
-      expect(await webdb.getDeletedMessageSeqs(42, [104])).toEqual([104]);
+      expect(await webdb.getMessageDeletions(42, [104])).toEqual([
+        { seq: 104, type: 'USER_RETRACTION' },
+      ]);
     });
 
-    it('commits identified tombs as timeline slots without exposing deleted bodies', async () => {
+    it('normalizes history tombs to invisible coordinate-only markers', async () => {
       await webdb.openForUser('1');
       const message: Message = {
         profileNamespaceId: 1,
@@ -768,6 +804,13 @@ describe('WebdbService', () => {
         isDeleted: false,
         localState: 'READY',
       };
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(42, {
+          publisherNamespaceId: 0,
+          profileAccount: 'alice',
+          profileRev: 1,
+        }),
+      ]);
       await webdb.applyDeletedMessages(
         42,
         [
@@ -791,23 +834,24 @@ describe('WebdbService', () => {
         gaps: [],
         knownNewestSeq: 6,
       });
-      expect(committed.messages).toEqual([
-        messageTomb(message, 'USER_RETRACTION'),
-        tomb,
-        live,
-      ]);
+      expect(committed.messages).toEqual([live]);
       expect(await webdb.queryCachedMessages(42, 'asc', 10)).toEqual(
         committed.messages,
       );
-      const db = await webdb.messageDb();
+      const db = await webdb.db();
       expect(await db.get('messages', [42, 4])).toEqual(
-        messageTomb(message, 'USER_RETRACTION'),
+        createMessageDeletionMarker(42, 4, 'USER_RETRACTION'),
       );
-      expect(await db.get('messages', [42, 5])).toEqual(tomb);
-      expect(await webdb.getDeletedMessageSeqs(42, [4, 5, 6])).toEqual([4, 5]);
+      expect(await db.get('messages', [42, 5])).toEqual(
+        createMessageDeletionMarker(42, 5, 'MODERATION_REMOVAL'),
+      );
+      expect(await webdb.getMessageDeletions(42, [4, 5, 6])).toEqual([
+        { seq: 4, type: 'USER_RETRACTION' },
+        { seq: 5, type: 'MODERATION_REMOVAL' },
+      ]);
     });
 
-    it('counts known unread slots including tombs but not own messages, unknown markers, or gaps', async () => {
+    it('counts visible unread slots but not deletions, own messages, or gaps', async () => {
       await webdb.openForUser('1');
       const owner = { account: 'me', namespaceId: 0 };
       const base: Message = {
@@ -843,6 +887,13 @@ describe('WebdbService', () => {
         { ...base, seq: 10, creator: { ...owner, namespaceId: 2 } },
         { ...base, seq: 11, threadId: 99 },
       ]);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(42, {
+          publisherNamespaceId: 0,
+          profileAccount: 'alice',
+          profileRev: 1,
+        }),
+      ]);
       await webdb.applyDeletedMessages(
         42,
         [
@@ -857,8 +908,8 @@ describe('WebdbService', () => {
         ],
         1,
       );
-      expect(await webdb.countUnreadMessageSlots(42, 0, 11, owner)).toBe(6);
-      expect(await webdb.countUnreadMessageSlots(42, 1, 3, owner)).toBe(1);
+      expect(await webdb.countUnreadMessageSlots(42, 0, 11, owner)).toBe(5);
+      expect(await webdb.countUnreadMessageSlots(42, 1, 3, owner)).toBe(0);
       expect(await webdb.countUnreadMessageSlots(42, 3, 7, owner)).toBe(1);
       expect(await webdb.countUnreadMessageSlots(42, 7, 7, owner)).toBe(0);
       const snapshot = {
@@ -900,12 +951,12 @@ describe('WebdbService', () => {
         );
         expect(projectThreadAttention(state, count)).toMatchObject({
           lastReadSeq: 3,
-          unreadCount: 4,
+          unreadCount: 5,
           hasUnreadMention: false,
         });
       }
       await webdb.putCachedMessages([{ ...base, seq: 7 }]);
-      expect(await webdb.countUnreadMessageSlots(42, 0, 11, owner)).toBe(7);
+      expect(await webdb.countUnreadMessageSlots(42, 0, 11, owner)).toBe(5);
       await expect(
         webdb.countUnreadMessageSlots(42, 5, 4, owner),
       ).rejects.toThrow('Invalid unread');
@@ -982,7 +1033,7 @@ describe('WebdbService', () => {
       ).toBe(120);
     });
 
-    it('opens separate per-user core and message DBs and signals ready', async () => {
+    it('opens one per-user account database and signals ready', async () => {
       const db = await webdb.openForUser('1');
       expect(db, 'opened handle').toBeTruthy();
       expect(db!.name, 'login-session partition key').toBe(
@@ -992,6 +1043,8 @@ describe('WebdbService', () => {
         'accountState',
         'groupMeta',
         'members',
+        'messageRanges',
+        'messages',
         'profileAvatarBlobs',
         'profileNamespaceTombs',
         'profileNamespaces',
@@ -1000,17 +1053,6 @@ describe('WebdbService', () => {
         'threadPreviews',
         'threads',
       ]);
-      const messageDb = await webdb.messageDb();
-      expect(messageDb.name).toBe(session.messageIndexedDbName);
-      expect([...messageDb.objectStoreNames].sort()).toEqual([
-        'messageRanges',
-        'messages',
-        'meta',
-        'threadSyncState',
-      ]);
-      expect((await messageDb.get('meta', 'schemaVersion'))?.value).toBe(
-        MESSAGE_CACHE_SCHEMA_VERSION,
-      );
       expect((await webdb.readAccountState()).schemaVersion).toBe(
         CACHE_SCHEMA_VERSION,
       );
@@ -1042,7 +1084,6 @@ describe('WebdbService', () => {
         (database) => database.name,
       );
       expect(names).not.toContain(session.indexedDbName);
-      expect(names).not.toContain(session.messageIndexedDbName);
       expect(webdb.ready()).toBe(false);
     });
 
@@ -1129,9 +1170,9 @@ describe('WebdbService', () => {
     it('counts only cached message rows', async () => {
       await webdb.openForUser('1');
       await webdb.putCachedMessages([
-        { threadId: 7, seq: 1 } as Message,
-        { threadId: 7, seq: 2 } as Message,
-        { threadId: 9, seq: 1 } as Message,
+        { threadId: 7, seq: 1, isDeleted: false, content: '' } as Message,
+        { threadId: 7, seq: 2, isDeleted: false, content: '' } as Message,
+        { threadId: 9, seq: 1, isDeleted: false, content: '' } as Message,
       ]);
 
       expect(await webdb.countCachedMessages()).toBe(3);
@@ -1139,6 +1180,13 @@ describe('WebdbService', () => {
 
     it('atomically commits messages and canonical explicit ranges', async () => {
       await webdb.openForUser('1');
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(7, {
+          publisherNamespaceId: 0,
+          profileAccount: 'peer',
+          profileRev: 1,
+        }),
+      ]);
       const page = await webdb.commitBrowserMessagePage({
         threadId: 7,
         scan: { left: 9, right: 50 },
@@ -1178,7 +1226,14 @@ describe('WebdbService', () => {
 
     it('finishes an admitted page atomically after its caller cancels, while rejecting later admission', async () => {
       await webdb.openForUser('1');
-      const liveDb = await webdb.messageDb();
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(7, {
+          publisherNamespaceId: 0,
+          profileAccount: 'peer',
+          profileRev: 1,
+        }),
+      ]);
+      const liveDb = await webdb.db();
       let release!: () => void;
       const held = new Promise<void>((resolve) => {
         release = resolve;
@@ -1188,7 +1243,7 @@ describe('WebdbService', () => {
         admitted = resolve;
       });
       const messageDb = vi
-        .spyOn(webdb, 'messageDb')
+        .spyOn(webdb, 'db')
         .mockImplementationOnce(async () => {
           admitted();
           await held;
@@ -1226,17 +1281,15 @@ describe('WebdbService', () => {
 
     it('serializes complete page commits for one thread before opening either transaction', async () => {
       await webdb.openForUser('1');
-      const liveDb = await webdb.messageDb();
+      const liveDb = await webdb.db();
       let release!: () => void;
       const held = new Promise<void>((resolve) => (release = resolve));
       let calls = 0;
-      const messageDb = vi
-        .spyOn(webdb, 'messageDb')
-        .mockImplementation(async () => {
-          calls++;
-          if (calls === 1) await held;
-          return liveDb;
-        });
+      const messageDb = vi.spyOn(webdb, 'db').mockImplementation(async () => {
+        calls++;
+        if (calls === 1) await held;
+        return liveDb;
+      });
 
       const first = webdb.commitBrowserMessagePage({
         threadId: 7,
@@ -1256,7 +1309,7 @@ describe('WebdbService', () => {
         gaps: [],
       });
       await Promise.resolve();
-      expect(calls).toBe(1);
+      await vi.waitFor(() => expect(calls).toBe(1));
 
       release();
       await Promise.all([first, second]);
@@ -1267,9 +1320,16 @@ describe('WebdbService', () => {
       ]);
     });
 
-    it('deletes one thread messages, ranges, and head without touching another thread', async () => {
+    it('deletes one thread messages and ranges but preserves its head without touching another thread', async () => {
       await webdb.openForUser('1');
       for (const threadId of [7, 8]) {
+        await webdb.mergeThreadStates([
+          threadFeedSnapshot(threadId, {
+            publisherNamespaceId: 0,
+            profileAccount: `peer-${threadId}`,
+            profileRev: 1,
+          }),
+        ]);
         await webdb.commitBrowserMessagePage({
           threadId,
           scan: { left: 0, right: 1 },
@@ -1285,6 +1345,7 @@ describe('WebdbService', () => {
 
       expect(await webdb.getMessage(7, 1)).toBeUndefined();
       expect(await webdb.getMessageRanges(7)).toEqual([]);
+      expect(await webdb.getMessageHead(7)).toBe(1);
       expect((await webdb.getMessage(8, 1))?.seq).toBe(1);
       expect(await webdb.getMessageRanges(8)).toHaveLength(1);
     });
@@ -1349,7 +1410,6 @@ describe('WebdbService', () => {
         (database) => database.name,
       );
       expect(names).not.toContain(session.indexedDbName);
-      expect(names).not.toContain(session.messageIndexedDbName);
     });
 
     it('full recreation blocks new core operations and waits for an admitted core read', async () => {
@@ -2426,6 +2486,13 @@ describe('WebdbService', () => {
 
     it('recreates only the message DB and preserves the core cache', async () => {
       await webdb.openForUser('1');
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(7, {
+          publisherNamespaceId: 0,
+          profileAccount: 'peer',
+          profileRev: 1,
+        }),
+      ]);
       await webdb.writeSelfProfile({
         id: 1,
         account: 'me',
@@ -2459,15 +2526,15 @@ describe('WebdbService', () => {
       ).toBe('x');
       expect(await webdb.getMessage(7, 1)).toBeUndefined();
       expect(await webdb.getMessageRanges(7)).toEqual([]);
-      expect(await webdb.getMessageHead(7)).toBeUndefined();
+      expect(await webdb.getMessageHead(7)).toBe(1);
     });
 
     it('aborts the old lifetime, closes admission, and waits for active message operations before recreating', async () => {
       await webdb.openForUser('1');
-      const liveDb = await webdb.messageDb();
+      const liveDb = await webdb.db();
       let release!: () => void;
       const held = new Promise<void>((resolve) => (release = resolve));
-      vi.spyOn(webdb, 'messageDb').mockImplementation(async () => {
+      vi.spyOn(webdb, 'db').mockImplementation(async () => {
         await held;
         return liveDb;
       });

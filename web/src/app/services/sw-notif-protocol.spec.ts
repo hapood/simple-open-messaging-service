@@ -11,9 +11,19 @@ describe('Push worker message boundaries', () => {
     const message = {
       type: SOMS_NOTIF_MSG.OPEN,
       target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       sessionId: 11,
     };
     expect(parseSwNotifMessage(message)).toEqual(message);
+    for (const latestSeq of [0, 2147483647]) {
+      expect(parseSwNotifMessage({ ...message, latestSeq })).toEqual({
+        ...message,
+        latestSeq,
+      });
+    }
+    for (const latestSeq of [undefined, null, -1, '8', 0.5, 2147483648, NaN]) {
+      expect(parseSwNotifMessage({ ...message, latestSeq })).toBeNull();
+    }
     for (const invalid of [undefined, 0, '7', 0.5, 2147483648]) {
       expect(
         parseSwNotifMessage({

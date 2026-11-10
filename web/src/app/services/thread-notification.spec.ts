@@ -1,4 +1,7 @@
-import { threadNotificationChanged, type ThreadFeedSnapshot } from '../../../../shared/thread-attention';
+import {
+  threadNotificationChanged,
+  type ThreadFeedSnapshot,
+} from '../../../../shared/thread-attention';
 import { createP2PConversation, createGroupConversation } from './model';
 import {
   threadNotificationDescriptor,
@@ -7,10 +10,23 @@ import {
 
 describe('thread notification presentation', () => {
   it('refreshes on blocking but not on unblocking alone', () => {
-    const previous = { ...update().state, blocked: false } as ThreadFeedSnapshot;
-    const blocked = { ...previous, blocked: true, threadFeedId: previous.threadFeedId + 1 };
+    const previous = {
+      ...update().state,
+      blocked: false,
+    } as ThreadFeedSnapshot;
+    const blocked = {
+      ...previous,
+      blocked: true,
+      threadFeedId: previous.threadFeedId + 1,
+    };
     expect(threadNotificationChanged(previous, blocked)).toBe(true);
-    expect(threadNotificationChanged(blocked, { ...blocked, blocked: false, threadFeedId: blocked.threadFeedId + 1 })).toBe(false);
+    expect(
+      threadNotificationChanged(blocked, {
+        ...blocked,
+        blocked: false,
+        threadFeedId: blocked.threadFeedId + 1,
+      }),
+    ).toBe(false);
   });
 
   const copy = {
@@ -27,6 +43,7 @@ describe('thread notification presentation', () => {
         publisherNamespaceId: 0,
         profileRev: 1,
         unreadCount: 101,
+        messageEndSeq: 10,
         lastReadSeq: 3,
         profile: { name: 'Peer', bio: '', avatarDigest: null },
       }),
@@ -108,7 +125,7 @@ describe('thread notification presentation', () => {
     ).toMatchObject({
       count: 101,
       body: '[Retracted]\n[Removed]',
-      data: { seq: 8 },
+      data: { target: { kind: 'thread', threadId: 7 }, seq: 8, latestSeq: 10 },
     });
   });
   it('distinguishes retraction and hides message content in private mode', () => {
@@ -142,7 +159,7 @@ describe('thread notification presentation', () => {
     expect(threadNotificationDescriptor(value, 'message', copy)).toMatchObject({
       count: 0,
       body: 'New message',
-      data: { seq: undefined },
+      data: { seq: undefined, latestSeq: 10 },
     });
   });
 });

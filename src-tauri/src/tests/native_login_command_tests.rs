@@ -16,6 +16,13 @@ pub(super) async fn verify_owned_local_commands() {
             .map_err(|e| e.to_string())
         })
         .unwrap();
+    owner
+        .with_database(|conn| {
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            thread_store::insert_test_thread(&tx, 42, 7, 0);
+            tx.commit().map_err(|e| e.to_string())
+        })
+        .unwrap();
     messages::native_db_put_message_head(42, 7, 10)
         .await
         .unwrap();
@@ -31,12 +38,15 @@ pub(super) async fn verify_owned_local_commands() {
     .unwrap();
     assert_eq!(messages::native_db_get_deleted_hwm(42, 7).await.unwrap(), 1);
     assert_eq!(
-        messages::native_db_get_deleted_message_seqs(42, 7, vec![8])
+        messages::native_db_get_message_deletions(42, 7, vec![8])
             .await
             .unwrap(),
-        vec![8]
+        vec![messages::MessageDeletion {
+            seq: 8,
+            deletion_type: messages::MessageDeletionType::UserRetraction,
+        }]
     );
-    assert_eq!(native_db_count_messages(42).await.unwrap(), 1);
+    assert_eq!(native_db_count_messages(42).await.unwrap(), 0);
     assert!(messages::native_db_get_message(42, 7, 8)
         .await
         .unwrap()
@@ -79,6 +89,7 @@ pub(super) async fn verify_owned_local_commands() {
         .await
         .unwrap();
     assert_eq!(native_db_count_messages(42).await.unwrap(), 0);
+    assert_eq!(messages::native_db_get_deleted_hwm(42, 7).await.unwrap(), 1);
     let pair = json!({"publisherNamespaceId": 0, "profileNamespaceId": 7});
     profile_namespaces::native_db_commit_profile_namespace_bindings(
         42,
@@ -149,10 +160,7 @@ pub(super) async fn verify_owned_local_commands() {
     .await
     .unwrap()
     .is_empty());
-    assert!(client_state::native_db_threads(42)
-        .await
-        .unwrap()
-        .is_empty());
+    assert_eq!(client_state::native_db_threads(42).await.unwrap().len(), 1);
     client_state::native_db_delete_thread(42, 7).await.unwrap();
     assert_eq!(
         client_state::native_db_patch_thread(42, 7, json!({"muted":true}))
@@ -175,6 +183,17 @@ pub(super) async fn verify_owned_local_commands() {
         })
         .unwrap();
 
+    owner
+        .with_database(|conn| {
+            thread_store::insert_test_thread(conn, 42, 7, 12);
+            conn.execute(
+                "UPDATE threads SET message_head=99 WHERE user_id=42 AND thread_id=7",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .unwrap();
     let proxy = crate::ServerSessionState::new();
     let old_sync = state_feed_sync::synchronize(&proxy, 42, 1);
     let old_view = owner.capture_database_work().unwrap();
@@ -182,6 +201,32 @@ pub(super) async fn verify_owned_local_commands() {
     assert!(old_view.assert_current().is_err());
     assert_eq!(old_sync.await.unwrap_err(), "native cache work superseded");
     native_db_validate_cache().await.unwrap();
+    assert_eq!(
+        messages::native_db_get_deleted_hwm(42, 7).await.unwrap(),
+        12
+    );
+    assert_eq!(
+        messages::native_db_get_message_deletions(42, 7, vec![8])
+            .await
+            .unwrap(),
+        vec![messages::MessageDeletion {
+            seq: 8,
+            deletion_type: messages::MessageDeletionType::UserRetraction,
+        }]
+    );
+    owner
+        .with_database(|conn| {
+            let head: i64 = conn
+                .query_row(
+                    "SELECT message_head FROM threads WHERE user_id=42 AND thread_id=7",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            assert_eq!(head, 99);
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(owner.credential().unwrap(), "secret-one");
     assert!(std::sync::Arc::ptr_eq(
         &owner,
@@ -197,7 +242,10 @@ pub(super) async fn verify_owned_local_commands() {
     assert!(skipped.await.unwrap().is_none());
     *owner.notification_reconstruction.lock().await = Some(vec![]);
     let held = owner.notification_reconstruction.lock().await;
-    assert!(notifications::synchronize(&proxy, 42, 0).await.unwrap().is_none());
+    assert!(notifications::synchronize(&proxy, 42, 0)
+        .await
+        .unwrap()
+        .is_none());
     drop(held);
     *owner.notification_reconstruction.lock().await = None;
     let admitted = notifications::synchronize(&proxy, 42, 0);
@@ -414,9 +462,7 @@ pub(super) fn verify_queued_commands_end_before_sql() {
         successor
             .with_database(|conn| {
                 let count: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM thread_sync_state", [], |row| {
-                        row.get(0)
-                    })
+                    .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
                 assert_eq!(count, 0);
                 for table in ["messages", "message_ranges"] {

@@ -1232,24 +1232,39 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller!.getInfo().newestId).toBe(100);
   });
 
-  it.each([false, true])('followBottom=%s controls arrivals without changing initial positioning', async (followBottom) => {
-    const { hooks } = controllableHooks();
-    const source = pushedSource(fakeSource(100));
-    scroller = createKernel({ viewport, content, hooks, source, config: { followBottom, thresholdFloor: 20000 } });
-    await scroller.init();
-    await flush();
-    const before = viewport.scrollTop;
-    source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
-    await flush();
-    expect(scroller.getInfo().newestId).toBe(100);
-    if (followBottom) expect(viewport.scrollTop).toBeGreaterThan(before);
-    else expect(viewport.scrollTop).toBe(before);
-  });
+  it.each([false, true])(
+    'followBottom=%s controls arrivals without changing initial positioning',
+    async (followBottom) => {
+      const { hooks } = controllableHooks();
+      const source = pushedSource(fakeSource(100));
+      scroller = createKernel({
+        viewport,
+        content,
+        hooks,
+        source,
+        config: { followBottom, thresholdFloor: 20000 },
+      });
+      await scroller.init();
+      await flush();
+      const before = viewport.scrollTop;
+      source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
+      await flush();
+      expect(scroller.getInfo().newestId).toBe(100);
+      if (followBottom) expect(viewport.scrollTop).toBeGreaterThan(before);
+      else expect(viewport.scrollTop).toBe(before);
+    },
+  );
 
   it('checks followBottom when an in-flight arrival is delivered', async () => {
     const { hooks } = controllableHooks();
     const source = pushedSource(fakeSource(100));
-    scroller = createKernel({ viewport, content, hooks, source, config: { thresholdFloor: 20000 } });
+    scroller = createKernel({
+      viewport,
+      content,
+      hooks,
+      source,
+      config: { thresholdFloor: 20000 },
+    });
     await scroller.init();
     await flush();
     const before = viewport.scrollTop;
@@ -1262,10 +1277,22 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('does not follow the first arriving batch after an empty initialization', async () => {
     const { hooks } = controllableHooks();
     const source = pushedSource(fakeSource(0));
-    scroller = createKernel({ viewport, content, hooks, source, config: { followBottom: false, thresholdFloor: 20000 } });
+    scroller = createKernel({
+      viewport,
+      content,
+      hooks,
+      source,
+      config: { followBottom: false, thresholdFloor: 20000 },
+    });
     await scroller.init();
     await flush();
-    source.pushLive(Array.from({ length: 20 }, (_, id) => ({ id, data: id, ...(id === 19 ? { boundary: 'newest' as const } : {}) })));
+    source.pushLive(
+      Array.from({ length: 20 }, (_, id) => ({
+        id,
+        data: id,
+        ...(id === 19 ? { boundary: 'newest' as const } : {}),
+      })),
+    );
     await flush();
     expect(scroller.getInfo().newestId).toBe(19);
     expect(viewport.scrollTop).toBe(0);
@@ -3458,6 +3485,37 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelector('[data-cb-id="450"]')).toBeNull(); // whole album gone
   });
 
+  it('notifies body mounts only after registration and drops replaced/unbound callbacks', async () => {
+    const { hooks } = controllableHooks();
+    const onItemMounted = vi.fn(
+      (item: CbItem<number>, element: CbElement<number>) => {
+        expect(scroller?.getMountedGeometry(item.id)?.el).toBe(element.el);
+        expect(element.el.parentNode).toBe(content);
+      },
+    );
+    scroller = createKernel<number>({
+      viewport,
+      content,
+      hooks,
+      source: fakeSource(2),
+      onItemMounted,
+    });
+    await scroller.init();
+    await Promise.resolve();
+    onItemMounted.mockClear();
+    scroller.mutateItem(1, () => ({ id: 1, data: 100 }));
+    scroller.mutateItem(1, () => ({ id: 1, data: 200 }));
+    expect(onItemMounted).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(onItemMounted).toHaveBeenCalledTimes(1);
+    expect(onItemMounted.mock.calls[0][0].data).toBe(200);
+    onItemMounted.mockClear();
+    scroller.mutateItem(1, () => ({ id: 1, data: 300 }));
+    scroller.unbind();
+    await Promise.resolve();
+    expect(onItemMounted).not.toHaveBeenCalled();
+  });
+
   it('Phase C: mutateItem rebuilds an album without removing its surviving members', async () => {
     const { hooks } = controllableHooks();
     const mergeItems = (items: CbItem<number>[]): CbItem<number>[] => {
@@ -3487,6 +3545,66 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.getInfo().mounted).toBe(mountedBefore);
     expect(content.querySelector('[data-cb-id="450"]')).not.toBeNull();
     expect(scroller.removeItem(452)).toBe(1); // surviving member still resolves to the rebuilt album
+  });
+
+  it('Phase C: mutateItem atomically splits a deleted album and preserves the reading anchor', async () => {
+    const { hooks } = controllableHooks();
+    const destroyed: number[] = [];
+    const createItem = vi.fn(
+      (item: CbItem<number>, prev: CbItem<number> | null) => {
+        const element = hooks.createItem(item, prev);
+        if (item.data === -1)
+          Object.defineProperty(element.el, 'offsetHeight', { get: () => 24 });
+        return {
+          ...element,
+          destroy: () => {
+            destroyed.push(item.id);
+          },
+        };
+      },
+    );
+    const source = fakeSource(500);
+    scroller = createKernel<number>({
+      viewport,
+      content,
+      source,
+      hooks: {
+        createItem,
+        mergeItems: (items) =>
+          items.flatMap((item) =>
+            item.id === 450
+              ? [{ ...item, ids: [450, 451, 452] }]
+              : item.id === 451 || item.id === 452
+                ? []
+                : [item],
+          ),
+      },
+    });
+    await scroller.init();
+    scroller.setFollowBottom(false);
+    viewport.scrollTop = 6000;
+    const scrollBefore = viewport.scrollTop;
+    const readsBefore = source.gets();
+    const mountedBefore = scroller.getInfo().mounted;
+    createItem.mockClear();
+    expect(
+      scroller.mutateItem(451, () => [
+        { id: 450, data: 450 },
+        { id: 451, data: -1 },
+        { id: 452, data: 452 },
+      ]),
+    ).toBe(true);
+    expect(scroller.getInfo().mounted).toBe(mountedBefore + 2);
+    expect(viewport.scrollTop).toBe(scrollBefore + 124);
+    expect(source.gets()).toBe(readsBefore);
+    expect(destroyed).toContain(450);
+    expect(
+      createItem.mock.calls.some(
+        ([item, prev]) => item.id === 453 && prev?.id === 452,
+      ),
+    ).toBe(true);
+    expect(scroller.getMountedGeometry(451)?.item.data).toBe(-1);
+    expect(scroller.getMountedGeometry(452)?.item.data).toBe(452);
   });
 
   it('Phase C: while a cb-leave is in flight, balance is deferred; it resumes on animationend', async () => {

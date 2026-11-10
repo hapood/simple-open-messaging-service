@@ -388,7 +388,7 @@ mod tests {
 
     fn show() -> NotificationCommand {
         NotificationCommand::Show(NotificationContent {
-            target: NotificationTarget::Thread { thread_id: 7 }, title: "Peer".into(), body: "Message".into(), count: 1,
+            target: NotificationTarget::Thread { thread_id: 7 }, latest_seq: Some(42), title: "Peer".into(), body: "Message".into(), count: 1,
             silent: false, messages: vec![], has_unread_mention: false,
         })
     }
@@ -596,7 +596,10 @@ mod tests {
         let first = state.prepare(show(), policy(), false, now).unwrap();
         state.complete(&first.operation_id, accepted(), now).unwrap();
         let mut request = show();
-        if let NotificationCommand::Show(value) = &mut request { value.target = NotificationTarget::GroupJoinRequests { thread_id: 7 }; }
+        if let NotificationCommand::Show(value) = &mut request {
+            value.target = NotificationTarget::GroupJoinRequests { thread_id: 7 };
+            value.latest_seq = None;
+        }
         let second = state.prepare(request, policy(), false, now).unwrap();
         assert_ne!(first.notification_id,second.notification_id);
         state.complete(&second.operation_id,accepted(),now).unwrap();
@@ -751,11 +754,13 @@ mod tests {
         if let NotificationCommand::Show(content) = &mut changed {
             content.body = "Edited message".into();
             content.count = 2;
+            content.latest_seq = Some(99);
         }
         let failed = state.prepare(changed.clone(), policy(), false, now).unwrap();
         state.complete(&failed.operation_id, DeliveryResult::Rejected, now).unwrap();
         let current = state.published.get(&NotificationTarget::from(7)).unwrap();
         assert_eq!(current.content.as_ref().unwrap().body, "Message");
+        assert_eq!(current.content.as_ref().unwrap().latest_seq, Some(42));
         assert_eq!(current.operation_id.as_deref(), Some(first.operation_id.as_str()));
         let replacement = state.prepare(changed, policy(), false, now).unwrap();
         assert_eq!(replacement.notification_id, first.notification_id);
@@ -765,6 +770,7 @@ mod tests {
         let current = state.published.get(&NotificationTarget::from(7)).unwrap();
         assert_eq!(current.content.as_ref().unwrap().body, "Edited message");
         assert_eq!(current.content.as_ref().unwrap().count, 2);
+        assert_eq!(current.content.as_ref().unwrap().latest_seq, Some(99));
         assert_eq!(current.handle, handle);
         assert_eq!(current.operation_id.as_deref(), Some(replacement.operation_id.as_str()));
         assert!(state.complete(&first.operation_id, accepted(), now).is_err());

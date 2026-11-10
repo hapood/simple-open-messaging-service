@@ -122,6 +122,8 @@ mod tests {
         .unwrap();
         conn.execute_batch(super::super::thread_store::SCHEMA)
             .unwrap();
+        conn.execute_batch(super::super::thread_store::PREVIEW_SCHEMA)
+            .unwrap();
         conn.execute_batch(super::super::group_meta_store::SCHEMA)
             .unwrap();
         super::super::thread_store::insert(
@@ -176,6 +178,8 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(super::super::thread_store::SCHEMA)
+            .unwrap();
+        conn.execute_batch(super::super::thread_store::PREVIEW_SCHEMA)
             .unwrap();
         conn.execute_batch(super::super::group_meta_store::SCHEMA)
             .unwrap();

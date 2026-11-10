@@ -18,8 +18,8 @@ fn seed(intent: &FeedIntent) {
           user_id,thread_id,kind,authority_namespace_id,self_mention_namespace_id,subject_account,thread_feed_id,
           conversation_state,blocked,thread_profile_rev,message_end_seq,tombstone_end_seq,
           join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
-          server_last_read_seq,announcement_read_feed_id,server_unread_count,local_read_seq,role)
-          VALUES(42,9,'GROUP',7,0,'!team',1,'ACTIVE',0,0,0,0,0,0,0,0,0,0,0,'OWNER');
+          server_last_read_seq,announcement_read_feed_id,server_unread_count,local_read_seq,role,deleted_hwm)
+          VALUES(42,9,'GROUP',7,0,'!team',1,'ACTIVE',0,0,0,0,0,0,0,0,0,0,0,'OWNER',0);
           INSERT INTO account_state(user_id,self_profile_json) VALUES(42,'{\"account\":\"self\"}');
           INSERT INTO members(user_id,thread_id,member_account,namespace_id,role,profile_rev)
           VALUES(42,9,'self',0,'OWNER',1),(42,9,'alice',12,'MEMBER',3),

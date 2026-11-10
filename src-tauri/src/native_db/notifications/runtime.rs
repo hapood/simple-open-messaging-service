@@ -506,6 +506,7 @@ mod tests {
         batch.threads.push(super::super::NotificationThread {
             thread_id: 7,
             thread_feed_id: 1,
+            message_end_seq: 42,
             unread_count: 1,
             last_read_seq: 0,
             has_unread_mention: false,

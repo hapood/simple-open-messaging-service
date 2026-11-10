@@ -18,6 +18,8 @@ CREATE TABLE threads (
   thread_profile_rev INTEGER NOT NULL CHECK(thread_profile_rev >= 0),
   message_end_seq INTEGER NOT NULL CHECK(message_end_seq >= 0),
   tombstone_end_seq INTEGER NOT NULL CHECK(tombstone_end_seq >= 0),
+  message_head INTEGER CHECK(message_head >= 0),
+  deleted_hwm INTEGER NOT NULL CHECK(deleted_hwm >= 0),
   group_meta_feed_end_id TEXT,
   join_request_end_feed_id INTEGER NOT NULL,
   join_request_read_feed_id INTEGER NOT NULL,
@@ -27,13 +29,9 @@ CREATE TABLE threads (
   server_unread_count INTEGER NOT NULL,
   last_mention_seq INTEGER,
   local_read_seq INTEGER NOT NULL,
-  last_message_at INTEGER,
   muted INTEGER NOT NULL DEFAULT 0,
   pinned INTEGER NOT NULL DEFAULT 0,
   pinned_at INTEGER,
-  last_message_preview TEXT,
-  last_message_sender_account TEXT,
-  last_message_sender_namespace_id INTEGER,
   mention_me INTEGER NOT NULL DEFAULT 0,
   mention_all INTEGER NOT NULL DEFAULT 0,
   unread_count INTEGER NOT NULL DEFAULT 0,
@@ -42,9 +40,6 @@ CREATE TABLE threads (
   PRIMARY KEY(user_id,thread_id),
   CHECK(join_request_read_feed_id >= -1 AND
         join_request_read_feed_id <= join_request_end_feed_id),
-  CHECK((last_message_sender_account IS NULL AND last_message_sender_namespace_id IS NULL)
-     OR (last_message_sender_account IS NOT NULL AND last_message_sender_namespace_id IS NOT NULL)),
-  CHECK(last_message_sender_account IS NULL OR last_message_sender_account <> ''),
   CHECK((kind='GROUP' AND subject_account LIKE '!%')
      OR kind='P2P')
 );
@@ -67,10 +62,60 @@ CREATE TABLE thread_previews (
 );
 "#;
 
+pub(super) fn validate_schema(conn: &Connection) -> Result<(), String> {
+    let columns = conn
+        .prepare("SELECT name FROM pragma_table_info('threads')")
+        .map_err(|e| format!("inspect thread layout: {e}"))?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("read thread layout: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("decode thread layout: {e}"))?;
+    let expected = [
+        "user_id",
+        "thread_id",
+        "kind",
+        "authority_namespace_id",
+        "self_mention_namespace_id",
+        "subject_account",
+        "thread_feed_id",
+        "conversation_state",
+        "blocked",
+        "alias",
+        "thread_profile_rev",
+        "message_end_seq",
+        "tombstone_end_seq",
+        "message_head",
+        "deleted_hwm",
+        "group_meta_feed_end_id",
+        "join_request_end_feed_id",
+        "join_request_read_feed_id",
+        "group_invite_end_feed_id",
+        "server_last_read_seq",
+        "announcement_read_feed_id",
+        "server_unread_count",
+        "last_mention_seq",
+        "local_read_seq",
+        "muted",
+        "pinned",
+        "pinned_at",
+        "mention_me",
+        "mention_all",
+        "unread_count",
+        "last_read_seq",
+        "role",
+    ];
+    if columns.iter().map(String::as_str).collect::<Vec<_>>() != expected {
+        return Err("incompatible thread layout".into());
+    }
+    Ok(())
+}
+
 /// Initialize a thread row once, from its validated feed snapshot. Existing
 /// threads are changed through operation-scoped commits; an INSERT conflict
-/// is an invariant error, never an implicit upsert. Last-message, mention, and
-/// preference columns start at their defaults; later page commits own them.
+/// is an invariant error, never an implicit upsert. Mention and preference
+/// columns start at their defaults; later page commits own them.
+/// Deletion progress starts at this snapshot's tombstone bound, while the optional
+/// message head remains unknown until history learns it independently of the feed.
 pub(super) fn insert(
     conn: &Connection,
     user_id: i64,
@@ -105,9 +150,9 @@ pub(super) fn insert(
           join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
           server_last_read_seq,announcement_read_feed_id,server_unread_count,
           last_mention_seq,local_read_seq,
-          role,self_mention_namespace_id)
+          role,self_mention_namespace_id,deleted_hwm)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
-           ?17,?18,?19,?20,?21,?22,?23)",
+           ?17,?18,?19,?20,?21,?22,?23,?12)",
         params![
             user_id,
             snapshot.thread_id,
@@ -162,8 +207,14 @@ pub(super) fn read(
            meta.recovery_announcement_text AS group_recovery_announcement_text,
            meta.recovery_announcement_created_at AS group_recovery_announcement_created_at,
            meta.recovery_announcement_origin_created_at AS group_recovery_announcement_origin_created_at,
-           last_message_at,muted,pinned,pinned_at,
-           last_message_preview,last_message_sender_account,last_message_sender_namespace_id,mention_me,mention_all,
+           preview.created_at AS preview_created_at,muted,pinned,pinned_at,
+           CASE preview.status
+             WHEN 'LIVE' THEN COALESCE(preview.text,'')
+             WHEN 'USER_RETRACTION' THEN '[Message retracted]'
+             WHEN 'MODERATION_REMOVAL' THEN '[Message removed by administrator]'
+           END AS last_message_preview,
+           preview.sender_account AS last_message_sender_account,
+           preview.sender_namespace_id AS last_message_sender_namespace_id,mention_me,mention_all,
            unread_count,last_read_seq,role,
            thread_feed_id,conversation_state,blocked,alias,thread_profile_rev,
            message_end_seq,tombstone_end_seq,group_meta_feed_end_id,
@@ -172,6 +223,8 @@ pub(super) fn read(
            last_mention_seq,local_read_seq,self_mention_namespace_id
          FROM threads LEFT JOIN group_meta meta
            ON meta.user_id=threads.user_id AND meta.thread_id=threads.thread_id
+         LEFT JOIN thread_previews preview
+           ON preview.user_id=threads.user_id AND preview.thread_id=threads.thread_id
          WHERE threads.user_id=?1 AND threads.thread_id=?2",
         params![user_id, thread_id], |row| {
             let kind: String = row.get("kind")?;
@@ -181,7 +234,8 @@ pub(super) fn read(
                 "account": account,
                 "profile": { "name": account, "bio": "", "avatarDigest": null },
                 "visible": true,
-                "lastMessageAt": row.get::<_, Option<i64>>("last_message_at")?,
+                "lastMessageAt": row.get::<_, Option<String>>("preview_created_at")?
+                    .as_deref().and_then(super::attention::preview_timestamp_millis),
                 "muted": row.get::<_, bool>("muted")?, "pinned": row.get::<_, bool>("pinned")?,
                 "pinnedAt": row.get::<_, Option<i64>>("pinned_at")?,
                 "lastMessagePreview": row.get::<_, Option<String>>("last_message_preview")?,
@@ -268,6 +322,28 @@ pub(super) fn apply_selected_profile(
 }
 
 #[cfg(test)]
+pub(crate) fn insert_test_thread(
+    conn: &Connection,
+    user_id: i64,
+    thread_id: i64,
+    tombstone_end: i64,
+) {
+    let snapshot = serde_json::from_value(serde_json::json!({
+        "type": "P2P", "threadId": thread_id, "publisherNamespaceId": 0,
+        "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
+        "role": null, "profileAccount": "peer", "profileRev": 1,
+        "threadFeedId": 1, "alias": null, "messageEndSeq": 0,
+        "tombstoneEndSeq": tombstone_end, "groupMetaFeedEndId": null,
+        "joinRequestEndFeedId": 0, "joinRequestReadFeedId": -1,
+        "groupInviteEndFeedId": 0, "lastReadSeq": 0,
+        "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
+        "previews": [],
+    }))
+    .unwrap();
+    insert(conn, user_id, &snapshot, 0).unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -282,6 +358,7 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(PREVIEW_SCHEMA).unwrap();
         conn.execute_batch(super::super::group_meta_store::SCHEMA)
             .unwrap();
         let input = serde_json::json!({
@@ -362,7 +439,15 @@ mod tests {
         assert!(!names.contains(&"payload_json".to_owned()));
         assert!(!names.contains(&"profile_rev".to_owned()));
         assert!(names.contains(&"thread_profile_rev".to_owned()));
-        assert!(!names.contains(&"last_message_seq".to_owned()));
+        for derived in [
+            "last_message_seq",
+            "last_message_at",
+            "last_message_preview",
+            "last_message_sender_account",
+            "last_message_sender_namespace_id",
+        ] {
+            assert!(!names.contains(&derived.to_owned()));
+        }
         assert!(!names.contains(&"group_dissolved_at".to_owned()));
         assert!(restored["meta"].get("dissolvedAt").is_none());
         assert!(!names.contains(&"group_member_count".to_owned()));
