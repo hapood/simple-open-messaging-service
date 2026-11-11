@@ -7,6 +7,7 @@ import { PreferenceStore } from './preference-store.service';
 import { SessionStore } from './session/session-store';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { uuid } from '../lib/uuid';
+import { getPushWorkerRegistration } from './push-worker-registration';
 import {
   PushRegistrationService,
   type PushRegistration,
@@ -127,7 +128,7 @@ export class WebPushService {
   async unsubscribe(): Promise<void> {
     if (isTauri() || !('serviceWorker' in navigator)) return;
     const release = async () => {
-      const reg = await navigator.serviceWorker.getRegistration('/push/');
+      const reg = await getPushWorkerRegistration();
       const subscription = await reg?.pushManager.getSubscription();
       if (subscription && !(await subscription.unsubscribe())) {
         throw new Error('Could not cancel push subscription');

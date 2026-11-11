@@ -1,4 +1,4 @@
-import { Injectable, InjectionToken, inject } from '@angular/core';
+import { DestroyRef, Injectable, InjectionToken, inject } from '@angular/core';
 import { BrowserSessionOwner } from './session/browser-session-owner';
 import { SessionStore } from './session/session-store';
 import { deleteBrowserSessionCache } from './session/browser-session-cache';
@@ -9,11 +9,15 @@ import { SessionLifecycleService } from './session-lifecycle.service';
 import { SessionStateService } from './session-state.service';
 import { isTauri } from './runtime';
 import { resetNotificationSince } from './browser-notification-checkpoint';
+import { SessionStartupService } from './session-startup.service';
 import { withNotificationRestoration } from './notification-session';
 
 /** Browser host adapter; no duplicate lifecycle or physical cleanup in UserService. */
 @Injectable({ providedIn: 'root' })
 export class BrowserSessionService extends BrowserSessionOwner {
+  private readonly startup = inject(SessionStartupService);
+  private readonly lifetime = new AbortController();
+  private readonly destroyRef = inject(DestroyRef);
   constructor(
     preferences: PreferenceStore,
     database: WebdbService,
@@ -51,11 +55,11 @@ export class BrowserSessionService extends BrowserSessionOwner {
       },
       (session) => lifecycle.bindSession(session.id),
     );
-
+    this.destroyRef.onDestroy(() => this.lifetime.abort());
   }
 
-  protected override withRestoration<T>(restore: () => Promise<T>): Promise<T> {
-    return withNotificationRestoration(restore);
+  protected override withRestoration<T>(restore: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    return withNotificationRestoration(restore, AbortSignal.any([signal, this.lifetime.signal]), (delay, retry) => this.startup.offerRetry(delay, retry));
   }
 }
 

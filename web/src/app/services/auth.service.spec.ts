@@ -1,3 +1,4 @@
+import { notificationDouble, registrationDouble, workerDouble } from './service-worker-test-doubles';
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
@@ -49,11 +50,16 @@ describe('AuthService (session-token contract, browser path)', () => {
 
   beforeEach(async () => {
     closeNotification = vi.fn();
-    vi.spyOn(navigator.serviceWorker, 'getRegistration').mockResolvedValue({
+    vi.spyOn(navigator.serviceWorker, 'getRegistration').mockResolvedValue(registrationDouble({
+      scope: new URL('/push/', location.href).href,
+      active: workerDouble((_message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) => {
+        const port = Array.isArray(transfer) ? transfer[0] : transfer?.transfer?.[0];
+        if (port instanceof MessagePort) port.postMessage({ ok: true });
+      }),
       getNotifications: async () => [
-        { tag: 'soms-thread-7', close: closeNotification },
+        notificationDouble('soms-thread-7', closeNotification),
       ],
-    } as unknown as ServiceWorkerRegistration);
+    }));
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),

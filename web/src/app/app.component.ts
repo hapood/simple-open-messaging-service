@@ -10,7 +10,6 @@ import {
 import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { ThemeService } from './services/theme.service';
 import { LanguageService } from './services/language.service';
-import { UpdateService } from './services/update.service';
 import { PushService } from './services/push.service';
 import { WebPushService } from './services/web-push.service';
 import { SseLifecycleService } from './services/sse-lifecycle.service';
@@ -47,11 +46,16 @@ import { stringifyTextMessageContent } from '../../../shared/text-message-conten
 import { MaterialDialogComponent } from './components/material-dialog/material-dialog.component';
 import { ServerConfigPageComponent } from './pages/server-config-page/server-config-page.component';
 import { ServerConfigDialogService } from './services/server-config-dialog.service';
+import { SessionStartupService } from './services/session-startup.service';
+import { IndicatorSlotComponent } from './components/indicator-slot/indicator-slot.component';
+import { ConnectionBannerComponent } from './components/connection-banner/connection-banner.component';
 import { AppBackDispatcherService } from './services/app-back-dispatcher.service';
 @Component({
   selector: 'app-root',
   imports: [
     RouterOutlet,
+    IndicatorSlotComponent,
+    ConnectionBannerComponent,
     DebugLogFabComponent,
     UpdateBannerComponent,
     MaterialDialogComponent,
@@ -62,6 +66,7 @@ import { AppBackDispatcherService } from './services/app-back-dispatcher.service
   styleUrl: './app.component.scss',
 })
 export class AppComponent {
+  protected readonly startup = inject(SessionStartupService);
   protected readonly serverConfigDialog = inject(ServerConfigDialogService);
   // Eagerly instantiate so their effects + listeners are live for the whole session.
   private readonly composerGeometry = inject(ComposerGeometryService);
@@ -76,9 +81,6 @@ export class AppComponent {
   private readonly language = inject(LanguageService);
   // Reflect device-local chat display preferences for the virtual-scroll kernel's detached rows.
   private readonly chatAppearance = inject(ChatAppearanceService);
-  // UpdateService subscribes to SwUpdate.versionUpdates (a hot stream) — eagerly constructed so a
-  // VERSION_READY emitted before the home shell mounts is not missed.
-  private readonly updates = inject(UpdateService);
   // PushService.init() registers the FCM token-handoff hooks + recovers any cold-start deep link. Runs
   // once at boot; a no-op outside the Tauri shell (the hooks are never triggered by the browser).
   private readonly push = inject(PushService);

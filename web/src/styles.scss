@@ -284,6 +284,21 @@ $dark-theme: mat.define-theme(
   inherits: true;
   initial-value: #b45309;
 }
+@property --c-restore-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #e0e8f4;
+}
+@property --c-restore-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #c2d2e9;
+}
+@property --c-restore {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #3568b8;
+}
 @property --c-amber-1 {
   syntax: '<color>';
   inherits: true;

@@ -20,7 +20,7 @@ describe('browser notification cleanup', () => {
       { tag: 'soms-thread-8', close: closeOther },
       { tag: 'other-app', close: closeForeign },
     ]);
-    getRegistration.mockResolvedValue({ getNotifications });
+    getRegistration.mockResolvedValue({ scope: new URL('/push/', location.href).href, getNotifications });
     vi.spyOn(navigator.serviceWorker, 'getRegistration').mockImplementation(
       getRegistration,
     );
@@ -30,6 +30,7 @@ describe('browser notification cleanup', () => {
   it('reports presentation changes without choosing or closing cards', async () => {
     const postMessage = vi.fn();
     getRegistration.mockResolvedValue({
+      scope: new URL('/push/', location.href).href,
       getNotifications,
       active: { postMessage },
     });

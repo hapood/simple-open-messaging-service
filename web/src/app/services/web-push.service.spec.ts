@@ -1,3 +1,4 @@
+import { registrationDouble, subscriptionDouble } from './service-worker-test-doubles';
 import { provideHttpClient } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService } from '@jsverse/transloco';
@@ -61,17 +62,17 @@ describe('WebPushService device ID', () => {
   it('logout unsubscribes without registering a worker', async () => {
     const unsubscribe = vi.fn().mockResolvedValue(true);
     const getRegistration = vi.spyOn(navigator.serviceWorker, 'getRegistration')
-      .mockResolvedValue({ pushManager: { getSubscription: async () => ({ unsubscribe }) } } as unknown as ServiceWorkerRegistration);
+      .mockResolvedValue(registrationDouble({ scope: new URL('/push/', location.href).href, pushManager: { ...registrationDouble().pushManager, getSubscription: async () => subscriptionDouble(unsubscribe) } }));
     const register = vi.spyOn(navigator.serviceWorker, 'register');
     await service.unsubscribe();
-    expect(getRegistration).toHaveBeenCalledWith('/push/');
+    expect(getRegistration).toHaveBeenCalledWith(new URL('/push/', location.href).href);
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(register).not.toHaveBeenCalled();
   });
 
   it('does not claim a failed unsubscribe succeeded', async () => {
     vi.spyOn(navigator.serviceWorker, 'getRegistration')
-      .mockResolvedValue({ pushManager: { getSubscription: async () => ({ unsubscribe: async () => false }) } } as unknown as ServiceWorkerRegistration);
+      .mockResolvedValue(registrationDouble({ scope: new URL('/push/', location.href).href, pushManager: { ...registrationDouble().pushManager, getSubscription: async () => subscriptionDouble(async () => false) } }));
     await expect(service.unsubscribe()).rejects.toThrow('Could not cancel push subscription');
   });
 

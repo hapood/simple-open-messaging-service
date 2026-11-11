@@ -862,6 +862,8 @@
     "yesterday": "Yesterday"
   },
   "connection": {
+    "restoring": "Restoring session…",
+    "restoringIn": "Restoring session — retrying in {{s}}s…",
     "connecting": "Connecting…",
     "reconnecting": "Connection lost — reconnecting…",
     "reconnectingIn": "Connection lost — reconnecting in {{s}}s…",

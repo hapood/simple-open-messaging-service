@@ -100,7 +100,7 @@ export class BrowserSessionOwner {
   }
 
   /** Hosts enter notification recovery before local restoration and HELLO. */
-  protected withRestoration<T>(restore: () => Promise<T>): Promise<T> {
+  protected withRestoration<T>(restore: () => Promise<T>, _signal: AbortSignal): Promise<T> {
     return restore();
   }
 
@@ -141,7 +141,7 @@ export class BrowserSessionOwner {
       this.active = descriptor;
       this.publish(descriptor);
       return true;
-    }));
+    }, signal));
   }
 
   /** Interactive logout keeps the original durable login until revocation is confirmed

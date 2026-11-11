@@ -862,6 +862,8 @@
     "yesterday": "昨天"
   },
   "connection": {
+    "restoring": "正在恢复会话…",
+    "restoringIn": "正在恢复会话——{{s}}秒后重试…",
     "connecting": "连接中…",
     "reconnecting": "连接中断——正在重新连接…",
     "reconnectingIn": "连接中断——{{s}}秒后重连…",

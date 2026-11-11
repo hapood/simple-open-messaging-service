@@ -493,8 +493,9 @@ export class AuthService {
         const restored = await browser.restore(hint);
         this.sessionState.setAuthenticated(restored);
         if (!restored) this.clearPresenceCookie();
-      } catch {
+      } catch (error) {
         // Preserve the credential for a retry, but admit no business work while local recovery failed.
+        console.warn('[session] browser restoration failed', error);
         this.toast.warn(this.t('auth.notice.localCacheUnavailable'));
       }
       return;

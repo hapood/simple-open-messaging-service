@@ -1,12 +1,12 @@
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
+import { getPushWorkerRegistration } from './push-worker-registration';
 
 /** The push worker owns rendering and thread removal decisions. The page reports facts. */
-const SW_SCOPE = '/push/';
 const SOMS_TAG_PREFIX = 'soms-';
 
 export async function clearBrowserMessageNotifications(): Promise<void> {
   if (!('serviceWorker' in navigator)) return;
-  const reg = await navigator.serviceWorker.getRegistration(SW_SCOPE);
+  const reg = await getPushWorkerRegistration();
   reg?.active?.postMessage({ type: SOMS_NOTIF_MSG.RESET });
   for (const notification of (await reg?.getNotifications()) ?? []) {
     if (notification.tag.startsWith(SOMS_TAG_PREFIX)) notification.close();
@@ -25,7 +25,7 @@ export class BrowserNotificationAdapter {
   }
 
   async presentationChanged(): Promise<void> {
-    const reg = await navigator.serviceWorker?.getRegistration(SW_SCOPE);
+    const reg = await getPushWorkerRegistration();
     reg?.active?.postMessage({ type: SOMS_NOTIF_MSG.PRESENTATION_CHANGED });
   }
 
