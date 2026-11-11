@@ -145,7 +145,8 @@ export interface CbConfig {
   /** Finish init after the first source page instead of awaiting older-page viewport fill. The caller can
    *  invoke backfillOlder() after revealing the thread, keeping first paint independent of network latency. */
   deferInitFill?: boolean;
-  /** Follow content growth only while at the bottom. Positioning alone never changes this policy. */
+  /** Follow newly arriving messages only while at the bottom. Existing-item height changes and keyboard/composer
+   *  or viewport geometry preserve an existing composer attachment independently of this policy. */
   followBottom?: boolean;
 }
 
@@ -697,13 +698,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (this.inactive || !this.steady || this.noOlder || !this.mounted.length)
       return Promise.resolve();
     this.cancelBackfill();
-    const anchor = this.captureAnchor();
     return new Promise<void>((resolve, reject) => {
       this.finishBackfill = resolve;
       const subscriber = new Subscriber<number>({
-        next: (mounted) => {
-          if (mounted > 0) this.applyAnchor(anchor);
-        },
+        next: () => {},
         error: (error: unknown) => {
           this.finishBackfill = undefined;
           reject(error);
@@ -714,7 +712,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         },
       });
       this.backfillSubscription = subscriber;
-      this.loadOlderIntoFresh().subscribe(subscriber);
+      this.loadOlderIntoFresh(true).subscribe(subscriber);
     });
   }
 
@@ -928,16 +926,16 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (!el || this.inactive) return;
     const nextH = el.offsetHeight;
     if (nextH === this.tailCapH) return;
-    const anchor = this.captureAnchor();
+    const anchor = this.captureComposerAnchor();
     this.tailCapH = nextH;
     this.applyAnchor(anchor);
     this.emit();
   }
 
   /**
-   * Snapshot the current viewport position as an {@link Anchor}, to re-apply after a content mutation. Call BEFORE
-   * the mutation (so topOf/totalH reflect the pre-change layout). The anchor encodes "keep the visible content put":
-   * at-bottom ⇒ follow the bottom; otherwise ⇒ hold the topmost-visible item at its current offset.
+   * Preserve the existing attachment to the composer boundary across geometry changes. The tail reserve maps
+   * that boundary to the scroll-content bottom; away from it, preserve the visible message instead.
+   * Capture before updating the cached geometry.
    *
    * The at-bottom test uses the KERNEL height model (totalH) inline, NOT isAtBottom()/content.scrollHeight: when
    * called from onElHeight the DOM already reflects the new height (a real ResizeObserver fires post-layout; the mock
@@ -946,17 +944,24 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * pre-change bottom. (For the other stabilization sites, capture runs before the mutation when DOM ≡ kernel model,
    * so the two bases agree.)
    *
+   * Geometry stabilization does not consult followBottom. Viewport/tail-reserve resizing and late-settling item
+   * heights preserve the existing attachment; following newly inserted messages is owned by the arrival path.
+   *
    * Rejects the bottom anchor while heights are unsettled (pendingMeasure > 0): a just-created/rebuilt entry has
    * height 0, which would make totalH() artificially low and the at-bottom test falsely true.
    */
-  private captureAnchor(): Anchor {
+  private captureComposerAnchor(): Anchor {
     if (
-      this.cfg.followBottom &&
       this.steady &&
       this.pendingMeasure.length === 0 &&
       this.viewport.scrollTop + this.vh >= this.totalH() - 1
     )
       return { mode: 'bottom' };
+    return this.captureAnchor();
+  }
+
+  /** Preserve the visible message across content mutations; new-message following is a separate decision. */
+  private captureAnchor(): Anchor {
     let idx = this.topVisibleIdx();
     // The oldest slot can be a loading placeholder, not readable message content.
     // Revealing it may change its height; anchor the next visible message instead
@@ -969,10 +974,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       )
         idx = next;
     }
-    if (idx < 0)
-      return this.cfg.followBottom
-        ? { mode: 'bottom' }
-        : { mode: 'offset', offset: this.viewport.scrollTop };
+    if (idx < 0) return { mode: 'offset', offset: this.viewport.scrollTop };
     return {
       mode: 'item',
       id: this.mounted[idx].item.id,
@@ -1193,8 +1195,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     return this.totalH() - this.prefix[idx + 1];
   }
 
-  /** Load one older batch into the building window (no compensation / no trim / no revalidate — viewport not positioned yet); includes the old ghost reveal rebuild. Empty batch → noOlder. Returns the number mounted (0 = hit boundary / overtaken / no data). */
-  private loadOlderIntoFresh(): Observable<number> {
+  /** Load one older batch without trim/revalidation; initialization owns positioning, while deferred backfill
+   *  preserves the delivery-time anchor. Includes the old ghost reveal rebuild. Empty batch → noOlder.
+   *  Returns the number mounted (0 = hit boundary / overtaken / no data). */
+  private loadOlderIntoFresh(preserveAnchor = false): Observable<number> {
     return defer(() => {
       if (this.noOlder || !this.mounted.length) return of(0);
       return this.demandItems(
@@ -1210,6 +1214,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             this.revealOldestGhost();
             return 0;
           }
+          // A pending request can outlive composer resizing or user scrolling. Flush any tail
+          // resize before mounting can consume its old measurement, then snapshot the current
+          // reading position immediately before delivery changes the mounted geometry.
+          if (preserveAnchor) this.onTailCapResize();
+          const anchor = preserveAnchor ? this.captureAnchor() : null;
           this.absorbBoundary(merged);
           const oldGhost = this.ghostEntry;
           this.mountBatch(merged, 'older');
@@ -1219,6 +1228,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           }
           this.measurePending();
           this.updateGhost();
+          if (anchor) this.applyAnchor(anchor);
           return merged.length;
         }),
       );
@@ -1945,7 +1955,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.resizeDeferred = true;
       return;
     }
-    const anchor = this.captureAnchor(); // BEFORE measureVh (at-bottom test uses the OLD vh + kernel totalH)
+    const anchor = this.captureComposerAnchor(); // BEFORE measureVh (at-bottom test uses the OLD vh + kernel totalH)
     this.measureVh(); // apply the new vh
     if (anchor.mode === 'bottom' && this.mounted.length > 0) {
       this.applyAnchor(anchor); // re-pin to the new bottom (new vh)
@@ -2842,7 +2852,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *   - a bottom anchor (captured because the viewport was pinned) re-pins to the new bottom — the old wasAtBottom
    *     re-pin that kept a late-settling tail item from sinking below the fold (the retry + new-message pin failure).
    *
-   *  captureAnchor reads the kernel height model (totalH), NOT content.scrollHeight: by the time the RO fires, the DOM
+   *  captureComposerAnchor reads the kernel height model (totalH), NOT content.scrollHeight: by the time the RO fires, the DOM
    *  already reflects the new height, so content.scrollHeight would read POST-change and the at-bottom test would
    *  falsely fail for a tail growth. totalH() here still holds the OLD entry height (the mutation is below). The first
    *  report inside mount/measure/shifting is cache-only (reentrancy guard — measurePending does the unified settle). */
@@ -2851,7 +2861,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const old = entry.height;
     if (old === h) return;
     const stabilize = !this.shifting && !this.mounting && !this.measuring;
-    const anchor = stabilize ? this.captureAnchor() : null; // BEFORE the mutation (pre-change layout)
+    const anchor = stabilize ? this.captureComposerAnchor() : null; // BEFORE the mutation (pre-change layout)
     entry.height = h;
     this.dirtyPrefix = true;
     if (anchor) {

@@ -187,6 +187,16 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // API 30+ reports IME geometry through WindowInsets; application surfaces own
+        // avoidance, so the window must not also pan or resize for the focused field.
+        // Older releases still require visible-frame changes for IME measurement.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setSoftInputMode(
+                (window.attributes.softInputMode and
+                    WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST.inv()) or
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING,
+            )
+        }
         if (savedInstanceState == null) captureSharedText(intent)
         restoringActivity = savedInstanceState != null
         installLaunchOverlay()
@@ -539,7 +549,17 @@ class MainActivity : TauriActivity() {
                 acceptLegacyImeObservation()
             }
             applySafeInsetsToWebView()
-            insets
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // The shell has captured IME geometry above and owns avoidance. Do not
+                // also expose IME occlusion to descendant WebViews, whose focused-field
+                // reveal would otherwise pan their visual viewport independently.
+                WindowInsetsCompat.Builder(insets)
+                    .setInsets(WindowInsetsCompat.Type.ime(), androidx.core.graphics.Insets.NONE)
+                    .setVisible(WindowInsetsCompat.Type.ime(), false)
+                    .build()
+            } else {
+                insets
+            }
         }
         // On API 30+ the IME animates open/close (~250ms). Follow it frame-by-frame so the chat input bar
         // slides up in sync with the keyboard (DISPATCH_MODE_STOP: we own the lift — the WebView must NOT

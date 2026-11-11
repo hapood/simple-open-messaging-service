@@ -1200,14 +1200,23 @@ class NativeComposerController(
                 maxOf(imeBottomPx, safeBottomPx)
             }
         val decor = activity.window.decorView
+        // DOM bounds use the WebView origin; the overlay uses the decor origin.
+        // Freeform captions can inset the WebView even when system-bar insets are zero.
+        val webView = SomsBridge.webView ?: return
+        val webLocation = IntArray(2)
+        val decorLocation = IntArray(2)
+        webView.getLocationInWindow(webLocation)
+        decor.getLocationInWindow(decorLocation)
+        val offsetX = webLocation[0] - decorLocation[0]
+        val offsetY = webLocation[1] - decorLocation[1]
         val boundsGap =
             if (hasBounds) {
-                (decor.height - boundsBottomPx).coerceAtLeast(0)
+                NativeComposerGeometry.bottomGap(decor.height, boundsBottomPx, offsetY)
             } else {
                 0
-        }
+            }
         val bottomMargin = keyboardBottom + boundsGap
-        val leftMargin = if (hasBounds) boundsLeftPx else params.leftMargin
+        val leftMargin = if (hasBounds) boundsLeftPx + offsetX else params.leftMargin
         val width = if (hasBounds) boundsWidthPx else params.width
         // Global-layout observations also refresh IME geometry on pre-R. Reassigning unchanged
         // LayoutParams requests another layout and unnecessarily feeds that observer again.
@@ -1764,6 +1773,9 @@ class NativeComposerController(
 
 /** Pure native-composer geometry policy, kept Android-free so handoff invariants can be unit tested. */
 internal object NativeComposerGeometry {
+    fun bottomGap(decorHeightPx: Int, webBottomPx: Int, webOffsetYPx: Int): Int =
+        (decorHeightPx - (webOffsetYPx + webBottomPx)).coerceAtLeast(0)
+
     fun occupiedDevicePx(
         visible: Boolean,
         composerBasePx: Int,

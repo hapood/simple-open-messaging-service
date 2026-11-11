@@ -1770,6 +1770,91 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.getInfo().atBottom).toBe(true);
   });
 
+  it.each([0, 350])(
+    'backfill preserves delivery-time composer geometry and user scroll (history offset=%s)',
+    async (historyOffset) => {
+      const { hooks } = controllableHooks();
+      const source = controllableSource(500);
+      scroller = createKernel<number>({
+        viewport,
+        content,
+        hooks,
+        source,
+        config: { initBatch: 20, deferInitFill: true, followBottom: false },
+      });
+      await scroller.init();
+      const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+      let capH = 62;
+      Object.defineProperty(cap, 'offsetHeight', {
+        configurable: true,
+        get: () => capH,
+      });
+      const resize = () =>
+        (
+          scroller as unknown as { onTailCapResize: () => void }
+        ).onTailCapResize();
+      resize();
+      const before = viewport.scrollTop;
+      const backfill = scroller.backfillOlder();
+      expect(source.isPending()).toBe(true);
+
+      capH = 298;
+      resize();
+      expect(viewport.scrollTop).toBe(before + 236);
+      viewport.scrollTop -= historyOffset;
+      const deliveryTop = viewport.scrollTop;
+      const deliveryHeight = content.scrollHeight;
+      const visibleIds = scroller.getFullyVisibleIds();
+
+      source.resolveOlder();
+      await backfill;
+
+      expect(scroller.getInfo().mounted).toBe(70);
+      expect(viewport.scrollTop).toBe(
+        deliveryTop + content.scrollHeight - deliveryHeight,
+      );
+      expect(scroller.getFullyVisibleIds()).toEqual(visibleIds);
+      expect(scroller.getInfo().atBottom).toBe(historyOffset === 0);
+    },
+  );
+
+  it('backfill does not consume a composer resize before the tail-cap observer runs', async () => {
+    const { hooks } = controllableHooks();
+    const source = controllableSource(500);
+    scroller = createKernel<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+      config: { initBatch: 20, deferInitFill: true, followBottom: false },
+    });
+    await scroller.init();
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    let capH = 62;
+    Object.defineProperty(cap, 'offsetHeight', {
+      configurable: true,
+      get: () => capH,
+    });
+    const resize = () =>
+      (
+        scroller as unknown as { onTailCapResize: () => void }
+      ).onTailCapResize();
+    resize();
+    const before = viewport.scrollTop;
+    const backfill = scroller.backfillOlder();
+    expect(source.isPending()).toBe(true);
+
+    // Layout has changed, but delivery runs before ResizeObserver reports the new cap height.
+    capH = 298;
+    source.resolveOlder();
+    await backfill;
+    resize();
+
+    expect(scroller.getInfo().mounted).toBe(70);
+    expect(viewport.scrollTop).toBe(before + 50 * 100 + 236);
+    expect(scroller.getInfo().atBottom).toBe(true);
+  });
+
   it('loadOlder trims the newest end → noNewer resets to false (loadNewer can load it back; fixes downward-scroll / pin-to-bottom stall)', async () => {
     const { hooks } = controllableHooks();
     scroller = createKernel<number>({
@@ -3880,13 +3965,53 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(sumChildrenHeight(content)).toBe(100 * 100); // zero-height gap is still folded into the content total
   });
 
-  it('tail cap: async aggregate growth follows bottom through the shared anchor logic', async () => {
-    const { hooks } = controllableHooks();
+  it.each([true, false])(
+    'tail cap: keyboard open/close preserves bottom with followBottom=%s',
+    async (followBottom) => {
+      const { hooks } = controllableHooks();
+      scroller = createKernel<number>({
+        viewport,
+        content,
+        hooks,
+        source: fakeSource(500),
+        config: { followBottom },
+      });
+      await scroller.init();
+      const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+      let capH = cap.offsetHeight;
+      Object.defineProperty(cap, 'offsetHeight', {
+        configurable: true,
+        get: () => capH,
+      });
+      const before = viewport.scrollTop;
+
+      capH += 120;
+      (
+        scroller as unknown as {
+          onTailCapResize: () => void;
+        }
+      ).onTailCapResize();
+
+      expect(viewport.scrollTop).toBe(before + 120);
+      expect(scroller.getInfo().atBottom).toBe(true);
+
+      capH -= 120;
+      (
+        scroller as unknown as { onTailCapResize: () => void }
+      ).onTailCapResize();
+      expect(viewport.scrollTop).toBe(before);
+      expect(scroller.getInfo().atBottom).toBe(true);
+    },
+  );
+
+  it('tail cap: geometry preserves history position and composer attachment independently of content following', async () => {
+    const { hooks, setHeight } = controllableHooks();
     scroller = createKernel<number>({
       viewport,
       content,
       hooks,
       source: fakeSource(500),
+      config: { followBottom: false },
     });
     await scroller.init();
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
@@ -3895,17 +4020,31 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       configurable: true,
       get: () => capH,
     });
+    viewport.scrollTop -= 400;
     const before = viewport.scrollTop;
+    for (const height of [298, 0]) {
+      capH = height;
+      (
+        scroller as unknown as { onTailCapResize: () => void }
+      ).onTailCapResize();
+      expect(viewport.scrollTop).toBe(before);
+      expect(scroller.getInfo().atBottom).toBe(false);
+    }
 
-    capH += 120;
-    (
-      scroller as unknown as {
-        onTailCapResize: () => void;
-      }
-    ).onTailCapResize();
-
-    expect(viewport.scrollTop).toBe(before + 120);
+    scroller.scrollToBottom();
+    const bottomBefore = viewport.scrollTop;
+    capH = 298;
+    (scroller as unknown as { onTailCapResize: () => void }).onTailCapResize();
+    expect(viewport.scrollTop).toBe(bottomBefore + 298);
+    setHeight(499, 200);
+    expect(viewport.scrollTop).toBe(bottomBefore + 398);
     expect(scroller.getInfo().atBottom).toBe(true);
+
+    // Inserting content is not geometry stabilization: disabled following must still keep the reading position.
+    const beforeInsert = viewport.scrollTop;
+    expect(scroller.insertAfter(499, { id: 500, data: 500 })).toBe(true);
+    expect(viewport.scrollTop).toBe(beforeInsert);
+    expect(scroller.getInfo().atBottom).toBe(false);
   });
 
   it('tail cap: an idle newer waiter after a mid-history jump stays a quiet gap', async () => {
@@ -4019,25 +4158,33 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   // ── Viewport resize reflow: pin-on-shrink (soft keyboard), no balance/load jank ──
 
-  it('resize: shrink while pinned to bottom → re-pins to the new bottom (before the fix the bottom dropped below the fold)', async () => {
-    const { hooks } = controllableHooks(); // 100px/item
-    const vh = mutableVh(viewport, 600);
-    scroller = createKernel<number>({
-      viewport,
-      content,
-      hooks,
-      source: fakeSource(500),
-    });
-    await scroller.init(); // pinned to bottom with vh=600
-    expect(scroller.getInfo().atBottom).toBe(true);
-    const total = content.scrollHeight; // unchanged by a vh-only resize
-    vh.set(300); // keyboard shrinks the layout viewport
-    reflow(scroller);
-    // re-pinned to the new bottom. Before the fix the old viewportObs ran balance (a no-op at bottom) but never
-    // re-pinned → scrollTop stayed at scrollHeight-600 while vh became 300 → atBottom false (bottom 300px cut off).
-    expect(viewport.scrollTop).toBe(total - 300);
-    expect(scroller.getInfo().atBottom).toBe(true);
-  });
+  it.each([true, false])(
+    'resize: keyboard open/close preserves bottom with followBottom=%s',
+    async (followBottom) => {
+      const { hooks } = controllableHooks(); // 100px/item
+      const vh = mutableVh(viewport, 600);
+      scroller = createKernel<number>({
+        viewport,
+        content,
+        hooks,
+        source: fakeSource(500),
+        config: { followBottom },
+      });
+      await scroller.init(); // pinned to bottom with vh=600
+      expect(scroller.getInfo().atBottom).toBe(true);
+      const total = content.scrollHeight; // unchanged by a vh-only resize
+      vh.set(300); // keyboard shrinks the layout viewport
+      reflow(scroller);
+      // re-pinned to the new bottom. Before the fix the old viewportObs ran balance (a no-op at bottom) but never
+      // re-pinned → scrollTop stayed at scrollHeight-600 while vh became 300 → atBottom false (bottom 300px cut off).
+      expect(viewport.scrollTop).toBe(total - 300);
+      expect(scroller.getInfo().atBottom).toBe(true);
+      vh.set(600);
+      reflow(scroller);
+      expect(viewport.scrollTop).toBe(total - 600);
+      expect(scroller.getInfo().atBottom).toBe(true);
+    },
+  );
 
   it('resize: shrink mid-history → scrollTop anchor preserved (same line stays in view), no load/trim', async () => {
     const { hooks } = controllableHooks();
