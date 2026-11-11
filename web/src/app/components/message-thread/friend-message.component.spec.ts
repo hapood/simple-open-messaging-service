@@ -126,7 +126,10 @@ describe('MessageThreadComponent binding lifecycle', () => {
       },
     ];
     Object.assign(component, {
-      msgRepo: { deletedLive$, getMessageDeletions: vi.fn().mockResolvedValue([]) },
+      threadAdapter: {
+        deletedLive$,
+        getMessageDeletions: vi.fn().mockResolvedValue([]),
+      },
       galleryViewer: { closeIfDeleted: vi.fn() },
       fileDetail: { closeIfDeleted: vi.fn() },
       messageInteraction: { removeMessage: vi.fn() },
@@ -149,9 +152,15 @@ describe('MessageThreadComponent binding lifecycle', () => {
     component.bind();
     delete component.initScroller;
     component.initScroller(component.userMsgTrd());
-    const rendered = { el: document.createElement('div'), update: vi.fn(), destroy: vi.fn() };
+    const rendered = {
+      el: document.createElement('div'),
+      update: vi.fn(),
+      destroy: vi.fn(),
+    };
     component.scroller.getMountedGeometry = (seq: number) =>
-      mounted.some((item) => item.id === seq || item.ids?.includes(seq)) ? { el: rendered.el } : null;
+      mounted.some((item) => item.id === seq || item.ids?.includes(seq))
+        ? { el: rendered.el }
+        : null;
     component.bindMessageDeletion(rendered, mounted[0]);
     deletedLive$.next({
       threadId: 99,
@@ -164,9 +173,16 @@ describe('MessageThreadComponent binding lifecycle', () => {
     });
     // Cleanup is synchronous, but only the mounted observer may mutate the row.
     expect(component.scroller.mutateItem).not.toHaveBeenCalled();
-    expect(component.galleryViewer.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(6, 11);
-    expect(component.fileDetail.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(6, 11);
-    expect(component.messageInteraction.removeMessage).toHaveBeenCalledExactlyOnceWith(11);
+    expect(
+      component.galleryViewer.closeIfDeleted,
+    ).toHaveBeenCalledExactlyOnceWith(6, 11);
+    expect(component.fileDetail.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(
+      6,
+      11,
+    );
+    expect(
+      component.messageInteraction.removeMessage,
+    ).toHaveBeenCalledExactlyOnceWith(11);
     await Promise.resolve();
     await Promise.resolve();
     expect(component.scroller.mutateItem).toHaveBeenCalledTimes(1);
@@ -197,9 +213,16 @@ describe('MessageThreadComponent binding lifecycle', () => {
     await Promise.resolve();
     expect(mounted).toEqual([]);
     expect(component.scroller.mutateItem).not.toHaveBeenCalled();
-    expect(component.galleryViewer.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(6, 12);
-    expect(component.fileDetail.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(6, 12);
-    expect(component.messageInteraction.removeMessage).toHaveBeenCalledExactlyOnceWith(12);
+    expect(
+      component.galleryViewer.closeIfDeleted,
+    ).toHaveBeenCalledExactlyOnceWith(6, 12);
+    expect(component.fileDetail.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(
+      6,
+      12,
+    );
+    expect(
+      component.messageInteraction.removeMessage,
+    ).toHaveBeenCalledExactlyOnceWith(12);
     component.deletionSurfaceSubscription.unsubscribe();
     expect(deletedLive$.observed).toBe(false);
   });
@@ -207,12 +230,16 @@ describe('MessageThreadComponent binding lifecycle', () => {
   it('does not run a second deletion path from a withdrawal HTTP acknowledgement', () => {
     const { component } = pane();
     Object.assign(component, {
-      threadAdapter: { withdrawMessage: vi.fn(() => of({ code: BusinessCode.OK })) },
+      threadAdapter: {
+        withdrawMessage: vi.fn(() => of({ code: BusinessCode.OK })),
+      },
       replaceMountedDeletedMessage: vi.fn(),
       closeDeletedMessageSurfaces: vi.fn(),
     });
     component.withdrawMessage(6, 10);
-    expect(component.threadAdapter.withdrawMessage).toHaveBeenCalledExactlyOnceWith({ threadId: 6, seq: 10 });
+    expect(
+      component.threadAdapter.withdrawMessage,
+    ).toHaveBeenCalledExactlyOnceWith({ threadId: 6, seq: 10 });
     expect(component.replaceMountedDeletedMessage).not.toHaveBeenCalled();
     expect(component.closeDeletedMessageSurfaces).not.toHaveBeenCalled();
   });
@@ -249,7 +276,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
       return [fact];
     });
     Object.assign(component, {
-      msgRepo: { deletedLive$, getMessageDeletions },
+      threadAdapter: { deletedLive$, getMessageDeletions },
       galleryViewer: { closeIfDeleted: vi.fn() },
       fileDetail: { closeIfDeleted: vi.fn() },
       messageInteraction: { removeMessage: vi.fn() },
@@ -320,7 +347,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     component.bind();
     const deletedLive$ = new Subject();
     let resolve!: (value: unknown) => void;
-    component.msgRepo = {
+    component.threadAdapter = {
       deletedLive$,
       getMessageDeletions: vi.fn(
         () =>
@@ -342,10 +369,9 @@ describe('MessageThreadComponent binding lifecycle', () => {
     resolve([{ seq: 10, type: 'MODERATION_REMOVAL' }]);
     await Promise.resolve();
     await Promise.resolve();
-    expect(component.replaceMountedDeletedMessage).toHaveBeenCalledExactlyOnceWith(
-      10,
-      'MODERATION_REMOVAL',
-    );
+    expect(
+      component.replaceMountedDeletedMessage,
+    ).toHaveBeenCalledExactlyOnceWith(10, 'MODERATION_REMOVAL');
     rendered.destroy();
     component.replaceMountedDeletedMessage.mockClear();
     const replacement = {
@@ -371,10 +397,9 @@ describe('MessageThreadComponent binding lifecycle', () => {
     resolve([{ seq: 10, type: 'USER_RETRACTION' }]);
     await Promise.resolve();
     await Promise.resolve();
-    expect(component.replaceMountedDeletedMessage).toHaveBeenCalledExactlyOnceWith(
-      10,
-      'USER_RETRACTION',
-    );
+    expect(
+      component.replaceMountedDeletedMessage,
+    ).toHaveBeenCalledExactlyOnceWith(10, 'USER_RETRACTION');
     successor.destroy();
     expect(deletedLive$.observed).toBe(false);
   });
@@ -491,8 +516,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
       };
       Object.assign(component, {
         scroller,
-        msgRepo: { deletedLive$: deleted },
-        threadAdapter: { createSource: () => source },
+        threadAdapter: { deletedLive$: deleted, createSource: () => source },
         optimistic: { bind: vi.fn(), reset: vi.fn() },
         transferStackRef: () => undefined,
         contentRef: () => ({ nativeElement: { querySelector: () => null } }),
@@ -785,8 +809,8 @@ describe('MessageThreadComponent binding lifecycle', () => {
     const error = new Error('history unavailable');
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     Object.assign(component, {
-      msgRepo: { deletedLive$: new Subject() },
       threadAdapter: {
+        deletedLive$: new Subject(),
         createSource: () => ({ getPending: () => [], destroy: vi.fn() }),
       },
       scroller: { bind: vi.fn(), init: () => Promise.reject(error) },

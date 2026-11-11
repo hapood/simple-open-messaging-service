@@ -1,5 +1,6 @@
 import { inject, Injectable, signal } from '@angular/core';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
+import type { MessageDeletionFact } from '../app/components/message-thread/mounted-message-deletion';
 import type {
   CbConfig,
   CbItem,
@@ -70,6 +71,24 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     followBottom: true,
   });
 
+  private readonly deletions = new Map<
+    number,
+    Map<number, MessageDeletionFact>
+  >();
+  private readonly deletionEvents = new Subject<{
+    threadId: number;
+    deletions: MessageDeletionFact[];
+  }>();
+  readonly deletedLive$ = this.deletionEvents.asObservable();
+
+  override async getMessageDeletions(threadId: number, seqs: number[]) {
+    const facts = this.deletions.get(threadId);
+    return [...new Set(seqs)].flatMap((seq) => {
+      const fact = facts?.get(seq);
+      return fact ? [{ ...fact }] : [];
+    });
+  }
+
   private readonly sources = new Map<number, MockItemSource>();
   private readonly groupSources = new WeakSet<MessageThreadSource>();
   private readonly state = inject(PlaygroundSocialState);
@@ -97,6 +116,9 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       this.groupSenderCount(),
     );
     if (isGroupConversation) this.groupSources.add(source);
+    for (const seq of this.deletions.get(conversation.threadId)?.keys() ?? []) {
+      source.withdraw(seq);
+    }
     this.sources.set(conversation.threadId, source);
     return source;
   }
@@ -209,6 +231,22 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   override withdrawMessage(request: { threadId: number; seq: number }) {
     this.sources.get(request.threadId)?.withdraw(request.seq);
+    let facts = this.deletions.get(request.threadId);
+    if (!facts) {
+      facts = new Map();
+      this.deletions.set(request.threadId, facts);
+    }
+    if (!facts.has(request.seq)) {
+      const fact: MessageDeletionFact = {
+        seq: request.seq,
+        type: 'USER_RETRACTION',
+      };
+      facts.set(request.seq, fact);
+      this.deletionEvents.next({
+        threadId: request.threadId,
+        deletions: [{ ...fact }],
+      });
+    }
     return of({ code: 0, message: 'ok' });
   }
 

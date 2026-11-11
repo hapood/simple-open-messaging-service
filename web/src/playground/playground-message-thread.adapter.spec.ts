@@ -21,6 +21,51 @@ function makeAdapter(): PlaygroundMessageThreadAdapter {
 }
 
 describe('PlaygroundMessageThreadAdapter', () => {
+  it('shares withdrawal facts with live observers and replacement sources without a database', async () => {
+    const adapter = makeAdapter();
+    adapter.sourceLatency.set(0);
+    const conversation = createGroupConversation({
+      threadId: PLAYGROUND_TEAM_THREAD_ID,
+      account: '!playground',
+      publisherNamespaceId: 0,
+      profileRev: 1,
+    });
+    const callbacks = { onNewerAvailable: () => {}, onMediaStatus: () => {} };
+    const source = adapter.createSource(conversation, callbacks);
+    const items = await source.init(-1, 20, 0);
+    const seq = items.find((item) => item.data.type === 'msg')!.id;
+    const event = vi.fn();
+    const subscription = adapter.deletedLive$.subscribe(event);
+    expect(
+      await adapter.getMessageDeletions(conversation.threadId, [seq]),
+    ).toEqual([]);
+    await firstValueFrom(
+      adapter.withdrawMessage({ threadId: conversation.threadId, seq }),
+    );
+    await firstValueFrom(
+      adapter.withdrawMessage({ threadId: conversation.threadId, seq }),
+    );
+    const fact = { seq, type: 'USER_RETRACTION' };
+    expect(event).toHaveBeenCalledExactlyOnceWith({
+      threadId: conversation.threadId,
+      deletions: [fact],
+    });
+    expect(
+      await adapter.getMessageDeletions(conversation.threadId, [seq, seq]),
+    ).toEqual([fact]);
+    expect(await adapter.getMessageDeletions(-999, [seq])).toEqual([]);
+    expect(
+      await adapter.getMessageDeletions(conversation.threadId, []),
+    ).toEqual([]);
+    const replacement = adapter.createSource(conversation, callbacks);
+    expect(
+      (await replacement.init(-1, 20, 0)).some((item) => item.id === seq),
+    ).toBe(false);
+    subscription.unsubscribe();
+    source.destroy?.();
+    replacement.destroy?.();
+  });
+
   it('delivers live ticker messages into the open group source with parsed mentions', () => {
     const state = TestBed.inject(PlaygroundSocialState);
     state.initialize();

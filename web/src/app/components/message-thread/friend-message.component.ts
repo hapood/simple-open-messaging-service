@@ -97,7 +97,6 @@ import { ChatboxStickyOverlaysComponent } from '../message-cards/chatbox-sticky-
 import { uuid } from '../../lib/uuid';
 import { assetUrl, isAndroidNative } from '../../services/runtime';
 import { SessionLifecycleService } from '../../services/session-lifecycle.service';
-import { MessageRepository } from '../../services/message-repository.service';
 import {
   MediaAvailabilityRegistration,
   MediaAvailabilityService,
@@ -317,7 +316,6 @@ export class MessageThreadComponent implements OnDestroy {
   });
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
-  private readonly msgRepo = inject(MessageRepository);
   private readonly mediaAvailability = inject(MediaAvailabilityService);
   private readonly userService = inject(UserService);
   readonly selfUserId = computed(() => this.userService.sessionProfile()?.id);
@@ -1311,15 +1309,16 @@ export class MessageThreadComponent implements OnDestroy {
   private initScroller(trd: ConversationItem): void {
     const binding = this.lifecycle.binding;
     if (!binding || !this.scroller) return;
-    this.deletionSurfaceSubscription = this.msgRepo.deletedLive$.subscribe({
-      next: ({ threadId, deletions }) => {
-        if (threadId !== binding.threadId) return;
-        // The thread subscription owns detached surfaces only. Each mounted body
-        // owns its own row mutation, including the durable post-mount recheck.
-        for (const { seq } of deletions)
-          this.closeDeletedMessageSurfaces(threadId, seq);
-      },
-    });
+    this.deletionSurfaceSubscription =
+      this.threadAdapter.deletedLive$.subscribe({
+        next: ({ threadId, deletions }) => {
+          if (threadId !== binding.threadId) return;
+          // The thread subscription owns detached surfaces only. Each mounted body
+          // owns its own row mutation, including the durable post-mount recheck.
+          for (const { seq } of deletions)
+            this.closeDeletedMessageSurfaces(threadId, seq);
+        },
+      });
     this.openMessageWindow(trd);
   }
 
@@ -1584,7 +1583,7 @@ export class MessageThreadComponent implements OnDestroy {
       unregister = undefined;
       if (!seqs.length) return;
       unregister = watchMountedMessageDeletions(
-        this.msgRepo,
+        this.threadAdapter,
         binding.threadId,
         seqs,
         binding.signal,

@@ -24,6 +24,10 @@ import type {
   UploadProgressHandler,
 } from '../../services/message.service';
 import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
+import type {
+  MountedMessageDeletionStore,
+  MessageDeletionFact,
+} from './mounted-message-deletion';
 import type { HistoryAnchor } from '../../services/history-anchor';
 
 export interface MessageThreadLiveCallbacks {
@@ -117,7 +121,15 @@ export interface MediaStageState {
 }
 
 /** Runtime boundary for the production chatbox. Alternate hosts replace data and transport, never its UI. */
-export abstract class MessageThreadAdapter {
+export abstract class MessageThreadAdapter
+  implements MountedMessageDeletionStore
+{
+  abstract readonly deletedLive$: MountedMessageDeletionStore['deletedLive$'];
+  abstract getMessageDeletions(
+    threadId: number,
+    seqs: number[],
+  ): Promise<MessageDeletionFact[]>;
+
   abstract createSource(
     conversation: ConversationItem,
     callbacks: MessageThreadLiveCallbacks,
@@ -220,6 +232,12 @@ export abstract class MessageThreadAdapter {
 @Injectable({ providedIn: 'root' })
 class ProductionMessageThreadAdapter extends MessageThreadAdapter {
   private readonly repository = inject(MessageRepository);
+  readonly deletedLive$ = this.repository.deletedLive$;
+
+  override getMessageDeletions(threadId: number, seqs: number[]) {
+    return this.repository.getMessageDeletions(threadId, seqs);
+  }
+
   private readonly users = inject(UserService);
   private readonly outbox = inject(ThreadSendOutbox);
   private readonly profiles = inject(ProfileRepository);
