@@ -12,6 +12,9 @@ jobs:
   verify:
     uses: ./.github/workflows/verify.yml
 
+  windows:
+    uses: ./.github/workflows/windows.yml
+
   docker:
     runs-on: ubuntu-latest
     steps:

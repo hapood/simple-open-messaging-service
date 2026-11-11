@@ -25,7 +25,7 @@ build-type taxonomy (all land in `dist/android/`):
 | `make install` / `make run` | `adb install -r` (+ launch) the newest APK |
 
 Artifacts land under `dist/<platform>/` (`dist/android/`, `dist/linux/`, and `dist/macos/` now;
-`dist/windows/` slots in when that host is wired). The build runs natively, so the cargo (`~/.cargo`) and
+`dist/windows/` is populated by the Windows CI workflow). The build runs natively, so the cargo (`~/.cargo`) and
 gradle (`~/.gradle`) caches persist across runs; the first build after a `Cargo.lock` change fetches
 crates (set `HTTP_PROXY`/`HTTPS_PROXY` or a `~/.cargo/config.toml` mirror if behind a proxy), and later
 warm builds need no network. Gradle is Java and ignores the `*_proxy` env vars; if your shell has a
@@ -139,11 +139,31 @@ npm --prefix web install                                  # so beforeBuildComman
 Android-gradle-only). Pin it to `2.11.4` to match `web/package.json`'s `@tauri-apps/cli` — the same
 version-drift guard the Makefile's host-toolchain check enforces.
 
-## Windows desktop build (future — not wired)
+## Windows desktop build
 
-> Windows (msi/nsis) bundles remain **future** work — the MSVC toolchain cannot be cross-built from
-> this Linux/macOS host. Build on a Windows host or a `windows-latest` CI runner (the
-> industry-standard `tauri-apps/tauri-action` matrix) when it is wired.
+CI builds x64 and ARM64 NSIS installers on `windows-latest` and `windows-11-arm`,
+respectively, and runs the shared Rust tests natively on each architecture.
+Both CI and Release use [the Windows workflow](../.github/workflows/windows.yml).
+Download the `soms-windows-x86_64` and `soms-windows-arm64` artifacts from ordinary
+CI runs; tagged releases attach both installers and architecture-specific
+`SHA256SUMS.windows-*` files to the GitHub Release.
+
+For a local build on Windows with Node.js 24, the Rust MSVC toolchain, Visual Studio
+C++ Build Tools, and WebView2 installed, run from the repository root:
+
+```powershell
+npm ci --prefix web
+node web/node_modules/@tauri-apps/cli/tauri.js build --ci --target x86_64-pc-windows-msvc --bundles nsis
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+```
+
+The installer is generated under
+`src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`; CI copies it to
+`src-tauri/dist/windows/` with a versioned name. Builds are unsigned, so Windows
+may display an unknown-publisher or SmartScreen warning. For ARM64 builds on an
+ARM64 Windows host, substitute `aarch64-pc-windows-msvc` for the x64 target above.
+MSI packages are not currently built. Windows builds require a Windows host,
+not the Linux/macOS Makefile.
 
 ### China mirror / proxy (cargo)
 

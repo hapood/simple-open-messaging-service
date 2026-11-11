@@ -207,8 +207,15 @@ jobs:
             src-tauri/dist/macos/SOMS-*.dmg
             src-tauri/dist/macos/SHA256SUMS.macos
           if-no-files-found: error
+  windows:
+    needs: prepare
+    uses: ./.github/workflows/windows.yml
+    with:
+      ref: ${{ needs.prepare.outputs.commit }}
+      release-tag: ${{ inputs.tag || github.ref_name }}
+
   publish:
-    needs: [prepare, android, linux, macos]
+    needs: [prepare, android, linux, macos, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -231,6 +238,12 @@ jobs:
         with:
           name: soms-macos-release
           path: release-assets/macos
+      - name: Download Windows release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: soms-windows-*
+          merge-multiple: true
+          path: release-assets/windows
       - name: Extract release notes from changelog
         run: |
           node --input-type=module <<'NODE'
@@ -265,7 +278,8 @@ jobs:
               release-assets/*.apk release-assets/SHA256SUMS \
               release-assets/linux/SOMS-*.AppImage release-assets/linux/SOMS-*.deb \
               release-assets/linux/SHA256SUMS.linux \
-              release-assets/macos/SOMS-*.dmg release-assets/macos/SHA256SUMS.macos --clobber
+              release-assets/macos/SOMS-*.dmg release-assets/macos/SHA256SUMS.macos \
+              release-assets/windows/SOMS-*.exe release-assets/windows/SHA256SUMS.windows-* --clobber
           else
             RELEASE_FLAGS=()
             if [[ "$RELEASE_TAG" == *-* ]]; then
@@ -276,5 +290,6 @@ jobs:
               release-assets/linux/SOMS-*.AppImage release-assets/linux/SOMS-*.deb \
               release-assets/linux/SHA256SUMS.linux \
               release-assets/macos/SOMS-*.dmg release-assets/macos/SHA256SUMS.macos \
+              release-assets/windows/SOMS-*.exe release-assets/windows/SHA256SUMS.windows-* \
               --verify-tag --notes-file "$RUNNER_TEMP/release-notes.md" "${RELEASE_FLAGS[@]}"
           fi
