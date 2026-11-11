@@ -176,6 +176,7 @@ define do_build
 	  $(TAURI) android build --apk $$dbflag $$targs --config '{"build":{"beforeBuildCommand":""}}'; \
 	  built=$$(find $(RAW_APK_DIR) -name '*$(1).apk' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); \
 	  test -n "$$built" || { echo "  ✗ no APK produced for $$tag"; exit 1; }; \
+	  python3 "$(MAKE_DIR)scripts/check-apk-alignment.py" "$$built"; \
 	  out=$(DIST_DIR)/soms-$(VERSION)$$dsuffix-$$tag.apk; \
 	  cp "$$built" "$$out"; \
 	  echo "✓ $$(basename $$out)  ($$(du -h "$$built" | cut -f1))  ABIs: [$(call apk_abis,$$built)]"; \
