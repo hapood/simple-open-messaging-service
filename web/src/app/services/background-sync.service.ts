@@ -2,8 +2,8 @@ import { Injectable, signal } from '@angular/core';
 
 /** FCM status shape returned by the `SomsFcm.getFcmStatus` bridge (JSON-decoded). */
 export interface FcmStatus {
-  /** True when an FCM token has been obtained — the proxy for "FCM available on this device"
-   *  (Google Play Services present). False on domestic devices without GMS, or before the first fetch. */
+  /** Whether native currently holds an FCM token. Absence does not imply missing Play services:
+   *  configuration, connectivity, or an in-flight fetch can also leave the token unavailable. */
   hasToken: boolean;
   /** Epoch ms of the last FCM availability check. 0 = never. */
   lastCheck: number;
@@ -50,7 +50,7 @@ export class BackgroundSyncService {
       : true,
   );
 
-  /** FCM availability snapshot, read once at boot. Refreshed by [requestFcmCheck]. */
+  /** Native FCM diagnostics, refreshed while the push settings panel is visible. */
   readonly fcmStatus = signal<FcmStatus>(this.readFcmStatus());
 
   /** System notification-permission snapshot, read once at boot. Refreshed by [refreshNotifStatus] (panel
@@ -112,7 +112,12 @@ export class BackgroundSyncService {
    *  The Kotlin fetch is async, so the status is re-read after a short delay to reflect the result. */
   requestFcmCheck(): void {
     window.SomsFcm?.requestFcmCheck?.();
-    window.setTimeout(() => this.fcmStatus.set(this.readFcmStatus()), 2500);
+    window.setTimeout(() => this.refreshFcmStatus(), 2500);
+  }
+
+  /** Read current native diagnostics without starting a token fetch. */
+  refreshFcmStatus(): void {
+    this.fcmStatus.set(this.readFcmStatus());
   }
 
   private readFcmStatus(): FcmStatus {

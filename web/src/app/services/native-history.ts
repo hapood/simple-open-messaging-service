@@ -14,9 +14,10 @@ export function nativeHistoryRequest(
   userId: number,
   threadId: number,
   demand: NativeMessageHistoryDemand,
-  signal?: AbortSignal,
+  signal: AbortSignal,
+  knownNewestSeq: number | undefined,
 ): Promise<NativeMessageHistoryResult> {
-  signal?.throwIfAborted();
+  signal.throwIfAborted();
   const Channel = window.__TAURI__?.core?.Channel;
   if (!Channel)
     return Promise.reject(new Error('native IPC channel unavailable'));
@@ -30,7 +31,7 @@ export function nativeHistoryRequest(
       );
     };
     const cleanup = () => {
-      signal?.removeEventListener('abort', abort);
+      signal.removeEventListener('abort', abort);
       window.removeEventListener('pagehide', abort);
     };
     const abort = () => {
@@ -40,7 +41,7 @@ export function nativeHistoryRequest(
       cleanup();
       if (id) cancel(id);
       reject(
-        signal?.reason ??
+        signal.reason ??
           new DOMException('History consumer closed', 'AbortError'),
       );
     };
@@ -51,9 +52,9 @@ export function nativeHistoryRequest(
       if (event.state === 'ready') resolve(event.result);
       else reject(new Error(event.reason));
     });
-    signal?.addEventListener('abort', abort, { once: true });
+    signal.addEventListener('abort', abort, { once: true });
     window.addEventListener('pagehide', abort, { once: true });
-    if (signal?.aborted) {
+    if (signal.aborted) {
       abort();
       return;
     }
@@ -61,6 +62,7 @@ export function nativeHistoryRequest(
       userId,
       threadId,
       demand,
+      knownNewestSeq,
       events,
     }).then(
       (requestId) => {

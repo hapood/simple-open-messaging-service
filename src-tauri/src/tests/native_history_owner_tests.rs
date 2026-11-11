@@ -256,6 +256,49 @@ async fn newly_created_thread_has_no_known_head() {
 }
 
 #[tokio::test]
+async fn newer_uses_committed_feed_and_opening_head_without_claiming_coverage() {
+    for (feed, cached, opening, expected) in [
+        (20, 19, None, 20),
+        (19, 19, Some(20), 20),
+        (20, 19, Some(18), 20),
+        (18, 20, Some(19), 20),
+    ] {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = ServerSessionState::new();
+        origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
+        let owner = owner();
+        owner.with_database(|conn| {
+            conn.execute(
+                "UPDATE threads SET message_end_seq=?1,message_head=?2 WHERE thread_id=7",
+                params![feed, cached],
+            ).map_err(|e| e.to_string())?;
+            assert!(load_message_ranges(conn, 42, 7)?.is_empty());
+            Ok(())
+        }).unwrap();
+        let serving = tokio::spawn(async move {
+            let (mut socket, _) = server.accept().await.unwrap();
+            assert_eq!(read_query(&mut socket).await,
+                json!({"threadId":7,"after":19,"through":expected,"take":50}));
+            respond(&mut socket, page(&[20], 20)).await;
+        });
+        let result = tokio::time::timeout(Duration::from_secs(5),
+            intent(&owner, &proxy).get_with_head(
+                NativeHistoryDemand::Newer { after: 19, count: 50 }, opening,
+            ),
+        ).await.unwrap().unwrap();
+        assert_eq!(sequences(result), [20]);
+        serving.await.unwrap();
+        let work = owner.capture_database_work().unwrap();
+        assert_eq!(read_native_message_head(&work, 42, 7).await.unwrap(), Some(20));
+        // A later stale opening must not lower the retained bound, even without HTTP work.
+        intent(&owner, &proxy).get_with_head(
+            NativeHistoryDemand::Newer { after: 20, count: 50 }, Some(18),
+        ).await.unwrap();
+        assert_eq!(read_native_message_head(&work, 42, 7).await.unwrap(), Some(20));
+    }
+}
+
+#[tokio::test]
 async fn cursor_recovery_reuses_the_original_request_context() {
     let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();

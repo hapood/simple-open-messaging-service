@@ -160,7 +160,7 @@ export class MessageRepository {
   async queryNativeMessageHistory(
     threadId: number,
     demand: NativeMessageHistoryDemand,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<NativeMessageHistoryResult> {
     const scope = this.sessionLifecycle.capture();
     if (!isTauri())
@@ -168,12 +168,23 @@ export class MessageRepository {
     const userId = this.userService.sessionUserId();
     if (userId === null)
       throw new Error('native message history requested without a session');
-    const result = await nativeHistoryRequest(userId, threadId, demand, signal);
-    signal?.throwIfAborted();
+    const liveHead = Math.max(
+      this.maxSeenSeq.get(threadId) ?? -1,
+      this.newerTruncateSeq.get(threadId) ?? -1,
+    );
+    const result = await nativeHistoryRequest(
+      userId,
+      threadId,
+      demand,
+      signal,
+      demand.kind !== 'localLatest' && liveHead >= 0 ? liveHead : undefined,
+    );
+    signal.throwIfAborted();
     if (!this.sessionLifecycle.isCurrent(scope))
       throw new Error('account session expired during native history query');
-    if (this.userService.sessionUserId() === userId)
-      this.slotsChanged.next(threadId);
+    // Rust publishes messageDbCommitted$ for actual writes. A completed cache read
+    // is not a mutation: signalling it here feeds metadata refresh back into the
+    // pending newer demand, repeatedly querying an already exhausted tail.
     return result;
   }
 

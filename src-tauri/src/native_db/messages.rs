@@ -743,7 +743,12 @@ async fn read_native_message_head(
     super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let head: Option<i64> = conn
             .query_row(
-                "SELECT message_head FROM threads WHERE user_id=?1 AND thread_id=?2",
+                // A committed thread feed can advance beyond the last history scan. Both
+                // are known server bounds, not proof that message bodies are cached.
+                // Preserve unknown for a structural placeholder with no history/head yet.
+                "SELECT CASE WHEN message_head IS NULL AND message_end_seq=0 THEN NULL
+                   ELSE MAX(COALESCE(message_head,0),message_end_seq) END
+                 FROM threads WHERE user_id=?1 AND thread_id=?2",
                 params![user_id, thread_id],
                 |row| row.get::<_, Option<i64>>(0),
             )
@@ -1244,6 +1249,30 @@ pub(crate) async fn commit_native_message_page(
 }
 
 impl NativeHistoryIntent {
+    /// Retain an opening/live hint under the captured login before walking history.
+    /// This is a server ceiling only; it never certifies local range coverage.
+    pub(super) async fn get_with_head(
+        self,
+        demand: NativeHistoryDemand,
+        known_newest_seq: Option<i64>,
+    ) -> Result<NativeHistoryResult, String> {
+        if let Some(seq) = known_newest_seq {
+            if seq < 0 {
+                return Err("native history has an invalid newest hint".into());
+            }
+            let user_id = self.user_id;
+            let thread_id = self.thread_id;
+            super::spawn_owned_database(Ok(self.work.clone()), move |conn| {
+                let tx = conn.transaction().map_err(|error| error.to_string())?;
+                update_message_head(&tx, user_id, thread_id, seq)?;
+                tx.commit().map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| format!("join native history head retention: {error}"))??;
+        }
+        self.get(demand).await
+    }
+
     pub(super) async fn get(
         mut self,
         demand: NativeHistoryDemand,
@@ -1290,11 +1319,16 @@ impl NativeHistoryIntent {
                 known_newest_seq,
             } => {
                 let count = validate_count(count)?;
-                let (server_lower, upper) = match known_newest_seq {
-                    Some(seq) if seq >= 0 => (lower, seq),
-                    Some(_) => {
-                        return Err("native latest demand has an invalid newest hint".to_string())
-                    }
+                if known_newest_seq.is_some_and(|seq| seq < 0) {
+                    return Err("native latest demand has an invalid newest hint".to_string());
+                }
+                let known = read_native_message_head(&work, user_id, thread_id)
+                    .await?
+                    .into_iter()
+                    .chain(known_newest_seq)
+                    .max();
+                let (server_lower, upper) = match known {
+                    Some(seq) => (lower, seq),
                     None => bootstrap_message_bounds(&work, &mut self.request, thread_id).await?,
                 };
                 let lower = lower.max(server_lower);
@@ -1327,11 +1361,16 @@ impl NativeHistoryIntent {
                 }
                 let older_count = validate_count(older_count)?;
                 let newer_count = validate_count(newer_count)?;
-                let (server_lower, upper) = match known_newest_seq {
-                    Some(seq) if seq >= 0 => (lower, seq),
-                    Some(_) => {
-                        return Err("native around demand has an invalid newest hint".to_string())
-                    }
+                if known_newest_seq.is_some_and(|seq| seq < 0) {
+                    return Err("native around demand has an invalid newest hint".to_string());
+                }
+                let known = read_native_message_head(&work, user_id, thread_id)
+                    .await?
+                    .into_iter()
+                    .chain(known_newest_seq)
+                    .max();
+                let (server_lower, upper) = match known {
+                    Some(seq) => (lower, seq),
                     None => bootstrap_message_bounds(&work, &mut self.request, thread_id).await?,
                 };
                 let lower = lower.max(server_lower);

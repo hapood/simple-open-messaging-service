@@ -29,6 +29,24 @@ describe('native history transport', () => {
     window.__TAURI__ = original;
   });
 
+  it('passes the known opening ceiling to the Rust-owned history walk', async () => {
+    const pending = nativeHistoryRequest(
+      1,
+      42,
+      { kind: 'newer', after: 19, count: 50 },
+      new AbortController().signal,
+      20,
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      'native_message_history_start',
+      expect.objectContaining({ userId: 1, threadId: 42, knownNewestSeq: 20 }),
+    );
+    const result = { items: [], hasOlder: true, hasNewer: false, failed: false };
+    emit({ state: 'ready', result });
+    registered('completed');
+    expect(await pending).toEqual(result);
+  });
+
   it('cancels a handle returned after unbind and ignores late events', async () => {
     const controller = new AbortController();
     const pending = nativeHistoryRequest(
@@ -36,6 +54,7 @@ describe('native history transport', () => {
       42,
       { kind: 'latest', count: 10 },
       controller.signal,
+      undefined,
     );
     const rejected = expect(pending).rejects.toMatchObject({
       name: 'AbortError',
@@ -58,6 +77,7 @@ describe('native history transport', () => {
       42,
       { kind: 'latest', count: 10 },
       controller.signal,
+      undefined,
     );
     const result = {
       items: [],
@@ -74,7 +94,13 @@ describe('native history transport', () => {
   });
 
   it('sends cancellation on pagehide for an active registration', async () => {
-    const pending = nativeHistoryRequest(1, 42, { kind: 'latest', count: 10 });
+    const pending = nativeHistoryRequest(
+      1,
+      42,
+      { kind: 'latest', count: 10 },
+      new AbortController().signal,
+      undefined,
+    );
     const rejected = expect(pending).rejects.toMatchObject({
       name: 'AbortError',
     });
@@ -88,10 +114,22 @@ describe('native history transport', () => {
   });
 
   it('pairs same-thread results with their own channels despite reversed replies', async () => {
-    const first = nativeHistoryRequest(1, 42, { kind: 'latest', count: 10 });
+    const first = nativeHistoryRequest(
+      1,
+      42,
+      { kind: 'latest', count: 10 },
+      new AbortController().signal,
+      undefined,
+    );
     const firstEmit = emit;
     const firstRegistered = registered;
-    const second = nativeHistoryRequest(1, 42, { kind: 'latest', count: 20 });
+    const second = nativeHistoryRequest(
+      1,
+      42,
+      { kind: 'latest', count: 20 },
+      new AbortController().signal,
+      undefined,
+    );
     const secondEmit = emit;
     const secondRegistered = registered;
     const firstResult = {
@@ -126,13 +164,20 @@ describe('native history transport', () => {
       42,
       { kind: 'latest', count: 10 },
       controller.signal,
+      undefined,
     );
     const firstEmit = emit;
     const firstRegistered = registered;
     const rejected = expect(first).rejects.toMatchObject({
       name: 'AbortError',
     });
-    const second = nativeHistoryRequest(1, 42, { kind: 'latest', count: 10 });
+    const second = nativeHistoryRequest(
+      1,
+      42,
+      { kind: 'latest', count: 10 },
+      new AbortController().signal,
+      undefined,
+    );
     const secondEmit = emit;
     registered('sibling');
     controller.abort();
@@ -164,6 +209,7 @@ describe('native history transport', () => {
         42,
         { kind: 'latest', count: 10 },
         controller.signal,
+        undefined,
       ),
     ).toThrow();
     expect(invoke).not.toHaveBeenCalled();

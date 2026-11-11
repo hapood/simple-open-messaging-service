@@ -70,6 +70,7 @@ pub(crate) fn native_message_history_start(
     user_id: i64,
     thread_id: i64,
     demand: NativeHistoryDemand,
+    known_newest_seq: Option<i64>,
     events: tauri::ipc::Channel<HistoryEvent>,
 ) -> Result<String, String> {
     let intent = NativeHistoryIntent::capture(Some(&app), &proxy, user_id, thread_id)?;
@@ -79,7 +80,7 @@ pub(crate) fn native_message_history_start(
     let registration = Registration(id.clone());
     tauri::async_runtime::spawn(async move {
         let _registration = registration;
-        if let Some(result) = run_until_cancelled(&token, intent.get(demand)).await {
+        if let Some(result) = run_until_cancelled(&token, intent.get_with_head(demand, known_newest_seq)).await {
             let event = match result {
                 Ok(result) => HistoryEvent::Ready { result },
                 Err(reason) => HistoryEvent::Failed { reason },
