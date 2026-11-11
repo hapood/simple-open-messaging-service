@@ -4,11 +4,18 @@
 
 ### Clients
 
+- Add Windows x64 and ARM64 NSIS installer builds to CI and release publishing,
+  with native Rust runtime tests on both architectures and SHA-256 checksums.
+  Installers are currently unsigned.
 - Add macOS and Linux alpha clients, desktop notifications, and a macOS Dock unread badge.
 - Unify native notification policy in Rust and align Web delivery, cooldowns, and
   click navigation. Silently restore surviving cards on restart where supported;
   Linux starts fresh without clearing old cards. Warn on uncertain delivery results
   without blocking later notifications.
+- Add system notifications for friend and group join requests across Web, desktop,
+  and Android, with clicks opening the corresponding request list or review panel.
+- Coordinate Web service-worker updates and session restoration to avoid startup
+  races between authentication, push registration, and notification delivery.
 - Fix Android startup hangs and native login restoration by making Rust the single
   owner of credential activation and session transitions.
 - Fix native profile and avatar updates, account cache initialization, and namespace
@@ -16,6 +23,8 @@
 - Preserve conversation drafts and composer state across message-window jumps and
   initial-load retries. Cancel abandoned window requests without cancelling
   account-level uploads or already-admitted database commits.
+- Reconcile refreshed messages and deletion notices without moving the reading
+  position, and persist deletion markers so stale cached messages do not reappear.
 - Improve synchronous cached-history pagination, message navigation, contact lookup,
   mentions, responsive layouts, and playground regression coverage.
 - Rework login methods with a Material 3 segmented selector and runtime language updates.
@@ -24,6 +33,8 @@
 
 ### Server and deployment
 
+- Prevent group creation from generating a spurious invitation or unread request
+  for the founding owner.
 - Expand administrator user, session, media, and federation diagnostic tools.
 - Unify daily quotas and add configurable per-file size limits.
 - Add TLS-ALPN-01 certificate challenges for standard-port deployments through
