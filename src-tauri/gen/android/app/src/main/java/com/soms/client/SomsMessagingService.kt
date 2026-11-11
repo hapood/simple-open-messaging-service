@@ -275,9 +275,9 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
                 .setContentText(d.body)
-                // Standard Android launcher badging: each active conversation card contributes the exact
-                // server-authored new-message count measured from the frozen foreground HWM. Supporting
-                // launchers aggregate these numbers; unsupported launchers may show only a dot.
+                // Standard notification badging only: supply this card's Rust-projected count, not an
+                // account-wide unread total. The launcher and system settings decide whether to show
+                // a number, a dot, or no badge. Do not maintain a separate OEM badge counter.
                 .setNumber(NotifThreadLogic.badgeNumber(d.count))
                 .setBadgeIconType(NotificationCompat.BADGE_ICON_NONE)
                 .setAutoCancel(true)

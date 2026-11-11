@@ -61,6 +61,48 @@ The current immediate foreground path removes the map entry before OS cancellati
 
 Clicks and Android auto-cancel need explicit lifecycle treatment. Click navigation is separate from read state; auto-cancel retirement must not be mistaken for a swipe callback (Android deleteIntent does not cover click cancellation).
 
+## Android app icon badges
+
+Android uses only standard notification badging. There is no OEM badge library,
+private launcher API, or independent account-wide badge counter. Rust owns each
+notification's projected count and lifecycle; Kotlin supplies that count through
+`NotificationCompat.Builder.setNumber`, preserving non-negative values without a
+visual cap. The launcher decides whether to display a number, a dot, or no badge;
+neither numeric display nor aggregation across cards is guaranteed.
+
+The Messages channel enables badging by default. Background sync, diagnostics,
+and call channels disable it by default. Existing channels and user settings are
+preserved; do not change channel IDs to bypass a user's choice. App notification
+permission, channel settings, and launcher badge settings remain authoritative.
+
+Badges follow active notifications, not the in-app unread total. Request cards may
+also contribute. Removing a card, including swipe, clear-all, and tap auto-cancel,
+can change the badge without marking messages read. Do not post synthetic or
+persistent notifications solely to keep a badge visible. Android notification
+settings explain this distinction and retain the existing system-settings link;
+there is no separate in-app badge toggle.
+
+Relevant implementation:
+
+- [Notification renderer and message channels](../src-tauri/gen/android/app/src/main/java/com/soms/client/SomsMessagingService.kt)
+- [Call channels](../src-tauri/gen/android/app/src/main/java/com/soms/client/CallService.kt)
+- [Count conversion tests](../src-tauri/gen/android/app/src/test/java/com/soms/client/NotifThreadLogicTest.kt)
+- [Android settings tests](../web/src/app/components/settings/settings-push.component.spec.ts)
+
+Device acceptance (requires real launcher validation, not just unit tests):
+
+- On a clean install, verify message-channel badging is enabled and background,
+  diagnostics, and call-channel badging is disabled.
+- Receive messages in multiple conversations; allow the launcher's native dot or
+  numeric representation without asserting a portable sum or display cap.
+- Swipe one card and clear all cards; verify unread messages remain unread even
+  if the badge changes. For a tap, distinguish notification removal from any
+  subsequent conversation-read action.
+- Disable notification permission, channel badging, and launcher badging where
+  available; verify there is no workaround that overrides these choices.
+- Reopen the app and upgrade it with existing channels; verify user settings are
+  preserved. Check both English and Chinese settings on a narrow screen.
+
 ## Lifecycle and recovery
 
 Logout/new-login must stop admission, settle or reconcile outstanding OS work, clear notifications, then release authentication admission. Avoid bolting login-field checks onto notification display/click payloads.

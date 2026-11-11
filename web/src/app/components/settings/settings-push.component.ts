@@ -100,11 +100,11 @@ import { SettingsPushProbeComponent } from './settings-push-probe.component';
             </div>
           </mat-list-item>
 
-          <mat-list-item>
-            <span matListItemTitle>{{ 'settings.fcm' | transloco }}</span>
-            <span matListItemLine class="hint">{{ fcmStatusLabel() }}</span>
-            <span matListItemLine class="hint">{{ fcmHint() }}</span>
-          </mat-list-item>
+          <div class="fcm-status-row" role="listitem">
+            <span>{{ 'settings.fcm' | transloco }}</span>
+            <p class="hint">{{ fcmStatusLabel() }}</p>
+            <p class="hint" data-testid="fcm-hint">{{ fcmHint() }}</p>
+          </div>
 
           <!-- Foreground service (real-time keep-alive) -->
           <mat-list-item>
@@ -201,10 +201,24 @@ import { SettingsPushProbeComponent } from './settings-push-probe.component';
         </mat-list>
         <app-settings-push-probe />
       </mat-card>
+      <p class="hint" data-testid="notification-badge-hint">
+        {{ 'settings.notifBadgeDesc' | transloco }}
+      </p>
     </section>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sub-page.scss',
+  styles: `
+    /* Diagnostics must wrap rather than be clipped by fixed-height list subtitles. */
+    .fcm-status-row {
+      padding: 12px 16px;
+      line-height: 24px;
+      overflow-wrap: anywhere;
+    }
+    .fcm-status-row p {
+      margin: 0;
+    }
+  `,
 })
 export class SettingsPushComponent implements OnInit, OnDestroy {
   readonly bgSync = inject(BackgroundSyncService);
@@ -255,10 +269,24 @@ export class SettingsPushComponent implements OnInit, OnDestroy {
       return this.transloco.translate('settings.fcmPlayServicesUnavailable', {
         status: local.playServicesStatus,
       });
-    if (local.tokenError)
-      return this.transloco.translate('settings.fcmTokenError', {
-        error: local.tokenError,
-      });
+    if (local.tokenError) {
+      // I/O failures can indicate connectivity or temporary provider unavailability,
+      // not a confirmed network outage or missing Google Play services.
+      const connectionError = [
+        'IOException',
+        'SocketTimeoutException',
+        'UnknownHostException',
+        'ConnectException',
+        'SERVICE_NOT_AVAILABLE',
+        'NETWORK_ERROR',
+      ].includes(local.tokenError);
+      return this.transloco.translate(
+        connectionError
+          ? 'settings.fcmConnectionError'
+          : 'settings.fcmTokenError',
+        { error: local.tokenError },
+      );
+    }
     return local.lastCheck
       ? this.transloco.translate('settings.fcmLastCheck', {
           time: dayjs(local.lastCheck).format('MM-DD HH:mm'),
@@ -303,10 +331,16 @@ export class SettingsPushComponent implements OnInit, OnDestroy {
     this.bgSync.openSystemSettings();
   }
 
-  /** Fresh read on panel open + on every window focus (the user returns from system settings with a
-   *  changed toggle). Zoneless CD is driven by the signal write inside refreshNotifStatus, so no NgZone. */
+  private fcmStatusTimer?: ReturnType<typeof setInterval>;
+
+  /** Read native diagnostics while this panel is open, including asynchronous token failures.
+   *  These reads never initiate token requests or change native retry policy. */
   ngOnInit(): void {
-    this.bgSync.refreshNotifStatus();
+    this.onFocusRefresh();
+    this.fcmStatusTimer = setInterval(() => {
+      if (document.visibilityState === 'visible')
+        this.bgSync.refreshFcmStatus();
+    }, 2500);
     window.addEventListener('focus', this.onFocusRefresh, { passive: true });
     document.addEventListener('visibilitychange', this.onVisibilityRefresh, {
       passive: true,
@@ -314,14 +348,16 @@ export class SettingsPushComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    clearInterval(this.fcmStatusTimer);
     window.removeEventListener('focus', this.onFocusRefresh);
     document.removeEventListener('visibilitychange', this.onVisibilityRefresh);
   }
 
-  private readonly onFocusRefresh = (): void =>
+  private readonly onFocusRefresh = (): void => {
     this.bgSync.refreshNotifStatus();
+    this.bgSync.refreshFcmStatus();
+  };
   private readonly onVisibilityRefresh = (): void => {
-    if (document.visibilityState === 'visible')
-      this.bgSync.refreshNotifStatus();
+    if (document.visibilityState === 'visible') this.onFocusRefresh();
   };
 }
