@@ -98,6 +98,8 @@ tauri = { version = "=2.12.5", features = ["unstable"] }
 zbus = "5.16"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Attach the WebView only after the native launch presentation is visible.
+tauri = { version = "=2.12.5", features = ["unstable"] }
 windows = { version = "0.61.3", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

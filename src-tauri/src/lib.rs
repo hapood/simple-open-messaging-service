@@ -69,7 +69,7 @@ use std::time::Duration;
 use log::{error, warn};
 use tauri::http::{Response, StatusCode};
 use tauri::{Emitter, Manager, UriSchemeResponder};
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Notify;
@@ -628,8 +628,8 @@ pub fn run() {
         .on_window_event(window_lifecycle::on_window_event)
         .setup(move |app| {
             native_db::notifications::initialize(app.handle().clone());
-            // First macOS frame is native artwork, before database/keychain work or WebKit creation.
-            #[cfg(target_os = "macos")]
+            // Show native artwork before database/keychain work or WebView creation.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             let launch_window = launch::create_window(app)?;
             #[cfg(target_os = "windows")]
             native_db::desktop_notifications::initialize_windows_links(app.handle())?;
@@ -655,9 +655,9 @@ pub fn run() {
                 error!("panic: {info}");
             }));
 
-            // macOS returns to the event loop immediately so the native launch layer can draw and
-            // animate while storage opens on a worker. WebKit is attached only after runtime setup.
-            #[cfg(target_os = "macos")]
+            // Return to the event loop so the native layer can animate while
+            // storage opens on a worker. Attach the WebView after runtime setup.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
                 let handle = app.handle().clone();
                 let state = proxy_state.clone();
@@ -686,7 +686,7 @@ pub fn run() {
                     }
                 });
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
                 initialize_client_storage(app.handle(), &proxy_state)
                     .map_err(std::io::Error::other)?;
@@ -699,8 +699,8 @@ pub fn run() {
                     .build()?;
             }
 
-            // Retry only after storage and origin restoration; macOS starts this in its initializer.
-            #[cfg(not(target_os = "macos"))]
+            // Native launch hosts start this after their asynchronous initializer.
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
                 let retry_app = app.handle().clone();
                 let retry_state = proxy_state.clone();

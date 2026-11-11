@@ -4,8 +4,8 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
-#[cfg(target_os = "macos")]
-mod macos;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod platform;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -103,20 +103,20 @@ fn dispatch(
             presentation.2
         );
         // Never hold the lifecycle lock across a platform call.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some(window) = handle.get_window("main") {
-            if let Ok(native) = window.ns_window() {
-                macos::present(native, presentation.0, presentation.1, presentation.2);
+            if let Err(error) = platform::present(&window, presentation.0, presentation.1, presentation.2) {
+                log::error!("launch presentation failed: {error}");
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let _ = (handle, presentation);
     })
     .map_err(|error| error.to_string())
 }
 
 /// Build only an OS window. No WebKit, database, keychain or network operation precedes its logo.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn create_window(app: &tauri::App) -> tauri::Result<tauri::Window> {
     use tauri::window::WindowBuilder;
     let window = WindowBuilder::new(app, "main")
@@ -135,7 +135,7 @@ pub(crate) fn create_window(app: &tauri::App) -> tauri::Result<tauri::Window> {
         finished: false,
         closed: false,
     });
-    macos::install(window.ns_window()?, dark);
+    platform::install(&window, dark)?;
     let closed = state.clone();
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
@@ -165,7 +165,7 @@ pub(crate) fn create_window(app: &tauri::App) -> tauri::Result<tauri::Window> {
 }
 
 /// Attach the one privileged WebView underneath the existing native overlay.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn attach_webview(window: &tauri::Window) -> tauri::Result<()> {
     let generation = {
         let state = window.state::<LaunchState>();
@@ -188,14 +188,13 @@ pub(crate) fn attach_webview(window: &tauri::Window) -> tauri::Result<()> {
         tauri::LogicalPosition::new(0.0, 0.0),
         window.inner_size()?,
     )?;
-    // Child creation inserts a view at the top. Restore stacking in this same main-thread turn,
-    // before AppKit can display any WebKit initialization frame.
-    macos::raise(window.ns_window()?);
+    // Restore overlay stacking before the platform can display a WebView initialization frame.
+    platform::raise(window)?;
     log::debug!("primary WebView attached beneath native launch layer");
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn failed(app: &tauri::AppHandle, error: &str) {
     log::error!("native launch failed: {error}");
     let state = app.state::<LaunchState>().inner().clone();

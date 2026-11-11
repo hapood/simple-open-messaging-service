@@ -21,8 +21,9 @@ extern "C" {
 
 // All entry points are called on Tauri's main thread. The NSWindow owns its overlay; no native
 // pointer is retained by Rust or sent to a worker, and late updates are gated by the launch state.
-pub(super) fn install(window: *mut c_void, dark: bool) {
+pub(super) fn install(window: *mut c_void, dark: bool) -> tauri::Result<()> {
     unsafe { soms_launch_install(window, dark, 320.0, 100.0, 220.0) };
+    Ok(())
 }
 
 pub(super) fn raise(window: *mut c_void) {

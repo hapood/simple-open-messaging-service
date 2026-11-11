@@ -47,7 +47,7 @@ const versions = new Map([
 ]);
 
 for (const path of ['src-tauri/Cargo.toml', 'src-tauri/Cargo.lock']) {
-  const source = readFileSync(path, 'utf8');
+  const source = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
   const match = path.endsWith('Cargo.lock')
     ? /name = "soms-client"\nversion = "([^"]+)"/.exec(source)
     : /^version = "([^"]+)"/m.exec(source);

@@ -1,8 +1,63 @@
 use super::*;
 use crate::proxy::{
-    is_allowed_http_path, read_body_with_inactivity_timeout, send_with_headers_deadline,
-    HeadersError,
+    await_headers_with_deadline, is_allowed_http_path, read_body_with_inactivity_timeout,
+    send_with_headers_deadline, HeadersError,
 };
+
+#[tokio::test(start_paused = true)]
+async fn headers_deadline_preserves_an_immediate_send_error() {
+    // Construct a real reqwest error without DNS, sockets, or OS retry timing.
+    let error = reqwest::Client::new().get("http://[").build().unwrap_err();
+    let expected = error.to_string();
+    let outcome = await_headers_with_deadline::<()>(
+        std::future::ready(Err(error)),
+        Duration::from_secs(2),
+        None,
+    )
+    .await;
+    match outcome {
+        Err(HeadersError::SendFailed(error)) => assert_eq!(error.to_string(), expected),
+        other => panic!("expected the original send error, got {other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn headers_deadline_times_out_a_pending_send() {
+    let started = tokio::time::Instant::now();
+    let deadline = Duration::from_secs(2);
+    let outcome = await_headers_with_deadline::<()>(
+        std::future::pending(),
+        deadline,
+        None,
+    )
+    .await;
+    assert!(matches!(outcome, Err(HeadersError::Timeout)));
+    assert_eq!(started.elapsed(), deadline);
+}
+
+#[tokio::test(start_paused = true)]
+async fn headers_deadline_preserves_a_successful_send() {
+    let outcome = await_headers_with_deadline(
+        std::future::ready(Ok(42)),
+        Duration::from_secs(2),
+        None,
+    )
+    .await;
+    assert!(matches!(outcome, Ok(42)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn headers_deadline_prioritizes_cancellation_over_a_ready_send() {
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let outcome = await_headers_with_deadline(
+        std::future::ready(Ok(42)),
+        Duration::from_secs(2),
+        Some(&cancel),
+    )
+    .await;
+    assert!(matches!(outcome, Err(HeadersError::Cancelled)));
+}
 
 /// A peer that completes the TCP handshake then never sends a byte — reqwest is "connected" but
 /// waits for headers that never arrive, so the deadline fires.
@@ -33,7 +88,7 @@ impl SilentPeer {
 #[tokio::test]
 async fn deadline_yields_timeout_when_upstream_accepts_but_never_responds() {
     let peer = SilentPeer::spawn();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let url = format!("http://{}/", peer._addr);
     let outcome = send_with_headers_deadline(client.get(&url), Duration::from_millis(200)).await;
     assert!(
@@ -44,17 +99,19 @@ async fn deadline_yields_timeout_when_upstream_accepts_but_never_responds() {
 
 #[tokio::test]
 async fn deadline_yields_send_failed_for_an_unreachable_host() {
-    // A port with no listener on the loopback → ECONNREFUSED at connect (a SendFailed, NOT a Timeout)
-    // — this is the case that must stay an `Err` (→ JS "network"), proving the 504 path is gated to
-    // connected-but-silent only. Bind+drop to claim a free port, then connect to the now-closed port.
+    // A port with no listener on the loopback produces a connection refusal.
+    // The send error must be preserved when it arrives before the headers deadline.
+    // Bind+drop to claim a free port, then connect to the now-closed port.
     let addr = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap();
     // (listener dropped here — port closed)
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let url = format!("http://{addr}/");
-    let outcome = send_with_headers_deadline(client.get(&url), Duration::from_secs(2)).await;
+    // Windows can retry a refused TCP connection for longer than two seconds.
+    // Leave room for that OS behavior instead of racing the headers deadline.
+    let outcome = send_with_headers_deadline(client.get(&url), Duration::from_secs(10)).await;
     assert!(
         matches!(outcome, Err(HeadersError::SendFailed(_))),
         "an unreachable host must be SendFailed (→network), not Timeout, got {outcome:?}"

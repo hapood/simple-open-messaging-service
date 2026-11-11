@@ -166,7 +166,15 @@ pub(crate) async fn send_with_headers_deadline_and_cancel(
     deadline: Duration,
     cancel: Option<&CancellationToken>,
 ) -> Result<reqwest::Response, HeadersError> {
-    let send_fut = tokio::time::timeout(deadline, req.send());
+    await_headers_with_deadline(req.send(), deadline, cancel).await
+}
+
+pub(crate) async fn await_headers_with_deadline<T>(
+    send: impl std::future::Future<Output = Result<T, reqwest::Error>>,
+    deadline: Duration,
+    cancel: Option<&CancellationToken>,
+) -> Result<T, HeadersError> {
+    let send_fut = tokio::time::timeout(deadline, send);
     if let Some(cancel) = cancel {
         tokio::select! {
             biased;

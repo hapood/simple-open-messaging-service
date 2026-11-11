@@ -139,7 +139,7 @@ The Angular client runs in the browser and is shared with the Tauri native appli
 | Android         | **Available (Alpha)** | APKs with native calling, notifications, and FCM integration                   |
 | macOS           | **Available (Alpha)** | Universal DMG for Apple Silicon and Intel; native notifications and Dock badge |
 | Linux           | **Available (Alpha)** | AppImage and deb for x86_64; native DBus notifications; Ubuntu 22.04+/Debian 12+ |
-| Windows         | Planned               | Tauri desktop application                                                       |
+| Windows         | **Available (Alpha)** | NSIS installers for x64 and ARM64; unsigned builds |
 | iOS             | Deferred              | Paused due to App Store distribution constraints                               |
 
 Download native packages from
