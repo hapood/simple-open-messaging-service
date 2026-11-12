@@ -40,7 +40,21 @@ jobs:
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
 
   android:
+    name: Android ${{ matrix.arch }}
     needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ARM64
+            abi: aarch64
+            target: aarch64-linux-android
+          - arch: ARMv7
+            abi: armv7
+            target: armv7-linux-androideabi
+          - arch: x86_64
+            abi: x86_64
+            target: x86_64-linux-android
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -64,7 +78,7 @@ jobs:
       - uses: android-actions/setup-android@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -90,20 +104,18 @@ jobs:
             echo "keyAlias=$ANDROID_KEY_ALIAS"
             echo "keyPassword=$ANDROID_KEY_PASSWORD"
           } > src-tauri/gen/android/keystore.properties
-      - name: Build signed per-ABI release APKs
+      - name: Build signed release APK
         run: |
-          make -C src-tauri apk ABI=aarch64
-          make -C src-tauri apk ABI=armv7 WEB_BUILD=0
-          make -C src-tauri apk ABI=x86_64 WEB_BUILD=0
+          make -C src-tauri apk ABI=${{ matrix.abi }}
           cd src-tauri/dist/android
-          sha256sum *.apk > SHA256SUMS
+          sha256sum *.apk > SHA256SUMS.android-${{ matrix.abi }}
       - name: Upload Android release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: soms-android-release
+          name: soms-android-release-${{ matrix.abi }}
           path: |
             src-tauri/dist/android/*.apk
-            src-tauri/dist/android/SHA256SUMS
+            src-tauri/dist/android/SHA256SUMS.android-${{ matrix.abi }}
           if-no-files-found: error
   linux:
     needs: prepare
@@ -229,8 +241,17 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: soms-android-release
+          pattern: soms-android-release-*
+          merge-multiple: true
           path: release-assets
+      - name: Verify and combine Android checksums
+        working-directory: release-assets
+        run: |
+          test "$(find . -maxdepth 1 -name '*.apk' | wc -l)" -eq 3
+          for abi in aarch64 armv7 x86_64; do
+            sha256sum --check "SHA256SUMS.android-$abi"
+          done
+          sort SHA256SUMS.android-* > SHA256SUMS
       - name: Download Linux release artifacts
         uses: actions/download-artifact@v4
         with:

@@ -58,6 +58,7 @@ jobs:
     uses: ./.github/workflows/verify.yml
 
   build:
+    name: Docker ${{ matrix.arch }}
     needs: prepare
     strategy:
       fail-fast: false

@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  windows:
-    name: Windows ${{ matrix.arch }}
+  installer:
+    name: Windows ${{ matrix.arch == 'arm64' && 'ARM64' || matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
