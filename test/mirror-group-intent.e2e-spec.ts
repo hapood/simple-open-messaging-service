@@ -379,11 +379,12 @@ describe('mirror group intent application', () => {
   it('no-ops an already expired invitation item', async () => {
     await freshGroup();
     const bob = await member('expired');
+    const now = Date.now();
     const { routed } = await run(
       bob,
       invitationBody({
-        statusChangedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
-        expiresAt: Date.now() - 24 * 60 * 60 * 1000,
+        statusChangedAt: now - 8 * 24 * 60 * 60 * 1000,
+        expiresAt: now - 24 * 60 * 60 * 1000,
       }),
     );
     expect(routed).toBe('noop:expired-request');
