@@ -1,5 +1,5 @@
 import { HttpClient, HttpContext } from '@angular/common/http';
-import { of, Subject } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
 import { IDLE_CALL, type CallSnapshot } from './call-adapter';
 import { BusinessCode } from './biz-code';
 import {
@@ -233,7 +233,7 @@ describe('approved call signaling correlation', () => {
     });
     const create = vi.fn();
     Object.assign(adapter, { createPeerConnection: create });
-    adapter.initiate(1, 'old-admission', 'AUDIO', '', '');
+    adapter.initiate(1, 'old-admission', 'AUDIO', 'peer', 0);
     await vi.waitFor(() => expect(adapter.snapshot().phase).toBe('starting'));
     adapter.cancel('old-admission');
     adapter.applyLifecycle({
@@ -293,7 +293,7 @@ describe('approved call signaling correlation', () => {
           .mockRejectedValue(new Error('setup failed')),
       });
       if (role === 'outgoing')
-        adapter.initiate(1, 'old-setup', 'AUDIO', '', '');
+        adapter.initiate(1, 'old-setup', 'AUDIO', 'peer', 0);
       else {
         await adapter.onIncoming({
           ...IDLE_CALL,
@@ -547,8 +547,8 @@ describe('approved call signaling correlation', () => {
       { post } as unknown as HttpClient,
       IDLE_CALL,
     );
-    adapter.initiate(1, 'late-media', 'AUDIO', '', '');
-    adapter.initiate(1, 'duplicate-click', 'AUDIO', '', '');
+    adapter.initiate(1, 'late-media', 'AUDIO', 'peer', 0);
+    adapter.initiate(1, 'duplicate-click', 'AUDIO', 'peer', 0);
     expect(getUserMedia).toHaveBeenCalledOnce();
     adapter.cancel('late-media');
     const stop = vi.fn();
@@ -823,52 +823,73 @@ describe('approved call signaling correlation', () => {
 });
 
 describe('WebCallAdapter multi-device ownership', () => {
-  it('ends a server-rejected outgoing call as busy and releases the microphone', async () => {
-    const stop = vi.fn();
-    const track = { kind: 'audio', stop, onended: null };
-    const getUserMedia = vi.fn().mockResolvedValue({
-      active: true,
-      getTracks: () => [track],
-      getVideoTracks: () => [],
-    });
-    vi.stubGlobal('navigator', {
-      ...navigator,
-      mediaDevices: { getUserMedia },
-    });
-    try {
-      const post = vi
-        .fn()
-        .mockReturnValue(
-          of({ code: BusinessCode.CALL_BUSY, message: 'busy', data: null }),
+  it.each([
+    [BusinessCode.CALL_BUSY, 'busy'],
+    [BusinessCode.CALL_PEER_UNREACHABLE, 'unreachable'],
+    [BusinessCode.FORBIDDEN, 'failed'],
+    [null, 'failed'],
+  ] as const)(
+    'ends admission failure %s as %s without a media error',
+    async (code, reason) => {
+      const stop = vi.fn();
+      const track = { kind: 'audio', stop, onended: null };
+      const getUserMedia = vi.fn().mockResolvedValue({
+        active: true,
+        getTracks: () => [track],
+        getVideoTracks: () => [],
+      });
+      vi.stubGlobal('navigator', {
+        ...navigator,
+        mediaDevices: { getUserMedia },
+      });
+      try {
+        const post = vi
+          .fn()
+          .mockReturnValue(
+            code === null
+              ? throwError(() => new Error('network unavailable'))
+              : of({ code, message: 'rejected', data: null }),
+          );
+        const mediaError = vi.fn();
+        const adapter = new WebCallAdapter(
+          { post } as unknown as HttpClient,
+          IDLE_CALL,
+          mediaError,
         );
-      const mediaError = vi.fn();
-      const adapter = new WebCallAdapter(
-        { post } as unknown as HttpClient,
-        IDLE_CALL,
-        mediaError,
-      );
-      const snapshots: CallSnapshot[] = [];
-      adapter.setSnapshotListener((snapshot) => snapshots.push(snapshot));
+        const snapshots: CallSnapshot[] = [];
+        adapter.setSnapshotListener((snapshot) => snapshots.push(snapshot));
 
-      adapter.initiate(12, 'busy-call', 'AUDIO', 'B', '');
-      await vi.waitFor(() =>
-        expect(snapshots.at(-1)?.terminalReason).toBe('busy'),
-      );
+        adapter.initiate(12, 'busy-call', 'AUDIO', 'b', 0);
+        await vi.waitFor(() =>
+          expect(snapshots.at(-1)?.terminalReason).toBe(reason),
+        );
 
-      expect(snapshots).toContainEqual(
-        expect.objectContaining({ phase: 'starting', callSid: 'busy-call' }),
-      );
-      expect(snapshots.at(-1)).toEqual(
-        expect.objectContaining({ phase: 'ended', callSid: 'busy-call' }),
-      );
-      expect(adapter.snapshot()).toEqual(IDLE_CALL);
-      expect(stop).toHaveBeenCalledOnce();
-      expect(mediaError).not.toHaveBeenCalled();
-      expect(post).toHaveBeenCalledOnce();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
+        expect(snapshots).toContainEqual(
+          expect.objectContaining({ phase: 'starting', callSid: 'busy-call' }),
+        );
+        expect(snapshots.at(-1)).toEqual(
+          expect.objectContaining({ phase: 'ended', callSid: 'busy-call' }),
+        );
+        expect(adapter.snapshot()).toEqual(IDLE_CALL);
+        expect(stop).toHaveBeenCalledOnce();
+        expect(mediaError).not.toHaveBeenCalled();
+        expect(post).toHaveBeenCalledOnce();
+        // Failure releases the microphone and reservation; retry is explicit, never automatic.
+        adapter.initiate(12, 'retry-call', 'AUDIO', 'b', 0);
+        await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(2));
+        expect(post).toHaveBeenCalledTimes(2);
+        expect(snapshots.at(-1)).toEqual(
+          expect.objectContaining({
+            phase: 'ended',
+            callSid: 'retry-call',
+            terminalReason: reason,
+          }),
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
   it.each([
     ['NotAllowedError', 'media-permission-denied'],
     ['NotFoundError', 'media-device-not-found'],
@@ -904,7 +925,7 @@ describe('WebCallAdapter multi-device ownership', () => {
         const snapshots: CallSnapshot[] = [];
         adapter.setSnapshotListener((snapshot) => snapshots.push(snapshot));
 
-        adapter.initiate(12, 'failed-call', 'AUDIO', 'B', '');
+        adapter.initiate(12, 'failed-call', 'AUDIO', 'b', 0);
         await vi.waitFor(() => expect(snapshots).toHaveLength(1));
 
         expect(notify).toHaveBeenCalledWith(step);
@@ -912,7 +933,7 @@ describe('WebCallAdapter multi-device ownership', () => {
         expect(adapter.snapshot()).toEqual(IDLE_CALL);
         expect(snapshots).toEqual([IDLE_CALL]);
 
-        adapter.initiate(12, 'retry-call', 'AUDIO', 'B', '');
+        adapter.initiate(12, 'retry-call', 'AUDIO', 'b', 0);
         await vi.waitFor(() =>
           expect(snapshots.at(-1)?.terminalReason).toBe('busy'),
         );

@@ -47,7 +47,7 @@ export function groupMembershipRevocationIntentWrite(
       threadId: input.threadId,
       status: 'REVOKED',
       note: '',
-      requestedAt: null,
+      statusChangedAt: new Date(),
       expiresAt: null,
     })
   );
@@ -101,7 +101,7 @@ export function groupMembershipRevocationSql(
     })})`;
   return sql`
     WITH revocation AS MATERIALIZED (
-      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
+      SELECT status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.author.account} AND "authorNamespaceId" = ${input.author.namespaceId}
         AND "receiverAccount" = ${input.receiver.account} AND "receiverNamespaceId" = ${input.receiver.namespaceId}
@@ -123,7 +123,9 @@ export function groupMembershipRevocationSql(
       ON CONFLICT ("threadId", (body ->> 'account'), (body -> 'namespaceId'))
         WHERE operation <> 'GROUP_ANNOUNCEMENT'
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
-        operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
+        operation = EXCLUDED.operation, body = EXCLUDED.body,
+        "createdAt" = EXCLUDED."createdAt", "originCreatedAt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), seq_alloc AS (
       -- One update per row per statement: the head allocation and the touch
@@ -149,9 +151,10 @@ export function groupMembershipRevocationSql(
       federation: false,
     })}, departure_task AS (
       INSERT INTO "DurableTask"
-        (kind, "scopeType", "scopeKey", "taskType", payload, "coalescingKey", status)
+        (kind, "scopeType", "scopeKey", "taskType", "actorUserId", payload, "coalescingKey", status)
       SELECT 'PROJECTION'::"DurableTaskKind", 'THREAD'::"DurableTaskScopeType", ${accountScope},
         'FAN_OUT_ACCOUNT_THREAD_CONTENT',
+        (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${input.threadId}::integer,
           'messageEndSeq', (SELECT seq FROM system_message),
           'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc),
@@ -203,7 +206,7 @@ function peerRecipient(input: GroupMembershipRevocationInput): SQL {
       SELECT jsonb_build_object('status', v.status,
           'namespaceId', v."profileNamespaceId",
           'profileRev', v."profileRev", 'note', v.note,
-          'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
+          'statusChangedAt', floor(extract(epoch FROM v."statusChangedAt") * 1000)::bigint,
           'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) AS body
       FROM revocation v

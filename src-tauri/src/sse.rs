@@ -7,7 +7,37 @@ use log::warn;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ServerSessionState, SSE_CONNECT_TIMEOUT};
+use crate::ServerSessionState;
+
+const SSE_CONNECT_TIMEOUT: Duration = Duration::from_millis(15_000);
+const SSE_IDLE_TIMEOUT: Duration = Duration::from_millis(30_000);
+const SSE_HEARTBEAT_EVENT: &str = "heartbeat";
+
+/// A stream-scoped receive deadline. Control wakes cannot extend it, and dropping
+/// the attempt drops its timer. Empty chunks do not count as network progress.
+struct ReceiveDeadline {
+    timer: std::pin::Pin<Box<tokio::time::Sleep>>,
+}
+
+impl ReceiveDeadline {
+    fn new() -> Self {
+        Self {
+            timer: Box::pin(tokio::time::sleep(SSE_IDLE_TIMEOUT)),
+        }
+    }
+
+    fn received(&mut self, bytes: usize) {
+        if bytes > 0 {
+            self.timer
+                .as_mut()
+                .reset(tokio::time::Instant::now() + SSE_IDLE_TIMEOUT);
+        }
+    }
+
+    async fn expired(&mut self) {
+        self.timer.as_mut().await;
+    }
+}
 
 // Shared Rust /events protocol. Desktop commands below are transport control adapters;
 // Android's headless JNI adapter uses the same run_loop and typed publication sink.
@@ -434,6 +464,15 @@ fn merge_cached_hello(
                 }
             }
         }
+        "REQUEST_ATTENTION" => {
+            for key in ["stateFeedEndId", "threadFeedEndId"] {
+                if let Some(head) = data[key].as_i64().filter(|head| *head >= 0) {
+                    if obj.get(key).and_then(|value| value.as_i64()).is_none_or(|old| head >= old) {
+                        obj.insert(key.into(), head.into());
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -455,10 +494,10 @@ impl StateFeedHead {
                 .get("userId")
                 .and_then(|value| value.as_i64())
                 .filter(|id| *id > 0);
-        } else if event != "STATE_FEED_UPDATED" {
+        } else if event != "STATE_FEED_UPDATED" && event != "REQUEST_ATTENTION" {
             return None;
         }
-        let key = if event == "HELLO" {
+        let key = if event == "HELLO" || event == "REQUEST_ATTENTION" {
             "stateFeedEndId"
         } else {
             "feedId"
@@ -472,6 +511,24 @@ impl StateFeedHead {
     }
 }
 
+#[cfg(test)]
+mod request_wake_tests {
+    use super::*;
+    #[test]
+    fn independent_request_heads_never_require_the_other_feed() {
+        let mut state = StateFeedHead::default();
+        let mut thread = ThreadFeedHead::default();
+        let hello = serde_json::json!({"userId":1,"stateFeedEndId":2,"threadFeedEndId":3});
+        state.accept("HELLO",&hello); thread.accept("HELLO",&hello);
+        let personal = serde_json::json!({"stateFeedEndId":4});
+        assert_eq!(state.accept("REQUEST_ATTENTION",&personal),Some((1,4)));
+        assert_eq!(thread.accept("REQUEST_ATTENTION",&personal),None);
+        let group = serde_json::json!({"threadFeedEndId":5});
+        assert_eq!(state.accept("REQUEST_ATTENTION",&group),None);
+        assert_eq!(thread.accept("REQUEST_ATTENTION",&group),Some((1,5)));
+    }
+}
+
 #[derive(Default)]
 struct ThreadFeedHead {
     user_id: Option<i64>,
@@ -480,7 +537,7 @@ struct ThreadFeedHead {
 
 impl ThreadFeedHead {
     fn accept(&mut self, event: &str, data: &serde_json::Value) -> Option<(i64, i32)> {
-        if event != "HELLO" && event != "THREAD_FEED_UPDATED" {
+        if event != "HELLO" && event != "THREAD_FEED_UPDATED" && event != "REQUEST_ATTENTION" {
             return None;
         }
         if event == "HELLO" {
@@ -617,7 +674,7 @@ async fn open_one_stream(
                     continue;
                 }
             };
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", desktop))]
             let feed_work = intent.database_work();
             let state_target = feed_state_target.load(Ordering::Acquire);
             let state_result = tokio::select! {
@@ -637,6 +694,14 @@ async fn open_one_stream(
             }
             match result {
                 Ok(result) => {
+                    #[cfg(target_os = "macos")]
+                    if let Some(handle) = feed_app.app() {
+                        if let Err(error) = crate::native_db::desktop_badge::refresh_owned(
+                            handle.clone(), feed_work.clone(), user_id,
+                        ).await {
+                            warn!("native unread badge refresh failed: {error}");
+                        }
+                    }
                     #[cfg(target_os = "android")]
                     {
                         // Assembly shares the exact cache view captured before the structural barrier.
@@ -646,6 +711,25 @@ async fn open_one_stream(
                         };
                         if let Ok(batch) = batch {
                             feed_app.publish(crate::realtime::Output::Notifications(batch));
+                        }
+                    }
+                    #[cfg(desktop)]
+                    if let Some(handle) = feed_app.app() {
+                        let batch = tokio::select! { biased;
+                            _ = feed_cancel.cancelled() => break,
+                            result = crate::native_db::notifications::from_result(feed_work.clone(), user_id, &result) => result,
+                        };
+                        match batch {
+                            Ok(batch) => {
+                                let delivery = tokio::select! { biased;
+                                    _ = feed_cancel.cancelled() => break,
+                                    result = crate::native_db::desktop_notifications::deliver_batch(handle.clone(), batch) => result,
+                                };
+                                if let Err(error) = delivery {
+                                    warn!("native notification delivery failed: {error}");
+                                }
+                            }
+                            Err(error) => warn!("native notification assembly failed: {error}"),
                         }
                     }
                     if let Some(error) = &result.error {
@@ -660,6 +744,7 @@ async fn open_one_stream(
     let state_app = app.clone();
     let state_events = crate::realtime::NativeEvents::capture(app.app());
     let state_proxy = proxy.clone();
+    let state_feed_wakes = feed_wakes.clone();
     let state_cancel = cancel.child_token();
     let _state_guard = state_cancel.clone().drop_guard();
     crate::realtime::spawn(app.clone(), async move {
@@ -683,6 +768,8 @@ async fn open_one_stream(
             }
             match result {
                 Ok(cursor) => {
+                    // State-only request changes still enter the shared notification lane.
+                    state_feed_wakes.send_replace(Some((user_id, -1)));
                     let _ = state_events.emit(
                         "soms-sse-event",
                         SseEventPayload {
@@ -757,6 +844,8 @@ async fn open_one_stream(
 
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let mut stream = resp.bytes_stream();
+    // Keep a persistent deadline: control wakes must not extend receive liveness.
+    let mut idle = ReceiveDeadline::new();
     loop {
         tokio::select! {
             biased;
@@ -775,10 +864,16 @@ async fn open_one_stream(
                     return outcome;
                 }
             }
+            _ = idle.expired() => {
+                warn!("sse stream received no data for 30s; reconnecting");
+                return StreamOutcome::Err;
+            }
             chunk = stream.next() => match chunk {
                 None => return StreamOutcome::StreamClosed,    // server closed → reconnect
                 Some(Err(_)) => return StreamOutcome::Err,     // network error → reconnect
                 Some(Ok(bytes)) => {
+                    idle.received(bytes.len());
+                    if bytes.is_empty() { continue; }
                     buf.extend_from_slice(&bytes);
                     while let Some(content) = take_sse_frame(&mut buf) {
                         if !app.authenticated() { return StreamOutcome::Cancelled; }
@@ -822,6 +917,30 @@ async fn open_one_stream(
                                             app.publish(crate::realtime::Output::IncomingCall(call.clone()));
                                         }
                                     }
+                                    // Catch up the namespace change feed on every (re)connect. The
+                                    // drain reads the durable cursor first, so an up-to-date login
+                                    // costs one empty page; the browser shell instead compares the
+                                    // HELLO anchor before pulling.
+                                    if let Some(user_id) = parsed.data["userId"]
+                                        .as_i64()
+                                        .filter(|value| *value > 0)
+                                    {
+                                        let ns_proxy = proxy.clone();
+                                        let ns_cancel = cancel.child_token();
+                                        crate::realtime::spawn(app.clone(), async move {
+                                            let result = tokio::select! { biased;
+                                                _ = ns_cancel.cancelled() => return,
+                                                result = crate::native_db::namespace_feed::synchronize(
+                                                    &ns_proxy, user_id,
+                                                ) => result,
+                                            };
+                                            if let Err(error) = result {
+                                                warn!(
+                                                    "profile-namespace catch-up failed; next wake retries: {error}"
+                                                );
+                                            }
+                                        });
+                                    }
                                 }
                                 merge_cached_hello(cached_hello, parsed.event.as_str(), &parsed.data);
                                 if let Some(head) = state_head.accept(&parsed.event, &parsed.data) {
@@ -850,6 +969,7 @@ async fn open_one_stream(
                                             if !profile_app.authenticated() || profile_cancel.is_cancelled() { return; }
                                             match result {
                                                 Ok(()) => {
+                                                    crate::native_db::profile_subscriptions::wake(user_id, "PROFILE_AVAILABLE", &profile_data);
                                                     let _ = profile_app.emit(
                                                         "soms-sse-event",
                                                         SseEventPayload {
@@ -865,6 +985,34 @@ async fn open_one_stream(
                                         });
                                         continue;
                                     }
+                                }
+                                if parsed.event == "PROFILE_UNAVAILABLE" {
+                                    if let Some(user_id) = feed_head.user_id {
+                                        crate::native_db::profile_subscriptions::wake(user_id, &parsed.event, &parsed.data);
+                                    }
+                                }
+                                if parsed.event == "PROFILE_NAMESPACE_UPDATED" {
+                                    // Rust owns the native namespace change-feed drain: converged
+                                    // pairs wake the subscription flights and warm undemanded
+                                    // bindings, so the event needs no renderer round trip.
+                                    if let Some(user_id) = feed_head.user_id {
+                                        let ns_proxy = proxy.clone();
+                                        let ns_cancel = cancel.child_token();
+                                        crate::realtime::spawn(app.clone(), async move {
+                                            let result = tokio::select! { biased;
+                                                _ = ns_cancel.cancelled() => return,
+                                                result = crate::native_db::namespace_feed::synchronize(
+                                                    &ns_proxy, user_id,
+                                                ) => result,
+                                            };
+                                            if let Err(error) = result {
+                                                warn!(
+                                                    "profile-namespace drain failed; next wake retries: {error}"
+                                                );
+                                            }
+                                        });
+                                    }
+                                    continue;
                                 }
                                 let _ = app.emit(
                                     "soms-sse-event",
@@ -968,6 +1116,9 @@ fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
         }
     }
     let event = event?;
+    if event.is_empty() || event == SSE_HEARTBEAT_EVENT {
+        return None;
+    }
     let joined = data_lines.join("\n");
     let data = if joined.is_empty() {
         serde_json::Value::Null
@@ -977,9 +1128,11 @@ fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
     Some(ParsedFrame { event, data })
 }
 
-// SSE parser unit tests (desktop-only — the parser fns are #[cfg(desktop)]). Pure byte/string logic,
-// the trickiest new code in the supervisor: line-end forms, frame boundaries, multi-line data join,
-// comment lines, malformed-JSON handling. Run with `cargo test` (the docker desktop build).
-#[cfg(all(test, desktop))]
+// The shared runtime parser and receive deadline behave identically on all hosts.
+#[cfg(test)]
 #[path = "tests/sse_parser_tests.rs"]
 mod sse_parser_tests;
+
+#[cfg(test)]
+#[path = "tests/sse_liveness_tests.rs"]
+mod sse_liveness_tests;

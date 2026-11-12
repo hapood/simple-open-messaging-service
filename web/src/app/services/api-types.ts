@@ -631,23 +631,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/user/search": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Fuzzy local identity discovery by account OR display name (local users and groups) */
-        post: operations["UserController_searchUsers"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/user/register": {
         parameters: {
             query?: never;
@@ -707,25 +690,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Invite friends to an existing group */
+        /** Invite users to an existing group */
         post: operations["GroupController_inviteUsers"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/group/invite-candidates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** List friends with authoritative group invitation state */
-        post: operations["GroupController_queryInviteCandidates"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1512,7 +1478,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/.well-known/somfp": {
+    "/somfp/discovery": {
         parameters: {
             query?: never;
             header?: never;
@@ -1528,7 +1494,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/group-meta": {
+    "/somfp/v1/group-meta": {
         parameters: {
             query?: never;
             header?: never;
@@ -1544,7 +1510,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/feed-heads": {
+    "/somfp/v1/feed-heads": {
         parameters: {
             query?: never;
             header?: never;
@@ -1560,7 +1526,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/profile-namespace-feed": {
+    "/somfp/v1/profile-namespace-feed": {
         parameters: {
             query?: never;
             header?: never;
@@ -1576,7 +1542,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/profile-namespaces/{nsid}": {
+    "/somfp/v1/profile-namespaces/{nsid}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1592,7 +1558,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/message-tombstones": {
+    "/somfp/v1/message-tombstones": {
         parameters: {
             query?: never;
             header?: never;
@@ -1608,7 +1574,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/messages": {
+    "/somfp/v1/messages": {
         parameters: {
             query?: never;
             header?: never;
@@ -1624,7 +1590,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/message-provenance": {
+    "/somfp/v1/message-provenance": {
         parameters: {
             query?: never;
             header?: never;
@@ -1640,7 +1606,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/state-feed": {
+    "/somfp/v1/state-feed": {
         parameters: {
             query?: never;
             header?: never;
@@ -1656,7 +1622,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/call": {
+    "/somfp/v1/call": {
         parameters: {
             query?: never;
             header?: never;
@@ -1672,7 +1638,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/accounts/{account}": {
+    "/somfp/v1/accounts/{account}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1688,7 +1654,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/account-profiles/{namespaceId}/{account}/{profileRev}": {
+    "/somfp/v1/account-profiles/{namespaceId}/{account}/{profileRev}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1704,7 +1670,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/group-member-profiles/{groupAccount}/{namespaceId}/{memberAccount}/{profileRev}": {
+    "/somfp/v1/group-member-profiles/{groupAccount}/{namespaceId}/{memberAccount}/{profileRev}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1720,7 +1686,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/media/{digest}": {
+    "/somfp/v1/media/{digest}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1736,7 +1702,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/forward-bundles/{bundleId}": {
+    "/somfp/v1/forward-bundles/{bundleId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1752,7 +1718,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/verify": {
+    "/somfp/v1/verify": {
         parameters: {
             query?: never;
             header?: never;
@@ -1768,7 +1734,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/recognize": {
+    "/somfp/v1/recognize": {
         parameters: {
             query?: never;
             header?: never;
@@ -1784,7 +1750,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/s2s/v1/health": {
+    "/somfp/v1/health": {
         parameters: {
             query?: never;
             header?: never;
@@ -1913,23 +1879,6 @@ export interface paths {
         put?: never;
         /** Send completed files and discard unfinished files */
         post: operations["UploadController_sendCompletedResumableBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/upload": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Upload one or more media files (type-agnostic; promotes a staged send at the batch barrier) */
-        post: operations["UploadController_upload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4521,23 +4470,6 @@ export interface components {
              */
             profileNamespaceId?: number;
         };
-        UserSearchDto: {
-            /**
-             * @description Search query (≥2 chars; matches account OR display name)
-             * @example ali
-             */
-            q: string;
-            /**
-             * @description Records to skip (optional)
-             * @example 0
-             */
-            skip?: number;
-            /**
-             * @description Records to take (1-20; clamped server-side)
-             * @example 20
-             */
-            take?: number;
-        };
         RegisterDto: {
             /**
              * @description Login unique name: 1-30 chars; starts alphanumeric; then letters, digits, dot, underscore or hyphen; case-insensitive
@@ -4589,35 +4521,13 @@ export interface components {
             namespaceId: number;
         };
         InviteGroupDto: {
-            /** @description Existing friends to invite by public address. */
+            /** @description Users to invite by public address; friendship is not required. */
             users: components["schemas"]["GroupInviteAddressDto"][];
             /**
              * @description Group id
              * @example 12
              */
             groupId: number;
-        };
-        QueryGroupInviteCandidatesDto: {
-            /**
-             * @description Group id
-             * @example 12
-             */
-            groupId: number;
-            /**
-             * @description Exclusive P2P thread-id cursor. Omit for the first page.
-             * @example 42
-             */
-            afterThreadId?: number;
-            /**
-             * @description Optional case-insensitive account or display-name search.
-             * @example alice
-             */
-            search?: string;
-            /**
-             * @description Page size (1-50)
-             * @default 20
-             */
-            take: number;
         };
         QueryGroupJoinRequestsDto: {
             /**
@@ -5058,7 +4968,7 @@ export interface components {
              */
             account: string;
             /**
-             * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.
+             * @description Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (GET /config loginMethods includes password); omitted otherwise.
              * @example P@ssw0rd
              */
             password?: string;
@@ -5110,6 +5020,9 @@ export interface components {
             seq?: number;
         };
         AdminSetQuotaDto: {
+            /** @description Maximum bytes per attachment; null inherits, zero disables new attachments. */
+            maxFileBytes?: number | null;
+            dailySignalLimit?: number | null;
             /**
              * @description Messages/day (null = default)
              * @example 5000
@@ -5182,12 +5095,13 @@ export interface components {
             keyCacheTtlSec: number;
             /** @example 12 */
             connectTimeoutSec: number;
-            /** @example 12 */
-            callTimeoutSec: number;
+            /**
+             * @description Response-header wait and response-body inactivity timeout after connection establishment, shared by ordinary and media requests.
+             * @example 30
+             */
+            requestIdleTimeoutSec: number;
             /** @example 8388608 */
             mediaChunkBytes: number;
-            /** @example 120 */
-            mediaChunkTimeoutSec: number;
             /** @example 5 */
             mediaMaxChunkRetries: number;
         };
@@ -5201,6 +5115,7 @@ export interface components {
             idleMinutes: number;
         };
         FederationQuotaDefaultsDto: {
+            maxFileBytes: number;
             dailyMsgLimit: number;
             dailyRequestLimit: number;
             dailySignalLimit: number;
@@ -5208,11 +5123,13 @@ export interface components {
             dailyFileBytesLimit: number;
         };
         UserQuotaDefaultsDto: {
+            maxFileBytes: number;
+            dailySignalLimit: number;
             dailyMsgLimit: number;
             dailyRequestLimit: number;
             dailyFileLimit: number;
             /** @example 1073741824 */
-            dailyFileBytesLimit: string;
+            dailyFileBytesLimit: number;
         };
         FederationHttpLimitsDto: {
             /** @example 16 */
@@ -5304,6 +5221,8 @@ export interface components {
             note?: string;
         };
         AdminContinueQuotaDto: {
+            addRequest?: number;
+            addSignal?: number;
             /**
              * @description Additional messages granted for today
              * @example 1000
@@ -6340,27 +6259,6 @@ export interface operations {
             };
         };
     };
-    UserController_searchUsers: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserSearchDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     UserController_registerLocal: {
         parameters: {
             query?: never;
@@ -6442,27 +6340,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["InviteGroupDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    GroupController_queryInviteCandidates: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["QueryGroupInviteCandidatesDto"];
             };
         };
         responses: {
@@ -7982,23 +7859,6 @@ export interface operations {
             path: {
                 clientMessageId: string;
             };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    UploadController_upload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
             cookie?: never;
         };
         requestBody?: never;

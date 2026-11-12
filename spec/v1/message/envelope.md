@@ -1,6 +1,6 @@
 # Message Envelope
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document defines the outer wire shape, origin coordinates, idempotency rules, and processing receipts shared by every message in a federation message query. See the [Message overview](../message.md#2-contenttype) and its topic documents for each parsed `contentType` shape, and [Message Query](../message-feed.md) for pagination semantics.
 

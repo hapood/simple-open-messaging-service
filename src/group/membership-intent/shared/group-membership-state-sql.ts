@@ -48,14 +48,14 @@ export function groupMembershipStateSql(input: {
   const profileNamespaceId = sql`${input.profileNamespaceId}`;
   return sql`
     WITH side_b AS MATERIALIZED (
-      SELECT status, note, "profileRev", "requestedAt", "expiresAt"
+      SELECT status, note, "profileRev", "statusChangedAt", "expiresAt", "requestId"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.memberAccount}
         AND "authorNamespaceId" = ${profileNamespaceId}
         AND "receiverAccount" = ${input.groupAccount}
         AND "receiverNamespaceId" = ${input.groupNamespaceId}
     ), side_a AS MATERIALIZED (
-      SELECT a.status, a.note, a."updatedAt", a."expiresAt"
+      SELECT a.status, a.note, a."expiresAt"
       FROM "RelationshipIntent" a
       WHERE a."authorAccount" = ${input.groupAccount}
         AND a."authorNamespaceId" = ${input.groupNamespaceId}
@@ -108,7 +108,9 @@ export function groupMembershipStateSql(input: {
         AND side_a."expiresAt" > CURRENT_TIMESTAMP) AS "invitationOutstanding",
       (side_b.status = 'REQUESTED' AND side_b."expiresAt" > CURRENT_TIMESTAMP
         AND (side_a.status IS NULL OR side_a.status = 'REQUESTED'
-          OR (side_a.status = 'REVOKED' AND side_a."updatedAt" < side_b."requestedAt"))
+          OR (side_a.status = 'REVOKED' AND EXISTS (
+            SELECT 1 FROM "RelationshipRequest" request
+            WHERE request.id = side_b."requestId" AND request.status = 'REQUESTED')))
       ) AS "applicationPending",
       COALESCE((SELECT pair.active FROM "RelationshipPair" pair
         WHERE pair.id = ${input.pairId}), false) AS "pairActive",

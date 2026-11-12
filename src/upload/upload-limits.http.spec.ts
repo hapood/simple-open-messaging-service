@@ -21,10 +21,9 @@ import { MessageService } from '../message/message.service.js';
 import { BearerAuthService } from '../auth/bearer-auth.service.js';
 import { MediaAccessService } from './media-access.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
-import {
-  MAX_MEDIA_FILE_BYTES,
-  MEDIA_UPLOAD_CHUNK_BYTES,
-} from '../../shared/media-upload-limits.js';
+import { FileSizeLimitError } from './file-size-limit.js';
+import { DEFAULT_MAX_FILE_BYTES } from '../quota/quota-policy.js';
+import { MEDIA_UPLOAD_CHUNK_BYTES } from '../../shared/media-upload-limits.js';
 
 // Exercise the production parser registration and controller/DTO, not direct service calls.
 describe('upload HTTP limits', () => {
@@ -33,7 +32,10 @@ describe('upload HTTP limits', () => {
   const append = vi.fn(async (_user, _id, _range, body: Buffer) => ({
     offset: body.length,
   }));
-  const init = vi.fn(async (_user, dto) => ({ totalBytes: dto.totalBytes }));
+  const init = vi.fn(async (_user, dto) => {
+    FileSizeLimitError.assert(dto.totalBytes, DEFAULT_MAX_FILE_BYTES);
+    return { totalBytes: dto.totalBytes };
+  });
 
   beforeAll(async () => {
     const fixture = await Test.createTestingModule({
@@ -99,7 +101,7 @@ describe('upload HTTP limits', () => {
   });
 
   it.each(['IMAGE', 'VIDEO', 'AUDIO', 'FILE'])(
-    'applies the strict 1 GiB boundary to %s without allocating a whole file',
+    'applies the configurable 1 GiB inclusive boundary to %s without allocating a whole file',
     async (intent) => {
       const dto = {
         clientMessageId: randomUUID(),
@@ -108,7 +110,7 @@ describe('upload HTTP limits', () => {
         intent,
         originalName: 'attachment.bin',
         mimeType: 'application/octet-stream',
-        totalBytes: MAX_MEDIA_FILE_BYTES,
+        totalBytes: DEFAULT_MAX_FILE_BYTES,
       };
       const accepted = await adapter.getInstance().inject({
         method: 'POST',
@@ -121,10 +123,10 @@ describe('upload HTTP limits', () => {
       const rejected = await adapter.getInstance().inject({
         method: 'POST',
         url: '/api/v1/uploads/resumable/init',
-        payload: { ...dto, totalBytes: MAX_MEDIA_FILE_BYTES + 1 },
+        payload: { ...dto, totalBytes: DEFAULT_MAX_FILE_BYTES + 1 },
       });
-      expect(rejected.json().code).not.toBe(0);
-      expect(init).not.toHaveBeenCalled();
+      expect(rejected.json().code).toBe(10027);
+      expect(init).toHaveBeenCalledOnce();
     },
   );
 });

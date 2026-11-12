@@ -1,17 +1,18 @@
 /// <reference lib="webworker" />
 
+import { LoginConnection } from './session/login-connection';
 import { WebdbStorage } from './webdb-storage';
 import { BusinessCode } from './biz-code';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
+import { parseNotificationTarget } from '../../../../shared/notification-target';
 import { GroupMetaSyncError, syncGroupMetaThread } from './group-meta-sync';
 import { syncTombstoneThread } from './tombstone-sync';
-import { synchronizeStateFeed } from './worker-state-feed-sync';
+import { syncPushState } from './push-state-sync';
 import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
 import { PreferenceStorage } from './preference-storage';
 import {
   restoreSessionCacheDescriptor,
-  type LoginSessionId,
   type SessionCacheDescriptor,
 } from './session/session-identity';
 import { apiPrefix } from './constants';
@@ -46,7 +47,7 @@ storage.profileWake$.subscribe((wake) =>
 );
 let openedUserId: string | null = null;
 // A worker is assigned once. It can never be rebound to a successor session.
-let workerCacheId: LoginSessionId | null | undefined;
+let workerLogin: LoginConnection | undefined;
 let storageLifecycle = Promise.resolve();
 let activeStorageUsers = 0;
 const idleWaiters: Array<() => void> = [];
@@ -57,30 +58,16 @@ let feedPort: MessagePort | null = null;
  *  checks this after committing a page and before starting the next: a page
  *  already in flight finishes and commits; this only prevents the NEXT page. */
 let openThreadId: number | null = null;
-// The database executor owns this projection of committed lifecycle changes.
-// A departure invalidates flights even if rejoining happens before they return.
-const metaLifecycle = new Map<
-  number,
-  { active: boolean; generation: number }
->();
 storage.threadFeedCommitted$.subscribe(({ userId, states }) => {
-  for (const state of states) {
-    const previous = metaLifecycle.get(state.threadId);
-    const active =
-      state.type === 'GROUP' && state.conversationState === 'ACTIVE';
-    metaLifecycle.set(state.threadId, {
-      active,
-      generation: (previous?.generation ?? 0) + (active ? 0 : 1),
-    });
-  }
   postMessage({ type: 'thread-feed-committed', userId, states });
 });
 
 /** Per-thread Group Meta drains. Different threads run concurrently; the same
- *  thread coalesces (one trailing round keeps the newest target). */
-const groupMetaDrains = new Map<number, TrailingSingleFlight<string>>();
+ *  thread coalesces into one in-flight round plus one trailing round. The
+ *  trigger is a bare wake signal; every round reads its target from storage. */
+const groupMetaDrains = new Map<number, TrailingSingleFlight<void>>();
 /** Per-thread tombstone drains, same coalescing policy as Group Meta. */
-const tombstoneDrains = new Map<number, TrailingSingleFlight<number>>();
+const tombstoneDrains = new Map<number, TrailingSingleFlight<void>>();
 
 type StorageRelease = () => void;
 
@@ -96,13 +83,16 @@ function notifyStorageIdle(): void {
 }
 
 async function acquireUserStorage(userId: string): Promise<StorageRelease> {
+  const login = workerLogin;
+  if (!login) throw new Error('database worker login is not initialized');
+  login.assertAccount(userId);
   const acquire = storageLifecycle.then(async () => {
+    login.assertAccount(userId);
     if (openedUserId !== userId) {
       await waitForStorageIdle();
       if (openedUserId !== null) await storage.close();
-      if (workerCacheId) await storage.openExistingForUser(userId);
+      if (workerLogin?.id) await storage.openExistingForUser(userId);
       else await storage.openForUser(userId);
-      metaLifecycle.clear();
       openThreadId = null;
       openedUserId = userId;
     }
@@ -160,7 +150,7 @@ async function synchronizeNotifications(
       removed: '[' + locale.chat.messageRemovedByAdmin + ']',
     },
   );
-  if (result.notifications.length && openedUserId === userId) {
+  if (openedUserId === userId) {
     const feedIds = new Map(
       result.states.flatMap((state) =>
         state.threadFeedId !== null
@@ -171,8 +161,11 @@ async function synchronizeNotifications(
     postMessage({
       type: 'notification-batch',
       userId: Number(userId),
+      syncComplete: !result.error,
       entries: result.notifications.flatMap((descriptor) => {
-        const feedId = feedIds.get(descriptor.data.threadId ?? -1);
+        const target = parseNotificationTarget(descriptor.data.target);
+        const feedId =
+          target?.kind === 'thread' ? feedIds.get(target.threadId) : undefined;
         return feedId === undefined ? [] : [{ feedId, descriptor }];
       }),
     });
@@ -348,8 +341,6 @@ type Request = { cacheDescriptor?: SessionCacheDescriptor | null } & (
       type: 'drain-thread-misc';
       userId: string;
       threadId: number | null;
-      groupMetaEndId: string | null;
-      tombstoneEndSeq: number | null;
     }
 );
 
@@ -361,13 +352,14 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           ? null
           : restoreSessionCacheDescriptor(data.cacheDescriptor);
       const id = descriptor?.id ?? null;
-      if (workerCacheId !== undefined && workerCacheId !== id) {
+      if (workerLogin && workerLogin.id !== id) {
         throw new Error('database worker belongs to a different login session');
       }
-      if (workerCacheId === undefined) {
+      if (!workerLogin) {
         if (descriptor) storage.bindSessionCache(descriptor);
-        workerCacheId = id;
+        workerLogin = new LoginConnection(id);
       }
+      workerLogin.bindAccount(data.userId);
       const release = await acquireUserStorage(data.userId);
       try {
         if (data.type === 'bind-thread-feed') {
@@ -405,16 +397,33 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             async (target) => {
               if (feedPort !== port) return;
               try {
-                const cursor = await synchronizeStateFeed(
+                const language =
+                  (await preferences.get<string>('global', 'language')) ??
+                  navigator.language;
+                const result = await syncPushState(
                   storage,
                   target,
                   requestStateFeed,
+                  preferences,
+                  language,
                 );
-                if (feedPort === port)
+                if (feedPort === port) {
+                  postMessage({
+                    type: 'notification-batch',
+                    userId: Number(data.userId),
+                    stream: 'state',
+                    syncComplete: !result.error,
+                    entries: result.notifications.map((descriptor) => ({
+                      feedId: result.cursor,
+                      descriptor,
+                    })),
+                  });
                   postMessage({
                     type: 'state-feed-committed',
                     userId: Number(data.userId),
                   });
+                }
+                if (result.error) throw result.error;
               } catch (error) {
                 console.warn(
                   '[state-feed] wake failed; next wake retries',
@@ -508,93 +517,86 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           // Group Meta drain (groups only; non-groups no-op inside).
           let groupMetaFlight = groupMetaDrains.get(threadId);
           if (!groupMetaFlight) {
-            groupMetaFlight = new TrailingSingleFlight<string>(
-              async (target) => {
-                const generation = metaLifecycle.get(threadId)?.generation ?? 0;
-                const metaGuard = () =>
-                  metaLifecycle.get(threadId)?.active !== false &&
-                  (metaLifecycle.get(threadId)?.generation ?? 0) === generation;
-                try {
-                  const committed = await syncGroupMetaThread(
-                    storage,
-                    requestGroupMeta,
-                    threadId,
-                    target,
-                    guard,
-                    metaGuard,
-                  );
-                  if (committed.threadIds.length)
-                    postMessage({
-                      type: 'group-meta-committed',
-                      userId: Number(data.userId),
-                      threadIds: committed.threadIds,
-                      patches: committed.patches,
-                    });
-                } catch (error) {
-                  // Earlier pages are durable even if a later page failed.
-                  // Deliver their facts before leaving retry pressure to the next wake.
-                  if (
-                    error instanceof GroupMetaSyncError &&
-                    error.threadIds.length
-                  )
-                    postMessage({
-                      type: 'group-meta-committed',
-                      userId: Number(data.userId),
-                      threadIds: error.threadIds,
-                      patches: error.patches,
-                    });
-                  console.warn(
-                    '[group-meta] per-thread drain failed; next wake retries',
-                    error,
-                  );
-                }
-              },
-            );
+            groupMetaFlight = new TrailingSingleFlight<void>(async () => {
+              try {
+                const committed = await syncGroupMetaThread(
+                  storage,
+                  requestGroupMeta,
+                  threadId,
+                  guard,
+                );
+                if (committed.threadIds.length)
+                  postMessage({
+                    type: 'group-meta-committed',
+                    userId: Number(data.userId),
+                    threadIds: committed.threadIds,
+                    patches: committed.patches,
+                  });
+              } catch (error) {
+                // Earlier pages are durable even if a later page failed.
+                // Deliver their facts before leaving retry pressure to the next wake.
+                if (
+                  error instanceof GroupMetaSyncError &&
+                  error.threadIds.length
+                )
+                  postMessage({
+                    type: 'group-meta-committed',
+                    userId: Number(data.userId),
+                    threadIds: error.threadIds,
+                    patches: error.patches,
+                  });
+                console.warn(
+                  '[group-meta] per-thread drain failed; next wake retries',
+                  error,
+                );
+              }
+            });
             groupMetaDrains.set(threadId, groupMetaFlight);
           }
           // Tombstone drain.
           let tombstoneFlight = tombstoneDrains.get(threadId);
           if (!tombstoneFlight) {
-            tombstoneFlight = new TrailingSingleFlight<number>(
-              async (target) => {
-                try {
-                  const committed = await syncTombstoneThread(
-                    storage,
-                    requestTombstone,
+            tombstoneFlight = new TrailingSingleFlight<void>(async () => {
+              try {
+                // The wake signal carries no coordinates: read the current
+                // target from the durable thread state on every round.
+                const states = await storage.getThreadStates();
+                const target =
+                  states.find((item) => item.threadId === threadId)
+                    ?.tombstoneEndSeq ?? null;
+                if (target === null) return;
+                const committed = await syncTombstoneThread(
+                  storage,
+                  requestTombstone,
+                  threadId,
+                  target,
+                  undefined,
+                  guard,
+                );
+                if (committed.length)
+                  postMessage({
+                    type: 'tombstone-committed',
                     threadId,
-                    target,
-                    undefined,
-                    guard,
-                  );
-                  if (committed.length)
-                    postMessage({
-                      type: 'tombstone-committed',
-                      threadId,
-                      tombstones: committed.map((item) => ({
-                        seq: item.messageSeq,
-                        type: item.type,
-                      })),
-                    });
-                } catch (error) {
-                  console.warn(
-                    '[tombstone] per-thread drain failed; next wake retries',
-                    error,
-                  );
-                }
-              },
-            );
+                    tombstones: committed.map((item) => ({
+                      seq: item.messageSeq,
+                      type: item.type,
+                    })),
+                  });
+              } catch (error) {
+                console.warn(
+                  '[tombstone] per-thread drain failed; next wake retries',
+                  error,
+                );
+              }
+            });
             tombstoneDrains.set(threadId, tombstoneFlight);
           }
-          // Fire both concurrently; they share one `openThreadId` guard.
-          // A null target skips that drain (e.g. a tombstone-only advance
-          // from a user retraction must not touch group meta).
+          // Fire both concurrently; they share one `openThreadId` guard, and
+          // each round re-reads its current target from durable storage (a
+          // current cursor → no-op), so a bare wake is always safe.
           await Promise.all([
-            data.groupMetaEndId !== null
-              ? groupMetaFlight.trigger(data.groupMetaEndId)
-              : Promise.resolve(),
-            data.tombstoneEndSeq !== null
-              ? tombstoneFlight.trigger(data.tombstoneEndSeq)
-              : Promise.resolve(),
+            groupMetaFlight.trigger(),
+            tombstoneFlight.trigger(),
           ]);
           postMessage({ id: data.id, ok: true });
           return;

@@ -1,3 +1,4 @@
+import { UserQuotaService } from '../quota/user-quota.service.js';
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { KeypairService } from './keypair.service.js';
@@ -26,7 +27,7 @@ import { FederationRecognitionService } from './federation-recognition.service.j
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
 import { FederationMessageProvenanceService } from './federation-message-provenance.service.js';
 import { FederationAdminMessageProvenanceService } from './federation-admin-message-provenance.service.js';
-import { FederationAdminHealthProbeService } from './federation-admin-health-probe.service.js';
+import { FederationMediaTransferService } from './federation-media-transfer.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
@@ -78,6 +79,7 @@ import { FederationInboundMessageValidatorService } from './federation-inbound-m
 import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
 import { FederationLocalSystemMessagePublisher } from './federation-local-system-message-publisher.service.js';
 import { FederationStatePullService } from './federation-state-pull.service.js';
+import { FederationFeedHeadReceiptService } from './federation-feed-head-receipt.service.js';
 import { FederationStateFeedHeadClient } from './federation-state-feed-head-client.service.js';
 import { FederationStateFeedPushSchedulerService } from './federation-state-feed-push-scheduler.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
@@ -107,7 +109,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
  * AccountThreadStateService (relationship reads + raw roster mutators), SseService (GatewayModule),
  * + UploadModule (avatar wire helpers). DatabaseService is provided globally by DatabaseModule.
  *
- * Two S2S controllers share the `s2s/v1` prefix: S2sController (unified invite + roster + signed GETs,
+ * Two S2S controllers share the `somfp/v1` prefix: S2sController (unified invite + roster + signed GETs,
  * allow-list-gated via S2sSignatureGuard) and S2sRecognitionController (bidirectional Recognize + Health).
  */
 @Module({
@@ -144,6 +146,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
         FederationStateFeedPushService,
         FederationNamespaceService,
         RequestTransactionCapability,
+        UserQuotaService,
       ],
       useFactory: (
         database: DatabaseService,
@@ -152,6 +155,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
         stateFeedPush: FederationStateFeedPushService,
         namespaces: FederationNamespaceService,
         requestCapability: RequestTransactionCapability,
+        quota: UserQuotaService,
       ) =>
         new UserIntentService(
           database,
@@ -160,6 +164,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
           stateFeedPush,
           namespaces,
           requestCapability,
+          quota,
         ),
     },
     {
@@ -253,6 +258,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     ProfileEvidenceProjectionService,
     ProfileResolutionCoordinatorService,
     FederationMediaRangeClient,
+    FederationMediaTransferService,
     FederationInboundFileSync,
     FederationPendingMediaPromoter,
     FederationInboundMediaBatchService,
@@ -273,6 +279,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     FederationLocalSystemMessagePublisher,
     FederationStatePullService,
     FederationStateFeedHeadClient,
+    FederationFeedHeadReceiptService,
     FederationStateFeedPushSchedulerService,
     FederationPeerResourceService,
     FederationInboundMessageCommitService,
@@ -287,7 +294,6 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     FederationMessageFeedService,
     FederationMessageProvenanceService,
     FederationAdminMessageProvenanceService,
-    FederationAdminHealthProbeService,
     FederationMessageTombstoneFeedService,
     FederationDownloadScheduler,
     FederationHttpScheduler,
@@ -338,7 +344,6 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     FederationMessageFeedService,
     FederationMessageProvenanceService,
     FederationAdminMessageProvenanceService,
-    FederationAdminHealthProbeService,
     FederationMessageTombstoneFeedService,
     FederationDownloadScheduler,
     FederationHttpScheduler,

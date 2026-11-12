@@ -1,30 +1,193 @@
-<main class="pnf">
-  <!-- A closed padlock = the universal "access denied" symbol. Decorative, so aria-hidden
-       keeps it out of the a11y tree; the 403 code + "Access denied" heading carry the meaning. -->
-  <div class="pnf-art" aria-hidden="true">
-    <svg class="pnf-lock" width="120" height="124" viewBox="0 0 120 124" fill="none">
-      <defs>
-        <linearGradient id="padlockGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#ef4444" />
-          <stop offset="1" stop-color="#dc2626" />
-        </linearGradient>
-      </defs>
-      <path d="M38 62V48a22 22 0 0 1 44 0v14"
-        stroke="url(#padlockGrad)" stroke-width="13" stroke-linecap="round" />
-      <rect x="24" y="60" width="72" height="56" rx="16" fill="url(#padlockGrad)" />
-      <circle cx="60" cy="84" r="7" fill="#ffffff" />
-      <path d="M55.5 88h9l-2.5 16h-4z" fill="#ffffff" />
-    </svg>
-  </div>
+<main class="error-page error-page--403">
+  <div class="error-card">
+    <!-- Header status badge (M3 Tonal Container) -->
+    <div class="error-badge">
+      <span class="error-badge__dot"></span>
+      <span class="error-badge__text">{{ 'forbidden.badge' | transloco }}</span>
+    </div>
 
-  <p class="pnf-code">{{ 'forbidden.code' | transloco }}</p>
-  <h1 class="pnf-title">{{ 'forbidden.title' | transloco }}</h1>
-  <p class="pnf-desc">{{ 'forbidden.desc' | transloco }}</p>
+    <!-- Material Design 3 Duotone Vector Illustration -->
+    <div class="error-art" aria-hidden="true">
+      <svg
+        class="error-illustration"
+        viewBox="0 0 200 140"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <!-- Grounding surface shadow -->
+        <ellipse
+          cx="100"
+          cy="126"
+          rx="64"
+          ry="7"
+          fill="var(--app-border)"
+          opacity="0.45"
+        />
 
-  <div class="pnf-actions">
-    <button type="button" class="pnf-btn pnf-btn--primary" (click)="goHome()">{{ 'forbidden.back' | transloco }}</button>
-    @if (canGoBack()) {
-      <button type="button" class="pnf-btn pnf-btn--ghost" (click)="goBack()">{{ 'forbidden.goBack' | transloco }}</button>
-    }
+        <!-- Security shield contour -->
+        <path
+          d="M100 24 L144 40 V72 C144 100 100 114 100 114 C100 114 56 100 56 72 V40 Z"
+          fill="var(--app-surface)"
+          stroke="var(--app-border)"
+          stroke-width="1.5"
+          stroke-dasharray="3 4"
+        />
+
+        <!-- Central Material Padlock (duotone) -->
+        <g class="m3-lock">
+          <!-- Heavy Hardened Shackle (Arch) -->
+          <path
+            d="M84 64 V48 A 16 16 0 0 1 116 48 V64"
+            fill="none"
+            stroke="var(--app-border-strong)"
+            stroke-width="6"
+            stroke-linecap="round"
+          />
+
+          <!-- Armored Padlock Body -->
+          <rect
+            x="74"
+            y="60"
+            width="52"
+            height="42"
+            rx="10"
+            fill="var(--app-surface-elevated)"
+            stroke="var(--app-border-strong)"
+            stroke-width="1.5"
+          />
+
+          <!-- Keyhole Core (Action Blue) -->
+          <circle cx="100" cy="78" r="4.5" fill="var(--app-action-primary)" />
+          <path
+            d="M98 81 L97 88 H103 L102 81 Z"
+            fill="var(--app-action-primary)"
+          />
+
+          <!-- Subtle SOMS logo vermilion node -->
+          <circle cx="100" cy="70" r="2.5" fill="var(--app-brand-accent)" />
+        </g>
+      </svg>
+    </div>
+
+    <!-- Error Title & Description -->
+    <div class="error-content">
+      <div class="error-code">{{ 'forbidden.code' | transloco }}</div>
+      <h1 class="error-title">{{ 'forbidden.title' | transloco }}</h1>
+      <p class="error-desc">{{ 'forbidden.desc' | transloco }}</p>
+
+      @if (currentPath() && currentPath() !== '/' && currentPath() !== '/**') {
+        <div class="error-path-chip">
+          <span class="error-path-chip__label"
+            >{{ 'forbidden.pathLabel' | transloco }}:</span
+          >
+          <code>{{ currentPath() }}</code>
+        </div>
+      }
+    </div>
+
+    <!-- Actions Bar (Angular Material Buttons) -->
+    <div class="error-actions">
+      <button
+        mat-flat-button
+        color="primary"
+        type="button"
+        class="error-action-btn"
+        (click)="goHome()"
+      >
+        <app-icon
+          class="btn-icon"
+          [type]="AppIcon.CHATS"
+          [style]="{ width: '18px', height: '18px' }"
+          aria-hidden="true"
+        />
+        <span>{{ 'forbidden.back' | transloco }}</span>
+      </button>
+
+      @if (canGoBack()) {
+        <button
+          mat-stroked-button
+          type="button"
+          class="error-action-btn"
+          (click)="goBack()"
+        >
+          <app-icon
+            class="btn-icon"
+            [type]="AppIcon.BACK"
+            [style]="{ width: '18px', height: '18px' }"
+            aria-hidden="true"
+          />
+          <span>{{ 'forbidden.goBack' | transloco }}</span>
+        </button>
+      }
+    </div>
+
+    <!-- Helpful Quick Destination Cards (Identical in 404 & 403) -->
+    <div class="error-shortcuts">
+      <span class="error-shortcuts__title">{{
+        'notFound.quickLinks' | transloco
+      }}</span>
+      <div class="error-shortcuts__grid">
+        <button type="button" class="error-shortcut-card" (click)="goHome()">
+          <span class="error-shortcut-card__icon">
+            <app-icon
+              [type]="AppIcon.CHATS"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <div class="error-shortcut-card__content">
+            <span class="error-shortcut-card__name">{{
+              'notFound.linkChat' | transloco
+            }}</span>
+            <span class="error-shortcut-card__desc">{{
+              'notFound.linkChatDesc' | transloco
+            }}</span>
+          </div>
+        </button>
+
+        <a
+          class="error-shortcut-card"
+          href="https://hapood.github.io/simple-open-messaging-service/#/deploy"
+          target="_blank"
+          rel="noopener"
+        >
+          <span class="error-shortcut-card__icon">
+            <app-icon
+              [type]="AppIcon.SERVER"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <div class="error-shortcut-card__content">
+            <span class="error-shortcut-card__name">{{
+              'notFound.linkDeploy' | transloco
+            }}</span>
+            <span class="error-shortcut-card__desc">{{
+              'notFound.linkDeployDesc' | transloco
+            }}</span>
+          </div>
+        </a>
+
+        <a
+          class="error-shortcut-card"
+          href="https://github.com/hapood/simple-open-messaging-service"
+          target="_blank"
+          rel="noopener"
+        >
+          <span class="error-shortcut-card__icon">
+            <app-icon
+              [type]="AppIcon.GLOBE"
+              [style]="{ width: '20px', height: '20px' }"
+            />
+          </span>
+          <div class="error-shortcut-card__content">
+            <span class="error-shortcut-card__name">{{
+              'notFound.linkHelp' | transloco
+            }}</span>
+            <span class="error-shortcut-card__desc">{{
+              'notFound.linkHelpDesc' | transloco
+            }}</span>
+          </div>
+        </a>
+      </div>
+    </div>
   </div>
 </main>

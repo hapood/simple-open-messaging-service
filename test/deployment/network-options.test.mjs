@@ -57,6 +57,7 @@ test('deployment tabs export host networking and admin access settings', async (
       assert.deepEqual(defaultsForMode(mode), {
         port: 7667,
         adminAccess: mode === 'public' ? 'public' : 'lan',
+        certMode: mode === 'public' ? 'alpn' : 'dns',
       });
     }
     const state = new DeploymentModeState();
@@ -64,14 +65,44 @@ test('deployment tabs export host networking and admin access settings', async (
       { ...config, adminAccess: 'public' },
       'public',
     );
+    const publicModel = parse(generateCompose(template, publicConfig));
+    assert.equal(publicModel.services.app.network_mode, 'host');
+    // ALPN default in public mode: cert mode line replaces the DNS directive, the token
+    // line and its anchor disappear, and the ACME email is passed through.
+    assert.equal(publicModel.services.app.environment.CADDY_CERT_MODE, 'alpn');
     assert.equal(
-      parse(generateCompose(template, publicConfig)).services.app.network_mode,
-      'host',
+      publicModel.services.app.environment.CADDY_DNS_DIRECTIVE,
+      undefined,
+    );
+    assert.equal(
+      publicModel.services.app.environment.CLOUDFLARE_API_TOKEN,
+      undefined,
+    );
+    assert.equal(publicModel['x-settings'].dnsToken, undefined);
+    const publicEmailModel = parse(
+      generateCompose(template, {
+        ...publicConfig,
+        acmeEmail: 'admin@example.com',
+      }),
+    );
+    assert.equal(
+      publicEmailModel.services.app.environment.ACME_EMAIL,
+      'admin@example.com',
     );
     const nasConfig = state.switch(publicConfig, 'nas');
     const model = parse(generateCompose(template, nasConfig));
     assert.equal(model.networks, undefined);
     assert.equal(model.services.app.environment.SOMS_ADMIN_ACCESS, 'public');
+    // NAS mode locks certMode to dns: the directive is explicit and the token flows via anchor.
+    assert.equal(model.services.app.environment.CADDY_CERT_MODE, 'dns');
+    assert.equal(
+      model.services.app.environment.CADDY_DNS_DIRECTIVE,
+      'dns cloudflare {env.CLOUDFLARE_API_TOKEN}',
+    );
+    assert.equal(
+      model.services.app.environment.CLOUDFLARE_API_TOKEN,
+      'test-token',
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

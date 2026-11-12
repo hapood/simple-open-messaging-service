@@ -7,6 +7,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+/// Binary delivery shared by native notifications and live presentation pages.
+/// Metadata carries indices only; each cached digest crosses the boundary once.
+#[derive(Default)]
+pub(super) struct AvatarBatch {
+    pub(super) bytes: Vec<Vec<u8>>,
+    indices: std::collections::BTreeMap<String, usize>,
+}
+impl AvatarBatch {
+    pub(super) fn index(&mut self, user_id: i64, digest: &str) -> Result<Option<usize>, String> {
+        if let Some(index) = self.indices.get(digest) {
+            return Ok(Some(*index));
+        }
+        let Some(bytes) = read(user_id, digest)? else {
+            return Ok(None);
+        };
+        let index = self.bytes.len();
+        self.bytes.push(bytes);
+        self.indices.insert(digest.to_owned(), index);
+        Ok(Some(index))
+    }
+}
+
 fn root() -> Result<PathBuf, String> {
     Ok(super::db_path()?.with_extension("profile-avatars"))
 }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::login_connection::LoginConnection;
 use crate::login_session_store::LoginSessionId;
+use futures_util::FutureExt;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,22 +28,18 @@ fn origins(proxy: &ServerSessionState, origin: &str) {
 
 fn seed_group_thread(conn: &mut Connection, user_id: i64, meta_end: &str) {
     let tx = conn.transaction().unwrap();
-    super::super::client_state::apply_thread_state(
-        &tx,
-        user_id,
-        &json!({
-            "type": "GROUP", "threadId": THREAD_ID, "authorityNamespaceId": 0,
-            "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
-            "role": "MEMBER",
-            "profile": {"account": "!dev", "namespaceId": 0, "profileRev": 3},
-            "alias": null, "threadProfileRev": 3, "messageEndSeq": 0, "tombstoneEndSeq": 0,
-            "groupMetaFeedEndId": meta_end, "joinRequestEndFeedId": 0,
-            "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
-            "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
-        }),
-        5,
-    )
+    let snapshot = serde_json::from_value::<super::super::attention::ThreadFeedSnapshot>(json!({
+        "type": "GROUP", "threadId": THREAD_ID, "publisherNamespaceId": 0,
+        "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
+        "role": "MEMBER", "profileAccount": "!dev", "profileRev": 3,
+        "threadFeedId": 5, "alias": null, "messageEndSeq": 0, "tombstoneEndSeq": 0,
+        "groupMetaFeedEndId": meta_end, "joinRequestEndFeedId": 0,
+        "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
+        "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
+        "previews": [],
+    }))
     .unwrap();
+    super::super::client_state::ensure_thread_identity(&tx, user_id, &snapshot).unwrap();
     tx.commit().unwrap();
 }
 
@@ -55,20 +52,27 @@ fn fixture(proxy: &ServerSessionState, group: bool) -> FeedIntent {
             .execute_batch(
                 "CREATE TEMP TABLE meta_cursor_proof(value TEXT);
                  CREATE TEMP TRIGGER meta_cursor_connection_proof
-                 AFTER UPDATE OF group_meta_feed_id ON main.threads
-                 BEGIN INSERT INTO meta_cursor_proof VALUES(NEW.group_meta_feed_id); END;
+                 AFTER UPDATE OF feed_id ON main.group_meta
+                 BEGIN INSERT INTO meta_cursor_proof VALUES(NEW.feed_id); END;
                  CREATE TEMP TABLE profile_proof(account TEXT);
                  CREATE TEMP TRIGGER profile_connection_proof AFTER INSERT ON main.profiles
                  BEGIN INSERT INTO profile_proof VALUES(NEW.account); END;",
             )
             .unwrap();
     } else {
+        seed_p2p_thread(&mut database, 42, 0);
+        database
+            .execute(
+                "UPDATE threads SET tombstone_end_seq=5 WHERE user_id=42 AND thread_id=?1",
+                [THREAD_ID],
+            )
+            .unwrap();
         database
             .execute_batch(
                 "CREATE TEMP TABLE tombstone_proof(kind TEXT);
                  CREATE TEMP TRIGGER tombstone_message_proof AFTER INSERT ON main.messages
                  BEGIN INSERT INTO tombstone_proof VALUES('message'); END;
-                 CREATE TEMP TRIGGER tombstone_hwm_proof AFTER INSERT ON main.thread_sync_state
+                 CREATE TEMP TRIGGER tombstone_hwm_proof AFTER UPDATE OF deleted_hwm ON main.threads
                  BEGIN INSERT INTO tombstone_proof VALUES('hwm'); END;",
             )
             .unwrap();
@@ -152,6 +156,24 @@ fn group_meta_page(scanned: &str, has_more: bool, items: Value) -> Value {
 
 /// A drain scheduled but not yet polled must fail on its first poll after the login ended or
 /// its cache view was invalidated; it cannot read plans, commit pages or adopt a successor.
+fn seed_p2p_thread(conn: &mut Connection, user_id: i64, tombstone_end: i64) {
+    let tx = conn.transaction().unwrap();
+    let snapshot = serde_json::from_value::<super::super::attention::ThreadFeedSnapshot>(json!({
+        "type": "P2P", "threadId": THREAD_ID, "publisherNamespaceId": 0,
+        "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
+        "role": null, "profileAccount": "bob", "profileRev": 1,
+        "threadFeedId": 5, "alias": null, "messageEndSeq": 0,
+        "tombstoneEndSeq": tombstone_end, "groupMetaFeedEndId": null,
+        "joinRequestEndFeedId": 0,
+        "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
+        "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
+        "previews": [],
+    }))
+    .unwrap();
+    super::super::client_state::ensure_thread_identity(&tx, user_id, &snapshot).unwrap();
+    tx.commit().unwrap();
+}
+
 #[tokio::test]
 async fn delayed_drain_futures_reject_end_and_repair_before_any_work() {
     for repair in [false, true] {
@@ -160,7 +182,7 @@ async fn delayed_drain_futures_reject_end_and_repair_before_any_work() {
         OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
         let group = Box::pin(sync_group_meta_thread(intent.clone(), THREAD_ID));
         let mut tombstone_intent = intent.clone();
-        let tombstone = Box::pin(sync_tombstone_thread(&mut tombstone_intent, THREAD_ID, 5));
+        let tombstone = Box::pin(sync_tombstone_thread(&mut tombstone_intent, THREAD_ID));
         if repair {
             intent.work.owner().invalidate_database_work().unwrap();
         } else {
@@ -179,10 +201,10 @@ async fn delayed_drain_futures_reject_end_and_repair_before_any_work() {
                 .with_database(|conn| {
                     let (feed, members): (String, i64) = conn
                         .query_row(
-                            "SELECT group_meta_feed_id,
+                            "SELECT feed_id,
                                     (SELECT COUNT(*) FROM members
                                      WHERE user_id=42 AND thread_id=?1)
-                             FROM threads WHERE user_id=42 AND thread_id=?1",
+                             FROM group_meta WHERE user_id=42 AND thread_id=?1",
                             [THREAD_ID],
                             |row| Ok((row.get(0)?, row.get(1)?)),
                         )
@@ -195,15 +217,6 @@ async fn delayed_drain_futures_reject_end_and_repair_before_any_work() {
         close(&intent);
         close(&successor);
     }
-}
-
-fn count_threads(conn: &Connection) -> i64 {
-    conn.query_row(
-        "SELECT COUNT(*) FROM threads WHERE user_id=42 AND thread_id=?1",
-        [THREAD_ID],
-        |row| row.get(0),
-    )
-    .unwrap()
 }
 
 /// A stalled Group Meta or tombstone response must close its actual socket when the login
@@ -237,12 +250,7 @@ async fn stalled_drain_sockets_close_on_end_or_repair() {
                     .await
                     .unwrap();
                 started.send(()).unwrap();
-                let mut byte = [0; 1];
-                let count = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte))
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(count, 0, "cancelled drain must close its TCP connection");
+                super::assert_client_closed_connection(&mut socket).await;
             });
             let owner = intent.work.owner().clone();
             let error = if group {
@@ -267,9 +275,7 @@ async fn stalled_drain_sockets_close_on_end_or_repair() {
             } else {
                 let mut moved = intent.clone();
                 let pending =
-                    tokio::spawn(
-                        async move { sync_tombstone_thread(&mut moved, THREAD_ID, 5).await },
-                    );
+                    tokio::spawn(async move { sync_tombstone_thread(&mut moved, THREAD_ID).await });
                 tokio::time::timeout(Duration::from_secs(2), ready)
                     .await
                     .unwrap()
@@ -304,7 +310,7 @@ async fn a_queued_group_meta_page_commit_rejects_end_or_repair() {
             namespace_id: 0,
             page: serde_json::from_value(json!({
                 "account": "!dev", "mode": "delta",
-                "items": [{"feedId": "1", "operation": "MEMBER_UPSERT",
+                "items": [{"feedId": "1", "createdAt":1000,"originCreatedAt":null,"operation": "MEMBER_UPSERT",
                            "body": {"account": "bob", "namespaceId": 0,
                                     "role": "MEMBER", "profileRev": 2}}],
                 "scannedThrough": "2", "groupMetaFeedEndId": "2", "hasMore": false,
@@ -316,7 +322,7 @@ async fn a_queued_group_meta_page_commit_rejects_end_or_repair() {
             Box::pin(intent.db(move |conn| {
                 super::super::client_state::apply_group_meta_page(conn, 42, update)
             }));
-        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert!(pending.as_mut().now_or_never().is_none());
         if repair {
             intent.work.owner().invalidate_database_work().unwrap();
         } else {
@@ -330,10 +336,10 @@ async fn a_queued_group_meta_page_commit_rejects_end_or_repair() {
                 .with_database(|conn| {
                     let (feed, members): (String, i64) = conn
                         .query_row(
-                            "SELECT group_meta_feed_id,
+                            "SELECT feed_id,
                                     (SELECT COUNT(*) FROM members
                                      WHERE user_id=42 AND thread_id=?1)
-                             FROM threads WHERE user_id=42 AND thread_id=?1",
+                             FROM group_meta WHERE user_id=42 AND thread_id=?1",
                             [THREAD_ID],
                             |row| Ok((row.get(0)?, row.get(1)?)),
                         )
@@ -385,7 +391,7 @@ async fn a_queued_tombstone_page_commit_rejects_end_or_repair() {
             tombstones,
             5,
         ));
-        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert!(pending.as_mut().now_or_never().is_none());
         if repair {
             intent.work.owner().invalidate_database_work().unwrap();
         } else {
@@ -399,7 +405,7 @@ async fn a_queued_tombstone_page_commit_rejects_end_or_repair() {
                 .with_database(|conn| {
                     let hwm: Option<i64> = conn
                         .query_row(
-                            "SELECT deleted_hwm FROM thread_sync_state
+                            "SELECT deleted_hwm FROM threads
                              WHERE user_id=42 AND thread_id=?1",
                             [THREAD_ID],
                             |row| row.get(0),
@@ -413,9 +419,9 @@ async fn a_queued_tombstone_page_commit_rejects_end_or_repair() {
                 })
                 .unwrap()
         };
-        assert_eq!(drained(successor.work.owner()), (None, 0));
+        assert_eq!(drained(successor.work.owner()), (Some(0), 0));
         if repair {
-            assert_eq!(drained(intent.work.owner()), (None, 0));
+            assert_eq!(drained(intent.work.owner()), (Some(0), 0));
         }
         close(&intent);
         close(&successor);
@@ -431,9 +437,8 @@ async fn group_meta_drain_retains_owner_and_materializes_profiles() {
     origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
     let intent = fixture(&proxy, true);
     OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
-    // Mutating runtime mirrors after capture cannot retarget any page or profile request.
+    // Mutating routing after capture cannot retarget any page or profile request.
     origins(&proxy, "http://127.0.0.1:1");
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serving = tokio::spawn(async move {
         {
             let (mut socket, _) = server.accept().await.unwrap();
@@ -449,7 +454,7 @@ async fn group_meta_drain_retains_owner_and_materializes_profiles() {
                 group_meta_page(
                     "1",
                     true,
-                    json!([{"feedId": "1", "operation": "MEMBER_UPSERT",
+                    json!([{"feedId": "1", "createdAt":1000,"originCreatedAt":null,"operation": "MEMBER_UPSERT",
                             "body": {"account": "bob", "namespaceId": 0,
                                      "role": "MEMBER", "profileRev": 2}}]),
                 ),
@@ -470,7 +475,7 @@ async fn group_meta_drain_retains_owner_and_materializes_profiles() {
                 group_meta_page(
                     "2",
                     false,
-                    json!([{"feedId": "2", "operation": "GROUP_ANNOUNCEMENT",
+                    json!([{"feedId": "2", "createdAt":1000,"originCreatedAt":null,"operation": "GROUP_ANNOUNCEMENT",
                             "body": {"text": "hello"}}]),
                 ),
             )
@@ -518,18 +523,13 @@ async fn group_meta_drain_retains_owner_and_materializes_profiles() {
     assert_eq!(patches.len(), 2);
     assert_eq!(patches[0].group_meta_feed_id, "1");
     assert_eq!(patches[0].member_count, 1);
-    assert!(patches[0].announcement.is_none());
+    assert!(patches[0].announcement_feed_id.is_none());
+    assert!(patches[0].announcement_text.is_none());
     assert_eq!(patches[0].group_meta_recovery_through.as_deref(), Some("2"));
     assert_eq!(patches[1].group_meta_feed_id, "2");
     assert_eq!(patches[1].member_count, 1);
-    assert_eq!(
-        patches[1]
-            .announcement
-            .as_ref()
-            .map(|value| value.text.as_deref()),
-        Some(Some("hello"))
-    );
-    assert_eq!(patches[1].announcement.as_ref().unwrap().feed_id, "2");
+    assert_eq!(patches[1].announcement_text.as_deref(), Some("hello"));
+    assert_eq!(patches[1].announcement_feed_id.as_deref(), Some("2"));
     assert_eq!(patches[1].group_meta_recovery_through, None);
     intent
         .work
@@ -542,9 +542,9 @@ async fn group_meta_drain_retains_owner_and_materializes_profiles() {
                 Option<String>,
             ) = conn
                 .query_row(
-                    "SELECT group_meta_feed_id, group_meta_recovery_through,
-                            group_member_count, group_announcement_text
-                     FROM threads WHERE user_id=42 AND thread_id=?1",
+                    "SELECT feed_id, recovery_through,
+                            member_count, announcement_text
+                     FROM group_meta WHERE user_id=42 AND thread_id=?1",
                     [THREAD_ID],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
@@ -628,8 +628,11 @@ async fn failed_profile_warming_keeps_committed_group_meta_pages() {
     )
     .await
     .unwrap();
-    serving.await.unwrap();
     assert_eq!(error, None, "warming failure is retried on the next wake");
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .expect("mock server did not receive the expected Meta pages and profile demand")
+        .unwrap();
     assert_eq!(changed, vec![THREAD_ID]);
     assert_eq!(patches.len(), 2);
     intent
@@ -638,7 +641,7 @@ async fn failed_profile_warming_keeps_committed_group_meta_pages() {
         .with_database(|conn| {
             let feed: String = conn
                 .query_row(
-                    "SELECT group_meta_feed_id FROM threads
+                    "SELECT feed_id FROM group_meta
                      WHERE user_id=42 AND thread_id=?1",
                     [THREAD_ID],
                     |row| row.get(0),
@@ -655,6 +658,49 @@ async fn failed_profile_warming_keeps_committed_group_meta_pages() {
     close(&intent);
 }
 
+#[tokio::test]
+async fn uninitialized_deletion_progress_is_rejected_without_replay() {
+    let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = ServerSessionState::new();
+    origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
+    let mut intent = fixture(&proxy, false);
+    intent
+        .work
+        .owner()
+        .with_database(|conn| {
+            conn.execute(
+                "DELETE FROM threads WHERE user_id=42 AND thread_id=?1",
+                [THREAD_ID],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO message_ranges VALUES(42,?1,0,3,'LOCAL_COVERED')",
+                [THREAD_ID],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+    OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
+    let error = sync_tombstone_thread(&mut intent, THREAD_ID)
+        .await
+        .unwrap_err();
+    assert_eq!(error, "thread deletion progress is not initialized");
+    assert!(server.accept().now_or_never().is_none());
+    intent
+        .work
+        .owner()
+        .with_database(|conn| {
+            assert_eq!(
+                super::super::messages::read_deleted_hwm(conn, 42, THREAD_ID)?,
+                None
+            );
+            Ok(())
+        })
+        .unwrap();
+    close(&intent);
+}
+
 /// A tombstone drain commits its tombs and high-water mark through the captured physical
 /// connection, retaining the original endpoint and bearer across the POST.
 #[tokio::test]
@@ -665,7 +711,6 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
     let intent = fixture(&proxy, false);
     OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
     origins(&proxy, "http://127.0.0.1:1");
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serving = tokio::spawn(async move {
         let (mut socket, _) = server.accept().await.unwrap();
         let (headers, body) = read_request(&mut socket).await;
@@ -690,7 +735,7 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
     let mut drain_intent = intent.clone();
     let committed = tokio::time::timeout(
         Duration::from_secs(5),
-        sync_tombstone_thread(&mut drain_intent, THREAD_ID, 5),
+        sync_tombstone_thread(&mut drain_intent, THREAD_ID),
     )
     .await
     .unwrap()
@@ -704,7 +749,7 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
         .with_database(|conn| {
             let hwm: Option<i64> = conn
                 .query_row(
-                    "SELECT deleted_hwm FROM thread_sync_state
+                    "SELECT deleted_hwm FROM threads
                      WHERE user_id=42 AND thread_id=?1",
                     [THREAD_ID],
                     |row| row.get(0),

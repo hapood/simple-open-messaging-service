@@ -24,8 +24,8 @@ build-type taxonomy (all land in `dist/android/`):
 | `make apk-debug` | debug APKs (stable debug key, no minify — fastest iteration) |
 | `make install` / `make run` | `adb install -r` (+ launch) the newest APK |
 
-Artifacts land under `dist/<platform>/` (`dist/android/` and `dist/macos/` now; `dist/{linux,windows}/`
-slot in when those desktop hosts are wired). The build runs natively, so the cargo (`~/.cargo`) and
+Artifacts land under `dist/<platform>/` (`dist/android/`, `dist/linux/`, and `dist/macos/` now;
+`dist/windows/` is populated by the Windows CI workflow). The build runs natively, so the cargo (`~/.cargo`) and
 gradle (`~/.gradle`) caches persist across runs; the first build after a `Cargo.lock` change fetches
 crates (set `HTTP_PROXY`/`HTTPS_PROXY` or a `~/.cargo/config.toml` mirror if behind a proxy), and later
 warm builds need no network. Gradle is Java and ignores the `*_proxy` env vars; if your shell has a
@@ -75,7 +75,10 @@ See `FCM_ANDROID_PATCH.md` for the native-side (FCM, bridges, dev shell) details
 The universal macOS bundle (`.app` + `.dmg`, covers Intel x86_64 + Apple Silicon aarch64) is built
 natively on a Mac via `src-tauri/Makefile` — no Docker, because macOS can't be cross-built on Linux
 (needs `hdiutil`/`codesign` + the macOS SDK). It reuses the same pipeline discipline as Android: version
-gate, `WEB_BUILD`, versioned artifacts under `dist/<platform>/` (`dist/macos/` here).
+gate, `WEB_BUILD`, versioned artifacts under `dist/<platform>/` (`dist/macos/` here). The tag-triggered
+release workflow also builds it on a `macos-latest` runner — ad-hoc signed by default; configure the
+`APPLE_SIGNING_IDENTITY` (and notarization `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`) repository
+secrets for signed public distribution. Local `make macos` remains the development path.
 
 | Command | Output |
 |---|---|
@@ -102,16 +105,65 @@ npm --prefix web install                                    # so beforeBuildComm
 Android-gradle-only). Pin it to `^2.11.4` to match `web/package.json`'s `@tauri-apps/cli` — the same
 version-drift guard the Android host-toolchain check enforces.
 
-## Linux / Windows desktop build (future — not wired)
+## Linux desktop build (wired)
 
-> Linux (deb/appimage) and Windows (msi/exe) bundles remain **future** work — each needs its own native
-> host (neither can be cross-built from the macOS host) and is not yet orchestrated. The industry-standard
-> path is a `tauri-apps/tauri-action` CI matrix.
+The Linux desktop client (AppImage + deb, x86_64) is built natively on a Linux host via
+`src-tauri/Makefile`, reusing the same pipeline discipline as Android/macOS: version gate, `WEB_BUILD`,
+versioned artifacts under `dist/<platform>/` (`dist/linux/` here).
 
-Tauri v2 desktop needs **`libwebkit2gtk-4.1`** (Ubuntu 22.04+ / Kylin V10 SP2). The Kylin V10 SP1 dev box
-(20.04-based) only has `4.0`, so a Linux desktop build must run on a 22.04+ host. Install the system deps
-there (`libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`), plus
-the Rust toolchain and Tauri CLI (`cargo install tauri-cli --version "^2"`).
+| Command | Output |
+|---|---|
+| `make linux` | `.AppImage` + `.deb` → `dist/linux/SOMS-<ver>-x86_64.{AppImage,deb}` |
+| `make dev` | `cargo tauri dev` — hot-reload (`ng serve` on :4200) |
+
+### System requirements (build AND run)
+
+Tauri v2 desktop needs **`libwebkit2gtk-4.1`**, and the AppImage does not bundle WebKitGTK/GTK either
+— so both the build host and the target machines must be **Ubuntu 22.04+ / Debian 12+** (or any
+distro providing WebKitGTK 4.1, e.g. Kylin V10 SP2). Older 4.0-only systems (Ubuntu 20.04, Kylin V10
+SP1) are out of support. The bundles also link against the build host's glibc, which makes 22.04
+(glibc 2.35) the build floor for distribution: a 24.04 host (glibc 2.39) emits binaries that refuse
+to start on 22.04-era distros — fine for local self-use only. The release workflow therefore pins its
+Linux job to `ubuntu-22.04`.
+
+### Linux one-time prerequisites
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+rustup target add x86_64-unknown-linux-gnu
+cargo install tauri-cli --version 2.11.4 --locked        # PIN to web/package.json @tauri-apps/cli
+npm --prefix web install                                  # so beforeBuildCommand (ng build) works
+```
+
+`tauri-cli` here is the `cargo tauri` binary (NOT the `src-tauri/tauri.js` node shim, which is
+Android-gradle-only). Pin it to `2.11.4` to match `web/package.json`'s `@tauri-apps/cli` — the same
+version-drift guard the Makefile's host-toolchain check enforces.
+
+## Windows desktop build
+
+CI builds x64 and ARM64 NSIS installers on `windows-latest` and `windows-11-arm`,
+respectively, and runs the shared Rust tests natively on each architecture.
+Both CI and Release use [the Windows workflow](../.github/workflows/windows.yml).
+Download the `soms-windows-x86_64` and `soms-windows-arm64` artifacts from ordinary
+CI runs; tagged releases attach both installers and architecture-specific
+`SHA256SUMS.windows-*` files to the GitHub Release.
+
+For a local build on Windows with Node.js 24, the Rust MSVC toolchain, Visual Studio
+C++ Build Tools, and WebView2 installed, run from the repository root:
+
+```powershell
+npm ci --prefix web
+node web/node_modules/@tauri-apps/cli/tauri.js build --ci --target x86_64-pc-windows-msvc --bundles nsis
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+```
+
+The installer is generated under
+`src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`; CI copies it to
+`src-tauri/dist/windows/` with a versioned name. Builds are unsigned, so Windows
+may display an unknown-publisher or SmartScreen warning. For ARM64 builds on an
+ARM64 Windows host, substitute `aarch64-pc-windows-msvc` for the x64 target above.
+MSI packages are not currently built. Windows builds require a Windows host,
+not the Linux/macOS Makefile.
 
 ### China mirror / proxy (cargo)
 

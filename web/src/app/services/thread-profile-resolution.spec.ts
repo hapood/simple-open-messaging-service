@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import { SessionLifecycleService } from './session-lifecycle.service';
@@ -20,21 +19,17 @@ describe('resolved thread profile identity', () => {
   afterEach(async () => storage.closeAndDelete(userId));
 
   function group(namespaceId = 0, profileRev = 1, threadId = 91) {
-    return createGroupConversation(
+    return createGroupConversation({
       threadId,
-      {
-        id: threadId,
-        account: '!group',
-        name: '',
-        namespaceId,
-        profileRev,
-      },
-      { threadFeedId: 33, visible: true },
-    );
+      account: '!group',
+      publisherNamespaceId: namespaceId,
+      threadFeedId: 33,
+      visible: true,
+      profileRev,
+    });
   }
 
   async function seedThread(item: ConversationItem) {
-    const subject = item.type === 'GROUP' ? item.group : item.peerUser;
     const feedId = item.threadFeedId ?? 1;
     await storage.mergeThreadStates([
       threadFeedSnapshot(item.threadId, {
@@ -42,11 +37,10 @@ describe('resolved thread profile identity', () => {
         type: item.type,
         role: item.role,
         publisherNamespaceId: item.publisherNamespaceId,
-        profileAccount: subject.account,
+        profileAccount: item.account,
         profileRev: item.profileRev,
       }),
     ]);
-    await storage.putThread({ ...item, threadFeedId: feedId });
   }
 
   it('normalizes a local canonical-domain response before matching and notifying', async () => {
@@ -78,13 +72,12 @@ describe('resolved thread profile identity', () => {
       },
     });
     const restored = await storage.getThreads();
-    expect(restored[0].group).not.toHaveProperty('domain');
+    expect(restored[0].profile).not.toHaveProperty('domain');
     expect(restored).toEqual([
       expect.objectContaining({
-        group: expect.objectContaining({
+        profile: expect.objectContaining({
           name: 'Created group',
-          description: 'Description',
-          avatar: '',
+          bio: 'Description',
         }),
       }),
     ]);
@@ -92,9 +85,10 @@ describe('resolved thread profile identity', () => {
 
   it('hydrates local peers while preserving their selected profile revision', async () => {
     await seedThread(
-      createP2PConversation(92, {
+      createP2PConversation({
+        threadId: 92,
         account: 'bob',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
         profileRev: 1,
       }),
     );
@@ -118,15 +112,14 @@ describe('resolved thread profile identity', () => {
     });
     expect(await storage.getThreads()).toEqual([
       expect.objectContaining({
-        peerUser: expect.objectContaining({ name: 'Bob' }),
+        profile: expect.objectContaining({ name: 'Bob' }),
         profileRev: 1,
       }),
     ]);
   });
 
-  it('does not let an in-flight attention write erase a newly resolved title', async () => {
-    const stale = group();
-    await seedThread(stale);
+  it('preserves resolved profile content when advancing attention reads', async () => {
+    await seedThread(group());
     await storage.commitResolvedProfile({
       account: '!group',
       publisherNamespaceId: 0,
@@ -137,12 +130,11 @@ describe('resolved thread profile identity', () => {
       avatarBase64: null,
     });
     await storage.advanceThreadRead(91, 1);
-    await storage.putThread({ ...stale, lastReadSeq: 1 });
     expect((await storage.getThreads())[0]).toMatchObject({
       lastReadSeq: 1,
-      group: {
+      profile: {
         name: 'Resolved while attention was in flight',
-        description: 'Description',
+        bio: 'Description',
       },
     });
   });
@@ -160,14 +152,14 @@ describe('resolved thread profile identity', () => {
     await seedThread(group(4));
     await storage.commitResolvedProfile(profile);
     expect((await storage.getThreads())[0]).toMatchObject({
-      group: { name: '' },
+      profile: { name: '!group' },
     });
     await seedThread(group(0, 2, 92));
     await storage.commitResolvedProfile(profile);
     expect(
       (await storage.getThreads()).find((item) => item.threadId === 92),
     ).toMatchObject({
-      group: { name: '' },
+      profile: { name: '!group' },
       profileRev: 2,
     });
   });

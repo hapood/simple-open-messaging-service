@@ -814,7 +814,7 @@ export class FederationThreadSyncStateService {
     this.assertCoordinate(localEndSeq, 'reserved local message seq');
     await tx.execute(sql`
       UPDATE "MessageThread"
-      SET "curSeq" = GREATEST("curSeq", ${localEndSeq})
+      SET "curSeq" = GREATEST("curSeq", ${localEndSeq}), "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${threadId}
     `);
   }

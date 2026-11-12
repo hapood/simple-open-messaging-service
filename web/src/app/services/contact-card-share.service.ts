@@ -34,12 +34,14 @@ export class ContactCardShareService {
   ): Promise<void> {
     if (!self) return;
     const isGroup = chat.type === 'GROUP';
-    const target = isGroup ? chat.group : chat.peerUser;
-    const bio = isGroup ? chat.group.description : chat.peerUser.bio;
+    const bio = chat.profile.bio ?? '';
+    // The card is built from already-materialized thread display fields; the
+    // routable address and root key come from the namespace binding. The
+    // server still freezes the authoritative content from the pinned target.
     const binding = await firstValueFrom(
       this.profileNamespaces.resolve({
         publisherNamespaceId: 0,
-        profileNamespaceId: target.namespaceId,
+        profileNamespaceId: chat.publisherNamespaceId,
       }),
     );
     const domain = namespaceDisplayDomain(binding);
@@ -48,12 +50,11 @@ export class ContactCardShareService {
       return;
     }
     const content = JSON.stringify({
-      account: target.account,
+      account: chat.account,
       domain,
       publicKey: binding.rootPublicKey,
-      displayName: target.name,
+      displayName: chat.profile.name,
       bio: bio ?? '',
-      ...(target.avatar ? { avatar: target.avatar } : {}),
     });
     const preview: ChatMsgData = {
       type: 'msg',
@@ -79,7 +80,7 @@ export class ContactCardShareService {
         messages: [
           {
             id: -1,
-            name: target.name,
+            name: chat.profile.name,
             summary: this.transloco.translate(
               isGroup ? 'contactCard.group' : 'contactCard.person',
             ),
@@ -97,7 +98,6 @@ export class ContactCardShareService {
     result: ForwardDialogResult,
     chat: ConversationItem,
   ): Promise<void> {
-    const target = chat.type === 'GROUP' ? chat.group : chat.peerUser;
     const outcomes = await Promise.all(
       result.threadIds.map(async (threadId) => {
         try {
@@ -105,8 +105,8 @@ export class ContactCardShareService {
             this.messages.sendContactCard({
               threadId,
               target: {
-                account: target.account,
-                namespaceId: target.namespaceId,
+                account: chat.account,
+                namespaceId: chat.publisherNamespaceId,
                 profileRev: chat.profileRev,
               },
               clientMessageId: uuid(),
@@ -121,7 +121,7 @@ export class ContactCardShareService {
     const sent = outcomes.filter(Boolean).length;
     this.toast[sent === outcomes.length ? 'info' : 'warn'](
       sent > 0
-        ? this.transloco.translate('forward.sent', { count: sent })
+        ? this.transloco.translate('forward.sendSuccess')
         : this.transloco.translate('forward.sendFailed'),
     );
   }

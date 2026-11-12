@@ -57,6 +57,7 @@ describe('AccountThreadStateService.setBlocked', () => {
 
     expect(clientFeed.writeInTx).not.toHaveBeenCalled();
     expect(clientFeed.notifyFeedUpdated).toHaveBeenCalledWith({
+      kind: 'thread-feed',
       userId: 4,
       feedId: 12,
       threadFeedEndId: 8,

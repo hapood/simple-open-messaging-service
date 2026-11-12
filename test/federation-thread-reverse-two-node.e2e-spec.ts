@@ -17,6 +17,7 @@ import {
   vi,
 } from 'vitest';
 import request from 'supertest';
+import { uploadMessagePart } from './support/upload';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { ContentType } from '../src/database/enums.js';
@@ -420,18 +421,15 @@ describe('federation reverse thread rounds (two nodes)', () => {
       });
     expect(staged.body.code).toBe(BusinessCode.OK);
     for (const position of [0, 1]) {
-      const uploaded = await request(appB.baseUrl)
-        .post('/api/v1/upload')
-        .set('Authorization', `Bearer ${tokenB}`)
-        .set('x-client-message-id', clientMessageId)
-        .attach(
-          'file',
-          await makePng(151 + position),
-          `gallery-${position}.png`,
-        )
-        .field('partId', randomUUID())
-        .field('position', String(position))
-        .field('intent', 'FILE');
+      const uploaded = await uploadMessagePart(
+        appB.baseUrl,
+        tokenB,
+        clientMessageId,
+        await makePng(151 + position),
+        `gallery-${position}.png`,
+        'FILE',
+        { position },
+      );
       expect(uploaded.body.code).toBe(BusinessCode.OK);
     }
     await vi.waitFor(

@@ -7,20 +7,21 @@
        updates this to match the resolved theme, so the browser chrome blends from the very first
        frame — placed before the script so the script can find it via querySelector. -->
     <meta name="theme-color" content="#f3f3f1" />
-    <!-- Pre-paint FOUC bootstrap (persisted theme + language). Loaded as an EXTERNAL 'self' script so the
+    <!-- Pre-paint system-theme and language fallback. Application content stays hidden until the
+       database-first theme is applied before Angular starts. Loaded as an EXTERNAL 'self' script so the
        somsapp:// CSP `script-src 'self'` admits it without a nonce — an inline <script> would be blocked.
        Synchronous (classic, no defer) so it runs during head parsing, before <body> paints. ThemeService /
-       LanguageService re-assert and own these attributes at runtime after boot. Referenced by RELATIVE path
+       LanguageService own runtime updates after boot. Referenced by RELATIVE path
        so it resolves against <base href>, which the Pages build rewrites to the deploy sub-path. -->
     <script src="boot.js"></script>
-    <title>SOMS — Self-Hosted, Federated Chat Platform</title>
+    <title>SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform</title>
     <meta
       name="description"
       content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."
     />
     <meta
       name="keywords"
-      content="self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
+      content="simple-open-messaging-service, simple open messaging service, soms, self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
     />
 
     <!-- Open Graph / Social Media -->
@@ -31,11 +32,11 @@
     />
     <meta
       property="og:title"
-      content="SOMS — Self-Hosted, Federated Chat Platform"
+      content="SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform"
     />
     <meta
       property="og:description"
-      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
     />
     <meta
       property="og:image"
@@ -50,16 +51,33 @@
     />
     <meta
       name="twitter:title"
-      content="SOMS — Self-Hosted, Federated Chat Platform"
+      content="SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform"
     />
     <meta
       name="twitter:description"
-      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
     />
     <meta
       name="twitter:image"
       content="https://hapood.github.io/simple-open-messaging-service/social-preview.png"
     />
+
+    <!-- Structured Data (Schema.org JSON-LD) -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "SOMS (Simple Open Messaging Service)",
+        "operatingSystem": "Web, Android, Linux, Windows, macOS",
+        "applicationCategory": "CommunicationApplication",
+        "offers": {
+          "@type": "Offer",
+          "price": "0"
+        },
+        "url": "https://hapood.github.io/simple-open-messaging-service/",
+        "description": "SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices."
+      }
+    </script>
     <!-- Scale locked (`minimum-scale=maximum-scale=1`, `user-scalable=no`): disables the browser's
        pinch-to-zoom and double-tap-to-zoom so the SPA behaves as a native shell, not a zoomable page.
        On Android this is reinforced authoritatively at the engine layer in MainActivity.onWebViewCreate

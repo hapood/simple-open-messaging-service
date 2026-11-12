@@ -15,7 +15,7 @@ export interface MirrorMembershipRequestInput {
     profileNamespaceId: number;
     profileRev: number;
     note: string;
-    requestedAt: Date;
+    statusChangedAt: Date;
     expiresAt: Date;
     messageEndSeq: number;
     tombstoneEndSeq: number;
@@ -41,7 +41,7 @@ export function mirrorMembershipRequestIntentWrite(
     receiver,
     status: 'REQUESTED',
     note: input.intent.note,
-    requestedAt: input.intent.requestedAt,
+    statusChangedAt: input.intent.statusChangedAt,
     expiresAt: input.intent.expiresAt,
     profileNamespaceId: input.intent.profileNamespaceId,
     profileRev: input.intent.profileRev,

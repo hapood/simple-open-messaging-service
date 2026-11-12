@@ -266,7 +266,7 @@ DECLARE s "AccountThreadState";
 BEGIN
   IF NEW."clearedSeq" IS NOT DISTINCT FROM OLD."clearedSeq" THEN RETURN NULL; END IF;
   FOR s IN SELECT * FROM "AccountThreadState" WHERE "threadId" = NEW.id ORDER BY "accountId" FOR NO KEY UPDATE LOOP
-    UPDATE "AccountThreadState" SET "unreadCount" =
+    UPDATE "AccountThreadState" SET "updatedAt" = CURRENT_TIMESTAMP, "unreadCount" =
       thread_unread_count(s, NEW."clearedSeq", s."lastReadSeq", s."messageEndSeq") WHERE id = s.id;
   END LOOP;
   RETURN NULL;
@@ -364,7 +364,7 @@ CREATE TABLE public."Message" (
     "threadId" integer NOT NULL,
     "creatorAccount" character varying(31),
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL,
     "clientMessageId" character varying(36),
     "originSeq" integer,
@@ -474,7 +474,7 @@ BEGIN
   LOOP
     PERFORM 1 FROM "Account" WHERE id = participant."accountId" FOR NO KEY UPDATE;
     UPDATE "AccountThreadState" s
-    SET "threadFeedId" = 0,
+    SET "updatedAt" = CURRENT_TIMESTAMP, "threadFeedId" = 0,
         "threadProfileRev" = CASE WHEN seed_revision AND participant."profileRev" IS NOT NULL
           THEN participant."profileRev" ELSE s."threadProfileRev" END,
         "profileSourceId" = CASE WHEN seed_revision AND participant."profileRev" IS NOT NULL
@@ -517,7 +517,7 @@ BEGIN
       OR (pair."endpointBType" = 'USER' AND pair."endpointBAccount" = self.account));
   IF initial_rev IS NOT NULL AND (initial_rev IS DISTINCT FROM NEW."threadProfileRev"
     OR NEW."profileSourceId" IS NOT NULL) THEN
-    UPDATE "AccountThreadState" SET "threadProfileRev" = initial_rev,
+    UPDATE "AccountThreadState" SET "updatedAt" = CURRENT_TIMESTAMP, "threadProfileRev" = initial_rev,
       "profileSourceId" = NULL
     WHERE id = NEW.id;
   END IF;
@@ -561,7 +561,7 @@ BEGIN
     OR NEW."threadProfileRev" IS DISTINCT FROM OLD."threadProfileRev"
     OR NEW.blocked IS DISTINCT FROM OLD.blocked
     OR NEW.role IS DISTINCT FROM OLD.role THEN
-    UPDATE "Account" SET "threadFeedEndId" = "threadFeedEndId" + 1
+    UPDATE "Account" SET "updatedAt" = CURRENT_TIMESTAMP, "threadFeedEndId" = "threadFeedEndId" + 1
       WHERE id = NEW."accountId" RETURNING "threadFeedEndId" INTO NEW."threadFeedId";
   END IF;
   RETURN NEW;
@@ -589,7 +589,6 @@ $$;
 CREATE TABLE public."Account" (
     id integer NOT NULL,
     account character varying(31) NOT NULL,
-    kind character varying(16) DEFAULT 'USER'::character varying NOT NULL,
     "namespaceId" integer DEFAULT 0 NOT NULL,
     "defaultProfileRev" integer DEFAULT 0 NOT NULL,
     availability character varying(16) DEFAULT 'AVAILABLE'::character varying NOT NULL,
@@ -608,7 +607,7 @@ CREATE TABLE public."Account" (
     CONSTRAINT "Account_clientStateFeedEndId_check" CHECK (("clientStateFeedEndId" >= 0)),
     CONSTRAINT "Account_defaultProfileRev_check" CHECK (("defaultProfileRev" >= 0)),
     CONSTRAINT "Account_namespace_check" CHECK (("namespaceId" = 0)),
-    CONSTRAINT "Account_kind_check" CHECK (((((kind)::text = 'USER'::text) AND ((account)::text <> '$system'::text)) OR (((kind)::text = 'SYSTEM'::text) AND ((account)::text = '$system'::text) AND ("hashPwd" IS NULL) AND ("disabledAt" IS NOT NULL) AND ("defaultProfileRev" = 0)))),
+    CONSTRAINT "Account_system_identity_check" CHECK ((((account)::text <> '$system'::text) OR (((account)::text = '$system'::text) AND ("hashPwd" IS NULL) AND ("disabledAt" IS NOT NULL) AND ("defaultProfileRev" = 0)))),
     CONSTRAINT "Account_threadFeedEndId_check" CHECK (("threadFeedEndId" >= 0))
 );
 
@@ -663,7 +662,7 @@ CREATE TABLE public."Admin" (
     "lastLoginIp" character varying(64),
     "lastLoginAt" timestamp(3) with time zone,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     role public."AdminRole" DEFAULT 'SUPER_ADMIN'::public."AdminRole" NOT NULL,
     "twoFactorEnabled" boolean DEFAULT false NOT NULL,
     "twoFactorSecretCipher" character varying(255),
@@ -678,6 +677,8 @@ CREATE TABLE public."Admin" (
 --
 
 CREATE TABLE public."AdminActionLog" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     "adminId" integer NOT NULL,
     "adminRole" public."AdminRole" NOT NULL,
@@ -689,7 +690,6 @@ CREATE TABLE public."AdminActionLog" (
     route character varying(255),
     "errorMessage" character varying(255),
     meta jsonb,
-    at timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     status public."AdminAuditStatus" DEFAULT 'STARTED'::public."AdminAuditStatus" NOT NULL
 );
 
@@ -718,6 +718,7 @@ ALTER SEQUENCE public."AdminActionLog_id_seq" OWNED BY public."AdminActionLog".i
 --
 
 CREATE TABLE public."AdminLoginChallenge" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     jti character varying(36) NOT NULL,
     "adminId" integer NOT NULL,
     "consumedAt" timestamp(3) with time zone,
@@ -730,6 +731,7 @@ CREATE TABLE public."AdminLoginChallenge" (
 --
 
 CREATE TABLE public."AdminSession" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     "adminId" integer NOT NULL,
     "tokenHash" text NOT NULL,
@@ -787,6 +789,8 @@ ALTER SEQUENCE public."Admin_id_seq" OWNED BY public."Admin".id;
 --
 
 CREATE TABLE public."CallHistory" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     key text NOT NULL,
     "threadId" integer NOT NULL,
     snapshot jsonb NOT NULL,
@@ -839,7 +843,7 @@ CREATE TABLE public."DiagnosticsReport" (
     manifest jsonb NOT NULL,
     status character varying(16) DEFAULT 'new'::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL
 );
 
@@ -869,12 +873,13 @@ ALTER SEQUENCE public."DiagnosticsReport_id_seq" OWNED BY public."DiagnosticsRep
 --
 
 CREATE TABLE public."DurableTask" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     kind public."DurableTaskKind" NOT NULL,
     "scopeType" public."DurableTaskScopeType" NOT NULL,
     "scopeKey" character varying(512) NOT NULL,
     "taskType" character varying(64) NOT NULL,
-    "actorUserId" integer,
+    "actorUserId" integer NOT NULL,
     payload jsonb NOT NULL,
     checkpoint jsonb DEFAULT '{}'::jsonb NOT NULL,
     "coalescingKey" character varying(512),
@@ -884,7 +889,7 @@ CREATE TABLE public."DurableTask" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "startedAt" timestamp(3) with time zone,
     "completedAt" timestamp(3) with time zone,
-    CONSTRAINT "DurableTask_actor_user_id_check" CHECK ((("actorUserId" IS NULL) OR ("actorUserId" > 0))),
+    CONSTRAINT "DurableTask_actor_user_id_check" CHECK (("actorUserId" > 0)),
     CONSTRAINT "DurableTask_checkpoint_check" CHECK ((jsonb_typeof(checkpoint) = 'object'::text)),
     CONSTRAINT "DurableTask_coalescing_key_check" CHECK ((("coalescingKey" IS NULL) OR (length(("coalescingKey")::text) > 0))),
     CONSTRAINT "DurableTask_error_check" CHECK ((("lastError" IS NULL) OR (status = 'FAILED'::public."DurableTaskStatus"))),
@@ -1003,6 +1008,7 @@ ALTER SEQUENCE public."FederationIdentityReview_id_seq" OWNED BY public."Federat
 --
 
 CREATE TABLE public."FederationIdentityConflict" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     domain character varying(63) NOT NULL,
     "rootPublicKey" character varying(44) NOT NULL,
@@ -1085,6 +1091,7 @@ ALTER SEQUENCE public."FederationThreadHistoryGap_id_seq" OWNED BY public."Feder
 --
 
 CREATE TABLE public."FederationThreadSyncState" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
     "messageTargetSeq" integer DEFAULT 0 NOT NULL,
     "deletionTargetSeq" integer DEFAULT 0 NOT NULL,
@@ -1116,7 +1123,6 @@ CREATE TABLE public."FileSyncProgress" (
     "originDomain" character varying(63),
     "publisherNamespaceId" integer DEFAULT 0 CONSTRAINT "FileSyncProgress_namespaceId_not_null" NOT NULL,
     "errorKind" character varying(255),
-    "quotaCounted" boolean DEFAULT false NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     payload jsonb
@@ -1147,6 +1153,7 @@ ALTER SEQUENCE public."FileSyncProgress_id_seq" OWNED BY public."FileSyncProgres
 --
 
 CREATE TABLE public."ForwardBundle" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigserial NOT NULL,
     messages jsonb NOT NULL,
     "messageCount" integer NOT NULL,
@@ -1169,6 +1176,8 @@ CREATE TABLE public."ForwardBundle" (
 --
 
 CREATE TABLE public."ForwardBundleAsset" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "bundleId" bigint NOT NULL,
     digest character varying(64) NOT NULL,
     ordinal integer NOT NULL,
@@ -1181,6 +1190,8 @@ CREATE TABLE public."ForwardBundleAsset" (
 --
 
 CREATE TABLE public."ForwardBundleDependency" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "parentBundleId" bigint NOT NULL,
     "childBundleId" bigint NOT NULL,
     ordinal integer NOT NULL
@@ -1192,6 +1203,8 @@ CREATE TABLE public."ForwardBundleDependency" (
 --
 
 CREATE TABLE public."ForwardMessage" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "messageId" bigint NOT NULL,
     "bundleId" bigint NOT NULL
 );
@@ -1238,6 +1251,7 @@ ALTER SEQUENCE public."GroupAccount_id_seq" OWNED BY public."GroupAccount".id;
 --
 
 CREATE TABLE public."GroupMeta" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "metaEndId" integer DEFAULT 0 NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
@@ -1247,10 +1261,6 @@ CREATE TABLE public."GroupMeta" (
     "metaTargetId" integer DEFAULT 0 NOT NULL,
     "metaProcessedThroughId" integer DEFAULT 0 NOT NULL,
     "metaRecoveryThroughId" integer,
-    "announcementFeedId" integer,
-    "announcementText" text,
-    CONSTRAINT "GroupMeta_announcementFeedId_check" CHECK ((("announcementFeedId" IS NULL) OR ("announcementFeedId" > 0))),
-    CONSTRAINT "GroupMeta_announcementText_check" CHECK ((("announcementText" IS NULL) OR (("announcementFeedId" IS NOT NULL) AND (char_length("announcementText") >= 1) AND (char_length("announcementText") <= 4096)))),
     CONSTRAINT "GroupMeta_applicationEndId_check" CHECK (("applicationEndId" >= 0)),
     CONSTRAINT "GroupMeta_invitationEndId_check" CHECK (("invitationEndId" >= 0)),
     CONSTRAINT "GroupMeta_metaEndId_check" CHECK (("metaEndId" >= 0)),
@@ -1266,6 +1276,7 @@ CREATE TABLE public."GroupMeta" (
 --
 
 CREATE TABLE public."GroupMetaMemberFeed" (
+    "originCreatedAt" timestamp(3) with time zone,
     "feedId" integer NOT NULL,
     operation public."GroupMetaMemberOperation" NOT NULL,
     body jsonb NOT NULL,
@@ -1273,6 +1284,14 @@ CREATE TABLE public."GroupMetaMemberFeed" (
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
     "profileSourceSeq" integer,
+    CONSTRAINT "GroupMetaMemberFeed_announcement_check" CHECK (operation <> 'GROUP_ANNOUNCEMENT' OR COALESCE(
+      body ? 'text' AND (body - 'text') = '{}'::jsonb
+      AND (body -> 'text' = 'null'::jsonb OR (
+        jsonb_typeof(body -> 'text') = 'string'
+        AND char_length(body ->> 'text') BETWEEN 1 AND 4096)), false)),
+    CONSTRAINT "GroupMetaMemberFeed_time_check" CHECK (
+      "createdAt" >= '1970-01-01'::timestamptz AND (
+        "originCreatedAt" IS NULL OR "originCreatedAt" >= '1970-01-01'::timestamptz)),
     CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (body <> '{}'::jsonb))),
     CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0)),
     CONSTRAINT "GroupMetaMemberFeed_profileSourceSeq_check" CHECK ((("profileSourceSeq" IS NULL) OR ("profileSourceSeq" > 0)))
@@ -1284,11 +1303,13 @@ CREATE TABLE public."GroupMetaMemberFeed" (
 --
 
 CREATE TABLE public."IdentityNamespace" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     domain character varying(63) NOT NULL,
     "rootPublicKey" character varying(44),
     "identityPinnedAt" timestamp(3) with time zone,
     "peerAssignedLocalNamespaceId" integer,
+    "signingKeyCreatedAt" bigint NOT NULL,
     active boolean DEFAULT false NOT NULL,
     "trustLevel" character varying(31) DEFAULT 'unrecognized'::character varying NOT NULL,
     "trustedAt" timestamp(3) with time zone,
@@ -1305,21 +1326,10 @@ CREATE TABLE public."IdentityNamespace" (
     "resetAt" timestamp(3) with time zone,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "retiredAt" timestamp(3) with time zone,
-    "stateFeedEndId" bigint DEFAULT 0 NOT NULL,
-    "dailyMsgLimit" integer,
-    "dailyRequestLimit" integer,
-    "dailyFileLimit" integer,
-    "dailyFileBytesLimit" bigint,
-    "stateFeedPulledThrough" bigint,
-    "profileNamespaceFeedEndId" bigint DEFAULT 0 NOT NULL,
-    "profileNamespaceFeedPulledThrough" bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT "IdentityNamespace_signingKeyCreatedAt_check" CHECK ((id = 0 AND "signingKeyCreatedAt" = 0) OR (id > 0 AND "signingKeyCreatedAt" BETWEEN 1 AND 9007199254740991)),
     CONSTRAINT "IdentityNamespace_active_check" CHECK (((active = false) OR ((id > 0) AND ("retiredAt" IS NULL)))),
-    CONSTRAINT "IdentityNamespace_profileNamespaceFeedEndId_check" CHECK (("profileNamespaceFeedEndId" >= 0)),
-    CONSTRAINT "IdentityNamespace_profileNamespaceFeedPulledThrough_check" CHECK (("profileNamespaceFeedPulledThrough" >= 0)),
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
     CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("peerAssignedLocalNamespaceId" IS NULL) AND ("retiredAt" IS NULL) AND (active = false) AND (("trustLevel")::text = 'unrecognized'::text) AND ("trustedAt" IS NULL) AND ("lastSuccessAt" IS NULL) AND ("degradedAt" IS NULL) AND ("degradationReason" IS NULL) AND ("degradationCount" = 0) AND ("haltedAt" IS NULL) AND ("haltCode" IS NULL) AND ("haltReason" IS NULL) AND ("peerAcceptanceConfirmed" = false) AND ("localServiceAvailable" = false) AND ("remoteServiceReachable" = false) AND ("resetAt" IS NULL)) OR ((id > 0) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL) AND (("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))))),
-    CONSTRAINT "IdentityNamespace_stateFeedEndId_check" CHECK ((("stateFeedEndId" >= 0) AND ((id <> 0) OR ("stateFeedEndId" = 0)))),
-    CONSTRAINT "IdentityNamespace_stateFeedPulledThrough_check" CHECK ((("stateFeedPulledThrough" IS NULL) OR ("stateFeedPulledThrough" >= 0))),
     CONSTRAINT "IdentityNamespace_trustLevel_check" CHECK ((("trustLevel")::text = ANY (ARRAY[('unrecognized'::character varying)::text, ('establishing'::character varying)::text, ('pending'::character varying)::text, ('available'::character varying)::text, ('degraded'::character varying)::text, ('halted'::character varying)::text])))
 );
 
@@ -1349,6 +1359,7 @@ ALTER SEQUENCE public."IdentityNamespace_id_seq" OWNED BY public."IdentityNamesp
 --
 
 CREATE TABLE public."LocalFederationRoot" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "rootPublicKey" character varying(44) NOT NULL,
     "rootPrivateKey" character varying(44) NOT NULL,
@@ -1387,6 +1398,7 @@ ALTER SEQUENCE public."LocalFederationRoot_id_seq" OWNED BY public."LocalFederat
 --
 
 CREATE TABLE public."LocalFederationSigningKey" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "keyName" character varying(64) NOT NULL,
     "publicKey" character varying(44) NOT NULL,
     "privateKey" character varying(44) NOT NULL,
@@ -1404,6 +1416,7 @@ CREATE TABLE public."LocalFederationSigningKey" (
 --
 
 CREATE TABLE public."LocalFederationSigningState" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer DEFAULT 0 NOT NULL,
     "currentKeyName" character varying(64) NOT NULL,
     "plannedSwitchAt" timestamp(3) with time zone,
@@ -1419,11 +1432,12 @@ CREATE TABLE public."LocalFederationSigningState" (
 --
 
 CREATE TABLE public."LoginCode" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "userId" integer NOT NULL,
     "codeHash" character varying(127) NOT NULL,
     "issuedBy" integer NOT NULL,
-    "issuedAt" timestamp(3) with time zone NOT NULL,
     "expiresAt" timestamp(3) with time zone NOT NULL,
     "consumedAt" timestamp(3) with time zone,
     "consumedIp" character varying(64),
@@ -1458,10 +1472,13 @@ ALTER SEQUENCE public."LoginCode_id_seq" OWNED BY public."LoginCode".id;
 --
 
 CREATE TABLE public."MediaAsset" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     digest character varying(64) NOT NULL,
     bytes bigint NOT NULL,
+    meta jsonb,
     "isDeleted" boolean DEFAULT false NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "MediaAsset_meta_object_check" CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
 
@@ -1499,7 +1516,7 @@ CREATE TABLE public."MessageThread" (
     id integer NOT NULL,
     type public."MessageThreadType" NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "curSeq" integer DEFAULT 0 NOT NULL,
     "tombstoneEndSeq" integer DEFAULT 0 NOT NULL,
     "pullUntil" integer DEFAULT 0 NOT NULL,
@@ -1590,7 +1607,7 @@ CREATE TABLE public."PendingMedia" (
     "clientMessageId" character varying(36),
     status character varying(12) DEFAULT 'pending'::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "failReason" character varying(255),
     direction public."FileSyncDirection" DEFAULT 'OUTBOUND'::public."FileSyncDirection" NOT NULL,
     "batchId" uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1630,6 +1647,8 @@ ALTER SEQUENCE public."PendingMedia_id_seq" OWNED BY public."PendingMedia".id;
 --
 
 CREATE TABLE public."Profile" (
+    "generatedAt" bigint NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     account character varying(31) NOT NULL,
     "profileRev" integer NOT NULL,
     "displayName" character varying(31) NOT NULL,
@@ -1638,7 +1657,8 @@ CREATE TABLE public."Profile" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "publisherNamespaceId" integer NOT NULL,
     "profileNamespaceId" integer NOT NULL,
-    CONSTRAINT "Profile_profileRev_check" CHECK (("profileRev" > 0))
+    CONSTRAINT "Profile_profileRev_check" CHECK (("profileRev" > 0)),
+    CONSTRAINT "Profile_generatedAt_check" CHECK (("generatedAt" >= 0 AND "generatedAt" <= 9007199254740991))
 );
 
 
@@ -1661,6 +1681,8 @@ CREATE TABLE public."ProfileNamespaceChangeFeed" (
 --
 
 CREATE TABLE public."ProfileNamespaceChangeFeedHead" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "endId" bigint DEFAULT 0 NOT NULL,
     CONSTRAINT "ProfileNamespaceChangeFeedHead_endId_check" CHECK (("endId" >= 0)),
@@ -1677,7 +1699,8 @@ CREATE TABLE public."ProfileNamespaceFeed" (
     "feedId" bigint NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "ProfileNamespaceFeed_feedId_check" CHECK (("feedId" > 0))
+    CONSTRAINT "ProfileNamespaceFeed_feedId_check" CHECK (("feedId" > 0)),
+    CONSTRAINT "ProfileNamespaceFeed_namespace_check" CHECK (("namespaceId" > 0))
 );
 
 
@@ -1690,12 +1713,14 @@ CREATE TABLE public."ProfileNamespace" (
     "profileNamespaceId" integer NOT NULL,
     domain character varying(63),
     "rootPublicKey" character varying(44),
+    "sourceGeneratedAt" bigint DEFAULT 0 NOT NULL,
     "updateFeedId" bigint DEFAULT 0 NOT NULL,
     expired boolean DEFAULT true NOT NULL,
     status text DEFAULT 'ACTIVE' NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "ProfileNamespace_bindings_check" CHECK ((((domain IS NULL) AND ("rootPublicKey" IS NULL)) OR ((domain IS NOT NULL) AND ("rootPublicKey" IS NOT NULL)))),
+    CONSTRAINT "ProfileNamespace_source_time_check" CHECK ("sourceGeneratedAt" BETWEEN 0 AND 9007199254740991),
     CONSTRAINT "ProfileNamespace_updateFeedId_check" CHECK (("updateFeedId" >= 0)),
     CONSTRAINT "ProfileNamespace_status_check" CHECK ((status IN ('ACTIVE', 'ARCHIVED')))
 );
@@ -1729,46 +1754,11 @@ CREATE TABLE public."ProfileTombstone" (
 
 
 --
--- Name: QuotaDailyAllowance; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."QuotaDailyAllowance" (
-    "namespaceId" integer NOT NULL,
-    date date NOT NULL,
-    "extraMsg" integer DEFAULT 0 NOT NULL,
-    "extraFile" integer DEFAULT 0 NOT NULL,
-    "extraFileBytes" bigint DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: QuotaDailyUsage; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."QuotaDailyUsage" (
-    "namespaceId" integer NOT NULL,
-    date date NOT NULL,
-    category character varying(15) NOT NULL,
-    count integer DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: QuotaFileByteUsage; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."QuotaFileByteUsage" (
-    "namespaceId" integer NOT NULL,
-    date date NOT NULL,
-    bytes bigint DEFAULT 0 NOT NULL
-);
-
-
---
 -- Name: RelationshipIntent; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public."RelationshipIntent" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "requestId" bigint,
     "authorAccount" character varying(31) NOT NULL,
     "authorNamespaceId" integer NOT NULL,
@@ -1780,11 +1770,12 @@ CREATE TABLE public."RelationshipIntent" (
     "messageEndSeq" integer NOT NULL,
     "tombstoneEndSeq" integer NOT NULL,
     note character varying(255) DEFAULT ''::character varying NOT NULL,
-    "requestedAt" timestamp(3) with time zone,
+    "statusChangedAt" timestamp(3) with time zone NOT NULL,
     "expiresAt" timestamp(3) with time zone,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "RelationshipIntent_author_namespace_check" CHECK (("authorNamespaceId" >= 0)),
-    CONSTRAINT "RelationshipIntent_expiry_check" CHECK ((((status = 'REQUESTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))) OR ((status = 'ACCEPTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NULL)) OR ((status = 'REVOKED'::public."RelationshipIntentStatus") AND ("expiresAt" IS NULL)))),
+    CONSTRAINT "RelationshipIntent_expiry_check" CHECK (((status = 'REQUESTED'::public."RelationshipIntentStatus") AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "statusChangedAt") AND ("expiresAt" <= ("statusChangedAt" + '7 days'::interval))) OR ((status IN ('ACCEPTED'::public."RelationshipIntentStatus", 'REVOKED'::public."RelationshipIntentStatus")) AND ("expiresAt" IS NULL))),
+    CONSTRAINT "RelationshipIntent_statusChangedAt_check" CHECK ("statusChangedAt" >= '1970-01-01'::timestamptz),
     CONSTRAINT "RelationshipIntent_head_check" CHECK ((("messageEndSeq" >= 0) AND ("tombstoneEndSeq" >= 0))),
     CONSTRAINT "RelationshipIntent_profileNamespaceId_check" CHECK (("profileNamespaceId" >= 0)),
     CONSTRAINT "RelationshipIntent_profileRev_check" CHECK (("profileRev" >= 0)),
@@ -1838,6 +1829,7 @@ CREATE INDEX "RelationshipRequest_receiver_page_idx" ON public."RelationshipRequ
 --
 
 CREATE TABLE public."RelationshipPair" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     kind character varying(16) NOT NULL,
     "endpointAType" character varying(8) NOT NULL,
@@ -1882,6 +1874,8 @@ ALTER SEQUENCE public."RelationshipPair_id_seq" OWNED BY public."RelationshipPai
 --
 
 CREATE TABLE public."S2SKeyCache" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     domain character varying(63) NOT NULL,
     "namespaceId" integer NOT NULL,
     "keyId" character varying(127) NOT NULL,
@@ -1889,7 +1883,6 @@ CREATE TABLE public."S2SKeyCache" (
     "notBefore" timestamp(3) with time zone NOT NULL,
     "notAfter" timestamp(3) with time zone NOT NULL,
     "authorizationSignature" character varying(127) NOT NULL,
-    "fetchedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     root character varying(44) DEFAULT ''::character varying NOT NULL
 );
 
@@ -1899,6 +1892,7 @@ CREATE TABLE public."S2SKeyCache" (
 --
 
 CREATE TABLE public."SessionToken" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "userId" integer NOT NULL,
     "tokenHash" character varying(127) NOT NULL,
@@ -1951,9 +1945,10 @@ ALTER SEQUENCE public."SessionToken_id_seq" OWNED BY public."SessionToken".id;
 --
 
 CREATE TABLE public."SystemSetting" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     key character varying(63) NOT NULL,
     value text NOT NULL,
-    "updatedAt" timestamp(3) with time zone NOT NULL
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 
@@ -1962,6 +1957,7 @@ CREATE TABLE public."SystemSetting" (
 --
 
 CREATE TABLE public."ThreadAudience" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id bigint NOT NULL,
     "targetNamespaceId" integer DEFAULT 0 NOT NULL,
     "localUserId" integer,
@@ -1999,6 +1995,7 @@ ALTER SEQUENCE public."ThreadAudience_id_seq" OWNED BY public."ThreadAudience".i
 --
 
 CREATE TABLE public."TwoFactorBackupCode" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "adminId" integer NOT NULL,
     "codeHash" character varying(64) NOT NULL,
@@ -2081,6 +2078,7 @@ ALTER SEQUENCE public."UploadSession_id_seq" OWNED BY public."UploadSession".id;
 --
 
 CREATE TABLE public."UserPreference" (
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "userId" integer NOT NULL,
     key character varying(100) NOT NULL,
     value jsonb NOT NULL,
@@ -2092,60 +2090,11 @@ CREATE TABLE public."UserPreference" (
 
 
 --
--- Name: UserQuotaDailyAllowance; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserQuotaDailyAllowance" (
-    "userId" integer NOT NULL,
-    date date NOT NULL,
-    "extraMsg" integer DEFAULT 0 NOT NULL,
-    "extraFile" integer DEFAULT 0 NOT NULL,
-    "extraFileBytes" bigint DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: UserQuotaDailyUsage; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserQuotaDailyUsage" (
-    "userId" integer NOT NULL,
-    date date NOT NULL,
-    category character varying(15) NOT NULL,
-    count integer DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: UserQuotaFileByteUsage; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserQuotaFileByteUsage" (
-    "userId" integer NOT NULL,
-    date date NOT NULL,
-    bytes bigint DEFAULT 0 NOT NULL
-);
-
-
---
--- Name: UserQuotaPolicy; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."UserQuotaPolicy" (
-    "userId" integer NOT NULL,
-    "dailyMsgLimit" integer,
-    "dailyRequestLimit" integer,
-    "dailyFileLimit" integer,
-    "dailyFileBytesLimit" bigint,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
-
---
 -- Name: WebAuthnCredential; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public."WebAuthnCredential" (
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     id integer NOT NULL,
     "adminId" integer NOT NULL,
     "credentialId" character varying(510) NOT NULL,
@@ -2709,30 +2658,6 @@ ALTER TABLE ONLY public."Profile"
 
 
 --
--- Name: QuotaDailyAllowance QuotaDailyAllowance_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaDailyAllowance"
-    ADD CONSTRAINT "QuotaDailyAllowance_pkey" PRIMARY KEY ("namespaceId", date);
-
-
---
--- Name: QuotaDailyUsage QuotaDailyUsage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaDailyUsage"
-    ADD CONSTRAINT "QuotaDailyUsage_pkey" PRIMARY KEY ("namespaceId", date, category);
-
-
---
--- Name: QuotaFileByteUsage QuotaFileByteUsage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaFileByteUsage"
-    ADD CONSTRAINT "QuotaFileByteUsage_pkey" PRIMARY KEY ("namespaceId", date);
-
-
---
 -- Name: RelationshipIntent RelationshipIntent_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2813,38 +2738,6 @@ ALTER TABLE ONLY public."UserPreference"
 
 
 --
--- Name: UserQuotaDailyAllowance UserQuotaDailyAllowance_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaDailyAllowance"
-    ADD CONSTRAINT "UserQuotaDailyAllowance_pkey" PRIMARY KEY ("userId", date);
-
-
---
--- Name: UserQuotaDailyUsage UserQuotaDailyUsage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaDailyUsage"
-    ADD CONSTRAINT "UserQuotaDailyUsage_pkey" PRIMARY KEY ("userId", date, category);
-
-
---
--- Name: UserQuotaFileByteUsage UserQuotaFileByteUsage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaFileByteUsage"
-    ADD CONSTRAINT "UserQuotaFileByteUsage_pkey" PRIMARY KEY ("userId", date);
-
-
---
--- Name: UserQuotaPolicy UserQuotaPolicy_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaPolicy"
-    ADD CONSTRAINT "UserQuotaPolicy_pkey" PRIMARY KEY ("userId");
-
-
---
 -- Name: WebAuthnCredential WebAuthnCredential_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2898,7 +2791,7 @@ CREATE INDEX "AdminActionLog_adminId_idx" ON public."AdminActionLog" USING btree
 -- Name: AdminActionLog_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "AdminActionLog_at_idx" ON public."AdminActionLog" USING btree (at);
+CREATE INDEX "AdminActionLog_createdAt_idx" ON public."AdminActionLog" USING btree ("createdAt");
 
 
 --
@@ -3114,6 +3007,8 @@ CREATE INDEX "ForwardMessage_bundleId_idx" ON public."ForwardMessage" USING btre
 -- Name: GroupMetaMemberFeed_member_key; Type: INDEX; Schema: public; Owner: -
 --
 
+CREATE UNIQUE INDEX "GroupMetaMemberFeed_announcement_key" ON public."GroupMetaMemberFeed" ("threadId") WHERE operation = 'GROUP_ANNOUNCEMENT';
+
 CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key" ON public."GroupMetaMemberFeed" USING btree ("threadId", ((body ->> 'account'::text)), ((body -> 'namespaceId'::text))) WHERE (operation <> 'GROUP_ANNOUNCEMENT'::public."GroupMetaMemberOperation");
 
 
@@ -3164,6 +3059,9 @@ CREATE INDEX "LoginCode_userId_idx" ON public."LoginCode" USING btree ("userId")
 --
 
 CREATE INDEX "MediaAsset_isDeleted_idx" ON public."MediaAsset" USING btree ("isDeleted");
+
+CREATE INDEX "MediaAsset_thumbnail_digest_idx" ON public."MediaAsset" ((meta #>> '{thumbnail,digest}'))
+    WHERE meta #>> '{thumbnail,digest}' IS NOT NULL;
 
 
 --
@@ -3323,20 +3221,6 @@ CREATE UNIQUE INDEX "ProfileNamespaceFeed_feedId_key" ON public."ProfileNamespac
 
 
 --
--- Name: QuotaDailyUsage_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "QuotaDailyUsage_date_idx" ON public."QuotaDailyUsage" USING btree (date);
-
-
---
--- Name: QuotaFileByteUsage_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "QuotaFileByteUsage_date_idx" ON public."QuotaFileByteUsage" USING btree (date);
-
-
---
 -- Name: RelationshipPair_endpointA_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3467,20 +3351,6 @@ CREATE INDEX "UploadSession_status_updatedAt_idx" ON public."UploadSession" USIN
 --
 
 CREATE UNIQUE INDEX "UploadSession_uploadId_key" ON public."UploadSession" USING btree ("uploadId");
-
-
---
--- Name: UserQuotaDailyUsage_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "UserQuotaDailyUsage_date_idx" ON public."UserQuotaDailyUsage" USING btree (date);
-
-
---
--- Name: UserQuotaFileByteUsage_date_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "UserQuotaFileByteUsage_date_idx" ON public."UserQuotaFileByteUsage" USING btree (date);
 
 
 --
@@ -3953,30 +3823,6 @@ ALTER TABLE ONLY public."Profile"
 
 
 --
--- Name: QuotaDailyAllowance QuotaDailyAllowance_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaDailyAllowance"
-    ADD CONSTRAINT "QuotaDailyAllowance_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
--- Name: QuotaDailyUsage QuotaDailyUsage_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaDailyUsage"
-    ADD CONSTRAINT "QuotaDailyUsage_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
--- Name: QuotaFileByteUsage QuotaFileByteUsage_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."QuotaFileByteUsage"
-    ADD CONSTRAINT "QuotaFileByteUsage_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
 -- Name: RelationshipIntent RelationshipIntent_authorNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4087,44 +3933,126 @@ ALTER TABLE ONLY public."UserPreference"
 
 
 --
--- Name: UserQuotaDailyAllowance UserQuotaDailyAllowance_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaDailyAllowance"
-    ADD CONSTRAINT "UserQuotaDailyAllowance_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
-
-
---
--- Name: UserQuotaDailyUsage UserQuotaDailyUsage_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaDailyUsage"
-    ADD CONSTRAINT "UserQuotaDailyUsage_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
-
-
---
--- Name: UserQuotaFileByteUsage UserQuotaFileByteUsage_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaFileByteUsage"
-    ADD CONSTRAINT "UserQuotaFileByteUsage_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
-
-
---
--- Name: UserQuotaPolicy UserQuotaPolicy_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."UserQuotaPolicy"
-    ADD CONSTRAINT "UserQuotaPolicy_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."Account"(id) ON DELETE CASCADE;
-
-
---
 -- Name: WebAuthnCredential WebAuthnCredential_adminId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."WebAuthnCredential"
     ADD CONSTRAINT "WebAuthnCredential_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES public."Admin"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
+
+-- Independent federation feed state and latest received observations.
+CREATE TABLE public."FederationFeedState" (
+    "namespaceId" integer PRIMARY KEY,
+    "lastHandshakeAt" timestamp(3) with time zone,
+    "latestHealthCheck" jsonb,
+    "outboundStateFeedEndId" bigint DEFAULT 0 NOT NULL,
+    "inboundStateFeedPulledThrough" bigint,
+    "inboundProfileNamespaceFeedPulledThrough" bigint DEFAULT 0 NOT NULL,
+    "stateFeedSourceGeneratedAt" bigint DEFAULT 0 NOT NULL,
+    "profileNamespaceFeedSourceGeneratedAt" bigint DEFAULT 0 NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationFeedState_namespace_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT,
+    CONSTRAINT "FederationFeedState_namespace_check" CHECK ("namespaceId" > 0),
+    CONSTRAINT "FederationFeedState_source_times_check" CHECK (
+        "stateFeedSourceGeneratedAt" BETWEEN 0 AND 9007199254740991
+        AND "profileNamespaceFeedSourceGeneratedAt" BETWEEN 0 AND 9007199254740991
+    ),
+    CONSTRAINT "FederationFeedState_coordinates_check" CHECK (
+        "outboundStateFeedEndId" >= 0
+        AND ("inboundStateFeedPulledThrough" IS NULL OR "inboundStateFeedPulledThrough" >= 0)
+        AND "inboundProfileNamespaceFeedPulledThrough" >= 0
+    )
+);
+
+CREATE TABLE public."ProfileNamespaceFeedHead" (
+    id integer PRIMARY KEY,
+    "endId" bigint DEFAULT 0 NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "ProfileNamespaceFeedHead_shape_check" CHECK (id = 0 AND "endId" >= 0)
+);
+
+CREATE TABLE public."FederationFeedHeadReceipt" (
+    "namespaceId" integer PRIMARY KEY,
+    "stateFeedEndId" text NOT NULL,
+    "profileNamespaceFeedEndId" text NOT NULL,
+    "generatedAt" bigint NOT NULL,
+    "sentAt" bigint NOT NULL,
+    "receivedAt" timestamp(3) with time zone NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationFeedHeadReceipt_namespace_fkey"
+        FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT,
+    CONSTRAINT "FederationFeedHeadReceipt_namespace_check" CHECK ("namespaceId" > 0),
+    CONSTRAINT "FederationFeedHeadReceipt_heads_check" CHECK (
+        "stateFeedEndId" ~ '^(0|[1-9][0-9]*)$'
+        AND "profileNamespaceFeedEndId" ~ '^(0|[1-9][0-9]*)$'
+    ),
+    CONSTRAINT "FederationFeedHeadReceipt_times_check" CHECK (
+        "generatedAt" BETWEEN 0 AND 9007199254740991
+        AND "sentAt" BETWEEN 0 AND 9007199254740991
+    )
+);
+
+-- Every new remote identity starts with independent feed coordinates. Identity
+-- rebinding within an existing namespace preserves its publication and progress.
+CREATE FUNCTION public.initialize_federation_feed_state() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.id > 0 THEN
+        INSERT INTO public."FederationFeedState" ("namespaceId") VALUES (NEW.id);
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER "IdentityNamespace_initialize_feed_state"
+AFTER INSERT ON public."IdentityNamespace"
+FOR EACH ROW EXECUTE FUNCTION public.initialize_federation_feed_state();
+
+CREATE TABLE public."FederationQuotaPolicy" (
+    "maxFileBytes" bigint,
+    CONSTRAINT "FederationQuotaPolicy_maxFileBytes_check" CHECK ("maxFileBytes" IS NULL OR "maxFileBytes" BETWEEN 0 AND 9007199254740991),
+    "nsid" integer NOT NULL,
+    "dailyMsgLimit" integer,
+    "dailyRequestLimit" integer,
+    "dailySignalLimit" integer,
+    "dailyFileLimit" integer,
+    "dailyFileBytesLimit" bigint,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationQuotaPolicy_pkey" PRIMARY KEY ("nsid"),
+    CONSTRAINT "FederationQuotaPolicy_nsid_fkey" FOREIGN KEY ("nsid") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE,
+    CONSTRAINT "FederationQuotaPolicy_limits_check" CHECK (
+      ("dailyMsgLimit" IS NULL OR "dailyMsgLimit" >= 0) AND
+      ("dailyRequestLimit" IS NULL OR "dailyRequestLimit" >= 0) AND
+      ("dailySignalLimit" IS NULL OR "dailySignalLimit" >= 0) AND
+      ("dailyFileLimit" IS NULL OR "dailyFileLimit" >= 0) AND
+      ("dailyFileBytesLimit" IS NULL OR "dailyFileBytesLimit" BETWEEN 0 AND 9007199254740991)
+    )
+);
+
+CREATE TABLE public."UserQuotaPolicy" (
+    "maxFileBytes" bigint,
+    CONSTRAINT "UserQuotaPolicy_maxFileBytes_check" CHECK ("maxFileBytes" IS NULL OR "maxFileBytes" BETWEEN 0 AND 9007199254740991),
+    "account" character varying(31) NOT NULL,
+    "dailyMsgLimit" integer,
+    "dailyRequestLimit" integer,
+    "dailySignalLimit" integer,
+    "dailyFileLimit" integer,
+    "dailyFileBytesLimit" bigint,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "UserQuotaPolicy_pkey" PRIMARY KEY ("account"),
+    CONSTRAINT "UserQuotaPolicy_account_fkey" FOREIGN KEY ("account") REFERENCES public."Account"(account) ON DELETE CASCADE,
+    CONSTRAINT "UserQuotaPolicy_limits_check" CHECK (
+      ("dailyMsgLimit" IS NULL OR "dailyMsgLimit" >= 0) AND
+      ("dailyRequestLimit" IS NULL OR "dailyRequestLimit" >= 0) AND
+      ("dailySignalLimit" IS NULL OR "dailySignalLimit" >= 0) AND
+      ("dailyFileLimit" IS NULL OR "dailyFileLimit" >= 0) AND
+      ("dailyFileBytesLimit" IS NULL OR "dailyFileBytesLimit" BETWEEN 0 AND 9007199254740991)
+    )
+);
 
 --
 -- PostgreSQL database dump complete
@@ -4133,6 +4061,12 @@ ALTER TABLE ONLY public."WebAuthnCredential"
 
 -- Required local identities and feed head sentinels.
 -- Namespace 0 is initialized with SOMS_DOMAIN by KeypairService on first boot.
--- The system account is initialized with SOMS_DOMAIN by systemAccountIdInTx.
+-- The reserved $system identity is seeded here: every durable task names an
+-- actor, and system-derived work runs on this account's authority. Lookups go
+-- through the unique key on the account name.
 
+INSERT INTO public."ProfileNamespaceFeedHead" (id, "endId") VALUES (0, 0);
 INSERT INTO public."ProfileNamespaceChangeFeedHead" ("id", "endId") VALUES (0, 0);
+
+INSERT INTO public."Account" (account, "namespaceId", "disabledAt")
+VALUES ('$system', 0, CURRENT_TIMESTAMP);

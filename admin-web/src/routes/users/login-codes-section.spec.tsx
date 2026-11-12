@@ -34,7 +34,7 @@ function code(
 ): LoginCodeView {
   return {
     id,
-    issuedAt: 1,
+    createdAt: 1,
     expiresAt: Date.now() + 60_000,
     consumedAt: null,
     consumedIp: null,

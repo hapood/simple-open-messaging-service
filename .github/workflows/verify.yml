@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -23,44 +25,147 @@ jobs:
             package-lock.json
             web/package-lock.json
             admin-web/package-lock.json
+            tools/cycle-check/package-lock.json
+
+      - name: Check native IPC permissions
+        run: npm run test:native-contracts
 
       - name: Install dependencies
         run: |
           npm ci
           npm ci --prefix web
           npm ci --prefix admin-web
+          npm ci --prefix tools/cycle-check
+
+      - name: Set up system package sources
+        timeout-minutes: 5
+        run: bash scripts/setup-ci-apt.sh
 
       - name: Install media tools
-        timeout-minutes: 5
-        run: |
-          # The runner's Azure mirror can stall individual package downloads for minutes.
-          # Use Ubuntu's primary archive while retaining apt's signed package verification.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
-          fi
-          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
+        timeout-minutes: 10
+        run: sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Check circular dependencies
-        run: npm run check:cycles
+        run: |
+          npm test --prefix tools/cycle-check
+          npm run check:cycles
 
       - name: Build and test server
         run: |
-          node scripts/check-version-sync.mjs
+          node scripts/check-version-sync.mjs --base-ref origin/main
           npm run build
           npm test
           npm run federation:conformance
 
+      - name: Install browser for web component tests
+        run: |
+          npm exec --prefix web -- playwright install --with-deps chromium
+          npm run test:browser:install
+
+      - name: Install Caddy for routing tests
+        run: |
+          docker pull caddy:2.11
+          container=$(docker create caddy:2.11)
+          trap 'docker rm "$container"' EXIT
+          docker cp "$container:/usr/bin/caddy" "$RUNNER_TEMP/caddy"
+          chmod +x "$RUNNER_TEMP/caddy"
+          "$RUNNER_TEMP/caddy" version
+
+      - name: Test repository tooling and automation helpers
+        env:
+          SOMFP_SPEC_DIR: ${{ github.workspace }}/spec
+          CADDY_BIN: ${{ runner.temp }}/caddy
+        run: |
+          npm run test:tooling
+          npm run test:browser:unit
+          npm run test:cross-platform:unit
+
       - name: Build and test web client
         run: |
           npm run test:build --prefix web
+          npm run test:unit --prefix web
           npm run build --prefix web
           npm test --prefix web
 
-      - name: Validate deployment image references and Compose output
-        run: node --test test/deployment/*.test.mjs docker/nas-compose.test.mjs
+      - name: Upload failed web component test screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-unit-test-failures
+          path: test-results/web-unit/
+          if-no-files-found: ignore
 
       - name: Build and test administration console
         run: |
           npm run build --prefix admin-web
           npm test --prefix admin-web
+
+  backend-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: soms_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d soms_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable service credentials, never a deployed database. The suite creates per-run databases.
+      DATABASE_URL: postgresql://postgres:ci-only-password@localhost:5432/soms_ci
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Set up system package sources
+        timeout-minutes: 5
+        run: bash scripts/setup-ci-apt.sh
+      - name: Install media tools
+        timeout-minutes: 10
+        run: sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Build and run PostgreSQL integration tests
+        run: |
+          npm run build
+          npm run test:e2e
+
+  playground-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix web
+      - name: Set up system package sources
+        timeout-minutes: 5
+        run: bash scripts/setup-ci-apt.sh
+      - name: Install browser and system dependencies
+        timeout-minutes: 10
+        run: npm exec -- playwright install --with-deps chromium
+      - name: Run Playground browser scenarios
+        run: npm run test:playground
+      - name: Upload failed browser test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playground-e2e-failures
+          path: test-results/browser-e2e/
+          if-no-files-found: ignore

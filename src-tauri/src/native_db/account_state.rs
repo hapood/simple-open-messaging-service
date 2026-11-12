@@ -6,9 +6,6 @@ use serde::{Deserialize, Serialize, Serializer};
 pub(crate) struct AccountSelfProfile {
     id: i64,
     account: String,
-    name: String,
-    avatar: String,
-    bio: String,
     is_group: bool,
     namespace_id: i64,
     profile_rev: i64,
@@ -163,7 +160,8 @@ pub(crate) async fn native_db_advance_intent_request_read(
     observed_end_id: String,
 ) -> Result<AccountState, String> {
     let target = request_id_to_sqlite(&observed_end_id)?;
-    super::spawn_login_database(move |conn| {
+    let work = super::capture_database_work()?;
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|error| format!("begin request read intent: {error}"))?;
@@ -181,6 +179,7 @@ pub(crate) async fn native_db_advance_intent_request_read(
         let state = read(&tx, user_id)?;
         tx.commit()
             .map_err(|error| format!("commit request read intent: {error}"))?;
+        super::notifications::refresh_requests(work, user_id);
         Ok(state)
     })
     .await
@@ -215,4 +214,31 @@ pub(crate) async fn native_db_write_composer_drafts(
     })
     .await
     .map_err(|error| format!("join draft write: {error}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AccountSelfProfile;
+
+    #[test]
+    fn self_account_state_contains_only_account_facts() {
+        let facts = serde_json::json!({
+            "id": 1, "account": "alice", "namespaceId": 0,
+            "profileRev": 7, "isGroup": false, "isDeleted": false,
+        });
+        let account: AccountSelfProfile = serde_json::from_value(facts.clone()).unwrap();
+        assert_eq!(serde_json::to_value(account).unwrap(), facts);
+    }
+
+    #[test]
+    fn self_account_state_rejects_display_copies() {
+        for field in ["name", "avatar", "bio"] {
+            let mut facts = serde_json::json!({
+                "id": 1, "account": "alice", "namespaceId": 0,
+                "profileRev": 7, "isGroup": false, "isDeleted": false,
+            });
+            facts[field] = "obsolete".into();
+            assert!(serde_json::from_value::<AccountSelfProfile>(facts).is_err());
+        }
+    }
 }

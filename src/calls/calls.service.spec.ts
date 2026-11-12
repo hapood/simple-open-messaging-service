@@ -8,6 +8,7 @@ import { CallsService } from './calls.service.js';
 import { callTombstoneCache } from './call-tombstone-cache.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import {
   FederationTransportError,
   S2sResponseError,
@@ -85,9 +86,13 @@ function mkMocks() {
       observe: vi.fn().mockResolvedValue(undefined),
       finish: vi.fn().mockResolvedValue(undefined),
     },
-    federation: { sendFrame: vi.fn().mockResolvedValue(undefined) },
+    federation: {
+      checkOutboundReady: vi.fn().mockResolvedValue(undefined),
+      sendFrame: vi.fn().mockResolvedValue(undefined),
+    },
     quota: {
       tick: vi.fn().mockResolvedValue(undefined),
+      tickStandalone: vi.fn().mockResolvedValue(undefined),
       peek: vi.fn().mockResolvedValue(undefined),
     },
   };
@@ -103,6 +108,7 @@ function mkService(m = mkMocks()) {
       m.push as never,
       m.participants as never,
       m.federation as never,
+      m.quota as never,
       m.quota as never,
       callState,
       m.history as never,
@@ -132,6 +138,23 @@ function lastBubbleContent(m: ReturnType<typeof mkMocks>) {
 }
 
 describe('CallsService.initiate', () => {
+  it('rejects exhausted local call admission before ringing', async () => {
+    const { svc, m } = mkService();
+    m.quota.tickStandalone.mockRejectedValueOnce(
+      new BusinessException(BusinessCode.QUOTA_EXCEEDED, 'call quota'),
+    );
+    await expect(
+      svc.initiate(1, {
+        callSid: 'quota-call',
+        threadId: 10,
+        callType: 'AUDIO',
+      }),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
+    expect(m.quota.tickStandalone).toHaveBeenCalledWith(1, 'signals', 400);
+    expect(m.push.dispatchForCall).not.toHaveBeenCalled();
+    expect(m.sse.onCallEvent).not.toHaveBeenCalled();
+  });
+
   it('registers a live ringing call, rings the callee in-band (SSE) + to all devices (push)', async () => {
     const { svc, m } = mkService();
     const res = await svc.initiate(1, {
@@ -999,6 +1022,68 @@ describe('CallsService federated initiate (outbound)', () => {
     ).resolves.toBeDefined();
   });
 
+  it.each([
+    ['degraded', new FederationTransportError('peer is degraded')],
+    [
+      'halted',
+      new BusinessException(
+        BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+        'halted',
+      ),
+    ],
+    [
+      'establishing',
+      new BusinessException(
+        BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
+        'not recognized',
+      ),
+    ],
+  ])(
+    'rejects a %s peer before delivery, records unreachable and permits a fresh call',
+    async (_state, error) => {
+      const { svc, m } = mkService();
+      m.participants.findP2PPeers.mockResolvedValue([
+        {
+          account: 'bob',
+          domain: 'bbb.local',
+          namespaceId: 3,
+          name: 'Bob',
+          avatar: '',
+        },
+      ]);
+      m.federation.checkOutboundReady.mockRejectedValueOnce(error);
+      await expect(
+        svc.initiate(1, {
+          callSid: 'degraded',
+          threadId: 10,
+          callType: 'AUDIO',
+        }),
+      ).rejects.toMatchObject({ bizCode: BusinessCode.CALL_PEER_UNREACHABLE });
+      expect(m.federation.checkOutboundReady).toHaveBeenCalledWith('bbb.local');
+      expect(m.federation.sendFrame).not.toHaveBeenCalled();
+      expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
+      expect(m.history.finish).toHaveBeenCalledOnce();
+      await expect(
+        svc.initiate(1, {
+          callSid: 'recovered',
+          threadId: 10,
+          callType: 'AUDIO',
+        }),
+      ).resolves.toBeDefined();
+      expect(m.federation.sendFrame).toHaveBeenCalledOnce();
+      // A peer degrading during an admitted call must not suppress its terminal frame.
+      m.federation.checkOutboundReady.mockRejectedValue(
+        new FederationTransportError('degraded again'),
+      );
+      await svc.cancel(1, 'recovered');
+      expect(m.federation.checkOutboundReady).toHaveBeenCalledTimes(2);
+      expect(m.federation.sendFrame).toHaveBeenLastCalledWith(
+        expect.objectContaining({ op: 'cancelled', callSid: 'recovered' }),
+        'bbb.local',
+      );
+    },
+  );
+
   it('a ring failure writes an `unreachable` bubble + throws CALL_PEER_UNREACHABLE + releases slots', async () => {
     const { svc, m } = mkService();
     m.participants.findP2PPeers.mockResolvedValue([
@@ -1158,7 +1243,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       2,
       expect.objectContaining({ callSid: 'cs1' }),
     );
-    expect(m.quota.tick).toHaveBeenCalledWith(3, 'requests');
+    expect(m.quota.tick).toHaveBeenCalledWith(3, 'signals', undefined, 400);
     expect(m.quota.tick).toHaveBeenCalledTimes(1);
     // The callee server never authors the terminal bubble.
     expect(m.history.finish).not.toHaveBeenCalled();

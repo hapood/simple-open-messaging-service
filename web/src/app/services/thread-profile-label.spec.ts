@@ -1,11 +1,17 @@
-import { displayThreadName, type ConversationItem } from './model';
+import {
+  createGroupConversation,
+  createP2PConversation,
+  displayThreadName,
+} from './model';
 
-const thread = (name: string, namespaceId = 0): ConversationItem =>
-  ({
-    type: 'P2P',
-    alias: null,
-    peerUser: { name, account: 'bob', namespaceId },
-  }) as unknown as ConversationItem;
+const thread = (name: string, namespaceId = 0) =>
+  createP2PConversation({
+    threadId: 1,
+    account: 'bob',
+    publisherNamespaceId: namespaceId,
+    profileRev: 1,
+    profile: { name, bio: '', avatarDigest: null },
+  });
 
 describe('thread profile label fallback', () => {
   it('keeps remarks and cached display names ahead of the account', () => {
@@ -25,14 +31,13 @@ describe('thread profile label fallback', () => {
   });
 
   it('renders a group account on a cache miss without a duplicated domain', () => {
-    const group = {
-      type: 'GROUP',
-      group: {
-        name: '',
-        account: '!team',
-        namespaceId: 12,
-      },
-    } as ConversationItem;
-    expect(displayThreadName(group)).toBe('!team');
+    const thread = createGroupConversation({
+      threadId: 2,
+      publisherNamespaceId: 12,
+      account: '!team',
+      profileRev: 1,
+      profile: { name: '', bio: '', avatarDigest: null },
+    });
+    expect(displayThreadName(thread)).toBe('!team');
   });
 });

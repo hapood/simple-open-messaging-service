@@ -9,7 +9,7 @@ export interface MessageSlotIdentity {
   updatedAt: number;
 }
 
-/** A deletion learned before its message. Unknown identity must never be invented. */
+/** A coordinate-only permanent deletion marker, not a visible message slot. */
 export interface MessageDeletionMarker {
   threadId: number;
   seq: number;
@@ -18,6 +18,8 @@ export interface MessageDeletionMarker {
   deletionType: MessageDeletionType;
 }
 
+/** A wire-only history tomb with its original slot identity, never a local display row.
+ * Persistent caches retain only MessageDeletionMarker; mounted UI rows own their presentation. */
 export type MessageTomb = MessageSlotIdentity & MessageDeletionMarker;
 
 export function messageTomb(
@@ -42,39 +44,12 @@ export function messageTomb(
   };
 }
 
-type LiveSlot = MessageSlotIdentity & {
-  contentType: string;
-  isDeleted: boolean;
-};
-
-/** One merge for page commits and individual writes. Deletions win, identity can arrive later. */
-export function mergeMessageSlot<T extends LiveSlot>(
-  // NoInfer: the slot type is determined by the incoming message alone —
-  // current may legitimately be a tomb (or absent), which must not constrain T.
-  current: NoInfer<T> | MessageDeletionMarker | undefined,
-  incoming: T | MessageTomb,
-): T | MessageTomb {
-  if (incoming.isDeleted && incoming.contentType !== 'TOMB')
-    throw new Error('Deleted messages must use the TOMB contract');
-  if (current?.contentType === 'TOMB')
-    return messageTomb(
-      incoming,
-      (current as MessageDeletionMarker).deletionType,
-    );
-  if (incoming.contentType === 'TOMB')
-    return messageTomb(incoming, (incoming as MessageTomb).deletionType);
-  return incoming;
-}
-
-/** Erase all body fields while retaining an existing slot's original identity. */
-export function deleteMessageSlot(
-  current: MessageSlotIdentity | MessageDeletionMarker | undefined,
+/** Construct a permanent deletion marker using only its coordinates and reason. */
+export function createMessageDeletionMarker(
   threadId: number,
   seq: number,
   deletionType: MessageDeletionType,
-): MessageTomb | MessageDeletionMarker {
-  if (current && 'creator' in current)
-    return messageTomb(current, deletionType);
+): MessageDeletionMarker {
   if (
     deletionType !== 'USER_RETRACTION' &&
     deletionType !== 'MODERATION_REMOVAL'

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://hapood.github.io/simple-open-messaging-service/sitemap.xml

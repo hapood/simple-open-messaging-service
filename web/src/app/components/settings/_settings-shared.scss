@@ -24,6 +24,21 @@
     padding: 0;
   }
 
+  // Material's trailing metadata uses a text-baseline spacer. Settings place controls
+  // here instead, so center their boxes and remove the synthetic text baseline.
+  .settings-card .mat-mdc-list-item [matListItemMeta] {
+    display: inline-flex;
+    align-items: center;
+    align-self: center;
+    margin-top: 0;
+    line-height: 20px;
+
+    &::before {
+      display: none;
+      content: none;
+    }
+  }
+
   // Trailing value sits in the MDC list-item __end slot; keep values muted and non-wrapping.
   .meta {
     font-size: 13px;
@@ -40,6 +55,23 @@
     font-size: 13px;
     line-height: 20px;
     color: var(--app-text-muted);
+  }
+
+  // Footnote/hint placed directly under a settings group card.
+  .settings-group > .hint {
+    margin: 0;
+    padding: 0 16px;
+  }
+
+  // Keep separate cards spaced even when a page uses multiple sections.
+  .settings-group + .settings-group {
+    margin-top: 16px;
+  }
+
+  // Preserve the list's trailing inset; negative margins can clip radio controls.
+  .settings-card mat-radio-button[matListItemMeta],
+  .settings-card [matListItemMeta] mat-radio-button {
+    margin-right: 16px;
   }
 
   // Accent hint — the "FCM active, FGS not needed" nudge under the foreground-service toggle.
@@ -105,5 +137,58 @@
     --mat-button-text-state-layer-color: var(--app-action-primary);
     --mdc-text-button-label-text-size: 13px;
     min-height: 32px;
+  }
+
+  // Trailing Material Select dropdown for discrete preferences.
+  .settings-select {
+    display: inline-flex;
+    align-items: center;
+    box-sizing: border-box;
+    height: 40px;
+    width: 140px;
+    flex: 0 0 140px;
+    min-width: 0;
+    padding: 0 8px 0 12px;
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius-md);
+    background: var(--app-surface);
+    color: var(--app-text);
+    font-size: 13px;
+    line-height: 20px;
+
+    ::ng-deep .mat-mdc-select-trigger {
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    ::ng-deep .mat-mdc-select-value {
+      display: flex;
+      align-items: center;
+    }
+
+    ::ng-deep .mat-mdc-select-value-text {
+      font-size: 13px;
+      line-height: 20px;
+      color: var(--app-text);
+    }
+
+    ::ng-deep .mat-mdc-select-arrow {
+      color: var(--app-text-muted);
+    }
+
+    &:hover {
+      background: var(--app-hover);
+      border-color: var(--app-border-strong);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--app-brand);
+      outline-offset: 2px;
+    }
+
+    &.mat-mdc-select-disabled {
+      opacity: 0.5;
+    }
   }
 }

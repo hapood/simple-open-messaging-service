@@ -7,10 +7,9 @@ import {
   parseFileExt,
   parseLinkContent,
   resolveFileType,
-  MAX_FILE_BYTES,
 } from './file-content.js';
 
-/** A content blob as the client forwards it (verbatim from POST /upload/file). */
+/** A content blob as the client forwards it after sequential upload completion. */
 function ok(
   over: Partial<{
     url: string;
@@ -159,8 +158,11 @@ describe('parseFileContent', () => {
     expect(parseFileContent(ok({ size: 0 }))).toBeNull();
     expect(parseFileContent(ok({ size: -1 }))).toBeNull();
     expect(parseFileContent(ok({ size: Number.POSITIVE_INFINITY }))).toBeNull();
-    expect(parseFileContent(ok({ size: MAX_FILE_BYTES + 1 }))).toBeNull();
-    expect(parseFileContent(ok({ size: MAX_FILE_BYTES }))).not.toBeNull(); // boundary inclusive
+    expect(
+      parseFileContent(ok({ size: Number.MAX_SAFE_INTEGER + 1 })),
+    ).toBeNull();
+    expect(parseFileContent(ok({ size: 1024 ** 3 + 1 }))).not.toBeNull();
+    expect(parseFileContent(ok({ size: 1.5 }))).toBeNull();
   });
 
   it('rejects an empty or over-long display name', () => {

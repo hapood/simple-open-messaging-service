@@ -1,8 +1,11 @@
+import type { TranslocoService } from '@jsverse/transloco';
+
 export const deploymentMessages = {
   en: {
     nav: {
       chat: 'Chat demo',
       deploy: 'Deployment',
+      effects: 'Effects & Motion',
       expand: 'Expand navigation',
       collapse: 'Collapse navigation',
       language: 'Language',
@@ -13,14 +16,28 @@ export const deploymentMessages = {
     themeDark: 'Theme: Dark',
 
     // Section 1: Environment
-    environment: 'Deployment Environment',
-    environmentCaption: 'Choose how users reach your server.',
-    public: 'Public Server',
-    nas: 'LAN / NAS',
+    environment: 'Deployment Environment & Network',
+    environmentCaption:
+      'Choose how users reach your server and obtain TLS certificates.',
+    public: 'Standard Port (443)',
+    nas: 'Custom Port',
     publicPorts: 'HTTPS 443 (HTTP 80 redirects to HTTPS)',
     port: 'Published Port',
     portHint:
       'Default 7667. Router port forwarding and DNS SRV records must match this port.',
+    certMode: 'Certificate Challenge',
+    certModeAlpn: 'Direct Port 443 (TLS-ALPN-01)',
+    certModeDns: 'DNS-01 (API Key)',
+    certModeAlpnHint:
+      'Direct TLS handshake verification on port 443. Requires public port 443 reachability; no DNS provider tokens needed. Wildcard and LAN domains are not supported.',
+    certModeDnsHint:
+      'Verifies domain ownership via DNS TXT records. Supports wildcard subdomains and private LAN domains.',
+    certModeLockedDns:
+      'Custom ports cannot use port 443 ALPN challenge; DNS-01 verification is required.',
+    acmeEmail: 'ACME Contact Email',
+    acmeEmailPlaceholder: 'admin@example.com (optional)',
+    acmeEmailHint:
+      "Optional contact email for Let's Encrypt / ZeroSSL expiry notifications.",
     networkOptions: 'Network options',
     adminOnly: 'Restrict admin access to private network IPs',
     adminHint:
@@ -45,6 +62,8 @@ export const deploymentMessages = {
     lanDomain: 'LAN Hostname',
     lanDomainHint:
       'Direct LAN address resolved to a private IP (for networks without NAT loopback).',
+    lanDomainDisabledHint:
+      'LAN domains resolve to private IPs unreachable by external ACME servers. Use DNS-01 challenge mode to certify LAN domains.',
     optional: 'optional',
     databasePassword: 'Database Password',
     databasePasswordHint: 'Password for PostgreSQL database connection.',
@@ -54,9 +73,8 @@ export const deploymentMessages = {
     random: 'Generate',
     passwordPlaceholder: 'Enter password',
 
-    // Section 3: DNS & Certificates
-    dnsAndCert: 'DNS & Certificates',
-    dnsAndCertCaption: 'Automatic wildcard certificates via DNS-01 challenge.',
+    // DNS & Certificates
+    dnsAndCert: 'DNS Provider & Credentials',
     dnsProvider: 'DNS Provider',
     dnsProviderHint: 'Select your domain DNS provider.',
     providerCloudflare: 'Cloudflare',
@@ -75,7 +93,7 @@ export const deploymentMessages = {
     tencentSecretKey: 'SecretKey',
     tencentSecretKeyHint: 'Tencent Cloud CAM SecretKey.',
 
-    // Section 4: Advanced
+    // Section 3: Advanced
     advanced: 'Advanced Configuration',
     databaseMode: 'PostgreSQL connection',
     databaseBuiltin: 'Bundled database (Unix socket)',
@@ -125,6 +143,7 @@ export const deploymentMessages = {
     nav: {
       chat: '聊天演示',
       deploy: '部署配置',
+      effects: '交互动效展示',
       expand: '展开导航',
       collapse: '收起导航',
       language: '切换语言',
@@ -135,13 +154,25 @@ export const deploymentMessages = {
     themeDark: '主题：深色模式',
 
     // Section 1: Environment
-    environment: '部署环境',
-    environmentCaption: '选择服务器的网络接入方式。',
-    public: '公网服务器',
-    nas: '内网 / NAS',
+    environment: '部署环境与网络',
+    environmentCaption: '选择服务器网络接入方式与 TLS 证书验证机制。',
+    public: '标准端口 (443)',
+    nas: '非标准端口',
     publicPorts: 'HTTPS 443（HTTP 80 自动重定向至 HTTPS）',
     port: '对外发布端口',
     portHint: '默认 7667。路由器端口转发与 DNS SRV 记录需与此一致。',
+    certMode: '证书验证方式',
+    certModeAlpn: '直接 443 端口验证 (TLS-ALPN-01)',
+    certModeDns: 'DNS-01 验证 (API 密钥)',
+    certModeAlpnHint:
+      '直接通过公网 443 端口发起 TLS 握手验证，无需任何 DNS 服务商 API 密钥。要求公网 443 端口直通，不支持通配符或内网域名。',
+    certModeDnsHint:
+      '通过 DNS TXT 记录验证域名所有权，支持通配符子域名与私网内网域名。',
+    certModeLockedDns:
+      '非标准端口外部无法直接进行 443 握手挑战，必须使用 DNS-01 验证。',
+    acmeEmail: '证书通知邮箱',
+    acmeEmailPlaceholder: 'admin@example.com（选填）',
+    acmeEmailHint: "选填，用于接收 Let's Encrypt / ZeroSSL 证书到期告警通知。",
     networkOptions: '网络选项',
     adminOnly: '仅允许私网 IP 访问管理后台',
     adminHint: '开启后仅允许私网 IP 访问管理后台页面及 API（均仍需密码登录）。',
@@ -163,6 +194,8 @@ export const deploymentMessages = {
     lanDomain: '内网域名',
     lanDomainHint:
       '局域网直连域名，解析至服务器私网 IP（用于不支持 NAT 回流的网络）。',
+    lanDomainDisabledHint:
+      '内网域名解析至私有 IP，公网 CA 无法通过 443 端口探测。配置内网域名时必须选用 DNS-01 验证模式。',
     optional: '选填',
     databasePassword: '数据库密码',
     databasePasswordHint: 'PostgreSQL 数据库连接密码。',
@@ -172,9 +205,8 @@ export const deploymentMessages = {
     random: '随机生成',
     passwordPlaceholder: '请输入密码',
 
-    // Section 3: DNS & Certificates
-    dnsAndCert: 'DNS 与证书',
-    dnsAndCertCaption: '配置 DNS-01 验证以自动申请通配符 TLS 证书。',
+    // DNS & Certificates
+    dnsAndCert: 'DNS 服务商凭证',
     dnsProvider: 'DNS 服务商',
     dnsProviderHint: '选择域名的 DNS 托管服务商。',
     providerCloudflare: 'Cloudflare',
@@ -191,7 +223,7 @@ export const deploymentMessages = {
     tencentSecretKey: 'SecretKey',
     tencentSecretKeyHint: '腾讯云 CAM 访问密钥 SecretKey。',
 
-    // Section 4: Advanced
+    // Section 3: Advanced
     advanced: '高级配置',
     databaseMode: 'PostgreSQL 连接方式',
     databaseBuiltin: '自带数据库（Unix socket）',
@@ -235,8 +267,26 @@ export const deploymentMessages = {
 
 export const issueMessages: Record<string, [string, string]> = {
   domain: ['请输入有效的身份域名。', 'Invalid identity domain.'],
-  webDomain: ['服务域名格式不正确。', 'Invalid server hostname.'],
-  lanDomain: ['内网域名格式不正确。', 'Invalid LAN hostname.'],
+  webDomain: [
+    '服务域名须格式正确，并与身份域名属于同一可注册域名。',
+    'Server hostname must be valid and share the identity hostname’s registrable domain.',
+  ],
+  lanDomain: [
+    '内网域名须格式正确，并与身份域名属于同一可注册域名。',
+    'LAN hostname must be valid and share the identity hostname’s registrable domain.',
+  ],
+  lanDomainRequiresDns: [
+    '内网域名仅支持 DNS-01 验证，请切换为 DNS-01 模式或清空内网域名。',
+    'LAN hostname requires DNS-01 challenge. Switch to DNS-01 mode or clear LAN hostname.',
+  ],
+  certMode: [
+    '直接 443 端口验证仅在标准端口 (443) 下可用。',
+    'Direct port 443 validation is only available on standard port (443).',
+  ],
+  acmeEmail: [
+    '证书通知邮箱格式不正确。',
+    'Invalid email address format for ACME contact.',
+  ],
   dataDir: ['请填写数据目录。', 'Data directory is required.'],
   port: [
     '端口必须是 1–65535 的整数。',
@@ -293,3 +343,24 @@ export const issueMessages: Record<string, [string, string]> = {
   ],
   image: ['镜像地址格式不正确。', 'Invalid image reference.'],
 };
+
+export function ensureDeploymentTranslations(
+  translator: TranslocoService,
+): void {
+  for (const [key, lang] of [
+    ['en', 'en'],
+    ['zh', 'zh-CN'],
+  ] as const) {
+    const errors = Object.fromEntries(
+      Object.entries(issueMessages).map(([name, text]) => [
+        name,
+        text[key === 'zh' ? 0 : 1],
+      ]),
+    );
+    translator.setTranslation(
+      { deployment: { ...deploymentMessages[key], errors } },
+      lang,
+      { merge: true },
+    );
+  }
+}

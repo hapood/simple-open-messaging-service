@@ -8,7 +8,7 @@
 // (the `configGuard` forces it until `is_origin_configured`).
 //
 // The `init_*` commands fetch client bootstrap configuration and validate TLS. The webview
-// always loads the SPA embedded in the installation package; `set_api_origin` persists the server.
+// always loads the SPA embedded in the installation package; server setup persists the server.
 //
 // Also registers the `media://localhost` custom URI scheme that proxies `/uploads/*` to the backend
 // with the current access token in an `Authorization: Bearer` header (a bare `<img src>` can't set
@@ -18,8 +18,18 @@
 mod android_realtime;
 #[cfg(target_os = "android")]
 mod android_runtime;
+#[cfg(target_os = "android")]
+mod android_notifications;
+#[cfg(any(target_os = "android", test))]
+mod android_notification_receipt;
+mod auth_lifecycle;
+#[cfg(any(target_os = "android", test))]
+mod call;
 mod client_compat;
+mod credential_storage;
 mod diagnostics;
+#[cfg(desktop)]
+mod launch;
 mod login_connection;
 mod login_request;
 mod login_session_store;
@@ -33,8 +43,10 @@ mod proxy;
 mod realtime;
 #[cfg(desktop)]
 mod secure_storage;
+mod server_setup;
 mod sse;
 mod upload;
+mod window_lifecycle;
 
 pub(crate) use proxy::{activate_origin, is_network_failure, pick_origin_race, runtime_switch};
 
@@ -47,9 +59,8 @@ use std::path::PathBuf;
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use futures_util::StreamExt;
 // `log` facade macros (warn!/error!) — backed at runtime by `tauri-plugin-log`, registered FIRST in
 // run(). Its Webview target forwards each record into the webview console via the `log://log` event
 // (re-emitted by the frontend attachConsole-equivalent in main.ts), so Rust-side failures — SSE connect
@@ -57,7 +68,9 @@ use futures_util::StreamExt;
 // the JS errors do (visible via edge://inspect / adb logcat). Previously these were swallowed or silent.
 use log::{error, warn};
 use tauri::http::{Response, StatusCode};
-use tauri::{Emitter, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, UriSchemeResponder};
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Notify;
 
@@ -71,6 +84,10 @@ const MEDIA_SCHEME: &str = "media";
 #[cfg(target_os = "android")]
 static ANDROID_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
+/// Max wait for reading the next chunk of response body stream. If the server goes silent
+/// for longer than this duration during body transfer, the request is aborted to prevent leaks.
+pub(crate) const API_BODY_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// TCP-connect timeout for EVERY backend reqwest client (`proxy_api`, `upload_stream_file`, the SSE
 /// supervisor, the client configuration probe) — set on the client builder in `http_client_for`. Bounds the "backend
 /// unreachable" wait so a dead host fails fast instead of hanging the webview request. This is a
@@ -78,20 +95,19 @@ static ANDROID_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 /// as long as they take; a total-duration timeout would wrongly kill a legitimate large upload).
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Max wait for a proxied API request's HEADERS (connect + send + server processing), and
-/// independently for reading its JSON response body. Streaming media has its own transport;
-/// resumable uploads have per-operation deadlines rather than a total-duration limit.
+/// Max wait for a proxied API request's HEADERS (connect + send + server processing).
 /// A backend that never sends headers produces 504 Gateway Timeout.
-const API_HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
+const API_HEADERS_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// Pool idle timeout for cached clients. Reclaims idle TCP sockets after 30 seconds of inactivity.
+const HTTP_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum idle connections kept open per host. Limits idle socket resource consumption.
+const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 16;
 
 /// Timeout for the unauthenticated client-compatibility probe used in origin selection.
 /// Bounds the full request (including its response body) during cold start and failover.
 const ORIGIN_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Max wait for the SSE stream's opening response. A server that accepts the connection but
-/// never sends headers would hang the connect forever. On timeout → treat as a network error → backoff
-/// + reconnect (parity with any other connect failure).
-const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The backend origin the shell talks to when nothing else is configured. A deliberate non-routable
 /// placeholder — identical in debug and release APKs (no dev-only `localhost`/LAN default, so the
@@ -100,13 +116,8 @@ const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// the config form (persisted to the `api_origin` file); desktop dev can still override via SOMS_API_ORIGIN.
 const DEFAULT_API_ORIGIN: &str = "https://example.com:7667";
 
-/// Persisted-origin file in the app-data dir. Holds a single validated http(s) URL. Read at boot to
-/// override the env/default; written by `persist_origin`.
-const CONFIG_FILENAME: &str = "api_origin";
-
-/// Sibling of `api_origin`: the optional LAN (secondary) origin, validated the same way. Absent/empty →
-/// no fallback configured (the shell behaves exactly as before). Written by `persist_origin_secondary`.
-const CONFIG_SECONDARY_FILENAME: &str = "api_origin_secondary";
+/// One configuration file stores the primary and optional backup origins atomically.
+const CONFIG_FILENAME: &str = "server_origins.json";
 
 /// Which origin `api_origin` currently holds, for the native fallback state machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -127,9 +138,8 @@ pub(crate) struct ServerSessionState {
     /// read sites never change. Cold-start select_origin may flip it from the persisted primary to the
     /// secondary before the first request flies.
     api_origin: Arc<Mutex<String>>,
-    /// The user-configured PRIMARY origin (field-1). Only `persist_origin` writes it (set_api_origin /
-    /// set_api_origin). `is_origin_configured` reads THIS, so a fallback swap to the secondary doesn't
-    /// trip the /config first-run guard.
+    /// The configured primary origin. Setup installs it together with the backup; failover changes
+    /// only the active address. `is_origin_configured` therefore stays stable across network switches.
     api_origin_primary: Arc<Mutex<String>>,
     /// The optional LAN (secondary) origin (field-2). None = no fallback configured → select_origin is a
     /// complete no-op and the shell behaves exactly as before.
@@ -142,17 +152,16 @@ pub(crate) struct ServerSessionState {
     /// origin. Race-free (Notify holds one permit). Mobile follows via the shared EncryptedSharedPreferences
     /// instead (Kotlin owns /events); the Notify is harmless there (nothing awaits it).
     origin_notify: Arc<Notify>,
-    /// Serializes `select_origin`'s RACE (single-flight): one race at a time. The cheap-check before the
-    /// lock coalesces the common case; this prevents a storm of concurrent full races. `tokio::sync::Mutex`
-    /// (held across `.await` probes) — distinct from the `std::sync::Mutex` used elsewhere for sync state.
+    /// Serializes global address selection and configuration commits. Candidates are captured after
+    /// acquiring this lock so a queued probe cannot reactivate a replaced configuration.
     select_lock: Arc<tokio::sync::Mutex<()>>,
-    token: Arc<Mutex<Option<String>>>,
+    server_setup: Arc<server_setup::ServerSetup>,
+    auth_lifecycle: Arc<auth_lifecycle::AuthLifecycle>,
+
     config_path: Arc<Mutex<PathBuf>>,
-    /// Woken by `set_session_token` after writing a non-empty token. The desktop SSE supervisor awaits
-    /// this when no token is set, so an `sse_start` issued before login (the facade connects eagerly at
-    /// boot) blocks without busy-looping and without 401-storming, then opens the moment login provides
-    /// a token. `tokio::sync::Notify` stores one permit, so a `notify_one()` that races ahead of the
-    /// `notified().await` is not lost — race-free. Unused on mobile (Kotlin owns SSE + the token).
+    /// Wakes unbound shared realtime workers after login activation. The immutable login owner,
+    /// not a second global credential or UUID mirror, admits subsequent network and cache work.
+    /// Notify retains a permit when activation races ahead of the worker's wait.
     token_notify: Arc<Notify>,
     /// Cached reqwest client for `proxy_api`, keyed on the origin string. Rebuilt only when the origin
     /// changes (see `ServerSessionState::api_client`) — so API calls reuse one connection pool (TCP+TLS
@@ -163,98 +172,26 @@ pub(crate) struct ServerSessionState {
     /// Shell streaming uploads keyed by clientMessageId. A cancel action resolves the token, which drops
     /// the in-flight reqwest future and closes the request body stream/file descriptor.
     upload_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    /// In-flight HTTP requests dispatched from the WebView keyed by reqId.
+    pub(crate) http_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     #[cfg(not(desktop))]
     native_voice_pending: Arc<Mutex<std::collections::HashMap<String, upload::NativeVoicePending>>>,
     /// App-scoped media downloads keyed by the renderer-generated task id. The shared image-download
     /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
     media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    #[cfg(not(desktop))]
     logout_tasks: native_logout::LogoutTasks,
-    /// The active native login UUID (login-lifetime identity; distinct from the transport token).
-    login_session: Arc<Mutex<Option<login_session_store::LoginSessionId>>>,
+    logout: Arc<native_logout::LogoutCoordinator>,
 }
 
 impl ServerSessionState {
-    fn replace_session_token(&self, token: Option<String>) -> Option<String> {
-        if let Ok(mut current) = self.token.lock() {
-            if current.is_some() && *current != token {
-                #[cfg(not(desktop))]
-                {
-                    for (cid, voice) in self
-                        .native_voice_pending
-                        .lock()
-                        .expect("native voice lock")
-                        .drain()
-                    {
-                        if let Some(cancel) = self
-                            .upload_cancels
-                            .lock()
-                            .expect("upload cancels lock")
-                            .remove(&cid)
-                        {
-                            cancel.cancel();
-                        }
-                        let _ = std::fs::remove_file(voice.path());
-                    }
-                }
-            }
-            let previous = std::mem::replace(&mut *current, token);
-            drop(current);
-            self.token_notify.notify_one();
-            realtime::runtime().refresh_login_work();
-            return previous;
-        }
-        None
+    fn session_token(&self) -> Option<String> {
+        native_db::active_login().ok()?.credential().ok()
     }
 
-    pub(crate) fn update_session_token_admitted(
-        &self,
-        token: Option<String>,
-        session_uuid: &str,
-    ) -> Result<(), String> {
-        let id = crate::login_session_store::LoginSessionId::try_from(session_uuid.to_string())?;
-        match token {
-            Some(token) => {
-                let active = self
-                    .login_session
-                    .lock()
-                    .map_err(|_| "login session lock poisoned")?;
-                if *active != Some(id.clone()) {
-                    return Err("native login superseded".into());
-                }
-                let owner = crate::native_db::login_connection(&id)?;
-                if owner.credential().map_err(|e| e.to_string())? != token {
-                    return Err("credential mismatch".into());
-                }
-                self.replace_session_token(Some(token));
-                Ok(())
-            }
-            None => {
-                let mut active = self
-                    .login_session
-                    .lock()
-                    .map_err(|_| "login session lock poisoned")?;
-                if active.as_ref() == Some(&id) {
-                    *active = None;
-                    drop(active);
-                    self.replace_session_token(None);
-                }
-                Ok(())
-            }
-        }
-    }
-
-    pub(crate) fn clear_residual_token(&self) -> Result<(), String> {
-        let active = self
-            .login_session
-            .lock()
-            .map_err(|_| "login session lock poisoned")?;
-        if active.is_none() {
-            drop(active);
-            self.replace_session_token(None);
-            Ok(())
-        } else {
-            Err("cannot clear residual token while a login session is active".into())
-        }
+    fn login_activated(&self) {
+        self.token_notify.notify_one();
+        realtime::runtime().refresh_login_work();
     }
 
     fn new() -> Self {
@@ -271,7 +208,9 @@ impl ServerSessionState {
             origin_mode: Arc::new(Mutex::new(OriginMode::Primary)),
             origin_notify: Arc::new(Notify::new()),
             select_lock: Arc::new(tokio::sync::Mutex::new(())),
-            token: Arc::new(Mutex::new(None)),
+            server_setup: Arc::new(server_setup::ServerSetup::default()),
+            auth_lifecycle: Arc::new(auth_lifecycle::AuthLifecycle::default()),
+
             config_path: Arc::new(Mutex::new(PathBuf::new())),
             token_notify: Arc::new(Notify::new()),
             // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
@@ -280,17 +219,19 @@ impl ServerSessionState {
                 http_client_for(&initial_origin),
             ))),
             upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            http_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             #[cfg(not(desktop))]
             native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            #[cfg(not(desktop))]
             logout_tasks: native_logout::LogoutTasks::default(),
-            login_session: Arc::new(Mutex::new(None)),
+            logout: Arc::new(native_logout::LogoutCoordinator::default()),
         }
     }
 
     /// Return a reqwest client for API calls to `origin`, rebuilding + caching only when the origin
     /// changes. `reqwest::Client` is `Clone`-cheap (Arc internals), so the cached pool is shared across
-    /// concurrent requests and kept warm between them (keepalive). On an origin swap (`set_api_origin`)
+    /// concurrent requests and kept warm between them (keepalive). On an origin swap
     /// the next request sees a mismatched tag and rebuilds — in-flight requests keep working (they hold
     /// their own clone of the old client).
     fn api_client(&self, origin: &str) -> reqwest::Client {
@@ -366,64 +307,13 @@ fn tls_posture_for(origin: &str) -> TlsPosture {
 fn http_client_for(origin: &str) -> reqwest::Client {
     let mut b = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(BACKEND_CONNECT_TIMEOUT);
+        .connect_timeout(BACKEND_CONNECT_TIMEOUT)
+        .pool_idle_timeout(Some(HTTP_POOL_IDLE_TIMEOUT))
+        .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE_PER_HOST);
     if tls_posture_for(origin) == TlsPosture::Permissive {
         b = b.danger_accept_invalid_certs(true);
     }
     b.build().unwrap_or_else(|_| reqwest::Client::new())
-}
-
-/// Persist + activate a backend origin: validate, write the app-data config file (survives restarts,
-/// feeds the media proxy Arc), and update the live Arc (so `/uploads/*` immediately uses the new host).
-/// Shared writer for configuration and origin fallback logic —
-/// the two persistence surfaces (this file + the web's `SomsSecureStore`) stay consistent.
-fn persist_origin(state: &ServerSessionState, url: &str) -> Result<String, String> {
-    let normalized =
-        validate_origin(url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
-    let path = state.config_path.lock().expect("config_path lock").clone();
-    fs::write(&path, &normalized).map_err(|e| format!("failed to write config: {e}"))?;
-    // This is the "user explicitly chose the primary" path (set_api_origin): record it
-    // as the primary, make it active, and reset the mode. The secondary is managed separately by
-    // persist_origin_secondary. select_origin may later flip `api_origin` to the secondary on failure.
-    *state.api_origin_primary.lock().expect("primary lock") = normalized.clone();
-    *state.api_origin.lock().expect("origin lock") = normalized.clone();
-    *state.origin_mode.lock().expect("mode lock") = OriginMode::Primary;
-    Ok(normalized)
-}
-
-/// Persist + set the LAN (secondary) origin (field-2). `None`/empty clears it (deletes the file + sets the
-/// Arc to None → no fallback). Validates via the same `validate_origin` so a malformed URL is never stored.
-/// Does NOT touch the active origin or mode — `select_origin` decides which is active.
-fn persist_origin_secondary(
-    state: &ServerSessionState,
-    url: Option<&str>,
-) -> Result<Option<String>, String> {
-    let dir = state
-        .config_path
-        .lock()
-        .expect("config_path lock")
-        .parent()
-        .map(|p| p.to_path_buf());
-    let normalized = match url.map(str::trim).filter(|s| !s.is_empty()) {
-        None => {
-            if let Some(dir) = &dir {
-                let _ = fs::remove_file(dir.join(CONFIG_SECONDARY_FILENAME));
-            }
-            *state.api_origin_secondary.lock().expect("secondary lock") = None;
-            None
-        }
-        Some(raw) => {
-            let n =
-                validate_origin(raw).ok_or_else(|| format!("not a valid http(s) URL: {raw}"))?;
-            if let Some(dir) = &dir {
-                fs::write(dir.join(CONFIG_SECONDARY_FILENAME), &n)
-                    .map_err(|e| format!("failed to write secondary config: {e}"))?;
-            }
-            *state.api_origin_secondary.lock().expect("secondary lock") = Some(n.clone());
-            Some(n)
-        }
-    };
-    Ok(normalized)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -523,13 +413,20 @@ pub fn run() {
     // plugin rebinds just above; without this guard the Android build references a configured-out type
     // (E0433 cannot find type `SseSupervisor`).
     #[cfg(desktop)]
-    let builder = builder.manage(sse::SseSupervisor::new());
+    let builder = builder
+        .manage(sse::SseSupervisor::new())
+        .manage(launch::LaunchState::default());
     builder
         .invoke_handler({
             #[cfg(desktop)]
             {
                 tauri::generate_handler![
-                    native_db::desktop_notifications::desktop_notification_update,
+                    launch::launch_update,
+                    native_db::desktop_notifications::desktop_badge_refresh,
+                    native_db::desktop_notifications::desktop_notification_permission,
+                    native_db::desktop_notifications::desktop_notification_request_permission,
+                    native_db::desktop_notifications::desktop_notification_open_settings,
+                    native_db::desktop_notifications::desktop_notification_presentation_changed,
                     native_db::profile_namespaces::native_db_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_commit_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_apply_profile_namespace_changes,
@@ -541,22 +438,25 @@ pub fn run() {
                     origin_commands::get_api_origin,
                     origin_commands::get_active_api_origin,
                     origin_commands::is_origin_configured,
-                    origin_commands::set_api_origin,
                     origin_commands::get_api_origin_secondary,
-                    origin_commands::set_api_origin_secondary,
                     origin_commands::get_origin_mode,
                     origin_commands::init_pick_origin,
-                    origin_commands::set_active_origin,
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
                     origin_commands::login_session_for_token,
                     native_db::native_db_begin_login,
                     origin_commands::begin_logout,
-                    origin_commands::wait_for_logout,
+                    origin_commands::logout_status,
+                    origin_commands::try_logout,
+                    origin_commands::finish_logout,
                     secure_storage::secure_get_token,
                     secure_storage::secure_set_token,
                     secure_storage::secure_clear_token,
                     secure_storage::secure_clear_residual_token,
+                    server_setup::begin_server_setup,
+                    server_setup::cancel_server_setup,
+                    server_setup::check_server_setup,
+                    server_setup::commit_server_setup,
                     client_compat::init_check_compat,
                     client_compat::init_validate_cert,
                     client_compat::init_compat_status,
@@ -572,9 +472,10 @@ pub fn run() {
                     diagnostics::set_debug_logging,
                     diagnostics::log_js,
                     diagnostics::read_native_log,
-                    proxy::api_request,
-                    proxy::media_request,
+                    proxy::http_request,
+                    proxy::cancel_http_request,
                     media_cache::cache_media,
+                    media_cache::has_cached_media,
                     media_cache::download_media,
                     media_cache::cancel_media_download,
                     media_cache::clear_media_cache,
@@ -582,19 +483,21 @@ pub fn run() {
                     media_cache::save_media_desktop,
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
+                    native_db::client_state::native_db_patch_thread,
                     native_db::account_state::native_db_advance_intent_request_read,
                     native_db::account_state::native_db_initialize_account_state,
                     native_db::account_state::native_db_read_account_state,
                     native_db::account_state::native_db_write_self_profile,
                     native_db::account_state::native_db_write_composer_drafts,
                     native_db::client_state::native_db_threads,
-                    native_db::client_state::native_db_put_thread,
-                    native_db::client_state::native_db_replace_threads,
                     native_db::client_state::native_db_delete_thread,
                     native_db::contacts::native_db_get_profile,
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
                     native_db::attention::native_db_thread_states,
+                    native_db::watch_ipc::native_watch_profile,
+                    native_db::watch_ipc::native_watch_namespace,
+                    native_db::watch_ipc::native_watch_cancel,
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
@@ -612,13 +515,14 @@ pub fn run() {
                     native_db::profile_avatars::native_db_get_profile_avatar,
                     native_db::messages::native_db_query_messages,
                     native_db::messages::native_db_count_unread_message_slots,
-                    native_db::messages::native_message_history_get,
+                    native_db::history_ipc::native_message_history_start,
+                    native_db::history_ipc::native_message_history_cancel,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
                     native_db::messages::native_db_get_deleted_hwm,
                     native_db::messages::native_db_apply_deleted_messages,
                     native_db::messages::native_db_get_message,
-                    native_db::messages::native_db_get_deleted_message_seqs,
+                    native_db::messages::native_db_get_message_deletions,
                     native_db::messages::native_db_newest_messages,
                     native_db::messages::native_db_correct_system_message_profile,
                     native_db::messages::native_db_delete_messages_by_thread,
@@ -632,18 +536,21 @@ pub fn run() {
                     origin_commands::get_api_origin,
                     origin_commands::get_active_api_origin,
                     origin_commands::is_origin_configured,
-                    origin_commands::set_api_origin,
                     origin_commands::get_api_origin_secondary,
-                    origin_commands::set_api_origin_secondary,
                     origin_commands::get_origin_mode,
                     origin_commands::init_pick_origin,
-                    origin_commands::set_active_origin,
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
                     origin_commands::login_session_for_token,
                     native_db::native_db_begin_login,
                     origin_commands::begin_logout,
                     origin_commands::wait_for_logout,
+                    origin_commands::logout_status,
+                    origin_commands::try_logout,
+                    server_setup::begin_server_setup,
+                    server_setup::cancel_server_setup,
+                    server_setup::check_server_setup,
+                    server_setup::commit_server_setup,
                     client_compat::init_check_compat,
                     client_compat::init_validate_cert,
                     client_compat::init_compat_status,
@@ -655,15 +562,17 @@ pub fn run() {
                     diagnostics::set_debug_logging,
                     diagnostics::log_js,
                     diagnostics::read_native_log,
-                    proxy::api_request,
-                    proxy::media_request,
+                    proxy::http_request,
+                    proxy::cancel_http_request,
                     media_cache::cache_media,
+                    media_cache::has_cached_media,
                     media_cache::download_media,
                     media_cache::cancel_media_download,
                     media_cache::clear_media_cache,
                     media_cache::get_media_cache_info,
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
+                    native_db::client_state::native_db_patch_thread,
                     native_db::profile_namespaces::native_db_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_commit_profile_namespace_bindings,
                     native_db::profile_namespaces::native_db_apply_profile_namespace_changes,
@@ -675,13 +584,14 @@ pub fn run() {
                     native_db::account_state::native_db_write_self_profile,
                     native_db::account_state::native_db_write_composer_drafts,
                     native_db::client_state::native_db_threads,
-                    native_db::client_state::native_db_put_thread,
-                    native_db::client_state::native_db_replace_threads,
                     native_db::client_state::native_db_delete_thread,
                     native_db::contacts::native_db_get_profile,
                     native_db::contacts::native_db_get_group_member,
                     native_db::contacts::native_db_query_group_members,
                     native_db::attention::native_db_thread_states,
+                    native_db::watch_ipc::native_watch_profile,
+                    native_db::watch_ipc::native_watch_namespace,
+                    native_db::watch_ipc::native_watch_cancel,
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
@@ -699,13 +609,14 @@ pub fn run() {
                     native_db::profile_avatars::native_db_get_profile_avatar,
                     native_db::messages::native_db_query_messages,
                     native_db::messages::native_db_count_unread_message_slots,
-                    native_db::messages::native_message_history_get,
+                    native_db::history_ipc::native_message_history_start,
+                    native_db::history_ipc::native_message_history_cancel,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
                     native_db::messages::native_db_get_deleted_hwm,
                     native_db::messages::native_db_apply_deleted_messages,
                     native_db::messages::native_db_get_message,
-                    native_db::messages::native_db_get_deleted_message_seqs,
+                    native_db::messages::native_db_get_message_deletions,
                     native_db::messages::native_db_newest_messages,
                     native_db::messages::native_db_correct_system_message_profile,
                     native_db::messages::native_db_delete_messages_by_thread,
@@ -714,7 +625,12 @@ pub fn run() {
                 ]
             }
         })
+        .on_window_event(window_lifecycle::on_window_event)
         .setup(move |app| {
+            native_db::notifications::initialize(app.handle().clone());
+            // Show native artwork before database/keychain work or WebView creation.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let launch_window = launch::create_window(app)?;
             #[cfg(target_os = "windows")]
             native_db::desktop_notifications::initialize_windows_links(app.handle())?;
             #[cfg(target_os = "macos")]
@@ -739,56 +655,59 @@ pub fn run() {
                 error!("panic: {info}");
             }));
 
-            let data_dir = app.path().app_data_dir()?;
-            native_db::location::initialize(&data_dir)?;
-            native_db::initialize_preferences()?;
-            if let Err(error) = native_db::initialize_login_cache() {
-                warn!("login cache initialization requires repair: {error}");
-            }
-            fs::create_dir_all(&data_dir)?;
-            // Android resources were restored by Application; do not overwrite live background state.
-            #[cfg(not(target_os = "android"))]
+            // Return to the event loop so the native layer can animate while
+            // storage opens on a worker. Attach the WebView after runtime setup.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
-                let config_path = data_dir.join(CONFIG_FILENAME);
-                if let Some(persisted) = fs::read_to_string(&config_path)
-                    .ok()
-                    .and_then(|s| validate_origin(&s))
-                {
-                    // The persisted file is the user-configured PRIMARY. Seed primary + active from it; a
-                    // cold-start select_origin (spawned later in setup) may flip `api_origin` to the secondary
-                    // if the primary is unreachable on this network.
-                    *proxy_state.api_origin_primary.lock().expect("primary lock") =
-                        persisted.clone();
-                    *proxy_state.api_origin.lock().expect("origin lock") = persisted;
-                }
-                // Secondary (LAN) origin — optional. Absent file → None → no fallback (exact legacy behavior).
-                if let Some(sec) = fs::read_to_string(data_dir.join(CONFIG_SECONDARY_FILENAME))
-                    .ok()
-                    .and_then(|s| validate_origin(&s))
-                {
-                    *proxy_state
-                        .api_origin_secondary
-                        .lock()
-                        .expect("secondary lock") = Some(sec);
-                }
-                *proxy_state.config_path.lock().expect("config_path lock") = config_path;
+                let handle = app.handle().clone();
+                let state = proxy_state.clone();
+                let proxy_state_for_retry = proxy_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let initializer = handle.clone();
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        initialize_client_storage(&initializer, &state)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(())) => {
+                            let errors = handle.clone();
+                            if let Err(error) = handle.run_on_main_thread(move || {
+                                if let Err(error) = launch::attach_webview(&launch_window) {
+                                    launch::failed(&errors, &error.to_string());
+                                }
+                            }) {
+                                launch::failed(&handle, &error.to_string());
+                            }
+                            diagnostics::retry_pending_diagnostics(handle, proxy_state_for_retry)
+                                .await;
+                        }
+                        Ok(Err(error)) => launch::failed(&handle, &error),
+                        Err(error) => launch::failed(&handle, &error.to_string()),
+                    }
+                });
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                initialize_client_storage(app.handle(), &proxy_state)
+                    .map_err(std::io::Error::other)?;
+                // Other hosts retain their existing window/Activity presentation.
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("SOMS")
+                    .on_navigation(navigation::is_allowed)
+                    .inner_size(1200.0, 800.0)
+                    .min_inner_size(390.0, 600.0)
+                    .build()?;
             }
 
-            // The single window loads only the embedded SPA.
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("SOMS")
-                .on_navigation(navigation::is_allowed)
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(900.0, 600.0)
-                .build()?;
-
-            // Offline diagnostics delivery: re-POST any report bundles captured during a prior network
-            // outage (kept under app_cache_dir/pending-*). Fire-and-forget — never blocks app launch.
-            let retry_app = app.handle().clone();
-            let retry_state = proxy_state.clone();
-            tauri::async_runtime::spawn(async move {
-                diagnostics::retry_pending_diagnostics(retry_app, retry_state).await;
-            });
+            // Native launch hosts start this after their asynchronous initializer.
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                let retry_app = app.handle().clone();
+                let retry_state = proxy_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    diagnostics::retry_pending_diagnostics(retry_app, retry_state).await;
+                });
+            }
 
             // The web APP_INITIALIZER invokes `init_pick_origin` before routing begins. That timing matters:
             // the logged-out login page immediately loads public `/config`, so the active origin must be
@@ -797,6 +716,44 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn initialize_client_storage(
+    app: &tauri::AppHandle,
+    proxy_state: &ServerSessionState,
+) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    native_db::location::initialize(&data_dir)?;
+    native_db::initialize_preferences()?;
+    if let Err(error) = native_db::initialize_login_cache() {
+        warn!("login cache initialization requires repair: {error}");
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Some(owner) = native_db::current_login()? {
+        #[cfg(target_os = "macos")]
+        let cards = native_db::desktop_notifications::macos_platform::restore_cards()?;
+        #[cfg(target_os = "windows")]
+        let cards = native_db::desktop_notifications::restore_windows_cards(app, owner.clone())?;
+        let candidates = {
+            let mut delivery = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?;
+            delivery.import_cards(cards).map_err(str::to_owned)?;
+            delivery.reconstruction_candidates()
+        };
+        *owner.notification_reconstruction.try_lock().map_err(|_| "notification restoration already running")? = Some(candidates);
+    }
+    fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+    // Android resources were restored by Application; do not overwrite live background state.
+    #[cfg(not(target_os = "android"))]
+    {
+        *proxy_state.config_path.lock().expect("config_path lock") = data_dir.join(CONFIG_FILENAME);
+        server_setup::restore(proxy_state)?;
+    }
+    #[cfg(target_os = "android")]
+    let _ = proxy_state;
+    Ok(())
 }
 
 // --- media:// proxy (unchanged) -----------------------------------------------------------

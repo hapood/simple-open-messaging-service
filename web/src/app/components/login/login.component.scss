@@ -1,15 +1,30 @@
 @use "../../assets/utils.scss" as *;
 
-// Password form card — shared auth-card surface (mirrors the OTP / QR cards so all methods read as one).
-.login-card {
-  @include auth-card;
+// Constrain the flex item itself so intrinsic Material control widths cannot
+// make the card wider than the auth pane on narrow screens.
+:host {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  min-width: 0;
 }
 
-// Android shell only: the auth viewport measures the focused input against the native IME top and
-// publishes the minimum lift needed to retain a comfortable 24px gap (capped by the directive at 80px).
-:host-context(.auth-native-keyboard-open) .login-card {
+.login-card {
+  @include auth-card;
+  position: relative;
+  padding: 32px 28px 24px;
+}
+
+// Android shell only: retain a comfortable 24px gap above the native IME without resizing the page.
+:host-context(.auth-native-viewport) .login-card {
   transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
   transition: transform 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host-context(.auth-native-viewport) .login-card {
+    transition: none;
+  }
 }
 
 .progress-slot {
@@ -22,68 +37,118 @@
 }
 
 .login-title {
-  margin: 0;
+  margin: 0 0 16px;
   font-size: 24px;
   font-weight: 600;
+  line-height: 32px;
+  text-align: center;
+  display: flex;
+  justify-content: center;
 }
 
-.login-sub {
-  margin: 6px 0 22px;
-  font-size: 14px;
-  color: var(--app-text-muted);
+.login-title-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.login-title-logo {
+  display: none;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+}
+
+// Match the auth shell's single-column breakpoint; the split layout owns its own brand panel.
+@media (max-width: 899px) {
+  .login-title-logo {
+    display: block;
+  }
+}
+
+.auth-segmented-slot {
+  width: 100%;
+  margin-bottom: 20px;
+}
+
+.tab-content-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 200px;
+  box-sizing: border-box;
+}
+
+/* Recreated by @switch on every method change, so the animation replays per switch. */
+.panel-in {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  animation: segment-panel-in 220ms cubic-bezier(0.2, 0, 0, 1) forwards;
+}
+
+@keyframes segment-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .field {
   width: 100%;
 }
 
-.keep-cb {
-  align-self: flex-start;
-  margin-top: 4px;
-}
-
-// One-line explanation under the desktop "Trust this device" toggle — the user is opting into a
-// permanent session, so the implication is spelled out (integer-px metrics per the project rule).
-.trust-hint {
-  margin: 2px 0 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--app-text-muted);
-}
-
-.error-slot {
-  min-height: 44px;
-  padding: 8px 2px 0;
-  box-sizing: border-box;
-}
-
-.error {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--mat-form-field-error-text-color);
-}
-
 .submit-btn {
   width: 100%;
   height: 44px;
   font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+  margin-top: 4px;
+
+  &:disabled,
+  &[disabled] {
+    opacity: 0.52;
+    cursor: not-allowed;
+    background: color-mix(in srgb, var(--app-text) 8%, var(--app-surface)) !important;
+    color: var(--app-text-muted) !important;
+    box-shadow: none !important;
+  }
 }
 
-.alt-action {
-  margin-top: 10px;
-  text-align: center;
+// Out-of-flow registration link below the card:
+// Absolutely positioned so its presence or absence has 0 impact on the card's vertical center.
+.alt-action-out-of-flow {
+  position: absolute;
+  top: calc(100% + 16px);
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   font-size: 14px;
+  line-height: 20px;
   color: var(--app-text-muted);
-}
 
-.link-btn {
-  @include auth-link;
-  // Gap after the inline "No account?" question text in .alt-action — the in-card register CTA sits
-  // inline with preceding text, unlike the footer switchers which stand alone.
-  margin-left: 4px;
-}
+  .link-btn {
+    @include auth-link;
+    color: var(--app-brand);
+    font-weight: 500;
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-size: 14px;
+    line-height: 20px;
 
-.link-btn:hover {
-  text-decoration: underline;
+    &:hover {
+      text-decoration: underline;
+    }
+  }
 }

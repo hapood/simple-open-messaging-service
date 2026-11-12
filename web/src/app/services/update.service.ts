@@ -1,13 +1,7 @@
-import { computed, Injectable, inject, OnDestroy, signal } from '@angular/core';
+import { computed, DestroyRef, Injectable, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { SwUpdate, VersionReadyEvent } from '@angular/service-worker';
 import { filter } from 'rxjs';
-
-/**
- * Polling interval for `checkForUpdate()`. The SW checks for an update automatically on registration
- * and on navigation, but a long-lived chat tab can sit on one route for hours — a mid-session deploy
- * would otherwise go unnoticed until reload. This poll closes that window.
- */
-const UPDATE_POLL_MS = 60 * 60 * 1000;
 
 /**
  * Wraps {@link SwUpdate} to surface "new version ready" as a reactive signal and to own the
@@ -18,17 +12,15 @@ const UPDATE_POLL_MS = 60 * 60 * 1000;
  *   the wrong moment to swap the bundle, so the user picks the moment.
  * - `UNRECOVERABLE_STATE` (cached assets missing / hash mismatch) is unrecoverable by definition →
  *   a full reload is the only recovery, so we trigger one immediately.
- * - On construction we also start a 60-minute `checkForUpdate` poll so a deploy during a long open
- *   tab is detected without relying on navigation.
+ * - Update checks are scheduled by ServiceWorkerLifecycleService independently of session recovery.
  *
- * Eagerly instantiated by `AppComponent` (injected alongside ThemeService/LanguageService) so the
- * subscriptions are live for the whole session — `versionUpdates` is a hot stream and a late
- * subscriber would miss the initial `VERSION_READY`.
+ * Instantiated during bootstrap before session restoration so early update events are retained
+ * even while the root shell is still waiting to mount.
  */
 @Injectable({ providedIn: 'root' })
-export class UpdateService implements OnDestroy {
+export class UpdateService {
+  private readonly destroyRef = inject(DestroyRef);
   private readonly swUpdate = inject(SwUpdate);
-  private readonly pollHandle?: ReturnType<typeof setInterval>;
 
   /** True once a new app version is downloaded and ready to activate. Latched until reload/dismiss. */
   readonly available = signal(false);
@@ -39,20 +31,21 @@ export class UpdateService implements OnDestroy {
     if (!this.swUpdate.isEnabled) return;
 
     this.swUpdate.versionUpdates
-      .pipe(filter((e): e is VersionReadyEvent => e.type === 'VERSION_READY'))
+      .pipe(takeUntilDestroyed(this.destroyRef), filter((e): e is VersionReadyEvent => e.type === 'VERSION_READY'))
       .subscribe(() => this.available.set(true));
 
-    this.swUpdate.unrecoverable.subscribe(() => {
+    this.swUpdate.versionUpdates.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((event) => {
+      if (event.type === 'VERSION_INSTALLATION_FAILED') {
+        console.warn('[update] version failed', event);
+      }
+    });
+
+    this.swUpdate.unrecoverable.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((event) => {
+      console.error('[update] unrecoverable state', event);
       // The SW cannot recover (a precached asset is missing/corrupt); only a full reload helps.
       location.reload();
     });
 
-    this.pollHandle = setInterval(() => {
-      // checkForUpdate resolves `true` if a new version was found and is being downloaded; a
-      // subsequent VERSION_READY will latch `available`. Errors (e.g. transient network) are
-      // non-fatal — the next poll retries.
-      this.swUpdate.checkForUpdate().catch(() => void 0);
-    }, UPDATE_POLL_MS);
   }
 
   /** Activate the downloaded version and reload into it. */
@@ -71,7 +64,4 @@ export class UpdateService implements OnDestroy {
     this.available.set(false);
   }
 
-  ngOnDestroy(): void {
-    if (this.pollHandle) clearInterval(this.pollHandle);
-  }
 }

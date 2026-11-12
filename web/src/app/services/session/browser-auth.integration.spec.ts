@@ -1,6 +1,11 @@
 import '@angular/compiler';
-import 'fake-indexeddb/auto';
-import { Injector, runInInjectionContext } from '@angular/core';
+import { LogoutDecisionService } from '../logout-decision.service';
+import {
+  type DestroyableInjector,
+  Injector,
+  inject,
+  runInInjectionContext,
+} from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Observable, firstValueFrom } from 'rxjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,8 +18,14 @@ import {
 import { PreferenceStore } from '../preference-store.service';
 import { SessionLifecycleService } from '../session-lifecycle.service';
 import { SessionStateService } from '../session-state.service';
+import { SessionStartupService } from '../session-startup.service';
+import { registrationDouble } from '../service-worker-test-doubles';
+import { ServerConfigDialogService } from '../server-config-dialog.service';
 import { WebdbStorage } from '../webdb-storage';
-import { parseLoginSessionId } from './session-identity';
+import {
+  parseLoginSessionId,
+  SessionSupersededError,
+} from './session-identity';
 
 type Request = {
   url: string;
@@ -25,6 +36,7 @@ type Request = {
 };
 const databases: WebdbStorage[] = [];
 const preferenceStores: PreferenceStore[] = [];
+const injectors = new Set<DestroyableInjector>();
 
 function client(
   preferences = new PreferenceStore(),
@@ -59,13 +71,6 @@ function client(
       if (id) await database.openExistingForUser(String(id));
     }),
   };
-  const owner = new BrowserSessionService(
-    preferences,
-    database,
-    user as never,
-    lifecycle,
-    state,
-  );
   const requests: Request[] = [];
   const http = {
     post: (url: string, body: unknown) =>
@@ -95,14 +100,34 @@ function client(
   const toast = { warn: vi.fn(), info: vi.fn() };
   const injector = Injector.create({
     providers: [
+      ServerConfigDialogService,
+      SessionStartupService,
+      {
+        provide: BrowserSessionService,
+        useFactory: () =>
+          new BrowserSessionService(
+            preferences,
+            database,
+            user as never,
+            lifecycle,
+            state,
+          ),
+      },
+      {
+        provide: LogoutDecisionService,
+        useValue: { decide: vi.fn().mockResolvedValue('localOnly') },
+      },
       { provide: SessionStateService, useValue: state },
       { provide: SessionLifecycleService, useValue: lifecycle },
       {
         provide: BROWSER_SESSION,
-        useValue: provideBrowserSession ? owner : null,
+        useFactory: () =>
+          provideBrowserSession ? inject(BrowserSessionService) : null,
       },
     ],
   });
+  injectors.add(injector);
+  const owner = injector.get(BROWSER_SESSION);
   const auth = runInInjectionContext(
     injector,
     () =>
@@ -110,7 +135,10 @@ function client(
         http as never,
         route as never,
         { onLogin: vi.fn() } as never,
-        { onLogin: vi.fn() } as never,
+        {
+          onLogin: vi.fn(),
+          unsubscribe: vi.fn().mockResolvedValue(undefined),
+        } as never,
         user as never,
         { translate: (key: string) => key } as never,
         toast as never,
@@ -127,6 +155,10 @@ function client(
     state,
     toast,
     lifecycle,
+    startup: injector.get(SessionStartupService),
+    destroy: () => {
+      if (injectors.delete(injector)) injector.destroy();
+    },
   };
 }
 
@@ -141,12 +173,14 @@ async function signIn(app: ReturnType<typeof client>) {
   document.cookie = 'logged_in=1; Path=/';
   request.flush({ code: 0, data: { session_token: 'never-persisted-in-js' } });
   await done;
-  expect(app.lifecycle.capture().sessionId).toBe(app.owner.currentSession?.id);
+  expect(app.lifecycle.capture().sessionId).toBe(app.owner!.currentSession?.id);
   expect(app.lifecycle.capture().signal.aborted).toBe(false);
-  return app.owner.currentSession!;
+  return app.owner!.currentSession!;
 }
 
 afterEach(async () => {
+  for (const injector of injectors) injector.destroy();
+  injectors.clear();
   vi.useRealTimers();
   for (const database of databases.splice(0)) await database.close();
   // Real preference stores hold open connections; close them before deleting the database,
@@ -172,6 +206,7 @@ afterEach(async () => {
 describe('browser AuthService with real session owner and IndexedDB caches', () => {
   it('fails browser configuration explicitly instead of falling back to the native path', () => {
     const app = client(undefined, false);
+    expect(app.owner).toBeNull();
     expect(() => app.auth.login({ account: 'alice', password: 'pw' })).toThrow(
       'Browser session service is missing on the browser host',
     );
@@ -186,6 +221,7 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     window.__TAURI__ = { core: { invoke } };
     try {
       const app = client(undefined, false);
+      expect(app.owner).toBeNull();
       await app.auth.restoreSession();
       expect(invoke).toHaveBeenCalledWith('init_pick_origin', undefined);
       expect(invoke).toHaveBeenCalledWith('secure_get_token', undefined);
@@ -204,7 +240,6 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     expect(app.auth.loggedIn()).toBe(true);
     const names = (await indexedDB.databases()).map((item) => item.name);
     expect(names).toContain(session.indexedDbName);
-    expect(names).toContain(session.messageIndexedDbName);
     expect(app.user.clearSession).not.toHaveBeenCalled();
     expect(app.user.prepareFreshCache).not.toHaveBeenCalled();
     expect(app.requests[0].body).toMatchObject({
@@ -235,7 +270,7 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     document.cookie = 'logged_in=1; Path=/';
     app.requests[2].flush({ code: 0, data: { session_token: 'new-token' } });
     await signingIn;
-    expect(app.owner.currentSession?.id).not.toBe(previous.id);
+    expect(app.owner!.currentSession?.id).not.toBe(previous.id);
     expect(
       app.requests.filter((item) => /\/auth\/logout$/.test(item.url)),
     ).toHaveLength(1);
@@ -258,7 +293,7 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
         'Close other cache connections and retry',
       );
       expect(app.requests).toHaveLength(1);
-      expect(app.owner.currentSession).toBeNull();
+      expect(app.owner!.currentSession).toBeNull();
     } finally {
       blocker.close();
     }
@@ -274,7 +309,7 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     await app.auth.restoreSession();
     expect(app.auth.isLoggedIn()).toBe(false);
     expect(app.auth.loggedIn()).toBe(false);
-    expect(app.owner.currentSession).toBeNull();
+    expect(app.owner!.currentSession).toBeNull();
     expect(app.lifecycle.capture().sessionId).toBeNull();
     expect(app.user.restoreWebdb).not.toHaveBeenCalled();
     expect(app.requests).toHaveLength(0);
@@ -293,7 +328,7 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     await original.preferences.set('device', 'soms.lastUserId', 1);
     const restored = client(original.preferences);
     await restored.auth.restoreSession();
-    expect(restored.owner.currentSession).toEqual(session);
+    expect(restored.owner!.currentSession).toEqual(session);
     expect(restored.auth.isLoggedIn()).toBe(true);
     expect(restored.requests).toHaveLength(0);
     expect(restored.database.ready()).toBe(true);
@@ -306,12 +341,40 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     document.cookie = 'logged_in=1; Path=/';
     const restored = client(original.preferences);
     await restored.auth.restoreSession();
-    expect(restored.owner.currentSession).toBeNull();
+    expect(restored.owner!.currentSession).toBeNull();
     expect(restored.auth.isLoggedIn()).toBe(false);
     expect(restored.requests).toHaveLength(0);
     expect((await indexedDB.databases()).map((item) => item.name)).toContain(
       session.indexedDbName,
     );
+  });
+
+  it('cancels notification recovery and releases retry timers when its injector is destroyed', async () => {
+    const app = client();
+    const registration = vi
+      .spyOn(navigator.serviceWorker, 'getRegistration')
+      .mockResolvedValue(registrationDouble());
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+
+    const restoring = app.owner!.restore(true);
+    const rejected = expect(restoring).rejects.toBeInstanceOf(
+      SessionSupersededError,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(app.startup.retryIn()).toBe(1000);
+    expect(registration).toHaveBeenCalledOnce();
+
+    app.destroy();
+    await rejected;
+    expect(app.startup.retryIn()).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    app.startup.retryNow();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(registration).toHaveBeenCalledOnce();
+    expect(app.user.restoreWebdb).not.toHaveBeenCalled();
+    expect(app.owner!.currentSession).toBeNull();
+    expect(app.lifecycle.capture().sessionId).toBeNull();
   });
 
   it('aborts the actual HTTP observable at logout timeout', async () => {
@@ -324,7 +387,7 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     await exited;
     expect(app.requests[1].aborted).toBe(true);
     expect(app.auth.isLoggedIn()).toBe(false);
-    expect(app.owner.currentSession).toBeNull();
+    expect(app.owner!.currentSession).toBeNull();
   });
 });
 
@@ -351,73 +414,86 @@ describe('native logout adapter integration', () => {
       );
       const invoke = vi.fn(async (command: string) => {
         if (command === 'begin_logout') return admission.promise;
+        if (command === 'try_logout') {
+          await remote.promise;
+          return { status: 'revoked' };
+        }
+        if (command === 'logout_status') return 'awaitingRevocation';
         if (command === 'wait_for_logout') return remote.promise;
         return undefined;
       });
-      window.__TAURI_INTERNALS__ = {};
-      window.__TAURI__ = { core: { invoke } };
-      if (android) {
-        Object.defineProperty(navigator, 'userAgent', {
-          value: 'Android',
-          configurable: true,
-        });
-        Object.defineProperty(window, 'SomsFcm', {
-          value: {
-            setSessionToken: setToken,
-            clearMessageNotifications: vi.fn(),
-          },
-          configurable: true,
-        });
-      }
-      const app = client(undefined, false);
-      const loginId = parseLoginSessionId(
-        '11111111-2222-4d9e-af01-234567890abc',
-      );
-      (
-        app.auth as unknown as { nativeLoginUuid: typeof loginId }
-      ).nativeLoginUuid = loginId;
-      app.state.setAuthenticated(true);
-      app.user.releaseSession.mockResolvedValue(undefined);
-      let finished = false;
-      const done = firstValueFrom(app.auth.logout()).then(() => {
-        finished = true;
-      });
       try {
-        expect(app.auth.isLoggedIn()).toBe(false);
-        expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
-        expect(app.user.clearSession).not.toHaveBeenCalled();
-        expect(setToken).not.toHaveBeenCalled();
-        expect(finished).toBe(false);
-        admission.resolve({
-          ticket: 'ended-operation',
-          localClearFailed: false,
-        });
-        await vi.waitFor(() =>
-          expect(invoke).toHaveBeenCalledWith('wait_for_logout', {
-            ticket: 'ended-operation',
-          }),
+        window.__TAURI_INTERNALS__ = {};
+        window.__TAURI__ = { core: { invoke } };
+        if (android) {
+          Object.defineProperty(navigator, 'userAgent', {
+            value: 'Android',
+            configurable: true,
+          });
+          Object.defineProperty(window, 'SomsFcm', {
+            value: {
+              setSessionToken: setToken,
+              clearMessageNotifications: vi.fn(),
+            },
+            configurable: true,
+          });
+        }
+        const app = client(undefined, false);
+        expect(app.owner).toBeNull();
+        const loginId = parseLoginSessionId(
+          '11111111-2222-4d9e-af01-234567890abc',
         );
-        if (android)
-          expect(setToken).toHaveBeenCalledExactlyOnceWith(
-            null,
-            '11111111-2222-4d9e-af01-234567890abc',
-          );
-        expect(finished).toBe(false);
-        remote.resolve();
-        await done;
-        expect(app.requests).toHaveLength(0);
-        expect(
-          invoke.mock.calls.some(([command]) =>
-            command.startsWith('native_db_'),
-          ),
-        ).toBe(false);
-      } finally {
-        admission.resolve({
-          ticket: 'ended-operation',
-          localClearFailed: false,
+        (
+          app.auth as unknown as { nativeLoginUuid: typeof loginId }
+        ).nativeLoginUuid = loginId;
+        app.state.setAuthenticated(true);
+        app.user.releaseSession.mockResolvedValue(undefined);
+        let finished = false;
+        const done = firstValueFrom(app.auth.logout()).then(() => {
+          finished = true;
         });
-        remote.resolve();
-        await done;
+        try {
+          if (android) {
+            expect(app.auth.isLoggedIn()).toBe(false);
+            expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
+          }
+          expect(app.user.clearSession).not.toHaveBeenCalled();
+          expect(setToken).not.toHaveBeenCalled();
+          expect(finished).toBe(false);
+          admission.resolve({
+            ticket: 'ended-operation',
+            localClearFailed: false,
+          });
+          await vi.waitFor(() => {
+            if (android)
+              expect(invoke).toHaveBeenCalledWith('wait_for_logout', {
+                ticket: 'ended-operation',
+              });
+            else expect(invoke).toHaveBeenCalledWith('try_logout', undefined);
+          });
+          if (android)
+            expect(setToken).toHaveBeenCalledExactlyOnceWith(
+              null,
+              '11111111-2222-4d9e-af01-234567890abc',
+            );
+          expect(finished).toBe(false);
+          remote.resolve();
+          await done;
+          expect(app.requests).toHaveLength(0);
+          expect(
+            invoke.mock.calls.some(([command]) =>
+              command.startsWith('native_db_'),
+            ),
+          ).toBe(false);
+        } finally {
+          admission.resolve({
+            ticket: 'ended-operation',
+            localClearFailed: false,
+          });
+          remote.resolve();
+          await done;
+        }
+      } finally {
         delete window.__TAURI_INTERNALS__;
         delete window.__TAURI__;
         delete window.SomsFcm;

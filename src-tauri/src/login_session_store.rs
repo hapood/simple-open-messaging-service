@@ -65,6 +65,7 @@ impl From<LoginSessionId> for String {
 pub(crate) enum Phase {
     Preparing,
     Active,
+    Revoking,
     Ending,
     SignedOut,
 }
@@ -117,7 +118,7 @@ impl TryFrom<JournalWire> for Journal {
                     && value.credential_fingerprint.is_none()
                     && value.pending_cleanup.is_empty()
             }
-            Phase::Active => {
+            Phase::Active | Phase::Revoking => {
                 value.session.is_some() && fingerprint_valid && value.pending_cleanup.is_empty()
             }
             Phase::Ending | Phase::SignedOut => {
@@ -227,6 +228,9 @@ impl SessionStore {
     /// Distinct from `end`, whose expected UUID rejects completions from superseded operations.
     pub(crate) fn end_current(conn: &mut Connection) -> Result<Journal, String> {
         Self::mutate(conn, |journal| {
+            if journal.phase == Phase::Revoking {
+                return Err("native session revocation requires an explicit decision".into());
+            }
             if let Some(id) = journal.session.take() {
                 journal.pending_cleanup.push(id);
             }
@@ -234,6 +238,43 @@ impl SessionStore {
             journal.phase = Phase::Ending;
             Ok(journal.clone())
         })
+    }
+
+    /// Retain credential ownership while preventing business restoration or fresh-login cleanup.
+    /// The caller must separately cancel and drain the captured runtime owner.
+    pub(crate) fn begin_revocation(
+        conn: &mut Connection,
+        expected: &LoginSessionId,
+    ) -> Result<(), String> {
+        Self::mutate(conn, |journal| {
+            if journal.session.as_ref() != Some(expected)
+                || !matches!(journal.phase, Phase::Active | Phase::Revoking)
+            {
+                return Err("native login superseded".into());
+            }
+            journal.phase = Phase::Revoking;
+            Ok(())
+        })
+    }
+
+    /// Validate a retained secure credential for revocation only, never for business admission.
+    pub(crate) fn revoking_session(
+        conn: &Connection,
+        token: &str,
+    ) -> Result<Option<LoginSessionId>, String> {
+        if token.is_empty() {
+            return Ok(None);
+        }
+        let Some(journal) = Self::read(conn)? else {
+            return Ok(None);
+        };
+        let fingerprint = format!("{:x}", Sha256::digest(token.as_bytes()));
+        if journal.phase == Phase::Revoking
+            && journal.credential_fingerprint.as_ref() == Some(&fingerprint)
+        {
+            return Ok(journal.session);
+        }
+        Ok(None)
     }
 
     /// Persist the end marker and cleanup ownership without removing a single cache file.
@@ -377,6 +418,11 @@ impl SessionStore {
         let Some(journal) = Self::read(conn)? else {
             return Ok(None);
         };
+        if journal.phase == Phase::Revoking {
+            // None means a residual credential that callers may delete. An unresolved
+            // revocation must instead retain secure storage and block ordinary restoration.
+            return Err("native session revocation requires an explicit decision".into());
+        }
         let fingerprint = format!("{:x}", Sha256::digest(token.as_bytes()));
         if journal.phase == Phase::Active
             && journal.credential_fingerprint.as_ref() == Some(&fingerprint)
@@ -401,6 +447,33 @@ mod tests {
 
     fn prepare(conn: &mut Connection) -> LoginSessionId {
         SessionStore::prepare(conn).unwrap()
+    }
+
+    #[test]
+    fn revocation_survives_restart_without_business_or_fresh_login_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preferences.sqlite");
+        let mut conn = open(&path);
+        let id = prepare(&mut conn);
+        SessionStore::activate(&mut conn, &id, "retained-secret").unwrap();
+        SessionStore::begin_revocation(&mut conn, &id).unwrap();
+        SessionStore::begin_revocation(&mut conn, &id).unwrap();
+        drop(conn);
+        let mut conn = open(&path);
+        assert_eq!(SessionStore::revoking_session(&conn, "retained-secret").unwrap(), Some(id.clone()));
+        assert_eq!(SessionStore::revoking_session(&conn, "other-secret").unwrap(), None);
+        assert!(SessionStore::restore(&conn, "retained-secret")
+            .unwrap_err().contains("explicit decision"));
+        assert!(SessionStore::read(&conn).unwrap().unwrap().active_session().is_none());
+        assert!(SessionStore::end_current(&mut conn).is_err());
+        assert!(SessionStore::prepare(&mut conn).is_err());
+        assert!(SessionStore::activate(&mut conn, &id, "retained-secret").is_err());
+        assert!(SessionStore::begin_revocation(&mut conn, &LoginSessionId::new()).is_err());
+        assert!(SessionStore::end(&mut conn, Some(&LoginSessionId::new())).is_err());
+        assert_eq!(SessionStore::revoking_session(&conn, "retained-secret").unwrap(), Some(id.clone()));
+        SessionStore::end(&mut conn, Some(&id)).unwrap();
+        SessionStore::finish_ending(&mut conn, Some(&id)).unwrap();
+        assert_eq!(SessionStore::revoking_session(&conn, "retained-secret").unwrap(), None);
     }
 
     #[test]

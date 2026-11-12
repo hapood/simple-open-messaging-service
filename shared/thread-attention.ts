@@ -189,6 +189,7 @@ export function threadNotificationChanged(
 ): boolean {
   return (
     !previous ||
+    (!previous.blocked && next.blocked) ||
     previous.messageEndSeq !== next.messageEndSeq ||
     previous.tombstoneEndSeq !== next.tombstoneEndSeq ||
     previous.lastReadSeq !== next.lastReadSeq ||

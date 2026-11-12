@@ -49,6 +49,53 @@ describe('computeRowFlags', () => {
     expect(computeRowFlags(firstChatMessage, system).isShowHead).toBe(true);
   });
 
+  it.each(['USER_RETRACTION', 'MODERATION_REMOVAL'] as const)(
+    'keeps a mounted %s notice anonymous while preserving date context and breaking the sender run',
+    (deletionType) => {
+      const before = message(1, 2);
+      const tomb: CbItem<ChatItemData> = {
+        id: 2,
+        boundary: 'oldest',
+        data: {
+          ...message(2, 2, 'SYSTEM').data,
+          type: 'system',
+          contentType: 'SYSTEM',
+          text: '',
+          time: '',
+          createdAtMs: before.data.createdAtMs,
+          deletionType,
+        },
+      };
+      const after = message(3, 2);
+      expect(computeRowFlags(tomb, before, after)).toEqual({
+        isShowHead: false,
+        isGroupStart: false,
+        showDate: false,
+        groupPosition: 'single',
+      });
+      expect(computeRowFlags(tomb, null).showDate).toBe(true);
+      expect(computeRowFlags(before, null, tomb).groupPosition).toBe('single');
+      expect(computeRowFlags(after, tomb)).toMatchObject({
+        isShowHead: true,
+        showDate: false,
+        groupPosition: 'single',
+      });
+      expect(computeRowFlags(after, null).showDate).toBe(false);
+    },
+  );
+
+  it('uses dated system events for date context independently of sender grouping', () => {
+    const system = { ...message(1, 2, 'SYSTEM'), boundary: 'oldest' as const };
+    const next = message(2, 2);
+    expect(computeRowFlags(system, null).showDate).toBe(true);
+    expect(computeRowFlags(next, system)).toMatchObject({
+      isShowHead: true,
+      showDate: false,
+    });
+    next.data.createdAtMs = system.data.createdAtMs! + 86400000;
+    expect(computeRowFlags(next, system).showDate).toBe(true);
+  });
+
   it('keeps consecutive ordinary messages from the same creator grouped', () => {
     expect(computeRowFlags(message(2, 2), message(1, 2)).isShowHead).toBe(
       false,

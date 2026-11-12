@@ -1,6 +1,6 @@
 # SOMFP offline validator
 
-Non-normative validation tool **1.0.0-draft.1** for the SOMFP v1 Final Review
+Non-normative validation tool **1.0.0-draft.2** for the SOMFP v1 Final Review
 release package. This directory is a standalone tool distribution, separate from
 the protocol's `spec/` directory. It does not import the reference implementation.
 

@@ -173,10 +173,10 @@ requests, `publisherNamespaceId` selects the locally recognized peer and is not
 sent as a profile field; `target.profileNamespaceId` becomes the S2S path's
 `:namespaceId`. Account Profile and Group Member Profile map directly to their corresponding S2S operations. Exact relationship-intent profile disclosures are authorized through Account Profile with the requested exact revision.
 
-### POST `/user/resolve` · `/user/search`
+### POST `/user/resolve`
 
-- `resolve` / `search`: local exact/fuzzy lookup. A foreign domain is rejected by `resolve`; federated
-  exact lookup must use the temporary stream below. (`10001` not found.)
+- Local exact account lookup. A foreign domain is rejected; federated exact lookup must use the
+  temporary stream below. (`10001` not found.)
 
 ### GET `/user/resolve-federated-stream` — Temporary federated exact lookup
 
@@ -295,7 +295,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/send-message` — Send message
 
-- **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the matching `/upload*` endpoint.
+- **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the sequential `/uploads/resumable/*` protocol.
 - **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` publishes each recipient's compacted `THREAD_CONTENT_HEAD`, wakes live clients through `STATE_FEED_UPDATED`, and notifies offline recipients through Push. `clientMessageId` is the send-idempotency key (a retry returns the original message).
 - **Replies**: PURE_TEXT content is `{ "text": "...", "quote": { "seq": n } }`. `n` must be a positive sequence identifying a visible message in the same local thread when sending; zero is invalid. Replies received through federation retain their positive source coordinate and digest even if the target body has not arrived. Ordinary text omits `quote`. Internal federation namespaces are not client navigation coordinates.
 - **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
@@ -307,7 +307,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/send-media` — Send media (staged)
 
-- **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/upload` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
+- **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/uploads/resumable/*` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
 
 ### POST `/link-preview/generations` · GET `/link-preview/generations/:generationId`
 
@@ -430,7 +430,8 @@ task coalescing, and optimistic client correction semantics.
 
 ### POST `/group/invite`
 
-- **Body**: `{ groupId, users: [{ account, namespaceId }] }` — author one GROUP invitation per valid namespace-bound user. Friendship is not an invitation prerequisite. The server resolves each target to its authoritative identity without selecting an identity copied from another peer's group. Namespace `0` selects local users. Duplicate normalized targets are coalesced; the synchronous response reports `invited` and `skipped` targets with rejection details.
+- **Body**: `{ groupId, users: [{ account, namespaceId, snapshot: { displayName, avatar } }] }` — author one GROUP invitation per valid namespace-bound user. The caller must be an active OWNER or ADMIN; friendship with the invitee is not required. The server resolves each target to its authoritative identity without selecting an identity copied from another peer's group. Namespace `0` selects local users. Duplicate normalized targets are coalesced; the synchronous response reports `invited` and `skipped` targets with rejection details.
+- An unanswered invitation does not activate membership. The invitee must accept, unless they already have a live join application that the invitation accepts. Active members and duplicate unanswered invitations are rejected.
 
 ### Group request rounds
 
@@ -582,18 +583,6 @@ client bootstrap can register again. Provider-reported expiry uses revision-base
 
 > Controller: [src/upload/upload.controller.ts](../../src/upload/upload.controller.ts) · Service: [src/upload/upload.service.ts](../../src/upload/upload.service.ts)
 
-### POST `/upload` — Upload staged chat media
-
-- **Body**: `multipart/form-data`, one or more `file` parts, plus the staged-send `x-client-message-id` and
-  per-file metadata such as `w`, `h`, or `duration`. The staged `/send-media` intent determines which
-  media families are accepted. Files are magic-byte validated; the multipart part cap is 100 MB.
-- **Behavior**: writes bytes through the **content-addressed CAS pipeline** — `MediaAsset` uses sha256 of
-  the raw bytes and stores exactly one extensionless blob at `data/cas/<dd>/<dd>/<digest>`. The upload
-  also records progress for the staged message; when all expected parts arrive, the pending send is
-  promoted to a `Message`.
-- **Response `data`**: one file returns its result (`digest`, `url`, `size`, and detected metadata); multiple
-  files return `{ items: [...] }`.
-
 ### POST `/upload/avatar` — Upload a group avatar
 
 - **Body**: `multipart/form-data`, field `file`.
@@ -610,8 +599,12 @@ client bootstrap can register again. Provider-reported expiry uses revision-base
 - `PUT /uploads/resumable/:uploadId` appends one ordered `application/octet-stream` chunk using
   `Content-Range`.
 - `POST /uploads/resumable/:uploadId/complete` validates, publishes, and promotes the completed upload.
-- All four endpoints require the authenticated user who owns the upload session. The resumable flow is
-  an upload transport and does not replace `/send-media` or `/upload`'s staged-send contract.
+- All endpoints require the authenticated user who owns the upload session. Initialization declares
+  `clientMessageId`, `partId`, `position`, `intent`, `originalName`, `mimeType`, and `totalBytes`.
+  Object-size admission and the full file count/byte charge occur before any attachment bytes arrive.
+- Completion derives digest, family and display metadata, then publishes the staged message when all
+  parts are complete. `data.result` contains the per-part payload. Stage messages using `/send-media` first.
+- Legacy message multipart routes are removed. Only `/upload/avatar` accepts multipart files.
 
 ### Authenticated upload resources
 
@@ -654,19 +647,80 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 
 ### Management
 
-- `POST /admin/users` `{ skip?, take?, search? }` → `{ list, total }`.
+- `POST /admin/users` `{ skip?, take?, search? }` → `{ list, total }`. Rows include
+  `adminId`, `adminRole`, `adminEnabled`, and `adminTwoFactorEnabled`; ordinary users
+  have null administrator fields. `POST /admin/users/:id/detail` also exposes
+  `adminRole`, `adminEnabled`, `adminTwoFactorEnabled` (TOTP), and `adminLastLoginAt`.
+  A null last-login timestamp means no recorded console sign-in; no credential secrets are returned.
 - `POST /admin/users/:id/{disable,enable,force-logout,sessions,generate-initial-password}` — disable (soft-delete + invalidate sessions), enable, force logout, view sessions, or generate an initial password (password generation invalidates existing sessions). There is no `/reset-password` route.
 - `POST /admin/threads/clear-history` `{ threadId, seq? }` — advances the thread-wide history boundary through `seq` (inclusive), or through the thread's current message sequence when omitted. Requires `ADMIN` or `SUPER_ADMIN` and is audited.
-- `POST /admin/bans` · `/admin/bans/unban` `{ ip?, account? }` — list/unban login bans (the shared `BruteForceService`; one unban clears all account-keyed dims — password + OTP).
-- `POST /admin/sessions` `{ skip?, take?, userId?, ip? }` · `/admin/sessions/purge` — system-wide session overview / one-click purge.
-- `POST /admin/audit` — `@Audit`-tagged action log (`AdminActionLog`).
+- `POST /admin/bans` lists current restrictions (`ip`, `user`, `otp`, `admin_pwd`,
+  `admin_2fa`) with `key`, `value`, `until`, `remainingMs`, and `userId`. `userId` is
+  an exact local-person match, or null for unknown accounts, groups, and IP restrictions.
+- `POST /admin/bans/unban` `{ ip?, account? }` requires ADMIN or SUPER_ADMIN. An account
+  release clears user-password, login-code, console-password, and console-second-factor
+  restrictions together. IP release is independent. Neither enables a banned account;
+  subsequent failures can trigger another restriction.
+- `POST /admin/sessions` `{ skip?, take?, userId?, ip?, client? }` lists valid consumer
+  sessions; `client` is `app`, `web`, or `desktop`. Rows expose `lastSeenAt`,
+  `autoTerminateDays`, and `expiresAt`. Per-user lists and detail sessions expose the
+  same lifetime fields. All clients use sliding inactivity expiry: 7, 30, 90, 180,
+  or 365 days (default 30). Activity writes extend the deadline at most once per five
+  minutes, on authenticated use, not on a periodic renewal timer. Changing the user's
+  policy recalculates existing deadlines from each session's last recorded activity.
+- `POST /admin/sessions/:id/revoke` requires ADMIN or SUPER_ADMIN and revokes only
+  the selected consumer credential. `POST /admin/sessions/purge` requires SUPER_ADMIN
+  and signs out all chat clients, including those of administrator accounts, regardless
+  of list filters. Neither operation revokes console sessions.
+- `POST /admin/admin-sessions` `{ skip?, take?, ip? }` lists console sessions with
+  `isCurrent` and `canRevoke`. `POST /admin/admin-sessions/:id/revoke` lets every
+  administrator end their own other sessions; only SUPER_ADMIN may end someone else's.
+  The current session must use `/admin/logout`. Revocation is immediate and audited.
+- `POST /admin/audit` `{ skip?, take?, action?, adminId?, status?, from?, to? }` —
+  read-only `@Audit` action summaries (`AdminActionLog`), available to all administrator roles.
+  `action` is a literal substring; `adminId` is a positive actor ID; `status` is
+  `STARTED`, `SUCCEEDED`, or `FAILED`. ISO 8601 time bounds are inclusive `from` and
+  exclusive `to`. Returns `{ list, total }`, ordered by creation time and ID descending;
+  operation data is excluded from this list. `take` defaults to 50 and is capped at 200.
+- `POST /admin/audit/actions` `{}` — returns `{ actions: string[] }` from the action registry.
+- `POST /admin/audit/detail` `{ id: string }` — returns one audit record with resolved
+  `targetLabel`, `updatedAt`, and `meta` operation data; missing IDs return HTTP 404.
+  IDs are decimal strings (PostgreSQL bigint), and timestamps are epoch milliseconds.
+  `meta` contains only action-specific allowlisted parameters, not raw HTTP bodies,
+  credentials, response bodies, or confirmed before/after state. It is `{}` when an
+  operation has no additional data. Failed operations record a safe HTTP failure category
+  or a generic failure summary, never raw exception messages. `STARTED` means no final
+  result was recorded, not necessarily that execution is still in progress.
+  The console exposes `/audit` and `/audit/:id` under Security, separately from runtime logs.
+- Media administration is SUPER_ADMIN-only: `POST /admin/media/{files,uploads,downloads,temporary}`
+  returns paginated privacy-safe inventory; `GET /admin/media/downloader/stream` sends process-local
+  SSE snapshots. Global and user-scoped views share the same queries. Stop/retry, temporary cleanup,
+  and unreferenced-file reclamation use existing task/asset records and audited commands. File names,
+  content, MIME types, and preview/download URLs are not exposed. See
+  [Media administration](../development/media-administration.md) for contracts and lifecycle semantics.
 - `POST /admin/durable-tasks` — paginated durable-task execution history with status and search filters.
 - `POST /admin/logs/output-level` → `{ level }`; `POST /admin/logs/output-level/set`
   `{ level }` changes the process-wide output threshold for console, files, and live logs.
   Supported levels: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. The value stays in memory
-  and resets to `error` on every restart. The live stream returns all captured records;
+  and resets to `warn` on every restart. The live stream returns all captured records;
   historical log search retains its independent minimum-level filter.
-- Federation / quota admin: `AdminFederationController` (peer trust timeline), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
+- Federation / quota admin: `AdminFederationController` (peer state and observations), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
+
+Federation peer detail (`POST /api/v1/admin/federation/peers/:domain`) includes
+`feedProgress.lastHandshakeAt` and `feedProgress.latestHealthCheck` from the
+namespace's runtime state. The nullable Health observation includes
+`namespaceId`, `domain`, `startedAt`, `completedAt`, `durationMs`, `source`
+(`automatic` or `manual`), `status` (`available`, `degraded`, `unavailable`, or
+null on request failure), and `error` (null on a valid response). Feed source
+timestamps remain the last processed item times, not observation timestamps.
+
+`POST /api/v1/admin/federation/health/probe` accepts `{ namespaceId }` for an
+active, non-halted peer and requires ADMIN or SUPER_ADMIN. It shares the normal
+Health execution path and returns the upgraded peer detail on success. Failed
+checks retain their observation and return the normal API error; clients refresh
+peer detail after either outcome. Opening detail never initiates a probe.
+The web console and backend ship this contract together; the former standalone
+probe-result shape is not supported.
 
 ## Client Diagnostics
 
@@ -694,7 +748,7 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
 On connect the server pushes a **`HELLO`** frame with `userId`, `sessionId`, `pushSubscriptionRev`, `stateFeedEndId`, `threadFeedEndId`, `profileRev`, and `activeCall`.
-`stateFeedEndId` bounds relationship/request metadata catch-up. `threadFeedEndId` independently bounds conversation snapshots, settings/read state, unread counts, and content ends. Profile namespace and Group Meta invalidations use their own synchronization coordinates. The stream is push-only; it sends no idle heartbeat.
+`stateFeedEndId` bounds relationship/request metadata catch-up. `threadFeedEndId` independently bounds conversation snapshots, settings/read state, unread counts, and content ends. Profile namespace and Group Meta invalidations use their own synchronization coordinates. The stream is push-only. A transport-only `heartbeat` event with `{}` data is sent immediately after subscription and every 10 seconds, independently of business activity. Browser and native long-lived SSE consumers reconnect after 30 seconds without receiving non-empty bytes; heartbeats and comments count as bytes but never trigger feed synchronization. Opening the stream has a separate 15-second deadline, and the HELLO handshake remains independently required.
 
 ### Frame format
 
@@ -731,7 +785,7 @@ connection. A late confirmation for an older head cannot confirm a newer wake. A
 for the same authenticated device session sends `SSE_REPLACED` to its old connection and closes it;
 that client must stop automatic reconnects, and the old UUID no longer accepts receipts. Browser
 tabs sharing one session hand ownership to the newly active tab. This proves SSE receipt, **not message read status or Android notification
-display**. No idle polling or heartbeat is involved. The generated wire `id` is neither a durable
+display**. Receipts are driven by committed feed drains, not by polling or transport heartbeats. The generated wire `id` is neither a durable
 cursor nor this connection UUID.
 
 Pending device-session push heads, deadlines, and confirmed cursors live only in the origin server's

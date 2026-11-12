@@ -19,7 +19,8 @@ import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
 import { readCurrentGroupMemberInTx } from '../src/group/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
 import { createTestApp } from './support/app.js';
-import { localIdentityDomain } from './support/local-domain.js';
+import { PushService } from '../src/push/push.service.js';
+import { RequestAttentionService } from '../src/relationship/request/request-attention.service.js';
 
 type Actor = Awaited<ReturnType<typeof seedUserWithSession>>;
 interface GroupFixture {
@@ -151,6 +152,7 @@ describe('permanent group request history and online visibility', () => {
     member: Actor,
     group: GroupFixture,
     displayName: string,
+    duplicate = false,
   ) {
     const response = await post(owner, 'group/invite', {
       groupId: group.threadId,
@@ -165,9 +167,22 @@ describe('permanent group request history and online visibility', () => {
     expect(response.body.code, JSON.stringify(response.body)).toBe(
       BusinessCode.OK,
     );
-    expect(response.body.data.invited).toEqual([
-      { account: member.account, namespaceId: 0 },
-    ]);
+    if (duplicate) {
+      expect(response.body.data.invited).toEqual([]);
+      expect(response.body.data.skipped).toEqual([
+        expect.objectContaining({
+          account: member.account,
+          namespaceId: 0,
+          reason: 'ALREADY_INVITED',
+          code: BusinessCode.ALREADY_EXISTS,
+        }),
+      ]);
+    } else {
+      expect(response.body.data.invited).toEqual([
+        { account: member.account, namespaceId: 0 },
+      ]);
+      expect(response.body.data.skipped).toEqual([]);
+    }
   }
   function stored(group: GroupFixture, member: Actor) {
     return database.db.query.relationshipRequest.findMany({
@@ -203,6 +218,60 @@ describe('permanent group request history and online visibility', () => {
     expect(rows).toHaveLength(1);
     return rows[0];
   }
+
+  it('wakes request-only manager attention and converges after the applications page is read', async () => {
+    const owner = await seedUserWithSession(app, 'join-notification-owner');
+    const applicant = await seedUserWithSession(
+      app,
+      'join-notification-applicant',
+    );
+    const group = await createGroup(owner, 'Request notification');
+    const wake = vi.spyOn(app.get(PushService), 'enqueueForRequestAttention');
+    const attention = app.get(RequestAttentionService);
+    try {
+      await apply(applicant, group, 'join request without a chat message');
+      await vi.waitFor(
+        async () => {
+          expect(
+            await attention.hasUnread(owner.id, {
+              personal: false,
+              managedGroups: true,
+            }),
+          ).toBe(true);
+          expect(wake).toHaveBeenCalledWith([
+            expect.objectContaining({
+              userId: owner.id,
+              threadFeedEndId: expect.any(Number),
+              convergence: false,
+            }),
+          ]);
+        },
+        { timeout: 10_000 },
+      );
+      const page = await groupPage(owner, group);
+      wake.mockClear();
+      const result = await post(owner, 'group/join-requests/read', {
+        groupId: group.threadId,
+        joinRequestReadFeedId: page.joinRequestEndFeedId,
+      });
+      expect(result.body.code).toBe(BusinessCode.OK);
+      expect(wake).toHaveBeenCalledWith([
+        expect.objectContaining({
+          userId: owner.id,
+          threadFeedEndId: expect.any(Number),
+          convergence: true,
+        }),
+      ]);
+      expect(
+        await attention.hasUnread(owner.id, {
+          personal: false,
+          managedGroups: true,
+        }),
+      ).toBe(false);
+    } finally {
+      wake.mockRestore();
+    }
+  });
 
   it('hides old rejections from online pages without deleting history, even after participation deletion', async () => {
     const owner = await seedUserWithSession(app, 'join-history-owner');
@@ -314,7 +383,7 @@ describe('permanent group request history and online visibility', () => {
       snapshot: { displayName: 'Member at invitation time', avatar: null },
     });
     const firstStored = await stored(group, member);
-    await invite(owner, member, group, 'Changed during the same request');
+    await invite(owner, member, group, 'Changed during the same request', true);
     expect(await groupPage(owner, group, true)).toEqual(pending);
     expect(await stored(group, member)).toEqual(firstStored);
 
@@ -402,17 +471,20 @@ describe('permanent group request history and online visibility', () => {
         readCurrentGroupMemberInTx(tx, group.threadId, member.id),
       ),
     ).resolves.toBeUndefined();
-    const candidates = await post(owner, 'group/invite-candidates', {
-      groupId: group.threadId,
-      search: member.account,
-    });
-    expect(candidates.body.code).toBe(BusinessCode.OK);
-    expect(candidates.body.data.data).toEqual([
+    // Candidate listing is gone: the owner's INVITED/MEMBER view is now the
+    // group's outgoing invitation rounds plus duplicate-invite rejections.
+    const pending = await groupPage(owner, group, true);
+    expect(
+      pending.items.filter(
+        (row) =>
+          row.receiver.account === member.account &&
+          row.receiver.namespaceId === 0,
+      ),
+    ).toEqual([
       expect.objectContaining({
-        account: member.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-        state: 'INVITED',
+        kind: 'GROUP_INVITATION',
+        direction: 'OUTGOING',
+        status: 'REQUESTED',
       }),
     ]);
     const received = (await personalPage(member)).items.filter(
@@ -427,17 +499,37 @@ describe('permanent group request history and online visibility', () => {
     });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data.status).toBe('OK');
-    const acceptedCandidates = await post(owner, 'group/invite-candidates', {
+    const acceptedPage = await groupPage(owner, group, true);
+    expect(
+      acceptedPage.items.filter(
+        (row) =>
+          row.receiver.account === member.account &&
+          row.receiver.namespaceId === 0,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'GROUP_INVITATION',
+        direction: 'OUTGOING',
+        status: 'ACCEPTED',
+      }),
+    ]);
+    const memberProbe = await post(owner, 'group/invite', {
       groupId: group.threadId,
-      search: member.account,
+      users: [
+        {
+          account: member.account,
+          namespaceId: 0,
+          snapshot: { displayName: 'Member at invitation', avatar: null },
+        },
+      ],
     });
-    expect(acceptedCandidates.body.code).toBe(BusinessCode.OK);
-    expect(acceptedCandidates.body.data.data).toEqual([
+    expect(memberProbe.body.code).toBe(BusinessCode.OK);
+    expect(memberProbe.body.data.invited).toEqual([]);
+    expect(memberProbe.body.data.skipped).toEqual([
       expect.objectContaining({
         account: member.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
-        state: 'MEMBER',
+        reason: 'ALREADY_MEMBER',
       }),
     ]);
     const history = await stored(group, member);
@@ -527,10 +619,29 @@ describe('permanent group request history and online visibility', () => {
         ),
       }),
     ).toBeDefined();
-    const demoted = await setRole('MEMBER');
-    expect(demoted.body.code, JSON.stringify(demoted.body)).toBe(
-      BusinessCode.OK,
+    const demotionWake = vi.spyOn(
+      app.get(PushService),
+      'enqueueForRequestAttention',
     );
+    try {
+      const demoted = await setRole('MEMBER');
+      expect(demoted.body.code, JSON.stringify(demoted.body)).toBe(
+        BusinessCode.OK,
+      );
+      expect(demotionWake).toHaveBeenCalledWith([
+        expect.objectContaining({
+          userId: admin.id,
+          threadFeedEndId: expect.any(Number),
+          convergence: true,
+        }),
+      ]);
+      const target = demotionWake.mock.calls
+        .flatMap(([targets]) => targets)
+        .find((target) => target.userId === admin.id);
+      expect(target).not.toHaveProperty('stateFeedEndId');
+    } finally {
+      demotionWake.mockRestore();
+    }
     expect(await stored(group, applicant)).toEqual(history);
     const denied = await post(admin, 'group/join-requests', {
       groupId: group.threadId,

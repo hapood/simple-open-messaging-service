@@ -39,7 +39,10 @@ import { DateRowComponent } from '../date-row/date-row.component';
       <app-msg-date-row [ms]="data().createdAtMs" />
     }
     <div class="system-message" role="status">
-      {{ label() }} <time>{{ data().time }}</time>
+      {{ label() }}
+      @if (!isDeletion() && data().time) {
+        <time>{{ data().time }}</time>
+      }
     </div>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -85,8 +88,12 @@ export class SystemRowComponent {
   private readonly users = inject(UserService);
   private readonly profileName = signal('');
   private readonly namespaceDomain = signal<string | null>(null);
+  readonly isDeletion = computed(() => {
+    const data = this.data();
+    return data.type === 'system' && data.deletionType !== undefined;
+  });
   private readonly event = computed(() =>
-    parseSystemMessageContent(this.data().text),
+    this.isDeletion() ? null : parseSystemMessageContent(this.data().text),
   );
   private readonly displayIdentity = computed(
     (): SystemEventAddress | undefined => {
@@ -161,7 +168,7 @@ export class SystemRowComponent {
           account: identity.account,
           rev: revision,
         },
-        groupAccount: item.group.account,
+        groupAccount: item.account,
       };
     }
     return {
@@ -321,8 +328,8 @@ export class SystemRowComponent {
               .find(
                 (item) =>
                   item.type === 'P2P' &&
-                  item.peerUser.account === identity.account &&
-                  item.peerUser.namespaceId === identity.profileNamespaceId,
+                  item.account === identity.account &&
+                  item.publisherNamespaceId === identity.profileNamespaceId,
               )
               ?.alias?.trim() ?? '')
           : '';

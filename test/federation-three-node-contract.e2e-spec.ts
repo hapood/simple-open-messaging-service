@@ -329,7 +329,7 @@ describe('three-node group wire convergence', () => {
           (entry) =>
             entry.method === 'GET' &&
             new URL(entry.path, 'http://proxy.invalid').pathname ===
-              '/s2s/v1/messages' &&
+              '/somfp/v1/messages' &&
             new URL(entry.path, 'http://proxy.invalid').searchParams.get(
               'account',
             ) === group,

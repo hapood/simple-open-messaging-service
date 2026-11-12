@@ -15,10 +15,10 @@ All routes are under the `/api/v1` prefix. Every response is the `ApiResult` env
 | Method | Path                        | Body                                       | Purpose                                                                                                                                                                                                                               |
 | ------ | --------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/calls/ice-servers`        | —                                          | WebRTC ICE config (STUN plus time-limited TURN REST credentials when configured). Call before creating the `RTCPeerConnection`.                                                                                                       |
-| POST   | `/calls/initiate`           | `{ callSid, threadId, callType }`      | Caller starts a call. Returns `{ callSid, threadId }`.                                                                                                                                                                                |
+| POST   | `/calls/initiate`           | `{ callSid, threadId, callType }`          | Caller starts a call. Returns `{ callSid, threadId }`.                                                                                                                                                                                |
 | POST   | `/calls/accept`             | `{ callSid }`                              | Callee answered (negotiating — NOT connected yet).                                                                                                                                                                                    |
 | POST   | `/calls/ringing`            | `{ callSid }`                              | Callee reports that incoming alerting started. Advisory and idempotent.                                                                                                                                                               |
-| POST   | `/calls/connected`          | `{ callSid }`                              | Callee: **the media leg is actually up** (DTLS-SRTP connected). This supplies the connection fact; each server records its local processing time. A caller report after acceptance and a repeated callee report are no-ops.                            |
+| POST   | `/calls/connected`          | `{ callSid }`                              | Callee: **the media leg is actually up** (DTLS-SRTP connected). This supplies the connection fact; each server records its local processing time. A caller report after acceptance and a repeated callee report are no-ops.           |
 | POST   | `/calls/upgrade-video`      | `{ callSid }`                              | Caller commits a successfully renegotiated AUDIO call as VIDEO. Idempotent; there is no VIDEO→AUDIO transition.                                                                                                                       |
 | POST   | `/calls/decline`            | `{ callSid }`                              | Callee rejects (ringing only).                                                                                                                                                                                                        |
 | POST   | `/calls/cancel`             | `{ callSid }`                              | Caller cancels (ringing only).                                                                                                                                                                                                        |
@@ -33,8 +33,30 @@ one logical signal and must be reused only when retrying that signal. `callType 
 **Business codes (70xxx, `src/common/business-code.ts`)** the client should handle:
 `CALL_NOT_ALLOWED` (70001, not friends), `CALL_NOT_FOUND` (70002, no such/active call),
 `CALL_NOT_PARTICIPANT` (70003), `CALL_BUSY` (70004, one active call per user),
-`CALL_INVALID_TRANSITION` (70005), `CALL_PEER_UNREACHABLE` (70006, a federated ring failed — show
-"couldn't reach").
+`CALL_INVALID_TRANSITION` (70005), `CALL_PEER_UNREACHABLE` (70006, new-call admission or
+federated incoming delivery failed).
+
+### Unreachable peers and admission failures
+
+New federated calls check the local outbound peer lifecycle before sending `incoming`.
+A degraded, halted, or not-yet-recognized peer fails admission without sending the
+invitation or starting recognition/recovery. Health checks own recovery. This gate
+is specific to new calls; it does not suppress best-effort terminal delivery for
+already admitted calls.
+
+An admission failure or an actual incoming transport failure normally returns HTTP
+200 with `{ code: 70006, message: "could not reach the peer server", data: null }`.
+The caller's server records one local `CALL_ENDED` notice with outcome `unreachable`
+and releases the busy slot. An explicit remote busy response remains `70004`.
+
+Rust maps `70006` to the `unreachable` terminal snapshot reason; the native adapter
+forwards that snapshot without interpreting the business code. Web/desktop applies
+the same mapping. The call screen says "Couldn't connect. Please try again later",
+and the thread record says "Couldn't connect". Do not classify admission or HTTP
+failures as microphone/camera failures. Other setup failures display "Call connection
+failed" until media has connected, rather than claiming an established call was
+interrupted. There is no automatic redial or deferred invitation delivery; a user
+may explicitly retry with a new call ID.
 
 ### Realtime events (SSE `GET /events` — payloads ride INLINE, not identity-only)
 
@@ -133,6 +155,6 @@ WebRTC signaling state.
 
 - **TURN is optional**. Without it, hard-NAT calls may fail. Deploy coturn separately and set
   `SOMS_TURN_URLS`/`SOMS_TURN_REST_SECRET` to enable time-limited credentials.
-- **Glare** (A calls B while B calls A): currently both fail fast with `CALL_PEER_UNREACHABLE` (safe,
-  symmetric). Auto-connect-on-glare is deferred.
+- **Glare** (A calls B while B calls A): explicit remote busy admission responses surface as
+  `CALL_BUSY`. Auto-connect-on-glare is deferred.
 - **Federated TURN guest-credential** (callee's coturn): parked until TURN is deployed.

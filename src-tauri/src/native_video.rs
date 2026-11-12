@@ -6,7 +6,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OnceCell, RwLock};
 
 const MAX_HEADERS: usize = 16 * 1024;
-const MAX_THUMBNAIL: usize = 512 * 1024;
 static VIDEO_HUB: OnceCell<Arc<VideoHub>> = OnceCell::const_new();
 
 struct VideoHub {
@@ -18,8 +17,6 @@ struct VideoHub {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeVideoStream {
     stream_url: String,
-    thumbnail_upload_url: String,
-    has_thumbnail: bool,
 }
 
 /** Register a capability on the process-wide loopback Range server backed by the authoritative Rust
@@ -47,16 +44,9 @@ pub(crate) async fn create_native_video_stream(
         .map(|value| format!("{value:02x}"))
         .collect::<String>();
     let video_route = format!("/video/{capability}");
-    let thumbnail_route = format!("/thumbnail/{capability}");
     hub.routes.write().await.insert(capability, path.clone());
-    let proxy = proxy.inner().clone();
-    let has_thumbnail = media_cache::get_video_thumbnail(&app, &proxy, &path)
-        .await
-        .is_ok();
     Ok(NativeVideoStream {
         stream_url: format!("http://localhost:{}{video_route}", hub.port),
-        thumbnail_upload_url: format!("http://localhost:{}{thumbnail_route}", hub.port),
-        has_thumbnail,
     })
 }
 
@@ -90,19 +80,33 @@ async fn start_hub(
 }
 
 fn valid_source_path(path: &str) -> bool {
-    if path.contains("..") || path.contains('\\') || path.contains('#') || path.contains('?') {
+    if path.contains("..") || path.contains('\\') || path.contains('#') {
         return false;
     }
-    let Some(rest) = path.strip_prefix("/uploads/shards/") else {
+    let (pathname, query) = path.split_once('?').unwrap_or((path, ""));
+    if !query.is_empty() {
+        let fields = query.split('&').collect::<Vec<_>>();
+        if fields.len() != 2
+            || !fields
+                .iter()
+                .zip(["threadId=", "seq="])
+                .all(|(field, prefix)| {
+                    field.strip_prefix(prefix).is_some_and(|value| {
+                        !value.starts_with('0') && value.parse::<u64>().is_ok_and(|id| id > 0)
+                    })
+                })
+        {
+            return false;
+        }
+    }
+    let Some(rest) = pathname.strip_prefix("/uploads/msg-assets/") else {
         return false;
     };
     let parts = rest.split('/').collect::<Vec<_>>();
     if parts.len() != 3 {
         return false;
     }
-    let Some((digest, extension)) = parts[2].split_once('.') else {
-        return false;
-    };
+    let digest = parts[2];
     let lower_hex = |value: &str| {
         value
             .bytes()
@@ -111,13 +115,36 @@ fn valid_source_path(path: &str) -> bool {
     parts[0].len() == 2
         && parts[1].len() == 2
         && digest.len() == 64
-        && !extension.is_empty()
-        && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
         && lower_hex(parts[0])
         && lower_hex(parts[1])
         && lower_hex(digest)
         && digest.starts_with(parts[0])
         && digest[2..].starts_with(parts[1])
+}
+
+// WebViews start playback with bytes=0-. The cache materializes each response before publishing it,
+// so bound each interval to avoid buffering the entire video before delivering its first frame.
+fn playback_range(value: &str) -> String {
+    const CHUNK_BYTES: u64 = 1024 * 1024;
+    let Some((start, end)) = value
+        .strip_prefix("bytes=")
+        .and_then(|range| range.split_once('-'))
+    else {
+        return value.to_string();
+    };
+    let Ok(start) = start.parse::<u64>() else {
+        return value.to_string();
+    };
+    let limit = start.saturating_add(CHUNK_BYTES - 1);
+    let end = if end.is_empty() {
+        limit
+    } else {
+        match end.parse::<u64>() {
+            Ok(end) if end >= start => end.min(limit),
+            _ => return value.to_string(),
+        }
+    };
+    format!("bytes={start}-{end}")
 }
 
 async fn serve(
@@ -167,7 +194,8 @@ async fn serve(
                 .or_else(|| line.strip_prefix("range: "))
         });
         if let Some(range) = range {
-            let media = media_cache::get_or_fetch_range(&app, &proxy, &source_path, range)
+            let range = playback_range(range);
+            let media = media_cache::get_or_fetch_range(&app, &proxy, &source_path, &range)
                 .await
                 .map_err(|error| format!("stream cached video range: {error}"))?;
             let mut extra = Vec::new();
@@ -197,39 +225,6 @@ async fn serve(
             &[("Accept-Ranges", "bytes")],
         )
         .await;
-    }
-
-    if method == "POST" && route_parts.get(1) == Some(&"thumbnail") {
-        let Some(source_path) = source_path else {
-            return respond(&mut socket, 404, "text/plain", &[], &[]).await;
-        };
-        let length = headers
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("Content-Length: ")
-                    .or_else(|| line.strip_prefix("content-length: "))
-            })
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .ok_or_else(|| "video thumbnail request has no content length".to_string())?;
-        if length == 0 || length > MAX_THUMBNAIL {
-            return respond(&mut socket, 413, "text/plain", &[], &[]).await;
-        }
-        let mut body = request[header_end..].to_vec();
-        while body.len() < length {
-            let remaining = length - body.len();
-            let mut chunk = vec![0u8; remaining.min(16 * 1024)];
-            let read = socket
-                .read(&mut chunk)
-                .await
-                .map_err(|error| format!("read video thumbnail: {error}"))?;
-            if read == 0 {
-                return respond(&mut socket, 400, "text/plain", &[], &[]).await;
-            }
-            body.extend_from_slice(&chunk[..read]);
-        }
-        body.truncate(length);
-        media_cache::put_video_thumbnail(&app, &proxy, &source_path, body).await?;
-        return respond(&mut socket, 204, "text/plain", &[], &[]).await;
     }
 
     respond(&mut socket, 404, "text/plain", &[], &[]).await

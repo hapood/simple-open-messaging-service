@@ -9,7 +9,7 @@ export interface MemberMembershipRequestStateInput {
   profileNamespaceId: number;
   localMemberId: number | null;
   note: string;
-  requestedAt: Date;
+  statusChangedAt: Date;
   expiresAt: Date;
 }
 
@@ -24,9 +24,9 @@ export function memberMembershipRequestStatement(
     WITH authored AS (
       ${intentWrite}
     ), request_state AS MATERIALIZED (
-      SELECT status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT status, "profileRev", note, "statusChangedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT status, "profileRev", note, "requestedAt", "expiresAt"
+      SELECT status, "profileRev", note, "statusChangedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.memberAccount} AND "authorNamespaceId" = ${input.profileNamespaceId}
         AND "receiverAccount" = ${input.groupAccount} AND "receiverNamespaceId" = 0

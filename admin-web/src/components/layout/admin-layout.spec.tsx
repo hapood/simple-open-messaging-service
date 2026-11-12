@@ -9,7 +9,11 @@ vi.mock('@/auth/auth-context', () => ({
 
 vi.mock('@/hooks/use-me', () => ({
   useMe: () => ({
-    data: { name: 'Admin', role: 'SUPER_ADMIN', somsDomain: 'node.example.org' },
+    data: {
+      name: 'Admin',
+      role: 'SUPER_ADMIN',
+      somsDomain: 'node.example.org',
+    },
   }),
 }));
 
@@ -30,9 +34,10 @@ const t = (key: string) => {
     'nav.logout': 'Sign out',
     'nav.security': 'My Account',
     'nav.users': 'Users',
-    'nav.group.overview': 'Overview',
-    'nav.group.access': 'Access',
-    'nav.group.system': 'System',
+    'nav.dashboard': 'Dashboard',
+    'nav.group.users': 'Users & Content',
+    'nav.group.security': 'Login & Security',
+    'nav.group.monitoring': 'Monitoring',
     'nav.group.account': 'Account',
     'language.label': 'Language',
   };
@@ -65,7 +70,9 @@ describe('AdminLayout', () => {
   it('renders expanded drawer by default with scroll container and collapse button', () => {
     renderLayout();
 
-    const collapseBtn = screen.getByRole('button', { name: 'Collapse navigation' });
+    const collapseBtn = screen.getByRole('button', {
+      name: 'Collapse navigation',
+    });
     expect(collapseBtn).toBeInTheDocument();
 
     const aside = collapseBtn.closest('aside');
@@ -79,7 +86,9 @@ describe('AdminLayout', () => {
   it('collapses drawer when collapse button is clicked and aligns My Account and Logout', () => {
     renderLayout();
 
-    const collapseBtn = screen.getByRole('button', { name: 'Collapse navigation' });
+    const collapseBtn = screen.getByRole('button', {
+      name: 'Collapse navigation',
+    });
     fireEvent.click(collapseBtn);
 
     expect(localStorage.getItem(NAV_COLLAPSED_KEY)).toBe('1');
@@ -110,14 +119,25 @@ describe('AdminLayout', () => {
     fireEvent.click(expandBtn);
 
     expect(localStorage.getItem(NAV_COLLAPSED_KEY)).toBe('0');
-    expect(screen.getByRole('button', { name: 'Collapse navigation' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Collapse navigation' }),
+    ).toBeInTheDocument();
   });
 
   it('supports collapsing and expanding navigation groups', () => {
     renderLayout();
 
-    const overviewGroupBtn = screen.getByRole('button', { name: /overview/i });
+    const overviewGroupBtn = screen.getByRole('button', {
+      name: 'Users & Content',
+    });
     expect(overviewGroupBtn).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Dashboard' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveAttribute(
+      'href',
+      '/dashboard',
+    );
 
     // Clicking group toggle collapses the items in the group
     fireEvent.click(overviewGroupBtn);

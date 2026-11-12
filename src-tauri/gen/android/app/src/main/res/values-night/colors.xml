@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="splash_background">#FF11161B</color>
+    <!-- Keep the logo's brand colors inherited from the default palette in both themes. -->
+    <color name="splash_text">#FFF0F1F2</color>
+    <color name="splash_text_secondary">#FFA9ADB1</color>
+    <color name="splash_text_status">#FFA9ADB1</color>
+</resources>

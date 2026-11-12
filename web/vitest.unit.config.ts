@@ -8,6 +8,13 @@ export default defineConfig({
     environment: 'node',
     clearMocks: true,
     restoreMocks: true,
-    include: ['src/playground/deployment/compose-generator.spec.ts'],
+    include: [
+      'src/playground/deployment/compose-generator.spec.ts',
+      'src/playground/sha256-fallback.spec.ts',
+      'src/playground/playground-conversation-list.mock.spec.ts',
+      'src/playground/playground-social-state.spec.ts',
+      'src/app/services/thread-list-order.spec.ts',
+      'src/app/components/thread-list/thread-list-window.spec.ts',
+    ],
   },
 });

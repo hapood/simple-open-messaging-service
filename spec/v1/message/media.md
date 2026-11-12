@@ -1,71 +1,98 @@
 # Media Messages
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
-This document defines `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, and `GALLERY`. See [Message Envelope](./envelope.md) for the shared outer message shape, asset descriptors, coordinates, and receive rules, and [Resources, Section 3](../resources.md#3-media-resources) for media HTTP operations.
+This document defines `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, and `GALLERY`.
+See [Message Envelope](./envelope.md) for the shared outer message shape,
+asset descriptors, coordinates, and receive rules, and
+[Resources, Section 3](../resources.md#3-media-resources) for media HTTP operations.
 
 ## 1. Common rules
 
-Media content carries no publisher display URL. Each resource is associated by `digest` with a descriptor in the outer message `assets`. Each `assets` entry uses the shared `BlobDescriptor { digest, bytes }` defined in [Message Envelope](./envelope.md#1-wire-types); `bytes` is the resource's sole declared length. The consumer constructs a media request from the validated message thread, author, sequence, and digest.
+Media content carries no publisher display URL. Each resource is associated by
+`digest` with a descriptor in the outer message `assets`. Each entry uses the
+shared `BlobDescriptor { digest, bytes }`; `bytes` is the resource's sole declared
+length. The consumer constructs a media request from the validated message
+thread, author, sequence, and digest.
 
 - `digest` MUST be `Sha256Hex`.
-- Every content digest MUST have exactly one `BlobDescriptor` with the same digest in the outer message `assets`.
-- A consumer may enforce local size and quota limits using `BlobDescriptor.bytes` before download. After download, it MUST still verify that the actual byte count equals `bytes` and that the SHA-256 of the actual bytes equals `digest`.
-- Media content MUST NOT repeat the resource length as `size`, `bytes`, or any
-  other field; the matching outer `BlobDescriptor.bytes` is authoritative.
-- `width/height` are `PositiveSafeInteger` pixel dimensions.
-- `duration` is a positive finite number of seconds.
-- `name` is required for every media kind, including standalone images and
-  GALLERY image items. It is the retained display filename, carried in message
-  content rather than inferred from a CAS URL or download response. Publishers
-  MUST preserve it across synchronization hops; it is covered by the message
-  payload digest. It is not part of the CAS resource identity.
-- `name/mimeType` are non-empty, untrusted display strings. They MUST NOT be used as paths, security assertions, or instructions to execute active content.
-- Every object is a closed schema; fields unrelated to its media kind MUST be omitted.
+- Every content digest MUST have exactly one matching outer `BlobDescriptor`.
+- A consumer MAY enforce size and quota limits before download. After receiving
+  the complete resource, it MUST verify its byte count and SHA-256 against the
+  descriptor before accepting it.
+- Content MUST NOT repeat resource length as `size`, `bytes`, or another field.
+- `name` is a required non-empty display filename, preserved across synchronization
+  hops and covered by the message payload digest. It is not part of CAS identity
+  and MUST NOT be trusted as a filesystem path or a security assertion.
+- Every file has required `meta`. Its `kind` selects the media-specific fields.
+- `meta.width` and `meta.height` are positive safe-integer display pixel dimensions.
+- `meta.duration` is a positive finite number of seconds.
+- Every object is closed: unknown or unrelated fields MUST be rejected.
+- File content and `meta` MUST NOT contain `mimeType`. Consumers determine MIME
+  from the received resource when needed; an unrecognized format can be treated
+  as `application/octet-stream`. Neither a filename nor `meta.kind` determines
+  an exact MIME type. Failure to decode a recognized format is not evidence that
+  the resource is simply an unrecognized format.
+- Thumbnails, their digests, and their metadata MUST NOT appear in these file
+  objects or as thumbnail descriptors in `assets`. Thumbnail generation is a
+  consumer-local concern and does not alter the publisher's message content.
 
-## 2. Single-resource types
+The original-resource transport is unchanged and remains independent of media
+kind. The absence of a MIME field does not change byte integrity or authorization
+requirements. Profile avatars and other separately defined objects retain their
+own contracts.
+
+## 2. File types
 
 ```ts
-interface ImageContent {
+type FileMeta =
+  | { kind: 'IMAGE'; width: PositiveSafeInteger; height: PositiveSafeInteger }
+  | {
+      kind: 'VIDEO';
+      width: PositiveSafeInteger;
+      height: PositiveSafeInteger;
+      duration: PositiveFiniteNumber;
+    }
+  | { kind: 'AUDIO'; duration: PositiveFiniteNumber }
+  | { kind: 'FILE' };
+
+interface MediaFile {
   digest: Sha256Hex;
   name: string;
-  width: PositiveSafeInteger;
-  height: PositiveSafeInteger;
+  meta: FileMeta;
 }
 
-interface NamedMediaContent {
-  digest: Sha256Hex;
-  name: string;
-  mimeType: string;
-}
+type ImageContent = MediaFile & { meta: Extract<FileMeta, { kind: 'IMAGE' }> };
+type VideoContent = MediaFile & { meta: Extract<FileMeta, { kind: 'VIDEO' }> };
+type AudioContent = MediaFile & { meta: Extract<FileMeta, { kind: 'AUDIO' }> };
+type FileContent = MediaFile;
 
-interface FileContent extends NamedMediaContent {}
-
-interface VideoContent extends NamedMediaContent {
-  width: PositiveSafeInteger;
-  height: PositiveSafeInteger;
-  duration: PositiveFiniteNumber;
-}
-
-interface AudioContent extends NamedMediaContent {
-  duration: PositiveFiniteNumber;
+interface GalleryContent {
+  items: MediaFile[];
 }
 ```
 
-Each `IMAGE`, `VIDEO`, `AUDIO`, and `FILE` MUST reference exactly one digest. The outer message `assets` MUST contain exactly one descriptor with that digest.
+Each single-resource content object is the file itself; there is no `file`
+wrapper. IMAGE, VIDEO, and AUDIO require the matching `meta.kind`. FILE selects
+file-style presentation and MAY carry any valid `FileMeta`, including media sent
+as a file. It does not force the resource's actual media category to FILE.
+
+Each single-resource message MUST reference exactly one digest and have exactly
+one matching outer asset descriptor. A gallery item uses the same `MediaFile`
+structure and identifies its category through `meta.kind`, not a top-level `kind`.
 
 ## 3. Single-resource content examples
 
-Each object below is the result of parsing the outer message `content` once as JSON; on the wire it MUST be encoded as a JSON string. The example digests use repeated characters only for readability and are all 64 lowercase hexadecimal characters long.
+These objects are parsed content. The outer message `content` MUST encode the
+object as a JSON string. Repeated-character digests are for readability only.
 
 ### 3.1 IMAGE
 
 ```json
 {
   "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "width": 1600,
-  "height": 900,
-  "name": "photo.png"
+  "name": "photo.png",
+  "meta": { "kind": "IMAGE", "width": 1600, "height": 900 }
 }
 ```
 
@@ -74,7 +101,7 @@ Corresponding outer message fields:
 ```json
 {
   "contentType": "IMAGE",
-  "content": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"height\":900,\"name\":\"photo.png\",\"width\":1600}",
+  "content": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"meta\":{\"height\":900,\"kind\":\"IMAGE\",\"width\":1600},\"name\":\"photo.png\"}",
   "assets": [
     {
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -90,10 +117,7 @@ Corresponding outer message fields:
 {
   "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "name": "demo.mp4",
-  "mimeType": "video/mp4",
-  "width": 1920,
-  "height": 1080,
-  "duration": 12.5
+  "meta": { "kind": "VIDEO", "width": 1920, "height": 1080, "duration": 12.5 }
 }
 ```
 
@@ -103,8 +127,7 @@ Corresponding outer message fields:
 {
   "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "name": "voice.m4a",
-  "mimeType": "audio/mp4",
-  "duration": 8.25
+  "meta": { "kind": "AUDIO", "duration": 8.25 }
 }
 ```
 
@@ -114,111 +137,60 @@ Corresponding outer message fields:
 {
   "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "name": "report.pdf",
-  "mimeType": "application/pdf"
+  "meta": { "kind": "FILE" }
 }
 ```
 
-The outer message shape for VIDEO, AUDIO, and FILE follows the IMAGE example: `contentType` uses the corresponding value, `content` is the JSON string encoding of the object above, and `assets` contains one descriptor with the same digest. Its `bytes` is the resource's declared length.
+VIDEO, AUDIO, and FILE use the same envelope arrangement as IMAGE. A video sent
+with `contentType: "FILE"` uses the VIDEO example's file object unchanged.
 
 ## 4. GALLERY
 
-```ts
-interface GalleryItemBase {
-  digest: Sha256Hex;
-}
-
-interface GalleryImageItem extends GalleryItemBase {
-  kind: 'IMAGE';
-  name: string;
-  width: PositiveSafeInteger;
-  height: PositiveSafeInteger;
-}
-
-interface GalleryVideoItem extends GalleryItemBase {
-  kind: 'VIDEO';
-  name: string;
-  mimeType: string;
-  width: PositiveSafeInteger;
-  height: PositiveSafeInteger;
-  duration: PositiveFiniteNumber;
-}
-
-interface GalleryAudioItem extends GalleryItemBase {
-  kind: 'AUDIO';
-  name: string;
-  mimeType: string;
-  duration: PositiveFiniteNumber;
-}
-
-interface GalleryFileItem extends GalleryItemBase {
-  kind: 'FILE';
-  name: string;
-  mimeType: string;
-}
-
-type GalleryItem =
-  | GalleryImageItem
-  | GalleryVideoItem
-  | GalleryAudioItem
-  | GalleryFileItem;
-
-interface GalleryContent {
-  items: GalleryItem[];
-}
-```
-
-`items` MUST be non-empty and preserve display order. Multiple items may reference the same digest and share one descriptor. The deduplicated set of all item digests MUST exactly equal the digest set in the outer message `assets`.
-
-### 4.1 Mixed GALLERY example
+`items` MUST be non-empty and preserve display order. Multiple items MAY reference
+the same digest and share one descriptor. The deduplicated item digest set MUST
+exactly equal the outer `assets` digest set.
 
 ```json
 {
   "items": [
     {
-      "kind": "IMAGE",
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "width": 1600,
-      "height": 900,
-      "name": "photo.png"
+      "name": "photo.png",
+      "meta": { "kind": "IMAGE", "width": 1600, "height": 900 }
     },
     {
-      "kind": "VIDEO",
       "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "name": "demo.mp4",
-      "mimeType": "video/mp4",
-      "width": 1920,
-      "height": 1080,
-      "duration": 12.5
+      "meta": { "kind": "VIDEO", "width": 1920, "height": 1080, "duration": 12.5 }
     },
     {
-      "kind": "AUDIO",
       "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "name": "voice.m4a",
-      "mimeType": "audio/mp4",
-      "duration": 8.25
+      "meta": { "kind": "AUDIO", "duration": 8.25 }
     },
     {
-      "kind": "FILE",
       "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "name": "report.pdf",
-      "mimeType": "application/pdf"
+      "meta": { "kind": "FILE" }
     }
   ]
 }
 ```
 
-The outer message `assets` MUST contain the four digests above, each exactly once. If multiple items use the same digest, `assets` still contains only one descriptor for it.
+The outer `assets` contains the four original digests, each exactly once.
 
 ## 5. Required rejections
 
-A consumer MUST reject at least the following cases:
+A consumer MUST reject at least these cases:
 
-- A single-resource type has other than one digest or descriptor.
-- The content-digest set differs from the `assets` digest set.
-- A digest, descriptor `bytes`, `width`, `height`, or `duration` violates its required type.
-- Media content repeats the resource length instead of using only the outer descriptor.
-- A required `name` or `mimeType` is absent or empty.
+- A single-resource message has other than one digest or descriptor.
+- Content and asset digest sets differ.
+- A digest, descriptor length, dimension, or duration violates its required type.
+- Content repeats the resource length instead of using the outer descriptor.
+- `name` is absent or empty, or `meta` is missing or malformed.
+- `meta.kind` is unknown or conflicts with IMAGE, VIDEO, or AUDIO contentType.
 - GALLERY `items` is empty.
-- An item lacks a field required by its kind.
-- An item carries a field allowed only for another kind, such as `duration` on IMAGE.
-- An object contains an unknown field.
+- A required kind-specific field is missing or a field belongs to another kind.
+- Legacy top-level `kind`, `width`, `height`, or `duration` is present.
+- A file object or its `meta` contains `mimeType`, thumbnail information, or any
+  other unknown field.

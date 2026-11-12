@@ -1,10 +1,7 @@
-@use '../../assets/utils.scss' as *;
-
 // Local aliases pointing to global tokens (var()). To change theme/dark mode, edit only _tokens.scss — zero changes here.
 $primary: var(--app-brand);
 $border: var(--app-border);
 $muted: var(--app-text-muted);
-$bg-subtle: var(--app-bg);
 $danger: var(--app-danger);
 
 .friend-requests {
@@ -90,57 +87,6 @@ $danger: var(--app-danger);
   flex-direction: column;
 }
 
-/* search bar (top) */
-.search-bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px;
-  // --app-bg-muted, not $bg-subtle (--app-bg): this is an input-bar/toolbar
-  // inside a --app-surface panel. In dark mode --app-bg is the deepest page
-  // background (#0b141a) and would punch a near-black band into the #202c33
-  // panel; --app-bg-muted tracks the surface in both themes (light: #f0f2f5
-  // either way, so no visual change there).
-  background: var(--app-bg-muted);
-
-  .search-input {
-    flex: 1;
-    min-width: 0;
-    height: 40px;
-    padding: 0 12px;
-    border: 1px solid $border;
-    border-radius: var(--app-radius-pill);
-    background: var(--app-surface);
-    color: var(--app-text);
-    font-size: 14px;
-    box-sizing: border-box;
-
-    // Native <input> does not reliably inherit `color` from body once an
-    // explicit background is set — Chromium falls back to its form-control
-    // default (dark text), which is invisible on the #202c33 dark surface.
-    // Pin both text and placeholder to app tokens explicitly.
-    &::placeholder {
-      color: var(--app-text-faint);
-    }
-
-    &:focus {
-      outline: none;
-      border-color: $primary;
-    }
-  }
-
-  .search-btn {
-    flex: 0 0 auto;
-  }
-}
-
-.result-area {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px;
-}
-
 /* shared empty / loading / error hint */
 .state-hint {
   height: 100%;
@@ -170,109 +116,16 @@ $danger: var(--app-danger);
   }
 }
 
-/* add result card */
-.user-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid $border;
-  border-radius: var(--app-radius-lg);
-
-  .user-main {
-    display: flex;
-    align-items: center;
-
-    .user-avatar {
-      width: 48px;
-      height: 48px;
-      flex: 0 0 auto;
-    }
-
-    .user-meta {
-      margin-left: 12px;
-    }
-  }
-
-  .user-actions {
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .user-name {
-    font-size: 16px;
-    font-weight: 600;
-  }
-
-  .response-text {
-    font-size: 12px;
-    color: $muted;
-
-    &.is-info {
-      color: $primary;
-    }
-  }
-}
-
-.connecting-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 20px 4px 0;
-  color: var(--app-text);
-
-  .connecting-heading {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-  }
-
-  .connecting-copy {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .connecting-title {
-    overflow: hidden;
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 20px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .connecting-stage,
-  .connecting-step {
-    color: $muted;
-    font-size: 12px;
-    line-height: 18px;
-  }
-
-  .connecting-stage {
-    margin-top: 2px;
-  }
-
-  .connecting-step {
-    flex: none;
-  }
-
-  .connecting-bar {
-    width: 100%;
-    height: 4px;
-  }
-
-  .connecting-cancel {
-    align-self: flex-end;
-  }
-}
-
-/* Exact account result (zero or one row). The row is informational; only the explicit action button
-   is interactive, so its visual and pointer hit areas stay aligned. */
+/* Exact account result displayed in a fixed-height virtual row. */
 .search-results {
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 
   .result-row {
+    height: 80px;
+    line-height: 20px;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -308,6 +161,10 @@ $danger: var(--app-danger);
       min-width: 0;
 
       .user-account {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        line-height: 18px;
         margin-top: 2px;
         color: $muted;
         font-size: 12px;
@@ -337,11 +194,6 @@ $danger: var(--app-danger);
   display: block;
 }
 
-// Federated chip on its own line directly under the nickname (single resolved card + discovery rows).
-.card-fed {
-  margin-top: 3px;
-}
-
 /* pending list */
 .pending-area {
   flex: 1;
@@ -364,129 +216,6 @@ $danger: var(--app-danger);
     font-size: 12px;
     line-height: 20px;
     text-align: center;
-  }
-
-  .pending-row {
-    display: grid;
-    grid-template-columns: 48px minmax(0, 1fr);
-    column-gap: 12px;
-    align-items: start;
-    padding: 16px;
-    border: 1px solid $border;
-    border-radius: var(--app-radius-lg);
-    background: var(--app-surface);
-    transition:
-      border-color 160ms ease,
-      box-shadow 160ms ease;
-
-    & + .pending-row {
-      margin-top: 12px;
-    }
-
-    &:hover {
-      border-color: var(--app-border-strong);
-      box-shadow: var(--app-shadow-sm, 0 4px 16px rgb(0 0 0 / 6%));
-    }
-
-    .user-avatar {
-      width: 48px;
-      height: 48px;
-      flex: 0 0 auto;
-    }
-
-    .pending-meta {
-      min-width: 0;
-
-      .pending-heading {
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
-      }
-
-      .user-name {
-        flex: 1;
-        min-width: 0;
-        font-size: 15px;
-        font-weight: 650;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .user-account {
-        margin-top: 2px;
-        color: $muted;
-        font-size: 12px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      // Federated-domain chip, on its own line directly under the nickname (local users render none).
-      .pending-fed {
-        margin-top: 5px;
-      }
-
-      .pending-date {
-        flex: none;
-        font-size: 12px;
-        color: $muted;
-        white-space: nowrap;
-      }
-
-      .pending-reason {
-        margin-top: 12px;
-
-        .reason-label {
-          margin-bottom: 6px;
-          color: $muted;
-          font-size: 12px;
-          font-weight: 650;
-          line-height: 17px;
-        }
-
-        .reason-text {
-          padding: 9px 11px;
-          border: 1px solid $border;
-          border-radius: var(--app-radius-md);
-          background: var(--app-bg-muted);
-          color: var(--app-text);
-          font-size: 13px;
-          line-height: 19px;
-          white-space: pre-wrap;
-          word-break: break-word;
-        }
-      }
-    }
-
-    .pending-actions {
-      grid-column: 2;
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 8px;
-      margin-top: 12px;
-
-      button {
-        min-width: 76px;
-      }
-
-      .revoke-btn {
-        background: var(--app-bg-muted);
-        color: var(--app-text);
-
-        &:hover {
-          background: var(--app-hover);
-        }
-      }
-    }
-  }
-
-  .row-err {
-    margin: -1px 0 10px;
-    padding: 8px 14px 8px 76px;
-    font-size: 12px;
-    color: $danger;
   }
 }
 
@@ -575,30 +304,5 @@ $danger: var(--app-danger);
 
   .delete-btn {
     color: $danger;
-  }
-}
-
-@media (max-width: 420px) {
-  .tabs [mat-tab-link] {
-    padding-right: 24px;
-    padding-left: 24px;
-  }
-
-  .pending-area .pending-row {
-    padding: 12px;
-
-    .pending-meta .pending-heading {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .pending-actions {
-      grid-column: 1 / -1;
-
-      button {
-        flex: 1;
-      }
-    }
   }
 }

@@ -21,7 +21,7 @@ pub(crate) enum Output {
     Reconnect,
     Origin(String, String),
     Identity(i32, i64),
-    #[cfg(any(target_os = "android", test))]
+    #[cfg(target_os = "android")]
     Notifications(crate::native_db::notifications::NotificationBatch),
     IncomingCall(Value),
 }
@@ -42,16 +42,7 @@ struct RunIdentity {
 
 impl RunIdentity {
     fn capture(proxy: &ServerSessionState) -> Result<Self, String> {
-        let expected = proxy
-            .login_session
-            .lock()
-            .map_err(|_| "login session lock poisoned")?
-            .clone()
-            .ok_or("native login is not admitted")?;
         let work = crate::native_db::capture_database_work()?;
-        if work.owner().id() != &expected {
-            return Err("native login superseded".into());
-        }
         let request = crate::login_request::LoginRequest::capture(proxy, work.owner().clone())?;
         Self::new(work, request)
     }
@@ -240,6 +231,7 @@ impl Run {
             self.sink.publish(Output::State(state.into()));
         }
     }
+    #[cfg(any(target_os = "android", test))]
     pub(crate) fn event_payload(&self, event: &str, message: &str, data: Value) -> Option<Value> {
         if !self.authenticated() {
             return None;
@@ -252,6 +244,7 @@ impl Run {
         ))
     }
 
+    #[cfg(any(target_os = "android", test))]
     pub fn replay_snapshot(&self) -> Option<Value> {
         let hello = self.event_payload("HELLO", "retained hello", self.replay()?)?;
         if !self.authenticated() {
@@ -284,10 +277,12 @@ impl Supervisor {
             run: Mutex::new(None),
         }
     }
+    #[cfg(any(desktop, test))]
     pub fn start(&self, proxy: ServerSessionState, sink: Arc<dyn Sink>) -> u64 {
         let identity = RunIdentity::capture(&proxy).ok();
         self.start_inner(proxy, sink, false, None, false, identity)
     }
+    #[cfg(target_os = "android")]
     pub fn replace(&self, proxy: ServerSessionState, sink: Arc<dyn Sink>) -> u64 {
         let identity = RunIdentity::capture(&proxy).ok();
         self.start_inner(proxy, sink, true, None, false, identity)
@@ -472,6 +467,7 @@ pub(crate) fn login_event_payload(
 #[derive(Clone)]
 pub(crate) struct NativeEvents {
     run: Option<Arc<Run>>,
+    #[cfg(desktop)]
     app: Option<tauri::AppHandle>,
     work: Option<crate::login_connection::DatabaseWork>,
 }
@@ -491,11 +487,14 @@ impl NativeEvents {
         app: Option<&tauri::AppHandle>,
         work: Option<crate::login_connection::DatabaseWork>,
     ) -> Self {
+        #[cfg(not(desktop))]
+        let _ = app;
         let run = WORK_RUN.try_with(Clone::clone).ok();
         #[cfg(target_os = "android")]
         let run = run.or_else(crate::android_realtime::current_run);
         Self {
             run,
+            #[cfg(desktop)]
             app: app.cloned(),
             work,
         }
@@ -592,7 +591,11 @@ impl Sink for DesktopSink {
             Output::Reconnect => {
                 let _ = self.0.emit("soms-sse-reconnect", ());
             }
-            _ => {}
+            // Android consumes these as adapter commands. The desktop renderer uses
+            // the forwarded SSE envelope instead of separate platform callbacks.
+            Output::Origin(_origin, _mode) => {}
+            Output::Identity(_user, _session) => {}
+            Output::IncomingCall(_call) => {}
         }
     }
 }
@@ -641,6 +644,7 @@ mod tests {
 
     #[test]
     fn desktop_reattach_transfers_control_without_reopening_the_worker() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
         let supervisor = Supervisor::new();
         let proxy = ServerSessionState::new();
         let first = supervisor.start(proxy.clone(), Arc::new(Null));
@@ -659,6 +663,7 @@ mod tests {
 
     #[test]
     fn authentication_loss_still_publishes_terminal_closed() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
         let supervisor = Supervisor::new();
         let states = Arc::new(Mutex::new(Vec::new()));
         let owner = supervisor.start(
@@ -682,6 +687,7 @@ mod tests {
 
     #[test]
     fn replay_returns_one_generation_tagged_snapshot_and_rejects_cancelled_source() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
         let supervisor = Supervisor::new();
         let proxy = ServerSessionState::new();
         let owner = supervisor.start(proxy.clone(), Arc::new(Null));
@@ -707,6 +713,7 @@ mod tests {
 
     #[test]
     fn synthetic_event_payloads_keep_the_original_login_and_reject_ended_work() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
         let supervisor = Supervisor::new();
         let proxy = ServerSessionState::new();
         let lease = supervisor.start(proxy.clone(), Arc::new(Null));
@@ -734,6 +741,7 @@ mod tests {
 
     #[test]
     fn explicit_retry_rebinds_worker_but_preserves_os_owner_and_offline_fact() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
         let supervisor = Supervisor::new();
         let owner = supervisor.start(ServerSessionState::new(), Arc::new(Null));
         let old = supervisor.current().unwrap();
@@ -754,6 +762,7 @@ mod tests {
 
     #[test]
     fn cache_repair_rebind_preserves_owner_and_invalidates_queued_worker_commands() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
         let supervisor = Supervisor::new();
         let proxy = ServerSessionState::new();
         let owner = supervisor.start(proxy.clone(), Arc::new(Null));
@@ -774,6 +783,7 @@ mod tests {
 
     #[test]
     fn stale_retry_cannot_reclaim_a_successor_owner() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
         let supervisor = Supervisor::new();
         let old = supervisor.start(ServerSessionState::new(), Arc::new(Null));
         supervisor.stop(old);
@@ -785,6 +795,7 @@ mod tests {
 
     #[test]
     fn stopped_run_and_stale_commands_cannot_touch_successor() {
+        let _filesystem = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
         let supervisor = Supervisor::new();
         let first = supervisor.start(ServerSessionState::new(), Arc::new(Null));
         let old = supervisor.current().unwrap();

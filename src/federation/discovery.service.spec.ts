@@ -59,6 +59,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
           notAfter: 1_900_000_000_000,
         },
       ],
+      signingKeyCreatedAt: 1700000000000,
       keys: [
         certificate(rootPrivateKey, 'peer.example/key-1', 32),
         certificate(rootPrivateKey, 'peer.example/key-2', 64),
@@ -69,6 +70,45 @@ describe('DiscoveryService root-authorized signing certificates', () => {
       'peer.example/key-2',
     ]);
   });
+
+  it.each([1, 1_699_000_000_000])(
+    'accepts positive active signing-key creation time %s',
+    (signingKeyCreatedAt) => {
+      const document = validateWellKnownDocument('peer.example', {
+        protocolVersions: [1],
+        signingKeyCreatedAt,
+        roots: [
+          {
+            ed25519: rootPublicKey,
+            notBefore: 1_600_000_000_000,
+            notAfter: 1_900_000_000_000,
+          },
+        ],
+        keys: [certificate(rootPrivateKey, 'peer.example/key-1', 32)],
+      });
+      expect(document.signingKeyCreatedAt).toBe(signingKeyCreatedAt);
+    },
+  );
+
+  it.each([undefined, null, 0, '1000', -1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects malformed active signing-key creation time %s',
+    (signingKeyCreatedAt) => {
+      expect(() =>
+        validateWellKnownDocument('peer.example', {
+          protocolVersions: [1],
+          signingKeyCreatedAt,
+          roots: [
+            {
+              ed25519: rootPublicKey,
+              notBefore: 1_600_000_000_000,
+              notAfter: 1_900_000_000_000,
+            },
+          ],
+          keys: [certificate(rootPrivateKey, 'peer.example/key-1', 32)],
+        }),
+      ).toThrow('malformed v1 document');
+    },
+  );
 
   it('rejects a certificate not authorized by the published root', () => {
     const otherRoot = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
@@ -82,6 +122,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
             notAfter: 1_900_000_000_000,
           },
         ],
+        signingKeyCreatedAt: 1700000000000,
         keys: [certificate(otherRoot, 'peer.example/key-1', 32)],
       }),
     ).toThrow('invalid signing certificate');
@@ -99,6 +140,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
             notAfter: 1_900_000_000_000,
           },
         ],
+        signingKeyCreatedAt: 1700000000000,
         keys: [key, key],
       }),
     ).toThrow('invalid signing certificate');
@@ -112,6 +154,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
             notAfter: 1_900_000_000_000,
           },
         ],
+        signingKeyCreatedAt: 1700000000000,
         keys: [certificate(rootPrivateKey, 'other.example/key-1', 32)],
       }),
     ).toThrow('invalid signing certificate');
@@ -135,6 +178,7 @@ describe('DiscoveryService peer-key refresh policy', () => {
       notAfter: 1_800_000_000_000,
     };
     return {
+      signingKeyCreatedAt: 1700000000000,
       protocolVersions: [1],
       roots: [
         {

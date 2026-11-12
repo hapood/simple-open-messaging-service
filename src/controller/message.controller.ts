@@ -42,6 +42,7 @@ import { AccountThreadStateService } from '../account-thread-state/account-threa
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
+import { withSseHeartbeat } from '../common/sse-heartbeat.js';
 import { parseLinkContent } from '../upload/file-content.js';
 import { FederationThreadAccessService } from '../federation/federation-thread-access.service.js';
 import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
@@ -1040,11 +1041,9 @@ export class MessageController {
       req.user.userId,
       dto,
     );
-    return this.sse.registerMediaMessageProgress(
-      req.user.userId,
-      threadId,
-      seq,
-    );
+    return this.sse
+      .registerMediaMessageProgress(req.user.userId, threadId, seq)
+      .pipe(withSseHeartbeat());
   }
 
   @Raw()
@@ -1070,12 +1069,14 @@ export class MessageController {
     ) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'media not found');
     }
-    return this.sse.registerMediaFileProgress(
-      req.user.userId,
-      threadId,
-      seq,
-      digest.toLowerCase(),
-    );
+    return this.sse
+      .registerMediaFileProgress(
+        req.user.userId,
+        threadId,
+        seq,
+        digest.toLowerCase(),
+      )
+      .pipe(withSseHeartbeat());
   }
 
   private async authorizeMediaProgress(

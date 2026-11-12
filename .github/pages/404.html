@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SOMS Playground</title>
+    <script>
+      // Single Page Application redirect for GitHub Pages.
+      // Translates path /simple-open-messaging-service/<route> to /simple-open-messaging-service/#/<route>
+      (function () {
+        var base = '/simple-open-messaging-service/';
+        var path = window.location.pathname;
+        var route =
+          path.indexOf(base) === 0
+            ? path.slice(base.length)
+            : path.replace(/^\//, '');
+        var cleanRoute = route.replace(/^\/+/, '');
+        var target =
+          base +
+          (cleanRoute ? '#/' + cleanRoute : '') +
+          window.location.search +
+          window.location.hash;
+        window.location.replace(target);
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>

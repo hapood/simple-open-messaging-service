@@ -1,5 +1,9 @@
 import { Injectable, inject, effect } from '@angular/core';
 import { Subject, firstValueFrom } from 'rxjs';
+import {
+  CancellationScope,
+  firstValueFromAbortable,
+} from '../lib/async/cancellation-scope';
 import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
 import {
@@ -10,8 +14,9 @@ import {
 } from './message.service';
 import { UserService } from './user.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { Message, MediaStatus, type MessageQueryRow } from './model';
-import { isTauri, tauriInvoke } from './runtime';
+import { Message, MediaStatus } from './model';
+import { isTauri } from './runtime';
+import { nativeHistoryRequest } from './native-history';
 import { historyAnchorRequest, type HistoryAnchor } from './history-anchor';
 
 export interface MessageHistoryTarget {
@@ -22,6 +27,7 @@ export interface MessageHistoryTarget {
 }
 
 export type NativeMessageHistoryDemand =
+  | { kind: 'localLatest'; count: number }
   | {
       kind: 'latest';
       count: number;
@@ -48,7 +54,7 @@ export type NativeMessageHistoryDemand =
     };
 
 export type MessageHistorySourceItem =
-  | { kind: 'message'; message: MessageQueryRow }
+  | { kind: 'message'; message: Message }
   | {
       kind: 'serverGap';
       left: number;
@@ -104,6 +110,12 @@ export class MessageRepository {
    */
   private readonly signal$ = new Subject<{ threadId: number; seq: number }>();
   readonly liveSignal$ = this.signal$.asObservable();
+  /** Every authoritative ceiling advance wakes history, including silent HELLO hydration. */
+  private readonly historyHeadSignal = new Subject<{
+    threadId: number;
+    seq: number;
+  }>();
+  readonly historyHead$ = this.historyHeadSignal.asObservable();
   private readonly deletedSignal$ = new Subject<{
     threadId: number;
     deletions: Array<{
@@ -148,6 +160,7 @@ export class MessageRepository {
   async queryNativeMessageHistory(
     threadId: number,
     demand: NativeMessageHistoryDemand,
+    signal: AbortSignal,
   ): Promise<NativeMessageHistoryResult> {
     const scope = this.sessionLifecycle.capture();
     if (!isTauri())
@@ -155,18 +168,23 @@ export class MessageRepository {
     const userId = this.userService.sessionUserId();
     if (userId === null)
       throw new Error('native message history requested without a session');
-    const result = await tauriInvoke<NativeMessageHistoryResult>(
-      'native_message_history_get',
-      {
-        userId,
-        threadId,
-        demand,
-      },
+    const liveHead = Math.max(
+      this.maxSeenSeq.get(threadId) ?? -1,
+      this.newerTruncateSeq.get(threadId) ?? -1,
     );
+    const result = await nativeHistoryRequest(
+      userId,
+      threadId,
+      demand,
+      signal,
+      demand.kind !== 'localLatest' && liveHead >= 0 ? liveHead : undefined,
+    );
+    signal.throwIfAborted();
     if (!this.sessionLifecycle.isCurrent(scope))
       throw new Error('account session expired during native history query');
-    if (this.userService.sessionUserId() === userId)
-      this.slotsChanged.next(threadId);
+    // Rust publishes messageDbCommitted$ for actual writes. A completed cache read
+    // is not a mutation: signalling it here feeds metadata refresh back into the
+    // pending newer demand, repeatedly querying an already exhausted tail.
     return result;
   }
 
@@ -175,17 +193,48 @@ export class MessageRepository {
   async queryBrowserMessageHistory(
     threadId: number,
     demand: NativeMessageHistoryDemand,
+    signal?: AbortSignal,
   ): Promise<NativeMessageHistoryResult> {
     if (isTauri())
       throw new Error('browser message history requested inside Tauri');
     const lowerHint = 0;
-    const lifetime = this.webdb.captureMessageLifetime();
+    const scope = new CancellationScope(
+      this.webdb.captureMessageLifetime(),
+      signal,
+    );
+    const lifetime = scope.signal;
     try {
+      lifetime.throwIfAborted();
       switch (demand.kind) {
+        case 'localLatest': {
+          if (
+            !Number.isSafeInteger(demand.count) ||
+            demand.count < 1 ||
+            demand.count > 200
+          )
+            throw new Error('local history count is outside 1..200');
+          const messages = await this.webdb.queryCachedMessages(
+            threadId,
+            'desc',
+            demand.count,
+            Number.MAX_SAFE_INTEGER,
+          );
+          lifetime.throwIfAborted();
+          return {
+            items: messages
+              .reverse()
+              .map((message) => ({ kind: 'message', message })),
+            // Local absence is not evidence of server exhaustion.
+            hasOlder: true,
+            hasNewer: true,
+            failed: false,
+          };
+        }
         case 'latest': {
           const [lower, upper] = await this.initialMessageBounds(
             threadId,
             lowerHint,
+            lifetime,
           );
           const page = await this.walkBrowserMessageHistory(
             threadId,
@@ -208,6 +257,7 @@ export class MessageRepository {
           const [lower, upper] = await this.initialMessageBounds(
             threadId,
             lowerHint,
+            lifetime,
           );
           const older = await this.walkBrowserMessageHistory(
             threadId,
@@ -270,7 +320,10 @@ export class MessageRepository {
           );
           let upper = Math.max(persistedHead ?? -1, liveHead);
           if (upper < 0) {
-            const bounds = await this.bootstrapMessageBounds(threadId);
+            const bounds = await this.bootstrapMessageBounds(
+              threadId,
+              lifetime,
+            );
             lower = Math.max(lower, bounds[0]);
             upper = bounds[1];
           }
@@ -293,15 +346,20 @@ export class MessageRepository {
         }
       }
     } catch {
+      lifetime.throwIfAborted();
       return { items: [], hasOlder: true, hasNewer: true, failed: true };
+    } finally {
+      scope.dispose();
     }
   }
 
   private async initialMessageBounds(
     threadId: number,
     lowerHint: number,
+    lifetime: AbortSignal,
   ): Promise<[number, number]> {
     const persistedHead = await this.webdb.getMessageHead(threadId);
+    lifetime.throwIfAborted();
     const liveHead = Math.max(
       this.maxSeenSeq.get(threadId) ?? -1,
       this.newerTruncateSeq.get(threadId) ?? -1,
@@ -309,15 +367,18 @@ export class MessageRepository {
     const knownHead = Math.max(persistedHead ?? -1, liveHead);
     return knownHead >= 0
       ? [lowerHint, knownHead]
-      : this.bootstrapMessageBounds(threadId);
+      : this.bootstrapMessageBounds(threadId, lifetime);
   }
 
   private async bootstrapMessageBounds(
     threadId: number,
+    lifetime: AbortSignal,
   ): Promise<[number, number]> {
-    const response = await firstValueFrom(
+    const response = await firstValueFromAbortable(
       this.msg.queryMessageHistoryPage({ threadId }),
+      lifetime,
     );
+    lifetime.throwIfAborted();
     if (response.code !== 30006 || !this.isHistoryCursor(response.data))
       throw new Error('message bootstrap did not return cursor bounds');
     if (
@@ -338,6 +399,7 @@ export class MessageRepository {
     knownNewestSeq: number | undefined,
     lifetime: AbortSignal,
   ): Promise<DirectionalHistoryWalk> {
+    lifetime.throwIfAborted();
     if (!Number.isSafeInteger(count) || count < 0 || count > 200)
       throw new Error('message history item count is outside 0..200');
     let cursor = initialCursor;
@@ -349,6 +411,7 @@ export class MessageRepository {
     let remaining = count;
 
     for (let step = 0; step < 1024; step++) {
+      lifetime.throwIfAborted();
       const atBoundary =
         direction === 'older' ? cursor <= lower + 1 : cursor >= upper;
       if (atBoundary || remaining === 0) return { items, hasMore: !atBoundary };
@@ -368,6 +431,7 @@ export class MessageRepository {
             boundary,
             remaining,
           );
+          lifetime.throwIfAborted();
           for (const message of cached) {
             cursor = message.seq;
             items.push({ kind: 'message', message });
@@ -408,6 +472,7 @@ export class MessageRepository {
         optimisticBoundary,
         remaining,
       );
+      lifetime.throwIfAborted();
       const provisional =
         optimistic.length === remaining
           ? (optimistic.at(-1)?.seq ?? optimisticBoundary)
@@ -439,11 +504,11 @@ export class MessageRepository {
         through,
         ...(direction === 'older' ? { before: cursor } : { after: cursor }),
       };
-      const response = await firstValueFrom(
+      const response = await firstValueFromAbortable(
         this.msg.queryMessageHistoryPage(request),
+        lifetime,
       );
-      if (lifetime.aborted)
-        throw new Error('message cache lifetime expired during history fill');
+      lifetime.throwIfAborted();
       if (response.code === 30006 && this.isHistoryCursor(response.data)) {
         if (
           response.data.resumeAfter < 0 ||
@@ -488,6 +553,7 @@ export class MessageRepository {
       );
       ranges = committed.ranges;
       this.slotsChanged.next(threadId);
+      lifetime.throwIfAborted();
       if (!scan) return { items, hasMore: false };
       const direct = this.projectCommittedHistoryPage(
         direction,
@@ -518,7 +584,7 @@ export class MessageRepository {
     cursor: number,
     boundary: number,
     take: number,
-  ): Promise<MessageQueryRow[]> {
+  ): Promise<Message[]> {
     const messages = await this.webdb.queryCachedMessages(
       threadId,
       direction === 'older' ? 'desc' : 'asc',
@@ -548,7 +614,7 @@ export class MessageRepository {
   private projectCommittedHistoryPage(
     direction: HistoryDirection,
     scan: { left: number; right: number },
-    messages: MessageQueryRow[],
+    messages: Message[],
     gaps: Array<{
       left: number;
       right: number;
@@ -640,6 +706,10 @@ export class MessageRepository {
     this.newerTruncateSeq.clear();
   }
 
+  newestKnownSeq(threadId: number): number {
+    return this.maxSeenSeq.get(threadId) ?? 0;
+  }
+
   /** Reconcile conversation metadata/live init state into the shared per-thread ceiling. */
   retainNewestSeq(threadId: number, seq: number): void {
     if (Number.isSafeInteger(seq) && seq >= 0)
@@ -685,6 +755,7 @@ export class MessageRepository {
     if (seq <= cur) return false;
     this.maxSeenSeq.set(threadId, seq);
     if (persist) void this.webdb.putMessageHead(threadId, seq);
+    this.historyHeadSignal.next({ threadId, seq });
     return true;
   }
 
@@ -702,15 +773,19 @@ export class MessageRepository {
   async resolveHistoryAnchor(
     threadId: number,
     anchor: HistoryAnchor,
+    signal?: AbortSignal,
   ): Promise<number | null> {
+    signal?.throwIfAborted();
     const scope = this.sessionLifecycle.capture();
-    const response = await firstValueFrom(
-      this.msg.queryMessageHistoryPage({
-        threadId,
-        take: 1,
-        ...historyAnchorRequest(anchor),
-      }),
-    );
+    const request = this.msg.queryMessageHistoryPage({
+      threadId,
+      take: 1,
+      ...historyAnchorRequest(anchor),
+    });
+    const response = await (signal
+      ? firstValueFromAbortable(request, signal)
+      : firstValueFrom(request));
+    signal?.throwIfAborted();
     if (response.code !== 0 || !response.data || !('messages' in response.data))
       throw new Error('history anchor resolution failed');
     if (!this.sessionLifecycle.isCurrent(scope))
@@ -728,6 +803,7 @@ export class MessageRepository {
     if (!this.sessionLifecycle.isCurrent(scope))
       throw new Error('account session expired during anchor commit');
     this.slotsChanged.next(threadId);
+    signal?.throwIfAborted();
     return seq;
   }
 
@@ -735,8 +811,19 @@ export class MessageRepository {
     return this.webdb.getMessageByOrigin(threadId, namespaceId, originSeq);
   }
 
-  getDeletedMessageSeqs(threadId: number, seqs: number[]): Promise<number[]> {
-    return this.webdb.getDeletedMessageSeqs(threadId, seqs);
+  async getMessageDeletions(
+    threadId: number,
+    seqs: number[],
+  ): Promise<
+    Array<{
+      seq: number;
+      type: import('../../../../shared/message-tomb').MessageDeletionType;
+    }>
+  > {
+    const scope = this.sessionLifecycle.capture();
+    const facts = await this.webdb.getMessageDeletions(threadId, seqs);
+    this.sessionLifecycle.assertCurrent(scope);
+    return facts;
   }
 
   /** Read one cached message by its composite key [threadId, seq] (best-effort; undefined when IDB is

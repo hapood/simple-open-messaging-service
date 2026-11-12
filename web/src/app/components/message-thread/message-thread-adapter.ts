@@ -24,6 +24,10 @@ import type {
   UploadProgressHandler,
 } from '../../services/message.service';
 import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
+import type {
+  MountedMessageDeletionStore,
+  MessageDeletionFact,
+} from './mounted-message-deletion';
 import type { HistoryAnchor } from '../../services/history-anchor';
 
 export interface MessageThreadLiveCallbacks {
@@ -39,7 +43,10 @@ export interface MessageThreadLiveCallbacks {
 /** The complete source contract consumed by the production thread shell. */
 export interface MessageThreadSource extends CbSource<ChatItemData> {
   /** Optional for alternate offline/demo sources; production resolves through the repository. */
-  resolveHistoryAnchor?(anchor: HistoryAnchor): Promise<number | null>;
+  resolveHistoryAnchor?(
+    anchor: HistoryAnchor,
+    signal?: AbortSignal,
+  ): Promise<number | null>;
   mountQuote?(
     replySeq: number,
     quote: NonNullable<
@@ -55,12 +62,14 @@ export interface MessageThreadSource extends CbSource<ChatItemData> {
   discardPending(clientMessageId: string): boolean;
   markPendingAccepted(clientMessageId: string): boolean;
   acceptedPending?(): CbItem<ChatItemData>[];
+  restoreMediaStages?(): Promise<void>;
   finishLocalInit?(
     liveLatestSeq: number | undefined,
     persistedLatestSeq?: number | null,
   ): void;
   pauseLiveUpdates?(): void;
   resumeLiveUpdates?(latestSeq?: number): void;
+  refreshLatest?(latestSeq: number): void;
 }
 
 export interface SendTextRequest {
@@ -112,7 +121,15 @@ export interface MediaStageState {
 }
 
 /** Runtime boundary for the production chatbox. Alternate hosts replace data and transport, never its UI. */
-export abstract class MessageThreadAdapter {
+export abstract class MessageThreadAdapter
+  implements MountedMessageDeletionStore
+{
+  abstract readonly deletedLive$: MountedMessageDeletionStore['deletedLive$'];
+  abstract getMessageDeletions(
+    threadId: number,
+    seqs: number[],
+  ): Promise<MessageDeletionFact[]>;
+
   abstract createSource(
     conversation: ConversationItem,
     callbacks: MessageThreadLiveCallbacks,
@@ -177,11 +194,11 @@ export abstract class MessageThreadAdapter {
 
   abstract cancelUploadBatch(
     clientMessageId: string,
-  ): Observable<StandardResponse<{ clientMessageId: string; cancelled: number }>>;
-
-  abstract sendCompletedUploadBatch(
-    clientMessageId: string,
   ): Observable<
+    StandardResponse<{ clientMessageId: string; cancelled: number }>
+  >;
+
+  abstract sendCompletedUploadBatch(clientMessageId: string): Observable<
     StandardResponse<{
       clientMessageId: string;
       sent: boolean;
@@ -215,6 +232,12 @@ export abstract class MessageThreadAdapter {
 @Injectable({ providedIn: 'root' })
 class ProductionMessageThreadAdapter extends MessageThreadAdapter {
   private readonly repository = inject(MessageRepository);
+  readonly deletedLive$ = this.repository.deletedLive$;
+
+  override getMessageDeletions(threadId: number, seqs: number[]) {
+    return this.repository.getMessageDeletions(threadId, seqs);
+  }
+
   private readonly users = inject(UserService);
   private readonly outbox = inject(ThreadSendOutbox);
   private readonly profiles = inject(ProfileRepository);

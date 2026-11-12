@@ -227,7 +227,7 @@ export function assertS2SCallFrame(
   }
 }
 
-/** Parse the complete, closed POST /s2s/v1/call wire shape. */
+/** Parse the complete, closed POST /somfp/v1/call wire shape. */
 export function parseS2SCallWireFrame(value: unknown): S2SCallFrame {
   if (!isRecord(value)) malformed('call frame must be an object');
   const wireOperation = value.operation;

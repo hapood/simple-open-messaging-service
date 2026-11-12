@@ -14,7 +14,6 @@ import {
   relationshipPair,
 } from '../src/database/schema.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('exact directed intent account-profile disclosure', () => {
@@ -51,6 +50,7 @@ describe('exact directed intent account-profile disclosure', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
+        generatedAt: 1_700_000_000_000,
         displayName: 'First',
       },
       {
@@ -58,6 +58,7 @@ describe('exact directed intent account-profile disclosure', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Second',
       },
     ]);
@@ -75,6 +76,7 @@ describe('exact directed intent account-profile disclosure', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 3,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Local group',
     });
     const [thread] = await database.db
@@ -130,7 +132,7 @@ describe('exact directed intent account-profile disclosure', () => {
         note: '',
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
-        requestedAt: now,
+        statusChangedAt: now,
         expiresAt: new Date(now.getTime() + 60_000),
       },
       {
@@ -144,7 +146,7 @@ describe('exact directed intent account-profile disclosure', () => {
         note: '',
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
-        requestedAt: now,
+        statusChangedAt: now,
       },
     ]);
   });

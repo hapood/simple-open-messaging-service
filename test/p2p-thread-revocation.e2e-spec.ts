@@ -35,12 +35,14 @@ describe('P2P thread-keyed relationship revocation', () => {
   beforeAll(() => {
     database = new DatabaseService();
     sse = new SseService(database, new CallStateRegistry());
-    feed = new ClientStateFeedService(database, sse);
+    feed = new ClientStateFeedService(database, sse, {
+      enqueueForRequestAttention: vi.fn().mockResolvedValue(undefined),
+    } as never);
     const changes = new ProfileNamespaceChangeStore(database);
     const keys = new KeypairService(database, changes, sse);
     namespaces = new FederationNamespaceService(
       database,
-      new ProfileNamespaceFeedService(database, keys, changes),
+      new ProfileNamespaceFeedService(database, changes),
       new ProfileNamespaceService(database, keys),
     );
     const requestCapability = new RequestTransactionCapabilityImpl(feed);
@@ -51,6 +53,7 @@ describe('P2P thread-keyed relationship revocation', () => {
       { pushStateFeedNamespaces: vi.fn() },
       namespaces,
       requestCapability,
+      { tick: vi.fn().mockResolvedValue(undefined) } as never,
     );
   });
 

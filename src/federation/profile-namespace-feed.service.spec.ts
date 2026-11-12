@@ -67,14 +67,9 @@ function harness(selectResults: Array<Record<string, unknown>[]>): Harness {
       ),
     },
   };
-  const keypair = { getRootPublicKeyB64: () => ROOT };
   const changes = new ProfileNamespaceChangeStore(database as never);
   return {
-    service: new ProfileNamespaceFeedService(
-      database as never,
-      keypair as never,
-      changes,
-    ),
+    service: new ProfileNamespaceFeedService(database as never, changes),
     reads,
     setReturning,
     upsertValues,
@@ -110,15 +105,15 @@ describe('ProfileNamespaceFeedService', () => {
     expect(upsertValues).toEqual([{ namespaceId: 12, feedId: 5n }]);
   });
 
-  it('rejects a negative or fractional namespace id', async () => {
-    const { service } = harness([]);
-    await expect(
-      service.recordNamespaceChangeInTx({} as never, -1),
-    ).rejects.toThrow('non-negative safe integer');
-    await expect(
-      service.recordNamespaceChangeInTx({} as never, 1.5),
-    ).rejects.toThrow('non-negative safe integer');
-  });
+  it.each([0, -1, 1.5])(
+    'rejects namespace id %s before writing',
+    async (nsid) => {
+      const { service } = harness([]);
+      await expect(
+        service.recordNamespaceChangeInTx({} as never, nsid),
+      ).rejects.toThrow('positive safe integer');
+    },
+  );
 
   it('reads the publisher-wide feed end from the sentinel row', async () => {
     const { service } = harness([[{ feedEndId: 9n }]]);
@@ -136,14 +131,14 @@ describe('ProfileNamespaceFeedService', () => {
     const { service } = harness([
       [{ feedEndId: 3n }],
       [
-        { namespaceId: 1, feedId: 1n },
-        { namespaceId: 2, feedId: 3n },
+        { namespaceId: 1, feedId: 1n, updatedAt: new Date(2000) },
+        { namespaceId: 2, feedId: 3n, updatedAt: new Date(1000) },
       ],
     ]);
     await expect(service.serve()).resolves.toEqual({
       items: [
-        { namespaceId: 1, feedId: '1' },
-        { namespaceId: 2, feedId: '3' },
+        { namespaceId: 1, feedId: '1', generatedAt: 2000 },
+        { namespaceId: 2, feedId: '3', generatedAt: 1000 },
       ],
       scannedThrough: '3',
       feedEndId: '3',
@@ -155,15 +150,15 @@ describe('ProfileNamespaceFeedService', () => {
     const { service } = harness([
       [{ feedEndId: 9n }],
       [
-        { namespaceId: 1, feedId: 2n },
-        { namespaceId: 2, feedId: 4n },
-        { namespaceId: 3, feedId: 6n },
+        { namespaceId: 1, feedId: 2n, updatedAt: new Date(2000) },
+        { namespaceId: 2, feedId: 4n, updatedAt: new Date(1000) },
+        { namespaceId: 3, feedId: 6n, updatedAt: new Date(3000) },
       ],
     ]);
     await expect(service.serve(1n, 2)).resolves.toEqual({
       items: [
-        { namespaceId: 1, feedId: '2' },
-        { namespaceId: 2, feedId: '4' },
+        { namespaceId: 1, feedId: '2', generatedAt: 2000 },
+        { namespaceId: 2, feedId: '4', generatedAt: 1000 },
       ],
       scannedThrough: '4',
       feedEndId: '9',
@@ -193,7 +188,6 @@ describe('ProfileNamespaceFeedService', () => {
   });
 
   it.each([
-    { nsid: 0, active: true, retiredAt: null },
     { nsid: 12, active: true, retiredAt: null },
     { nsid: 12, active: false, retiredAt: new Date() },
   ])('emits schema-valid bindings without local lifecycle: %j', async (row) => {
@@ -210,6 +204,7 @@ describe('ProfileNamespaceFeedService', () => {
     const { service } = harness([
       [{ feedEndId: 7n }],
       [{ ...row, domain: 'peer.test', rootPublicKey: ROOT }],
+      [{ updatedAt: new Date(1234) }],
     ]);
     const bindings = await service.resolveBindings(row.nsid);
     expect(validate(bindings), JSON.stringify(validate.errors)).toBe(true);
@@ -217,13 +212,13 @@ describe('ProfileNamespaceFeedService', () => {
     expect(validate({ ...bindings, status: 'ACTIVE' })).toBe(false);
   });
 
-  it('answers nsid 0 from local authority', async () => {
-    const { service } = harness([[{ feedEndId: 7n }]]);
-    await expect(service.resolveBindings(0)).resolves.toEqual({
-      domain: 'soms.test',
-      rootPublicKey: ROOT,
-      profileNamespaceFeedEndId: '7',
+  it('rejects nsid 0 without reading or requiring a self feed item', async () => {
+    const { service, reads } = harness([]);
+    await expect(service.resolveBindings(0)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
     });
+    expect(reads).toEqual([]);
   });
 
   it('answers a bound positive nsid and reports never-handshaked ids as NOT_FOUND business outcomes', async () => {
@@ -237,11 +232,13 @@ describe('ProfileNamespaceFeedService', () => {
           active: true,
         },
       ],
+      [{ updatedAt: new Date(1234) }],
     ]);
     await expect(service.resolveBindings(12)).resolves.toEqual({
       domain: 'peer.test',
       rootPublicKey: ROOT,
       profileNamespaceFeedEndId: '7',
+      generatedAt: 1234,
     });
 
     // A reset-retired id keeps answering with its last retained bindings so
@@ -256,11 +253,13 @@ describe('ProfileNamespaceFeedService', () => {
           active: false,
         },
       ],
+      [{ updatedAt: new Date(1234) }],
     ]);
     await expect(retired.service.resolveBindings(12)).resolves.toEqual({
       domain: 'peer.test',
       rootPublicKey: ROOT,
       profileNamespaceFeedEndId: '7',
+      generatedAt: 1234,
     });
 
     const missing = harness([[{ feedEndId: 7n }], []]);

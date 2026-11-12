@@ -40,7 +40,21 @@ jobs:
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
 
   android:
+    name: Android ${{ matrix.arch }}
     needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ARM64
+            abi: aarch64
+            target: aarch64-linux-android
+          - arch: ARMv7
+            abi: armv7
+            target: armv7-linux-androideabi
+          - arch: x86_64
+            abi: x86_64
+            target: x86_64-linux-android
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -64,16 +78,14 @@ jobs:
       - uses: android-actions/setup-android@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
       - name: Install Android NDK
         run: sdkmanager 'ndk;27.1.12297006'
       - name: Install frontend and Tauri tooling
-        run: |
-          npm ci --prefix web
-          cargo install tauri-cli --version 2.11.4 --locked
+        run: npm ci --prefix web
       - name: Configure release signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -92,23 +104,133 @@ jobs:
             echo "keyAlias=$ANDROID_KEY_ALIAS"
             echo "keyPassword=$ANDROID_KEY_PASSWORD"
           } > src-tauri/gen/android/keystore.properties
-      - name: Build signed per-ABI release APKs
+      - name: Build signed release APK
         run: |
-          make -C src-tauri apk ABI=aarch64
-          make -C src-tauri apk ABI=armv7 WEB_BUILD=0
-          make -C src-tauri apk ABI=x86_64 WEB_BUILD=0
+          make -C src-tauri apk ABI=${{ matrix.abi }}
           cd src-tauri/dist/android
-          sha256sum *.apk > SHA256SUMS
+          sha256sum *.apk > SHA256SUMS.android-${{ matrix.abi }}
       - name: Upload Android release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: soms-android-release
+          name: soms-android-release-${{ matrix.abi }}
           path: |
             src-tauri/dist/android/*.apk
-            src-tauri/dist/android/SHA256SUMS
+            src-tauri/dist/android/SHA256SUMS.android-${{ matrix.abi }}
           if-no-files-found: error
+  linux:
+    needs: prepare
+    # Pinned to 22.04 — NOT ubuntu-latest: the bundles link against the runner's glibc (2.35) and
+    # WebKitGTK 4.1, which is the oldest supported baseline. A 24.04 build (glibc 2.39) refuses to
+    # start on 22.04-era hosts.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify release version
+        run: |
+          node scripts/check-version-sync.mjs
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION"
+      - name: Set up system package sources
+        timeout-minutes: 5
+        run: bash scripts/setup-ci-apt.sh
+      - name: Install desktop build dependencies
+        timeout-minutes: 15
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend and Tauri tooling
+        run: npm ci --prefix web
+      - name: Build AppImage and deb bundles
+        run: make -C src-tauri linux
+      - name: Checksum Linux artifacts
+        run: |
+          cd src-tauri/dist/linux
+          sha256sum SOMS-* > SHA256SUMS.linux
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: soms-linux-release
+          path: |
+            src-tauri/dist/linux/SOMS-*
+            src-tauri/dist/linux/SHA256SUMS.linux
+          if-no-files-found: error
+  macos:
+    needs: prepare
+    # Ad-hoc signed by default (the committed signingIdentity "-") — identical to a local
+    # personal build. For signed + notarized public distribution, configure the APPLE_* repo
+    # secrets; the build step passes them through to Tauri verbatim (empties are unset so the
+    # ad-hoc fallback keeps working when secrets are absent).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify release version
+        run: |
+          node scripts/check-version-sync.mjs
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend and Tauri tooling
+        run: npm ci --prefix web
+      - name: Build universal macOS bundles
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # An unset secret arrives as an EMPTY string, and an empty APPLE_SIGNING_IDENTITY would
+          # override the committed ad-hoc identity and fail codesign — drop empties first.
+          for v in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          make -C src-tauri macos
+      - name: Checksum macOS artifacts
+        run: |
+          cd src-tauri/dist/macos
+          shasum -a 256 SOMS-*.dmg > SHA256SUMS.macos
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: soms-macos-release
+          path: |
+            src-tauri/dist/macos/SOMS-*.dmg
+            src-tauri/dist/macos/SHA256SUMS.macos
+          if-no-files-found: error
+  windows:
+    needs: prepare
+    uses: ./.github/workflows/windows.yml
+    with:
+      ref: ${{ needs.prepare.outputs.commit }}
+      release-tag: ${{ inputs.tag || github.ref_name }}
+
   publish:
-    needs: [prepare, android]
+    needs: [prepare, android, linux, macos, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -119,8 +241,33 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: soms-android-release
+          pattern: soms-android-release-*
+          merge-multiple: true
           path: release-assets
+      - name: Verify and combine Android checksums
+        working-directory: release-assets
+        run: |
+          test "$(find . -maxdepth 1 -name '*.apk' | wc -l)" -eq 3
+          for abi in aarch64 armv7 x86_64; do
+            sha256sum --check "SHA256SUMS.android-$abi"
+          done
+          sort SHA256SUMS.android-* > SHA256SUMS
+      - name: Download Linux release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: soms-linux-release
+          path: release-assets/linux
+      - name: Download macOS release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: soms-macos-release
+          path: release-assets/macos
+      - name: Download Windows release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: soms-windows-*
+          merge-multiple: true
+          path: release-assets/windows
       - name: Extract release notes from changelog
         run: |
           node --input-type=module <<'NODE'
@@ -151,11 +298,22 @@ jobs:
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
-            gh release upload "$RELEASE_TAG" release-assets/*.apk release-assets/SHA256SUMS --clobber
+            gh release upload "$RELEASE_TAG" \
+              release-assets/*.apk release-assets/SHA256SUMS \
+              release-assets/linux/SOMS-*.AppImage release-assets/linux/SOMS-*.deb \
+              release-assets/linux/SHA256SUMS.linux \
+              release-assets/macos/SOMS-*.dmg release-assets/macos/SHA256SUMS.macos \
+              release-assets/windows/SOMS-*.exe release-assets/windows/SHA256SUMS.windows-* --clobber
           else
             RELEASE_FLAGS=()
             if [[ "$RELEASE_TAG" == *-* ]]; then
               RELEASE_FLAGS+=(--prerelease --latest=false)
             fi
-            gh release create "$RELEASE_TAG" release-assets/*.apk release-assets/SHA256SUMS --verify-tag --notes-file "$RUNNER_TEMP/release-notes.md" "${RELEASE_FLAGS[@]}"
+            gh release create "$RELEASE_TAG" \
+              release-assets/*.apk release-assets/SHA256SUMS \
+              release-assets/linux/SOMS-*.AppImage release-assets/linux/SOMS-*.deb \
+              release-assets/linux/SHA256SUMS.linux \
+              release-assets/macos/SOMS-*.dmg release-assets/macos/SHA256SUMS.macos \
+              release-assets/windows/SOMS-*.exe release-assets/windows/SHA256SUMS.windows-* \
+              --verify-tag --notes-file "$RUNNER_TEMP/release-notes.md" "${RELEASE_FLAGS[@]}"
           fi

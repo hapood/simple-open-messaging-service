@@ -50,7 +50,7 @@ declare module 'fastify' {
       groupDissolved: boolean;
     };
     /**
-     * Captured by the S2S preParsing hook (scoped to /s2s/v1/*): the exact request body bytes as
+     * Captured by the S2S preParsing hook (scoped to /somfp/v1/*): the exact request body bytes as
      * received over the wire. Required for RFC 9421 content-digest verification — re-serialized JSON
      * would not match the digest the sender signed. Read by S2sSignatureGuard.
      */
@@ -64,6 +64,7 @@ declare module 'fastify' {
       domain: string;
       namespaceId: number;
       keyId: string;
+      signatureCreatedAtSec: number;
       signatureExpiresAtSec: number;
     };
   }

@@ -6,6 +6,7 @@ const snapshot = {
   publisherNamespaceId: 7,
   profileNamespaceId: 7,
   profileRev: 3,
+  generatedAt: 1_700_000_000_000,
   displayName: 'Alice',
   avatar: '',
   bio: 'Hello',
@@ -35,6 +36,15 @@ describe('immutable addressed profiles', () => {
     await expect(
       writeProfileSnapshotInTx(transaction(snapshot) as never, snapshot),
     ).resolves.toBeUndefined();
+  });
+
+  it('rejects a conflicting generation time at the same exact revision', async () => {
+    await expect(
+      writeProfileSnapshotInTx(transaction(snapshot) as never, {
+        ...snapshot,
+        generatedAt: snapshot.generatedAt + 1,
+      }),
+    ).rejects.toThrow('conflicting immutable profile revision');
   });
 
   it('rejects conflicting contents at the same exact revision', async () => {

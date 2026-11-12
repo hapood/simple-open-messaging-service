@@ -8,6 +8,7 @@ import {
   vi,
 } from 'vitest';
 import { createGroupConversation } from './model';
+import { threadStructure } from './thread-feed.test-helper';
 import { WebdbStorage } from './webdb-storage';
 
 function page(scannedThrough: string, hasMore: boolean) {
@@ -49,18 +50,39 @@ describe('database worker Group Meta completion', () => {
     vi.spyOn(WebdbStorage.prototype, 'close').mockResolvedValue(undefined);
     vi.spyOn(WebdbStorage.prototype, 'getThreads').mockImplementation(
       async () => [
-        createGroupConversation(12, {
-          id: 21,
+        createGroupConversation({
+          threadId: 12,
           account: 'room',
-          namespaceId: 7,
-          name: '',
-          avatar: '',
-          description: '',
+          publisherNamespaceId: 7,
           profileRev: 1,
         }),
       ],
     );
-    vi.spyOn(WebdbStorage.prototype, 'getThreadStates').mockResolvedValue([]);
+    vi.spyOn(WebdbStorage.prototype, 'getThreadStates').mockResolvedValue([
+      {
+        ...threadStructure(12, {
+          type: 'GROUP',
+          publisherNamespaceId: 7,
+          profileAccount: 'room',
+          profileRev: 1,
+        }),
+        threadId: 12,
+        localReadSeq: 0,
+        threadFeedId: 1,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+        alias: null,
+        profileRev: 1,
+        groupMetaFeedEndId: '3',
+        joinRequestEndFeedId: 0,
+        joinRequestReadFeedId: -1,
+        groupInviteEndFeedId: 0,
+        announcementReadFeedId: 0,
+        lastReadSeq: 0,
+        unreadCount: 0,
+        lastMentionSeq: null,
+      },
+    ]);
     vi.spyOn(
       WebdbStorage.prototype,
       'beginGroupMetaRecovery',
@@ -71,9 +93,11 @@ describe('database worker Group Meta completion', () => {
         threadId: 12,
         memberCount: 0,
         groupMetaFeedId: page.scannedThrough,
-        announcement: null,
+        announcementFeedId: null,
+        announcementText: null,
+        announcementCreatedAt: null,
+        announcementOriginCreatedAt: null,
         groupMetaRecoveryThrough: page.hasMore ? '3' : null,
-        groupMetaRecoveryAnnouncement: null,
       }));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
@@ -90,11 +114,28 @@ describe('database worker Group Meta completion', () => {
         type: 'drain-thread-misc',
         userId: '42',
         threadId: 12,
-        groupMetaEndId: '3',
-        tombstoneEndSeq: null,
       },
     } as MessageEvent);
   }
+
+  it('posts explicit notification completion for an empty HELLO feed wake', async () => {
+    vi.spyOn(WebdbStorage.prototype, 'getThreadStates').mockResolvedValue([]);
+    vi.spyOn(WebdbStorage.prototype, 'readAccountState').mockResolvedValue({
+      schemaVersion: 1, selfProfile: null, selfIdentity: null, composerDrafts: [],
+      threadFeedCursor: 0, stateFeedId: null, stateFeedFullThrough: null,
+      profileNamespaceChangeEndId: null, intentRequestEndId: null,
+      intentRequestReadId: null, intentRequestOptimisticReadId: null,
+    });
+    vi.spyOn(WebdbStorage.prototype, 'withThreadFeedLock').mockImplementation(async (run) => run());
+    const port = { onmessage: null, start: vi.fn(), close: vi.fn() };
+    receive({ data: { id: 100, type: 'bind-thread-feed', userId: '42', port } } as unknown as MessageEvent);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ id: 100, ok: true }));
+    (port.onmessage as unknown as (event: { data: { target: number } }) => void)({ data: { target: 0 } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({
+      type: 'notification-batch', userId: 42, entries: [], syncComplete: true,
+    }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it('posts fact completion before the drain reply without requesting member profiles', async () => {
     fetch.mockResolvedValue({ ok: true, json: async () => page('3', false) });

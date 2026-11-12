@@ -5,8 +5,8 @@ export const FEDERATION_PROTOCOL_VERSIONS = [
 ] as const;
 export const CLIENT_API_PREFIX = 'api/v1' as const;
 export const FEDERATION_API_PREFIX =
-  `s2s/v${FEDERATION_PROTOCOL_VERSION}` as const;
-export const FEDERATION_WELL_KNOWN_PATH = '.well-known/somfp' as const;
+  `somfp/v${FEDERATION_PROTOCOL_VERSION}` as const;
+export const FEDERATION_DISCOVERY_PATH = 'somfp/discovery' as const;
 
 /** Pick the highest mutually supported major. Invalid/duplicate peer lists have no negotiation result. */
 export function selectFederationProtocolVersion(

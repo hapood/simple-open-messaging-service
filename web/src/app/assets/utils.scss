@@ -104,8 +104,8 @@
 @mixin auth-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
-  height: calc(100vh - var(--auth-keyboard-inset, 0px));
-  height: calc(100dvh - var(--auth-keyboard-inset, 0px));
+  height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: auto;
   // border-box + padding-top so the grid's 100dvh height INCLUDES the status-bar safe-area inset:
@@ -114,33 +114,45 @@
   // --soms-safe-top is injected by the native shell (see _tokens.scss).
   box-sizing: border-box;
   padding-top: var(--soms-safe-top, 0px);
-  transition: height 160ms ease-out;
+  // Keep keyboard motion on the content layer, never on the full-screen layout box.
+  &.auth-native-viewport .login-card {
+    transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
+    transition: transform 160ms ease-out;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    &.auth-native-viewport .login-card {
+      transition: none;
+    }
+  }
 
   .form-pane {
     @include neutral-form-controls;
     // Anchor for <app-auth-toolbar>'s absolute top-right placement.
     position: relative;
+    min-width: 0;
     display: flex;
     flex-direction: column; // stack the form card + the Tauri-only "server settings" link vertically
     align-items: center;
     justify-content: center;
     box-sizing: border-box; // padding stays inside the grid-stretched size — no explicit height is set
-    padding: 32px 24px;
+    padding: 64px 24px 32px; // Safe top clearance so centered form card never collides with top-right toolbar
     background:
       radial-gradient(circle at 88% 10%, color-mix(in srgb, var(--app-brand) 7%, transparent), transparent 30%),
       radial-gradient(circle at 12% 90%, color-mix(in srgb, var(--app-text-muted) 5%, transparent), transparent 32%),
       var(--app-bg);
   }
 
-  // Android shell only: native WindowInsets gives us authoritative IME geometry. Keep the unchanged form
-  // centered in the visible region. `safe center` falls back to the start edge when the full-size content
-  // is taller than that region, leaving it scroll-reachable without hiding or resizing any page chrome.
-  &.auth-native-keyboard-open .form-pane {
-    justify-content: safe center;
-  }
 
   @media (max-width: 899px) {
-    grid-template-columns: 1fr;
+    // A bare 1fr retains the content's automatic minimum and can overflow
+    // the viewport when Material controls contribute a wide intrinsic size.
+    grid-template-columns: minmax(0, 1fr);
+
+    .form-pane {
+      padding-inline: 16px;
+    }
+
     // .form-pane needs no min-height: the grid stretches the single row to fill the auth-shell's 100dvh
     // content area (verified live). The old `min-height: 100dvh` sized the content-box and, with the
     // 32px padding, gave 1088px → 64px overflow on a 1024px viewport. Stretch + border-box adapts to
@@ -154,18 +166,18 @@
 @mixin auth-card {
   position: relative;
   width: 100%;
-  max-width: 380px;
+  max-width: 400px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  padding: 40px 32px 32px;
+  padding: 32px 28px 24px;
   background: var(--app-surface);
   border: 1px solid color-mix(in srgb, var(--app-brand) 10%, var(--app-border));
   border-radius: var(--app-radius-lg);
   box-shadow: 0 20px 56px rgba(20, 22, 24, 0.10), 0 2px 8px rgba(20, 22, 24, 0.04);
 
   @media (max-width: 479px) {
-    padding: 32px 24px 24px;
+    padding: 28px 20px 20px;
   }
 }
 
@@ -193,8 +205,8 @@
 @mixin auth-footer {
   .auth-footer {
     width: 100%;
-    max-width: 380px;
-    margin-top: 12px;
+    max-width: 400px;
+    margin-top: 56px;
     min-height: 24px;
     box-sizing: border-box;
     display: flex;

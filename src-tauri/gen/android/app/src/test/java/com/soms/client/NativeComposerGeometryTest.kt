@@ -7,6 +7,14 @@ import org.junit.Test
 
 class NativeComposerGeometryTest {
     @Test
+    fun `freeform caption is not counted as a bottom gap`() {
+        assertEquals(0, NativeComposerGeometry.bottomGap(1477, 1364, 113))
+        assertEquals(0, NativeComposerGeometry.bottomGap(1364, 1364, 0))
+        assertEquals(100, NativeComposerGeometry.bottomGap(1477, 1264, 113))
+        assertEquals(0, NativeComposerGeometry.bottomGap(1477, 1400, 113))
+    }
+
+    @Test
     fun `emoji and system surfaces report the same total for the same keyboard height`() {
         val emoji = NativeComposerGeometry.occupiedDevicePx(
             visible = true,

@@ -1,6 +1,12 @@
 import { lookup } from 'node:dns';
 import { resolveSrv } from 'node:dns/promises';
-import { Agent, buildConnector, fetch as undiciFetch } from 'undici';
+import {
+  Agent,
+  buildConnector,
+  request as undiciRequest,
+  type Dispatcher,
+} from 'undici';
+import { Readable } from 'node:stream';
 import type { TLSSocket } from 'node:tls';
 import {
   classifySomfpSrvRrset,
@@ -162,19 +168,46 @@ export async function requestFederation(
   dispatcher: Agent | undefined,
   init: RequestInit = {},
   poolSignal?: AbortSignal,
+  idleTimeoutMs = 30_000,
 ): Promise<Response> {
-  return (await undiciFetch(url, {
-    ...(init as Record<string, unknown>),
-    ...(poolSignal
-      ? {
-          signal: init.signal
-            ? AbortSignal.any([init.signal, poolSignal])
-            : poolSignal,
-        }
-      : {}),
-    redirect: 'manual',
+  const headers = Object.fromEntries(new Headers(init.headers).entries());
+  const signal = poolSignal
+    ? init.signal
+      ? AbortSignal.any([init.signal, poolSignal])
+      : poolSignal
+    : init.signal;
+  // Undici starts the headers deadline only once the connection is ready to send
+  // the request. Its body deadline resets on incoming data and respects backpressure.
+  // fetch() overrides dispatcher deadlines, so use request() and adapt its body.
+  const result = await undiciRequest(url, {
+    method: (init.method ?? 'GET') as Dispatcher.HttpMethod,
+    headers,
+    body: init.body as string | undefined,
+    signal,
+    headersTimeout: idleTimeoutMs,
+    bodyTimeout: idleTimeoutMs,
     ...(dispatcher ? { dispatcher } : {}),
-  } as never)) as unknown as Response;
+  });
+  const responseHeaders = new Headers();
+  for (const [key, value] of Object.entries(result.headers)) {
+    if (Array.isArray(value)) {
+      for (const entry of value) responseHeaders.append(key, entry);
+    } else if (value !== undefined) responseHeaders.set(key, value);
+  }
+  const noBody =
+    init.method === 'HEAD' || [204, 205, 304].includes(result.statusCode);
+  if (noBody) await result.body.dump();
+  return new Response(
+    noBody
+      ? null
+      : (Readable.toWeb(result.body, {
+          strategy: {
+            highWaterMark: 64 * 1024,
+            size: (chunk: Uint8Array) => chunk.byteLength,
+          },
+        }) as ReadableStream<Uint8Array>),
+    { status: result.statusCode, headers: responseHeaders },
+  );
 }
 
 /** Identical content-type, size, JSON, and signature validation for discovery consumers. */

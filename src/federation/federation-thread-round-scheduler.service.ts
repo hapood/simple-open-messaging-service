@@ -1,3 +1,5 @@
+import { QuotaService } from '../quota/quota.service.js';
+import { QuotaPausedError } from '../quota/quota-runtime.js';
 import {
   FEDERATION_STATE_FEED_PUSH,
   type FederationStateFeedPush,
@@ -131,6 +133,7 @@ export class FederationThreadRoundSchedulerService
     private readonly threadQueryDenials: FederationThreadQueryDenialService,
     private readonly sources: FederationThreadSourceService,
     private readonly keypair: KeypairService,
+    private readonly quota: QuotaService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -541,6 +544,8 @@ export class FederationThreadRoundSchedulerService
     const queue = this.queues[direction];
     const workKey = this.workKey(threadId, peerDomain, namespaceId);
     queue.dirtyThreads.delete(workKey);
+    if (direction === 'message' || direction === 'reverse')
+      await this.quota.assertCanPullMessages(namespaceId);
     let shouldContinue: boolean;
     if (direction === 'message') {
       await this.forward.runMessages(
@@ -765,6 +770,9 @@ export class FederationThreadRoundSchedulerService
   }
 
   private retryDecision(error: unknown): { retry: boolean; delayMs: number } {
+    // Recheck locally at bounded intervals so policy edits and UTC reset resume work without another push.
+    if (error instanceof QuotaPausedError)
+      return { retry: true, delayMs: Math.min(30, error.retryAfter) * 1000 };
     if (
       error instanceof BusinessException ||
       error instanceof FederationMessageContextError

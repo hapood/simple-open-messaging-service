@@ -1,4 +1,5 @@
 import { parseRequestSnapshot } from '../../../../shared/request-snapshot.js';
+import { UserQuotaService } from '../../../quota/user-quota.service.js';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
@@ -35,6 +36,7 @@ import { admitGroupMembershipProjectionFanoutInTx } from '../shared/group-member
 import { Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
+import { captureGroupDepartureUpdatesInTx } from '../../shared/capture-group-departure-updates.js';
 import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
 import type { RequestDecision } from '../../../../shared/relationship-request.js';
 import { BusinessCode } from '../../../common/business-code.js';
@@ -79,7 +81,6 @@ export type MemberAuthoredGroupMembershipIntentCommand =
     };
 
 export interface MemberAuthoredGroupMembershipIntentOptions {
-  admissionInTx?: (tx: DatabaseTransaction) => Promise<void>;
   /** Exact-round gate for HTTP decisions: the command may only settle the
    * named open round. Validated under the membership locks held here. */
   requestDecision?: { requestId: bigint; decision: RequestDecision };
@@ -148,6 +149,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     private readonly clientFeed: ClientStateFeedService,
     private readonly relationshipMutations: GroupRelationshipMutationService,
     private readonly federation: FederationStateFeedPusher,
+    private readonly quota: UserQuotaService,
   ) {}
 
   async execute(
@@ -167,7 +169,6 @@ export class MemberAuthoredGroupMembershipIntentService {
       memberUserId: number;
       target: { account: string; namespaceId: number };
       note?: string;
-      admissionInTx?: (tx: DatabaseTransaction) => Promise<void>;
     } & (
       | { decision: 'REQUESTED'; snapshot: RequestSnapshot }
       | { decision: 'ACCEPTED' | 'REVOKED'; snapshot?: never }
@@ -257,11 +258,7 @@ export class MemberAuthoredGroupMembershipIntentService {
               memberUserId: params.memberUserId,
               decision: params.decision,
             };
-      return this.executeInTx(tx, command, clientUpdates, {
-        ...(params.admissionInTx
-          ? { admissionInTx: params.admissionInTx }
-          : {}),
-      });
+      return this.executeInTx(tx, command, clientUpdates, {});
     });
     this.publishApplied(applied, clientUpdates);
     return applied.outcome;
@@ -330,7 +327,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     );
     if ('status' in context)
       return { outcome: context, peers: new Map<number, bigint>() };
-    await options?.admissionInTx?.(tx);
+    await this.quota.tick(params.memberUserId, 'requests', tx);
     return {
       outcome: { status: 'APPLIED' },
       peers: await this.applyInTx(context, clientUpdates),
@@ -563,9 +560,9 @@ export class MemberAuthoredGroupMembershipIntentService {
     if (row.invitationOutstanding) return this.prepareAcceptanceInTx(base);
     if (base.params.decision !== 'REQUESTED')
       throw new Error('request command required');
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     const expiresAt = new Date(
-      requestedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
+      statusChangedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
     );
     if (row.namespaceId !== 0)
       return this.finalizeValidationInTx(base, {
@@ -585,7 +582,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         profileNamespaceId: 0,
         localMemberId: row.localMemberId!,
         note: (base.params.note ?? '').slice(0, 255),
-        requestedAt,
+        statusChangedAt,
         expiresAt,
       },
     });
@@ -861,6 +858,14 @@ export class MemberAuthoredGroupMembershipIntentService {
       }>(groupMembershipRevocationSql(context.input));
       const row = result.rows[0];
       if (!row) throw new Error('membership revocation update disappeared');
+      if (row.pairChanged)
+        clientUpdates.push(
+          ...(await captureGroupDepartureUpdatesInTx(
+            context.tx,
+            context.params.threadId,
+            context.params.memberUserId,
+          )),
+        );
       // Explicit member-side terminal actions:
       // - WITHDRAW: member withdraws application (request -> WITHDRAWN)
       // - DECLINE: member declines group invitation (request -> REJECTED)

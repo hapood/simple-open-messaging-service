@@ -1,0 +1,83 @@
+name: Build Windows client
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build; defaults to the caller's checkout ref
+        type: string
+        default: ''
+      release-tag:
+        description: Optional release tag to validate against the package version
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Windows ${{ matrix.arch == 'arm64' && 'ARM64' || matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify version
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          node scripts/check-version-sync.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:RELEASE_TAG) {
+            $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+            if ($env:RELEASE_TAG -ne "v$version") { throw "Release tag does not match package version" }
+          }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend and Tauri tooling
+        run: npm ci --prefix web
+      - name: Build Windows NSIS installer
+        # No signing certificate is configured; Windows may warn about an unknown publisher.
+        run: node web/node_modules/@tauri-apps/cli/tauri.js build --ci --target ${{ matrix.target }} --bundles nsis
+      - name: Test shared Rust runtime on Windows
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib --target ${{ matrix.target }}
+      - name: Collect and checksum Windows installer
+        run: |
+          $installers = @(Get-ChildItem src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe)
+          if ($installers.Count -ne 1) { throw "Expected exactly one Windows installer" }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force src-tauri/dist/windows | Out-Null
+          $name = "SOMS-$version-windows-${{ matrix.arch }}-setup.exe"
+          $destination = "src-tauri/dist/windows/$name"
+          Copy-Item $installers[0].FullName $destination
+          $hash = (Get-FileHash $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content src-tauri/dist/windows/SHA256SUMS.windows-${{ matrix.arch }} "$hash  $name" -Encoding utf8NoBOM
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: soms-windows-${{ matrix.arch }}
+          path: |
+            src-tauri/dist/windows/SOMS-*.exe
+            src-tauri/dist/windows/SHA256SUMS.windows-*
+          if-no-files-found: error

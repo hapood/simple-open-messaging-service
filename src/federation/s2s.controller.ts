@@ -1,3 +1,4 @@
+import { FederationFeedHeadReceiptService } from './federation-feed-head-receipt.service.js';
 import { Public } from '../common/public.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
 import {
@@ -49,11 +50,11 @@ import {
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
  * Active namespace trust + request integrity + captures req.rawBody, then sets req.peer.
  *
- * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationCallBridgeService.handleFrame.
- * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.
- * - POST /s2s/v1/feed-heads — an ephemeral merged state-feed / profile-namespace-feed wake-up hint.
- * - GET  /s2s/v1/profile-namespace-feed — the shared compacted identity-binding change feed.
- * - GET  /s2s/v1/profile-namespaces/:nsid — current bindings of one namespace id in this server's space.
+ * - POST /somfp/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationCallBridgeService.handleFrame.
+ * - GET  /somfp/v1/state-feed — compacted profile/relationship/group state for the signed peer.
+ * - POST /somfp/v1/feed-heads — an ephemeral merged state-feed / profile-namespace-feed wake-up hint.
+ * - GET  /somfp/v1/profile-namespace-feed — the shared compacted identity-binding change feed.
+ * - GET  /somfp/v1/profile-namespaces/:nsid — current bindings of one namespace id in this server's space.
  *
  * Response shape: success bodies are enveloped by the global SerializeInterceptor as
  * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
@@ -81,6 +82,7 @@ export class S2sController {
     private readonly roundScheduler: FederationThreadRoundSchedulerService,
     private readonly groupMeta: FederationGroupMetaFeedService,
     private readonly keypair: KeypairService,
+    private readonly feedHeadReceipts: FederationFeedHeadReceiptService,
   ) {}
 
   @Get('group-meta')
@@ -145,23 +147,34 @@ export class S2sController {
     const body = req.body as {
       stateFeedEndId?: unknown;
       profileNamespaceFeedEndId?: unknown;
+      generatedAt?: unknown;
     } | null;
+    const timestamp = (value: unknown): value is number =>
+      typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
     const decimal = (value: unknown): value is string =>
       typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
     if (
       !body ||
       typeof body !== 'object' ||
       Array.isArray(body) ||
-      Object.keys(body).length !== 2 ||
+      Object.keys(body).length !== 3 ||
       !decimal(body.stateFeedEndId) ||
-      !decimal(body.profileNamespaceFeedEndId)
+      !decimal(body.profileNamespaceFeedEndId) ||
+      !timestamp(body.generatedAt)
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'feed end IDs must be unsigned decimal strings',
+        'feed heads require decimal end IDs and a non-negative safe-integer generation timestamp',
         HttpStatus.BAD_REQUEST,
       );
     }
+    await this.feedHeadReceipts.record(req.peer!.namespaceId, {
+      stateFeedEndId: body.stateFeedEndId,
+      profileNamespaceFeedEndId: body.profileNamespaceFeedEndId,
+      generatedAt: body.generatedAt,
+      // RFC 9421 created is authenticated by the guard and uses whole seconds.
+      sentAt: req.peer!.signatureCreatedAtSec * 1000,
+    });
     const stateFeedEndId = BigInt(body.stateFeedEndId);
     this.roundScheduler.wakeStateFeed(signer, stateFeedEndId);
     // Each field is handled independently: the profile-namespace head wakes
@@ -205,15 +218,14 @@ export class S2sController {
     return this.profileNamespaceFeed.serve(after, take, through);
   }
 
-  /** Current bindings of one namespace id in this responder's own namespace
-   *  space. Id 0 is the responder itself; display/vouching data only. */
+  /** Current third-party bindings in this responder's namespace space. */
   @Get('profile-namespaces/:nsid')
   async getProfileNamespace(@Req() req: FastifyRequest): Promise<unknown> {
     const raw = (req.params as { nsid?: unknown }).nsid;
-    if (typeof raw !== 'string' || !/^(0|[1-9][0-9]{0,15})$/.test(raw)) {
+    if (typeof raw !== 'string' || !/^[1-9][0-9]{0,15}$/.test(raw)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'nsid must be a non-negative decimal path parameter',
+        'nsid must be a positive decimal path parameter',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -463,7 +475,7 @@ export class S2sController {
   @Get('accounts/:account')
   async getAccountProfile(@Req() req: FastifyRequest) {
     const parsed = parseFederationResourceRequest(req, {
-      pathPrefix: '/s2s/v1/accounts/',
+      pathPrefix: '/somfp/v1/accounts/',
       pathName: 'account',
       query: [{ name: 'publicKey' }, { name: 'challenge' }],
     });
@@ -493,9 +505,17 @@ export class S2sController {
         `account ${account} not found`,
       );
     }
-    const { account: owner, displayName, bio, avatar, profileRev } = profile;
+    const {
+      account: owner,
+      displayName,
+      bio,
+      avatar,
+      profileRev,
+      generatedAt,
+    } = profile;
     return {
       account: owner,
+      generatedAt,
       profileRev,
       profile: profileRev === 0 ? null : { displayName, bio, avatar },
       proof,
@@ -504,11 +524,11 @@ export class S2sController {
 
   @Get('account-profiles/:namespaceId/:account/:profileRev')
   async getExactAccountProfile(@Req() req: FastifyRequest) {
-    const path = parseFederationResourcePath(req, '/s2s/v1/account-profiles/', [
-      'namespaceId',
-      'account',
-      'profileRev',
-    ]);
+    const path = parseFederationResourcePath(
+      req,
+      '/somfp/v1/account-profiles/',
+      ['namespaceId', 'account', 'profileRev'],
+    );
     const profileNamespaceId = requireSafeDecimal(
       path.namespaceId,
       'namespaceId',
@@ -531,8 +551,8 @@ export class S2sController {
     );
     if (!profile)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
-    const { account: owner, displayName, bio, avatar } = profile;
-    return { account: owner, displayName, bio, avatar };
+    const { account: owner, displayName, bio, avatar, generatedAt } = profile;
+    return { account: owner, displayName, bio, avatar, generatedAt };
   }
 
   @Get(
@@ -541,7 +561,7 @@ export class S2sController {
   async getGroupMemberProfile(@Req() req: FastifyRequest) {
     const path = parseFederationResourcePath(
       req,
-      '/s2s/v1/group-member-profiles/',
+      '/somfp/v1/group-member-profiles/',
       ['groupAccount', 'namespaceId', 'memberAccount', 'profileRev'],
     );
     const groupAccount = requireAccount(path.groupAccount, 'groupAccount');
@@ -579,8 +599,8 @@ export class S2sController {
     );
     if (!profile)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
-    const { account, displayName, bio, avatar } = profile;
-    return { account, displayName, bio, avatar };
+    const { account, displayName, bio, avatar, generatedAt } = profile;
+    return { account, displayName, bio, avatar, generatedAt };
   }
 
   /** The verified signer domain (set by S2sSignatureGuard as req.peer.domain). */
@@ -717,7 +737,7 @@ export class S2sController {
     return { type: 'GROUP' as const, account: normalizedAccount };
   }
 
-  /** Parse and validate the `queries` array of a `POST /s2s/v1/message-provenance` request. Each
+  /** Parse and validate the `queries` array of a `POST /somfp/v1/message-provenance` request. Each
    *  query is a closed object with a `thread` (P2P `{account, peerAccount}` or GROUP `{account}`),
    *  a positive `seq`, and a 64-character lowercase hex `payloadDigest`. */
   private parseProvenanceQueries(raw: unknown[]): {
@@ -824,7 +844,7 @@ export class S2sController {
     );
   }
 
-  /** GET /s2s/v1/media/:digest — stream a chat-media asset by sha256 digest,
+  /** GET /somfp/v1/media/:digest — stream a chat-media asset by sha256 digest,
    *  with HTTP Range/206 support so the receiver fetches large files in resumable chunks (no whole-file
    *  buffer, no whole-transfer timeout). The receiver already knows the extension from the message
    *  content URL and re-serves same-origin via @fastify/static (ext→mime), so the S2S Content-Type is
@@ -835,7 +855,7 @@ export class S2sController {
   @Get('media/:digest')
   async getFile(@Req() req: FastifyRequest, @Res() reply: FastifyReply) {
     const parsed = parseFederationResourceRequest(req, {
-      pathPrefix: '/s2s/v1/media/',
+      pathPrefix: '/somfp/v1/media/',
       pathName: 'digest',
       query: [
         { name: 'fromAccount' },
@@ -936,7 +956,7 @@ export class S2sController {
   @Get('forward-bundles/:bundleId')
   async getForwardBundle(@Req() req: FastifyRequest) {
     const parsed = parseFederationResourceRequest(req, {
-      pathPrefix: '/s2s/v1/forward-bundles/',
+      pathPrefix: '/somfp/v1/forward-bundles/',
       pathName: 'bundleId',
     });
     const bundleId = requireBundleId(parsed.pathValue);

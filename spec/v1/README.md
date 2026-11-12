@@ -2,11 +2,11 @@
 
 Status: `DRAFT` — Final Review
 
-Release: `v1.0.0-draft.1`
+Release: `v1.0.0-draft.2`
 
-This directory contains the Simple Open Messaging Federation Protocol v1.0.0-draft.1 working package. The intended protocol scope is settled for final review, but the wire contract is not frozen. This is a closeout-review draft, not an early design sketch or a release candidate. Corrections remain possible; the current text and validation artifacts must describe the same draft contract. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
+This directory contains the Simple Open Messaging Federation Protocol v1.0.0-draft.2 working package. The intended protocol scope is settled for final review, but the wire contract is not frozen. This is a closeout-review draft, not an early design sketch or a release candidate. Corrections remain possible; the current text and validation artifacts must describe the same draft contract. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
 
-This English text is the authoritative working text for v1.0.0-draft.1.
+This English text is the authoritative working text for v1.0.0-draft.2.
 
 The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174. Wire fields, enum values, HTTP headers, standard names, and stable error codes retain their original spelling and appear in code formatting. Examples, diagrams, TypeScript notation, and artifacts under `schema/` explain or validate the normative text but do not independently create protocol requirements.
 
@@ -15,7 +15,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and module dependencies, and [`RELEASE.json`](../RELEASE.json) for package version and status metadata.
 
 1. [Core Protocol](./protocol.md): roles, versioning, HTTP surface, shared types, responses, durable state, and evolution rules.
-2. [Transport and Security](./transport-security.md): well-known discovery, root and signing keys, SRV, TLS, logical authority, digests, and HTTP Message Signatures.
+2. [Transport and Security](./transport-security.md): discovery, root and signing keys, SRV, TLS, logical authority, digests, and HTTP Message Signatures.
 3. [Peer Recognition](./recognition.md): bidirectional Recognize, root public-key pinning, the peer-assigned namespace disclosure, domain re-binding and root rotation arrivals, sealed-challenge verification, Health availability queries, degraded state, timing, and failure handling.
 4. [State Feed](./state-feed.md): compacted relationship/profile-reference, Group Meta feed-head, and thread-content snapshots.
 5. [Group Meta Feed](./group-meta.md): the group-origin canonical full and delta member-role, compacted group-profile-reference, and current-announcement feed.

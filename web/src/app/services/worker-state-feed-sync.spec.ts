@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { synchronizeStateFeed } from './worker-state-feed-sync';

@@ -10,6 +10,7 @@ use tokio::net::{TcpListener, TcpStream};
 fn owner() -> Arc<LoginConnection> {
     let database = Connection::open_in_memory().unwrap();
     crate::native_db::create_cache_schema(&database).unwrap();
+    crate::native_db::thread_store::insert_test_thread(&database, 42, 7, 3);
     database
         .execute_batch(
             "CREATE TEMP TABLE message_writes(seq INTEGER);
@@ -115,6 +116,51 @@ fn sequences(result: NativeHistoryResult) -> Vec<i64> {
 }
 
 #[tokio::test]
+async fn consumer_cancel_closes_in_flight_history_http_without_ending_login() {
+    let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = ServerSessionState::new();
+    origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
+    let owner = owner();
+    let history = intent(&owner, &proxy);
+    let token = tokio_util::sync::CancellationToken::new();
+    let task_token = token.clone();
+    let task = tokio::spawn(async move {
+        crate::native_db::history_ipc::run_until_cancelled(
+            &task_token,
+            history.get(NativeHistoryDemand::Latest {
+                count: 3,
+                known_newest_seq: None,
+            }),
+        )
+        .await
+    });
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_query(&mut socket).await, json!({"threadId": 7}));
+    token.cancel();
+    assert!(tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_none());
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), socket.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    owner
+        .capture_database_work()
+        .unwrap()
+        .assert_current()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connection() {
     let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
@@ -123,7 +169,6 @@ async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connectio
     let history = intent(&owner, &proxy);
     // Mutating runtime mirrors after intent creation cannot retarget any page.
     origins(&proxy, "http://127.0.0.1:1");
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serving = tokio::spawn(async move {
         for (query, reply) in [
             (json!({"threadId": 7}), cursor(4)),
@@ -153,6 +198,13 @@ async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connectio
     .unwrap();
     assert_eq!(sequences(result), [1, 2, 3]);
     serving.await.unwrap();
+    // The local-only opening path must work even with an unreachable origin.
+    let local = intent(&owner, &proxy)
+        .get(NativeHistoryDemand::LocalLatest { count: 2 })
+        .await
+        .unwrap();
+    assert!(local.has_older && local.has_newer);
+    assert_eq!(sequences(local), [2, 3]);
     // Both legs now use the same cached ranges without contacting the unreachable new origin.
     let result = intent(&owner, &proxy)
         .get(NativeHistoryDemand::Around {
@@ -179,21 +231,71 @@ async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connectio
 }
 
 #[tokio::test]
-async fn deletion_only_sync_state_has_no_known_head() {
+async fn local_latest_empty_does_not_bootstrap_or_claim_exhaustion() {
+    let proxy = ServerSessionState::new();
+    origins(&proxy, "http://127.0.0.1:1");
     let owner = owner();
-    owner
-        .with_database(|conn| {
-            conn.execute(
-                "INSERT INTO thread_sync_state(user_id,thread_id,deleted_hwm) VALUES(42,7,3)",
-                [],
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
+    let result = intent(&owner, &proxy)
+        .get(NativeHistoryDemand::LocalLatest { count: 20 })
+        .await
         .unwrap();
+    assert!(result.items.is_empty());
+    assert!(result.has_older && result.has_newer);
+    assert!(!result.failed);
+}
+
+#[tokio::test]
+async fn newly_created_thread_has_no_known_head() {
+    let owner = owner();
     let work = owner.capture_database_work().unwrap();
     assert_eq!(read_native_message_head(&work, 42, 7).await.unwrap(), None);
-    assert_eq!(read_native_message_head(&work, 42, 8).await.unwrap(), None);
+    assert_eq!(
+        read_native_message_head(&work, 42, 8).await.unwrap_err(),
+        "thread message progress is not initialized"
+    );
+}
+
+#[tokio::test]
+async fn newer_uses_committed_feed_and_opening_head_without_claiming_coverage() {
+    for (feed, cached, opening, expected) in [
+        (20, 19, None, 20),
+        (19, 19, Some(20), 20),
+        (20, 19, Some(18), 20),
+        (18, 20, Some(19), 20),
+    ] {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = ServerSessionState::new();
+        origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
+        let owner = owner();
+        owner.with_database(|conn| {
+            conn.execute(
+                "UPDATE threads SET message_end_seq=?1,message_head=?2 WHERE thread_id=7",
+                params![feed, cached],
+            ).map_err(|e| e.to_string())?;
+            assert!(load_message_ranges(conn, 42, 7)?.is_empty());
+            Ok(())
+        }).unwrap();
+        let serving = tokio::spawn(async move {
+            let (mut socket, _) = server.accept().await.unwrap();
+            assert_eq!(read_query(&mut socket).await,
+                json!({"threadId":7,"after":19,"through":expected,"take":50}));
+            respond(&mut socket, page(&[20], 20)).await;
+        });
+        let result = tokio::time::timeout(Duration::from_secs(5),
+            intent(&owner, &proxy).get_with_head(
+                NativeHistoryDemand::Newer { after: 19, count: 50 }, opening,
+            ),
+        ).await.unwrap().unwrap();
+        assert_eq!(sequences(result), [20]);
+        serving.await.unwrap();
+        let work = owner.capture_database_work().unwrap();
+        assert_eq!(read_native_message_head(&work, 42, 7).await.unwrap(), Some(20));
+        // A later stale opening must not lower the retained bound, even without HTTP work.
+        intent(&owner, &proxy).get_with_head(
+            NativeHistoryDemand::Newer { after: 20, count: 50 }, Some(18),
+        ).await.unwrap();
+        assert_eq!(read_native_message_head(&work, 42, 7).await.unwrap(), Some(20));
+    }
 }
 
 #[tokio::test]
@@ -241,13 +343,14 @@ async fn cancellation_drops_history_body(repair: bool) {
             .unwrap();
         ready.send(()).unwrap();
         let mut byte = [0];
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte))
-                .await
-                .unwrap()
-                .unwrap(),
-            0
-        );
+        let closed = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte))
+            .await
+            .expect("cancelled history request must terminate its transport");
+        match closed {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("expected EOF or reset after cancellation, got {other:?}"),
+        }
     });
     let fetching = tokio::spawn(history.get(NativeHistoryDemand::Latest {
         count: 1,

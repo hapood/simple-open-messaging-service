@@ -118,7 +118,7 @@ class RealtimeService : Service(), RealtimeCallbacks {
         val type = envelope.getString("event")
         // Platform media routing reads data, but WebView delivery preserves the full Rust envelope.
         if (type == "CALL_SIGNAL" || type == "CALL_EVENT")
-            CallController.onFrame(type, envelope.getJSONObject("data").toString())
+            CallController.onFrame(type, envelope.getJSONObject("data").toString(), envelope.getString("loginSessionId"))
         if (SomsMessagingService.appInForeground)
             SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__($envelopeJson);")
     }
@@ -150,12 +150,6 @@ class RealtimeService : Service(), RealtimeCallbacks {
             SomsSecureStore.setHelloIdentity(this, SomsSecureStore.getSessionToken(this), sessionId.toInt(), userId)
     }
 
-    override fun onNotifications(generation: Long, batch: NativeNotificationBatch) = dispatch(generation) {
-        SomsMessagingService.renderNativeBatch(this, batch) {
-            adapter.isAlive && RustRuntimeBridge.realtimeIsCurrent(generation) && RustRuntimeBridge.isLoginSessionCurrent(batch.loginSessionId)
-        }
-    }
-
     /** Execute Rust's explicit recovery command; do not re-derive ringing/caller policy from HELLO. */
     override fun onIncomingCall(generation: Long, dataJson: String) = dispatch(generation) {
         val command = JSONObject(dataJson)
@@ -165,14 +159,7 @@ class RealtimeService : Service(), RealtimeCallbacks {
         val account = command.getString("peerAccount")
         val namespaceId = command.optInt("peerNamespaceId", -1)
         val callType = command.optString("callType", "AUDIO")
-        // The shared native resolver owns presentation (alias → cached profile → cached thread name →
-        // account); the HELLO payload's name/avatar are only the fallback without a local record.
-        val peer = ClientStateDb.getCallPeer(this, account, namespaceId, threadId)
-        val name = peer?.name ?: command.optString("peerName", account)
-        val avatar = peer?.avatarDataUrl()
-            ?: if (command.isNull("peerAvatar")) "" else command.optString("peerAvatar", "")
-        CallController.seedIncoming(sid, peerId, account, namespaceId, name, avatar, threadId, callType)
-        CallService.startIncoming(this, sid, account, namespaceId, threadId, callType, name, avatar)
+        CallController.seedIncoming(sid, peerId, account, namespaceId, threadId, callType, "hello", command.getString("loginSessionId"))
     }
 
     override fun onTimeout(startId: Int) {

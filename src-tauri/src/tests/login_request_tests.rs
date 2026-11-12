@@ -79,7 +79,6 @@ async fn captured_request_never_reads_successor_origin_or_credential() {
     let owner = owner();
     let mut request = LoginRequest::capture(&proxy, owner.clone()).unwrap();
     origins(&proxy, &successor_origin, None);
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serve = tokio::spawn(async move {
         let (mut socket, _) = server.accept().await.unwrap();
         let headers = read_request(&mut socket).await;
@@ -131,10 +130,15 @@ async fn end_cancels_the_socket_while_waiting_for_a_body_without_holding_sql() {
             .unwrap();
         headers_sent.send(()).unwrap();
         let mut rest = Vec::new();
-        tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut rest))
+        let closed = tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut rest))
             .await
-            .expect("owner cancellation must close the actual socket")
-            .unwrap();
+            .expect("owner cancellation must close the actual socket");
+        match closed {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("expected EOF or reset after cancellation, got {other:?}"),
+        }
+        assert!(rest.is_empty(), "cancelled request must not send more data");
     });
     let fetching = tokio::spawn(async move { request.get("/silent-body".into()).await });
     tokio::time::timeout(Duration::from_secs(2), ready)
@@ -170,7 +174,6 @@ async fn verify_captured_failover(post_query: bool) {
     let owner = owner();
     let mut request = LoginRequest::capture(&proxy, owner).unwrap();
     origins(&proxy, &successor_origin, None);
-    *proxy.token.lock().unwrap() = Some("successor-token".into());
     let serve = tokio::spawn(async move {
         let (mut probe, _) = fallback.accept().await.unwrap();
         let headers = read_request(&mut probe).await;
@@ -227,10 +230,6 @@ async fn verify_captured_failover(post_query: bool) {
     assert_eq!(response.body, "replayed");
     serve.await.unwrap();
     assert_eq!(*proxy.api_origin.lock().unwrap(), successor_origin);
-    assert_eq!(
-        proxy.token.lock().unwrap().as_deref(),
-        Some("successor-token")
-    );
     assert!(
         tokio::time::timeout(Duration::from_millis(50), successor.accept())
             .await

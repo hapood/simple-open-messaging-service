@@ -6,17 +6,18 @@ import { Subject } from 'rxjs';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { LanguageService } from '../../services/language.service';
 import { UpdateService } from '../../services/update.service';
+import { ToastContentComponent } from '../toast-content/toast-content.component';
 import { UpdateBannerComponent } from './update-banner.component';
 
 describe('UpdateBannerComponent (global Material snackbar)', () => {
-  const action$ = new Subject<void>();
-  const dismissed$ = new Subject<void>();
+  let action$: Subject<void>;
+  let dismissed$: Subject<void>;
   const ref = {
     onAction: () => action$.asObservable(),
     afterDismissed: () => dismissed$.asObservable(),
     dismiss: vi.fn().mockName('dismiss'),
   };
-  const snackBar = { open: vi.fn().mockName('open').mockReturnValue(ref) };
+  const snackBar = { openFromComponent: vi.fn().mockReturnValue(ref) };
   const available = signal(false);
   const update = {
     available,
@@ -28,8 +29,10 @@ describe('UpdateBannerComponent (global Material snackbar)', () => {
   };
 
   beforeEach(() => {
+    action$ = new Subject<void>();
+    dismissed$ = new Subject<void>();
     available.set(false);
-    snackBar.open.mockClear();
+    snackBar.openFromComponent.mockClear();
     ref.dismiss.mockClear();
     update.applyUpdate.mockClear();
     update.dismiss.mockClear();
@@ -58,20 +61,20 @@ describe('UpdateBannerComponent (global Material snackbar)', () => {
     const fixture = TestBed.createComponent(UpdateBannerComponent);
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(snackBar.open).not.toHaveBeenCalled();
+    expect(snackBar.openFromComponent).not.toHaveBeenCalled();
   });
 
-  it('opens a standard bottom notification when an update becomes available', async () => {
+  it('opens dismissible content with a persistent update action', async () => {
     const fixture = TestBed.createComponent(UpdateBannerComponent);
     fixture.detectChanges();
     available.set(true);
     await fixture.whenStable();
-    expect(snackBar.open).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
+    expect(snackBar.openFromComponent).toHaveBeenCalledWith(
+      ToastContentComponent,
       expect.objectContaining({
+        data: { message: expect.any(String), action: expect.any(String) },
         duration: 0,
-        panelClass: expect.arrayContaining(['soms-snack-bar--interactive']),
+        panelClass: ['soms-snack-bar', 'soms-update-snack-bar'],
       }),
     );
   });
@@ -82,16 +85,19 @@ describe('UpdateBannerComponent (global Material snackbar)', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     action$.next();
-    expect(update.applyUpdate).toHaveBeenCalled();
+    expect(update.applyUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it('dismisses the pending update when the snackbar closes', async () => {
+  it('dismisses the pending update without applying it when the snackbar closes', async () => {
     const fixture = TestBed.createComponent(UpdateBannerComponent);
     available.set(true);
     fixture.detectChanges();
     await fixture.whenStable();
     dismissed$.next();
-    expect(update.dismiss).toHaveBeenCalled();
+    await fixture.whenStable();
+    expect(update.dismiss).toHaveBeenCalledTimes(1);
+    expect(update.applyUpdate).not.toHaveBeenCalled();
+    expect(snackBar.openFromComponent).toHaveBeenCalledTimes(1);
   });
 
   it('supports the playground override and emits demoDismiss', async () => {
@@ -103,5 +109,7 @@ describe('UpdateBannerComponent (global Material snackbar)', () => {
     await fixture.whenStable();
     dismissed$.next();
     expect(count).toBe(1);
+    expect(update.applyUpdate).not.toHaveBeenCalled();
+    expect(update.dismiss).not.toHaveBeenCalled();
   });
 });

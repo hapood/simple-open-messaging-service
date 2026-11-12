@@ -19,7 +19,14 @@ function setup() {
   const sse = { onThreadFeedUpdated: vi.fn() };
   sse.onThreadFeedUpdated.mockImplementation(
     (userId: number, data: { threadFeedEndId: number }) =>
-      feed.notifyFeedUpdates([{ userId, feedId: data.threadFeedEndId }]),
+      feed.notifyFeedUpdates([
+        {
+          kind: 'thread-feed',
+          userId,
+          feedId: data.threadFeedEndId,
+          threadFeedEndId: data.threadFeedEndId,
+        },
+      ]),
   );
   const progress = {
     read: vi.fn().mockResolvedValue({ phase: 'FEED', afterAccountId: 0 }),

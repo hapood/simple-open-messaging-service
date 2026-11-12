@@ -65,7 +65,7 @@ function TargetDiagnosticsPanel() {
               {' · '}
               {t('networkTools.identity')}: {probe.data.route.domain}
               {' · '}
-              {probe.data.route.origin}/.well-known/somfp
+              {probe.data.route.origin}/somfp/discovery
             </p>
           )}
           {probe.data.checks.map((check, index) => (

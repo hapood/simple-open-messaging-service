@@ -14,17 +14,11 @@ export function conversationAvatarType(t: ConversationItem): UserAvatarType {
 }
 
 export function conversationAvatarAccount(t: ConversationItem): string {
-  return t.type === 'P2P' ? t.peerUser.account : t.group.account;
+  return t.account;
 }
 
 export function conversationAvatarNamespaceId(t: ConversationItem): number {
-  return t.type === 'P2P' ? t.peerUser.namespaceId : t.group.namespaceId;
-}
-
-export function conversationAvatarSrc(
-  t: ConversationItem,
-): string | null | undefined {
-  return t.type === 'P2P' ? t.peerUser.avatar : t.group.avatar;
+  return t.publisherNamespaceId;
 }
 
 // The thread→profile mapping (pinned revision, ACTIVE-linked authorization) lives in

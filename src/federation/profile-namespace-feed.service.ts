@@ -9,16 +9,17 @@ import {
 } from '../database/database.service.js';
 import {
   identityNamespace,
+  profileNamespaceFeedHead,
   profileNamespaceChangeFeed,
   profileNamespaceChangeFeedHead,
   profileNamespaceFeed,
 } from '../database/schema.js';
-import { KeypairService } from './keypair.service.js';
 import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
 
 export interface ProfileNamespaceFeedItem {
   namespaceId: number;
   feedId: string;
+  generatedAt: number;
 }
 
 export interface ProfileNamespaceFeedPage {
@@ -29,6 +30,7 @@ export interface ProfileNamespaceFeedPage {
 }
 
 export interface ProfileNamespaceBindings {
+  generatedAt: number;
   domain: string;
   rootPublicKey: string;
   profileNamespaceFeedEndId: string;
@@ -36,9 +38,7 @@ export interface ProfileNamespaceBindings {
 
 const DEFAULT_TAKE = 100;
 const MAX_TAKE = 200;
-/** Row 0 is the reserved local namespace: the sentinel for "the publisher
- *  itself" and the carrier of the per-server Profile Namespace Feed
- *  allocator. */
+/** Reserved subject namespace for the publisher itself. */
 const LOCAL_NAMESPACE_ID = 0;
 
 /** Client-facing coordinates are JSON numbers; the s2s wire keeps
@@ -62,7 +62,6 @@ function toClientFeedNumber(value: bigint): number {
 export class ProfileNamespaceFeedService {
   constructor(
     private readonly database: DatabaseService,
-    private readonly keypair: KeypairService,
     private readonly changes: ProfileNamespaceChangeStore,
   ) {}
 
@@ -191,125 +190,128 @@ export class ProfileNamespaceFeedService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    return this.database.db.transaction(async (tx) => {
-      const [head] = await tx
-        .select({ feedEndId: identityNamespace.profileNamespaceFeedEndId })
-        .from(identityNamespace)
-        .where(eq(identityNamespace.id, LOCAL_NAMESPACE_ID))
-        .limit(1);
-      if (!head) throw new Error('local namespace sentinel row is missing');
-      const feedEndId = head.feedEndId;
-      const cursor = after ?? 0n;
-      if (through !== undefined && through < cursor) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'through must be greater than or equal to after',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      if (cursor < 0n || cursor > feedEndId) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_MALFORMED,
-          'profile namespace feed cursor is outside the available coordinate space',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      const scanEnd =
-        through === undefined || through > feedEndId ? feedEndId : through;
-      const rawRows = await tx
-        .select()
-        .from(profileNamespaceFeed)
-        .where(
-          and(
-            gt(profileNamespaceFeed.feedId, cursor),
-            lte(profileNamespaceFeed.feedId, scanEnd),
-          ),
-        )
-        .orderBy(asc(profileNamespaceFeed.feedId))
-        .limit(take + 1);
-      const rows = rawRows.slice(0, take);
-      const items: ProfileNamespaceFeedPage['items'] = [];
-      let bytes = 0;
-      for (const row of rows) {
-        const item: ProfileNamespaceFeedPage['items'][number] = {
-          namespaceId: row.namespaceId,
-          feedId: row.feedId.toString(),
+    return this.database.db.transaction(
+      async (tx) => {
+        const [head] = await tx
+          .select({ feedEndId: profileNamespaceFeedHead.endId })
+          .from(profileNamespaceFeedHead)
+          .where(eq(profileNamespaceFeedHead.id, LOCAL_NAMESPACE_ID))
+          .limit(1);
+        if (!head) throw new Error('local namespace sentinel row is missing');
+        const feedEndId = head.feedEndId;
+        const cursor = after ?? 0n;
+        if (through !== undefined && through < cursor) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'through must be greater than or equal to after',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        if (cursor < 0n || cursor > feedEndId) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'profile namespace feed cursor is outside the available coordinate space',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        const scanEnd =
+          through === undefined || through > feedEndId ? feedEndId : through;
+        const rawRows = await tx
+          .select()
+          .from(profileNamespaceFeed)
+          .where(
+            and(
+              gt(profileNamespaceFeed.feedId, cursor),
+              lte(profileNamespaceFeed.feedId, scanEnd),
+            ),
+          )
+          .orderBy(asc(profileNamespaceFeed.feedId))
+          .limit(take + 1);
+        const rows = rawRows.slice(0, take);
+        const items: ProfileNamespaceFeedPage['items'] = [];
+        let bytes = 0;
+        for (const row of rows) {
+          const item: ProfileNamespaceFeedPage['items'][number] = {
+            namespaceId: row.namespaceId,
+            feedId: row.feedId.toString(),
+            generatedAt: row.updatedAt.getTime(),
+          };
+          const itemBytes = Buffer.byteLength(JSON.stringify(item));
+          if (items.length > 0 && bytes + itemBytes > STATE_FEED_PAGE_MAX_BYTES)
+            break;
+          items.push(item);
+          bytes += itemBytes;
+        }
+        const last = items.at(-1);
+        let scannedThrough: bigint;
+        if (items.length < rows.length && last) {
+          scannedThrough = BigInt(last.feedId);
+        } else if (rawRows.length > take) {
+          scannedThrough = rows.at(-1)?.feedId ?? cursor;
+        } else {
+          scannedThrough = scanEnd;
+        }
+        const hasMore = scannedThrough < scanEnd;
+        return {
+          items,
+          scannedThrough: scannedThrough.toString(),
+          feedEndId: feedEndId.toString(),
+          hasMore,
         };
-        const itemBytes = Buffer.byteLength(JSON.stringify(item));
-        if (items.length > 0 && bytes + itemBytes > STATE_FEED_PAGE_MAX_BYTES)
-          break;
-        items.push(item);
-        bytes += itemBytes;
-      }
-      const last = items.at(-1);
-      let scannedThrough: bigint;
-      if (items.length < rows.length && last) {
-        scannedThrough = BigInt(last.feedId);
-      } else if (rawRows.length > take) {
-        scannedThrough = rows.at(-1)?.feedId ?? cursor;
-      } else {
-        scannedThrough = scanEnd;
-      }
-      const hasMore = scannedThrough < scanEnd;
-      return {
-        items,
-        scannedThrough: scannedThrough.toString(),
-        feedEndId: feedEndId.toString(),
-        hasMore,
-      };
-    });
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 
-  /** Resolves one namespace id in this responder's own namespace space.
-   *  Id 0 answers the responder itself from local authority; a positive id
-   *  answers the identity currently bound there. A retired or unknown id is
-   *  a business miss (HTTP 200 + NOT_FOUND), never a protocol 404. The
-   *  answer is display/vouching data only. */
+  /** Resolves a positive namespace id in this responder's namespace space.
+   * Retired identities retain their last binding; unknown ids are business
+   * misses. The responder's own binding is established by identity exchange. */
   async resolveBindings(nsid: number): Promise<ProfileNamespaceBindings> {
-    if (!Number.isSafeInteger(nsid) || nsid < 0) {
+    if (!Number.isSafeInteger(nsid) || nsid <= 0) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'nsid must be a non-negative safe integer',
+        'nsid must be a positive safe integer',
         HttpStatus.BAD_REQUEST,
       );
     }
-    const feedEndId = await this.readFeedEndId();
-    if (nsid === LOCAL_NAMESPACE_ID) {
-      const local = await this.database.db.query.identityNamespace.findFirst({
-        where: eq(identityNamespace.id, LOCAL_NAMESPACE_ID),
-        columns: { domain: true },
-      });
-      if (!local) throw new Error('local identity namespace is missing');
-      return {
-        domain: local.domain,
-        rootPublicKey: this.keypair.getRootPublicKeyB64(),
-        profileNamespaceFeedEndId: feedEndId.toString(),
-      };
-    }
-    const [row] = await this.database.db
-      .select({
-        domain: identityNamespace.domain,
-        rootPublicKey: identityNamespace.rootPublicKey,
-      })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, nsid))
-      .limit(1);
-    // An id that never completed a handshake is unknown; everything else
-    // is disclosed regardless of trust or retirement state: these are
-    // display/vouching bindings, admission gating stays in the recognition
-    // machinery, and a reset-retired id keeps answering with its last
-    // retained bindings so historical references stay renderable.
-    if (!row || row.rootPublicKey === null) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'namespace id is not bound to a servable identity',
-        HttpStatus.OK,
-      );
-    }
-    return {
-      domain: row.domain,
-      rootPublicKey: row.rootPublicKey,
-      profileNamespaceFeedEndId: feedEndId.toString(),
-    };
+    return this.database.db.transaction(
+      async (tx) => {
+        const [head] = await tx
+          .select({ feedEndId: profileNamespaceFeedHead.endId })
+          .from(profileNamespaceFeedHead)
+          .where(eq(profileNamespaceFeedHead.id, LOCAL_NAMESPACE_ID))
+          .limit(1);
+        if (!head) throw new Error('local namespace sentinel row is missing');
+        const [row] = await tx
+          .select({
+            domain: identityNamespace.domain,
+            rootPublicKey: identityNamespace.rootPublicKey,
+          })
+          .from(identityNamespace)
+          .where(eq(identityNamespace.id, nsid))
+          .limit(1);
+        if (!row || !row.rootPublicKey) {
+          throw new BusinessException(
+            BusinessCode.NOT_FOUND,
+            'namespace id is not bound to a servable identity',
+            HttpStatus.OK,
+          );
+        }
+        const [item] = await tx
+          .select({ updatedAt: profileNamespaceFeed.updatedAt })
+          .from(profileNamespaceFeed)
+          .where(eq(profileNamespaceFeed.namespaceId, nsid))
+          .limit(1);
+        if (!item) throw new Error('servable namespace has no feed item');
+        // Reset-retired identities retain their last bindings and generation time.
+        return {
+          domain: row.domain,
+          rootPublicKey: row.rootPublicKey,
+          profileNamespaceFeedEndId: head.feedEndId.toString(),
+          generatedAt: item.updatedAt.getTime(),
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 }

@@ -35,6 +35,7 @@ const validateVerify = ajv.getSchema(
 const validateProfile = ajv.getSchema('urn:somfp:v1:profile')!;
 const profile = {
   account: 'alice',
+  generatedAt: 1700000000000,
   profileRev: 1,
   profile: { displayName: 'Alice', bio: '', avatar: null },
 };

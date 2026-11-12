@@ -38,7 +38,10 @@ describe('Federation v1 protocol documentation', () => {
     const ajv = new Ajv2020Module.default({ strict: false });
     ajv.addSchema(readSchema('common.schema.json'));
     const validate = ajv.compile(readSchema('message-content.schema.json'));
-    const image = { digest: 'a'.repeat(64), width: 1, height: 1 };
+    const image = {
+      digest: 'a'.repeat(64),
+      meta: { kind: 'IMAGE', width: 1, height: 1 },
+    };
     for (const name of ['photo.png', '旅行照片.png', undefined, '', null, 1]) {
       const fields = { ...image, ...(name === undefined ? {} : { name }) };
       const expected = typeof name === 'string' && name.length > 0;
@@ -48,7 +51,7 @@ describe('Federation v1 protocol documentation', () => {
       expect(
         validate({
           contentType: 'GALLERY',
-          content: { items: [{ kind: 'IMAGE', ...fields }] },
+          content: { items: [fields] },
         }),
       ).toBe(expected);
     }
@@ -86,12 +89,25 @@ describe('Federation v1 protocol documentation', () => {
       readFileSync(join(process.cwd(), 'spec/RELEASE.json'), 'utf8'),
     );
     expect(release).toMatchObject({
-      version: '1.0.0-draft.1',
+      version: '1.0.0-draft.2',
       status: 'draft',
       reviewStage: 'final-review',
       language: 'en',
       authoritativeLanguage: 'en',
     });
+    const validatorPath = join(process.cwd(), 'tools/federation-conformance');
+    const validator = JSON.parse(
+      readFileSync(join(validatorPath, 'package.json'), 'utf8'),
+    );
+    const lock = JSON.parse(
+      readFileSync(join(validatorPath, 'package-lock.json'), 'utf8'),
+    );
+    expect(validator.version).toBe(release.version);
+    expect(lock.version).toBe(release.version);
+    expect(lock.packages[''].version).toBe(release.version);
+    expect(
+      readFileSync(join(process.cwd(), 'spec/CHANGELOG.md'), 'utf8'),
+    ).toContain(`## ${release.version}`);
     for (const directory of ['', 'message', 'schema']) {
       for (const file of readdirSync(
         join(process.cwd(), 'spec/v1', directory),
@@ -135,7 +151,7 @@ describe('Federation v1 protocol documentation', () => {
       )) {
         const path =
           file === 'well-known.controller.ts'
-            ? `/.well-known/${match[2]}`
+            ? `/somfp/${match[2]}`
             : `/${FEDERATION_API_PREFIX}/${match[2]}`;
         implemented.push(`${match[1].toUpperCase()} ${path}`);
       }
@@ -250,8 +266,26 @@ describe('Federation v1 protocol documentation', () => {
       ['GROUP_PROFILE', { account: '!team', namespaceId: 0, profileRev: 3 }],
       ['GROUP_ANNOUNCEMENT', { text: null }],
     ] as const) {
-      const item = { feedId: 1, operation, body };
+      const item = {
+        feedId: 1,
+        originCreatedAt: 0,
+        operation,
+        body,
+      };
       expect(validate(item)).toBe(true);
+      const { originCreatedAt: _originCreatedAt, ...withoutOriginCreatedAt } =
+        item;
+      expect(validate(withoutOriginCreatedAt)).toBe(false);
+      for (const originCreatedAt of [
+        null,
+        -1,
+        0.5,
+        '0',
+        Number.MAX_SAFE_INTEGER + 1,
+      ])
+        expect(validate({ ...item, originCreatedAt })).toBe(false);
+      for (const createdAt of [null, 0, '0', false])
+        expect(validate({ ...item, createdAt })).toBe(false);
       expect(validate({ ...item, account: 'alice' })).toBe(false);
       expect(validate({ ...item, domain: 'a.example' })).toBe(false);
       expect(
@@ -275,11 +309,27 @@ describe('Federation v1 protocol documentation', () => {
           ? {
               account: 'alice',
               profileRev: 1,
+              generatedAt: 1_700_000_000_000,
               profile: content,
               proof: 'Y2hhbGxlbmdl',
             }
-          : { account: 'alice', ...content };
+          : { account: 'alice', generatedAt: 1_700_000_000_000, ...content };
       expect(validate(profile)).toBe(true);
+      for (const generatedAt of [
+        undefined,
+        null,
+        -1,
+        0.5,
+        '1',
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        const invalid: Record<string, unknown> = { ...profile, generatedAt };
+        if (generatedAt === undefined) delete invalid.generatedAt;
+        expect(validate(invalid)).toBe(false);
+      }
+      for (const generatedAt of [0, 1, Number.MAX_SAFE_INTEGER]) {
+        expect(validate({ ...profile, generatedAt })).toBe(true);
+      }
       expect(validate({ ...profile, domain: 'a.example' })).toBe(false);
     }
   });
@@ -291,11 +341,13 @@ describe('Federation v1 protocol documentation', () => {
     const empty = {
       account: 'alice',
       profileRev: 0,
+      generatedAt: 0,
       profile: null,
       proof: 'Y2hhbGxlbmdl',
     };
     const content = { displayName: 'Alice', bio: '', avatar: null };
     expect(validate(empty)).toBe(true);
+    expect(validate({ ...empty, generatedAt: 1 })).toBe(false);
     expect(validate({ ...empty, profileRev: 1 })).toBe(false);
     expect(validate({ ...empty, profile: content })).toBe(false);
     expect(validate({ ...empty, profileRev: 1, profile: content })).toBe(true);
@@ -479,24 +531,24 @@ describe('Federation v1 protocol documentation', () => {
         (operation) => `${operation.method} ${operation.path}`,
       ),
     ).toEqual([
-      'GET /.well-known/somfp',
-      'POST /s2s/v1/recognize',
-      'GET /s2s/v1/health',
-      'POST /s2s/v1/verify',
-      'POST /s2s/v1/feed-heads',
-      'GET /s2s/v1/state-feed',
-      'GET /s2s/v1/profile-namespace-feed',
-      'GET /s2s/v1/profile-namespaces/:nsid',
-      'GET /s2s/v1/group-meta',
-      'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
-      'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
-      'GET /s2s/v1/messages',
-      'GET /s2s/v1/message-tombstones',
-      'POST /s2s/v1/message-provenance',
-      'POST /s2s/v1/call',
-      'GET /s2s/v1/accounts/:account',
-      'GET /s2s/v1/media/:digest',
-      'GET /s2s/v1/forward-bundles/:bundleId',
+      'GET /somfp/discovery',
+      'POST /somfp/v1/recognize',
+      'GET /somfp/v1/health',
+      'POST /somfp/v1/verify',
+      'POST /somfp/v1/feed-heads',
+      'GET /somfp/v1/state-feed',
+      'GET /somfp/v1/profile-namespace-feed',
+      'GET /somfp/v1/profile-namespaces/:nsid',
+      'GET /somfp/v1/group-meta',
+      'GET /somfp/v1/account-profiles/:namespaceId/:account/:profileRev',
+      'GET /somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
+      'GET /somfp/v1/messages',
+      'GET /somfp/v1/message-tombstones',
+      'POST /somfp/v1/message-provenance',
+      'POST /somfp/v1/call',
+      'GET /somfp/v1/accounts/:account',
+      'GET /somfp/v1/media/:digest',
+      'GET /somfp/v1/forward-bundles/:bundleId',
     ]);
   });
 });

@@ -194,6 +194,7 @@ describe('account controls and exact profiles', () => {
       publisherNamespaceId: namespaceId,
       profileNamespaceId: namespaceId,
       profileRev: 2,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Received name',
     });
     await database.db

@@ -36,7 +36,7 @@ import {
   type LinkCardGenerationDialogResult,
   type LinkCardGenerationMode,
 } from '../components/link-card-generation-dialog/link-card-generation-dialog.component';
-import type { ContactCardTarget, User, UserRef } from './model';
+import type { ContactCardPreview, InviteSubject, User } from './model';
 import {
   ContactIdentityDialogComponent,
   type ContactIdentityDialogData,
@@ -48,8 +48,6 @@ export enum RoutePage {
   HOME,
   AUTH_LOGIN,
   AUTH_REGISTER,
-  AUTH_OTP,
-  AUTH_QR,
   AUTH_SET_PASSWORD,
   CONFIG,
 }
@@ -118,15 +116,19 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.GROUP_ANNOUNCEMENT]: 'chatbox',
 };
 
+const disableCloseDict: Partial<Record<PopupType, boolean>> = {
+  [PopupType.GROUP_ANNOUNCEMENT]: true,
+};
+
 // per-popup input contracts — what each dialog's input() fields accept
 export interface PopupInput {
   [PopupType.FRIEND_REQUESTS]: {
     subject?: Subject<any>;
     initialTab?: 'add' | 'pending';
-    initialUser?: UserRef;
+    initialUser?: InviteSubject;
     initialAddress?: { account: string; domain: string; publicKey: string };
   };
-  [PopupType.FRIEND_INVITE]: { user: UserRef; standalone: true };
+  [PopupType.FRIEND_INVITE]: { user: InviteSubject; standalone: true };
   [PopupType.NEW_GROUP]: undefined;
   [PopupType.EDIT_PROFILE]: undefined;
   [PopupType.AVATAR_EDITOR]: { file: File };
@@ -163,6 +165,8 @@ export interface PopupInput {
     threadId: number;
     feedId: string;
     text: string;
+    createdAt: number;
+    originCreatedAt: number | null;
   };
 }
 
@@ -200,16 +204,7 @@ export interface PopupResult {
   [PopupType.LINK_CARD_GENERATION]: LinkCardGenerationDialogResult | undefined;
   [PopupType.CONTACT_IDENTITY]: undefined;
   [PopupType.GROUP_ANNOUNCEMENT]: undefined;
-  [PopupType.CONTACT_PICKER]:
-    | {
-        target: ContactCardTarget;
-        account: string;
-        domain: string;
-        name: string;
-        avatar: string;
-        bio: string;
-      }
-    | undefined;
+  [PopupType.CONTACT_PICKER]: ContactCardPreview | undefined;
 }
 
 export interface DlgInfo {
@@ -220,10 +215,12 @@ export interface DlgInfo {
   desktopSize: DialogDesktopSize;
   desktopHeight: DialogDesktopHeight;
   scopeThreadId?: number;
+  disableClose?: boolean;
 }
 
 export interface PopupOptions {
   scopeThreadId?: number;
+  disableClose?: boolean;
 }
 
 /**
@@ -289,6 +286,7 @@ export class RouteService {
       desktopSize: p.desktopSize ?? 'standard',
       desktopHeight: p.desktopHeight ?? 'content',
       scopeThreadId: p.scopeThreadId,
+      disableClose: p.disableClose ?? false,
     })),
   );
 
@@ -303,12 +301,6 @@ export class RouteService {
         break;
       case RoutePage.AUTH_REGISTER:
         commands = ['auth/register'];
-        break;
-      case RoutePage.AUTH_OTP:
-        commands = ['auth/otp'];
-        break;
-      case RoutePage.AUTH_QR:
-        commands = ['auth/qr'];
         break;
       case RoutePage.AUTH_SET_PASSWORD:
         commands = ['auth/set-password'];
@@ -358,8 +350,15 @@ export class RouteService {
       desktopHeight:
         popupType === PopupType.FRIEND_REQUESTS ? 'workspace' : 'content',
       scopeThreadId: options?.scopeThreadId,
+      disableClose:
+        options?.disableClose ?? disableCloseDict[popupType] ?? false,
     });
     return { id };
+  }
+
+  /** Shared entry for header, rail and notification taps; the component owns loading/read state. */
+  openFriendRequests(initialTab: 'add' | 'pending'): DlgRef {
+    return this.popupDlg(PopupType.FRIEND_REQUESTS, { initialTab });
   }
 
   /** Open the current user's profile editor as a shared page dialog on every layout. */

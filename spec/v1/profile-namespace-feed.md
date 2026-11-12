@@ -1,11 +1,11 @@
 # Simple Open Messaging Federation Protocol v1 Profile Namespace Feed
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 Operations:
 
-- `GET /s2s/v1/profile-namespace-feed`
-- `GET /s2s/v1/profile-namespaces/:nsid`
+- `GET /somfp/v1/profile-namespace-feed`
+- `GET /somfp/v1/profile-namespaces/:nsid`
 
 This document is entirely normative. The Profile Namespace Feed invalidates
 cached namespace-identity bindings — the domain and root public key a consumer
@@ -41,16 +41,15 @@ Consumers MUST resolve a namespace through the publisher's bindings query;
 this feed does not authorize a consumer to replace an identity pin or invent
 a namespace transition.
 
-Namespace `0` denotes the publisher itself. A publisher changing its own
-public root key or domain MUST publish a binding-change item with
-`namespaceId: 0` and MUST continue to identify its own subjects with namespace
-`0`. A consumer expires the cached binding and re-queries
-`profile-namespaces/0`. Root adoption remains subject to Peer Recognition;
-observing this feed item does not authorize adoption.
+Namespace `0` denotes the publisher itself in profile references. Its binding
+is established and updated through verified Peer Recognition, including root
+rotation and domain re-binding. Publishers MUST NOT emit namespace `0` in this
+feed, and consumers MUST NOT query its binding through `profile-namespaces`.
+The feed and bindings query describe only positive publisher-scoped namespace IDs.
 
 ## 2. Feed request and bootstrap
 
-`GET /s2s/v1/profile-namespace-feed` accepts the closed query containing
+`GET /somfp/v1/profile-namespace-feed` accepts the closed query containing
 optional `after`, `take`, and `through`. `after` is an exclusive non-negative
 decimal cursor, `take` a positive safe-integer suggestion, and `through` an
 inclusive bound that MUST be at least `after`. `take` and `through` require
@@ -98,19 +97,26 @@ capacity-based floor.
 
 ```ts
 interface ProfileNamespaceFeedItem {
-  namespaceId: SafeNonNegativeInteger;
+  namespaceId: PositiveSafeInteger;
   feedId: PositiveDecimalString;
+  generatedAt: EpochMilliseconds;
 }
 ```
 
 `namespaceId` is the affected identity's namespace in the authenticated
 publisher's namespace space, as defined by
 [Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation);
-`0` is the publisher itself (Section 1).
+The namespace ID MUST be positive; `0` is reserved for the publisher (Section 1).
 The item body is the namespace id itself. An item states that the bindings of
 that identity changed at least through `feedId`; it carries no domain, no key,
 and no delta. A new-item entry for a namespace the consumer has never resolved
 has no effect.
+
+`generatedAt` MUST be the generation time of this binding version in
+Unix milliseconds, not the response or receipt time. Repeated reads of an
+unchanged item retain its time. Consumers MUST use `feedId`, never timestamps,
+for ordering and invalidation; generation times need not be monotonic. Pages
+carry no top-level generation time.
 
 ## 5. Consumer rules
 
@@ -130,20 +136,22 @@ SHOULD also reconcile during ordinary periodic State Feed draining.
 
 ## 6. Namespace bindings query
 
-`GET /s2s/v1/profile-namespaces/:nsid` resolves one namespace id in the
-authenticated publisher's own namespace space. `nsid` is a non-negative
-decimal path parameter. The success data envelope carries:
+`GET /somfp/v1/profile-namespaces/:nsid` resolves one namespace id in the
+authenticated publisher's own namespace space. `nsid` is a positive safe-integer
+canonical decimal path parameter; `0` is malformed. The success data envelope carries:
 
 ```ts
 interface ProfileNamespaceBindings {
   domain: Domain;
   rootPublicKey: Base64Ed25519Key;
   profileNamespaceFeedEndId: DecimalString;
+  generatedAt: EpochMilliseconds;
 }
 ```
 
-- `nsid = 0` returns the publisher's own current public domain, root public
-  key, and feed end.
+- `generatedAt` is the current binding version's generation time, consistent
+  with its namespace feed item and read with the binding and feed end from one
+  source snapshot.
 - A positive `nsid` returns the current bindings the publisher retains for
   that identity and its feed end. A reset-retired id keeps answering with
   its last retained bindings — historical references must stay renderable

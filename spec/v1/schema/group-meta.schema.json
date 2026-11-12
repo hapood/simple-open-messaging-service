@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:group-meta",
-  "title": "GET /s2s/v1/group-meta response data",
+  "title": "GET /somfp/v1/group-meta response data",
   "$defs": {
     "feedId": {
       "type": "integer",
@@ -20,12 +20,8 @@
       "properties": {
         "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
         "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] },
-        "namespaceId": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "profileRev": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-        }
+        "namespaceId": { "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger" },
+        "profileRev": { "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger" }
       },
       "additionalProperties": false
     },
@@ -34,12 +30,8 @@
       "required": ["account", "namespaceId", "profileRev"],
       "properties": {
         "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
-        "namespaceId": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
-        "profileRev": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-        }
+        "namespaceId": { "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger" },
+        "profileRev": { "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger" }
       },
       "additionalProperties": false
     },
@@ -56,83 +48,46 @@
       },
       "additionalProperties": false
     },
-    "memberItemBase": {
-      "type": "object",
-      "required": ["feedId", "operation"],
-      "properties": {
-        "feedId": {
-          "$ref": "#/$defs/feedId"
-        },
-
-        "operation": { "type": "string" }
-      }
-    },
     "item": {
+      "type": "object",
+      "required": ["feedId", "originCreatedAt", "operation", "body"],
+      "properties": {
+        "feedId": { "$ref": "#/$defs/feedId" },
+        "originCreatedAt": { "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds" },
+        "operation": { "enum": ["MEMBER_UPSERT", "MEMBER_DEPART", "GROUP_PROFILE", "GROUP_ANNOUNCEMENT"] },
+        "body": { "type": "object" }
+      },
       "oneOf": [
         {
-          "$ref": "#/$defs/memberItemBase",
-          "required": ["body"],
           "properties": {
-            "operation": { "const": "MEMBER_UPSERT" },
+            "operation": { "enum": ["MEMBER_UPSERT", "MEMBER_DEPART"] },
             "body": { "$ref": "#/$defs/upsertBody" }
-          },
-          "unevaluatedProperties": false
+          }
         },
         {
-          "$ref": "#/$defs/memberItemBase",
-          "required": ["body"],
           "properties": {
-            "operation": { "const": "MEMBER_DEPART" },
-            "body": { "$ref": "#/$defs/upsertBody" }
-          },
-          "unevaluatedProperties": false
-        },
-        {
-          "type": "object",
-          "required": ["feedId", "operation", "body"],
-          "properties": {
-            "feedId": {
-              "$ref": "#/$defs/feedId"
-            },
             "operation": { "const": "GROUP_PROFILE" },
             "body": { "$ref": "#/$defs/profileBody" }
-          },
-          "additionalProperties": false
+          }
         },
         {
-          "type": "object",
-          "required": ["feedId", "operation", "body"],
           "properties": {
-            "feedId": {
-              "$ref": "#/$defs/feedId"
-            },
             "operation": { "const": "GROUP_ANNOUNCEMENT" },
             "body": { "$ref": "#/$defs/announcementBody" }
-          },
-          "additionalProperties": false
+          }
         }
-      ]
+      ],
+      "additionalProperties": false
     }
   },
   "type": "object",
-  "required": [
-    "account",
-    "mode",
-    "items",
-    "scannedThrough",
-    "groupMetaFeedEndId",
-    "hasMore"
-  ],
+  "required": ["account", "mode", "items", "scannedThrough", "groupMetaFeedEndId", "hasMore"],
   "properties": {
     "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
     "mode": { "enum": ["full", "delta"] },
     "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "scannedThrough": {
-      "$ref": "#/$defs/feedBoundary"
-    },
-    "groupMetaFeedEndId": {
-      "$ref": "#/$defs/feedBoundary"
-    },
+    "scannedThrough": { "$ref": "#/$defs/feedBoundary" },
+    "groupMetaFeedEndId": { "$ref": "#/$defs/feedBoundary" },
     "hasMore": { "type": "boolean" }
   },
   "additionalProperties": false

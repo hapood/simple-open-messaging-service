@@ -1,3 +1,4 @@
+import { QuotaPausedError } from '../quota/quota-runtime.js';
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
 import { Logger } from '@nestjs/common';
@@ -79,6 +80,7 @@ function harness() {
   const denials = {
     handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKED'),
   };
+  const quota = { assertCanPullMessages: vi.fn().mockResolvedValue(undefined) };
   const scheduler = new FederationThreadRoundSchedulerService(
     database as never,
     states as never,
@@ -93,9 +95,11 @@ function harness() {
       initialize: vi.fn().mockResolvedValue(undefined),
       waitUntilInitialized: vi.fn().mockResolvedValue(undefined),
     } as never,
+    quota as never,
   );
   return {
     scheduler,
+    quota,
     states,
     sources,
     peerLifecycle,
@@ -109,6 +113,23 @@ function harness() {
 }
 
 describe('FederationThreadRoundSchedulerService', () => {
+  it('does not start a quota-paused page and resumes without another remote wake', async () => {
+    vi.useFakeTimers();
+    const { scheduler, forward, quota } = harness();
+    try {
+      quota.assertCanPullMessages.mockRejectedValue(new QuotaPausedError(3600));
+      await scheduler.wake(1, 'a.test', 'message');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(forward.runMessages).not.toHaveBeenCalled();
+      quota.assertCanPullMessages.mockResolvedValue(undefined);
+      await vi.advanceTimersByTimeAsync(32_000);
+      expect(forward.runMessages).toHaveBeenCalledOnce();
+    } finally {
+      await scheduler.onModuleDestroy();
+      vi.useRealTimers();
+    }
+  });
+
   it('starts initialized work after a local relationship publication without waiting for a content head', async () => {
     const h = harness();
     h.databaseState.startupRows = [
@@ -475,19 +496,16 @@ describe('FederationThreadRoundSchedulerService', () => {
   it('continues a captured namespace across scheduler quanta', async () => {
     const { scheduler, states, forward, databaseState } = harness();
     databaseState.ownerDomain = 'b.test';
-    states.require
-      .mockResolvedValueOnce({
-        messageTargetSeq: 10,
-        deletionTargetSeq: 0,
-        messageProcessedThroughSeq: 9,
-        deletionProcessedThroughSeq: 0,
-      })
-      .mockResolvedValue({
-        messageTargetSeq: 10,
-        deletionTargetSeq: 0,
-        messageProcessedThroughSeq: 10,
-        deletionProcessedThroughSeq: 0,
-      });
+    let messageRuns = 0;
+    forward.runMessages.mockImplementation(async () => {
+      messageRuns += 1;
+    });
+    states.require.mockImplementation(async () => ({
+      messageTargetSeq: 10,
+      deletionTargetSeq: 0,
+      messageProcessedThroughSeq: messageRuns < 2 ? 9 : 10,
+      deletionProcessedThroughSeq: 0,
+    }));
 
     scheduler.onWake({
       threadId: 1,

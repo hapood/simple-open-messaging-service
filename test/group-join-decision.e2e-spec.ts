@@ -13,6 +13,7 @@ import { GroupMembershipProjectionFanoutService } from '../src/group/membership-
 import { mintGroupMemberPairInTx } from '../src/group/membership-intent/shared/group-member-pair-mint.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import { insertPendingTaskInTx } from '../src/durable-task/task-admission.js';
+import { systemAccountIdInTx } from '../src/user/system-account.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import {
   afterAll,
@@ -178,6 +179,7 @@ describe('group join decision', () => {
       services.peerFeed,
       services.federation,
       services.mutations,
+      { tick: vi.fn().mockResolvedValue(undefined) } as never,
     );
   });
   afterEach(async () => {
@@ -437,7 +439,7 @@ describe('group join decision', () => {
       )
       INSERT INTO "RelationshipIntent"
         ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
-         status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq", "requestedAt", "updatedAt")
+         status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq", "statusChangedAt", "updatedAt")
       SELECT ${groupAccount}, 0, "endpointBAccount", 0, 'ACCEPTED', 0, 0, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM inserted
     `);
   }
@@ -567,6 +569,7 @@ describe('group join decision', () => {
         publisherNamespaceId: member.namespaceId,
         profileNamespaceId: member.namespaceId,
         profileRev: 7,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Remote member',
         avatar: '',
         bio: '',
@@ -590,7 +593,7 @@ describe('group join decision', () => {
           tombstoneEndSeq: 0,
           profileRev: 7,
           note: 'remote application',
-          requestedAt: new Date(),
+          statusChangedAt: new Date(),
           expiresAt: new Date(Date.now() + 60_000),
         });
         await services.mutations.writeGroupRequestEffectsInTx(
@@ -774,6 +777,7 @@ describe('group join decision', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Updated profile',
         avatar: '',
         bio: 'updated',
@@ -787,6 +791,7 @@ describe('group join decision', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Updated group',
         avatar: '',
         bio: '',
@@ -886,7 +891,7 @@ describe('group join decision', () => {
     });
     await database.db
       .update(tables.relationshipIntent)
-      .set({ requestedAt: new Date(0), expiresAt: new Date(1) })
+      .set({ statusChangedAt: new Date(0), expiresAt: new Date(1) })
       .where(f.requestDirection);
     await expect(authoredIntents.execute(f.params)).resolves.toMatchObject({
       status: 'REJECTED',
@@ -961,6 +966,7 @@ describe('group join decision', () => {
         scopeType: 'THREAD',
         scopeKey: scope,
         taskType: 'FAN_OUT_THREAD_CONTENT',
+        actorUserId: await systemAccountIdInTx(tx),
         payload: {
           threadId: f.group.threadId,
           messageEndSeq: 0,
@@ -1283,6 +1289,7 @@ describe('group join decision', () => {
         scopeType: 'THREAD',
         scopeKey: scope,
         taskType: 'FAN_OUT_THREAD_CONTENT',
+        actorUserId: await systemAccountIdInTx(tx),
         payload: {
           threadId: f.group.threadId,
           messageEndSeq: 0,
@@ -1578,6 +1585,7 @@ describe('group join decision', () => {
       publisherNamespaceId: member.namespaceId,
       profileNamespaceId: member.namespaceId,
       profileRev: 5,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Remote kicked',
       avatar: '',
       bio: '',
@@ -1601,7 +1609,7 @@ describe('group join decision', () => {
         tombstoneEndSeq: 0,
         profileRev: 5,
         note: 'remote kick application',
-        requestedAt: new Date(),
+        statusChangedAt: new Date(),
         expiresAt: new Date(Date.now() + 60_000),
       });
       await services.mutations.writeGroupRequestEffectsInTx(
@@ -1828,7 +1836,7 @@ describe('group join decision', () => {
       .update(tables.relationshipIntent)
       .set({ status: 'ACCEPTED', expiresAt: null, updatedAt: new Date() })
       .where(memberDirection(invited.group.account, invited.applicant.account));
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: invited.group.account,
       authorNamespaceId: 0,
@@ -1840,8 +1848,8 @@ describe('group join decision', () => {
       note: '',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt,
-      expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+      statusChangedAt,
+      expiresAt: new Date(statusChangedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
       updatedAt: new Date(),
     });
     // Owner (1) + invitee's invitation (1) + 997 filled = the limit.
@@ -1924,7 +1932,7 @@ describe('group join decision', () => {
       note: 'you are invited',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: invitationRequestedAt,
+      statusChangedAt: invitationRequestedAt,
       expiresAt: new Date(
         invitationRequestedAt.getTime() + 7 * 24 * 60 * 60 * 1000,
       ),
@@ -2014,7 +2022,7 @@ describe('group join decision', () => {
         updatedAt: new Date(),
       })
       .where(memberDirection(f.group.account, f.applicant.account));
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: f.group.account,
       authorNamespaceId: 0,
@@ -2026,8 +2034,8 @@ describe('group join decision', () => {
       note: 'you are invited',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt,
-      expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+      statusChangedAt,
+      expiresAt: new Date(statusChangedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
       updatedAt: new Date(),
     });
     await authoredIntents.execute({
@@ -2184,7 +2192,11 @@ describe('group join decision', () => {
     // projection fan-out task's per-manager watermark advance.
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify.mock.calls[0][0]).toEqual([
-      { userId: invitee.id, feedId: feed!.feedId },
+      {
+        kind: 'personal-request-arrival',
+        userId: invitee.id,
+        feedId: feed!.feedId,
+      },
     ]);
   });
 
@@ -2215,6 +2227,7 @@ describe('group join decision', () => {
       publisherNamespaceId: member.namespaceId,
       profileNamespaceId: member.namespaceId,
       profileRev: 7,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Remote invitee',
       avatar: '',
       bio: '',
@@ -2426,6 +2439,7 @@ describe('group join decision', () => {
         services.clientFeed,
         services.mutations,
         services.federation,
+        { tick: vi.fn().mockResolvedValue(undefined) } as never,
       );
     });
 

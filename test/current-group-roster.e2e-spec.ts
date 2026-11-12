@@ -271,6 +271,7 @@ describe('current Group Meta roster', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 7,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Seven',
       },
       {
@@ -278,6 +279,7 @@ describe('current Group Meta roster', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 4,
+        generatedAt: 1_700_000_000_000,
         displayName: 'Four',
       },
     ]);
@@ -517,6 +519,7 @@ describe('current Group Meta roster', () => {
       publisherNamespaceId: namespaceId,
       profileNamespaceId: 0,
       profileRev: 4,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Remote member',
     });
     expect(await publish()).toBe(false); // A cached snapshot does not re-select.

@@ -48,14 +48,14 @@ function invitationBody(
 ) {
   // One clock read: the TTL window must not overflow by a tick between the
   // two samples.
-  const requestedAt = Date.now();
+  const statusChangedAt = Date.now();
   return {
     status: 'REQUESTED' as const,
     profileNamespaceId: 0,
     profileRev: 3,
     note: 'join us',
-    requestedAt,
-    expiresAt: requestedAt + 7 * 24 * 60 * 60 * 1000,
+    statusChangedAt,
+    expiresAt: statusChangedAt + 7 * 24 * 60 * 60 * 1000,
     messageEndSeq: 5,
     tombstoneEndSeq: 1,
     ...overrides,
@@ -72,7 +72,7 @@ function acceptanceBody(
     profileNamespaceId: 0,
     profileRev: 3,
     note: 'join us',
-    requestedAt: Date.now(),
+    statusChangedAt: Date.now(),
     expiresAt: null,
     messageEndSeq: 5,
     tombstoneEndSeq: 1,
@@ -100,7 +100,7 @@ function revocationBody() {
     profileNamespaceId: 0,
     profileRev: 3,
     note: '',
-    requestedAt: null,
+    statusChangedAt: Date.now(),
     expiresAt: null,
   };
 }
@@ -379,11 +379,12 @@ describe('mirror group intent application', () => {
   it('no-ops an already expired invitation item', async () => {
     await freshGroup();
     const bob = await member('expired');
+    const now = Date.now();
     const { routed } = await run(
       bob,
       invitationBody({
-        requestedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
-        expiresAt: Date.now() - 24 * 60 * 60 * 1000,
+        statusChangedAt: now - 8 * 24 * 60 * 60 * 1000,
+        expiresAt: now - 24 * 60 * 60 * 1000,
       }),
     );
     expect(routed).toBe('noop:expired-request');
@@ -408,7 +409,7 @@ describe('mirror group intent application', () => {
       note: '',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
     const ackItem = acceptanceBody();
@@ -490,7 +491,7 @@ describe('mirror group intent application', () => {
       note: 'let me in',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: new Date(msFromNow(6)),
     });
     const { routed } = await run(bob, acceptanceBody());
@@ -519,7 +520,7 @@ describe('mirror group intent application', () => {
       note: '',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
     const { routed } = await run(bob, invitationBody());
@@ -558,14 +559,14 @@ describe('mirror group intent application', () => {
       note: '',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
     const outboundBefore = await peerItems(group.namespaceId);
     const [namespaceBefore] = await database.db
-      .select({ endId: tables.identityNamespace.stateFeedEndId })
-      .from(tables.identityNamespace)
-      .where(eq(tables.identityNamespace.id, group.namespaceId));
+      .select({ endId: tables.federationFeedState.outboundStateFeedEndId })
+      .from(tables.federationFeedState)
+      .where(eq(tables.federationFeedState.namespaceId, group.namespaceId));
     const ackItem = acceptanceBody();
     const { routed } = await run(bob, ackItem);
     expect(routed).toBe('noop:dropped-ack');
@@ -578,9 +579,9 @@ describe('mirror group intent application', () => {
     ).toBe('REVOKED');
     expect(await peerItems(group.namespaceId)).toEqual(outboundBefore);
     const [namespaceAfter] = await database.db
-      .select({ endId: tables.identityNamespace.stateFeedEndId })
-      .from(tables.identityNamespace)
-      .where(eq(tables.identityNamespace.id, group.namespaceId));
+      .select({ endId: tables.federationFeedState.outboundStateFeedEndId })
+      .from(tables.federationFeedState)
+      .where(eq(tables.federationFeedState.namespaceId, group.namespaceId));
     expect(namespaceAfter!.endId).toBe(namespaceBefore!.endId);
     expect((await run(bob, ackItem)).routed).toBe('noop:dropped-ack');
   });
@@ -601,7 +602,7 @@ describe('mirror group intent application', () => {
       note: '',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
     const { routed } = await run(bob, revocationBody());
@@ -660,7 +661,7 @@ describe('mirror group intent application', () => {
     const bob = await member('rejection');
     await run(bob, invitationBody());
     const { pair } = await findPair(bob.account);
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     const expiresAt = new Date(msFromNow(6));
     // Explicit authored-round fixture: do not synthesize historical evidence
     // from a received REVOKED item that carries no request evidence.
@@ -677,7 +678,7 @@ describe('mirror group intent application', () => {
         authorProfileRev: 1,
         snapshot: { displayName: 'Group at application', avatar: null },
         note: 'let me in',
-        requestedAt,
+        requestedAt: statusChangedAt,
         expiresAt,
       })
       .returning();
@@ -693,7 +694,7 @@ describe('mirror group intent application', () => {
       note: 'let me in',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt,
+      statusChangedAt,
       expiresAt,
     });
     const { routed } = await run(bob, revocationBody());
@@ -757,7 +758,7 @@ describe('mirror group intent application', () => {
       note: '',
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
     await run(bob, acceptanceBody());
@@ -865,6 +866,7 @@ describe('mirror group intent application', () => {
             account: group.account,
             eventType: 'THREAD_CONTENT_HEAD',
             feedId: '1',
+            generatedAt: 0,
             body: {
               messageEndSeq: 7,
               tombstoneEndSeq: 1,
@@ -891,6 +893,7 @@ describe('mirror group intent application', () => {
             peerAccount: bob.account,
             eventType: 'RELATIONSHIP_INTENT',
             feedId: '2',
+            generatedAt: 0,
             body: wireBody(accepted),
           },
         ],
@@ -976,7 +979,7 @@ describe('mirror group intent application', () => {
           note: '',
           messageEndSeq: 5,
           tombstoneEndSeq: 1,
-          requestedAt: new Date(),
+          statusChangedAt: new Date(),
           expiresAt: null,
         },
         {
@@ -990,7 +993,7 @@ describe('mirror group intent application', () => {
           note: '',
           messageEndSeq: 0,
           tombstoneEndSeq: 0,
-          requestedAt: new Date(),
+          statusChangedAt: new Date(),
           expiresAt: null,
         },
       ]);
@@ -1007,7 +1010,7 @@ describe('mirror group intent application', () => {
         note: '',
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
-        requestedAt: new Date(),
+        statusChangedAt: new Date(),
         expiresAt: null,
       };
       await database.db.insert(tables.relationshipIntent).values(aliceSideB);

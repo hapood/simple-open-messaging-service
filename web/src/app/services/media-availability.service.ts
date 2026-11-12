@@ -1,5 +1,5 @@
 import { Injectable, Signal, WritableSignal, signal } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, type Subscription } from 'rxjs';
 import { MessageRepository } from './message-repository.service';
 import { MsgService } from './message.service';
 import { MEDIA_STATUS, MediaStatus } from './model';
@@ -20,6 +20,7 @@ interface MediaEntry {
   readonly withdrawnListeners: Set<() => void>;
   refs: number;
   generation: number;
+  progress?: Subscription;
 }
 
 /**
@@ -27,8 +28,7 @@ interface MediaEntry {
  *
  * Cards and viewers register the same (threadId, seq), so one backend snapshot/SSE transition owns
  * both presentations. Registration and SSE reconnect coalesce into bulk queries; no interval exists.
- * TODO: replace the coarse MEDIA_STATUS wake with the backend's temporary media-message/file progress
- * SSE streams when the Web/Tauri media progress UI is migrated.
+ * Nonterminal messages also own a temporary progress stream, closed when no mounted consumer remains.
  */
 @Injectable({ providedIn: 'root' })
 export class MediaAvailabilityService {
@@ -68,7 +68,12 @@ export class MediaAvailabilityService {
 
     this.ws.reconnect$.subscribe(() => {
       for (const entry of this.entries.values()) {
-        if (entry.refs > 0) this.scheduleQuery(entry.threadId);
+        if (entry.refs > 0) {
+          entry.progress?.unsubscribe();
+          entry.progress = undefined;
+          this.watchProgress(entry);
+          this.scheduleQuery(entry.threadId);
+        }
       }
     });
 
@@ -78,6 +83,7 @@ export class MediaAvailabilityService {
         const entry = this.entries.get(key);
         if (!entry) continue;
         entry.generation += 1;
+        entry.progress?.unsubscribe();
         this.entries.delete(key);
         for (const listener of entry.withdrawnListeners) listener();
         entry.listeners.clear();
@@ -106,6 +112,7 @@ export class MediaAvailabilityService {
       this.entries.set(key, entry);
     }
     entry.refs += 1;
+    this.watchProgress(entry);
     this.scheduleQuery(threadId);
 
     let registered = true;
@@ -129,6 +136,7 @@ export class MediaAvailabilityService {
           entry!.listeners.clear();
           entry!.withdrawnListeners.clear();
           entry!.generation += 1;
+          entry!.progress?.unsubscribe();
           this.entries.delete(key);
         }
       },
@@ -204,11 +212,41 @@ export class MediaAvailabilityService {
   }
 
   private async apply(entry: MediaEntry, status: MediaStatus): Promise<void> {
-    if (entry.status() === status) return;
+    if (this.entries.get(keyOf(entry.threadId, entry.seq)) !== entry) return;
+    if (entry.status() === status) {
+      this.watchProgress(entry);
+      return;
+    }
     await this.repo.setMediaStatus(entry.threadId, entry.seq, status);
     if (this.entries.get(keyOf(entry.threadId, entry.seq)) !== entry) return;
     entry.status.set(status);
+    this.watchProgress(entry);
     for (const listener of entry.listeners) listener(status);
+  }
+
+  private watchProgress(entry: MediaEntry): void {
+    if (
+      entry.status() === MEDIA_STATUS.READY ||
+      entry.status() === MEDIA_STATUS.FAILED
+    ) {
+      entry.progress?.unsubscribe();
+      entry.progress = undefined;
+      return;
+    }
+    if (entry.progress && !entry.progress.closed) return;
+    entry.progress = this.msg
+      .mediaDownloadProgress(entry.threadId, entry.seq)
+      .subscribe({
+        next: (status) => {
+          if (this.entries.get(keyOf(entry.threadId, entry.seq)) !== entry)
+            return;
+          entry.generation += 1;
+          void this.enqueue(entry.threadId, () => this.apply(entry, status));
+        },
+        error: () => {
+          // Reconnect or remount reconciles a transport failure without changing availability.
+        },
+      });
   }
 
   private enqueue(threadId: number, task: () => Promise<void>): Promise<void> {

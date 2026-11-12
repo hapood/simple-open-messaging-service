@@ -12,21 +12,14 @@
  * worker. A 401 means the session is revoked/expired → the worker posts `force-logout` (main re-logs in)
  * and stops; it does NOT retry (that would just 401-loop).
  *
- * The stream is read with a bare `fetch` + `getReader()` loop, NOT `@microsoft/fetch-event-source`.
- * That library is main-thread-only — it resolves `window.fetch` / `window.setTimeout` and calls
- * `document.removeEventListener('visibilitychange', …)` inside its `dispose()`, all undefined on a
- * `DedicatedWorkerGlobalScope`, so it throws `ReferenceError: window is not defined` the instant it
- * runs here (every `openOnce` blew up → the `run` loop flipped to `reconnecting` forever → a permanent
- * "Connection lost" banner even though the server was healthy). A worker already has `fetch`,
- * `TextDecoder`, and `ReadableStream`, so we parse the SSE byte stream ourselves (see `readFrames` /
- * `parseFrame`). There is no auto-reconnect inside the reader — a read error or clean close simply
- * returns and the outer `run` loop owns every reconnect so backoff stays coherent, exactly as on the
- * main thread before.
+ * The shared, framework-independent SSE reader owns decoding, opening and receive-idle deadlines,
+ * and attempt-scoped cancellation. This worker owns authentication, domain events and reconnects.
  *
  * `sw` is the typed worker global — cast through `unknown` because the app's tsconfig includes both
  * the `dom` and (via the reference above) `webworker` libs, which would otherwise make the bare
  * global `self` / `addEventListener` ambiguous.
  */
+import { consumeSse } from '../../../../shared/sse-client';
 import { SseReceiptCoalescer } from './sse-receipt-coalescer';
 import {
   SSE_EVENT_FORCE_LOGOUT,
@@ -36,7 +29,7 @@ import {
 
 const sw = self as unknown as DedicatedWorkerGlobalScope;
 
-/** Thrown when onopen sees a 401 → the loop renews the token and reopens immediately (no backoff). */
+/** A revoked session stops reconnects and asks the main thread to log out. */
 class AuthNeededError extends Error {
   constructor() {
     super('auth-needed');
@@ -116,85 +109,19 @@ async function reconnectAfter(): Promise<void> {
  *  attaches the httpOnly session cookie. A 401 throws AuthNeededError. */
 async function openOnce(): Promise<void> {
   aborter = new AbortController();
-  const res = await fetch(url, {
+  await consumeSse(url, {
     signal: aborter.signal,
-    headers: { Accept: 'text/event-stream' },
-    // Defeat any intermediate caching of the event stream (correctness, not performance). Default
-    // `credentials: same-origin` attaches the httpOnly session cookie (the browser path authenticates
-    // entirely via the cookie — no token is held in the worker).
-    cache: 'no-store',
+    onResponse: (response) => {
+      if (response.status === 401) throw new AuthNeededError();
+    },
+    onOpen: () => {
+      attempt = 0;
+      if (openedOnce) post({ type: 'reconnect' });
+      openedOnce = true;
+      post({ type: 'state', state: 'open' });
+    },
+    onFrame: ({ event, data }) => dispatch(event, data),
   });
-  if (res.status === 401) {
-    throw new AuthNeededError(); // session dead — the run loop posts force-logout + stops
-  }
-  if (!res.ok || !res.body) {
-    throw new Error(`SSE open failed: ${res.status}`);
-  }
-
-  // Headers received → the stream is open. Mirror the old onopen side-effects: reset backoff, emit the
-  // reconnect backfill pulse on every open after the first and tell main we're up. No
-  // `openWhenHidden` is needed — a worker has no visibility concept and is not throttled on tab hide,
-  // so the native reader is inherently always-open-when-hidden.
-  attempt = 0;
-  if (openedOnce) post({ type: 'reconnect' });
-  openedOnce = true;
-  post({ type: 'state', state: 'open' });
-
-  // Blocks until the server ends the stream or `aborter` fires (offline / stop). A read or
-  // abort error propagates to `run`, which backs off and reconnects.
-  await readFrames(res.body);
-}
-
-/** Consume the SSE byte stream, dispatching one frame per blank-line-terminated chunk. A network chunk
- *  can split a frame (or carry several), so we buffer and cut on the `\n\n` separator; `\r\n` is
- *  normalized to `\n` for spec robustness (the server emits bare `\n`). Resolves on a clean stream end
- *  and rejects on a read/abort error. */
-async function readFrames(body: ReadableStream<Uint8Array>): Promise<void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    let idx: number;
-    while ((idx = buffer.indexOf('\n\n')) !== -1) {
-      const frame = parseFrame(buffer.slice(0, idx));
-      buffer = buffer.slice(idx + 2);
-      if (frame) dispatch(frame.event, frame.data);
-    }
-  }
-  // Flush the decoder's trailing surrogate; any un-terminated frame left in the buffer is incomplete
-  // (the server closed mid-frame) and is dropped.
-  decoder.decode();
-}
-
-/** Parse one SSE frame (the text between blank lines) into `{ event, data }`. Implements the relevant
- *  slice of the SSE wire spec: a line starting with `:` is a comment (ignored), a single leading space
- *  after the field colon is stripped, and multiple `data:` lines join with `\n`. `id` / `retry` are
- *  unused (the app drives its own backoff and resumption cursor) so they're dropped. The server names
- *  every real frame (`event: …`); a frame with no event field (the leading `: connected` comment)
- *  yields `event: ''` and is skipped, so it never reaches `dispatch`. */
-function parseFrame(raw: string): { event: string; data?: string } | undefined {
-  let event = '';
-  let data = '';
-  let hasData = false;
-  for (const line of raw.split('\n')) {
-    if (!line || line.startsWith(':')) continue;
-    const colon = line.indexOf(':');
-    const field = colon === -1 ? line : line.slice(0, colon);
-    let value = colon === -1 ? '' : line.slice(colon + 1);
-    if (value.startsWith(' ')) value = value.slice(1);
-    if (field === 'event') {
-      event = value;
-    } else if (field === 'data') {
-      data = hasData ? `${data}\n${value}` : value;
-      hasData = true;
-    }
-  }
-  if (!event) return undefined;
-  return { event, data: hasData ? data : undefined };
 }
 
 /** Dispatch by the event field: FORCE_LOGOUT ends the session; other frames go to main. */

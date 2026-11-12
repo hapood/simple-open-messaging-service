@@ -1,12 +1,13 @@
 import { BusinessCode } from './biz-code';
-import { applyThreadStateSnapshot } from './thread-state-projection';
-import { preserveThreadProfile } from './thread-profile-projection';
+import { createGroupMeta } from './model';
 import {
   restoreThread,
-  restoreThreadForStorageMutation,
-  storeThreadPresentation,
-  type StoredThread,
-  type StoredThreadAttention,
+  projectThreadPreview,
+  createLocalThreadState,
+  threadAttentionFields,
+  applyLocalThreadPatch,
+  type StoredGroupMeta,
+  type LocalThreadState,
 } from './thread-record';
 import { signal } from '@angular/core';
 import { Subject, type Observable, type Subscription } from 'rxjs';
@@ -24,31 +25,42 @@ export type {
   ClientGroupMetaFeedPage,
   GroupMetaCommitPatch,
 } from './group-meta-model';
-import { openDB, deleteDB, type DBSchema, type IDBPDatabase } from 'idb';
 import {
-  localSubjectIdentity,
+  openDB,
+  deleteDB,
+  type DBSchema,
+  type IDBPDatabase,
+  type IDBPObjectStore,
+} from 'idb';
+import {
   parseUserIdentityKey,
   type ConversationItem,
+  type LocalThreadPatch,
   type DeletedMessageItem,
   type Message,
   type MessageCreator,
   type MessageQueryRow,
 } from './model';
 import {
-  mergeMessageSlot,
-  deleteMessageSlot,
+  createMessageDeletionMarker,
   type MessageDeletionMarker,
-  type MessageTomb,
+  type MessageDeletionType,
 } from '../../../../shared/message-tomb';
-import type { AccountState, AccountSelfProfile, AccountComposerDraft } from '../../../../shared/account-state';
+import type {
+  AccountState,
+  AccountSelfProfile,
+  AccountComposerDraft,
+} from '../../../../shared/account-state';
 import type { AccountStateStorage } from '../../../../shared/account-state-ipc';
 import { invokeAccountState } from './account-state-ipc';
 import { parseIncomingRequestHead } from '../../../../shared/relationship-request';
 import type { ClientStateFeedItem } from './user.service';
 import { isTauri, tauriInvoke } from './runtime';
+import { nativeProfileRequest } from './native-profile-request';
 import { decodeProfileAvatar } from './profile-avatar-bytes';
 import {
   reduceMessageRanges,
+  validateMessageResponse,
   type MessageInterval,
   type MessageRange,
   type ServerMessageRange,
@@ -75,14 +87,14 @@ import {
 /**
  * The IndexedDB primitive for the frontend persistence layer ("webdb") — the storage half of the
  * strict 3-tier architecture (UI ↔ repositories ↔ backend). This service is PURE STORAGE: it owns the
- * per-user core and message databases, avatar persistence, and exposes typed `idb` handles via
+ * per-user account database, avatar persistence, and exposes typed `idb` handles via
  * {@link db}. It does NO HTTP, consumes NO SSE, and depends on NO domain service — opening/closing the
  * per-user DB is driven imperatively by the session owner (UserService's lifecycle effect calls
  * {@link openForUser} / {@link closeAndDelete}). Repositories read/write through
  * `(await webdb.db()).get/put/...`, which is per-store typed via {@link WebdbSchema}.
  *
  * Per-user partition: the database name embeds the active login-session UUID
- * (`soms-session-<uuid>` / `soms-session-messages-<uuid>`), bound before any open, so a second account
+ * (`soms-session-<uuid>`), bound before any open, so a second account
  * on the same browser can never read the first's cached peers/avatars/list/history. The session owner
  * owns the lifecycle: logout only closes handles; physical deletion happens before the next fresh
  * login (see the client session lifecycle design).
@@ -187,32 +199,23 @@ export interface ResolvedMemberRecord extends MemberRecord {
   user: ProfileSnapshot;
 }
 
-/** Message-cache schema metadata, independent from the account-state record. */
-interface MetaRecord {
-  key: string;
-  value: unknown;
-}
-
-/** Per-thread sync progress, keyed by `threadId` (keyPath `'threadId'`) in the message DB's
- *  `threadSyncState` store. Each cursor is independently absent until first written. */
-interface ThreadSyncRecord {
-  threadId: number;
-  messageHead?: number;
-  deletedHwm?: number;
-}
-
 type CachedMessageBody = Message;
 
-/** A deletion learned before its message body. It deliberately has no synthetic content or creator. */
-type CachedMessageTombstone = MessageDeletionMarker | MessageTomb;
-
-type CachedMessage = CachedMessageBody | CachedMessageTombstone;
+/** Every persisted deletion is an invisible coordinate-only marker. */
+type CachedMessage = CachedMessageBody | MessageDeletionMarker;
 
 function mergeCachedMessage(
   current: CachedMessage | undefined,
   incoming: MessageQueryRow,
 ): CachedMessage {
-  const merged = mergeMessageSlot<Message>(current, incoming);
+  const merged =
+    incoming.contentType === 'TOMB'
+      ? createMessageDeletionMarker(
+          incoming.threadId,
+          incoming.seq,
+          incoming.deletionType,
+        )
+      : incoming;
   if (
     isCachedMessageBody(merged) &&
     merged.contentType === 'SYSTEM' &&
@@ -229,19 +232,55 @@ function mergeCachedMessage(
   return merged;
 }
 
+/** Read each identity once, then fold repeated input identities in caller order.
+ * Queue requests together instead of waiting for an IndexedDB round trip per row. */
+async function readCachedMessageBatch(
+  store: { get(key: [number, number]): Promise<CachedMessage | undefined> },
+  rows: Array<{ threadId: number; seq: number }>,
+): Promise<Map<string, CachedMessage | undefined>> {
+  const keys = new Map(
+    rows.map(({ threadId, seq }) => [
+      `${threadId}:${seq}`,
+      [threadId, seq] as [number, number],
+    ]),
+  );
+  return new Map(
+    await Promise.all(
+      [...keys].map(
+        async ([key, identity]) => [key, await store.get(identity)] as const,
+      ),
+    ),
+  );
+}
+
 function isCachedMessageBody(value: CachedMessage): value is CachedMessageBody {
   return !value.isDeleted && 'content' in value;
 }
 
-function isCachedTimelineSlot(value: CachedMessage): value is MessageQueryRow {
-  return (
-    isCachedMessageBody(value) ||
-    (value.contentType === 'TOMB' && 'creator' in value)
-  );
+function validateMessageRows(rows: MessageQueryRow[]): void {
+  for (const row of rows) {
+    if (
+      !Number.isSafeInteger(row.threadId) ||
+      row.threadId < 1 ||
+      !Number.isSafeInteger(row.seq) ||
+      row.seq < 1
+    )
+      throw new Error('invalid message coordinates');
+    if (row.contentType === 'TOMB') {
+      if (
+        !row.isDeleted ||
+        !['USER_RETRACTION', 'MODERATION_REMOVAL'].includes(row.deletionType)
+      )
+        throw new Error('Invalid message deletion type');
+    } else if (row.isDeleted) {
+      throw new Error('Deleted messages must use the TOMB contract');
+    }
+  }
 }
 
 function readDeletedHwm(value: unknown): number {
-  if (value === undefined) return 0;
+  if (value === undefined)
+    throw new Error('missing required deleted-message HWM');
   if (Number.isSafeInteger(value) && (value as number) >= 0)
     return value as number;
   throw new Error('deleted-message HWM must be a non-negative integer');
@@ -263,14 +302,15 @@ export interface CommitMessagePageInput {
 }
 
 export interface CommittedMessagePage {
-  messages: MessageQueryRow[];
+  /** Persisted live rows for the input message sequences, excluding deletion stubs. */
+  messages: Message[];
   ranges: MessageRange[];
 }
 
-/** Core cache schema. High-volume message data intentionally lives in MessageDbSchema. */
+/** Thread preview projection stored alongside account and message state. */
 type ThreadPreview = NonNullable<ThreadFeedSnapshot['previews']>[number];
 
-type StoredThreadPreview = {
+type LocalThreadStatePreview = {
   threadId: number;
   seq: number;
   createdAt: string;
@@ -284,7 +324,7 @@ type StoredThreadPreview = {
 function storeThreadPreview(
   threadId: number,
   preview: ThreadPreview,
-): StoredThreadPreview {
+): LocalThreadStatePreview {
   return {
     threadId,
     seq: preview.seq,
@@ -297,7 +337,7 @@ function storeThreadPreview(
   };
 }
 
-function restoreThreadPreview(row: StoredThreadPreview): ThreadPreview {
+function restoreThreadPreview(row: LocalThreadStatePreview): ThreadPreview {
   return {
     seq: row.seq,
     createdAt: row.createdAt,
@@ -311,16 +351,9 @@ function restoreThreadPreview(row: StoredThreadPreview): ThreadPreview {
   };
 }
 
-function storeThreadAttention(
-  state: LocalThreadAttention,
-): StoredThreadAttention {
-  const { previews: _previews, ...fields } = state;
-  return fields;
-}
-
 function withStoredPreview(
-  state: StoredThreadAttention,
-  row: StoredThreadPreview | undefined,
+  state: LocalThreadState,
+  row: LocalThreadStatePreview | undefined,
 ): LocalThreadAttention {
   const {
     threadId,
@@ -377,10 +410,10 @@ function withStoredPreview(
  *  projection was computed from, so a result computed before a concurrent feed merge or local read
  *  advance can never overwrite the newer projection state. */
 function attentionFactsUnchanged(
-  snapshotRow: StoredThread,
-  snapshotPreview: StoredThreadPreview | undefined,
-  currentRow: StoredThread,
-  currentPreview: StoredThreadPreview | undefined,
+  snapshotRow: LocalThreadState,
+  snapshotPreview: LocalThreadStatePreview | undefined,
+  currentRow: LocalThreadState,
+  currentPreview: LocalThreadStatePreview | undefined,
 ): boolean {
   return (
     snapshotRow.threadFeedId === currentRow.threadFeedId &&
@@ -397,21 +430,6 @@ function attentionFactsUnchanged(
     snapshotPreview?.senderProfileNamespaceId ===
       currentPreview?.senderProfileNamespaceId
   );
-}
-
-function requireThreadIdentity(
-  item: ConversationItem,
-  state: StoredThreadAttention | undefined,
-): asserts state is StoredThreadAttention {
-  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
-  if (
-    !state ||
-    state.threadId !== item.threadId ||
-    state.type !== item.type ||
-    state.publisherNamespaceId !== item.publisherNamespaceId ||
-    state.profileAccount !== subject.account
-  )
-    throw new Error('thread presentation has no matching feed state');
 }
 
 export interface WebdbSchema extends DBSchema {
@@ -441,15 +459,11 @@ export interface WebdbSchema extends DBSchema {
     };
   };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
-  threads: { key: number; value: StoredThread };
-  threadPreviews: { key: number; value: StoredThreadPreview };
+  threads: { key: number; value: LocalThreadState };
+  groupMeta: { key: number; value: StoredGroupMeta };
+  threadPreviews: { key: number; value: LocalThreadStatePreview };
   /** One fixed record for account metadata and synchronization coordinates. */
   accountState: { key: 'account'; value: AccountState };
-}
-
-export interface MessageDbSchema extends DBSchema {
-  /** Stable KV store for the message-cache schema version. */
-  meta: { key: string; value: MetaRecord };
   /** One record per message, keyed by `[threadId, seq]` (both fields are the keyPath). */
   messages: {
     key: [number, number];
@@ -461,12 +475,9 @@ export interface MessageDbSchema extends DBSchema {
     value: MessageRange;
     indexes: { byThreadRight: [number, number] };
   };
-  /** Per-thread sync cursors (messageHead, deletedHwm), keyed by `threadId`. */
-  threadSyncState: { key: number; value: ThreadSyncRecord };
 }
 
 export const CACHE_SCHEMA_VERSION = 1;
-export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -536,6 +547,8 @@ type StateFeedWorkerEvent =
       type: 'notification-batch';
       userId: number;
       entries: BrowserNotificationBatch['entries'];
+      stream?: BrowserNotificationBatch['stream'];
+      syncComplete: boolean;
     }
   | { type: 'profile-wake'; wake: ProfileWake }
   | {
@@ -703,8 +716,6 @@ export class WebdbStorage implements AccountStateStorage {
   >();
   /** The currently-open database promise (resolves to the live handle), or null when no user / closed. */
   private dbPromise: Promise<IDBPDatabase<WebdbSchema>> | null = null;
-  private messageDbPromise: Promise<IDBPDatabase<MessageDbSchema>> | null =
-    null;
   /** Message-cache maintenance barrier. Every public message operation is counted until its Promise
    * settles; recreation closes the admission gate, waits for this count to reach zero, then replaces the
    * store. JavaScript runs the admission check + increment synchronously, so recreation cannot slip
@@ -740,7 +751,6 @@ export class WebdbStorage implements AccountStateStorage {
     if (
       this.currentUserId !== null ||
       this.dbPromise ||
-      this.messageDbPromise ||
       this.accountResetPromise ||
       this.messageResetPromise ||
       this.cacheBindingOperations !== 0
@@ -774,7 +784,6 @@ export class WebdbStorage implements AccountStateStorage {
       await this.closeHandles();
       const opened = await Promise.allSettled([
         this.openValidatedOrRecreate(descriptor.indexedDbName),
-        this.openValidatedMessageDbOrRecreate(descriptor.messageIndexedDbName),
       ]);
       for (const result of opened) {
         if (result.status === 'fulfilled') result.value.close();
@@ -806,10 +815,6 @@ export class WebdbStorage implements AccountStateStorage {
     return this.requireSessionCache().indexedDbName;
   }
 
-  private messageDbName(_userId: string): string {
-    return this.requireSessionCache().messageIndexedDbName;
-  }
-
   private requireSessionCache(): SessionCacheDescriptor {
     const cache = this.sessionCache;
     if (!cache)
@@ -819,6 +824,12 @@ export class WebdbStorage implements AccountStateStorage {
 
   /** The userId whose DB is open (or being opened). */
   protected currentUserId: string | null = null;
+
+  /** Numeric mirror of `currentUserId` for the native watch engine's IPC
+   *  arguments (Rust identifies users numerically). */
+  get numericUserId(): number | null {
+    return this.currentUserId === null ? null : Number(this.currentUserId);
+  }
   /** Whether `navigator.storage.persist()` has been requested for this origin. */
   private persistedRequested = false;
 
@@ -852,17 +863,10 @@ export class WebdbStorage implements AccountStateStorage {
     }
     this.currentUserId = userId;
     this.dbPromise = this.openValidatedOrRecreate(this.dbName(userId));
-    this.messageDbPromise = this.openValidatedMessageDbOrRecreate(
-      this.messageDbName(userId),
-    );
     try {
-      const [db, messages] = await Promise.all([
-        this.dbPromise,
-        this.messageDbPromise,
-      ]);
+      const db = await this.dbPromise;
       if (epoch !== this.cacheEpoch || this.currentUserId !== userId) {
         db.close();
-        messages.close();
         throw new Error('webdb: stale open discarded');
       }
       this.activateMessageLifetime();
@@ -871,7 +875,6 @@ export class WebdbStorage implements AccountStateStorage {
       return db;
     } catch (e) {
       this.dbPromise = null;
-      this.messageDbPromise = null;
       this.ready.set(false);
       throw e;
     }
@@ -891,17 +894,10 @@ export class WebdbStorage implements AccountStateStorage {
       await this.close();
     this.currentUserId = userId;
     this.dbPromise = this.openExistingCore(this.dbName(userId));
-    this.messageDbPromise = this.openExistingMessages(
-      this.messageDbName(userId),
-    );
     try {
-      const [db, messages] = await Promise.all([
-        this.dbPromise,
-        this.messageDbPromise,
-      ]);
+      const db = await this.dbPromise;
       if (epoch !== this.cacheEpoch || this.currentUserId !== userId) {
         db.close();
-        messages.close();
         throw new Error('webdb: stale existing-cache open discarded');
       }
       this.activateMessageLifetime();
@@ -913,7 +909,7 @@ export class WebdbStorage implements AccountStateStorage {
     }
   }
 
-  /** Fresh-login path: explicitly drop both browser cache databases, then initialize the current v1
+  /** Fresh-login path: explicitly drop the browser account database, then initialize the current v1
    * schema. Authentication remains valid; only rebuildable local data is replaced. */
   async recreateForUser(
     userId: string,
@@ -943,22 +939,14 @@ export class WebdbStorage implements AccountStateStorage {
   ): Promise<IDBPDatabase<WebdbSchema> | null> {
     await this.waitForAccountIdle();
     await this.closeHandles();
-    await Promise.all([
-      deleteDB(this.dbName(userId)),
-      deleteDB(this.messageDbName(userId)),
-    ]);
+    await deleteDB(this.dbName(userId));
     if (epoch !== this.cacheEpoch) return null;
     this.currentUserId = userId;
     const core = this.openValidatedOrRecreate(this.dbName(userId));
-    const message = this.openValidatedMessageDbOrRecreate(
-      this.messageDbName(userId),
-    );
     this.dbPromise = core;
-    this.messageDbPromise = message;
-    const [db, messages] = await Promise.all([core, message]);
+    const db = await core;
     if (epoch !== this.cacheEpoch || this.currentUserId !== userId) {
       db.close();
-      messages.close();
       return null;
     }
     this.activateMessageLifetime();
@@ -993,7 +981,8 @@ export class WebdbStorage implements AccountStateStorage {
     }
     try {
       if (
-        (await db.get('accountState', 'account'))?.schemaVersion !== CACHE_SCHEMA_VERSION
+        (await db.get('accountState', 'account'))?.schemaVersion !==
+        CACHE_SCHEMA_VERSION
       ) {
         db.close();
         throw new LocalCacheVersionMismatchError(name);
@@ -1010,38 +999,7 @@ export class WebdbStorage implements AccountStateStorage {
     throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
   }
 
-  private async openExistingMessages(
-    name: string,
-  ): Promise<IDBPDatabase<MessageDbSchema>> {
-    if (!(await this.databaseExists(name)))
-      throw new LocalCacheUnavailableError(`missing local cache: ${name}`);
-    const db = await openDB<MessageDbSchema>(name);
-    this.observeCacheDeletion(db);
-    if (!db.objectStoreNames.contains('meta')) {
-      db.close();
-      throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
-    }
-    try {
-      if (
-        (await db.get('meta', 'schemaVersion'))?.value !==
-        MESSAGE_CACHE_SCHEMA_VERSION
-      ) {
-        db.close();
-        throw new LocalCacheVersionMismatchError(name);
-      }
-    } catch (error) {
-      db.close();
-      if (error instanceof LocalCacheVersionMismatchError) throw error;
-      throw new LocalCacheUnavailableError(`unreadable local cache: ${name}`);
-    }
-    if (await this.isCurrentMessageSchema(db)) {
-      return db;
-    }
-    db.close();
-    throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
-  }
-
-  /** Open the current cache without requesting an IndexedDB upgrade. The stable `meta` KV store owns the
+  /** Open the current cache without requesting an IndexedDB upgrade. The account-state record owns the
    *  application schema version. Any old/missing/damaged rebuildable cache is deleted and initialized from
    *  scratch; there are deliberately no incremental data migrations. */
   private async openValidatedOrRecreate(
@@ -1076,6 +1034,9 @@ export class WebdbStorage implements AccountStateStorage {
       'profileAvatarBlobs',
       'members',
       'threads',
+      'messages',
+      'messageRanges',
+      'groupMeta',
       'threadPreviews',
       'accountState',
     ] as const;
@@ -1088,7 +1049,11 @@ export class WebdbStorage implements AccountStateStorage {
         state?.schemaVersion === CACHE_SCHEMA_VERSION &&
         db.transaction('accountState').store.keyPath === null &&
         db.transaction('members').store.indexNames.contains('thread') &&
-        db.transaction('members').store.indexNames.contains('address')
+        db.transaction('members').store.indexNames.contains('address') &&
+        db.transaction('messages').store.indexNames.contains('byOrigin') &&
+        db
+          .transaction('messageRanges')
+          .store.indexNames.contains('byThreadRight')
       );
     } catch {
       return false;
@@ -1126,48 +1091,6 @@ export class WebdbStorage implements AccountStateStorage {
         members.createIndex('thread', 'threadId');
         members.createIndex('address', ['threadId', 'account', 'namespaceId']);
         db.createObjectStore('threads', { keyPath: 'threadId' });
-        db.createObjectStore('threadPreviews', { keyPath: 'threadId' });
-        db.createObjectStore('accountState');
-        transaction.objectStore('accountState').put({
-          schemaVersion: CACHE_SCHEMA_VERSION,
-          selfProfile: null,
-          selfIdentity: null,
-          composerDrafts: [],
-          threadFeedCursor: null,
-          stateFeedId: null,
-          stateFeedFullThrough: null,
-          profileNamespaceChangeEndId: null,
-          intentRequestEndId: null,
-          intentRequestReadId: null,
-          intentRequestOptimisticReadId: null,
-        }, 'account');
-      },
-    });
-  }
-
-  private async openValidatedMessageDbOrRecreate(
-    name: string,
-  ): Promise<IDBPDatabase<MessageDbSchema>> {
-    const epoch = this.cacheEpoch;
-    const existing = await openDB<MessageDbSchema>(name);
-    this.observeCacheDeletion(existing);
-    const valid = await this.isCurrentMessageSchema(existing);
-    if (epoch !== this.cacheEpoch) {
-      existing.close();
-      throw new Error('webdb: cache invalidated during schema validation');
-    }
-    if (valid) return existing;
-    existing.close();
-    await deleteDB(name);
-    if (epoch !== this.cacheEpoch)
-      throw new Error('webdb: stale cache recreation discarded');
-    const db = await openDB<MessageDbSchema>(name, IDB_FORMAT_VERSION, {
-      upgrade(db, oldVersion, _newVersion, transaction) {
-        if (oldVersion !== 0)
-          throw new Error(
-            'message cache recreation expected an empty IndexedDB',
-          );
-        db.createObjectStore('meta', { keyPath: 'key' });
         const messages = db.createObjectStore('messages', {
           keyPath: ['threadId', 'seq'],
         });
@@ -1180,42 +1103,27 @@ export class WebdbStorage implements AccountStateStorage {
           keyPath: ['threadId', 'left'],
         });
         ranges.createIndex('byThreadRight', ['threadId', 'right']);
-        db.createObjectStore('threadSyncState', { keyPath: 'threadId' });
-        transaction.objectStore('meta').put({
-          key: 'schemaVersion',
-          value: MESSAGE_CACHE_SCHEMA_VERSION,
-        });
+        db.createObjectStore('threadPreviews', { keyPath: 'threadId' });
+        db.createObjectStore('groupMeta', { keyPath: 'threadId' });
+        db.createObjectStore('accountState');
+        transaction.objectStore('accountState').put(
+          {
+            schemaVersion: CACHE_SCHEMA_VERSION,
+            selfProfile: null,
+            selfIdentity: null,
+            composerDrafts: [],
+            threadFeedCursor: null,
+            stateFeedId: null,
+            stateFeedFullThrough: null,
+            profileNamespaceChangeEndId: null,
+            intentRequestEndId: null,
+            intentRequestReadId: null,
+            intentRequestOptimisticReadId: null,
+          },
+          'account',
+        );
       },
     });
-    this.observeCacheDeletion(db);
-    return db;
-  }
-
-  private async isCurrentMessageSchema(
-    db: IDBPDatabase<MessageDbSchema>,
-  ): Promise<boolean> {
-    if (
-      db.objectStoreNames.length !== 4 ||
-      !db.objectStoreNames.contains('meta') ||
-      !db.objectStoreNames.contains('messages') ||
-      !db.objectStoreNames.contains('messageRanges') ||
-      !db.objectStoreNames.contains('threadSyncState')
-    )
-      return false;
-    try {
-      if (
-        (await db.get('meta', 'schemaVersion'))?.value !==
-        MESSAGE_CACHE_SCHEMA_VERSION
-      )
-        return false;
-      const rangeIndexes = db.transaction('messageRanges').store.indexNames;
-      return (
-        rangeIndexes.contains('byThreadRight') &&
-        db.transaction('messages').store.indexNames.contains('byOrigin')
-      );
-    } catch {
-      return false;
-    }
   }
 
   /** Close and physically delete the given user's database (logout / account switch). The synchronous
@@ -1234,22 +1142,13 @@ export class WebdbStorage implements AccountStateStorage {
     ++this.cacheEpoch;
     this.beginAccountMaintenance();
     const closing = this.dbPromise;
-    const closingMessages = this.messageDbPromise;
     this.dbPromise = null;
-    this.messageDbPromise = null;
     this.currentUserId = null;
     this.ready.set(false);
     await this.waitForAccountIdle();
     if (closing) {
       try {
         (await closing).close();
-      } catch {
-        /* already closed */
-      }
-    }
-    if (closingMessages) {
-      try {
-        (await closingMessages).close();
       } catch {
         /* already closed */
       }
@@ -1264,7 +1163,6 @@ export class WebdbStorage implements AccountStateStorage {
       }
     }
     if (idbAvailable()) await deleteDB(this.dbName(userId));
-    if (idbAvailable()) await deleteDB(this.messageDbName(userId));
     if (isTauri()) {
       await tauriInvoke('native_db_clear_user', { userId: Number(userId) });
     }
@@ -1282,22 +1180,13 @@ export class WebdbStorage implements AccountStateStorage {
     ++this.cacheEpoch;
     this.beginAccountMaintenance();
     const closing = this.dbPromise;
-    const closingMessages = this.messageDbPromise;
     this.dbPromise = null;
-    this.messageDbPromise = null;
     this.currentUserId = null;
     this.ready.set(false);
     await this.waitForAccountIdle();
     if (closing) {
       try {
         (await closing).close();
-      } catch {
-        /* already closed */
-      }
-    }
-    if (closingMessages) {
-      try {
-        (await closingMessages).close();
       } catch {
         /* already closed */
       }
@@ -1320,21 +1209,12 @@ export class WebdbStorage implements AccountStateStorage {
 
   private async closeHandles(): Promise<void> {
     const closing = this.dbPromise;
-    const closingMessages = this.messageDbPromise;
     this.dbPromise = null;
-    this.messageDbPromise = null;
     this.currentUserId = null;
     this.ready.set(false);
     if (closing) {
       try {
         (await closing).close();
-      } catch {
-        /* already closed */
-      }
-    }
-    if (closingMessages) {
-      try {
-        (await closingMessages).close();
       } catch {
         /* already closed */
       }
@@ -1354,16 +1234,6 @@ export class WebdbStorage implements AccountStateStorage {
       return db;
     }
     throw new Error('webdb: no user / unavailable');
-  }
-
-  /** Internal message-cache handle; separate so clearing chat history never drops core cache data. */
-  async messageDb(): Promise<IDBPDatabase<MessageDbSchema>> {
-    if (this.messageDbPromise) return this.messageDbPromise;
-    if (this.currentUserId != null && idbAvailable()) {
-      await this.openForUser(this.currentUserId);
-      if (this.messageDbPromise) return this.messageDbPromise;
-    }
-    throw new Error('message db: no user / unavailable');
   }
 
   /** Lifetime captured by cache-populating network work. Abortion is synchronous and observable by all
@@ -1396,9 +1266,32 @@ export class WebdbStorage implements AccountStateStorage {
   private async withMessageThreadCommit<T>(
     threadId: number,
     operation: () => Promise<T>,
+    lifetime?: AbortSignal,
   ): Promise<T> {
     const previous = this.messageCommitTails.get(threadId) ?? Promise.resolve();
-    const run = previous.then(operation, operation);
+    const userId = this.currentUserId;
+    const epoch = this.cacheEpoch;
+    const signal = lifetime
+      ? AbortSignal.any([this.messageLifetime.signal, lifetime])
+      : this.messageLifetime.signal;
+    const admitted = () => {
+      if (
+        signal.aborted ||
+        epoch !== this.cacheEpoch ||
+        userId !== this.currentUserId
+      )
+        throw new Error('message cache lifetime expired');
+      return operation();
+    };
+    const commit = () =>
+      typeof navigator !== 'undefined' && navigator.locks
+        ? navigator.locks.request(
+            `soms-message-commit-${userId}-${threadId}`,
+            { signal },
+            admitted,
+          )
+        : admitted();
+    const run = previous.then(commit, commit);
     const tail = run.then(
       () => undefined,
       () => undefined,
@@ -1448,11 +1341,19 @@ export class WebdbStorage implements AccountStateStorage {
           userId: Number(this.currentUserId),
         });
       }
-      return (await this.messageDb()).count('messages');
+      const tx = (await this.db()).transaction('messages', 'readonly');
+      let count = 0;
+      let cursor = await tx.store.openCursor();
+      while (cursor) {
+        if (isCachedMessageBody(cursor.value)) count++;
+        cursor = await cursor.continue();
+      }
+      await tx.done;
+      return count;
     });
   }
 
-  /** Drop and recreate only message data plus its coverage metadata. Core threads/profiles/avatars survive. */
+  /** Evict message bodies and reset coverage. Deletion slots and account state survive. */
   async recreateMessageCache(): Promise<void> {
     if (this.messageResetPromise) return this.messageResetPromise;
     if (this.currentUserId == null)
@@ -1478,22 +1379,13 @@ export class WebdbStorage implements AccountStateStorage {
       await tauriInvoke('native_db_recreate_messages');
       return;
     }
-    const userId = this.currentUserId;
-    const closing = this.messageDbPromise;
-    this.messageDbPromise = null;
-    if (closing) {
-      try {
-        (await closing).close();
-      } catch {
-        /* already closed */
-      }
-    }
-    await deleteDB(this.messageDbName(userId));
-    if (this.currentUserId !== userId) return;
-    this.messageDbPromise = this.openValidatedMessageDbOrRecreate(
-      this.messageDbName(userId),
+    const tx = (await this.db()).transaction(
+      ['messages', 'messageRanges'],
+      'readwrite',
     );
-    await this.messageDbPromise;
+    await this.evictMessageBodies(tx.objectStore('messages'));
+    await tx.objectStore('messageRanges').clear();
+    await tx.done;
   }
 
   // ---- core sync-state store: keyed synchronization cursors ------------------------------
@@ -1557,6 +1449,23 @@ export class WebdbStorage implements AccountStateStorage {
   }
 
   /** Serialize cursor consumers across page workers and the Push Service Worker. */
+  async withStateFeedLock<T>(run: () => Promise<T>): Promise<T> {
+    const epoch = this.cacheEpoch;
+    const userId = this.currentUserId;
+    const guarded = () => {
+      if (
+        epoch !== this.cacheEpoch ||
+        userId === null ||
+        this.accountMaintenance
+      )
+        throw new Error('account cache lifetime expired');
+      return run();
+    };
+    return typeof navigator !== 'undefined' && navigator.locks
+      ? navigator.locks.request('soms-state-feed-' + userId, guarded)
+      : guarded();
+  }
+
   async withThreadFeedLock<T>(run: () => Promise<T>): Promise<T> {
     const epoch = this.cacheEpoch;
     const userId = this.currentUserId;
@@ -1575,9 +1484,7 @@ export class WebdbStorage implements AccountStateStorage {
   }
 
   /** Another context deleting/rebuilding the account must invalidate this handle before any late write. */
-  private observeCacheDeletion(
-    db: IDBPDatabase<WebdbSchema> | IDBPDatabase<MessageDbSchema>,
-  ): void {
+  private observeCacheDeletion(db: IDBPDatabase<WebdbSchema>): void {
     db.addEventListener('versionchange', () => {
       db.close();
       void this.close();
@@ -1621,7 +1528,7 @@ export class WebdbStorage implements AccountStateStorage {
           'native thread feed synchronization belongs to the Rust SSE executor',
         );
       const tx = (await this.db()).transaction(
-        ['threadPreviews', 'threads', 'accountState'],
+        ['threadPreviews', 'threads', 'groupMeta', 'accountState'],
         'readwrite',
       );
       const store = tx.objectStore('threads');
@@ -1630,6 +1537,7 @@ export class WebdbStorage implements AccountStateStorage {
       const commit = async (): Promise<LocalThreadAttention[]> => {
         for (const { snapshot, latest } of incoming) {
           const stored = await store.get(snapshot.threadId);
+          if (stored) readDeletedHwm(stored.deletedHwm);
           if (
             stored &&
             (stored.type !== snapshot.type ||
@@ -1645,15 +1553,18 @@ export class WebdbStorage implements AccountStateStorage {
             : undefined;
           const next = mergeThreadAttention(current, snapshot);
           if (next !== current) {
-            const structure = applyThreadStateSnapshot(
-              stored ? restoreThreadForStorageMutation(stored) : undefined,
-              snapshot,
-              snapshot.threadFeedId,
+            const attention = threadAttentionFields(next);
+            await store.put(
+              stored
+                ? { ...stored, ...attention }
+                : createLocalThreadState(next),
             );
-            await store.put({
-              ...storeThreadPresentation(structure),
-              ...storeThreadAttention(next),
-            });
+            if (!stored && snapshot.type === 'GROUP') {
+              await tx.objectStore('groupMeta').add({
+                threadId: snapshot.threadId,
+                ...createGroupMeta(),
+              });
+            }
             if (latest) await previewStore.put(latest);
             else await previewStore.delete(next.threadId);
           }
@@ -1663,10 +1574,16 @@ export class WebdbStorage implements AccountStateStorage {
           const syncState = tx.objectStore('accountState');
           const state = await syncState.get('account');
           if (!state) throw new Error('missing account sync state');
-          await syncState.put({
-            ...state,
-            threadFeedCursor: Math.max(state.threadFeedCursor ?? 0, scannedThrough),
-          }, 'account');
+          await syncState.put(
+            {
+              ...state,
+              threadFeedCursor: Math.max(
+                state.threadFeedCursor ?? 0,
+                scannedThrough,
+              ),
+            },
+            'account',
+          );
         }
         await tx.done;
         return [...merged.values()];
@@ -1728,7 +1645,7 @@ export class WebdbStorage implements AccountStateStorage {
       if (next !== current)
         await tx.objectStore('threads').put({
           ...stored,
-          ...storeThreadAttention(next),
+          ...threadAttentionFields(next),
         });
       await tx.done;
       return next;
@@ -1766,16 +1683,26 @@ export class WebdbStorage implements AccountStateStorage {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId !== null)
         return invokeAccountState('native_db_advance_intent_request_read', {
-          userId: Number(this.currentUserId), observedEndId,
+          userId: Number(this.currentUserId),
+          observedEndId,
         });
       const tx = (await this.db()).transaction('accountState', 'readwrite');
       const state = await tx.store.get('account');
       if (!state) throw new Error('missing account state');
-      if (BigInt(observedEndId) > BigInt(state.intentRequestReadId ?? '0') &&
-          BigInt(observedEndId) > BigInt(state.intentRequestOptimisticReadId ?? '0'))
+      if (
+        BigInt(observedEndId) > BigInt(state.intentRequestReadId ?? '0') &&
+        BigInt(observedEndId) >
+          BigInt(state.intentRequestOptimisticReadId ?? '0')
+      )
         state.intentRequestOptimisticReadId = observedEndId;
       await tx.store.put(state, 'account');
       await tx.done;
+      this.browserNotifications.next({
+        userId: Number(this.currentUserId),
+        entries: [],
+        stream: 'state',
+        requestReadChanged: true,
+      });
       return state;
     });
   }
@@ -1785,15 +1712,22 @@ export class WebdbStorage implements AccountStateStorage {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId !== null) {
         await invokeAccountState('native_db_write_self_profile', {
-          userId: Number(this.currentUserId), profile,
+          userId: Number(this.currentUserId),
+          profile,
         });
         return;
       }
       const tx = (await this.db()).transaction('accountState', 'readwrite');
       const state = await tx.store.get('account');
       if (!state) throw new Error('missing account state');
-      await tx.store.put({ ...state, selfProfile: profile,
-        selfIdentity: { account: profile.account } }, 'account');
+      await tx.store.put(
+        {
+          ...state,
+          selfProfile: profile,
+          selfIdentity: { account: profile.account },
+        },
+        'account',
+      );
       await tx.done;
     });
   }
@@ -1803,7 +1737,8 @@ export class WebdbStorage implements AccountStateStorage {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId !== null) {
         await invokeAccountState('native_db_write_composer_drafts', {
-          userId: Number(this.currentUserId), drafts,
+          userId: Number(this.currentUserId),
+          drafts,
         });
         return;
       }
@@ -1827,105 +1762,38 @@ export class WebdbStorage implements AccountStateStorage {
           userId: Number(this.currentUserId),
         },
       );
-      return threads.map((thread) => ({
-        ...this.normalizeThreadSubject(thread),
-        alias: thread.alias,
-      }));
+      return threads;
     }
-    const tx = (await this.db()).transaction('threads', 'readonly');
+    const tx = (await this.db()).transaction(
+      ['threads', 'threadPreviews', 'groupMeta', 'profiles'],
+      'readonly',
+    );
     const threads = await tx.objectStore('threads').getAll();
-    await tx.done;
-    return threads
-      .map((thread) =>
-        restoreThread(thread, {
-          namespaceId: thread.publisherNamespaceId,
-        }),
-      )
-      .map((thread) => ({
-        ...this.normalizeThreadSubject(thread),
-        alias: thread.alias,
-      }));
-  }
-
-  private normalizeThreadSubject(item: ConversationItem): ConversationItem {
-    // The feed-state columns own private aliases; presentation writes never replace them.
-    item = { ...item };
-    delete item.alias;
-    if (item.type === 'P2P') {
-      const peer = localSubjectIdentity(item.peerUser);
-      // Ignore the numeric user id in caches written by older clients; conversation peers are addresses.
-      const {
-        id: _legacyId,
-        profileRev: _nestedRev,
-        ...peerUser
-      } = peer as typeof peer & {
-        id?: number;
-        profileRev?: number;
-      };
-      return { ...item, peerUser };
-    }
-    const group = localSubjectIdentity(item.group);
-    const { profileRev: _nestedRev, ...groupProfile } =
-      group as typeof group & {
-        profileRev?: number;
-      };
-    return {
-      ...item,
-      group: groupProfile,
-    };
-  }
-
-  async replaceThreads(items: ConversationItem[]): Promise<void> {
-    return this.runAccountOperation(() =>
-      this.replaceThreadsInternal(
-        items.map((item) => this.normalizeThreadSubject(item)),
-      ),
+    const restored = await Promise.all(
+      threads.map(async (thread) => {
+        const profile =
+          thread.profileRev > 0
+            ? await tx
+                .objectStore('profiles')
+                .get([
+                  thread.publisherNamespaceId,
+                  0,
+                  thread.profileAccount,
+                  thread.profileRev,
+                ])
+            : undefined;
+        return restoreThread(
+          thread,
+          { profile },
+          await tx.objectStore('threadPreviews').get(thread.threadId),
+          thread.type === 'GROUP'
+            ? await tx.objectStore('groupMeta').get(thread.threadId)
+            : undefined,
+        );
+      }),
     );
-  }
-
-  private async replaceThreadsInternal(
-    items: ConversationItem[],
-  ): Promise<void> {
-    if (isTauri() && this.currentUserId != null) {
-      await tauriInvoke('native_db_replace_threads', {
-        userId: Number(this.currentUserId),
-        items,
-      });
-      return;
-    }
-    const tx = (await this.db()).transaction(['threads'], 'readwrite');
-    // Presentation-only batch: omitted entries retain their authoritative
-    // feed state; clearing the table here would silently lose valid threads.
-    const previous = new Map(
-      (await tx.objectStore('threads').getAll()).map((item) => [
-        item.threadId,
-        item,
-      ]),
-    );
-    const selected: ConversationItem[] = [];
-    for (const item of items) {
-      const state = previous.get(item.threadId);
-      try {
-        requireThreadIdentity(item, state);
-      } catch (error) {
-        tx.abort();
-        await tx.done.catch(() => undefined);
-        throw error;
-      }
-      selected.push(
-        preserveThreadProfile(
-          { ...item, profileRev: state.profileRev },
-          restoreThreadForStorageMutation(state),
-        ),
-      );
-    }
-    for (const item of selected) {
-      await tx.objectStore('threads').put({
-        ...previous.get(item.threadId)!,
-        ...storeThreadPresentation(item),
-      });
-    }
     await tx.done;
+    return restored;
   }
 
   async projectThreadAttention(
@@ -1994,22 +1862,12 @@ export class WebdbStorage implements AccountStateStorage {
       self,
     );
     const projection = projectThreadAttention(state, count);
-    const previewText = preview
-      ? preview.status === 'LIVE'
-        ? (preview.text ?? '')
-        : preview.status === 'USER_RETRACTION'
-          ? '[Message retracted]'
-          : '[Message removed by administrator]'
-      : null;
     const result: ThreadAttentionProjection = {
       threadId,
       lastReadSeq: projection.lastReadSeq,
       unreadCount: projection.unreadCount,
       mentionUnread: projection.hasUnreadMention ? ['me'] : [],
-      lastMessagePreview: previewText,
-      lastMessageAt: preview ? Date.parse(preview.createdAt) : null,
-      lastMessageSenderAccount: preview?.senderAccount ?? null,
-      lastMessageSenderNamespaceId: preview?.senderProfileNamespaceId ?? null,
+      ...projectThreadPreview(preview),
     };
     const writeTx = core.transaction(
       ['threads', 'threadPreviews'],
@@ -2034,87 +1892,34 @@ export class WebdbStorage implements AccountStateStorage {
       projectedUnreadCount: result.unreadCount,
       mentionMe: result.mentionUnread.includes('me'),
       mentionAll: result.mentionUnread.includes('all'),
-      lastMessagePreview: result.lastMessagePreview,
-      lastMessageAt: result.lastMessageAt,
-      lastMessageSenderAccount: result.lastMessageSenderAccount,
-      lastMessageSenderNamespaceId: result.lastMessageSenderNamespaceId,
     });
     await writeTx.done;
     return result;
   }
 
-  async putThread(item: ConversationItem): Promise<void> {
-    return this.runAccountOperation(() => this.putThreadInternal(item));
-  }
-
-  private async putThreadInternal(item: ConversationItem): Promise<void> {
-    if (isTauri() && this.currentUserId != null) {
-      await tauriInvoke('native_db_put_thread', {
-        userId: Number(this.currentUserId),
-        threadId: item.threadId,
-        item,
-      });
-      return;
-    }
-    const tx = (await this.db()).transaction(
-      ['threads', 'profiles'],
-      'readwrite',
-    );
-    const state = await tx.objectStore('threads').get(item.threadId);
-    try {
-      requireThreadIdentity(item, state);
-    } catch (error) {
+  /** Persist only the fields named by this local operation, against the latest row. */
+  async patchThread(threadId: number, patch: LocalThreadPatch): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_patch_thread', {
+          userId: Number(this.currentUserId),
+          threadId,
+          patch,
+        });
+        return;
+      }
+      const tx = (await this.db()).transaction('threads', 'readwrite');
+      const row = await tx.store.get(threadId);
+      if (!row) throw new Error('cannot patch thread before feed state exists');
+      await tx.store.put(applyLocalThreadPatch(row, patch));
       await tx.done;
-      throw error;
-    }
-    const current = restoreThreadForStorageMutation(state);
-    item = preserveThreadProfile(
-      { ...item, profileRev: state.profileRev },
-      current,
-    );
-    if ((current?.threadFeedId ?? 0) <= (item.threadFeedId ?? 0)) {
-      // Attention writes can carry presentation captured before resolution.
-      // The selected immutable profile owns these fields, not the caller's
-      // copy of the conversation. Read it in this same write transaction.
-      const identity = item.type === 'GROUP' ? item.group : item.peerUser;
-      const profile =
-        item.profileRev > 0
-          ? await tx
-              .objectStore('profiles')
-              .get([
-                identity.namespaceId,
-                identity.namespaceId,
-                identity.account,
-                item.profileRev,
-              ])
-          : undefined;
-      if (profile)
-        item =
-          item.type === 'GROUP'
-            ? {
-                ...item,
-                group: {
-                  ...item.group,
-                  name: profile.name,
-                  avatar: '',
-                  description: profile.bio,
-                },
-              }
-            : {
-                ...item,
-                peerUser: {
-                  ...item.peerUser,
-                  name: profile.name,
-                  avatar: '',
-                  bio: profile.bio,
-                },
-              };
-      await tx.objectStore('threads').put({
-        ...state,
-        ...storeThreadPresentation(item),
-      });
-    }
-    await tx.done;
+      if (patch.joinRequestReadFeedId !== undefined)
+        this.browserNotifications.next({
+          userId: Number(this.currentUserId),
+          entries: [],
+          groupRequestReadChanged: threadId,
+        });
+    });
   }
 
   async deleteThread(threadId: number): Promise<void> {
@@ -2130,10 +1935,11 @@ export class WebdbStorage implements AccountStateStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'threadPreviews', 'members'],
+      ['threads', 'groupMeta', 'threadPreviews', 'members'],
       'readwrite',
     );
     await tx.objectStore('threads').delete(threadId);
+    await tx.objectStore('groupMeta').delete(threadId);
     await tx.objectStore('threadPreviews').delete(threadId);
     let member = await tx
       .objectStore('members')
@@ -2144,6 +1950,11 @@ export class WebdbStorage implements AccountStateStorage {
       member = await member.continue();
     }
     await tx.done;
+    this.browserNotifications.next({
+      userId: Number(this.currentUserId),
+      entries: [],
+      groupRequestReadChanged: threadId,
+    });
   }
 
   /** Apply one compacted state-feed page and its cursor atomically. */
@@ -2182,19 +1993,20 @@ export class WebdbStorage implements AccountStateStorage {
    * READY results are committed there before this promise resolves. */
   async resolveProfileDemand(
     demand: ProfileDemand,
-    options: { evidence?: null } = {},
+    options: { evidence?: null; signal?: AbortSignal } = {},
   ): Promise<ProfileResolutionAttempt> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
     const userId = this.currentUserId;
     const epoch = this.cacheEpoch;
     const result = isTauri()
-      ? await tauriInvoke<ProfileResolutionAttempt>('native_profile_resolve', {
-          userId: Number(userId),
-          request: Object.hasOwn(options, 'evidence')
-            ? { demand, evidence: options.evidence }
+      ? await nativeProfileRequest<ProfileResolutionAttempt>(
+          Number(userId),
+          Object.hasOwn(options, 'evidence')
+            ? { demand, evidence: null }
             : demand,
-        })
+          options.signal,
+        )
       : await this.requestDbWorker<ProfileResolutionAttempt>({
           type: 'resolve-profile',
           userId,
@@ -2209,19 +2021,14 @@ export class WebdbStorage implements AccountStateStorage {
     return result;
   }
 
-  /** Drive per-thread Group Meta + tombstone drains in the database worker.
-   *
-   *  `threadId === null` is the stop signal: the worker finishes the current
-   *  page and commits it, then stops (the next page's guard fails). A non-null
-   *  `threadId` sets it as the open thread and fires the requested drains
-   *  concurrently; each checks `openThreadId === threadId` between pages. A
-   *  `null` target skips that drain (e.g. a tombstone-only advance from a
-   *  thread-feed commit must not re-drain Group Meta). */
-  async drainThreadMisc(
-    threadId: number | null,
-    groupMetaEndId: string | null,
-    tombstoneEndSeq: number | null,
-  ): Promise<void> {
+  /** Wake the per-thread Group Meta + tombstone drains in the database worker.
+   *  Every round reads its current target from durable storage, so the wake
+   *  carries no coordinates. `threadId === null` is the stop signal: the
+   *  worker finishes the current page and commits it, then stops (the next
+   *  page's guard fails). A non-null `threadId` sets it as the open thread and
+   *  wakes both drains concurrently; each checks `openThreadId === threadId`
+   *  between pages. */
+  async drainThreadMisc(threadId: number | null): Promise<void> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
     const userId = this.currentUserId;
@@ -2229,8 +2036,6 @@ export class WebdbStorage implements AccountStateStorage {
       type: 'drain-thread-misc',
       userId,
       threadId,
-      groupMetaEndId,
-      tombstoneEndSeq,
     });
     if (!pending) throw new Error('database worker unavailable');
     await pending;
@@ -2263,6 +2068,8 @@ export class WebdbStorage implements AccountStateStorage {
             this.browserNotifications.next({
               userId: data.userId,
               entries: data.entries,
+              syncComplete: data.syncComplete,
+              stream: data.stream,
             });
           return;
         }
@@ -2383,7 +2190,14 @@ export class WebdbStorage implements AccountStateStorage {
       );
     const db = await this.db();
     const tx = db.transaction(
-      ['threads', 'profileNamespaces', 'profiles', 'members', 'accountState'],
+      [
+        'threads',
+        'groupMeta',
+        'profileNamespaces',
+        'profiles',
+        'members',
+        'accountState',
+      ],
       'readwrite',
     );
     const patches: GroupMetaCommitPatch[] = [];
@@ -2393,36 +2207,23 @@ export class WebdbStorage implements AccountStateStorage {
         const currentThread = await tx
           .objectStore('threads')
           .get(update.threadId);
-        if (
-          currentThread?.type !== 'GROUP' ||
-          currentThread.conversationState === 'READ_ONLY'
-        )
-          continue;
+        if (currentThread?.type !== 'GROUP') continue;
+        const groupMetaStore = tx.objectStore('groupMeta');
+        const meta = await groupMetaStore.get(update.threadId);
+        if (!meta)
+          throw new Error('stored group thread is missing its meta row');
         for (const item of update.page.items) {
           if (item.operation === 'GROUP_ANNOUNCEMENT') {
-            const thread = await tx.objectStore('threads').get(update.threadId);
-            if (thread?.type === 'GROUP') {
-              const announcement = {
-                feedId: item.feedId,
-                text: item.body.text,
-              };
-              const presentation = restoreThreadForStorageMutation(thread);
-              if (presentation.type !== 'GROUP')
-                throw new Error('invalid group structure');
-              const next =
-                update.page.mode === 'full'
-                  ? {
-                      ...presentation,
-                      groupMetaRecoveryAnnouncement: announcement,
-                    }
-                  : {
-                      ...presentation,
-                      group: { ...presentation.group, announcement },
-                    };
-              await tx.objectStore('threads').put({
-                ...thread,
-                ...storeThreadPresentation(next),
-              });
+            if (update.page.mode === 'full') {
+              meta.recoveryAnnouncementFeedId = item.feedId;
+              meta.recoveryAnnouncementText = item.body.text;
+              meta.recoveryAnnouncementCreatedAt = item.createdAt;
+              meta.recoveryAnnouncementOriginCreatedAt = item.originCreatedAt;
+            } else {
+              meta.announcementFeedId = item.feedId;
+              meta.announcementText = item.body.text;
+              meta.announcementCreatedAt = item.createdAt;
+              meta.announcementOriginCreatedAt = item.originCreatedAt;
             }
             continue;
           }
@@ -2452,44 +2253,37 @@ export class WebdbStorage implements AccountStateStorage {
           .index('thread')
           .getAll(update.threadId);
         const activeMembers = currentMembers.filter((member) => !member.left);
-        const thread = await tx.objectStore('threads').get(update.threadId);
-        if (thread?.type === 'GROUP') {
-          const presentation = restoreThreadForStorageMutation(thread);
-          if (presentation.type !== 'GROUP')
-            throw new Error('invalid group structure');
-          const next = {
-            ...presentation,
-            groupMetaRecoveryThrough: update.page.hasMore
-              ? presentation.groupMetaRecoveryThrough
-              : null,
-            groupMetaRecoveryAnnouncement:
-              update.page.mode === 'full' && update.page.hasMore
-                ? (presentation.groupMetaRecoveryAnnouncement ?? null)
-                : null,
-            group: {
-              ...presentation.group,
-              memberCount: activeMembers.length,
-              groupMetaFeedId: update.page.scannedThrough,
-              ...(update.page.mode === 'full' && !update.page.hasMore
-                ? {
-                    announcement:
-                      presentation.groupMetaRecoveryAnnouncement ?? null,
-                  }
-                : {}),
-            },
-          };
-          await tx.objectStore('threads').put({
-            ...thread,
-            ...storeThreadPresentation(next),
-          });
-          patches.push({
-            threadId: update.threadId,
-            groupMetaFeedId: next.group.groupMetaFeedId,
-            memberCount: next.group.memberCount,
-            announcement: next.group.announcement ?? null,
-            groupMetaRecoveryThrough: next.groupMetaRecoveryThrough ?? null,
-          });
+        const finished = !update.page.hasMore;
+        const next: StoredGroupMeta = {
+          ...meta,
+          memberCount: activeMembers.length,
+          groupMetaFeedId: update.page.scannedThrough,
+        };
+        if (finished) {
+          if (update.page.mode === 'full') {
+            next.announcementFeedId = meta.recoveryAnnouncementFeedId;
+            next.announcementText = meta.recoveryAnnouncementText;
+            next.announcementCreatedAt = meta.recoveryAnnouncementCreatedAt;
+            next.announcementOriginCreatedAt =
+              meta.recoveryAnnouncementOriginCreatedAt;
+          }
+          next.recoveryThrough = null;
+          next.recoveryAnnouncementFeedId = null;
+          next.recoveryAnnouncementText = null;
+          next.recoveryAnnouncementCreatedAt = null;
+          next.recoveryAnnouncementOriginCreatedAt = null;
         }
+        await groupMetaStore.put(next);
+        patches.push({
+          threadId: update.threadId,
+          groupMetaFeedId: next.groupMetaFeedId,
+          memberCount: next.memberCount,
+          announcementFeedId: next.announcementFeedId,
+          announcementText: next.announcementText,
+          announcementCreatedAt: next.announcementCreatedAt,
+          announcementOriginCreatedAt: next.announcementOriginCreatedAt,
+          groupMetaRecoveryThrough: next.recoveryThrough,
+        });
       }
       const syncState = tx.objectStore('accountState');
       const state = await syncState.get('account');
@@ -2498,8 +2292,11 @@ export class WebdbStorage implements AccountStateStorage {
         const head = parseIncomingRequestHead(op.body);
         state.intentRequestEndId = head.requestEndId;
         state.intentRequestReadId = head.requestReadId;
-        if (state.intentRequestOptimisticReadId !== null &&
-            BigInt(head.requestReadId) >= BigInt(state.intentRequestOptimisticReadId))
+        if (
+          state.intentRequestOptimisticReadId !== null &&
+          BigInt(head.requestReadId) >=
+            BigInt(state.intentRequestOptimisticReadId)
+        )
           state.intentRequestOptimisticReadId = null;
       }
       if (fullThrough !== undefined) {
@@ -2705,7 +2502,10 @@ export class WebdbStorage implements AccountStateStorage {
         const syncState = tx.objectStore('accountState');
         const state = await syncState.get('account');
         if (!state) throw new Error('missing account sync state');
-        await syncState.put({ ...state, profileNamespaceChangeEndId: checkpoint }, 'account');
+        await syncState.put(
+          { ...state, profileNamespaceChangeEndId: checkpoint },
+          'account',
+        );
       }
       await tx.done;
       return touched;
@@ -2899,7 +2699,6 @@ export class WebdbStorage implements AccountStateStorage {
     });
   }
 
-  /** Resolve an demand to an already materialized local snapshot. */
   /** Resolve a demand to an already materialized local snapshot. */
   async findProfileForDemand(
     demand: ProfileDemand,
@@ -2956,14 +2755,11 @@ export class WebdbStorage implements AccountStateStorage {
         throw new Error('Group Meta recovery is owned by the native executor');
       }
       const tx = (await this.db()).transaction(
-        ['threads', 'members'],
+        ['threads', 'groupMeta', 'members'],
         'readwrite',
       );
       const thread = await tx.objectStore('threads').get(threadId);
-      if (
-        thread?.type !== 'GROUP' ||
-        thread.conversationState === 'READ_ONLY'
-      ) {
+      if (thread?.type !== 'GROUP') {
         await tx.done;
         return;
       }
@@ -2975,13 +2771,18 @@ export class WebdbStorage implements AccountStateStorage {
         await member.delete();
         member = await member.continue();
       }
-      await tx.objectStore('threads').put({
-        ...thread,
-        groupMetaRecoveryThrough: through,
+      const previousMeta = await tx.objectStore('groupMeta').get(threadId);
+      if (!previousMeta)
+        throw new Error('stored group thread is missing its meta row');
+      await tx.objectStore('groupMeta').put({
+        ...previousMeta,
+        memberCount: 0,
+        groupMetaFeedId: '0',
+        recoveryThrough: through,
         recoveryAnnouncementFeedId: null,
         recoveryAnnouncementText: null,
-        groupMemberCount: 0,
-        groupMetaFeedId: '0',
+        recoveryAnnouncementCreatedAt: null,
+        recoveryAnnouncementOriginCreatedAt: null,
       });
       await tx.done;
     });
@@ -2992,6 +2793,7 @@ export class WebdbStorage implements AccountStateStorage {
     afterIdentity?: string;
     take: number;
     search?: string;
+    exclude?: { account: string; namespaceId: number };
   }): Promise<ResolvedMemberRecord[]> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
@@ -3003,6 +2805,8 @@ export class WebdbStorage implements AccountStateStorage {
             afterIdentity: params.afterIdentity ?? '',
             take: params.take,
             search: params.search?.trim() ?? '',
+            excludeAccount: params.exclude?.account ?? null,
+            excludeNamespaceId: params.exclude?.namespaceId ?? null,
           },
         );
       const db = await this.db();
@@ -3010,7 +2814,7 @@ export class WebdbStorage implements AccountStateStorage {
       if (thread?.type !== 'GROUP') return [];
       const publisherNamespaceId = thread.publisherNamespaceId;
       const result: ResolvedMemberRecord[] = [];
-      const search = params.search?.trim().toLocaleLowerCase() ?? '';
+      const search = params.search?.trim().toLowerCase() ?? '';
       const cursor = params.afterIdentity
         ? parseUserIdentityKey(params.afterIdentity)
         : null;
@@ -3023,6 +2827,11 @@ export class WebdbStorage implements AccountStateStorage {
         .filter((member) => {
           return (
             !member.left &&
+            !(
+              params.exclude &&
+              member.account === params.exclude.account &&
+              member.namespaceId === params.exclude.namespaceId
+            ) &&
             (!cursor || compareMemberIdentity(member, cursor) > 0)
           );
         })
@@ -3038,8 +2847,8 @@ export class WebdbStorage implements AccountStateStorage {
         const user = this.memberUser(member, publisherNamespaceId, snapshot);
         if (
           !search ||
-          user.name.toLocaleLowerCase().includes(search) ||
-          user.account.toLocaleLowerCase().includes(search)
+          user.name.toLowerCase().includes(search) ||
+          user.account.toLowerCase().includes(search)
         )
           result.push(
             this.resolveMember(member, publisherNamespaceId, snapshot),
@@ -3219,12 +3028,6 @@ export class WebdbStorage implements AccountStateStorage {
       });
       if (decodedAvatar)
         await tx.objectStore('profileAvatarBlobs').put(decodedAvatar);
-      await tx.objectStore('threads').put({
-        ...thread,
-        subjectName: profile.name,
-        subjectAvatar: '',
-        subjectBio: profile.bio,
-      });
       await tx.done;
       return true;
     });
@@ -3252,7 +3055,7 @@ export class WebdbStorage implements AccountStateStorage {
     });
     const written = await this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
-        ['profiles', 'profileAvatarBlobs', 'threads'],
+        ['profiles', 'profileAvatarBlobs'],
         'readwrite',
       );
       if (avatar) await tx.objectStore('profileAvatarBlobs').put(avatar);
@@ -3260,19 +3063,6 @@ export class WebdbStorage implements AccountStateStorage {
         tx.objectStore('profiles'),
         snapshot,
       );
-      for (const thread of await tx.objectStore('threads').getAll()) {
-        if (
-          thread.profileAccount === snapshot.account &&
-          thread.publisherNamespaceId === snapshot.publisherNamespaceId &&
-          thread.profileRev === snapshot.profileRev
-        )
-          await tx.objectStore('threads').put({
-            ...thread,
-            subjectName: snapshot.name,
-            subjectAvatar: '',
-            subjectBio: snapshot.bio,
-          });
-      }
       await tx.done;
       return written;
     });
@@ -3350,7 +3140,7 @@ export class WebdbStorage implements AccountStateStorage {
     orderBy: 'desc' | 'asc',
     take: number,
     anchor?: number,
-  ): Promise<MessageQueryRow[]> {
+  ): Promise<Message[]> {
     return this.runMessageOperation(() =>
       this.queryCachedMessagesInternal(threadId, orderBy, take, anchor),
     );
@@ -3393,7 +3183,7 @@ export class WebdbStorage implements AccountStateStorage {
             profileRev,
           },
         );
-      const tx = (await this.messageDb()).transaction('messages', 'readwrite');
+      const tx = (await this.db()).transaction('messages', 'readwrite');
       const message = await tx.store.get([threadId, seq]);
       if (
         !message ||
@@ -3424,6 +3214,40 @@ export class WebdbStorage implements AccountStateStorage {
     });
   }
 
+  /** Filter against the current coverage before reading candidate slots. Successful
+   * pages may replace either server gap state, but never rewrite local coverage. */
+  private async writeMessageCandidates(
+    store: Pick<
+      IDBPObjectStore<WebdbSchema, ['messages'], 'messages', 'readwrite'>,
+      'get' | 'put'
+    >,
+    messages: MessageQueryRow[],
+    ranges: MessageRange[],
+  ): Promise<void> {
+    const candidates = messages.filter(
+      (message) =>
+        !ranges.some(
+          (range) =>
+            range.state === 'LOCAL_COVERED' &&
+            message.seq > range.left &&
+            message.seq <= range.right,
+        ),
+    );
+    const current = await readCachedMessageBatch(store, candidates);
+    const writes = new Map<string, CachedMessage>();
+    for (const message of candidates) {
+      const key = `${message.threadId}:${message.seq}`;
+      const old = current.get(key);
+      if (old?.isDeleted) continue;
+      const merged = mergeCachedMessage(old, message);
+      current.set(key, merged);
+      writes.set(key, merged);
+    }
+    await Promise.all(
+      [...writes.values()].map((message) => store.put(message)),
+    );
+  }
+
   async putCachedMessages(messages: MessageQueryRow[]): Promise<void> {
     if (messages.length === 0) return;
     return this.runMessageOperation(async () => {
@@ -3436,12 +3260,41 @@ export class WebdbStorage implements AccountStateStorage {
         });
         return;
       }
-      const tx = (await this.messageDb()).transaction('messages', 'readwrite');
-      for (const message of messages) {
-        const existing = await tx.store.get([message.threadId, message.seq]);
-        await tx.store.put(mergeCachedMessage(existing, message));
+      for (const threadId of new Set(
+        messages.map((message) => message.threadId),
+      )) {
+        await this.withMessageThreadCommit(threadId, async () => {
+          const rows = messages.filter(
+            (message) => message.threadId === threadId,
+          );
+          validateMessageRows(rows);
+          const tx = (await this.db()).transaction(
+            ['messages', 'messageRanges'],
+            'readwrite',
+          );
+          try {
+            const ranges = await tx
+              .objectStore('messageRanges')
+              .getAll(
+                IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
+              );
+            await this.writeMessageCandidates(
+              tx.objectStore('messages'),
+              rows,
+              ranges,
+            );
+            await tx.done;
+          } catch (error) {
+            try {
+              tx.abort();
+            } catch {
+              /* Already finished. */
+            }
+            await tx.done.catch(() => undefined);
+            throw error;
+          }
+        });
       }
-      await tx.done;
       if (epoch === this.cacheEpoch && userId === this.currentUserId) {
         for (const threadId of new Set(
           messages.map((message) => message.threadId),
@@ -3452,9 +3305,9 @@ export class WebdbStorage implements AccountStateStorage {
     });
   }
 
-  /** Count known message slots, including tombs, in (afterSeq, throughSeq].
+  /** Count visible message slots in (afterSeq, throughSeq].
    * The caller bounds this interval by the server projection and visibility window.
-   * A deletion-only marker has no author yet and is not a known message slot.
+   * Persisted deletion markers are invisible and contribute zero.
    */
   async countUnreadMessageSlots(
     threadId: number,
@@ -3488,8 +3341,7 @@ export class WebdbStorage implements AccountStateStorage {
           owner,
         });
       if (afterSeq === throughSeq) return 0;
-      const tx = (await this.messageDb()).transaction('messages', 'readonly');
-      let cursor = await tx.store.openCursor(
+      const rows = await this.readMessageSlots(
         IDBKeyRange.bound(
           [threadId, afterSeq],
           [threadId, throughSeq],
@@ -3497,23 +3349,60 @@ export class WebdbStorage implements AccountStateStorage {
           false,
         ),
       );
-      let count = 0;
-      while (cursor) {
-        const message = cursor.value;
-        if ('creator' in message) {
-          const creator = message.creator;
-          if (
-            !creator ||
-            creator.account !== owner.account ||
-            creator.namespaceId !== owner.namespaceId
-          )
-            count++;
-        }
-        cursor = await cursor.continue();
-      }
-      await tx.done;
-      return count;
+      return rows.filter(
+        (message) =>
+          !message.creator ||
+          message.creator.account !== owner.account ||
+          message.creator.namespaceId !== owner.namespaceId,
+      ).length;
     });
+  }
+
+  /** Read bounded batches in one snapshot; invisible stubs never consume the page limit. */
+  private async readMessageSlots(
+    range: IDBKeyRange,
+    orderBy: 'asc' | 'desc' = 'asc',
+    take = Infinity,
+  ): Promise<Message[]> {
+    if (take <= 0) return [];
+    const tx = (await this.db()).transaction('messages', 'readonly');
+    const result: Message[] = [];
+    let remaining = range;
+    while (result.length < take) {
+      let batch: CachedMessage[];
+      if (orderBy === 'asc') {
+        batch = await tx.store.getAll(remaining, 100);
+      } else {
+        const last = await tx.store.openKeyCursor(remaining, 'prev');
+        if (!last) break;
+        const first = await last.advance(99);
+        const query = first
+          ? IDBKeyRange.bound(
+              first.primaryKey,
+              remaining.upper,
+              false,
+              remaining.upperOpen,
+            )
+          : remaining;
+        batch = (await tx.store.getAll(query, 100)).reverse();
+      }
+      for (const row of batch) {
+        if (isCachedMessageBody(row)) result.push(row);
+        if (result.length === take) break;
+      }
+      if (batch.length < 100 || result.length === take) break;
+      const last = batch[batch.length - 1];
+      const key = [last.threadId, last.seq];
+      if (orderBy === 'asc') {
+        if (indexedDB.cmp(key, range.upper) >= 0) break;
+        remaining = IDBKeyRange.bound(key, range.upper, true, range.upperOpen);
+      } else {
+        if (indexedDB.cmp(key, range.lower) <= 0) break;
+        remaining = IDBKeyRange.bound(range.lower, key, range.lowerOpen, true);
+      }
+    }
+    await tx.done;
+    return result;
   }
 
   private async queryCachedMessagesInternal(
@@ -3521,9 +3410,9 @@ export class WebdbStorage implements AccountStateStorage {
     orderBy: 'desc' | 'asc',
     take: number,
     anchor?: number,
-  ): Promise<MessageQueryRow[]> {
+  ): Promise<Message[]> {
     if (isTauri() && this.currentUserId != null) {
-      return tauriInvoke<MessageQueryRow[]>('native_db_query_messages', {
+      return tauriInvoke<Message[]>('native_db_query_messages', {
         userId: Number(this.currentUserId),
         threadId,
         anchor: anchor ?? null,
@@ -3531,7 +3420,6 @@ export class WebdbStorage implements AccountStateStorage {
         take,
       });
     }
-    const db = await this.messageDb();
     const lower =
       anchor === undefined || orderBy === 'desc' ? -Infinity : anchor;
     const upper = anchor === undefined || orderBy === 'asc' ? Infinity : anchor;
@@ -3541,18 +3429,7 @@ export class WebdbStorage implements AccountStateStorage {
       orderBy === 'asc' && anchor !== undefined,
       orderBy === 'desc' && anchor !== undefined,
     );
-    const out: MessageQueryRow[] = [];
-    const tx = db.transaction('messages', 'readonly');
-    let cursor = await tx.store.openCursor(
-      range,
-      orderBy === 'desc' ? 'prev' : 'next',
-    );
-    while (cursor && out.length < take) {
-      if (isCachedTimelineSlot(cursor.value)) out.push(cursor.value);
-      cursor = await cursor.continue();
-    }
-    await tx.done;
-    return out;
+    return this.readMessageSlots(range, orderBy, take);
   }
 
   async getMessageRanges(threadId: number): Promise<MessageRange[]> {
@@ -3567,10 +3444,11 @@ export class WebdbStorage implements AccountStateStorage {
         throw new Error(
           'native message head belongs to the native source walker',
         );
-      const record = await (
-        await this.messageDb()
-      ).get('threadSyncState', threadId);
-      return readMessageHead(record?.messageHead);
+      const record = await (await this.db()).get('threads', threadId);
+      if (!record) throw new Error('missing thread for message head');
+      return readMessageHead(
+        record.messageHead === null ? undefined : record.messageHead,
+      );
     });
   }
 
@@ -3589,18 +3467,16 @@ export class WebdbStorage implements AccountStateStorage {
         });
         return;
       }
-      const db = await this.messageDb();
-      const tx = db.transaction('threadSyncState', 'readwrite');
-      const current = await tx.store.get(threadId);
-      const old = readMessageHead(current?.messageHead) ?? 0;
-      await tx.store.put({
-        threadId,
-        ...(current?.deletedHwm !== undefined
-          ? { deletedHwm: current.deletedHwm }
-          : {}),
-        messageHead: Math.max(knownNewestSeq, old),
+      await this.withMessageThreadCommit(threadId, async () => {
+        const tx = (await this.db()).transaction('threads', 'readwrite');
+        const thread = await tx.store.get(threadId);
+        if (!thread) throw new Error('missing thread for message head');
+        await tx.store.put({
+          ...thread,
+          messageHead: Math.max(thread.messageHead ?? 0, knownNewestSeq),
+        });
+        await tx.done;
       });
-      await tx.done;
     });
   }
 
@@ -3611,7 +3487,7 @@ export class WebdbStorage implements AccountStateStorage {
       throw new Error(
         'native message ranges belong to the native source walker',
       );
-    return (await this.messageDb()).getAll(
+    return (await this.db()).getAll(
       'messageRanges',
       IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
     );
@@ -3623,8 +3499,10 @@ export class WebdbStorage implements AccountStateStorage {
   ): Promise<CommittedMessagePage> {
     return this.runMessageOperation(
       () =>
-        this.withMessageThreadCommit(input.threadId, () =>
-          this.commitBrowserMessagePageInternal(input),
+        this.withMessageThreadCommit(
+          input.threadId,
+          () => this.commitBrowserMessagePageInternal(input),
+          lifetime,
         ),
       lifetime,
     );
@@ -3643,46 +3521,66 @@ export class WebdbStorage implements AccountStateStorage {
     )
       throw new Error('known newest message sequence is invalid');
 
-    const tx = (await this.messageDb()).transaction(
-      ['messages', 'messageRanges', 'threadSyncState'],
+    validateMessageRows(input.messages);
+    // Validate the untouched response, even when every row will be filtered out.
+    validateMessageResponse(
+      input.scan,
+      input.gaps,
+      input.messages.map((message) => message.seq),
+    );
+    const tx = (await this.db()).transaction(
+      ['messages', 'messageRanges', 'threads'],
       'readwrite',
     );
-    const rangeKey = IDBKeyRange.bound(
-      [input.threadId, -Infinity],
-      [input.threadId, Infinity],
-    );
-    const rangeStore = tx.objectStore('messageRanges');
-    const current = await rangeStore.getAll(rangeKey);
-    const ranges = reduceMessageRanges({
-      threadId: input.threadId,
-      current,
-      scan: input.scan,
-      gaps: input.gaps,
-      messageSeqs: input.messages.map((message) => message.seq),
-    });
-    const messageStore = tx.objectStore('messages');
-    const committedMessages: MessageQueryRow[] = [];
-    for (const message of input.messages) {
-      const existing = await messageStore.get([input.threadId, message.seq]);
-      const merged = mergeCachedMessage(existing, message);
-      await messageStore.put(merged);
-      if (isCachedTimelineSlot(merged)) committedMessages.push(merged);
-    }
-    await rangeStore.delete(rangeKey);
-    for (const range of ranges) await rangeStore.put(range);
-    if (input.knownNewestSeq !== undefined) {
-      const syncState = tx.objectStore('threadSyncState');
-      const current = await syncState.get(input.threadId);
-      const old = readMessageHead(current?.messageHead) ?? 0;
-      await syncState.put({
+    let ranges: MessageRange[];
+    let committedMessages: Message[];
+    try {
+      const rangeKey = IDBKeyRange.bound(
+        [input.threadId, -Infinity],
+        [input.threadId, Infinity],
+      );
+      const rangeStore = tx.objectStore('messageRanges');
+      const current = await rangeStore.getAll(rangeKey);
+      await this.writeMessageCandidates(
+        tx.objectStore('messages'),
+        input.messages,
+        current,
+      );
+      ranges = reduceMessageRanges({
         threadId: input.threadId,
-        ...(current?.deletedHwm !== undefined
-          ? { deletedHwm: current.deletedHwm }
-          : {}),
-        messageHead: Math.max(input.knownNewestSeq, old),
+        current,
+        scan: input.scan,
+        gaps: input.gaps,
+        messageSeqs: input.messages.map((message) => message.seq),
       });
+      if (input.knownNewestSeq !== undefined) {
+        const thread = await tx.objectStore('threads').get(input.threadId);
+        if (!thread) throw new Error('missing thread for message head');
+        await tx.objectStore('threads').put({
+          ...thread,
+          messageHead: Math.max(thread.messageHead ?? 0, input.knownNewestSeq),
+        });
+      }
+      await rangeStore.delete(rangeKey);
+      await Promise.all(ranges.map((range) => rangeStore.put(range)));
+      // Return persisted input slots, including stored rows skipped by the coverage filter.
+      const slots = await readCachedMessageBatch(
+        tx.objectStore('messages'),
+        input.messages,
+      );
+      committedMessages = [...slots.values()].filter(
+        (row): row is CachedMessageBody => !!row && isCachedMessageBody(row),
+      );
+      await tx.done;
+    } catch (error) {
+      try {
+        tx.abort();
+      } catch {
+        /* Already finished. */
+      }
+      await tx.done.catch(() => undefined);
+      throw error;
     }
-    await tx.done;
     if (epoch === this.cacheEpoch && userId === this.currentUserId) {
       this.messageDbCommitted.next({
         userId: Number(userId),
@@ -3721,7 +3619,7 @@ export class WebdbStorage implements AccountStateStorage {
           )) ?? undefined
         );
       }
-      const db = await this.messageDb();
+      const db = await this.db();
       const row =
         namespaceId === 0
           ? await db.get('messages', [threadId, originSeq])
@@ -3737,26 +3635,30 @@ export class WebdbStorage implements AccountStateStorage {
     });
   }
 
-  /** Read deletion facts independently of cached bodies; an absent row is not a tombstone. */
-  async getDeletedMessageSeqs(
+  /** Read only deletion coordinates and reasons for already-mounted rows. No identity or
+   * body is returned, and an absent cache row must never be inferred to be deleted. */
+  async getMessageDeletions(
     threadId: number,
     seqs: number[],
-  ): Promise<number[]> {
+  ): Promise<Array<{ seq: number; type: MessageDeletionType }>> {
     if (seqs.length === 0) return [];
     return this.runMessageOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
-        return tauriInvoke<number[]>('native_db_get_deleted_message_seqs', {
-          userId: Number(this.currentUserId),
-          threadId,
-          seqs,
-        });
+        return tauriInvoke<Array<{ seq: number; type: MessageDeletionType }>>(
+          'native_db_get_message_deletions',
+          { userId: Number(this.currentUserId), threadId, seqs },
+        );
       }
-      const tx = (await this.messageDb()).transaction('messages', 'readonly');
+      const tx = (await this.db()).transaction('messages', 'readonly');
       const rows = await Promise.all(
         [...new Set(seqs)].map((seq) => tx.store.get([threadId, seq])),
       );
       await tx.done;
-      return rows.flatMap((row) => (row?.isDeleted ? [row.seq] : []));
+      return rows.flatMap((row) =>
+        row?.contentType === 'TOMB'
+          ? [{ seq: row.seq, type: row.deletionType }]
+          : [],
+      );
     });
   }
 
@@ -3769,10 +3671,7 @@ export class WebdbStorage implements AccountStateStorage {
         });
         return hwm;
       }
-      const tx = (await this.messageDb()).transaction(
-        'threadSyncState',
-        'readonly',
-      );
+      const tx = (await this.db()).transaction('threads', 'readonly');
       const record = await tx.store.get(threadId);
       const hwm = readDeletedHwm(record?.deletedHwm);
       await tx.done;
@@ -3786,6 +3685,8 @@ export class WebdbStorage implements AccountStateStorage {
     hwm: number,
   ): Promise<void> {
     return this.runMessageOperation(async () => {
+      if (!Number.isSafeInteger(threadId) || threadId < 1)
+        throw new Error('invalid deleted-message thread');
       if (!Number.isSafeInteger(hwm) || hwm < 0)
         throw new Error('deleted-message HWM must be a non-negative integer');
       if (
@@ -3796,7 +3697,8 @@ export class WebdbStorage implements AccountStateStorage {
             item.deletionSeq < 1 ||
             item.deletionSeq > hwm ||
             !Number.isSafeInteger(item.messageSeq) ||
-            item.messageSeq < 1,
+            item.messageSeq < 1 ||
+            !['USER_RETRACTION', 'MODERATION_REMOVAL'].includes(item.type),
         )
       )
         throw new Error('deleted-message page contains invalid coordinates');
@@ -3809,30 +3711,45 @@ export class WebdbStorage implements AccountStateStorage {
         });
         return;
       }
-      const tx = (await this.messageDb()).transaction(
-        ['messages', 'threadSyncState'],
-        'readwrite',
-      );
-      for (const item of items) {
-        const current = await tx
-          .objectStore('messages')
-          .get([threadId, item.messageSeq]);
-        await tx
-          .objectStore('messages')
-          .put(
-            deleteMessageSlot(current, threadId, item.messageSeq, item.type),
-          );
-      }
-      const syncState = tx.objectStore('threadSyncState');
-      const current = await syncState.get(threadId);
-      await syncState.put({
-        threadId,
-        ...(current?.messageHead !== undefined
-          ? { messageHead: current.messageHead }
-          : {}),
-        deletedHwm: hwm,
+      await this.withMessageThreadCommit(threadId, async () => {
+        const tx = (await this.db()).transaction(
+          ['threads', 'messages'],
+          'readwrite',
+        );
+        try {
+          const thread = await tx.objectStore('threads').get(threadId);
+          const currentHwm = readDeletedHwm(thread?.deletedHwm);
+          if (!thread)
+            throw new Error('missing thread for deleted-message HWM');
+          // No per-message reads: coordinates alone permanently replace the body.
+          await Promise.all([
+            ...items.map(async (item) =>
+              tx
+                .objectStore('messages')
+                .put(
+                  createMessageDeletionMarker(
+                    threadId,
+                    item.messageSeq,
+                    item.type,
+                  ),
+                ),
+            ),
+            (async () =>
+              tx
+                .objectStore('threads')
+                .put({ ...thread, deletedHwm: Math.max(currentHwm, hwm) }))(),
+          ]);
+          await tx.done;
+        } catch (error) {
+          try {
+            tx.abort();
+          } catch {
+            /* Already finished. */
+          }
+          await tx.done.catch(() => undefined);
+          throw error;
+        }
       });
-      await tx.done;
     });
   }
 
@@ -3849,10 +3766,9 @@ export class WebdbStorage implements AccountStateStorage {
         })) ?? undefined
       );
     }
-    const value = await (
-      await this.messageDb()
-    ).get('messages', [threadId, seq]);
-    return value && isCachedMessageBody(value) ? value : undefined;
+    const value = await (await this.db()).get('messages', [threadId, seq]);
+    if (!value) return undefined;
+    return isCachedMessageBody(value) ? value : undefined;
   }
 
   async getNewestMessages(threadIds: number[]): Promise<Message[]> {
@@ -3871,19 +3787,23 @@ export class WebdbStorage implements AccountStateStorage {
         threadIds,
       });
     }
-    const tx = (await this.messageDb()).transaction('messages', 'readonly');
     const messages = await Promise.all(
       threadIds.map(async (threadId) => {
-        const cursor = await tx.store.openCursor(
-          IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
-          'prev',
-        );
-        let current = cursor;
-        while (current?.value.isDeleted) current = await current.continue();
-        return current?.value;
+        let anchor: number | undefined;
+        for (;;) {
+          const rows = await this.queryCachedMessagesInternal(
+            threadId,
+            'desc',
+            100,
+            anchor,
+          );
+          const body = rows.find(isCachedMessageBody);
+          if (body) return body;
+          if (rows.length < 100) return undefined;
+          anchor = rows[rows.length - 1].seq;
+        }
       }),
     );
-    await tx.done;
     return messages.filter(
       (message): message is Message => message !== undefined,
     );
@@ -3891,7 +3811,9 @@ export class WebdbStorage implements AccountStateStorage {
 
   async deleteMessagesByThread(threadId: number): Promise<void> {
     return this.runMessageOperation(() =>
-      this.deleteMessagesByThreadInternal(threadId),
+      this.withMessageThreadCommit(threadId, () =>
+        this.deleteMessagesByThreadInternal(threadId),
+      ),
     );
   }
 
@@ -3905,18 +3827,34 @@ export class WebdbStorage implements AccountStateStorage {
       });
       return;
     }
-    const tx = (await this.messageDb()).transaction(
-      ['messages', 'messageRanges', 'threadSyncState'],
+    const tx = (await this.db()).transaction(
+      ['messages', 'messageRanges'],
       'readwrite',
     );
-    await tx
-      .objectStore('messages')
-      .delete(IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]));
+    await this.evictMessageBodies(
+      tx.objectStore('messages'),
+      IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
+    );
     await tx
       .objectStore('messageRanges')
       .delete(IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]));
-    await tx.objectStore('threadSyncState').delete(threadId);
     await tx.done;
+  }
+
+  private async evictMessageBodies(
+    store: IDBPObjectStore<
+      WebdbSchema,
+      ['messages', 'messageRanges'],
+      'messages',
+      'readwrite'
+    >,
+    range?: IDBKeyRange,
+  ): Promise<void> {
+    let cursor = await store.openCursor(range);
+    while (cursor) {
+      if (!cursor.value.isDeleted) await cursor.delete();
+      cursor = await cursor.continue();
+    }
   }
 
   /** Request persistent storage so the browser doesn't evict the origin under disk pressure. */
@@ -3942,8 +3880,18 @@ function compareMemberIdentity(
   left: Pick<MemberRecord, 'namespaceId' | 'account'>,
   right: Pick<MemberRecord, 'namespaceId' | 'account'>,
 ): number {
-  return (
-    left.namespaceId - right.namespaceId ||
-    left.account.localeCompare(right.account)
-  );
+  const namespaceOrder = left.namespaceId - right.namespaceId;
+  if (namespaceOrder) return namespaceOrder;
+  // SQLite's BINARY account ordering is Unicode scalar order for valid UTF-8.
+  // Locale collation would select different pages on browser and native hosts.
+  let a = 0;
+  let b = 0;
+  while (a < left.account.length && b < right.account.length) {
+    const leftPoint = left.account.codePointAt(a)!;
+    const rightPoint = right.account.codePointAt(b)!;
+    if (leftPoint !== rightPoint) return leftPoint - rightPoint;
+    a += leftPoint > 0xffff ? 2 : 1;
+    b += rightPoint > 0xffff ? 2 : 1;
+  }
+  return left.account.length - a - (right.account.length - b);
 }

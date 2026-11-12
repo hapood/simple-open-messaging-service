@@ -4,16 +4,18 @@ import { BusinessCode } from '../../common/business-code.js';
 import { BusinessException } from '../../common/business.exception.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 
-interface GroupMetaFeedItemBase {
-  feedId: number;
+interface GroupMetaCopyTimes {
+  /** First persistence at this publisher, in epoch milliseconds. */
+  createdAt: number;
+  /** Direct source copy time; null on the group's origin. */
+  originCreatedAt: number | null;
 }
 
-/** One Group Meta feed item. The wire item is the stored body verbatim: the
- * subject identity is (account, namespaceId) in the publisher's coordinate
- * space, and no domain travels on the wire — consumers resolve the display
- * domain through publisher-scoped namespace bindings. */
-export type GroupMetaFeedItem =
-  | (GroupMetaFeedItemBase & {
+/** Shared operation bodies and coordinates, independent of local or federation
+ * timestamp projection. Subject identities use the publisher's namespace. */
+export type GroupMetaFact =
+  | {
+      feedId: number;
       operation: 'MEMBER_UPSERT';
       body: {
         account: string;
@@ -21,8 +23,9 @@ export type GroupMetaFeedItem =
         role: 'OWNER' | 'ADMIN' | 'MEMBER';
         profileRev: number;
       };
-    })
-  | (GroupMetaFeedItemBase & {
+    }
+  | {
+      feedId: number;
       operation: 'MEMBER_DEPART';
       body: {
         account: string;
@@ -30,15 +33,19 @@ export type GroupMetaFeedItem =
         role: 'OWNER' | 'ADMIN' | 'MEMBER';
         profileRev: number;
       };
-    })
-  | (GroupMetaFeedItemBase & {
+    }
+  | {
+      feedId: number;
       operation: 'GROUP_PROFILE';
       body: { account: string; namespaceId: number; profileRev: number };
-    })
-  | (GroupMetaFeedItemBase & {
+    }
+  | {
+      feedId: number;
       operation: 'GROUP_ANNOUNCEMENT';
       body: { text: string | null };
-    });
+    };
+
+export type GroupMetaFeedItem = GroupMetaFact & GroupMetaCopyTimes;
 
 export interface GroupMetaFeedPage {
   account: string;
@@ -126,32 +133,37 @@ export async function readGroupMetaPageInTx(
         | 'GROUP_PROFILE'
         | 'GROUP_ANNOUNCEMENT';
       body: Record<string, unknown>;
+      createdAt: Date | string;
+      originCreatedAt: Date | string | null;
     }>(sql`
-    SELECT fact."feedId", fact.operation::text AS operation, fact.body
+    SELECT fact."feedId", fact.operation::text AS operation, fact.body, fact."createdAt", fact."originCreatedAt"
     FROM "GroupMetaMemberFeed" fact
     WHERE fact."threadId" = ${params.groupId}
       AND fact."feedId" > ${params.after} AND fact."feedId" <= ${scanEnd}
-      ${params.feedMode === 'full' ? sql`AND fact.operation IN ('MEMBER_UPSERT', 'GROUP_PROFILE')` : sql.empty()}
-    UNION ALL
-    SELECT meta."announcementFeedId", 'GROUP_ANNOUNCEMENT'::text,
-      jsonb_build_object('text', meta."announcementText")
-    FROM "GroupMeta" meta WHERE meta."threadId" = ${params.groupId}
-      AND meta."announcementFeedId" > ${params.after}
-      AND meta."announcementFeedId" <= ${scanEnd}
+      ${params.feedMode === 'full' ? sql`AND fact.operation <> 'MEMBER_DEPART'` : sql.empty()}
     ORDER BY "feedId" LIMIT ${queryLimit}
   `)
   ).rows;
   const items: GroupMetaFeedItem[] = memberRows
     .map((row): GroupMetaFeedItem => {
+      const times = {
+        createdAt: new Date(row.createdAt).getTime(),
+        originCreatedAt:
+          row.originCreatedAt === null
+            ? null
+            : new Date(row.originCreatedAt).getTime(),
+      };
       if (row.operation === 'GROUP_ANNOUNCEMENT')
         return {
           feedId: row.feedId,
+          ...times,
           operation: 'GROUP_ANNOUNCEMENT',
           body: { text: (row.body.text as string | null) ?? null },
         };
       if (row.operation === 'GROUP_PROFILE')
         return {
           feedId: row.feedId,
+          ...times,
           operation: 'GROUP_PROFILE',
           body: {
             account: String(row.body.account),
@@ -161,6 +173,7 @@ export async function readGroupMetaPageInTx(
         };
       return {
         feedId: row.feedId,
+        ...times,
         operation: row.operation,
         body: {
           account: String(row.body.account),

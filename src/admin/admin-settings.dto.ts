@@ -1,14 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsInt,
-  IsBoolean,
-  IsString,
-  Matches,
-  Max,
-  MaxLength,
-  Min,
-  ValidateBy,
-} from 'class-validator';
+import { IsInt, IsBoolean, Max, Min, ValidateBy } from 'class-validator';
 
 const isZeroOrRange = (minimum: number, maximum: number) =>
   ValidateBy({
@@ -91,23 +82,23 @@ export class FederationTransportDto {
   @Max(120)
   connectTimeoutSec!: number;
 
-  @ApiProperty({ minimum: 1, maximum: 600, example: 12 })
+  @ApiProperty({
+    minimum: 1,
+    maximum: 600,
+    example: 30,
+    description:
+      'Response-header wait and response-body inactivity timeout after connection establishment, shared by ordinary and media requests.',
+  })
   @IsInt()
   @Min(1)
   @Max(600)
-  callTimeoutSec!: number;
+  requestIdleTimeoutSec!: number;
 
   @ApiProperty({ minimum: 262144, maximum: 67108864, example: 8388608 })
   @IsInt()
   @Min(262144)
   @Max(67108864)
   mediaChunkBytes!: number;
-
-  @ApiProperty({ minimum: 5, maximum: 3600, example: 120 })
-  @IsInt()
-  @Min(5)
-  @Max(3600)
-  mediaChunkTimeoutSec!: number;
 
   @ApiProperty({ minimum: 0, maximum: 20, example: 5 })
   @IsInt()
@@ -132,6 +123,18 @@ export class AdminSessionPolicyDto {
 }
 
 export class UserQuotaDefaultsDto {
+  @ApiProperty({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  maxFileBytes!: number;
+
+  @ApiProperty({ minimum: 0 })
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  dailySignalLimit!: number;
+
   @ApiProperty({ minimum: 0 })
   @IsInt()
   @Min(0)
@@ -150,14 +153,20 @@ export class UserQuotaDefaultsDto {
   @Max(Number.MAX_SAFE_INTEGER)
   dailyFileLimit!: number;
 
-  @ApiProperty({ type: String, pattern: '^\\d+$', example: '1073741824' })
-  @IsString()
-  @MaxLength(16)
-  @Matches(/^\d+$/)
-  dailyFileBytesLimit!: string;
+  @ApiProperty({ minimum: 0 })
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  dailyFileBytesLimit!: number;
 }
 
 export class FederationQuotaDefaultsDto {
+  @ApiProperty({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  maxFileBytes!: number;
+
   @ApiProperty({ minimum: 0 })
   @IsInt()
   @Min(0)

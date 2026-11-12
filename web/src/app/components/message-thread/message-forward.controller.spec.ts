@@ -6,7 +6,6 @@ import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { ChatMsgData } from '../message-cards/chat-item';
 import { MessageForwardController } from './message-forward.controller';
 import type { MessageThreadAdapter } from './message-thread-adapter';
-import type { ConversationListService } from '../../services/conversation-list.service';
 import type { RouteService } from '../../services/route.service';
 import type { ToastService } from '../../services/toast.service';
 import type { TranslocoService } from '@jsverse/transloco';
@@ -20,7 +19,6 @@ function controller(
 ): MessageForwardController {
   return new MessageForwardController(
     (deps?.adapter ?? {}) as MessageThreadAdapter,
-    {} as ConversationListService,
     {
       popupDlg: (_type: unknown, data: unknown) => onDialog?.(data),
     } as unknown as RouteService,
@@ -31,6 +29,21 @@ function controller(
 }
 
 describe('MessageForwardController', () => {
+  it.each([BusinessCode.FRIEND_NOT_FOUND, BusinessCode.GROUP_DISSOLVED])(
+    'only reports business failure %s without refreshing or patching relationship state',
+    async (code) => {
+      const warn = vi.fn();
+      const forwarding = controller(undefined, {
+        adapter: { sendForward: vi.fn(() => of({ code, message: 'business refusal' }) as ReturnType<MessageThreadAdapter['sendForward']>) },
+        toast: { warn },
+      });
+      const result = await forwarding['send']({
+        threadIds: [9], messages: [{ id: 4 }] as never, mode: 'DIRECT',
+      }, 8);
+      expect(result).toBe(false);
+      expect(warn).toHaveBeenCalledOnce();
+    },
+  );
   it('builds a chronologically sorted forward-dialog model', () => {
     let dialogData: unknown;
     const item = (id: number, createdAtMs: number): CbItem<ChatMsgData> =>

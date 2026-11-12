@@ -15,11 +15,14 @@ vi.mock('@/hooks/use-quota', () => ({
       users: [
         {
           entity: '42',
+          userId: 42,
+          requests: { count: 0, limit: 50 },
+          signals: { count: 0, limit: 10000 },
           scope: 'user',
           msg: { count: 10, limit: 5 },
           file: { count: 0, limit: 5 },
           fileBytes: { bytes: '0', limit: 10 },
-          trippedDims: ['msg'],
+          trippedDims: ['messages'],
         },
       ],
     },

@@ -1,22 +1,49 @@
 # SOMFP Changelog
 
+## 1.0.0-draft.2
+
+Not backward compatible with draft.1.
+
+- Unify single media files and GALLERY items as `{ digest, name, meta }`.
+  Move media kind, dimensions, and duration under `meta`; single files now
+  explicitly carry `meta.kind`. FILE presentation permits any media kind.
+- Remove `mimeType` from media file content. MIME interpretation is local to
+  the consumer; unrecognized resource formats may use `application/octet-stream`.
+  Original digest/length descriptors and resource transfer remain unchanged.
+  Thumbnail bytes, references, and metadata are not part of media federation.
+  Legacy flat fields are rejected; canonical message payload digests change
+  with the new content structure.
+
+- Move cross-version discovery to `/somfp/discovery` and the versioned wire
+  surface to `/somfp/v1/*`. Retired discovery and S2S paths have no aliases;
+  communicating nodes must upgrade together. HTTP signature paths and published
+  test signatures change accordingly.
+
+- Add required `generatedAt` to `feed-heads`; request send time comes from the
+  authenticated HTTP signature's `created` parameter.
+- Require discovery `signingKeyCreatedAt` diagnostic metadata for the
+  currently active HTTP signing key's creation time.
+- Require `generatedAt` on every State Feed item to identify the publisher's
+  generation time for its current `feedId` version, unchanged by retransmission.
+- Require top-level `generatedAt` on public current-profile and both exact
+  profile responses; original revision times stay stable across reads and
+  forwarding, and revision-0 public responses carry `0`.
+- Require `generatedAt` on Profile Namespace Feed items and namespace binding
+  responses; both identify the binding version's generation time.
+- Restrict Namespace Feed items and binding queries to positive namespace IDs;
+  the publisher's own binding follows verified identity exchange.
+- Require non-null `originCreatedAt` on all Group Meta items; local copy
+  `createdAt` is not part of the S2S response.
+- Replace intent `requestedAt` with required `statusChangedAt` for request,
+  acknowledgement, and revocation times.
+
 ## 1.0.0-draft.1
 
-### Breaking changes
+Not backward compatible with draft.0.
 
-- Public current-profile responses now contain exactly `account`,
-  `profileRev`, `profile`, and `proof`. Profile content moves into
-  the nested `profile` object; flattened responses are no longer valid.
-- Existing local users and live groups without a current profile return
-  `profileRev: 0` and `profile: null`, rather than `NOT_FOUND` solely
-  because no profile exists. Possession proof remains required.
-
-### Compatibility
-
-- Both peers must support the revised response format.
-- Among profile read operations, only the current-profile response allows
-  revision 0; exact-revision profile requests still require positive revisions.
-  Existing revision-0 references in intents, Group Meta, and messages remain valid.
+- Nest public current-profile content under `profile`.
+- Return `profileRev: 0` and `profile: null` for existing accounts without a
+  profile; exact-revision requests still require positive revisions.
 
 ## 1.0.0-draft.0
 

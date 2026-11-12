@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { API_BASE } from '@/lib/constants';
 import { forceLogout } from '@/auth/force-logout';
+import { consumeSse } from '../../../shared/sse-client';
 
 export type LogStreamState = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
-/** One structured log record — the parsed pino JSON line the backend streams. `level` is a string
- *  label ('info'|'warn'|…), `time` an ISO string, plus the pino fields (context, req, res, …). */
+/** One structured log record received from the backend. */
 export interface LogRecord {
   level: string;
   time: string | number;
@@ -24,75 +24,10 @@ export interface LogRecord {
   [key: string]: unknown;
 }
 
-/** No frame within STALE_MS while open → the stream silently stalled (half-open TCP); abort + reconnect. ~2× the 25s heartbeat. */
-const STALE_MS = 60_000;
-const WATCHDOG_CHECK_MS = 5_000;
-/** Browser-side cap on retained lines (the server ring buffer holds more; the disk holds everything). */
 const MAX_LINES = 1000;
 
-/** Parse one SSE frame (the text between blank lines) into { event, data }. A leading `:` line is a
- *  comment (ignored); a frame with no `event:` field is dropped. Multiple `data:` lines join with `\n`
- *  per spec. Direct port of the consumer web/src/app/services/sse.worker.ts parser. */
-function parseFrame(raw: string): { event: string; data?: string } | undefined {
-  let event = '';
-  let data = '';
-  let hasData = false;
-  for (const line of raw.split('\n')) {
-    if (!line || line.startsWith(':')) continue;
-    const colon = line.indexOf(':');
-    const field = colon === -1 ? line : line.slice(0, colon);
-    let value = colon === -1 ? '' : line.slice(colon + 1);
-    if (value.startsWith(' ')) value = value.slice(1);
-    if (field === 'event') event = value;
-    else if (field === 'data') {
-      data = hasData ? `${data}\n${value}` : value;
-      hasData = true;
-    }
-  }
-  if (!event) return undefined;
-  return { event, data: hasData ? data : undefined };
-}
-
-/** Consume the SSE byte stream, invoking onFrame per complete frame. Resolves on a clean stream end;
- *  rejects on a read/abort error so the caller can back off + reconnect. */
-async function readFrames(
-  body: ReadableStream<Uint8Array>,
-  onFrame: (event: string, data?: string) => void,
-): Promise<void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    let idx: number;
-    while ((idx = buffer.indexOf('\n\n')) !== -1) {
-      const frame = parseFrame(buffer.slice(0, idx));
-      buffer = buffer.slice(idx + 2);
-      if (frame) onFrame(frame.event, frame.data);
-    }
-  }
-  decoder.decode();
-}
-
-/** Exponential backoff + full jitter: delay = random(0, min(1000·2^attempt, 30000)). Base 1s, cap 30s. */
-function backoff(attempt: number): number {
-  const ceil = Math.min(1000 * 2 ** attempt, 30000);
-  return Math.random() * ceil;
-}
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((r) => setTimeout(r, ms));
-
-/**
- * Live log tail opened with fetch and the same-origin admin session cookie.
- * Owns reconnect backoff and the liveness watchdog. Output level changes leave
- * this connection and its retained records intact. The browser keeps MAX_LINES
- * records; older records remain available through historical log search.
- * Auto-scroll is owned by react-virtuoso in the page.
- */
+/** Log projection and reconnect policy. The shared SSE reader owns transport
+ * liveness and disposes every attempt before another connection can start. */
 export function useLogStream(filters?: {
   scope?: string;
   taskId?: string;
@@ -107,92 +42,64 @@ export function useLogStream(filters?: {
       setState('closed');
       return;
     }
-    let manualClose = false;
-    let aborter: AbortController | undefined;
+    const lifetime = new AbortController();
     let attempt = 0;
-    let lastFrameAt = 0;
-    let watchdog: ReturnType<typeof setInterval> | undefined;
-
-    const stopWatchdog = () => {
-      if (watchdog) {
-        clearInterval(watchdog);
-        watchdog = undefined;
-      }
-    };
-
-    // Changing scope or task starts a fresh view.
     setLines([]);
 
     const run = async (): Promise<void> => {
       setState('connecting');
-      while (!manualClose) {
+      while (!lifetime.signal.aborted) {
         try {
-          aborter = new AbortController();
           const params = new URLSearchParams();
           if (filters?.scope) params.set('scope', filters.scope);
           if (filters?.taskId) params.set('taskId', filters.taskId);
           const url = `${API_BASE}/admin/logs/stream${params.size ? `?${params}` : ''}`;
-          const res = await fetch(url, {
-            signal: aborter.signal,
-            credentials: 'same-origin',
-            headers: { Accept: 'text/event-stream' },
-            cache: 'no-store',
+          await consumeSse(url, {
+            signal: lifetime.signal,
+            onResponse: (response) => {
+              if (response.status === 401) {
+                lifetime.abort();
+                setState('closed');
+                forceLogout();
+              }
+            },
+            onOpen: () => {
+              attempt = 0;
+              setState('open');
+              // Each connection replays a snapshot rather than resuming a cursor.
+              setLines([]);
+            },
+            onFrame: ({ event, data }) => {
+              if (event !== 'log' || !data) return;
+              try {
+                const rec = JSON.parse(data) as LogRecord;
+                setLines((prev) => [...prev.slice(-(MAX_LINES - 1)), rec]);
+              } catch {
+                // Ignore malformed log records without terminating the transport.
+              }
+            },
           });
-
-          if (res.status === 401) {
-            forceLogout();
-            return;
-          }
-          if (!res.ok || !res.body)
-            throw new Error(`SSE open failed: ${res.status}`);
-
-          attempt = 0;
-          setState('open');
-          lastFrameAt = Date.now();
-          stopWatchdog();
-          watchdog = setInterval(() => {
-            if (lastFrameAt && Date.now() - lastFrameAt > STALE_MS)
-              aborter?.abort();
-          }, WATCHDOG_CHECK_MS);
-
-          await readFrames(res.body, (event, data) => {
-            lastFrameAt = Date.now();
-            if (event !== 'log' || !data) return;
-            try {
-              const rec = JSON.parse(data) as LogRecord;
-              setLines((prev) => {
-                const next =
-                  prev.length >= MAX_LINES
-                    ? prev.slice(prev.length - MAX_LINES + 1)
-                    : prev;
-                return [...next, rec];
-              });
-            } catch {
-              /* skip a malformed line */
-            }
-          });
-
-          if (manualClose) break;
-          setState('reconnecting');
-          attempt++;
-          await sleep(backoff(attempt));
         } catch {
-          if (manualClose) break;
-          // Retry transport failures with backoff.
-          setState('reconnecting');
-          attempt++;
-          await sleep(backoff(attempt));
+          // A transport failure follows the same backoff path as a clean close.
         }
+        if (lifetime.signal.aborted) return;
+        setState('reconnecting');
+        attempt++;
+        const ms = Math.random() * Math.min(1000 * 2 ** attempt, 30_000);
+        await new Promise<void>((resolve) => {
+          const finish = () => {
+            clearTimeout(timer);
+            lifetime.signal.removeEventListener('abort', finish);
+            resolve();
+          };
+          const timer = setTimeout(finish, ms);
+          lifetime.signal.addEventListener('abort', finish, { once: true });
+        });
       }
-      setState('closed');
     };
 
     void run();
-    return () => {
-      manualClose = true;
-      aborter?.abort();
-      stopWatchdog();
-    };
+    return () => lifetime.abort();
   }, [filters?.scope, filters?.taskId, filters?.enabled]);
 
   const clear = useCallback(() => setLines([]), []);

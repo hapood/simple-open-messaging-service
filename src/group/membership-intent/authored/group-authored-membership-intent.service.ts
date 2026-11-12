@@ -1,3 +1,4 @@
+import { UserQuotaService } from '../../../quota/user-quota.service.js';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import type { AccountSubjectAddress } from '../../../user/account-address.js';
@@ -34,6 +35,7 @@ import { lockGroupMemberIntentRowsInTx } from '../shared/group-member-intent-loc
 import { Logger } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
+import { captureGroupDepartureUpdatesInTx } from '../../shared/capture-group-departure-updates.js';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
 import type { RequestDecision } from '../../../../shared/relationship-request.js';
@@ -176,6 +178,7 @@ export class GroupAuthoredMembershipIntentService {
     private readonly peerFeed: PeerStateFeedService,
     private readonly federation: FederationStateFeedPusher,
     private readonly relationshipMutations: GroupRelationshipMutationService,
+    private readonly quota: UserQuotaService,
   ) {}
 
   async execute(
@@ -190,6 +193,7 @@ export class GroupAuthoredMembershipIntentService {
         options?.requestDecision,
       );
       if ('status' in context) return { outcome: context };
+      await this.quota.tick(params.managerUserId, 'requests', tx);
       return {
         outcome: { status: 'APPLIED' as const },
         peers: await this.applyInTx(context, clientUpdates),
@@ -824,7 +828,30 @@ export class GroupAuthoredMembershipIntentService {
         ),
       );
     if (row.pairActive)
-      return Promise.resolve({ status: 'NO_OP', reason: 'ALREADY_MEMBER' });
+      return Promise.resolve(
+        this.reject(
+          'ALREADY_MEMBER',
+          BusinessCode.ALREADY_EXISTS,
+          'target is already a group member',
+        ),
+      );
+    // An unacknowledged outstanding invitation is a duplicate request, not
+    // a successful write. Crossed applications and acknowledged invitations
+    // retain their existing acceptance semantics.
+    if (
+      row.groupIntentStatus === 'REQUESTED' &&
+      row.groupIntentExpiresAt !== null &&
+      new Date(row.groupIntentExpiresAt) > new Date() &&
+      row.memberIntentStatus !== 'ACCEPTED' &&
+      !row.applicationPending
+    )
+      return Promise.resolve(
+        this.reject(
+          'ALREADY_INVITED',
+          BusinessCode.ALREADY_EXISTS,
+          'target already has a pending group invitation',
+        ),
+      );
     if (
       (row.memberIntentStatus === 'REQUESTED' && row.applicationPending) ||
       row.invitationOutstanding
@@ -838,9 +865,9 @@ export class GroupAuthoredMembershipIntentService {
           'invitation target is missing',
         ),
       );
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     const expiresAt = new Date(
-      requestedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
+      statusChangedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
     );
     const member: Applicant = {
       account: row.memberAccount!,
@@ -866,7 +893,7 @@ export class GroupAuthoredMembershipIntentService {
         targetNamespaceId: member.namespaceId,
         localTargetId: row.localMemberId,
         note: (params.note ?? '').slice(0, 255),
-        requestedAt,
+        statusChangedAt,
         expiresAt,
       },
     });
@@ -981,6 +1008,14 @@ export class GroupAuthoredMembershipIntentService {
     }>(groupMembershipRevocationSql(context.input));
     const row = result.rows[0];
     if (!row) throw new Error('group membership revocation update disappeared');
+    if (row.pairChanged && context.localMemberId !== null)
+      clientUpdates.push(
+        ...(await captureGroupDepartureUpdatesInTx(
+          tx,
+          context.params.threadId,
+          context.localMemberId,
+        )),
+      );
     // Explicit manager-side terminal actions:
     // - REJECT: rejects a pending application (request -> REJECTED)
     // - WITHDRAW: cancels the group's own live invitation (request -> WITHDRAWN)
@@ -1017,7 +1052,7 @@ export class GroupAuthoredMembershipIntentService {
           threadId: context.params.threadId,
           status: 'REVOKED',
           note: '',
-          requestedAt: null,
+          statusChangedAt: new Date(),
           expiresAt: null,
         }),
       );

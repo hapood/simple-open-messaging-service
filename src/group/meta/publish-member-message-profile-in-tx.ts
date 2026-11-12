@@ -145,6 +145,7 @@ export async function publishMemberMessageProfileInTx(
     UPDATE "GroupMetaMemberFeed"
     SET "feedId" = ${feedId}, "profileSourceSeq" = ${messageSeq},
       body = jsonb_set(body, '{profileRev}', to_jsonb(${profileRev}::integer)),
+      "createdAt" = CURRENT_TIMESTAMP, "originCreatedAt" = NULL,
       "updatedAt" = CURRENT_TIMESTAMP
     WHERE "threadId" = ${groupId} AND body ->> 'account' = ${account}
       AND (body -> 'namespaceId') = to_jsonb(${memberNamespaceId}::integer) AND operation = 'MEMBER_UPSERT'

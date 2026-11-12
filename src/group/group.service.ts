@@ -1,7 +1,3 @@
-import {
-  parseRequestSnapshot,
-  type RequestSnapshot,
-} from '../../shared/request-snapshot.js';
 import { assertGroupNameLength } from './group-profile-validation.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import {
@@ -9,9 +5,7 @@ import {
   groupStateFields,
   readGroupState,
 } from './shared/group-state.js';
-import { p2pPeerRelation } from '../relationship/shared/relationship-address.js';
 import type { NamespacedAddress } from '../common/client-identity.js';
-import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
@@ -21,6 +15,7 @@ import {
 import {
   groupAccount,
   groupMeta,
+  groupMetaMemberFeed,
   account as userAccount,
   accountThreadState,
   messageThread,
@@ -35,8 +30,12 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
+import type {
+  GroupRequestReadEvent,
+  PendingClientStateFeedUpdate,
+} from '../client-state-feed/client-state-feed.service.js';
 import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
+import type { CapturedThreadStateUpdate } from '../client-state-feed/capture-thread-state-updates.js';
 import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allocator-lock.js';
 import { GroupRelationshipMutationService } from './membership-intent/shared/group-relationship-mutation.service.js';
 import { GroupMetaFeedService } from './meta/group-meta-feed.service.js';
@@ -50,7 +49,6 @@ import {
   readCurrentGroupMemberByAddressInTx,
   readCurrentGroupMemberInTx,
   readCurrentGroupOwnersInTx,
-  readCurrentLocalGroupManagersInTx,
 } from './meta/current-group-roster.js';
 
 /**
@@ -150,78 +148,12 @@ export class GroupService {
     });
   }
 
-  /**
-   * Build the invitation picker from server state. The client cannot infer this page from its cached
-   * conversations because friendship, membership, and manager-facing invitation projections converge
-   * independently across federation.
-   */
-  async queryInviteCandidates(
-    threadId: number,
-    managerUserId: number,
-    afterThreadId?: number,
-    search?: string,
-    take = 20,
-  ) {
-    const normalizedSearch = search?.trim() ?? '';
-    const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
-    const rows = await this.database.db.execute<{
-      threadId: number;
-      namespaceId: number;
-      profileRev: number;
-      account: string;
-      domain: string;
-      name: string;
-      avatar: string;
-      bio: string;
-      state: 'AVAILABLE' | 'INVITED' | 'MEMBER';
-    }>(sql`
-      SELECT friendship."threadId", friend.account, friend.domain, friend."namespaceId",
-        COALESCE(peer_intent."profileRev", 0) AS "profileRev",
-        friend.account AS name,
-        '' AS avatar, '' AS bio,
-        CASE WHEN member.operation = 'MEMBER_UPSERT' THEN 'MEMBER'
-          WHEN invitation.status = 'REQUESTED' AND invitation."expiresAt" > CURRENT_TIMESTAMP THEN 'INVITED'
-          ELSE 'AVAILABLE' END AS state
-      FROM "RelationshipPair" friendship
-      JOIN "Account" actor ON actor.id = ${managerUserId}
-      JOIN ${p2pPeerRelation(sql`friendship`, sql`actor`)} friend ON true
-      JOIN "MessageThread" thread_scope ON thread_scope.id = ${threadId} AND thread_scope.type = 'GROUP'
-      LEFT JOIN "RelationshipIntent" peer_intent
-        ON peer_intent."authorAccount" = friend.account
-       AND peer_intent."authorNamespaceId" = friend."namespaceId"
-       AND peer_intent."receiverAccount" = actor.account
-       AND peer_intent."receiverNamespaceId" = 0
-      LEFT JOIN LATERAL (
-        SELECT member_fact.operation FROM "GroupMetaMemberFeed" member_fact
-        WHERE member_fact."threadId" = thread_scope.id
-          AND member_fact.body ->> 'account' = friend.account
-          AND member_fact.body -> 'namespaceId' = to_jsonb(friend."namespaceId")
-        ORDER BY member_fact."feedId" DESC LIMIT 1
-      ) member ON true
-      LEFT JOIN "RelationshipIntent" invitation ON
-        invitation."authorAccount" = thread_scope."groupAccount"
-        AND invitation."authorNamespaceId" = 0
-        AND invitation."receiverAccount" = friend.account
-        AND invitation."receiverNamespaceId" = friend."namespaceId"
-      WHERE friendship.kind = 'P2P' AND friendship.active = true AND friendship."threadId" IS NOT NULL
-        ${afterThreadId === undefined ? sql.empty() : sql`AND friendship."threadId" > ${afterThreadId}`}
-        ${normalizedSearch === '' ? sql.empty() : sql`AND (friend.account ILIKE ${pattern} ESCAPE '\\' OR (friend.account || '@' || friend.domain) ILIKE ${pattern} ESCAPE '\\')`}
-      ORDER BY friendship."threadId" ASC LIMIT ${take + 1}
-    `);
-    const page = rows.rows.slice(0, take);
-    return {
-      data: page,
-      hasMore: rows.rows.length > take,
-      afterThreadId: page.at(-1)?.threadId ?? null,
-    };
-  }
-
   async markJoinRequestsRead(
     threadId: number,
     managerUserId: number,
     joinRequestReadFeedId: number,
   ): Promise<void> {
-    let pending: PendingClientStateFeedUpdate | undefined;
+    let pending: GroupRequestReadEvent | undefined;
     await this.database.db.transaction(async (tx) => {
       await lockAccountFeedAllocatorsInTx(tx, [managerUserId]);
       const [updated] = await tx
@@ -240,7 +172,11 @@ export class GroupService {
         )
         .returning({ accountId: accountThreadState.accountId });
       if (!updated) return;
-      [pending] = await captureThreadStateUpdatesInTx(tx, [updated.accountId]);
+      [pending] = await captureThreadStateUpdatesInTx(
+        tx,
+        [updated.accountId],
+        'group-request-read',
+      );
     });
     if (pending) this.clientStateFeed.notifyFeedUpdated(pending);
   }
@@ -351,44 +287,18 @@ export class GroupService {
             await tx.insert(groupMeta).values({
               threadId: thread.id,
               metaEndId: 1,
-              announcementFeedId: 1,
-              announcementText: null,
+            });
+            await tx.insert(groupMetaMemberFeed).values({
+              threadId: thread.id,
+              feedId: 1,
+              operation: 'GROUP_ANNOUNCEMENT',
+              body: { text: null },
             });
             const owner = await tx.query.account.findFirst({
               where: eq(userAccount.id, params.owner),
               columns: { account: true, defaultProfileRev: true },
             });
             if (!owner) throw new Error('group creator account is unavailable');
-            const ownerProfile =
-              owner.defaultProfileRev > 0
-                ? await tx.query.profileTable.findFirst({
-                    where: and(
-                      eq(profileTable.account, owner.account),
-                      eq(profileTable.publisherNamespaceId, 0),
-                      eq(profileTable.profileNamespaceId, 0),
-                      eq(profileTable.profileRev, owner.defaultProfileRev),
-                    ),
-                    columns: { displayName: true, avatar: true },
-                  })
-                : null;
-            if (owner.defaultProfileRev > 0 && !ownerProfile)
-              throw new Error('group creator profile is unavailable');
-            // Creation authors a founding invitation before the owner accepts it.
-            // A revision-zero owner has account-name presentation, not a stored profile.
-            const snapshot = parseRequestSnapshot({
-              displayName: ownerProfile?.displayName ?? owner.account,
-              avatar: ownerProfile?.avatar ? ownerProfile.avatar : null,
-            });
-            await this.relationshipMutations.writeGroupRelationshipIntentInTx(
-              tx,
-              thread.id,
-              params.owner,
-              '',
-              'REQUESTED',
-              clientFeedUpdates,
-              undefined,
-              { snapshot },
-            );
             // The creation notice is authority-local history: federation message
             // feeds exclude SYSTEM rows. Write it before owner activation so the
             // new participant's read boundary initializes at this sequence.
@@ -401,21 +311,10 @@ export class GroupService {
                 profileRev: owner.defaultProfileRev,
               },
             });
-            await this.relationshipMutations.writeMemberRelationshipIntentInTx(
+            await this.relationshipMutations.initializeFoundingMembershipInTx(
               tx,
               thread.id,
               params.owner,
-              'ACCEPTED',
-              clientFeedUpdates,
-              '',
-              { initialRole: GroupRole.OWNER },
-            );
-            await this.relationshipMutations.writeGroupRelationshipIntentInTx(
-              tx,
-              thread.id,
-              params.owner,
-              '',
-              'ACCEPTED',
               clientFeedUpdates,
             );
             return {
@@ -626,18 +525,19 @@ export class GroupService {
     accountId: number;
     feedId: number;
   }): Promise<{ announcementReadFeedId: number }> {
-    let pending: PendingClientStateFeedUpdate | undefined;
+    let pending: CapturedThreadStateUpdate | undefined;
     const result = await this.database.db.transaction(async (tx) => {
       await lockAccountFeedAllocatorsInTx(tx, [params.accountId]);
       const updated = await tx.execute<{ announcementReadFeedId: number }>(sql`
         UPDATE "AccountThreadState" state
         SET "announcementReadFeedId" = GREATEST(state."announcementReadFeedId", ${params.feedId}),
           "updatedAt" = CURRENT_TIMESTAMP
-        FROM "GroupMeta" meta
+        FROM "GroupMetaMemberFeed" meta
         WHERE state."threadId" = ${params.threadId}
           AND state."accountId" = ${params.accountId}
           AND meta."threadId" = state."threadId"
-          AND meta."announcementFeedId" >= ${params.feedId}
+          AND meta.operation = 'GROUP_ANNOUNCEMENT'
+          AND meta."feedId" >= ${params.feedId}
           AND state."announcementReadFeedId" < ${params.feedId}
         RETURNING state."announcementReadFeedId"
       `);
@@ -806,6 +706,7 @@ export class GroupService {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: nextRev,
+      generatedAt: Date.now(),
       displayName: name,
       avatar,
       bio: description,

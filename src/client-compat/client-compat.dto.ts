@@ -1,5 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { LoginMode } from '../config/public-config.js';
+import {
+  LOGIN_METHODS,
+  LoginMethod,
+  LoginMethodOptionDto,
+} from '../config/public-config.js';
 
 export class ClientFirebaseConfigDto {
   @ApiProperty()
@@ -24,8 +28,10 @@ export class ClientCompatDto {
   serverVersion!: string;
   @ApiProperty()
   registrationOpen!: boolean;
-  @ApiProperty({ enum: LoginMode, enumName: 'LoginMode' })
-  loginMode!: LoginMode;
+  @ApiProperty({ type: LoginMethodOptionDto, isArray: true })
+  loginMethods!: LoginMethodOptionDto[];
+  @ApiProperty({ enum: LOGIN_METHODS, enumName: 'LoginMethod' })
+  defaultLoginMethod!: LoginMethod;
   @ApiProperty({ required: false })
   primaryOrigin?: string;
   @ApiProperty({ required: false })

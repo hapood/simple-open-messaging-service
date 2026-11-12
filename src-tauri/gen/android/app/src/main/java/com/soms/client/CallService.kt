@@ -27,28 +27,9 @@ import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.IconCompat
 
-/**
- * The active-call foreground service. Anchors the process for a call's duration (so the system keeps the
- * RTCPeerConnection + the DTLS-SRTP audio leg alive while the user backgrounds into PiP / another app) and
- * owns the active call's audio routing ([AudioManager.MODE_IN_COMMUNICATION]) + a PARTIAL_WAKE_LOCK + the
- * foreground notification.
- *
- * **phoneCall type** (NOT dataSync — [RealtimeService] uses dataSync, which Android 15 bounds at ~6h; a call
- * must not be killed by that budget). The WebRTC state + the lifecycle FSM live in the process-global
- * [CallController]; this service is the lifecycle/audio/anchor wrapper.
- *
- * Two start modes:
- *  - **[ACTION_INCOMING]** (Phase 6 wake-up): started by [SomsMessagingService] from a high-priority
- *    CALL_INCOMING FCM push. The high-priority grant is the exemption that lets a backgrounded/killed app
- *    start a phoneCall FGS. Seeds CallController into the incoming phase + rings + posts the incoming-ring
- *    notification (MAX priority, CATEGORY_CALL, full-screen intent, Answer/Decline) — the phone rings even
- *    from a killed process. Comms audio is NOT acquired here (CallRinger sets MODE_RINGTONE for the
- *    notification channel sound); [onAccepted] switches to it.
- *  - **default** (outgoing, or a re-delivered start): anchor + acquire comms audio at once.
- *
- * The peer name for the incoming notification rides the FCM push (a cold-started callee has no live SSE for
- * CALL_EVENT{incoming}). [instance] lets CallController reach [onAccepted] on the accept transition.
- */
+/** OS foreground-service adapter for a Rust-owned call. Owns notification rendering, audio focus,
+ * communication routing and the wake lock. Rust explicitly requests ringing/ongoing presentation;
+ * delayed service intents recheck the original call lease before acquiring resources. */
 class CallService : Service() {
 
     private var audioManager: AudioManager? = null
@@ -62,6 +43,7 @@ class CallService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var notificationSession: NotificationSessionBinding? = null
     private var notificationCallSid: String? = null
+    private var notificationStartId = 0
     @Volatile private var destroyed = false
 
     override fun onCreate() {
@@ -72,6 +54,11 @@ class CallService : Service() {
     fun currentNotificationSession(): NotificationSessionBinding? =
         if (destroyed) null else notificationSession?.takeIf { it.isCurrent(this) }
 
+    /** A delayed cleanup command may release only the service presentation it originally owned. */
+    fun stopOwned(callSid: String) {
+        if (!destroyed && notificationCallSid == callSid) stopSelfResult(notificationStartId)
+    }
+
     /** Bound-mode is unused (a started service); satisfy the abstract base. */
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -81,6 +68,13 @@ class CallService : Service() {
             if (notificationSession?.isCurrent(this) != true) stopSelf(startId)
             return START_NOT_STICKY
         }
+        val callLease = intent?.getLongExtra("callLease", 0L) ?: 0L
+        val incoming = intent?.action == ACTION_INCOMING
+        if (!RustCallBridge.isLive(callLease) || incoming && !RustCallBridge.canRing(callLease)) {
+            if (notificationCallSid == null) stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        notificationStartId = startId
         val owner = notificationSession
         if (owner != null && owner != requestedSession) {
             // Do not reparent an existing call's notification to a newly logged-in session.
@@ -92,8 +86,6 @@ class CallService : Service() {
         val isIncoming = intent?.action == ACTION_INCOMING
         val sid = if (isIncoming) intent?.getStringExtra(EXTRA_SID) else null
         val callerAccount = intent?.getStringExtra(EXTRA_CALLER_ACCOUNT) ?: ""
-        val callerNamespaceId = intent?.getIntExtra(EXTRA_CALLER_NAMESPACE_ID, -1) ?: -1
-        val incomingThreadId = intent?.getIntExtra(EXTRA_THREAD_ID, 0) ?: 0
         // Promote before decoding an avatar: a cold FCM start has only a short deadline to call
         // startForeground. The initial incoming card has a placeholder caller; it is updated under the
         // same notification ID once the passed-in presentation facts are decoded.
@@ -134,8 +126,9 @@ class CallService : Service() {
                 return START_NOT_STICKY
             }
         } else if (!isIncoming) {
-            // Outgoing / re-delivered start: comms audio (the call is negotiating/active).
+            // Rust admitted this media lifetime; only notification/audio mechanics remain here.
             acquireAudio()
+            loadAvatar(CallController.peerAvatar, CallController.peerName)
         } else {
             // An incoming start with no sid (shouldn't happen) — promoted + now stop.
             stopSelf()
@@ -146,7 +139,7 @@ class CallService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Called by [CallController.accept]: the callee answered — switch to comms audio + flip the notification
+    /** Execute Rust's accepted command: the callee answered — switch to comms audio + flip the notification
      *  from the ringing card to the ongoing "call in progress" one (which also dismisses the full-screen
      *  incoming surface). The ring itself was already stopped in accept. */
     fun onAccepted() {
@@ -376,7 +369,7 @@ class CallService : Service() {
     override fun onDestroy() {
         destroyed = true
         mainHandler.removeCallbacksAndMessages(null)
-        // Clear the instance FIRST so CallController.onAccepted can't reach a destroying service.
+        // Clear the instance before any later Rust media command can reach this service.
         if (instance === this) instance = null
         releaseAudio()
         CallController.destroy(notificationCallSid)
@@ -501,12 +494,22 @@ class CallService : Service() {
         @Volatile var instance: CallService? = null
             private set
 
-        /** Start the call FGS for an incoming ring. The trigger (SSE / HELLO / FCM) has already resolved
-         *  the caller presentation from native SQLite and seeds [CallController] itself; this start passes
-         *  the resolved facts inline, so the service only renders them. The high-priority FCM grant is the
-         *  exemption that lets a backgrounded/killed app start a phoneCall FGS; the try/catch is
-         *  belt-and-suspenders for a rare rejected start (the phone still won't ring, but the process won't
-         *  crash). */
+        fun startOutgoing(ctx: Context, sid: String, lease: Long) {
+            val binding = NotificationSessionBinding.capture(ctx) ?: return
+            if (!RustCallBridge.isLive(lease)) return
+            val intent = Intent(ctx, CallService::class.java).apply {
+                putExtra("callLease", lease)
+                putExtra(EXTRA_SID, sid)
+                binding.attach(this, "outgoing-service", sid)
+            }
+            try {
+                ContextCompat.startForegroundService(ctx, intent)
+            } catch (error: RuntimeException) {
+                SomsLog.w("SomsCall") { "call service start rejected: ${error.javaClass.simpleName}" }
+            }
+        }
+
+        /** Render Rust's incoming-call command with its resolved peer presentation. */
         fun startIncoming(
             ctx: Context,
             sid: String,
@@ -516,6 +519,7 @@ class CallService : Service() {
             callType: String,
             callerName: String,
             callerAvatarDataUrl: String,
+            lease: Long,
         ) {
             val binding = NotificationSessionBinding.capture(ctx) ?: run {
                 SomsLog.w("SomsCall") { "incoming notification skipped: session identity is not ready" }
@@ -524,6 +528,7 @@ class CallService : Service() {
             val intent = Intent(ctx, CallService::class.java).apply {
                 binding.attach(this, "incoming-service", sid)
                 action = ACTION_INCOMING
+                putExtra("callLease", lease)
                 putExtra(EXTRA_SID, sid)
                 putExtra(EXTRA_CALLER_ACCOUNT, callerAccount)
                 putExtra(EXTRA_CALLER_NAMESPACE_ID, callerNamespaceId)
@@ -533,7 +538,7 @@ class CallService : Service() {
                 putExtra(EXTRA_CALL_TYPE, callType)
             }
             CallController.whenSessionResourcesReleased {
-                if (!binding.isCurrent(ctx)) return@whenSessionResourcesReleased
+                if (!binding.isCurrent(ctx) || !RustCallBridge.canRing(lease)) return@whenSessionResourcesReleased
                 try {
                     ContextCompat.startForegroundService(ctx, intent)
                 } catch (e: Exception) {

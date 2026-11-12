@@ -1,3 +1,5 @@
+import { SessionStartupService } from './services/session-startup.service';
+import { ServiceWorkerLifecycleService } from './services/service-worker-lifecycle.service';
 import {
   APP_INITIALIZER,
   ApplicationConfig,
@@ -6,7 +8,7 @@ import {
   isDevMode,
   provideZonelessChangeDetection,
 } from '@angular/core';
-import { provideRouter, withComponentInputBinding } from '@angular/router';
+import { provideRouter, Router, withDisabledInitialNavigation, withComponentInputBinding } from '@angular/router';
 import {
   provideHttpClient,
   withFetch,
@@ -64,15 +66,21 @@ export const appConfig: ApplicationConfig = {
   providers: [
     provideWebdbService(),
     { provide: CSP_NONCE, useValue: readCspNonce() },
-    // Restore the native session from OS secure storage (Android EncryptedSharedPreferences / desktop
-    // keyring) BEFORE the router resolves, so isLoggedIn() + the HTTP interceptor see the restored token
-    // with no race on a trusted-device cold start.
+    // Native restoration remains awaited. Browser restoration mounts the shared
+    // indicator immediately while keeping initial navigation closed until admission settles.
     {
       provide: APP_INITIALIZER,
       multi: true,
-      deps: [SseLifecycleService],
-      useFactory: (coordinator: SseLifecycleService) => () =>
-        coordinator.restoreSession(),
+      deps: [SseLifecycleService, ServiceWorkerLifecycleService, SessionStartupService, Router],
+      useFactory: (coordinator: SseLifecycleService, workers: ServiceWorkerLifecycleService, startup: SessionStartupService, router: Router) => () => {
+        workers.start();
+        if (isTauri()) return coordinator.restoreSession();
+        // Mount the recovery shell, but keep the router outlet absent until admission settles.
+        void startup.run(() => coordinator.restoreSession()).then(() => {
+          if (!startup.restoring()) router.initialNavigation();
+        });
+        return undefined;
+      },
     },
     provideZonelessChangeDetection(),
     {
@@ -84,7 +92,7 @@ export const appConfig: ApplicationConfig = {
     // disjoint from `[http]` (the httpTraceInterceptor) and `[unhandled]` (the main.ts window listeners).
     // See global-error.handler.ts.
     { provide: ErrorHandler, useClass: GlobalErrorHandler },
-    provideRouter(routes, withComponentInputBinding()),
+    provideRouter(routes, withComponentInputBinding(), ...(isTauri() ? [] : [withDisabledInitialNavigation()])),
     // HTTP transport: a custom `HttpBackend` (TauriHttpBackend) is the terminus of the interceptor chain.
     // Browser: delegates to Angular's stock FetchBackend (same-origin fetch; httpOnly cookie authenticates).
     // Tauri (desktop + Android): routes /api/v1 through the Rust `api_request` IPC command — Android's
@@ -161,6 +169,7 @@ export const appConfig: ApplicationConfig = {
     // intercept /api + /uploads navigation. See services/runtime.ts.
     provideServiceWorker('ngsw-worker.js', {
       enabled: !isDevMode() && !isTauri(),
+      registrationStrategy: 'registerImmediately',
     }),
   ],
 };

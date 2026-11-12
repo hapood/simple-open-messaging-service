@@ -28,13 +28,14 @@ import {
 import { MediaSaveService } from '../../services/media-save.service';
 import { ToastService } from '../../services/toast.service';
 import { ImageDownloadService } from '../../services/image-download.service';
-import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { formatBytes } from '../message-cards/file-meta.util';
 import { NativeVideoService } from '../../services/native-video.service';
 import {
+  assetUrl,
   ANDROID_MEDIA3_ENABLED,
   type LocalVideoStream,
   isAndroid,
+  tauriInvoke,
   isTauri,
 } from '../../services/runtime';
 
@@ -152,7 +153,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     typeof window !== 'undefined' &&
     (window.matchMedia?.('(pointer: coarse)').matches ||
       window.innerWidth <= 768);
-  private readonly threshold = inject(MediaSizeThresholdService);
+  private readonly cachedOriginals = signal<ReadonlySet<string>>(new Set());
+  private readonly requestedOriginals = signal<ReadonlySet<string>>(new Set());
+  private readonly ownedDownloads = new Set<string>();
   readonly formatBytes = formatBytes;
 
   constructor() {
@@ -263,10 +266,35 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     this.pswp = pswp;
     pswp.init();
     this.activateVideo(initialIndex);
+    if (isTauri()) {
+      for (const media of images.filter((item) => item.kind === 'image')) {
+        void tauriInvoke<boolean>('has_cached_media', { path: media.src })
+          .then((cached) => {
+            if (!cached || this.destroying) return;
+            this.cachedOriginals.update(
+              (current) => new Set([...current, this.downloads.key(media)]),
+            );
+            const i = images.indexOf(media);
+            this.slides[i].src = assetUrl(media.src);
+            this.pswp?.refreshSlideContent(i);
+          })
+          .catch(() => undefined);
+      }
+    }
   }
 
   ngOnDestroy(): void {
     this.destroying = true;
+    for (const media of this.images()) {
+      const key = this.downloads.key(media);
+      const task = this.downloads.task(media);
+      if (
+        this.ownedDownloads.has(key) &&
+        task?.status === 'downloading' &&
+        !task.saveAfterLoad
+      )
+        this.downloads.cancel(media);
+    }
     this.releaseMediaRegistration();
     this.destroyVideoPlayers();
     this.pswp?.destroy();
@@ -287,9 +315,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   mediaUrl(media: AlbumMedia): string {
-    if (media.kind === 'video' && this.useNativeVideo)
+    if (media.kind === 'video' && this.isAndroidApp)
       return this.nativeVideo.thumbnailUrl(media.src);
-    return this.downloads.displayUrl(media);
+    return this.downloads.thumbnailUrl(media);
   }
 
   async saveCurrent(event: MouseEvent): Promise<void> {
@@ -308,6 +336,20 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   loadCurrent(): void {
     const media = this.current();
     if (!media || media.kind !== 'image') return;
+    if (!isTauri()) {
+      this.requestedOriginals.update(
+        (current) => new Set([...current, this.downloads.key(media)]),
+      );
+      const i = this.index();
+      if (this.slides[i]) {
+        this.slides[i].src = assetUrl(media.src);
+        this.pswp?.refreshSlideContent(i);
+      }
+      return;
+    }
+    const task = this.downloads.task(media);
+    if (!task || task.status === 'failed')
+      this.ownedDownloads.add(this.downloads.key(media));
     this.downloads.start(media, this.threadId());
   }
 
@@ -322,7 +364,10 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   retryCurrentDownload(): void {
     const media = this.current();
-    if (media) this.downloads.retry(media, this.threadId());
+    if (media) {
+      this.ownedDownloads.add(this.downloads.key(media));
+      this.downloads.retry(media, this.threadId());
+    }
   }
 
   /** Retry a transient image fetch with a cache-busted URL. */
@@ -388,11 +433,8 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
         kind: image.kind,
       };
     }
-    const gated = this.shouldGate(image);
     return {
-      ...(gated
-        ? { html: '<div class="gv-unloaded-slide" aria-hidden="true"></div>' }
-        : { src: this.imageUrl(image, galleryIndex) }),
+      src: this.imageUrl(image, galleryIndex),
       width: Math.max(1, image.w),
       height: Math.max(1, image.h),
       alt: '',
@@ -402,7 +444,11 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private imageUrl(image: AlbumMedia, index: number): string {
-    const base = this.downloads.displayUrl(image);
+    const base = this.shouldGate(image)
+      ? this.downloads.thumbnailUrl(image)
+      : isTauri()
+        ? this.downloads.displayUrl(image)
+        : assetUrl(image.src);
     const retryKey = this.retryKeys.get(index) ?? 0;
     if (retryKey === 0 || /^(blob:|data:)/.test(base)) return base;
     return `${base}${base.includes('?') ? '&' : '?'}_r=${retryKey}`;
@@ -412,19 +458,16 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     return `media-${media.msgId ?? index + 1}.${media.kind === 'video' ? 'mp4' : 'jpg'}`;
   }
 
-  isMediaGated(media: AlbumMedia): boolean {
-    return media.kind === 'image' && this.shouldGate(media);
-  }
-
   private shouldGate(media: AlbumMedia): boolean {
-    return (
-      this.threshold.shouldDefer(media.size ?? 0) &&
-      !this.downloads.isLoaded(media)
-    );
+    if (/^(blob:|data:)/.test(media.src)) return false;
+    return isTauri()
+      ? !this.downloads.isLoaded(media) &&
+          !this.cachedOriginals().has(this.downloads.key(media))
+      : !this.requestedOriginals().has(this.downloads.key(media));
   }
 
   private refreshDownloadedSlides(): void {
-    if (!this.pswp) return;
+    if (!this.pswp || !isTauri()) return;
     this.images().forEach((media, i) => {
       if (media.kind !== 'image' || !this.downloads.isLoaded(media)) return;
       const url = this.downloads.displayUrl(media);
@@ -545,29 +588,26 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     if (this.videoPlayers.has(index) || this.videoPlayerMounts.has(index))
       return;
     this.videoPlayerMounts.add(index);
-    if (this.isAndroidApp) {
-      container
-        .querySelector<HTMLButtonElement>('.gv-native-video-open')
-        ?.addEventListener('click', (event) => {
-          event.stopPropagation();
-          if (this.useNativeVideo) {
-            void this.nativeVideo.open(media.src);
-            return;
-          }
-          void this.nativeVideo.stream(media.src).then((stream) => {
-            if (!stream || !container.isConnected) {
-              this.setVideoError(index, 'network');
-              return;
-            }
-            container.replaceChildren();
-            void this.createVideoPlayer(container, media, index, stream);
-          });
-        });
-      this.videoPlayerMounts.delete(index);
-      return;
-    }
     try {
+      if (this.isAndroidApp) {
+        if (index !== this.index()) return;
+        if (this.useNativeVideo) {
+          await this.nativeVideo.open(media.src);
+          return;
+        }
+        const stream = await this.nativeVideo.stream(media.src);
+        if (!container.isConnected || index !== this.index()) return;
+        if (!stream) {
+          this.setVideoError(index, 'network');
+          return;
+        }
+        container.replaceChildren();
+        await this.createVideoPlayer(container, media, index, stream);
+        return;
+      }
       await this.createVideoPlayer(container, media, index, null);
+    } catch {
+      this.setVideoError(index, 'network');
     } finally {
       this.videoPlayerMounts.delete(index);
     }
@@ -646,24 +686,32 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     container.append(errorLayer);
     this.videoErrorLayers.set(index, errorLayer);
 
-    let thumbnailRequested = false;
     const onPlayable = () => {
       this.setVideoError(index, null);
       if (index === this.index()) this.videoPlaying.set(true);
-      if (!localStream || thumbnailRequested) return;
-      thumbnailRequested = true;
-      const capture = () =>
-        void this.nativeVideo.captureThumbnail(
-          player.video,
-          localStream,
-          media.src,
-        );
-      if ('requestVideoFrameCallback' in player.video) {
-        player.video.requestVideoFrameCallback(() => capture());
-      } else {
-        setTimeout(capture, 100);
-      }
     };
+    player.on('video:loadedmetadata', () => {
+      const { videoWidth: width, videoHeight: height } = player.video;
+      if (width < 1 || height < 1) return;
+      // Old messages may contain encoded dimensions without the display-matrix rotation applied.
+      // Correct the existing slide in place; refreshing content would destroy the active player.
+      const data = this.slides[index];
+      if (data) {
+        data.width = width;
+        data.height = height;
+      }
+      container
+        .closest<HTMLElement>('.gv-native-video-shell')
+        ?.style.setProperty('--gv-video-ratio', `${width}/${height}`);
+      const slide = this.pswp?.currSlide;
+      if (slide?.index === index) {
+        slide.width = width;
+        slide.height = height;
+        slide.content.width = width;
+        slide.content.height = height;
+        slide.resize();
+      }
+    });
     player.on('video:loadeddata', () => this.setVideoError(index, null));
     player.on('video:playing', onPlayable);
     player.on('video:canplay', () => this.setVideoError(index, null));
@@ -692,7 +740,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private activateVideo(activeIndex: number): void {
-    if (this.isAndroidApp) return;
     this.videoPlaying.set(false);
     for (const index of [...this.videoPlayers.keys()]) {
       if (index !== activeIndex) this.destroyVideoPlayer(index);

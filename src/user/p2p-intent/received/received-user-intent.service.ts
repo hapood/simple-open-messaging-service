@@ -57,7 +57,7 @@ interface ReceivedUserIntentBody {
   profileNamespaceId: number;
   profileRev: number;
   note: string;
-  requestedAt: number | null;
+  statusChangedAt: number;
   expiresAt: number | null;
   messageEndSeq?: number;
   tombstoneEndSeq?: number;
@@ -92,13 +92,13 @@ export interface ReceivedUserIntentResult {
 /** The body after wireIntent validation: an expired REQUESTED resolves to `undefined`
  * (an ineffective input, not a transition — the pull cursor still advances). */
 interface ValidatedReceivedIntentBase {
-  requestedAt: Date | null;
+  statusChangedAt: Date;
   expiresAt: Date | null;
 }
 
 type ValidatedReceivedIntent =
   | ({ status: 'REQUESTED' } & ValidatedReceivedIntentBase & {
-        requestedAt: Date;
+        statusChangedAt: Date;
         expiresAt: Date;
       })
   | ({ status: 'ACCEPTED' } & ValidatedReceivedIntentBase)
@@ -334,6 +334,7 @@ export class ReceivedUserIntentService {
       return { routed: 'noop:dropped-ack' };
     }
     return this.applyRevocationInTx(tx, {
+      statusChangedAt: intent.statusChangedAt,
       wireIntent,
       pairId,
       threadId,
@@ -403,7 +404,7 @@ export class ReceivedUserIntentService {
           profileNamespaceId: wireIntent.profileNamespaceId,
           profileRev: wireIntent.profileRev,
           note: wireIntent.note,
-          requestedAt: intent.requestedAt,
+          statusChangedAt: intent.statusChangedAt,
           expiresAt: null,
           messageEndSeq: wireIntent.messageEndSeq,
           tombstoneEndSeq: wireIntent.tombstoneEndSeq,
@@ -460,11 +461,10 @@ export class ReceivedUserIntentService {
           profileNamespaceId: number;
           profileRev: number;
           note: string | null;
-          requestedAt: string | null;
+          statusChangedAt: string;
         }>(sql`
           SELECT status, "profileNamespaceId", "profileRev", note,
-            CASE WHEN "requestedAt" IS NULL THEN NULL
-              ELSE floor(extract(epoch FROM "requestedAt") * 1000)::bigint END AS "requestedAt"
+            floor(extract(epoch FROM "statusChangedAt") * 1000)::bigint AS "statusChangedAt"
           FROM "RelationshipIntent"
           WHERE "authorAccount" = ${context.localUser.account}
             AND "authorNamespaceId" = ${context.localUser.namespaceId}
@@ -486,8 +486,7 @@ export class ReceivedUserIntentService {
               namespaceId: ours.profileNamespaceId,
               profileRev: ours.profileRev,
               note: ours.note ?? '',
-              requestedAt:
-                ours.requestedAt === null ? null : Number(ours.requestedAt),
+              statusChangedAt: Number(ours.statusChangedAt),
               expiresAt: null,
             },
           },
@@ -552,7 +551,7 @@ export class ReceivedUserIntentService {
         targetAccount: context.localUser.account,
         targetNamespaceId: 0,
         note: wireIntent.note,
-        requestedAt: intent.requestedAt,
+        statusChangedAt: intent.statusChangedAt,
         expiresAt: intent.expiresAt,
         authoredSql: receivedUserIntentWriteSql({
           author: {
@@ -567,7 +566,7 @@ export class ReceivedUserIntentService {
           profileNamespaceId: wireIntent.profileNamespaceId,
           profileRev: wireIntent.profileRev,
           note: wireIntent.note,
-          requestedAt: intent.requestedAt,
+          statusChangedAt: intent.statusChangedAt,
           expiresAt: intent.expiresAt,
           messageEndSeq: wireIntent.messageEndSeq,
           tombstoneEndSeq: wireIntent.tombstoneEndSeq,
@@ -597,7 +596,7 @@ export class ReceivedUserIntentService {
           authorProfileRev: wireIntent.profileRev,
           snapshot: null,
           note: wireIntent.note,
-          requestedAt: intent.requestedAt,
+          requestedAt: intent.statusChangedAt,
           expiresAt: intent.expiresAt,
         },
       });
@@ -637,6 +636,7 @@ export class ReceivedUserIntentService {
   private async applyRevocationInTx(
     tx: DatabaseTransaction,
     context: {
+      statusChangedAt: Date;
       wireIntent: {
         profileNamespaceId: number;
         profileRev: number;
@@ -684,7 +684,7 @@ export class ReceivedUserIntentService {
           profileNamespaceId: wireIntent.profileNamespaceId,
           profileRev: wireIntent.profileRev,
           note: wireIntent.note,
-          requestedAt: null,
+          statusChangedAt: context.statusChangedAt,
           expiresAt: null,
         }),
       }),

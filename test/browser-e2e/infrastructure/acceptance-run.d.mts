@@ -31,7 +31,7 @@ export type Issue = {
   evidence: string;
   proposal?: string;
   caseId?: string;
-  decision?: string;
+  decision?: 'continue' | 'stop' | 'agent-retry';
   failureSource?: 'browser-command';
   recovery?: {
     scope: 'arguments' | 'temporary-step';
@@ -50,6 +50,8 @@ export type RunState = {
   issues: Issue[];
   next: string;
   checkpoint?: string;
+  round?: string;
+  roundCaseIds?: string[];
 };
 export function endpoint(value: string): string;
 export function deploymentNode(
@@ -78,10 +80,11 @@ export function loadRun(
   root: string,
   id: string,
 ): { directory: string; state: RunState };
+export function roundPrefixOf(ids: string[]): string;
 export function registerCases(
   state: RunState,
   items: Pick<CaseRecord, 'id' | 'title'>[],
-): { requested: number; added: number; preserved: number };
+): { requested: number; added: number; preserved: number; round: string };
 export function progressSummary(state: RunState): {
   id: string;
   phase: RunState['phase'];
@@ -92,6 +95,8 @@ export function progressSummary(state: RunState): {
 export function recordCase(state: RunState, item: CaseRecord): void;
 export function pauseRun(state: RunState, issue: Omit<Issue, 'id'>): Issue;
 export function decideRun(state: RunState, decision: string): void;
+// decideRun accepts only 'continue' or 'stop' at runtime; the operator dialog
+// never offers 'agent-retry', which recoverTestError records directly.
 export function assertBrowserAction(
   state: RunState | undefined,
   action: string,

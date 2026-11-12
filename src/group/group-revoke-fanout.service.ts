@@ -168,9 +168,7 @@ export class GroupRevokeFanoutService {
           },
         },
         taskType: DurableTaskType.FORCE_REVOKE_GROUP_MEMBER,
-        ...(parent.actorUserId === null
-          ? {}
-          : { actorUserId: parent.actorUserId }),
+        actorUserId: parent.actorUserId,
         payload: {
           threadId,
           ...(denial

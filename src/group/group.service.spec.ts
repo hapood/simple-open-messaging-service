@@ -219,6 +219,7 @@ describe('GroupService membership lifecycle', () => {
           publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 4,
+          generatedAt: expect.any(Number),
           displayName: 'New name',
           avatar: 'old-avatar',
           bio: 'New bio',

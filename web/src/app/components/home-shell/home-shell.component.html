@@ -73,7 +73,12 @@
         <app-group-info [memberManagerMode]="true" />
       }
       @case ('group-join-requests') {
-        <app-group-join-requests />
+        @for (entry of asideEntry() ? [asideEntry()!] : []; track entry.id) {
+          <app-group-join-requests
+            [threadId]="asideThreadId()"
+            [initialTab]="entry.payload?.initialTab"
+          />
+        }
       }
       <!-- 'settings' is rendered as an inline mobile/tablet section selected from the account menu,
            not as a chat-scoped aside overlay. -->

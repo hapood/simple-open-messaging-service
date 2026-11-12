@@ -22,16 +22,14 @@ import {
 
 describe('GroupInfoComponent reactive display identity', () => {
   const group = (threadId: number, namespaceId: number) =>
-    createGroupConversation(
+    createGroupConversation({
       threadId,
-      {
-        id: threadId,
-        account: '!room',
-        name: 'Room',
-        namespaceId,
-      },
-      { conversationState: 'READ_ONLY' },
-    );
+      account: '!room',
+      publisherNamespaceId: namespaceId,
+      profileRev: 0,
+      profile: { name: 'Room', bio: '', avatarDigest: null },
+      conversationState: 'READ_ONLY',
+    });
   let component: GroupInfoComponent;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let openThreadId: ReturnType<typeof signal<number | undefined>>;
@@ -94,7 +92,7 @@ describe('GroupInfoComponent reactive display identity', () => {
     expect(component.displayDomain()).toBe('7.archive.rebound.test');
     first.next(binding(null));
     expect(component.displayDomain()).toBe('');
-    expect(component.group()).not.toHaveProperty('domain');
+    expect(component.groupMeta()).not.toHaveProperty('domain');
   });
 
   it('clears a previous address on a thread switch and ignores its old stream', () => {

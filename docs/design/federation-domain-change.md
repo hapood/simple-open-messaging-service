@@ -18,7 +18,7 @@ domain: it keeps its root key, its namespaces, and all relationships, and only i
 changes. The wire contract for the arrival is defined normatively in
 `spec/v1/recognition.md` Section 4.4; this document records the server design.
 
-The arrival reuses `POST /s2s/v1/recognize`. A separate endpoint would need its own
+The arrival reuses `POST /somfp/v1/recognize`. A separate endpoint would need its own
 authentication context whose only difference is "resolve the signer by root key instead of by
 domain". Reusing recognize also gives the recipient a natural polling surface: while validation or
 review is incomplete it returns `pending`, after approval it returns `recognized`, and after a
@@ -28,13 +28,13 @@ recorded rejection it returns `failed` with the stable rejection code.
 
 Peer B moved from `b.example` to `c.example`. B still holds its root key and its database.
 
-1. B signs `POST /s2s/v1/recognize` from `c.example`, with body `{"namespaceId": N}` where `N` is
+1. B signs `POST /somfp/v1/recognize` from `c.example`, with body `{"namespaceId": N}` where `N` is
    the namespace B's local store assigned to A (the sender-assigned local namespace B disclosed in a
    prior epoch), or `{}` if B holds none.
 2. A accepts the attempt into an in-memory single-flight verifier and immediately returns
    `{"ok":true,"status":"pending","message":"verification in progress"}`. This response is only a
    receipt: it discloses no namespace and gives B no acceptance evidence.
-3. The verifier fetches the well-known document from `c.example` (hostname-verified) and validates
+3. The verifier fetches the discovery document from `c.example` (hostname-verified) and validates
    the signature. This fetch proves B controls the new domain.
 4. A matches the presented root key byte-for-byte against its unretired namespaces. The partial
    unique index on `rootKeyFingerprint` (`retiredAt IS NULL`) guarantees at most one match.
@@ -64,7 +64,7 @@ The recognize verifier resolves an accepted attempt as follows:
 
 ```text
 accept attempt -> return pending
-  -> fetch signer-domain well-known and verify signature
+  -> fetch signer-domain discovery and verify signature
   -> fingerprint match against unretired IdentityNamespace rows
        no match   : signer domain unknown -> ordinary first recognition candidate
                     signer domain pinned with another root -> FEDERATION_IDENTITY_MISMATCH
@@ -169,7 +169,7 @@ its recognition:
 The final `recognized` result proves, in one exchange:
 
 - possession of the root-authorized signing key pinned for the matched namespace (signature
-  verification against the well-known fetched from the new domain);
+  verification against the discovery fetched from the new domain);
 - control of the new domain's discovery endpoint (the hostname-verified fetch itself);
 - retention of the sender-assigned local namespace, when the `namespaceId` member is present
   and equal.
@@ -177,7 +177,7 @@ The final `recognized` result proves, in one exchange:
 The initial `pending` result proves none of those facts. It is a receipt that prevents a long
 blocking request while keeping namespace disclosure and data-plane admission closed.
 
-An attacker holding only the key cannot serve well-known at the new domain; an attacker controlling
+An attacker holding only the key cannot serve discovery at the new domain; an attacker controlling
 only the domain cannot match the pinned root; an attacker with both but a stolen-or-stale database
 fails the sender-assigned local namespace check. Rebinding never inherits anything automatically: activation is an administrator
 decision, recorded as an audit event, and reversible only by another administrative action.

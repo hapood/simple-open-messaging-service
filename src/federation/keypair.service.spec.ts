@@ -407,10 +407,9 @@ describe('KeypairService database-backed identity', () => {
         rootPublicKey,
       ),
     ).toBe(false);
-    expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledWith(
-      expect.anything(),
-      0,
-    );
+    // Identity re-binding no longer publishes on the s2s namespace feed;
+    // remote adoption follows the verified identity exchange.
+    expect(changes.recordNamespaceChangeInTx).not.toHaveBeenCalled();
     expect(changes.recordClientChangeInTx).toHaveBeenCalledWith(
       expect.anything(),
       { publisherNamespaceId: 0, profileNamespaceId: 0 },
@@ -500,7 +499,7 @@ describe('KeypairService database-backed identity', () => {
     const restored = await boot();
     expect(restored.getSigningKeyCertificates()).toEqual(certificateBefore);
     expect(fake.getKeys()).toEqual(keysBefore);
-    expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledTimes(2);
+    expect(changes.recordNamespaceChangeInTx).not.toHaveBeenCalled();
     expect(changes.recordClientChangeInTx).toHaveBeenCalledTimes(2);
   });
 
@@ -770,7 +769,7 @@ describe('KeypairService database-backed identity', () => {
     expect(service.getRootGroup()).toHaveLength(2);
   }, 20_000);
 
-  it('announces a replacement on both feeds in one transaction and wakes devices after commit', async () => {
+  it('announces a replacement on the client feed in one transaction and wakes devices after commit', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_000_000);
     setRotationTimings();
@@ -785,14 +784,10 @@ describe('KeypairService database-backed identity', () => {
 
     const rotation = await service.rotateRoot();
 
-    // The namespace-0 s2s feed item (peers re-pull /profile-namespaces/0 for
-    // the new root public key) and the (0, 0) client change (devices re-
-    // resolve the pair) both ran inside the replacement transaction.
-    expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledTimes(1);
-    expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledWith(
-      expect.anything(),
-      0,
-    );
+    // Only the (0, 0) client change (devices re-resolve the pair) runs
+    // inside the replacement transaction; peers adopt the new root through
+    // the verified root-rotation exchange, not the namespace feed.
+    expect(changes.recordNamespaceChangeInTx).not.toHaveBeenCalled();
     expect(changes.recordClientChangeInTx).toHaveBeenCalledTimes(1);
     expect(changes.recordClientChangeInTx).toHaveBeenCalledWith(
       expect.anything(),

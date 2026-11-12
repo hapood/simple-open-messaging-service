@@ -104,13 +104,16 @@
     },
     "feedHeadHint": {
       "type": "object",
-      "required": ["stateFeedEndId", "profileNamespaceFeedEndId"],
+      "required": ["stateFeedEndId", "profileNamespaceFeedEndId", "generatedAt"],
       "properties": {
         "stateFeedEndId": {
           "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         },
         "profileNamespaceFeedEndId": {
           "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        },
+        "generatedAt": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         }
       },
       "additionalProperties": false

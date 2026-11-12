@@ -4,6 +4,7 @@ import { TranslocoService } from '@jsverse/transloco';
 import { of, throwError } from 'rxjs';
 import { UserService } from '../../services/user.service';
 import { LocalDomainService } from '../../services/local-domain.service';
+import { ToastService } from '../../services/toast.service';
 import { ProfileEditorComponent } from './profile-editor.component';
 
 describe('ProfileEditorComponent', () => {
@@ -36,12 +37,17 @@ describe('ProfileEditorComponent', () => {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
         },
+        { provide: ToastService, useValue: { warn: vi.fn(), info: vi.fn() } },
       ],
+    });
+    // These tests exercise editor state and save behavior, not Transloco's template directive.
+    TestBed.overrideComponent(ProfileEditorComponent, {
+      set: { template: '' },
     });
     return TestBed.createComponent(ProfileEditorComponent).componentInstance;
   }
 
-  it('renders the account address from the namespace domain', () => {
+  it('derives the account address from the namespace domain', () => {
     const component = createComponent();
 
     expect(component.accountAddress()).toBe('charlie@chat.example.test');
@@ -60,7 +66,7 @@ describe('ProfileEditorComponent', () => {
     expect(component.isNameValid()).toBe(true);
   });
 
-  it('shows a localized rejection for an invalid avatar and keeps the draft for retry', async () => {
+  it('warns with a localized toast for an invalid avatar and keeps the draft for retry', async () => {
     const component = createComponent();
     const user = TestBed.inject(UserService);
     vi.mocked(user.updateProfile).mockReturnValue(
@@ -72,28 +78,29 @@ describe('ProfileEditorComponent', () => {
     await component.save();
 
     expect(component.saving()).toBe(false);
-    expect(component.saveError()).toBe('profile.avatarInvalid');
+    expect(TestBed.inject(ToastService).warn).toHaveBeenCalledWith(
+      'profile.avatarInvalid',
+    );
     expect(component.pendingAvatar()).toBe(avatar);
     expect(user.updateSessionProfile).not.toHaveBeenCalled();
-    component.onNameInput('New name');
-    expect(component.saveError()).toBe('');
   });
 
-  it('shows failures for other business responses and network errors, then clears on retry', async () => {
+  it('warns via toast for other business responses and network errors', async () => {
     const component = createComponent();
     const user = TestBed.inject(UserService);
+    const toast = TestBed.inject(ToastService);
     component.onBioInput('new bio');
     vi.mocked(user.updateProfile).mockReturnValueOnce(
       of({ code: 99999, message: 'server rejection' }),
     );
     await component.save();
-    expect(component.saveError()).toBe('server rejection');
+    expect(toast.warn).toHaveBeenCalledWith('server rejection');
 
     vi.mocked(user.updateProfile).mockReturnValueOnce(
       throwError(() => new Error('offline')),
     );
     await component.save();
-    expect(component.saveError()).toBe('profile.saveFailed');
+    expect(toast.warn).toHaveBeenCalledWith('profile.saveFailed');
     expect(component.saving()).toBe(false);
     expect(component.canSave()).toBe(true);
   });

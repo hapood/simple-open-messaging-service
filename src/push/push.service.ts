@@ -54,8 +54,23 @@ import {
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { sendFcmMessages } from './fcm-transport.js';
+import { RequestAttentionService } from '../relationship/request/request-attention.service.js';
 
 export type PushProbeStatus = PushProbeStatusDto;
+
+/** Feed coordinates are independent. Neither is a request ID or message sequence. */
+export interface RequestAttentionTarget {
+  userId: number;
+  stateFeedEndId?: number;
+  threadFeedEndId?: number;
+  /** Read changes must wake even when there is no remaining unread attention. */
+  convergence?: boolean;
+}
+
+type RequestWake = RequestAttentionTarget & {
+  sessionId: number;
+  timer?: NodeJS.Timeout;
+};
 
 type PushProbeEntry = PushProbeStatus & {
   userId: number;
@@ -111,6 +126,122 @@ export class PushService implements OnModuleDestroy {
     }
   >();
   private stopped = false;
+  private readonly requestWakes = new Map<number, RequestWake>();
+
+  /** Post-commit, fixed-window request wakes; never routed through message fanout. */
+  async enqueueForRequestAttention(
+    targets: RequestAttentionTarget[],
+  ): Promise<void> {
+    if (this.stopped || !targets.length) return;
+    for (const target of targets) this.validateRequestTarget(target);
+    const tokens = await this.registrations(
+      inArray(
+        sessionToken.userId,
+        targets.map((t) => t.userId),
+      ),
+    );
+    if (this.stopped) return;
+    for (const token of tokens) {
+      for (const target of targets.filter((t) => t.userId === token.userId)) {
+        const pending = this.requestWakes.get(token.sessionId);
+        if (pending) {
+          for (const key of ['stateFeedEndId', 'threadFeedEndId'] as const)
+            if (target[key] !== undefined)
+              pending[key] = Math.max(pending[key] ?? 0, target[key]);
+          pending.convergence ||= target.convergence;
+          continue;
+        }
+        const wake: RequestWake = { ...target, sessionId: token.sessionId };
+        wake.timer = setTimeout(() => {
+          this.requestWakes.delete(wake.sessionId);
+          if (!this.stopped)
+            void this.dispatchForRequestAttention([wake], wake.sessionId).catch(
+              (error: unknown) => {
+                this.logger.warn(`Request push wake failed: ${String(error)}`);
+              },
+            );
+        }, 5_000);
+        wake.timer.unref();
+        this.requestWakes.set(token.sessionId, wake);
+      }
+    }
+  }
+
+  private validateRequestTarget(target: RequestAttentionTarget): void {
+    if (
+      target.stateFeedEndId === undefined &&
+      target.threadFeedEndId === undefined
+    )
+      throw new Error('Request push target needs a feed coordinate');
+    for (const head of [target.stateFeedEndId, target.threadFeedEndId])
+      if (
+        head !== undefined &&
+        (!Number.isInteger(head) || head < 0 || head > 2_147_483_647)
+      )
+        throw new Error('Invalid request feed push target');
+  }
+
+  async dispatchForRequestAttention(
+    targets: RequestAttentionTarget[],
+    sessionId?: number,
+  ): Promise<void> {
+    if (this.stopped || !targets.length) return;
+    const heads = new Map<number, RequestAttentionTarget>();
+    for (const target of targets) {
+      this.validateRequestTarget(target);
+      const current = heads.get(target.userId) ?? { userId: target.userId };
+      for (const key of ['stateFeedEndId', 'threadFeedEndId'] as const)
+        if (target[key] !== undefined)
+          current[key] = Math.max(current[key] ?? 0, target[key]);
+      current.convergence ||= target.convergence;
+      heads.set(target.userId, current);
+    }
+    const tokens = await this.registrations(
+      and(
+        inArray(sessionToken.userId, [...heads.keys()]),
+        sessionId === undefined ? undefined : eq(sessionToken.id, sessionId),
+      ),
+    );
+    const unread = new Map<number, Promise<boolean>>();
+    const eligible: typeof tokens = [];
+    for (const token of tokens) {
+      if (token.revokedAt !== null || token.expiresAt <= new Date()) continue;
+      const target = heads.get(token.userId)!;
+      // Only ThreadFeed has receipts today. Never compare a StateFeed coordinate
+      // against a ThreadFeed receipt, even when both happen to be the same number.
+      if (
+        target.stateFeedEndId === undefined &&
+        target.threadFeedEndId !== undefined &&
+        this.sse.confirmedThreadHead(token.userId, token.sessionId) >=
+          target.threadFeedEndId
+      )
+        continue;
+      if (!target.convergence) {
+        let check = unread.get(token.userId);
+        if (!check) {
+          check = this.requestAttention.hasUnread(token.userId, {
+            personal: target.stateFeedEndId !== undefined,
+            managedGroups: target.threadFeedEndId !== undefined,
+          });
+          unread.set(token.userId, check);
+        }
+        if (!(await check)) continue;
+      }
+      eligible.push(token);
+    }
+    await this.sendFeedWakes(eligible, (userId) => {
+      const target = heads.get(userId)!;
+      return {
+        type: 'REQUEST_ATTENTION',
+        ...(target.stateFeedEndId === undefined
+          ? {}
+          : { stateFeedEndId: String(target.stateFeedEndId) }),
+        ...(target.threadFeedEndId === undefined
+          ? {}
+          : { threadFeedEndId: String(target.threadFeedEndId) }),
+      };
+    });
+  }
 
   /** A device session starts one fixed five-second window on its first hint. */
   async enqueueForMessage(
@@ -196,6 +327,8 @@ export class PushService implements OnModuleDestroy {
     this.stopped = true;
     for (const wake of this.messageWakes.values()) clearTimeout(wake.timer);
     this.messageWakes.clear();
+    for (const wake of this.requestWakes.values()) clearTimeout(wake.timer);
+    this.requestWakes.clear();
   }
 
   constructor(
@@ -203,6 +336,10 @@ export class PushService implements OnModuleDestroy {
     private readonly sse: SseService,
     private readonly settings: SettingsService,
     @Optional() fcmCredentialPathOverride?: string,
+    @Optional()
+    private readonly requestAttention: RequestAttentionService = new RequestAttentionService(
+      database,
+    ),
   ) {
     this.fcmCredentialPath =
       fcmCredentialPathOverride ??
@@ -659,87 +796,93 @@ export class PushService implements OnModuleDestroy {
         threadFeedEndId: String(heads.get(userId)!),
       });
 
-      const dead: SessionPushRegistration[] = [];
-      // Branch by SUBSCRIPTION SHAPE, not the platform label: a Web Push subscription is identified by
-      // having p256dh+auth keys — true for every browser/PWA context (desktop Chrome/Firefox/Safari,
-      // Android webview PWA, AND iOS-Safari-installed-as-PWA). The platform enum is transport-oriented
-      // (WEB = Web Push, ANDROID = FCM, IOS reserved for a hypothetical future native APNs app), so
-      // iOS-PWA subs register as WEB and correctly route here. No native APNs path exists today.
-      const webSubs = deliverableTokens.filter(
-        (token) => !!token.webP256dh && !!token.webAuth,
-      );
-      const fcmTokens = deliverableTokens.filter(
-        (token) => !token.webP256dh || !token.webAuth,
-      );
-
-      // FCM path (ANDROID / IOS).
-      if (fcmTokens.length > 0 && this.messaging) {
-        const messages: Message[] = fcmTokens.map((t) => ({
-          token: t.token,
-          data: dataFor(t.userId),
-          android: { priority: 'high', ttl: 2_419_200 }, // 28 days — the FCM max retention window
-        }));
-        const res = await sendFcmMessages(
-          this.messaging,
-          messages,
-          this.fcmUsesHttpProxy,
-        );
-        res.responses.forEach((r, i) => {
-          if (
-            !r.success &&
-            r.error?.code === 'messaging/registration-token-not-registered'
-          ) {
-            dead.push(fcmTokens[i]);
-          }
-        });
-        this.logger.debug(
-          `FCM message handoff accepted=${res.successCount}, failed=${res.failureCount}`,
-        );
-        const failed = res.failureCount - dead.length;
-        if (failed > 0) {
-          this.logger.warn(
-            `FCM sendEach: ${failed} transient failure(s) (not pruned)`,
-          );
-        }
-      }
-
-      // Web Push path (browser/PWA). VAPID is read per send from SettingsService (file-backed,
-      // admin-managed), so the gate is whether a keypair is configured. sendWebPush throws on failure →
-      // 404/410 = subscription expired/gone (prune), anything else is transient.
-      if (webSubs.length > 0 && this.settings.isWebPushConfigured) {
-        await Promise.all(
-          webSubs.map(async (s) => {
-            try {
-              await this.sendWebPush(
-                {
-                  endpoint: s.token,
-                  keys: { p256dh: s.webP256dh!, auth: s.webAuth! },
-                },
-                JSON.stringify(dataFor(s.userId)),
-              );
-            } catch (e) {
-              const code = (e as { statusCode?: number }).statusCode;
-              if (code === 404 || code === 410) {
-                dead.push(s);
-              } else {
-                this.logger.warn(
-                  `Web Push transient failure (${code}): ${(e as Error).message}`,
-                );
-              }
-            }
-          }),
-        );
-      }
-
-      for (const snapshot of dead) await this.invalidateSubscription(snapshot);
+      await this.sendFeedWakes(deliverableTokens, dataFor);
     } catch (e) {
-      // Provider failures are handled per token above. An infrastructure
-      // failure is surfaced to the in-memory timer owner for diagnostics.
       this.logger.error(
         `push dispatchForMessage failed: ${(e as Error).message}`,
       );
       throw e;
     }
+  }
+
+  /** Shared identity-only transport retains exact-registration invalidation. */
+  private async sendFeedWakes(
+    deliverableTokens: Awaited<ReturnType<PushService['registrations']>>,
+    dataFor: (userId: number) => Record<string, string>,
+  ): Promise<void> {
+    const dead: SessionPushRegistration[] = [];
+    // Branch by SUBSCRIPTION SHAPE, not the platform label: a Web Push subscription is identified by
+    // having p256dh+auth keys — true for every browser/PWA context (desktop Chrome/Firefox/Safari,
+    // Android webview PWA, AND iOS-Safari-installed-as-PWA). The platform enum is transport-oriented
+    // (WEB = Web Push, ANDROID = FCM, IOS reserved for a hypothetical future native APNs app), so
+    // iOS-PWA subs register as WEB and correctly route here. No native APNs path exists today.
+    const webSubs = deliverableTokens.filter(
+      (token) => !!token.webP256dh && !!token.webAuth,
+    );
+    const fcmTokens = deliverableTokens.filter(
+      (token) => !token.webP256dh || !token.webAuth,
+    );
+
+    // FCM path (ANDROID / IOS).
+    if (fcmTokens.length > 0 && this.messaging) {
+      const messages: Message[] = fcmTokens.map((t) => ({
+        token: t.token,
+        data: dataFor(t.userId),
+        android: { priority: 'high', ttl: 2_419_200 }, // 28 days — the FCM max retention window
+      }));
+      const res = await sendFcmMessages(
+        this.messaging,
+        messages,
+        this.fcmUsesHttpProxy,
+      );
+      res.responses.forEach((r, i) => {
+        if (
+          !r.success &&
+          r.error?.code === 'messaging/registration-token-not-registered'
+        ) {
+          dead.push(fcmTokens[i]);
+        }
+      });
+      this.logger.debug(
+        `FCM message handoff accepted=${res.successCount}, failed=${res.failureCount}`,
+      );
+      const failed = res.failureCount - dead.length;
+      if (failed > 0) {
+        this.logger.warn(
+          `FCM sendEach: ${failed} transient failure(s) (not pruned)`,
+        );
+      }
+    }
+
+    // Web Push path (browser/PWA). VAPID is read per send from SettingsService (file-backed,
+    // admin-managed), so the gate is whether a keypair is configured. sendWebPush throws on failure →
+    // 404/410 = subscription expired/gone (prune), anything else is transient.
+    if (webSubs.length > 0 && this.settings.isWebPushConfigured) {
+      await Promise.all(
+        webSubs.map(async (s) => {
+          try {
+            await this.sendWebPush(
+              {
+                endpoint: s.token,
+                keys: { p256dh: s.webP256dh!, auth: s.webAuth! },
+              },
+              JSON.stringify(dataFor(s.userId)),
+            );
+          } catch (e) {
+            const code = (e as { statusCode?: number }).statusCode;
+            if (code === 404 || code === 410) {
+              dead.push(s);
+            } else {
+              this.logger.warn(
+                `Web Push transient failure (${code}): ${(e as Error).message}`,
+              );
+            }
+          }
+        }),
+      );
+    }
+
+    for (const snapshot of dead) await this.invalidateSubscription(snapshot);
   }
 
   /**
@@ -875,7 +1018,12 @@ export class PushService implements OnModuleDestroy {
   /** Read-only metadata for the operator-provided Firebase credential. Never exposes credential content. */
   getFcmCredentialStatus() {
     if (!existsSync(this.fcmCredentialPath)) {
-      return { configured: false, valid: false, reason: 'file not found' };
+      return {
+        filePath: this.fcmCredentialPath,
+        configured: false,
+        valid: false,
+        reason: 'file not found',
+      };
     }
     try {
       const raw = readFileSync(this.fcmCredentialPath, 'utf8');
@@ -887,6 +1035,7 @@ export class PushService implements OnModuleDestroy {
         typeof value.private_key === 'string';
       const stat = statSync(this.fcmCredentialPath);
       return {
+        filePath: this.fcmCredentialPath,
         configured: true,
         valid,
         projectId:
@@ -905,6 +1054,7 @@ export class PushService implements OnModuleDestroy {
       };
     } catch {
       return {
+        filePath: this.fcmCredentialPath,
         configured: true,
         valid: false,
         reason: 'invalid Firebase service-account JSON',

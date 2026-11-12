@@ -1,15 +1,21 @@
-/** Client-owned presentation model assembled from committed thread-feed projections. */
+/** Client-owned presentation model assembled from committed message and request attention. */
 
 /** Sent from the database worker through the page to the push service worker. */
 export interface BrowserNotificationBatch {
   userId: number;
   entries: { feedId: number; descriptor: NotificationDescriptor }[];
+  /** Account state and thread feeds have independent coordinate spaces. */
+  stream?: 'thread' | 'state';
+  /** Reconcile an optimistic personal-request read against durable account state. */
+  requestReadChanged?: boolean;
+  /** Reconcile a local group read or deletion using the durable thread state. */
+  groupRequestReadChanged?: number;
+  /** Explicit successful full feed-drain signal, including an empty delta. */
+  syncComplete?: boolean;
 }
 
 export interface NotificationDescriptor {
-  /** Stable per-thread id; posting the same tag replaces that conversation's prior notification. */
-  tag: string;
-  /** Template/action discriminator: `'thread-message'` today; extensible for future notification kinds. */
+  /** Presentation kind; navigation uses the separately validated target payload. */
   kind: string;
   title: string;
   body: string;
@@ -19,12 +25,12 @@ export interface NotificationDescriptor {
   lang: string;
   /** Client-selected notification icon; null lets the platform use its default. */
   icon: string | null;
-  /** Re-alert on replace (false = silent update after the first post). */
-  renotify: boolean;
   /** Optional attention reason for platform-specific emphasis. */
   attention?: 'mention';
   /** Quiet update (no sound). */
   silent?: boolean;
+  /** Read/metadata convergence may update an OS instance but cannot recreate a dismissed card. */
+  updateExistingOnly?: boolean;
   messages?: Array<{
     seq: number;
     sender: { account: string; domain: string };
@@ -33,6 +39,6 @@ export interface NotificationDescriptor {
     timestamp: number;
   }>;
   previewMode?: 'message' | 'private';
-  /** Routing payload for opening a per-thread notification. */
-  data: { threadId?: number; seq?: number; [k: string]: unknown };
+  /** Destination payload; navigation reads only the validated target. */
+  data: { target?: unknown; seq?: number; [k: string]: unknown };
 }

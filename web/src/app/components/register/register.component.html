@@ -10,7 +10,7 @@
   <div class="input-line">
     <mat-form-field class="field" appearance="fill">
       <mat-label>{{ 'auth.account' | transloco }}</mat-label>
-      <input matInput name="account" autocomplete="username" autofocus
+      <input matInput name="account" autocapitalize="off" autocomplete="username" autofocus
         [ngModel]="account()" (ngModelChange)="onAccountInput($event)">
     </mat-form-field>
     <div class="hint">{{accountHint()}}</div>
@@ -19,7 +19,7 @@
   <div class="input-line">
     <mat-form-field class="field" appearance="fill">
       <mat-label>{{ 'auth.password' | transloco }}</mat-label>
-      <input matInput name="password" autocomplete="new-password"
+      <input matInput name="password" autocapitalize="off" autocomplete="new-password"
         [type]="showPassword() ? 'text' : 'password'"
         [ngModel]="password()" (ngModelChange)="onPasswordInput($event)">
       <button mat-icon-button matSuffix type="button" (click)="togglePassword()"
@@ -32,7 +32,7 @@
   <div class="input-line">
     <mat-form-field class="field" appearance="fill">
       <mat-label>{{ 'auth.passwordAgain' | transloco }}</mat-label>
-      <input matInput name="password2" autocomplete="new-password"
+      <input matInput name="password2" autocapitalize="off" autocomplete="new-password"
         [type]="showPassword() ? 'text' : 'password'"
         [ngModel]="password2()" (ngModelChange)="onPassword2Input($event)">
     </mat-form-field>

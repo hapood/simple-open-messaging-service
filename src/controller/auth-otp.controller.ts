@@ -16,6 +16,7 @@ import { setSessionCookies } from '../auth/media-token.js';
 import { Public } from '../common/public.decorator.js';
 import { OtpLoginDto } from '../dto/auth.dto.js';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard.js';
+import { loginMethodEnabledGuard } from '../auth/login-method-enabled.guard.js';
 import { UseRateLimitPolicy } from '../rate-limit/rate-limit.decorator.js';
 import { AUTH_RATE_LIMIT_POLICIES } from '../rate-limit/auth-policy.registry.js';
 
@@ -32,7 +33,7 @@ export class AuthOtpController {
   constructor(private readonly otpLoginService: OtpLoginService) {}
 
   @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.otpLogin)
-  @UseGuards(RateLimitGuard)
+  @UseGuards(RateLimitGuard, loginMethodEnabledGuard('otp'))
   @HttpCode(HttpStatus.OK)
   @Post('auth/otp/login')
   @ApiOperation({

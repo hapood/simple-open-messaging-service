@@ -1,5 +1,4 @@
-import type { ReactNode } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { ArrowLeft } from 'lucide-react';
@@ -31,89 +30,47 @@ import { Timestamp } from '@/components/common/timestamp';
 import { formatApiError } from '@/lib/format-error';
 import { PeerStatusBadge } from './peer-status-badge';
 import { PeerQuotaPanel } from './peer-quota-panel';
-
-function Meta({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="text-sm">{children}</span>
-    </div>
-  );
-}
-
-function FeedProgressCard({
-  title,
-  pulled,
-  end,
-  endLabel,
-  showLag = false,
-}: {
-  title: string;
-  pulled: string | null;
-  end: string;
-  endLabel: string;
-  showLag?: boolean;
-}) {
-  const { t } = useTranslation();
-  const status = showLag ? feedProgressStatus(pulled, end) : null;
-  const text =
-    status === null
-      ? null
-      : status.key === 'federation.feed.behind'
-        ? t(status.key, { count: status.lag.toString() })
-        : t(status.key);
-  const variant = status !== null && status.lag > 0n ? 'outline' : 'secondary';
-  return (
-    <div className="rounded-md border p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="font-medium">{title}</span>
-        {text ? <Badge variant={variant}>{text}</Badge> : null}
-      </div>
-      <div className="grid grid-cols-2 gap-3 font-mono text-xs text-muted-foreground">
-        <div>
-          <div>{t('federation.feed.pulled')}</div>
-          <div>{pulled ?? '-'}</div>
-        </div>
-        <div>
-          <div>{endLabel}</div>
-          <div>{end}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-type FeedProgressStatusKey =
-  | 'federation.feed.notStarted'
-  | 'federation.feed.caughtUp'
-  | 'federation.feed.behind';
-
-function feedProgressStatus(
-  pulled: string | null,
-  end: string,
-): { key: FeedProgressStatusKey; lag: bigint } {
-  if (pulled === null) return { key: 'federation.feed.notStarted', lag: 1n };
-  const lag = nonNegativeDiff(end, pulled);
-  return {
-    key: lag === 0n ? 'federation.feed.caughtUp' : 'federation.feed.behind',
-    lag,
-  };
-}
-
-function nonNegativeDiff(end: string, pulled: string): bigint {
-  const diff = BigInt(end) - BigInt(pulled);
-  return diff > 0n ? diff : 0n;
-}
+import {
+  PeerMeta as Meta,
+  PeerCoordinate,
+  PeerTime,
+} from './peer-detail-primitives';
+import { PeerFeedPanel } from './peer-feed-panel';
+import { PeerHealthFlags, PeerHealthPanel } from './peer-health-panel';
 
 /** Routed peer detail (deep-linkable by domain). Replaces the old PeerDetailDialog so a peer view is
  *  shareable/bookmarkable and respects browser back. */
 export function PeerDetailPage() {
   const { t } = useTranslation();
   const { domain = '' } = useParams<{ domain: string }>();
-  const d = decodeURIComponent(domain);
-  const { data: peer, isLoading, error } = useFederationPeer(d);
-  const { data: namespaceData, isLoading: namespacesLoading } =
-    useFederationPeerNamespaces(d);
+  const d = domain;
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab') ?? 'overview';
+  const tab = ['overview', 'namespaces', 'health', 'feed', 'quota'].includes(
+    requestedTab,
+  )
+    ? requestedTab
+    : 'overview';
+  const selectTab = (value: string) =>
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value === 'overview') next.delete('tab');
+      else next.set('tab', value);
+      return next;
+    });
+  const {
+    data: peer,
+    isLoading,
+    error,
+    refetch,
+    isFetching,
+  } = useFederationPeer(d);
+  const {
+    data: namespaceData,
+    isLoading: namespacesLoading,
+    error: namespacesError,
+    refetch: refetchNamespaces,
+  } = useFederationPeerNamespaces(d);
   const namespaces = namespaceData?.namespaces;
   const reviews = namespaceData?.reviews;
   const block = useBlockFederationPeer();
@@ -198,7 +155,7 @@ export function PeerDetailPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4 leading-[20px] [&_th]:leading-[20px] [&_td]:leading-[20px]">
       <Link
         to="/federation"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
@@ -248,19 +205,78 @@ export function PeerDetailPage() {
             ) : null}
           </div>
 
-          <Tabs defaultValue="overview">
-            <TabsList>
-              <TabsTrigger value="overview">
-                {t('federation.detail.tabOverview')}
-              </TabsTrigger>
-              <TabsTrigger value="namespaces">
-                {t('federation.detail.tabNamespaces')}
-              </TabsTrigger>
-              <TabsTrigger value="quota">
-                {t('federation.detail.tabQuota')}
-              </TabsTrigger>
-            </TabsList>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-muted-foreground">
+            <Meta label={t('federation.meta.activeNamespace')}>
+              <PeerCoordinate value={peer.id} />
+            </Meta>
+            <Meta label={t('federation.namespaces.col.peerAssigned')}>
+              <PeerCoordinate value={peer.peerAssignedLocalNamespaceId} />
+            </Meta>
+            <Button
+              variant="outline"
+              disabled={isFetching}
+              onClick={() => {
+                void refetch();
+                void refetchNamespaces();
+              }}
+            >
+              {t('federation.inspect.refresh')}
+            </Button>
+          </div>
+          {peer.trustLevel === 'halted' ? (
+            <div
+              role="alert"
+              className="rounded-md border border-destructive/40 p-4 text-sm leading-[20px] text-destructive"
+            >
+              <p>
+                {peer.haltReason ?? t('federation.status.halted')}{' '}
+                {peer.haltCode == null ? null : `(${peer.haltCode})`}
+              </p>
+              <PeerTime value={peer.haltedAt} />
+            </div>
+          ) : null}
+          {reviews?.some((review) => review.status === 'pending') ? (
+            <Button
+              variant="outline"
+              className="self-start"
+              onClick={() => selectTab('namespaces')}
+            >
+              {t('federation.inspect.pendingReviews', {
+                count: reviews.filter((review) => review.status === 'pending')
+                  .length,
+              })}
+            </Button>
+          ) : null}
+
+          <Tabs value={tab} onValueChange={(value) => selectTab(String(value))}>
+            <div className="overflow-x-auto">
+              <TabsList className="h-10">
+                <TabsTrigger value="overview">
+                  {t('federation.detail.tabOverview')}
+                </TabsTrigger>
+                <TabsTrigger value="namespaces">
+                  {t('federation.detail.tabNamespaces')}
+                </TabsTrigger>
+                <TabsTrigger value="health">
+                  {t('federation.detail.tabHealth')}
+                </TabsTrigger>
+                <TabsTrigger value="feed">
+                  {t('federation.detail.tabFeed')}
+                </TabsTrigger>
+                <TabsTrigger value="quota">
+                  {t('federation.detail.tabQuota')}
+                </TabsTrigger>
+              </TabsList>
+            </div>
             <TabsContent value="overview">
+              <Card className="mb-4">
+                <CardHeader>
+                  <CardTitle>{t('federation.inspect.localHealth')}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <PeerHealthFlags peer={peer} />
+                </CardContent>
+              </Card>
               <Card>
                 <CardContent className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm md:grid-cols-3">
                   <Meta label={t('federation.meta.createdAt')}>
@@ -300,26 +316,71 @@ export function PeerDetailPage() {
                 <CardHeader>
                   <CardTitle>{t('federation.feed.title')}</CardTitle>
                 </CardHeader>
-                <CardContent className="grid gap-4 text-sm md:grid-cols-2">
-                  <FeedProgressCard
-                    title={t('federation.feed.state')}
-                    pulled={peer.feedProgress.inboundStateFeedPulledThrough}
-                    end={peer.feedProgress.outboundStateFeedEndId}
-                    endLabel={t('federation.feed.localOutboundEnd')}
-                  />
-                  <FeedProgressCard
-                    title={t('federation.feed.profileNamespace')}
-                    pulled={
-                      peer.feedProgress.inboundProfileNamespaceFeedPulledThrough
-                    }
-                    end={peer.feedProgress.remoteProfileNamespaceFeedEndId}
-                    endLabel={t('federation.feed.observedEnd')}
-                    showLag
-                  />
+                <CardContent className="grid gap-4 sm:grid-cols-3">
+                  <Meta label={t('federation.feed.state')}>
+                    <PeerCoordinate
+                      value={peer.feedProgress.inboundStateFeedPulledThrough}
+                    />
+                  </Meta>
+                  <Meta label={t('federation.feed.profileNamespace')}>
+                    <PeerCoordinate
+                      value={
+                        peer.feedProgress
+                          .inboundProfileNamespaceFeedPulledThrough
+                      }
+                    />
+                  </Meta>
+                  <Meta label={t('federation.receipt.receivedAt')}>
+                    <PeerTime value={peer.latestFeedHeadReceipt?.receivedAt} />
+                  </Meta>
                 </CardContent>
               </Card>
             </TabsContent>
+            <TabsContent value="feed">
+              <PeerFeedPanel peer={peer} />
+            </TabsContent>
+            <TabsContent value="health">
+              <PeerHealthPanel
+                key={`${d}:${peer.id}:${peer.rootPublicKey}`}
+                peer={peer}
+              />
+            </TabsContent>
             <TabsContent value="namespaces">
+              <Card className="mb-4">
+                <CardHeader>
+                  <CardTitle>{t('federation.inspect.identity')}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-4 lg:grid-cols-3">
+                    <Meta label={t('federation.inspect.lastHandshakeAt')}>
+                      <PeerTime value={peer.feedProgress.lastHandshakeAt} />
+                    </Meta>
+                    <Meta label={t('federation.inspect.signingKeyCreatedAt')}>
+                      <PeerTime value={peer.signingKeyCreatedAt} />
+                    </Meta>
+                    <Meta label={t('federation.namespaces.col.pinnedAt')}>
+                      <PeerTime value={peer.identityPinnedAt} />
+                    </Meta>
+                    <Meta label={t('federation.meta.trustedAt')}>
+                      <PeerTime value={peer.trustedAt} />
+                    </Meta>
+                  </div>
+                  <Meta label={t('federation.namespaces.col.rootKey')}>
+                    <details>
+                      <summary className="cursor-pointer font-mono text-xs leading-[20px]">
+                        {peer.rootPublicKey
+                          ? `${peer.rootPublicKey.slice(0, 16)}…`
+                          : '—'}
+                      </summary>
+                      <PeerCoordinate value={peer.rootPublicKey} />
+                    </details>
+                  </Meta>
+                  <PeerHealthFlags peer={peer} />
+                  <p className="text-xs leading-[20px] text-muted-foreground">
+                    {t('federation.inspect.identityHint')}
+                  </p>
+                </CardContent>
+              </Card>
               <Card>
                 <CardHeader>
                   <CardTitle>{t('federation.namespaces.title')}</CardTitle>
@@ -329,6 +390,10 @@ export function PeerDetailPage() {
                     <div className="py-4 text-sm text-muted-foreground">
                       {t('common.loading')}
                     </div>
+                  ) : namespacesError ? (
+                    <p role="alert" className="text-destructive">
+                      {formatApiError(namespacesError)}
+                    </p>
                   ) : (namespaces?.length ?? 0) === 0 ? (
                     <div className="py-6 text-center text-sm text-muted-foreground">
                       {t('federation.namespaces.empty')}

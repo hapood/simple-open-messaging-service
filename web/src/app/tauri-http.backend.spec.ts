@@ -5,12 +5,13 @@ import {
   HttpContext,
   HttpErrorResponse,
   HttpRequest,
+  HttpResponse,
   HttpHeaders,
   provideHttpClient,
   withFetch,
   withXhr,
 } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import { filter, firstValueFrom } from 'rxjs';
 import { TauriHttpBackend } from './tauri-http.backend';
 import { REPLAY_SAFE } from './request-context';
 
@@ -104,11 +105,11 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
               replaySafe?: boolean;
             },
           };
-          // A successful 200 JSON response — the body shape `api_request` returns to JS.
+          // A successful 200 JSON response — the body shape `http_request` returns to JS.
           return {
             status: 200,
             headers: {},
-            body: '{"code":0,"message":"success","data":{}}',
+            text: '{"code":0,"message":"success","data":{}}',
           };
         },
       },
@@ -134,7 +135,7 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
         new HttpRequest('POST', '/api/v1/auth/qr/create', { client: 'app' }),
       ),
     );
-    expect(invokeArgs!.cmd).toBe('api_request');
+    expect(invokeArgs!.cmd).toBe('http_request');
     // The body crossed the IPC as raw JSON bytes...
     expect(ArrayBuffer.isView(invokeArgs!.args.body)).toBe(true);
     expect(
@@ -172,7 +173,7 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
       new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' }),
       'voice.webm',
     );
-    const req = new HttpRequest('POST', '/api/v1/upload/audio', fd, {
+    const req = new HttpRequest('POST', '/api/v1/upload/avatar', fd, {
       headers: new HttpHeaders({ 'x-client-message-id': 'voice-cid-1' }),
     });
     await firstValueFrom(backend.handle(req));
@@ -244,7 +245,7 @@ describe('TauriHttpBackend content-type synthesis under Tauri (regression: 415 o
         invoke: async () => ({
           status: 504,
           headers: {},
-          body: 'Gateway Timeout',
+          text: 'Gateway Timeout',
         }),
       },
     };
@@ -288,8 +289,8 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
           calls.push({ cmd, args });
           return {
             status: 200,
-            contentType: 'image/webp',
-            body: [1, 2, 3],
+            headers: { 'content-type': 'image/webp' },
+            bytes: [1, 2, 3],
           };
         },
       },
@@ -308,11 +309,33 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
     tauriWindow().__TAURI__ = undefined;
   });
 
+  it('decodes native mention data URLs locally without an authenticated media or API request', async () => {
+    const event = await firstValueFrom(
+      TestBed.inject(HttpBackend)
+        .handle(
+          new HttpRequest('GET', 'data:image/webp;base64,eA==', null, {
+            responseType: 'blob',
+          }),
+        )
+        .pipe(
+          filter(
+            (value): value is HttpResponse<Blob> =>
+              value instanceof HttpResponse,
+          ),
+        ),
+    );
+    expect(calls).toEqual([]);
+    expect(event.body?.type).toBe('image/webp');
+    expect(Array.from(new Uint8Array(await event.body!.arrayBuffer()))).toEqual(
+      [120],
+    );
+  });
+
   for (const url of [
     'media://localhost/uploads/avatars/a-512.webp?rev=1',
     'http://media.localhost/uploads/avatars/a-512.webp?rev=1',
   ]) {
-    it(`routes ${url} through media_request`, async () => {
+    it(`routes ${url} through http_request`, async () => {
       const backend = TestBed.inject(HttpBackend);
       const response = await firstValueFrom(
         backend.handle(
@@ -320,12 +343,17 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
         ),
       );
 
-      expect(calls).toEqual([
-        {
-          cmd: 'media_request',
-          args: { path: '/uploads/avatars/a-512.webp?rev=1' },
-        },
-      ]);
+      expect(calls.length).toBe(1);
+      expect(calls[0].cmd).toBe('http_request');
+      expect(calls[0].args).toMatchObject({
+        method: 'GET',
+        path: '/uploads/avatars/a-512.webp?rev=1',
+        headers: {},
+        body: undefined,
+        binary: true,
+        replaySafe: true,
+      });
+      expect(typeof (calls[0].args as any).reqId).toBe('string');
       expect(
         (
           response as {
@@ -335,4 +363,37 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
       ).toBe('image/webp');
     });
   }
+
+  it('triggers cancel_http_request when unsubscribed before completion', async () => {
+    const backend = TestBed.inject(HttpBackend);
+    let capturedReqId: string | undefined;
+    tauriWindow().__TAURI__ = {
+      core: {
+        invoke: async (cmd: string, args?: Record<string, unknown>) => {
+          calls.push({ cmd, args });
+          if (cmd === 'http_request') {
+            capturedReqId = args?.['reqId'] as string;
+            // Never resolves until test finishes
+            return new Promise(() => {});
+          }
+          return true;
+        },
+      },
+    };
+
+    const sub = backend.handle(new HttpRequest('GET', '/api/v1/threads')).subscribe();
+    // Allow the microtask (serializeBody etc.) to complete and dispatch invoke
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls.length).toBe(1);
+    expect(calls[0].cmd).toBe('http_request');
+    expect(capturedReqId).toBeDefined();
+
+    sub.unsubscribe();
+    expect(calls.length).toBe(2);
+    expect(calls[1]).toEqual({
+      cmd: 'cancel_http_request',
+      args: { reqId: capturedReqId },
+    });
+  });
 });

@@ -4,22 +4,74 @@ import { firstValueFrom, Subject, takeUntil } from 'rxjs';
 import { apiPrefix } from './constants';
 import { REQUEST_SCOPE, RequestScope } from '../request-context';
 
-/** Mirror of the backend `LoginMode` (src/config/public-config.ts). 1=all, 2=app-otp+qr, 3=password-only. */
-export enum LoginMode {
-  ALL = 1,
-  APP_OTP_AND_QR = 2,
-  PASSWORD_ONLY = 3,
+/** A login method a client UI can offer, mirroring the backend `LoginMethod` (src/config/public-config.ts).
+ *  `otp` (admin-issued one-time code) yields a long-term `app` session on trusted native clients (14-day
+ *  sliding in browser); `qr` (scan-to-sign-in) yields a 2-week sliding session confirmed by an
+ *  already-logged-in phone; `password` is universal. */
+export type LoginMethod = 'password' | 'otp' | 'qr';
+
+/** One advertised login method. The list order IS the presentation order (e.g. login tab order);
+ *  `disabled` entries stay advertised so the UI renders them as visible-but-unavailable options. */
+export interface LoginMethodOption {
+  key: LoginMethod;
+  disabled: boolean;
 }
 
-/** A login method a client UI can offer. `otp` (admin-issued one-time code) is Android-only and yields a
- *  long-term `app` session; `qr` (scan-to-sign-in) is desktop/web-only and yields a 2-week sliding session
- *  confirmed by an already-logged-in phone; `password` is universal. */
-export type LoginMethod = 'password' | 'otp' | 'qr';
+/** The validated policy stored in the service signals. */
+interface LoginPolicy {
+  methods: LoginMethodOption[];
+  defaultMethod: LoginMethod;
+}
+
+const KNOWN_LOGIN_METHODS: readonly LoginMethod[] = [
+  'password',
+  'otp',
+  'qr',
+];
+
+/** Normalize the advertised policy: keep only well-formed entries with known keys, PRESERVE the array
+ *  order (it is the presentation order per the API contract — do not re-sort), and keep only the first
+ *  occurrence of a duplicated key. The default is resolved with the documented fallback: a missing,
+ *  unknown, or disabled `defaultLoginMethod` falls back to the first non-disabled entry. Returns `null`
+ *  when no usable method remains — a policy with zero enabled methods is a misconfiguration the login
+ *  surface must surface as a config failure rather than a login page with nothing selectable. */
+function normalizeLoginPolicy(
+  advertised: unknown,
+  advertisedDefault: unknown,
+): LoginPolicy | null {
+  if (!Array.isArray(advertised)) return null;
+  const methods: LoginMethodOption[] = [];
+  for (const raw of advertised) {
+    if (raw === null || typeof raw !== 'object') continue;
+    const key = (raw as { key?: unknown }).key;
+    if (typeof key !== 'string' || !KNOWN_LOGIN_METHODS.includes(key as LoginMethod))
+      continue;
+    if (methods.some((m) => m.key === key)) continue;
+    methods.push({
+      key: key as LoginMethod,
+      disabled: (raw as { disabled?: unknown }).disabled === true,
+    });
+  }
+  const firstEnabled = methods.find((m) => !m.disabled);
+  if (!firstEnabled) return null;
+  const defaultKey = advertisedDefault;
+  const defaultMethod =
+    typeof defaultKey === 'string' &&
+    KNOWN_LOGIN_METHODS.includes(defaultKey as LoginMethod) &&
+    methods.some((m) => m.key === defaultKey && !m.disabled)
+      ? (defaultKey as LoginMethod)
+      : firstEnabled.key;
+  return { methods, defaultMethod };
+}
 
 type ConfigRes = {
   code: number;
   message: string;
-  data?: { registrationOpen: boolean; loginMode: LoginMode };
+  data?: {
+    registrationOpen: boolean;
+    loginMethods: LoginMethodOption[];
+    defaultLoginMethod: LoginMethod;
+  };
 };
 
 /**
@@ -40,7 +92,12 @@ export class ConfigService {
 
   /** `null` until the first successful load (closed-by-default while unknown). */
   readonly registrationOpen = signal<boolean | null>(null);
-  readonly loginMode = signal<LoginMode | null>(null);
+  /** `null` until the first successful load of a usable, well-formed policy (closed-by-default while
+   *  unknown). Order is the presentation order; disabled entries are kept for grayed-out rendering. */
+  readonly loginMethods = signal<LoginMethodOption[] | null>(null);
+  /** `null` alongside `loginMethods`; otherwise the resolved pre-selected method (server default with the
+   *  documented fallback already applied). */
+  readonly defaultLoginMethod = signal<LoginMethod | null>(null);
   /** Flips to true once the first load attempt has settled (success or failure). */
   readonly loaded = signal(false);
   /** The user explicitly stopped the current connection attempt. Kept separate from a network failure so
@@ -53,23 +110,11 @@ export class ConfigService {
    *  reconfigure/reload; only the newest generation is allowed to publish signals. */
   private loadGeneration = 0;
 
-  /** Methods available on THIS platform under the current `loginMode`. Empty until config is loaded.
-   *  Drives which login UI the shell renders (and whether the method switcher shows >1 option).
-   *
-   *  Both OTP and QR are available on EVERY platform under the alt modes; they differ only in session
-   *  lifetime (trusted native clients → permanent; browser → 14-day sliding) and are switchable everywhere. */
-  readonly methodsForPlatform = computed<LoginMethod[]>(() => {
-    const mode = this.loginMode();
-    if (mode === null) return [];
-    const passwordOn =
-      mode === LoginMode.ALL || mode === LoginMode.PASSWORD_ONLY;
-    const altOn = mode === LoginMode.ALL || mode === LoginMode.APP_OTP_AND_QR; // otp + qr, both on every platform
-    const methods: LoginMethod[] = [];
-    if (passwordOn) methods.push('password');
-    if (altOn) methods.push('otp');
-    if (altOn) methods.push('qr');
-    return methods;
-  });
+  /** Enabled methods in presentation order. Empty until config is loaded; drives the login-page ready
+   *  gate (a loaded policy always has ≥1 enabled entry — normalization nulls it otherwise). */
+  readonly methodsForPlatform = computed<LoginMethod[]>(() =>
+    (this.loginMethods() ?? []).filter((m) => !m.disabled).map((m) => m.key),
+  );
 
   /** Fetch `/config` once. Idempotent (concurrent callers share the same promise); never throws — on error
    *  the signals stay `null` and `loaded` flips true so consumers can react (e.g. backend unreachable). */
@@ -86,7 +131,12 @@ export class ConfigService {
       .then((res) => {
         if (generation === this.loadGeneration && res.code === 0 && res.data) {
           this.registrationOpen.set(res.data.registrationOpen);
-          this.loginMode.set(res.data.loginMode);
+          const policy = normalizeLoginPolicy(
+            res.data.loginMethods,
+            res.data.defaultLoginMethod,
+          );
+          this.loginMethods.set(policy?.methods ?? null);
+          this.defaultLoginMethod.set(policy?.defaultMethod ?? null);
           this.cancelled.set(false);
         }
       })
@@ -115,7 +165,8 @@ export class ConfigService {
     this.loaded.set(false);
     this.cancelled.set(false);
     this.registrationOpen.set(null);
-    this.loginMode.set(null);
+    this.loginMethods.set(null);
+    this.defaultLoginMethod.set(null);
     return this.ensureLoaded();
   }
 
@@ -127,7 +178,8 @@ export class ConfigService {
     this.cancelled.set(true);
     this.loaded.set(true);
     this.registrationOpen.set(null);
-    this.loginMode.set(null);
+    this.loginMethods.set(null);
+    this.defaultLoginMethod.set(null);
     this.cancelRequest.next();
     this.cancelRequest.complete();
   }

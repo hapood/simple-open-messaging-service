@@ -18,8 +18,8 @@ export interface RouteTab {
  * `aria-current` is the correct active-state indicator, not `aria-selected` plus the arrow-key /
  * focus-management contract a real tablist would require.
  *
- * `end` makes a tab active only on an exact pathname match, so the index tab (e.g. /users) is not
- * also highlighted when a sibling tab (/users/operators) is active.
+ * `end` makes a tab active only on an exact pathname match, so the index tab (e.g. /sessions) is not
+ * also highlighted when a sibling tab (/sessions/admins) is active.
  */
 export function RouteTabs({ tabs, className }: { tabs: RouteTab[]; className?: string }) {
   return (

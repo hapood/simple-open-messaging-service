@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SystemMessageType } from '../../../shared/system-message-content.js';
 import { GroupRole } from '../../database/enums.js';
 import { BusinessCode } from '../../common/business-code.js';
@@ -26,6 +26,20 @@ vi.mock(
     admitGroupMembershipProjectionFanoutInTx: vi
       .fn()
       .mockResolvedValue(undefined),
+  }),
+);
+
+vi.mock(
+  '../../client-state-feed/capture-thread-state-updates.js',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('../../client-state-feed/capture-thread-state-updates.js')
+    >()),
+    captureThreadStateUpdatesInTx: vi
+      .fn()
+      .mockImplementation(async (_tx, _ids, kind = 'thread-feed') => [
+        { kind, userId: 2, feedId: 99, threadFeedEndId: 7 },
+      ]),
   }),
 );
 
@@ -101,16 +115,62 @@ function createService(tx: ReturnType<typeof createTx>, overrides = {}) {
       .fn()
       .mockResolvedValue({ message: { seq: 4 }, messageId: 1n }),
   };
+  const clientFeed = { notifyFeedUpdates: vi.fn() };
   const service = new GroupRosterRoleService({
     database: tx as never,
+    clientFeed,
     groupMeta,
     messages,
     ...overrides,
   });
-  return { service, groupMeta, messages };
+  return { service, groupMeta, messages, clientFeed };
 }
 
 describe('GroupRosterRoleService', () => {
+  beforeEach(() => vi.clearAllMocks());
+  it.each([false, true])(
+    'wakes demoted manager request cards only after commit (rollback=%s)',
+    async (rollback) => {
+      const tx = createTx([
+        { rows: [{ groupAccount: '!group' }] },
+        { rows: [{ ok: true }] },
+        { rows: [] },
+        { rows: [authorizedRow({ targetRole: GroupRole.ADMIN })] },
+      ]);
+      let committed = false;
+      tx.db.transaction.mockImplementation(async (run) => {
+        const result = await run(tx);
+        if (rollback) throw new Error('rollback');
+        committed = true;
+        return result;
+      });
+      const { service, clientFeed } = createService(tx);
+      clientFeed.notifyFeedUpdates.mockImplementation(() => {
+        expect(committed).toBe(true);
+      });
+      const result = service.execute({
+        threadId: 10,
+        operatorUserId: 1,
+        kind: 'SET_ROLE',
+        target: { account: 'member', namespaceId: 0 },
+        role: GroupRole.MEMBER,
+      });
+      if (rollback) {
+        await expect(result).rejects.toThrow('rollback');
+        expect(clientFeed.notifyFeedUpdates).not.toHaveBeenCalled();
+      } else {
+        await expect(result).resolves.toEqual({ status: 'APPLIED' });
+        expect(clientFeed.notifyFeedUpdates).toHaveBeenCalledExactlyOnceWith([
+          {
+            kind: 'group-request-read',
+            userId: 2,
+            feedId: 99,
+            threadFeedEndId: 7,
+          },
+        ]);
+      }
+    },
+  );
   it('transfers ownership: keeps the previous owner as admin, then emits the event and fan-outs', async () => {
     const tx = createTx([
       { rows: [{ groupAccount: '!group' }] },

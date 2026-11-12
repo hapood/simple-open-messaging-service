@@ -61,8 +61,10 @@ The `webtest_run` tool writes local progress, handoff and issue documents beneat
 product bugs, environment faults and driver/shared-harness repairs require an
 explicit operator decision. Diagnosed invocation mistakes and agent-authored
 temporary-step mistakes can use the audited `webtest_run recover` path without
-an operator dialog; this does not authorize source changes or imply PASS. A
-specific source repair approval does not authorize automatic retry or later repairs.
+an operator dialog; this does not authorize source changes or imply PASS. The
+operator decision is approve-and-continue or stop; approving resumes the run
+and, when the issue carries a repair proposal, authorizes only that proposal —
+approval never extends to later issues.
 Shared settings and test credentials live in the Git-ignored private file
 `test/browser-e2e/.local/config.json`, not in each run or session. Startup offers
 use/modify; reuse skips credential entry. Use `/webtest-status` or

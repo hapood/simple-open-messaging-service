@@ -96,26 +96,29 @@ export class PlaygroundCallState implements OnDestroy {
     });
     const response = this.opponentResponse();
     this.clearTimers();
-    this.responseTimer = setTimeout(() => {
-      this.responseTimer = null;
-      if (this.callState().callSid !== callSid) return;
-      if (response !== 'accept') {
-        this.showTerminal(
-          response === 'decline'
-            ? 'declined'
-            : response === 'busy'
-              ? 'busy'
-              : 'missed',
-        );
-        return;
-      }
-      this.callState.update((state) => ({
-        ...state,
-        phase: 'connected',
-        mediaState: 'connected',
-        startedAt: Date.now(),
-      }));
-    }, response === 'no-answer' ? NO_ANSWER_DELAY_MS : PEER_RESPONSE_DELAY_MS);
+    this.responseTimer = setTimeout(
+      () => {
+        this.responseTimer = null;
+        if (this.callState().callSid !== callSid) return;
+        if (response !== 'accept') {
+          this.showTerminal(
+            response === 'decline'
+              ? 'declined'
+              : response === 'busy'
+                ? 'busy'
+                : 'missed',
+          );
+          return;
+        }
+        this.callState.update((state) => ({
+          ...state,
+          phase: 'connected',
+          mediaState: 'connected',
+          startedAt: Date.now(),
+        }));
+      },
+      response === 'no-answer' ? NO_ANSWER_DELAY_MS : PEER_RESPONSE_DELAY_MS,
+    );
   }
 
   setMuted(muted: boolean): void {
@@ -127,8 +130,6 @@ export class PlaygroundCallState implements OnDestroy {
     this.showTerminal('completed');
   }
 
-  markLocalTermination(_callSid: string): void {}
-
   private showTerminal(terminalReason: CallTerminalReason): void {
     const callSid = this.callState().callSid;
     if (!callSid) return;
@@ -139,15 +140,16 @@ export class PlaygroundCallState implements OnDestroy {
       step: '',
       terminalReason,
     }));
-    this.terminalTimer = setTimeout(() => {
-      this.terminalTimer = null;
-      if (this.callState().callSid === callSid) {
-        this.callState.set({ ...IDLE_CALL });
-      }
-    },
-    terminalReason === 'busy'
-      ? BUSY_TERMINAL_DISPLAY_MS
-      : TERMINAL_DISPLAY_MS,
+    this.terminalTimer = setTimeout(
+      () => {
+        this.terminalTimer = null;
+        if (this.callState().callSid === callSid) {
+          this.callState.set({ ...IDLE_CALL });
+        }
+      },
+      terminalReason === 'busy'
+        ? BUSY_TERMINAL_DISPLAY_MS
+        : TERMINAL_DISPLAY_MS,
     );
   }
 
@@ -246,12 +248,8 @@ export class PlaygroundCallAdapter {
   private applyVideoPosters(): void {
     const swapped = this.state.callState().swapped;
     if (this.remoteVideo)
-      this.remoteVideo.poster = swapped
-        ? SELF_VIDEO_POSTER
-        : PEER_VIDEO_POSTER;
+      this.remoteVideo.poster = swapped ? SELF_VIDEO_POSTER : PEER_VIDEO_POSTER;
     if (this.selfVideo)
-      this.selfVideo.poster = swapped
-        ? PEER_VIDEO_POSTER
-        : SELF_VIDEO_POSTER;
+      this.selfVideo.poster = swapped ? PEER_VIDEO_POSTER : SELF_VIDEO_POSTER;
   }
 }

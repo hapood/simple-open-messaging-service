@@ -20,38 +20,33 @@ object RustRuntimeBridge {
         check(databasePath == null) { "Rust runtime is already initialized" }
         databasePath = initializeRuntime(
             ctx.applicationContext.dataDir.absolutePath,
-            origins(ctx),
             SomsSecureStore.getSessionToken(ctx),
+        )
+        val restored = JSONObject(getServerOrigins())
+        SomsSecureStore.recordServerOrigins(
+            ctx,
+            if (restored.getBoolean("configured")) restored.getString("primary") else "",
+            restored.optString("secondary").takeIf { !restored.isNull("secondary") },
+            restored.getString("mode"),
         )
     }
 
     // The account cache uses Rust's bundled SQLite. Android's platform SQLite can be too old
     // to parse its schema, so background Kotlin components must never open that file directly.
+    external fun notificationPresentationChanged(visible: Boolean, focused: Boolean, threadId: Int)
+    external fun notificationDismissed(target: String, notificationId: String)
+    external fun validateNotificationOpening(opening: String): String?
     external fun getNotificationPreference(key: String): String?
     external fun setNotificationPreference(key: String, value: String)
     external fun queryCallPeer(userId: Int, threadId: Int, account: String, namespaceId: Int): String?
 
-    private fun origins(ctx: Context): String = JSONObject().apply {
-        put("primary", SomsSecureStore.getApiOrigin(ctx) ?: JSONObject.NULL)
-        put("secondary", SomsSecureStore.getApiOriginSecondary(ctx) ?: JSONObject.NULL)
-        put("mode", SomsSecureStore.getOriginMode(ctx))
-    }.toString()
-
-    fun updateOrigins(ctx: Context) {
-        checkNotNull(databasePath) { "Rust runtime is not initialized" }
-        setOrigins(origins(ctx))
-    }
-
-    @Synchronized
-    fun setSessionToken(token: String?, sessionUuid: String) {
+    fun storeSessionToken(token: String?, sessionUuid: String, storage: Runnable) {
         require(sessionUuid.isNotBlank()) { "sessionUuid must not be blank" }
-        val normalizedToken = token?.takeIf { it.isNotEmpty() }
-        updateSessionToken(normalizedToken, sessionUuid)
+        persistSessionToken(token?.takeIf { it.isNotEmpty() }, sessionUuid, storage)
     }
 
-    @Synchronized
-    fun discardResidualToken() {
-        clearResidualToken()
+    fun discardResidualToken(storage: Runnable) {
+        clearResidualToken(storage)
     }
 
     @Synchronized
@@ -70,16 +65,17 @@ object RustRuntimeBridge {
     external fun realtimeRetryNow(instance: Long): Long
     external fun realtimeForceReconnect(instance: Long): Long
     external fun realtimeGetState(): String
+
     external fun realtimeReplayHello(): String?
     external fun realtimePickOrigin(): String?
 
-    private external fun updateSessionToken(token: String?, sessionUuid: String)
-    private external fun clearResidualToken()
+    private external fun persistSessionToken(token: String?, sessionUuid: String, storage: Runnable)
+    private external fun clearResidualToken(storage: Runnable)
 
-    fun synchronizeNotifications(userId: Int, threadFeedEndId: Int): NativeNotificationBatch {
+    fun synchronizeNotifications(userId: Int, threadFeedEndId: Int, allowAlert: Boolean, stateFeedEndId: Long = 0L): String? {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Notification synchronization must run off the main thread" }
         checkNotNull(databasePath) { "Rust runtime is not initialized" }
-        return queryNotifications(userId, threadFeedEndId)
+        return queryNotifications(userId, threadFeedEndId, allowAlert, stateFeedEndId)
     }
 
     fun synchronizeStateFeed(userId: Int, stateFeedEndId: Long): JSONObject {
@@ -89,7 +85,7 @@ object RustRuntimeBridge {
     }
 
     private external fun syncStateFeed(userId: Int, target: Long): String
-    private external fun queryNotifications(userId: Int, threadFeedEndId: Int): NativeNotificationBatch
-    private external fun setOrigins(originsJson: String)
-    private external fun initializeRuntime(dataDirectory: String, originsJson: String, token: String?): String
+    private external fun queryNotifications(userId: Int, threadFeedEndId: Int, allowAlert: Boolean, stateFeedEndId: Long): String?
+    private external fun getServerOrigins(): String
+    private external fun initializeRuntime(dataDirectory: String, token: String?): String
 }

@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import type { ConversationItem, Message } from './model';
@@ -68,6 +67,18 @@ describe('WebdbService native SQLite routing', () => {
     tauriWindow().__TAURI__ = undefined;
   });
 
+  it('initializes the native account record before opening reads without inventing sync cursors', async () => {
+    expect(calls).toContainEqual({
+      cmd: 'native_db_initialize_account_state',
+      args: { userId: 42 },
+    });
+    responses.set('native_db_read_account_state', accountState());
+    await expect(service.readAccountState()).resolves.toEqual(accountState());
+    const initialization = calls.findIndex((call) => call.cmd === 'native_db_initialize_account_state');
+    const read = calls.findIndex((call) => call.cmd === 'native_db_read_account_state');
+    expect(initialization).toBeLessThan(read);
+  });
+
   it.each(['openExistingForUser', 'recreateForUser'] as const)(
     're-arms the account lifetime on %s after logout without a renderer reload',
     async (open) => {
@@ -77,12 +88,8 @@ describe('WebdbService native SQLite routing', () => {
       responses.set('native_db_read_account_state', accountState());
       await service[open]('43');
       await expect(service.getThreads()).resolves.toEqual([]);
-      await expect(
-        service.readAccountState(),
-      ).resolves.toEqual(accountState());
-      await expect(
-        service.drainThreadMisc(9, null, null),
-      ).resolves.toBeUndefined();
+      await expect(service.readAccountState()).resolves.toEqual(accountState());
+      await expect(service.drainThreadMisc(9)).resolves.toBeUndefined();
       expect(calls).toContainEqual(
         expect.objectContaining({
           cmd: 'native_db_threads',
@@ -106,7 +113,8 @@ describe('WebdbService native SQLite routing', () => {
       profileRev: 0,
       role: null,
       lastMessageAt: null,
-      lastMessageSeq: null,
+      messageEndSeq: 0,
+      groupMetaFeedEndId: null,
       muted: false,
       blocked: false,
       pinned: false,
@@ -119,24 +127,17 @@ describe('WebdbService native SQLite routing', () => {
       lastMessageSenderAccount: null,
       lastMessageSenderNamespaceId: null,
       type: 'P2P',
-      peerUser: {
-        account: 'peer',
+      account: 'peer',
+      profile: {
         name: '',
-        avatar: '',
         bio: '',
-        isGroup: false,
-        domain: 'chat.test',
-        namespaceId: 0,
-        createdAt: 0,
-        updatedAt: 0,
-        isDeleted: false,
+        avatarDigest: null,
       },
     } as ConversationItem;
     responses.set('native_db_threads', [thread]);
 
     expect(await service.getThreads()).toEqual([thread]);
-    await service.putThread(thread);
-    await service.replaceThreads([thread]);
+    await service.patchThread(9, { muted: true });
     await service.deleteThread(9);
 
     expect(calls).toContainEqual(
@@ -147,18 +148,8 @@ describe('WebdbService native SQLite routing', () => {
     );
     expect(calls).toContainEqual(
       expect.objectContaining({
-        cmd: 'native_db_put_thread',
-        args: expect.objectContaining({
-          userId: 42,
-          threadId: 9,
-          item: thread,
-        }),
-      }),
-    );
-    expect(calls).toContainEqual(
-      expect.objectContaining({
-        cmd: 'native_db_replace_threads',
-        args: { userId: 42, items: [thread] },
+        cmd: 'native_db_patch_thread',
+        args: { userId: 42, threadId: 9, patch: { muted: true } },
       }),
     );
     expect(calls).toContainEqual(
@@ -243,6 +234,7 @@ describe('WebdbService native SQLite routing', () => {
         afterIdentity: JSON.stringify([12, 'aaron']),
         take: 20,
         search: 'ali',
+        exclude: { namespaceId: 0, account: 'self' },
       }),
     ).toEqual([member]);
     expect(calls).toContainEqual(
@@ -254,6 +246,8 @@ describe('WebdbService native SQLite routing', () => {
           afterIdentity: JSON.stringify([12, 'aaron']),
           take: 20,
           search: 'ali',
+          excludeAccount: 'self',
+          excludeNamespaceId: 0,
         },
       }),
     );

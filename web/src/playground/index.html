@@ -9,14 +9,14 @@
       rel="canonical"
       href="https://hapood.github.io/simple-open-messaging-service/"
     />
-    <title>SOMS — Self-Hosted, Federated Chat Platform</title>
+    <title>SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform</title>
     <meta
       name="description"
       content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."
     />
     <meta
       name="keywords"
-      content="self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
+      content="simple-open-messaging-service, simple open messaging service, soms, self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
     />
 
     <meta property="og:type" content="website" />
@@ -26,11 +26,11 @@
     />
     <meta
       property="og:title"
-      content="SOMS — Self-Hosted, Federated Chat Platform"
+      content="SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform"
     />
     <meta
       property="og:description"
-      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
     />
     <meta
       property="og:image"
@@ -44,16 +44,33 @@
     />
     <meta
       name="twitter:title"
-      content="SOMS — Self-Hosted, Federated Chat Platform"
+      content="SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform"
     />
     <meta
       name="twitter:description"
-      content="An open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
     />
     <meta
       name="twitter:image"
       content="https://hapood.github.io/simple-open-messaging-service/social-preview.png"
     />
+
+    <!-- Structured Data (Schema.org JSON-LD) -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "SOMS (Simple Open Messaging Service)",
+        "operatingSystem": "Web, Android, Linux, Windows, macOS",
+        "applicationCategory": "CommunicationApplication",
+        "offers": {
+          "@type": "Offer",
+          "price": "0"
+        },
+        "url": "https://hapood.github.io/simple-open-messaging-service/",
+        "description": "SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices."
+      }
+    </script>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
@@ -205,11 +222,25 @@
         min-height: 0;
       }
       .playground-viewport app-home-shell,
-      .playground-viewport app-deployment-page {
+      .playground-viewport app-deployment-page,
+      .playground-viewport app-effects-page,
+      .playground-viewport app-page-not-found,
+      .playground-viewport app-forbidden,
+      .playground-viewport app-login-page {
         height: 100%;
       }
-      .playground-viewport app-deployment-page {
+      .playground-viewport app-deployment-page,
+      .playground-viewport app-effects-page,
+      .playground-viewport app-page-not-found,
+      .playground-viewport app-forbidden,
+      .playground-viewport app-login-page {
+        display: block;
         position: relative;
+        overflow-y: auto;
+      }
+      .playground-viewport app-login-page .auth-shell {
+        height: 100%;
+        min-height: 100%;
       }
       .playground-page .app-splash {
         height: 100%;

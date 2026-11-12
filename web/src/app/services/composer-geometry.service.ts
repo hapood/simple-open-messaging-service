@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { isTauri } from './runtime';
+import { isAndroidNative } from './runtime';
 
 const WIDE_BREAKPOINT_PX = 720;
 const COMPACT_HEIGHT_PX = 74;
@@ -8,7 +8,8 @@ const WIDE_HEIGHT_PX = 82;
 /** Owns web pane geometry and publishes the active pane's height for external UI. */
 @Injectable({ providedIn: 'root' })
 export class ComposerGeometryService {
-  private readonly tauri = isTauri();
+  private readonly nativeComposer =
+    isAndroidNative() && !!window.SomsShell?.showComposer;
   private lastHeight = -1;
   private activeContainer?: HTMLElement;
 
@@ -16,9 +17,10 @@ export class ComposerGeometryService {
     this.syncForWidth(document.documentElement.clientWidth);
   }
 
-  /** Browser/PWA observes the real chat width. Tauri accepts shell geometry only after the boot seed. */
+  /** Every web composer, including desktop Tauri, owns measured pane geometry.
+   * Only Android's native composer bridge supplies shell-owned geometry. */
   observe(container: HTMLElement): () => void {
-    if (this.tauri) return () => {};
+    if (this.nativeComposer) return () => {};
     let observedComposer: HTMLElement | null = null;
     const sync = (): void => {
       const composer = container.querySelector<HTMLElement>('app-chat-input');
@@ -53,7 +55,7 @@ export class ComposerGeometryService {
 
   /** Promote one chatbox's owned geometry to the global notification channel. */
   setActive(container: HTMLElement, active: boolean): void {
-    if (this.tauri) return;
+    if (this.nativeComposer) return;
     if (active) {
       this.activeContainer = container;
       const ownedHeight = Number.parseFloat(

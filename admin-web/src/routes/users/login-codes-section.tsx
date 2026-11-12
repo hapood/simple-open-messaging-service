@@ -110,7 +110,7 @@ export function LoginCodesSection({ userId }: { userId: number }) {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Timestamp value={c.issuedAt} />
+                        <Timestamp value={c.createdAt} />
                       </TableCell>
                       <TableCell>
                         <Timestamp value={c.expiresAt} />

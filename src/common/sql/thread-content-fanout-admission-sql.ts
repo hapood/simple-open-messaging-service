@@ -18,7 +18,7 @@ export function threadFanoutAdmissionSql(params: {
   const prefix = sql.raw(params.prefix);
   return sql`
     ${prefix}_merge AS (
-      UPDATE "DurableTask" d SET payload = jsonb_build_object(
+      UPDATE "DurableTask" d SET "updatedAt" = CURRENT_TIMESTAMP, payload = jsonb_build_object(
         'threadId', ${params.threadId}::integer,
         'messageEndSeq', GREATEST((d.payload->>'messageEndSeq')::bigint, (SELECT seq FROM system_message)),
         'tombstoneEndSeq', GREATEST((d.payload->>'tombstoneEndSeq')::bigint,
@@ -29,9 +29,10 @@ export function threadFanoutAdmissionSql(params: {
       RETURNING d.id
     ), ${prefix}_insert AS (
       INSERT INTO "DurableTask"
-        (kind, "scopeType", "scopeKey", "taskType", payload, "coalescingKey", status)
+        (kind, "scopeType", "scopeKey", "taskType", "actorUserId", payload, "coalescingKey", status)
       SELECT 'PROJECTION'::"DurableTaskKind", 'THREAD'::"DurableTaskScopeType", ${scopeKey},
         ${taskType},
+        (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${params.threadId}::integer,
           'messageEndSeq', (SELECT seq FROM system_message),
           'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc)),

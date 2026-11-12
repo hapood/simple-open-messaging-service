@@ -128,55 +128,17 @@ function validatePage(
     throw new Error('invalid group announcement');
 }
 
-/** Catch every stored group projection up to its durable thread-head target.
- *  A failing group isolates to its own error entry and
- *  never starves the remaining groups; the aggregated failure still rejects
- *  the invocation so the caller's wake/retry pressure is preserved. */
-export async function syncGroupMeta(
-  storage: GroupMetaSyncStorage,
-  request: GroupMetaRequester,
-): Promise<number[]> {
-  const changed: number[] = [];
-  const patches: GroupMetaCommitPatch[] = [];
-  const failures: string[] = [];
-  try {
-    const committed = await syncGroupMetaUnchecked(
-      storage,
-      request,
-      changed,
-      patches,
-      failures,
-    );
-    if (failures.length) {
-      const visible = failures.slice(0, 5);
-      const overflow = failures.length - visible.length;
-      throw new GroupMetaSyncError(
-        visible.join('; ') + (overflow > 0 ? `; (+${overflow} more)` : ''),
-        [...new Set(changed)],
-        [...new Map(patches.map((p) => [p.threadId, p])).values()],
-      );
-    }
-    return committed;
-  } catch (error) {
-    if (error instanceof GroupMetaSyncError) throw error;
-    throw new GroupMetaSyncError(
-      error instanceof Error ? error.message : String(error),
-      [...new Set(changed)],
-      [...new Map(patches.map((p) => [p.threadId, p])).values()],
-    );
-  }
-}
-
+/** Catch the open thread's stored group projection up to its durable
+ *  thread-head target, read fresh from storage on every call (the drain's
+ *  trigger is a bare wake signal and carries no coordinates). */
 async function syncGroupMetaThreadUnchecked(
   storage: GroupMetaSyncStorage,
   request: GroupMetaRequester,
   threadId: number,
-  target: string,
   changed: number[],
   committed: GroupMetaCommitPatch[],
   failures: string[],
   guard?: () => boolean,
-  permission?: () => boolean,
 ): Promise<void> {
   const [threads, states] = await Promise.all([
     storage.getThreads(),
@@ -190,16 +152,16 @@ async function syncGroupMetaThreadUnchecked(
     thread.conversationState === 'READ_ONLY'
   )
     return;
-  const feedTarget = state?.threadFeedId === null ? null : target;
-  if (feedTarget === null) return;
+  const target =
+    state && state.threadFeedId !== null ? state.groupMetaFeedEndId : null;
+  if (target === null || target === undefined) return;
 
-  let after = thread.group.groupMetaFeedId;
-  let recoveryThrough = thread.groupMetaRecoveryThrough ?? null;
+  let after = thread.meta.groupMetaFeedId;
+  let recoveryThrough = thread.meta.recoveryThrough ?? null;
   if (recoveryThrough === null && BigInt(after) >= BigInt(target)) return;
 
-  const active = () => !permission || permission();
-  if (!active() || (guard && !guard())) return;
-  const context = `group ${thread.group.account} (namespace ${thread.group.namespaceId}, thread ${thread.threadId})`;
+  if (guard && !guard()) return;
+  const context = `group ${thread.account} (namespace ${thread.publisherNamespaceId}, thread ${thread.threadId})`;
   try {
     let mode: 'full' | 'delta';
     let through: string;
@@ -221,7 +183,7 @@ async function syncGroupMetaThreadUnchecked(
     // server-directed replacement window allowed during this invocation.
     let reopened = false;
     for (;;) {
-      if (!active() || (guard && !guard())) return;
+      if (guard && !guard()) return;
       const envelope = (await request({
         threadId: thread.threadId,
         mode,
@@ -229,7 +191,6 @@ async function syncGroupMetaThreadUnchecked(
         through,
         take: 100,
       })) as GroupMetaEnvelope;
-      if (!active()) return;
       if (envelope?.code === CLIENT_FEED_CURSOR_UNAVAILABLE) {
         const resetThrough = recoveryWindow(envelope.data);
         if (resetThrough === null || reopened)
@@ -248,14 +209,14 @@ async function syncGroupMetaThreadUnchecked(
           `group-meta pull failed (code ${String(envelope?.code)})`,
         );
       validatePage(page, {
-        account: thread.group.account,
+        account: thread.account,
         mode,
         after,
         through,
       });
       const patch = await storage.applyGroupMetaPage({
         threadId: thread.threadId,
-        namespaceId: thread.group.namespaceId,
+        namespaceId: thread.publisherNamespaceId,
         page,
       });
       if (patch) {
@@ -273,7 +234,6 @@ async function syncGroupMetaThreadUnchecked(
       }
     }
   } catch (error) {
-    if (!active()) return;
     failures.push(
       `${context}: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -284,9 +244,7 @@ export async function syncGroupMetaThread(
   storage: GroupMetaSyncStorage,
   request: GroupMetaRequester,
   threadId: number,
-  target: string,
   guard?: () => boolean,
-  permission?: () => boolean,
 ): Promise<{
   /** Committed Group Meta facts, one per thread (latest wins). */
   patches: GroupMetaCommitPatch[];
@@ -300,12 +258,10 @@ export async function syncGroupMetaThread(
     storage,
     request,
     threadId,
-    target,
     changed,
     committed,
     failures,
     guard,
-    permission,
   );
   if (failures.length) {
     const visible = failures.slice(0, 5);
@@ -320,40 +276,4 @@ export async function syncGroupMetaThread(
     patches: [...new Map(committed.map((p) => [p.threadId, p])).values()],
     threadIds: [...new Set(changed)],
   };
-}
-
-async function syncGroupMetaUnchecked(
-  storage: GroupMetaSyncStorage,
-  request: GroupMetaRequester,
-  changed: number[],
-  committed: GroupMetaCommitPatch[],
-  failures: string[],
-): Promise<number[]> {
-  const [threads, states] = await Promise.all([
-    storage.getThreads(),
-    storage.getThreadStates(),
-  ]);
-  const byThread = new Map(threads.map((thread) => [thread.threadId, thread]));
-  for (const state of states) {
-    const target =
-      state.threadFeedId === null ? null : state.groupMetaFeedEndId;
-    const thread = byThread.get(state.threadId);
-    if (
-      target === null ||
-      target === undefined ||
-      thread?.type !== 'GROUP' ||
-      thread.conversationState === 'READ_ONLY'
-    )
-      continue;
-    await syncGroupMetaThreadUnchecked(
-      storage,
-      request,
-      state.threadId,
-      target,
-      changed,
-      committed,
-      failures,
-    );
-  }
-  return [...new Set(changed)];
 }

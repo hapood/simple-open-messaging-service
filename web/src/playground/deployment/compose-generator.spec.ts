@@ -16,6 +16,29 @@ describe('deployment configuration validation', () => {
     adminPassword: 'admin-password-123',
     dnsToken: 'test-token',
   };
+  it('requires one registrable domain using public suffix rules', () => {
+    expect(
+      deploymentIssues({ ...valid, webDomain: 'app.other.net' }),
+    ).toContain('webDomain');
+    expect(
+      deploymentIssues({ ...valid, lanDomain: 'lan.other.net' }),
+    ).toContain('lanDomain');
+    expect(
+      deploymentIssues({
+        ...valid,
+        domain: 'id.example.co.uk',
+        webDomain: 'app.example.co.uk',
+        lanDomain: 'lan.example.co.uk',
+      }),
+    ).toEqual([]);
+    expect(
+      deploymentIssues({
+        ...valid,
+        domain: 'id.example.co.uk',
+        webDomain: 'app.other.co.uk',
+      }),
+    ).toContain('webDomain');
+  });
   it('validates required fields before export', () => {
     // domain, adminPassword, and dnsToken are remaining required fields (webDomain is optional, dataDir defaults to ./data)
     expect(deploymentIssues(initialDeployment)).toEqual([
@@ -32,8 +55,13 @@ describe('deployment configuration validation', () => {
     expect(defaultsForMode('public')).toEqual({
       port: 7667,
       adminAccess: 'public',
+      certMode: 'alpn',
     });
-    expect(defaultsForMode('nas')).toEqual({ port: 7667, adminAccess: 'lan' });
+    expect(defaultsForMode('nas')).toEqual({
+      port: 7667,
+      adminAccess: 'lan',
+      certMode: 'dns',
+    });
     expect(initialDeployment.adminAccess).toBe('lan');
     expect(deploymentIssues({ ...valid, mode: 'public', port: 443 })).toContain(
       'publicPort',
@@ -95,6 +123,22 @@ describe('deployment configuration validation', () => {
     ).not.toEqual([]);
     for (const port of [0, 65536, 1.5, NaN])
       expect(deploymentIssues({ ...valid, port })).not.toEqual([]);
+  });
+  it('validates certMode rules (ALPN skips DNS token, rejects lanDomain, requires public)', () => {
+    const publicAlpn = {
+      ...valid,
+      mode: 'public' as const,
+      port: 7667,
+      certMode: 'alpn' as const,
+      dnsToken: '',
+    };
+    expect(deploymentIssues(publicAlpn)).toEqual([]);
+    expect(
+      deploymentIssues({ ...publicAlpn, lanDomain: 'lan.example.com' }),
+    ).toContain('lanDomainRequiresDns');
+    expect(deploymentIssues({ ...publicAlpn, mode: 'nas' as const })).toContain(
+      'certMode',
+    );
   });
   it('escapes YAML and Compose independently', () => {
     expect(composeScalar('hello$token')).toBe('"hello$$token"');

@@ -24,6 +24,7 @@ export async function writeProfileSnapshotInTx(
   if (
     !existing ||
     existing.displayName !== snapshot.displayName ||
+    existing.generatedAt !== snapshot.generatedAt ||
     existing.avatar !== (snapshot.avatar ?? '') ||
     existing.bio !== (snapshot.bio ?? '')
   )

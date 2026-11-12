@@ -1,5 +1,4 @@
 import {
-  groupStateSql,
   readGroupState,
   groupStateFields,
 } from '../group/shared/group-state.js';
@@ -58,6 +57,7 @@ export class FederationProfileService {
     avatar: string;
     bio: string;
     profileRev: number;
+    generatedAt: number;
   }): Promise<S2SProfile> {
     this.assertPositiveRevision(user.profileRev);
     const wire = user.avatar
@@ -78,6 +78,7 @@ export class FederationProfileService {
       avatar,
       bio: user.bio,
       profileRev: user.profileRev,
+      generatedAt: user.generatedAt,
     };
   }
 
@@ -104,6 +105,7 @@ export class FederationProfileService {
       avatar: row.avatar,
       bio: row.bio,
       profileRev: row.profileRev,
+      generatedAt: row.generatedAt,
     });
   }
 
@@ -113,6 +115,13 @@ export class FederationProfileService {
     publisherNamespaceId: number,
   ): Promise<void> {
     this.assertPositiveRevision(profile.profileRev);
+    if (!this.validGeneratedAt(profile.generatedAt)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'generatedAt must be a non-negative safe integer',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     const prepared = await this.prepareForeignProfileData(profile);
     await this.database.db.transaction(async (tx) => {
       const source = await tx.query.identityNamespace.findFirst({
@@ -125,6 +134,7 @@ export class FederationProfileService {
         account: normalizeAccount(profile.account),
         profileNamespaceId: profile.namespaceId,
         profileRev: profile.profileRev,
+        generatedAt: profile.generatedAt,
         displayName: prepared.name,
         avatar: prepared.avatar,
         bio: prepared.bio,
@@ -169,7 +179,8 @@ export class FederationProfileService {
         eq(tables.account.namespaceId, 0),
       ),
     });
-    if (!user || user.namespaceId !== 0 || user.kind === 'SYSTEM') return null;
+    if (!user || user.namespaceId !== 0 || user.account === '$system')
+      return null;
     if (user.defaultProfileRev === 0) return this.noProfile(user.account);
     return this.getStoredProfile(
       0,
@@ -185,6 +196,7 @@ export class FederationProfileService {
       namespaceId: 0,
       account,
       profileRev: 0,
+      generatedAt: 0,
       displayName: account,
       bio: '',
       avatar: null,
@@ -232,9 +244,11 @@ export class FederationProfileService {
               bio: string;
               profileNamespaceId: number;
               profileRev: number;
+              generatedAt: number;
             }>(sql`
             SELECT profile.account, profile."displayName", profile.avatar,
-              profile.bio, profile."profileNamespaceId", profile."profileRev"
+              profile.bio, profile."profileNamespaceId", profile."profileRev",
+              profile."generatedAt"::double precision AS "generatedAt"
             FROM "GroupAccount" group_account
             JOIN "MessageThread" thread ON thread.id = ${authorized.threadId}
               AND thread."groupAccountId" = group_account.id
@@ -272,6 +286,7 @@ export class FederationProfileService {
             avatar: row.avatar,
             bio: row.bio,
             profileRev: row.profileRev,
+            generatedAt: row.generatedAt,
           })
         : null;
     }
@@ -285,13 +300,15 @@ export class FederationProfileService {
           bio: string;
           profileNamespaceId: number;
           profileRev: number;
+          generatedAt: number;
         }>(sql`
       SELECT profile.account, profile."displayName", profile.avatar,
-        profile.bio, profile."profileNamespaceId", profile."profileRev"
+        profile.bio, profile."profileNamespaceId", profile."profileRev",
+        profile."generatedAt"::double precision AS "generatedAt"
       FROM "Profile" profile
       JOIN "Account" owner ON owner.account = profile.account
         AND owner."namespaceId" = 0
-        AND owner.kind = 'USER' AND owner.availability = 'AVAILABLE'
+        AND owner.account <> '$system' AND owner.availability = 'AVAILABLE'
       WHERE profile.account = ${owner}
         AND profile."publisherNamespaceId" = 0
         AND profile."profileNamespaceId" = ${profileNamespaceId}
@@ -400,6 +417,7 @@ export class FederationProfileService {
           avatar: row.avatar,
           bio: row.bio,
           profileRev: row.profileRev,
+          generatedAt: row.generatedAt,
         })
       : null;
   }
@@ -460,9 +478,11 @@ export class FederationProfileService {
             bio: string;
             profileNamespaceId: number;
             profileRev: number;
+            generatedAt: number;
           }>(sql`
           SELECT profile.account, profile."displayName", profile.avatar,
-            profile.bio, profile."profileNamespaceId", profile."profileRev"
+            profile.bio, profile."profileNamespaceId", profile."profileRev",
+            profile."generatedAt"::double precision AS "generatedAt"
           FROM "Profile" profile
           -- The origin's published member namespace names the member home.
           -- Its retained native snapshot is (that captured publisher, subject 0).
@@ -540,6 +560,7 @@ export class FederationProfileService {
           avatar: row.avatar,
           bio: row.bio,
           profileRev: row.profileRev,
+          generatedAt: row.generatedAt,
         })
       : null;
   }
@@ -584,7 +605,7 @@ export class FederationProfileService {
       ),
     ).toString('base64');
     const profile = await this.peerHttp.get<unknown>(
-      `/s2s/v1/accounts/${encodeFederationResourceComponent(
+      `/somfp/v1/accounts/${encodeFederationResourceComponent(
         address.account,
       )}?publicKey=${encodeURIComponent(rootPublicKey)}` +
         `&challenge=${encodeURIComponent(sealed)}`,
@@ -609,7 +630,9 @@ export class FederationProfileService {
           this.validPublicProfileContent(content as Record<string, unknown>);
     if (
       Object.keys(fields).sort().join(',') !==
-        'account,profile,profileRev,proof' ||
+        'account,generatedAt,profile,profileRev,proof' ||
+      !this.validGeneratedAt(fields.generatedAt) ||
+      (fields.profileRev === 0 && fields.generatedAt !== 0) ||
       fields.account !== address.account ||
       !Number.isSafeInteger(fields.profileRev) ||
       Number(fields.profileRev) < 0 ||
@@ -639,6 +662,7 @@ export class FederationProfileService {
       bio: body.bio as string,
       avatar: body.avatar as S2SProfile['avatar'],
       profileRev: fields.profileRev as number,
+      generatedAt: fields.generatedAt as number,
       namespaceId: 0,
     };
   }
@@ -712,7 +736,7 @@ export class FederationProfileService {
     expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     return this.fetchExactProfile(
-      `/s2s/v1/account-profiles/${expectedProfileNamespaceId}` +
+      `/somfp/v1/account-profiles/${expectedProfileNamespaceId}` +
         `/${encodeFederationResourceComponent(account)}/${rev}`,
       account,
       rev,
@@ -729,7 +753,7 @@ export class FederationProfileService {
     expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     return this.fetchExactProfile(
-      `/s2s/v1/group-member-profiles/${encodeFederationResourceComponent(groupAccount)}` +
+      `/somfp/v1/group-member-profiles/${encodeFederationResourceComponent(groupAccount)}` +
         `/${expectedProfileNamespaceId}` +
         `/${encodeFederationResourceComponent(memberAccount)}/${rev}`,
       memberAccount,
@@ -767,7 +791,8 @@ export class FederationProfileService {
     const fields = body as Record<string, unknown>;
     if (
       Object.keys(fields).sort().join(',') !==
-        'account,avatar,bio,displayName' ||
+        'account,avatar,bio,displayName,generatedAt' ||
+      !this.validGeneratedAt(fields.generatedAt) ||
       fields.account !== expectedAccount ||
       typeof fields.displayName !== 'string' ||
       !this.validWireText(fields.displayName, 1, 31) ||
@@ -781,6 +806,10 @@ export class FederationProfileService {
       namespaceId: expectedProfileNamespaceId,
       profileRev: rev,
     };
+  }
+
+  private validGeneratedAt(value: unknown): value is number {
+    return Number.isSafeInteger(value) && Number(value) >= 0;
   }
 
   private validWireText(value: string, min: number, max: number): boolean {

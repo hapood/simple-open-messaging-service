@@ -15,7 +15,6 @@ import {
   serial,
   boolean,
   primaryKey,
-  date,
   pgEnum,
   uuid,
   customType,
@@ -150,6 +149,10 @@ export const fileSyncKind = pgEnum('FileSyncKind', [
 export const identityNamespace = pgTable(
   'IdentityNamespace',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: serial().primaryKey().notNull(),
     domain: varchar({ length: 63 }).notNull(),
     rootPublicKey: varchar({ length: 44 }),
@@ -159,6 +162,9 @@ export const identityNamespace = pgTable(
       mode: 'date',
     }),
     peerAssignedLocalNamespaceId: integer(),
+    /** Active signing-key creation time advertised by the peer, in epoch milliseconds.
+     * The local namespace sentinel has no remote certificate and explicitly uses zero. */
+    signingKeyCreatedAt: bigint({ mode: 'number' }).notNull(),
     active: boolean().default(false).notNull(),
     trustLevel: varchar({ length: 31 }).default('unrecognized').notNull(),
     trustedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
@@ -177,28 +183,6 @@ export const identityNamespace = pgTable(
     localServiceAvailable: boolean().default(false).notNull(),
     remoteServiceReachable: boolean().default(false).notNull(),
     resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    dailyMsgLimit: integer(),
-    dailyRequestLimit: integer(),
-    dailyFileLimit: integer(),
-    dailyFileBytesLimit: bigint({ mode: 'bigint' }),
-    /** Unified outbound State Feed end for this federation identity epoch.
-     * Namespace 0 is local and never allocates from this coordinate. */
-    stateFeedEndId: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-    /** Inbound State Feed drain progress for this peer. NULL means the feed
-     * was never bootstrapped; the first fetch omits `after`. */
-    stateFeedPulledThrough: bigint({ mode: 'bigint' }),
-    /** Profile Namespace Feed coordinate. Row 0 is the local publisher allocator;
-     * positive peer rows store the latest remote publisher head observed while
-     * draining that peer. */
-    profileNamespaceFeedEndId: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-    /** Inbound Profile Namespace Feed drain progress for this peer. */
-    profileNamespaceFeedPulledThrough: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -220,6 +204,10 @@ export const identityNamespace = pgTable(
     index('IdentityNamespace_trustLevel_idx').using(
       'btree',
       table.trustLevel.asc().nullsLast().op('text_ops'),
+    ),
+    check(
+      'IdentityNamespace_signingKeyCreatedAt_check',
+      sql`(${table.id} = 0 AND ${table.signingKeyCreatedAt} = 0) OR (${table.id} > 0 AND ${table.signingKeyCreatedAt} BETWEEN 1 AND 9007199254740991)`,
     ),
     check(
       'IdentityNamespace_shape_check',
@@ -262,28 +250,16 @@ export const identityNamespace = pgTable(
       'IdentityNamespace_retiredAt_check',
       sql`${table.retiredAt} IS NULL OR ${table.retiredAt} >= ${table.createdAt}`,
     ),
-    check(
-      'IdentityNamespace_stateFeedEndId_check',
-      sql`${table.stateFeedEndId} >= 0 AND (${table.id} <> 0 OR ${table.stateFeedEndId} = 0)`,
-    ),
-    check(
-      'IdentityNamespace_stateFeedPulledThrough_check',
-      sql`${table.stateFeedPulledThrough} IS NULL OR ${table.stateFeedPulledThrough} >= 0`,
-    ),
-    check(
-      'IdentityNamespace_profileNamespaceFeedEndId_check',
-      sql`${table.profileNamespaceFeedEndId} >= 0`,
-    ),
-    check(
-      'IdentityNamespace_profileNamespaceFeedPulledThrough_check',
-      sql`${table.profileNamespaceFeedPulledThrough} >= 0`,
-    ),
   ],
 );
 
 export const adminSession = pgTable(
   'AdminSession',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     adminId: integer().notNull(),
     tokenHash: text().notNull(),
@@ -333,6 +309,13 @@ export const adminSession = pgTable(
 export const forwardMessage = pgTable(
   'ForwardMessage',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     messageId: bigint({ mode: 'bigint' }).primaryKey().notNull(),
     bundleId: bigint({ mode: 'bigint' }).notNull(),
@@ -362,6 +345,10 @@ export const forwardMessage = pgTable(
 export const forwardBundle = pgTable(
   'ForwardBundle',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     messages: jsonb().notNull(),
     messageCount: integer().notNull(),
@@ -410,7 +397,6 @@ export const account = pgTable(
   {
     id: serial().primaryKey().notNull(),
     account: varchar({ length: 31 }).notNull(),
-    kind: varchar({ length: 16 }).default('USER').notNull(),
     namespaceId: integer().default(0).notNull(),
     defaultProfileRev: integer().default(0).notNull(),
     availability: varchar({ length: 16 }).default('AVAILABLE').notNull(),
@@ -426,13 +412,14 @@ export const account = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     check('Account_namespace_check', sql`${table.namespaceId} = 0`),
     check(
-      'Account_kind_check',
-      sql`(${table.kind} = 'USER' AND ${table.account} <> '$system') OR (${table.kind} = 'SYSTEM' AND ${table.account} = '$system' AND ${table.hashPwd} IS NULL AND ${table.disabledAt} IS NOT NULL AND ${table.defaultProfileRev} = 0)`,
+      'Account_system_identity_check',
+      sql`(${table.account} <> '$system') OR (${table.account} = '$system' AND ${table.hashPwd} IS NULL AND ${table.disabledAt} IS NOT NULL AND ${table.defaultProfileRev} = 0)`,
     ),
     check('Account_threadFeedEndId_check', sql`${table.threadFeedEndId} >= 0`),
     check(
@@ -469,7 +456,8 @@ export const groupAccount = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     unique('GroupAccount_account_key').on(table.account),
@@ -486,12 +474,17 @@ export const groupAccount = pgTable(
 export const durableTask = pgTable(
   'DurableTask',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     kind: durableTaskKind().notNull(),
     scopeType: durableTaskScopeType().notNull(),
     scopeKey: varchar({ length: 512 }).notNull(),
     taskType: varchar({ length: 64 }).notNull(),
-    actorUserId: integer(),
+    /** Account on whose authority the task runs: the commanding user or the reserved $system identity. */
+    actorUserId: integer().notNull(),
     payload: jsonb().$type<Record<string, unknown>>().notNull(),
     checkpoint: jsonb()
       .$type<Record<string, unknown>>()
@@ -527,10 +520,7 @@ export const durableTask = pgTable(
       'DurableTask_task_type_check',
       sql`${table.taskType} ~ '^[A-Z][A-Z0-9_]*$'`,
     ),
-    check(
-      'DurableTask_actor_user_id_check',
-      sql`${table.actorUserId} IS NULL OR ${table.actorUserId} > 0`,
-    ),
+    check('DurableTask_actor_user_id_check', sql`${table.actorUserId} > 0`),
     check(
       'DurableTask_payload_check',
       sql`jsonb_typeof(${table.payload}) = 'object'`,
@@ -587,13 +577,17 @@ export const durableTask = pgTable(
 export const userPreference = pgTable(
   'UserPreference',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
     userId: integer().notNull(),
     key: varchar({ length: 100 }).notNull(),
     value: jsonb().$type<unknown>().notNull(),
     revision: integer().default(0).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({ columns: [table.userId, table.key] }),
@@ -672,7 +666,8 @@ export const accountThreadState = pgTable(
       mode: 'date',
     })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     uniqueIndex('AccountThreadState_accountId_threadId_key').on(
@@ -769,7 +764,10 @@ export const messageThread = pgTable(
       precision: 3,
       withTimezone: true,
       mode: 'date',
-    }).notNull(),
+    })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     curSeq: integer().default(0).notNull(),
     /** Inclusive lower history boundary shared by every viewer of this thread. */
     clearedSeq: integer(),
@@ -837,6 +835,10 @@ export const messageThread = pgTable(
 export const threadAudience = pgTable(
   'ThreadAudience',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     targetNamespaceId: integer().default(0).notNull(),
     /** Non-null for a local user audience; null for a federated peer audience. */
@@ -911,7 +913,8 @@ export const messageAsset = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -951,14 +954,29 @@ export const messageAsset = pgTable(
 export const mediaAsset = pgTable(
   'MediaAsset',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     digest: varchar({ length: 64 }).primaryKey().notNull(),
     bytes: bigint({ mode: 'bigint' }).notNull(),
+    /** Complete local inspection and derivative descriptors; never a partial processing result. */
+    meta: jsonb().$type<
+      import('../upload/stored-media-metadata.js').StoredMediaMetadata
+    >(),
     isDeleted: boolean().default(false).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
   (table) => [
+    check(
+      'MediaAsset_meta_object_check',
+      sql`${table.meta} IS NULL OR jsonb_typeof(${table.meta}) = 'object'`,
+    ),
+    index('MediaAsset_thumbnail_digest_idx')
+      .on(sql`(${table.meta} #>> '{thumbnail,digest}')`)
+      .where(sql`${table.meta} #>> '{thumbnail,digest}' IS NOT NULL`),
     index('MediaAsset_isDeleted_idx').using(
       'btree',
       table.isDeleted.asc().nullsLast().op('bool_ops'),
@@ -987,7 +1005,10 @@ export const message = pgTable(
       precision: 3,
       withTimezone: true,
       mode: 'date',
-    }).notNull(),
+    })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     isDeleted: boolean().default(false).notNull(),
     clientMessageId: varchar({ length: 36 }),
     originSeq: integer(),
@@ -1100,7 +1121,8 @@ export const deletedMessage = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -1152,7 +1174,8 @@ export const federatedMessageTombstone = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     check(
@@ -1205,7 +1228,10 @@ export const admin = pgTable(
       precision: 3,
       withTimezone: true,
       mode: 'date',
-    }).notNull(),
+    })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     role: adminRole().default('SUPER_ADMIN').notNull(),
     twoFactorEnabled: boolean().default(false).notNull(),
     twoFactorSecretCipher: varchar({ length: 255 }),
@@ -1245,7 +1271,8 @@ export const messageReport = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -1269,6 +1296,13 @@ export const messageReport = pgTable(
 export const adminActionLog = pgTable(
   'AdminActionLog',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     adminId: integer().notNull(),
     adminRole: adminRole().notNull(),
@@ -1281,9 +1315,6 @@ export const adminActionLog = pgTable(
     status: adminAuditStatus().default('STARTED').notNull(),
     errorMessage: varchar({ length: 255 }),
     meta: jsonb(),
-    at: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
   },
   (table) => [
     index('AdminActionLog_action_idx').using(
@@ -1294,9 +1325,9 @@ export const adminActionLog = pgTable(
       'btree',
       table.adminId.asc().nullsLast().op('int4_ops'),
     ),
-    index('AdminActionLog_at_idx').using(
+    index('AdminActionLog_createdAt_idx').using(
       'btree',
-      table.at.asc().nullsLast().op('timestamptz_ops'),
+      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
     ),
     foreignKey({
       columns: [table.adminId],
@@ -1328,7 +1359,10 @@ export const pendingMedia = pgTable(
       precision: 3,
       withTimezone: true,
       mode: 'date',
-    }).notNull(),
+    })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     failReason: varchar({ length: 255 }),
     // Groups one message's files by batchId. INBOUND rows reference an existing STUB Message;
     // OUTBOUND rows retain the pre-Message staging fields above.
@@ -1444,7 +1478,8 @@ export const uploadSession = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     completedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     abortedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
@@ -1509,13 +1544,13 @@ export const fileSyncProgress = pgTable(
     errorKind: varchar({ length: 255 }),
     // Tick-once guard: once this file's file-cnt/file-bytes quota has been charged, admin retry or crash-resume
     // must not re-charge it. Set true after the first successful claim.
-    quotaCounted: boolean().default(false).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     // Outbound: per-file display payload used by barrier promotion. Inbound: the authorized S2S fetch
     // route persisted by global /missed so crash/quota recovery never depends on mutable relationships.
     payload: jsonb(),
@@ -1542,12 +1577,18 @@ export const fileSyncProgress = pgTable(
 export const profileTable = pgTable(
   'Profile',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     account: varchar({ length: 31 }).notNull(),
     /** Local publisher namespace that disclosed or owns this immutable snapshot. */
     publisherNamespaceId: integer().notNull(),
     /** Publisher-scoped profile subject namespace. */
     profileNamespaceId: integer().notNull(),
     profileRev: integer().notNull(),
+    /** Original revision generation time in Unix milliseconds, preserved across publishers. */
+    generatedAt: bigint({ mode: 'number' }).notNull(),
     displayName: varchar({ length: 31 }).notNull(),
     avatar: text().default('').notNull(),
     bio: varchar({ length: 255 }).default('').notNull(),
@@ -1571,6 +1612,10 @@ export const profileTable = pgTable(
       name: 'Profile_publisherNamespaceId_fkey',
     }).onDelete('restrict'),
     check('Profile_profileRev_check', sql`${table.profileRev} > 0`),
+    check(
+      'Profile_generatedAt_check',
+      sql`${table.generatedAt} >= 0 AND ${table.generatedAt} <= 9007199254740991`,
+    ),
   ],
 );
 
@@ -1586,7 +1631,8 @@ export const clientStateFeed = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     foreignKey({
@@ -1631,7 +1677,8 @@ export const relationshipRequest = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .defaultNow()
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     index('RelationshipRequest_author_page_idx').on(
@@ -1680,13 +1727,19 @@ export const relationshipRequest = pgTable(
 );
 
 export const systemSetting = pgTable('SystemSetting', {
+  createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+    .default(sql`CURRENT_TIMESTAMP`)
+    .notNull(),
   key: varchar({ length: 63 }).primaryKey().notNull(),
   value: text().notNull(),
   updatedAt: timestamp({
     precision: 3,
     withTimezone: true,
     mode: 'date',
-  }).notNull(),
+  })
+    .default(sql`CURRENT_TIMESTAMP`)
+    .notNull()
+    .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
 });
 
 /** This installation's immutable federation identity plus its root key material. Private keys are
@@ -1702,6 +1755,10 @@ export const systemSetting = pgTable('SystemSetting', {
 export const localFederationRoot = pgTable(
   'LocalFederationRoot',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: serial().primaryKey().notNull(),
     rootPublicKey: varchar({ length: 44 }).notNull().unique(),
     rootPrivateKey: varchar({ length: 44 }).notNull(),
@@ -1747,6 +1804,10 @@ export const localFederationRoot = pgTable(
 export const localFederationSigningKey = pgTable(
   'LocalFederationSigningKey',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     rootId: integer()
       .notNull()
       .references(() => localFederationRoot.id, { onDelete: 'restrict' }),
@@ -1785,6 +1846,9 @@ export const localFederationSigningKey = pgTable(
 export const localFederationSigningState = pgTable(
   'LocalFederationSigningState',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
     id: integer().primaryKey().default(0).notNull(),
     currentKeyName: varchar({ length: 64 }).notNull(),
     plannedSwitchAt: timestamp({
@@ -1795,7 +1859,8 @@ export const localFederationSigningState = pgTable(
     plannedSuccessorKeyName: varchar({ length: 64 }),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     check('LocalFederationSigningState_id_check', sql`${table.id} = 0`),
@@ -1849,7 +1914,8 @@ export const federationIdentityReview = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     uniqueIndex('FederationIdentityReview_one_pending_per_namespace_key')
@@ -1883,6 +1949,10 @@ export const federationIdentityReview = pgTable(
 export const federationIdentityConflict = pgTable(
   'FederationIdentityConflict',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: serial().primaryKey().notNull(),
     /** Verified arrival domain. */
     domain: varchar({ length: 63 }).notNull(),
@@ -1930,7 +2000,8 @@ export const peerStateFeed = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -1961,20 +2032,147 @@ export const peerStateFeed = pgTable(
   ],
 );
 
+/** Per-peer runtime observations, publication allocator and durable inbound progress; never receipt metadata. */
+export const federationFeedState = pgTable(
+  'FederationFeedState',
+  {
+    namespaceId: integer().primaryKey().notNull(),
+    /** Last completed recognition exchange, not the start of the trust epoch. */
+    lastHandshakeAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
+    /** Latest completed outbound Health observation; independent of feed source times. */
+    latestHealthCheck: jsonb().$type<{
+      namespaceId: number;
+      domain: string;
+      startedAt: number;
+      completedAt: number;
+      durationMs: number;
+      status: 'available' | 'degraded' | 'unavailable' | null;
+      error: string | null;
+      source: 'automatic' | 'manual';
+    }>(),
+    outboundStateFeedEndId: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
+    /** NULL means State Feed bootstrap has not completed. */
+    inboundStateFeedPulledThrough: bigint({ mode: 'bigint' }),
+    inboundProfileNamespaceFeedPulledThrough: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
+    /** Source times of the last processed items; empty scans leave them unchanged. */
+    stateFeedSourceGeneratedAt: bigint({ mode: 'number' }).default(0).notNull(),
+    profileNamespaceFeedSourceGeneratedAt: bigint({ mode: 'number' })
+      .default(0)
+      .notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'FederationFeedState_namespace_fkey',
+    }).onDelete('restrict'),
+    check('FederationFeedState_namespace_check', sql`${table.namespaceId} > 0`),
+    check(
+      'FederationFeedState_source_times_check',
+      sql`${table.stateFeedSourceGeneratedAt} BETWEEN 0 AND 9007199254740991 AND ${table.profileNamespaceFeedSourceGeneratedAt} BETWEEN 0 AND 9007199254740991`,
+    ),
+    check(
+      'FederationFeedState_coordinates_check',
+      sql`${table.outboundStateFeedEndId} >= 0 AND (${table.inboundStateFeedPulledThrough} IS NULL OR ${table.inboundStateFeedPulledThrough} >= 0) AND ${table.inboundProfileNamespaceFeedPulledThrough} >= 0`,
+    ),
+  ],
+);
+
+/** Publisher-wide Profile Namespace Feed allocator, independent of identity rows. */
+export const profileNamespaceFeedHead = pgTable(
+  'ProfileNamespaceFeedHead',
+  {
+    id: integer().primaryKey().notNull(),
+    endId: bigint({ mode: 'bigint' })
+      .default(sql`0`)
+      .notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    check(
+      'ProfileNamespaceFeedHead_shape_check',
+      sql`${table.id} = 0 AND ${table.endId} >= 0`,
+    ),
+  ],
+);
+
+/** Latest complete inbound head hint per authenticated publisher, for observation only. */
+export const federationFeedHeadReceipt = pgTable(
+  'FederationFeedHeadReceipt',
+  {
+    namespaceId: integer().primaryKey().notNull(),
+    stateFeedEndId: text().notNull(),
+    profileNamespaceFeedEndId: text().notNull(),
+    generatedAt: bigint({ mode: 'number' }).notNull(),
+    sentAt: bigint({ mode: 'number' }).notNull(),
+    receivedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'FederationFeedHeadReceipt_namespace_fkey',
+    }).onDelete('restrict'),
+    check(
+      'FederationFeedHeadReceipt_namespace_check',
+      sql`${table.namespaceId} > 0`,
+    ),
+    check(
+      'FederationFeedHeadReceipt_heads_check',
+      sql`${table.stateFeedEndId} ~ '^(0|[1-9][0-9]*)$' AND ${table.profileNamespaceFeedEndId} ~ '^(0|[1-9][0-9]*)$'`,
+    ),
+    check(
+      'FederationFeedHeadReceipt_times_check',
+      sql`${table.generatedAt} BETWEEN 0 AND 9007199254740991 AND ${table.sentAt} BETWEEN 0 AND 9007199254740991`,
+    ),
+  ],
+);
+
 /** One group-scoped Group Meta coordinate space. Local groups author it; remote groups mirror it. */
 export const groupMeta = pgTable(
   'GroupMeta',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
     threadId: integer().primaryKey().notNull(),
     /** Origin allocation end or mirror's last completely applied round cursor. */
     metaEndId: integer().default(0).notNull(),
     /** Profile revision carried by the GROUP_PROFILE item at the end coordinate.
      * Zero while the group has no profile revision yet. */
     profileRev: integer().default(0).notNull(),
-    /** Null feed id means the current announcement is unknown, not an explicit clear.
-     * A positive feed id with null text means the announcement was cleared. */
-    announcementFeedId: integer(),
-    announcementText: text(),
     /** Greatest meta feed end merged from committed State Feed items. */
     metaTargetId: integer().default(0).notNull(),
     /** Greatest source meta feed id durably scanned by meta rounds. */
@@ -1990,7 +2188,8 @@ export const groupMeta = pgTable(
     invitationEndId: integer().default(0).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     foreignKey({
@@ -2000,14 +2199,6 @@ export const groupMeta = pgTable(
     }).onDelete('cascade'),
     check('GroupMeta_metaEndId_check', sql`${table.metaEndId} >= 0`),
     check('GroupMeta_profileRev_check', sql`${table.profileRev} >= 0`),
-    check(
-      'GroupMeta_announcementFeedId_check',
-      sql`${table.announcementFeedId} IS NULL OR ${table.announcementFeedId} > 0`,
-    ),
-    check(
-      'GroupMeta_announcementText_check',
-      sql`${table.announcementText} IS NULL OR (${table.announcementFeedId} IS NOT NULL AND char_length(${table.announcementText}) BETWEEN 1 AND 4096)`,
-    ),
     check('GroupMeta_metaTargetId_check', sql`${table.metaTargetId} >= 0`),
     check(
       'GroupMeta_metaProcessedThroughId_check',
@@ -2031,9 +2222,9 @@ export const groupMeta = pgTable(
   ],
 );
 
-/** One current Group Meta operation per stable key on origins and mirrors. The subject
- * identity (account + namespaceId) lives inside `body` in the publisher's coordinate
- * space; it is deliberately not a local IdentityNamespace foreign key. */
+/** All current Group Meta facts, including the group-wide announcement. The legacy
+ * table name also covers group-profile facts. Subject namespaces inside body are
+ * publisher coordinates, not local IdentityNamespace foreign keys. */
 export const groupMetaMemberFeed = pgTable(
   'GroupMetaMemberFeed',
   {
@@ -2044,12 +2235,20 @@ export const groupMetaMemberFeed = pgTable(
     /** Backend-only member-message coordinate behind the currently published
      * profile revision. Null for an intent-initialized membership. */
     profileSourceSeq: integer(),
+    /** Direct source copy time; null for an origin-authored fact. */
+    originCreatedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
+    /** First local persistence of this feed coordinate, preserved during recovery. */
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -2063,6 +2262,22 @@ export const groupMetaMemberFeed = pgTable(
         sql`(${table.body} -> 'namespaceId')`,
       )
       .where(sql`${table.operation} <> 'GROUP_ANNOUNCEMENT'`),
+    uniqueIndex('GroupMetaMemberFeed_announcement_key')
+      .on(table.threadId)
+      .where(sql`${table.operation} = 'GROUP_ANNOUNCEMENT'`),
+    check(
+      'GroupMetaMemberFeed_announcement_check',
+      sql`${table.operation} <> 'GROUP_ANNOUNCEMENT' OR COALESCE(
+        ${table.body} ? 'text' AND (${table.body} - 'text') = '{}'::jsonb
+        AND (${table.body} -> 'text' = 'null'::jsonb OR (
+          jsonb_typeof(${table.body} -> 'text') = 'string'
+          AND char_length(${table.body} ->> 'text') BETWEEN 1 AND 4096)), false)`,
+    ),
+    check(
+      'GroupMetaMemberFeed_time_check',
+      sql`${table.createdAt} >= '1970-01-01'::timestamptz AND (
+        ${table.originCreatedAt} IS NULL OR ${table.originCreatedAt} >= '1970-01-01'::timestamptz)`,
+    ),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -2094,7 +2309,8 @@ export const profileNamespaceFeed = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     uniqueIndex('ProfileNamespaceFeed_feedId_key').on(table.feedId),
@@ -2104,6 +2320,10 @@ export const profileNamespaceFeed = pgTable(
       name: 'ProfileNamespaceFeed_namespace_fkey',
     }).onDelete('restrict'),
     check('ProfileNamespaceFeed_feedId_check', sql`${table.feedId} > 0`),
+    check(
+      'ProfileNamespaceFeed_namespace_check',
+      sql`${table.namespaceId} > 0`,
+    ),
   ],
 );
 
@@ -2122,7 +2342,8 @@ export const profileNamespaceChangeFeed = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -2145,6 +2366,13 @@ export const profileNamespaceChangeFeed = pgTable(
 export const profileNamespaceChangeFeedHead = pgTable(
   'ProfileNamespaceChangeFeedHead',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: integer().primaryKey().notNull(),
     endId: bigint({ mode: 'bigint' }).notNull().default(0n),
   },
@@ -2164,6 +2392,8 @@ export const profileNamespace = pgTable(
     profileNamespaceId: integer().notNull(),
     domain: varchar({ length: 63 }),
     rootPublicKey: varchar({ length: 44 }),
+    /** Publisher generation time of the cached binding; 0 for unresolved/local seeds. */
+    sourceGeneratedAt: bigint({ mode: 'number' }).default(0).notNull(),
     updateFeedId: bigint({ mode: 'bigint' })
       .default(sql`0`)
       .notNull(),
@@ -2180,7 +2410,8 @@ export const profileNamespace = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -2192,6 +2423,10 @@ export const profileNamespace = pgTable(
       foreignColumns: [identityNamespace.id],
       name: 'ProfileNamespace_publisher_fkey',
     }).onDelete('restrict'),
+    check(
+      'ProfileNamespace_source_time_check',
+      sql`${table.sourceGeneratedAt} BETWEEN 0 AND 9007199254740991`,
+    ),
     check(
       'ProfileNamespace_updateFeedId_check',
       sql`${table.updateFeedId} >= 0`,
@@ -2222,7 +2457,8 @@ export const profileNamespaceTombstone = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -2252,7 +2488,8 @@ export const profileTombstone = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -2279,6 +2516,9 @@ export const profileTombstone = pgTable(
 export const relationshipIntent = pgTable(
   'RelationshipIntent',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
     /** Current visible request round; protocol-only transitions may have none. */
     requestId: bigint({ mode: 'bigint' }),
     authorAccount: varchar({ length: 31 }).notNull(),
@@ -2294,11 +2534,17 @@ export const relationshipIntent = pgTable(
     messageEndSeq: integer().notNull(),
     tombstoneEndSeq: integer().notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
-    requestedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    /** Author's transition time, not this server's copy or row update time. */
+    statusChangedAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
     expiresAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -2345,7 +2591,11 @@ export const relationshipIntent = pgTable(
     check('RelationshipIntent_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
       'RelationshipIntent_expiry_check',
-      sql`(${table.status} = 'REQUESTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.requestedAt} AND ${table.expiresAt} <= ${table.requestedAt} + INTERVAL '7 days') OR (${table.status} = 'ACCEPTED' AND ${table.requestedAt} IS NOT NULL AND ${table.expiresAt} IS NULL) OR (${table.status} = 'REVOKED' AND ${table.expiresAt} IS NULL)`,
+      sql`(${table.status} = 'REQUESTED' AND ${table.expiresAt} IS NOT NULL AND ${table.expiresAt} > ${table.statusChangedAt} AND ${table.expiresAt} <= ${table.statusChangedAt} + INTERVAL '7 days') OR (${table.status} IN ('ACCEPTED', 'REVOKED') AND ${table.expiresAt} IS NULL)`,
+    ),
+    check(
+      'RelationshipIntent_statusChangedAt_check',
+      sql`${table.statusChangedAt} >= '1970-01-01'::timestamptz`,
     ),
   ],
 );
@@ -2355,6 +2605,9 @@ export const relationshipIntent = pgTable(
 export const relationshipPair = pgTable(
   'RelationshipPair',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     kind: varchar({ length: 16 }).notNull(),
     endpointAType: varchar({ length: 8 }).notNull(),
@@ -2372,7 +2625,8 @@ export const relationshipPair = pgTable(
     established: boolean().default(false).notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     unique('RelationshipPair_endpoints_key').on(
@@ -2458,7 +2712,8 @@ export const federationThreadHistoryGap = pgTable(
       .notNull(),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     unique('FederationThreadHistoryGap_threadId_id_key').on(
@@ -2498,6 +2753,9 @@ export const federationThreadHistoryGap = pgTable(
 export const federationThreadSyncState = pgTable(
   'FederationThreadSyncState',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
     threadId: integer().notNull(),
     namespaceId: integer().notNull(),
     /** Greatest message-query target merged from committed State Feed items. */
@@ -2518,7 +2776,8 @@ export const federationThreadSyncState = pgTable(
     activeGapId: bigint({ mode: 'bigint' }),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     primaryKey({
@@ -2573,15 +2832,17 @@ export const federationThreadSyncState = pgTable(
 export const loginCode = pgTable(
   'LoginCode',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: serial().primaryKey().notNull(),
     userId: integer().notNull(),
     codeHash: varchar({ length: 127 }).notNull(),
     issuedBy: integer().notNull(),
-    issuedAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }).notNull(),
     expiresAt: timestamp({
       precision: 3,
       withTimezone: true,
@@ -2611,6 +2872,10 @@ export const loginCode = pgTable(
 export const sessionToken = pgTable(
   'SessionToken',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: serial().primaryKey().notNull(),
     userId: integer().notNull(),
     tokenHash: varchar({ length: 127 }).notNull(),
@@ -2701,6 +2966,10 @@ export const sessionToken = pgTable(
 export const twoFactorBackupCode = pgTable(
   'TwoFactorBackupCode',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: serial().primaryKey().notNull(),
     adminId: integer().notNull(),
     codeHash: varchar({ length: 64 }).notNull(),
@@ -2728,6 +2997,10 @@ export const twoFactorBackupCode = pgTable(
 export const webAuthnCredential = pgTable(
   'WebAuthnCredential',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     id: serial().primaryKey().notNull(),
     adminId: integer().notNull(),
     credentialId: varchar({ length: 510 }).notNull(),
@@ -2764,6 +3037,10 @@ export const webAuthnCredential = pgTable(
 export const adminLoginChallenge = pgTable(
   'AdminLoginChallenge',
   {
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     jti: varchar({ length: 36 }).primaryKey().notNull(),
     adminId: integer().notNull(),
     consumedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
@@ -2802,7 +3079,10 @@ export const diagnosticsReport = pgTable(
       precision: 3,
       withTimezone: true,
       mode: 'date',
-    }).notNull(),
+    })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     isDeleted: boolean().default(false).notNull(),
   },
   (table) => [
@@ -2831,6 +3111,13 @@ export const diagnosticsReport = pgTable(
 export const forwardBundleDependency = pgTable(
   'ForwardBundleDependency',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     parentBundleId: bigint({ mode: 'bigint' }).notNull(),
     childBundleId: bigint({ mode: 'bigint' }).notNull(),
     ordinal: integer().notNull(),
@@ -2869,6 +3156,13 @@ export const forwardBundleDependency = pgTable(
 export const s2SKeyCache = pgTable(
   'S2SKeyCache',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     domain: varchar({ length: 63 }).notNull(),
     namespaceId: integer().notNull(),
     keyId: varchar({ length: 127 }).notNull(),
@@ -2887,9 +3181,6 @@ export const s2SKeyCache = pgTable(
       mode: 'date',
     }).notNull(),
     authorizationSignature: varchar({ length: 127 }).notNull(),
-    fetchedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
   },
   (table) => [
     primaryKey({
@@ -2904,197 +3195,86 @@ export const s2SKeyCache = pgTable(
   ],
 );
 
-export const quotaDailyUsage = pgTable(
-  'QuotaDailyUsage',
+export const federationQuotaPolicy = pgTable(
+  'FederationQuotaPolicy',
   {
-    namespaceId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    category: varchar({ length: 15 }).notNull(),
-    count: integer().default(0).notNull(),
+    nsid: integer().primaryKey().notNull(),
+    maxFileBytes: bigint({ mode: 'bigint' }),
+    dailyMsgLimit: integer(),
+    dailyRequestLimit: integer(),
+    dailySignalLimit: integer(),
+    dailyFileLimit: integer(),
+    dailyFileBytesLimit: bigint({ mode: 'bigint' }),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
-    index('QuotaDailyUsage_date_idx').using(
-      'btree',
-      table.date.asc().nullsLast().op('date_ops'),
-    ),
     foreignKey({
-      columns: [table.namespaceId],
+      columns: [table.nsid],
       foreignColumns: [identityNamespace.id],
-      name: 'QuotaDailyUsage_namespaceId_fkey',
+      name: 'FederationQuotaPolicy_nsid_fkey',
     }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.namespaceId, table.date, table.category],
-      name: 'QuotaDailyUsage_pkey',
-    }),
+    check(
+      'FederationQuotaPolicy_maxFileBytes_check',
+      sql`${table.maxFileBytes} IS NULL OR ${table.maxFileBytes} BETWEEN 0 AND 9007199254740991`,
+    ),
+    check(
+      'FederationQuotaPolicy_limits_check',
+      sql`(${table.dailyMsgLimit} IS NULL OR ${table.dailyMsgLimit} >= 0) AND (${table.dailyRequestLimit} IS NULL OR ${table.dailyRequestLimit} >= 0) AND (${table.dailySignalLimit} IS NULL OR ${table.dailySignalLimit} >= 0) AND (${table.dailyFileLimit} IS NULL OR ${table.dailyFileLimit} >= 0) AND (${table.dailyFileBytesLimit} IS NULL OR ${table.dailyFileBytesLimit} BETWEEN 0 AND 9007199254740991)`,
+    ),
   ],
 );
 
 export const userQuotaPolicy = pgTable(
   'UserQuotaPolicy',
   {
-    userId: integer().primaryKey().notNull(),
+    account: varchar({ length: 31 }).primaryKey().notNull(),
+    maxFileBytes: bigint({ mode: 'bigint' }),
     dailyMsgLimit: integer(),
     dailyRequestLimit: integer(),
-    // Quota circuit-breaker file dimensions (daily). All file types consolidate into a single file cnt + file
-    // total size; bundles count +1 file cnt and 0 bytes. null = use the global default.
+    dailySignalLimit: integer(),
     dailyFileLimit: integer(),
     dailyFileBytesLimit: bigint({ mode: 'bigint' }),
-    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'UserQuotaPolicy_userId_fkey',
+      columns: [table.account],
+      foreignColumns: [account.account],
+      name: 'UserQuotaPolicy_account_fkey',
     }).onDelete('cascade'),
-  ],
-);
-
-export const userQuotaDailyUsage = pgTable(
-  'UserQuotaDailyUsage',
-  {
-    userId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    category: varchar({ length: 15 }).notNull(),
-    count: integer().default(0).notNull(),
-  },
-  (table) => [
-    index('UserQuotaDailyUsage_date_idx').using(
-      'btree',
-      table.date.asc().nullsLast().op('date_ops'),
+    check(
+      'UserQuotaPolicy_maxFileBytes_check',
+      sql`${table.maxFileBytes} IS NULL OR ${table.maxFileBytes} BETWEEN 0 AND 9007199254740991`,
     ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'UserQuotaDailyUsage_userId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.userId, table.date, table.category],
-      name: 'UserQuotaDailyUsage_pkey',
-    }),
-  ],
-);
-
-/**
- * Daily file-total-size accumulator for a federated peer (bigint — count tables above are integer). One row per
- * (namespaceId, UTC day). The file-cnt dimension reuses QuotaDailyUsage with category 'files'; the byte
- * dimension lives here because byte totals exceed integer range. Drives the per-namespace circuit breaker.
- */
-export const quotaFileByteUsage = pgTable(
-  'QuotaFileByteUsage',
-  {
-    namespaceId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    bytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-  },
-  (table) => [
-    index('QuotaFileByteUsage_date_idx').using(
-      'btree',
-      table.date.asc().nullsLast().op('date_ops'),
+    check(
+      'UserQuotaPolicy_limits_check',
+      sql`(${table.dailyMsgLimit} IS NULL OR ${table.dailyMsgLimit} >= 0) AND (${table.dailyRequestLimit} IS NULL OR ${table.dailyRequestLimit} >= 0) AND (${table.dailySignalLimit} IS NULL OR ${table.dailySignalLimit} >= 0) AND (${table.dailyFileLimit} IS NULL OR ${table.dailyFileLimit} >= 0) AND (${table.dailyFileBytesLimit} IS NULL OR ${table.dailyFileBytesLimit} BETWEEN 0 AND 9007199254740991)`,
     ),
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'QuotaFileByteUsage_namespaceId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.namespaceId, table.date],
-      name: 'QuotaFileByteUsage_pkey',
-    }),
-  ],
-);
-
-/**
- * Daily file-total-size accumulator for a local user (bigint). One row per (userId, UTC day). Drives the per-user
- * circuit breaker. See src/quota/user-quota.service.ts.
- */
-export const userQuotaFileByteUsage = pgTable(
-  'UserQuotaFileByteUsage',
-  {
-    userId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    bytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-  },
-  (table) => [
-    index('UserQuotaFileByteUsage_date_idx').using(
-      'btree',
-      table.date.asc().nullsLast().op('date_ops'),
-    ),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'UserQuotaFileByteUsage_userId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.userId, table.date],
-      name: 'UserQuotaFileByteUsage_pkey',
-    }),
-  ],
-);
-
-/**
- * Admin "continue / add quota": a per-(namespaceId, UTC-day) ADDITIVE allowance on top of the base limit.
- * The effective breaker limit for today = base (override ?? default) + extra*. Persisted across restarts;
- * auto-resets via the date key.
- */
-export const quotaDailyAllowance = pgTable(
-  'QuotaDailyAllowance',
-  {
-    namespaceId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    extraMsg: integer().default(0).notNull(),
-    extraFile: integer().default(0).notNull(),
-    extraFileBytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'QuotaDailyAllowance_namespaceId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.namespaceId, table.date],
-      name: 'QuotaDailyAllowance_pkey',
-    }),
-  ],
-);
-
-/** Per-(userId, UTC-day) additive allowance — local-user counterpart of QuotaDailyAllowance. */
-export const userQuotaDailyAllowance = pgTable(
-  'UserQuotaDailyAllowance',
-  {
-    userId: integer().notNull(),
-    date: date({ mode: 'date' }).notNull(),
-    extraMsg: integer().default(0).notNull(),
-    extraFile: integer().default(0).notNull(),
-    extraFileBytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [account.id],
-      name: 'UserQuotaDailyAllowance_userId_fkey',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.userId, table.date],
-      name: 'UserQuotaDailyAllowance_pkey',
-    }),
   ],
 );
 
 export const forwardBundleAsset = pgTable(
   'ForwardBundleAsset',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     bundleId: bigint({ mode: 'bigint' }).notNull(),
     digest: varchar({ length: 64 }).notNull(),
     ordinal: integer().notNull(),
@@ -3129,6 +3309,13 @@ export const forwardBundleAsset = pgTable(
 export const callHistory = pgTable(
   'CallHistory',
   {
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+      .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
     key: text().primaryKey(),
     threadId: integer()
       .notNull()

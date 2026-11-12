@@ -18,18 +18,18 @@ import {
   ConnectionState,
 } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
-import { IndicatorSlotService } from '../../services/indicator-slot.service';
 import { prefersReducedMotion, springGradient } from '../../lib/motion-utils';
+import { SessionStartupService } from '../../services/session-startup.service';
 import { statusRingTemplate } from '../../lib/status-ring';
 
-/** The rendered visual state of the chip. `closed` is only surfaced when a `demoState` override is set
- *  (the playground); in production `closed` = logged out and the shell navigates away, so it stays hidden. */
-type ConnVisual = 'connecting' | 'reconnecting' | 'recovered' | 'closed';
+/** Visual states shared by startup recovery, live connectivity, and playground previews. */
+type ConnVisual = 'restoring' | 'connecting' | 'reconnecting' | 'recovered' | 'closed';
 
 /** Per-state palette, expressed as the names of the registered `<color>` CSS vars (--c-*) that hold the
  *  theme-aware concrete colors. {@link ConnectionBannerComponent.morphTo} resolves them at runtime via
  *  getComputedStyle, so Motion receives interpolable rgb() targets without this component knowing the theme. */
 const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
+  restoring: { from: '--c-restore-1', to: '--c-restore-2', ic: '--c-restore' },
   connecting: { from: '--c-amber-1', to: '--c-amber-2', ic: '--c-amber' },
   reconnecting: { from: '--c-amber-2', to: '--c-amber-1', ic: '--c-amber' },
   recovered: { from: '--c-green-1', to: '--c-green-2', ic: '--c-green' },
@@ -158,6 +158,9 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
           var(--app-danger) 32%,
           var(--app-surface)
         );
+        --c-restore-1: color-mix(in srgb, var(--app-action-primary) 16%, var(--app-surface));
+        --c-restore-2: color-mix(in srgb, var(--app-action-primary) 30%, var(--app-surface));
+        --c-restore: var(--app-action-primary);
         --c-amber: var(--app-warning);
         --c-green: var(--app-success);
         --c-red: var(--app-danger);
@@ -284,6 +287,7 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
       }
       /* Resting shape visibility, keyed off the chip's [data-state] binding — the single source of truth for
        which icon is shown. CSS owns this (and the transition into it); Motion owns only the gradient morph. */
+      .chip[data-state='restoring'] .spin,
       .chip[data-state='connecting'] .spin,
       .chip[data-state='reconnecting'] .spin {
         opacity: 1;
@@ -403,6 +407,8 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
   ],
 })
 export class ConnectionBannerComponent implements OnDestroy {
+  private readonly startup = inject(SessionStartupService);
+  private readonly restoring = computed(() => this.demoState() === null && this.startup.restoring());
   private readonly ws = inject(WebsocketService);
   private readonly transloco = inject(TranslocoService);
   /** CDK LiveAnnouncer: proactively voices connection-state transitions to assistive tech — more reliable
@@ -411,9 +417,6 @@ export class ConnectionBannerComponent implements OnDestroy {
    *  aria-hidden visible text, never announced per-second). */
   private readonly liveAnnouncer = inject(LiveAnnouncer);
   private readonly language = inject(LanguageService);
-  /** The top-center indicator slot — this component is its PRIORITY occupant. While visible, it occupies
-   *  the slot so the lower-priority update banner defers (and shows once the chip clears, if still wanted). */
-  private readonly slot = inject(IndicatorSlotService);
 
   /** Optional playground override: when non-null, the chip renders this state instead of the live
    *  WebsocketService signal — the chatbox playground's "Connection status" control uses it to preview
@@ -456,6 +459,7 @@ export class ConnectionBannerComponent implements OnDestroy {
    *  `disconnected` (OS offline) reuses the `reconnecting` amber visual — it's still transient connection
    *  trouble worth surfacing expanded — but its label is the static "no network" message (no countdown). */
   readonly show = computed<ConnVisual | undefined>(() => {
+    if (this.restoring()) return this.startup.failed() ? 'closed' : 'restoring';
     if (this.recovering()) return 'recovered';
     const s = this.effState();
     if (s === 'connecting' || s === 'reconnecting' || s === 'disconnected')
@@ -470,6 +474,7 @@ export class ConnectionBannerComponent implements OnDestroy {
    *  {@link label} (which overlays the ticking number). Re-evaluates on language switch. */
   readonly stateMessage = computed(() => {
     this.language.lang();
+    if (this.restoring()) return this.transloco.translate(this.startup.failed() ? 'auth.notice.localCacheUnavailable' : 'connection.restoring');
     switch (this.effState()) {
       case 'connecting':
         return this.transloco.translate('connection.connecting');
@@ -491,6 +496,12 @@ export class ConnectionBannerComponent implements OnDestroy {
    *  {@link stateMessage}. Re-evaluates on language switch and on every countdown tick. */
   readonly label = computed(() => {
     this.language.lang();
+    if (this.restoring()) {
+      const ms = this.startup.retryIn();
+      return ms != null && ms > 0
+        ? this.transloco.translate('connection.restoringIn', { s: Math.ceil(ms / 1000) })
+        : this.stateMessage();
+    }
     if (this.effState() !== 'reconnecting') return this.stateMessage();
     // Live countdown: render "reconnecting in Ns" when a backoff deadline is known (>0). Fall back to the
     // plain "reconnecting" message for the brief pre-emit gap, the dead-worker respawn window, and the
@@ -509,7 +520,7 @@ export class ConnectionBannerComponent implements OnDestroy {
     // Non-ticking base ({@link stateMessage}) so the accessible name is stable across countdown ticks; in
     // `reconnecting` the click is a retry trigger, conveyed as part of the name.
     const base = this.stateMessage();
-    return this.effState() === 'reconnecting'
+    return (this.restoring() ? this.startup.retryIn() !== null : this.effState() === 'reconnecting')
       ? `${base}. ${this.transloco.translate('connection.retry')}`
       : base;
   });
@@ -519,6 +530,16 @@ export class ConnectionBannerComponent implements OnDestroy {
        driver while reconnecting. Reading effState() here is the single reactive input; writes go to
        independent signals. */
     effect(() => {
+      if (this.restoring()) {
+        this.wasReconnecting = false;
+        this.recovering.set(false);
+        clearTimeout(this.recoverTimer);
+        this.expanded.set(true);
+        this.liveAnnouncer.announce(this.transloco.translate(
+          this.startup.failed() ? 'auth.notice.localCacheUnavailable' : 'connection.restoring',
+        ));
+        return;
+      }
       const s: ConnectionState = this.effState();
       if (s === 'reconnecting' || s === 'disconnected') {
         // The failure mode this component exists for — STAY expanded so the live countdown (reconnecting) /
@@ -560,11 +581,6 @@ export class ConnectionBannerComponent implements OnDestroy {
       this.morphTo(s);
     });
 
-    /* Report visibility to the indicator slot so the lower-priority update banner can defer while this
-       chip is showing (and surface once it clears). show() is the single source of chip visibility. */
-    effect(() => {
-      this.slot.priorityOccupied.set(!!this.show());
-    });
   }
 
   /** Spring the gradient stops + icon color to the new state's palette. The icon shapes' visibility and
@@ -600,7 +616,10 @@ export class ConnectionBannerComponent implements OnDestroy {
    *  resetting (the next failure emits a fresh, small deadline) or the recover flourish firing on success
    *  (which collapses it). In the other shown states the click just toggles the pill open/closed. */
   onClick(): void {
-    if (this.effState() === 'reconnecting') {
+    if (this.restoring()) {
+      if (this.startup.retryIn() !== null) this.startup.retryNow();
+      else this.expanded.update((v) => !v);
+    } else if (this.effState() === 'reconnecting') {
       this.ws.retryNow();
     } else {
       this.expanded.update((v) => !v);
@@ -635,6 +654,5 @@ export class ConnectionBannerComponent implements OnDestroy {
   ngOnDestroy(): void {
     this.controls.forEach((c) => c.stop());
     clearTimeout(this.recoverTimer);
-    this.slot.priorityOccupied.set(false); // release the indicator slot so a deferred update can show
   }
 }

@@ -48,6 +48,89 @@ describe('concurrent federation key-cache replacement', () => {
     }
   });
 
+  it('persists discovery metadata atomically and never accepts it from a mismatched identity', async () => {
+    const domain = 'metadata.test';
+    const root = createHash('sha256').update(domain).digest('base64');
+    const [namespace] = await database.db
+      .insert(tables.identityNamespace)
+      .values({
+        domain,
+        rootPublicKey: root,
+        signingKeyCreatedAt: 1700000000000,
+        identityPinnedAt: new Date(),
+        active: true,
+      })
+      .returning();
+    expect(namespace.signingKeyCreatedAt).toBe(1700000000000);
+    const document: WellKnownDoc = {
+      protocolVersions: [1],
+      signingKeyCreatedAt: 1700000000123,
+      roots: [{ ed25519: root, notBefore: 0, notAfter: 253402300799999 }],
+      keys: [
+        {
+          keyId: `${domain}/current`,
+          ed25519: root,
+          root,
+          notBefore: 1700000000000,
+          notAfter: 253402300799999,
+          authorizationSignature: Buffer.alloc(64).toString('base64'),
+        },
+      ],
+    };
+    const read = () =>
+      database.db.query.identityNamespace.findFirst({
+        where: eq(tables.identityNamespace.id, namespace.id),
+      });
+    await discovery.cacheDocument(domain, namespace.id, document);
+    expect((await read())!.signingKeyCreatedAt).toBe(1700000000123);
+    // Refreshes replace rather than maximize the timestamp: clock corrections
+    // and a different active key can produce an earlier creation time.
+    await discovery.cacheDocument(domain, namespace.id, {
+      ...document,
+      signingKeyCreatedAt: 1000,
+    });
+    expect((await read())!.signingKeyCreatedAt).toBe(1000);
+    // A failed cache insertion must also roll back the metadata replacement.
+    await expect(
+      discovery.cacheDocument(domain, namespace.id, {
+        ...document,
+        keys: [document.keys[0], document.keys[0]],
+      }),
+    ).rejects.toThrow();
+    expect((await read())!.signingKeyCreatedAt).toBe(1000);
+    await expect(
+      discovery.cacheDocument(domain, namespace.id, {
+        ...document,
+        roots: [],
+      }),
+    ).rejects.toThrow();
+    expect((await read())!.signingKeyCreatedAt).toBe(1000);
+    const { signingKeyCreatedAt: _createdAt, ...missingTime } = document;
+    await expect(
+      discovery.cacheDocument(
+        domain,
+        namespace.id,
+        missingTime as WellKnownDoc,
+      ),
+    ).rejects.toThrow();
+    expect((await read())!.signingKeyCreatedAt).toBe(1000);
+    for (const signingKeyCreatedAt of [
+      0,
+      -1,
+      Number.MAX_SAFE_INTEGER + 1,
+      null,
+    ]) {
+      await expect(
+        database.db
+          .update(tables.identityNamespace)
+          .set({
+            signingKeyCreatedAt: signingKeyCreatedAt as number,
+          })
+          .where(eq(tables.identityNamespace.id, namespace.id)),
+      ).rejects.toThrow();
+    }
+  });
+
   it.each([false, true])(
     'completes overlapping refreshes with existing cache=%s',
     async (populated) => {
@@ -60,6 +143,7 @@ describe('concurrent federation key-cache replacement', () => {
         .values({
           domain,
           rootPublicKey: root,
+          signingKeyCreatedAt: 1700000000000,
           identityPinnedAt: new Date(),
           active: true,
           trustLevel: 'available',
@@ -70,6 +154,9 @@ describe('concurrent federation key-cache replacement', () => {
         .returning();
       const document = (ids: string[]): WellKnownDoc => ({
         protocolVersions: [1],
+        signingKeyCreatedAt: ids.includes('next')
+          ? 1700000000123
+          : 1600000000123,
         roots: [
           {
             ed25519: root,
@@ -126,6 +213,11 @@ describe('concurrent federation key-cache replacement', () => {
           .select()
           .from(tables.s2SKeyCache)
           .where(eq(tables.s2SKeyCache.namespaceId, namespace.id));
+        expect(
+          (await database.db.query.identityNamespace.findFirst({
+            where: eq(tables.identityNamespace.id, namespace.id),
+          }))!.signingKeyCreatedAt,
+        ).toBe(1700000000123);
         expect(keys.map(({ keyId }) => keyId).sort()).toEqual([
           `${domain}/current`,
           `${domain}/next`,

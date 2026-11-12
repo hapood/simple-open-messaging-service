@@ -3,6 +3,7 @@ import {
   IsArray,
   IsIn,
   IsInt,
+  IsISO8601,
   IsNotEmpty,
   IsNumber,
   IsObject,
@@ -179,9 +180,9 @@ export class AdminListUsersDto {
 }
 
 /** Admin create-user input. The admin provisions an account the user later signs into via whichever login
- *  method is enabled. `password` is required only when password login is enabled (loginMode ALL /
- *  PASSWORD_ONLY); for an OTP/QR-only account (loginMode APP_OTP_AND_QR) it is omitted and the account is
- *  created with NO password, bootstrapped instead by the one-time code the admin issues next. */
+ *  method is enabled. `password` is required only when `password` is among the enabled login methods
+ * (GET /config `loginMethods`); otherwise it is omitted and the account is created with NO password,
+ * bootstrapped instead by the one-time code the admin issues next. */
 export class AdminCreateUserDto {
   @ApiProperty({
     example: 'alice',
@@ -199,7 +200,7 @@ export class AdminCreateUserDto {
     required: false,
     example: 'P@ssw0rd',
     description:
-      'Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.',
+      'Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (GET /config loginMethods includes password); omitted otherwise.',
   })
   @IsOptional()
   @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
@@ -325,6 +326,14 @@ export class AdminListSessionsDto {
   ip?: string;
 }
 
+/** User credential filters are separate from administrator-session filters. */
+export class AdminListUserSessionsDto extends AdminListSessionsDto {
+  @ApiPropertyOptional({ enum: ['app', 'web', 'desktop'] })
+  @IsOptional()
+  @IsIn(['app', 'web', 'desktop'])
+  client?: 'app' | 'web' | 'desktop';
+}
+
 /** Pagination + filter for the Federation v1 recognition lifecycle list. */
 export class AdminListFederationPeersDto {
   @ApiProperty({
@@ -416,8 +425,22 @@ export class AdminFederationIdentityRecoverDto {
 }
 
 /** Per-peer daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
- *  field means "use the global default". Stored on IdentityNamespace. See QuotaService.setLimits. */
+ *  field means "use the global default". Stored in the scope's quota policy table. */
 export class AdminSetQuotaDto {
+  @ApiPropertyOptional({
+    type: Number,
+    description:
+      'Maximum bytes per attachment; null inherits, zero disables new attachments.',
+    minimum: 0,
+    maximum: Number.MAX_SAFE_INTEGER,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  maxFileBytes?: number | null;
+
   @ApiProperty({
     required: false,
     example: 5000,
@@ -437,6 +460,16 @@ export class AdminSetQuotaDto {
   @IsInt()
   @Min(0)
   dailyRequestLimit?: number | null;
+
+  @ApiPropertyOptional({
+    minimum: 0,
+    description: 'Daily call budget (null = default)',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  dailySignalLimit?: number | null;
 
   @ApiProperty({
     required: false,
@@ -472,6 +505,18 @@ export class AdminContinueQuotaDto {
   @IsInt()
   @Min(0)
   addMsg?: number;
+
+  @ApiPropertyOptional({ minimum: 0 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  addRequest?: number;
+
+  @ApiPropertyOptional({ minimum: 0 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  addSignal?: number;
 
   @ApiProperty({
     required: false,
@@ -517,13 +562,26 @@ export class AdminAuditQueryDto {
   })
   @IsOptional()
   @IsString()
+  @MaxLength(64)
   action?: string;
 
   @ApiPropertyOptional({ description: 'Scope to one actor' })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
+  @Min(1)
+  @Max(2147483647)
   adminId?: number;
+
+  @ApiPropertyOptional({ description: 'Inclusive ISO 8601 start time' })
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Exclusive ISO 8601 end time' })
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  to?: string;
 
   @ApiPropertyOptional({
     enum: ['STARTED', 'SUCCEEDED', 'FAILED'],
@@ -532,6 +590,13 @@ export class AdminAuditQueryDto {
   @IsOptional()
   @IsIn(['STARTED', 'SUCCEEDED', 'FAILED'])
   status?: 'STARTED' | 'SUCCEEDED' | 'FAILED';
+}
+
+export class AdminAuditDetailDto {
+  @ApiProperty({ description: 'Audit record ID as a decimal string' })
+  @IsString()
+  @Matches(/^[1-9]\d{0,18}$/)
+  id!: string;
 }
 
 /** Durable-task history query. Search covers task type and scope key; status is exact. */
@@ -585,31 +650,6 @@ export class AdminDurableTaskQueryDto {
     | 'REJECTED'
     | 'FAILED'
     | 'SUPERSEDED';
-}
-
-/** Admin self-management: paginated, searchable list of admin accounts. */
-export class AdminManageListDto {
-  @ApiPropertyOptional({ default: 0 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  skip?: number;
-
-  @ApiPropertyOptional({ default: 50, minimum: 1, maximum: 200 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(200)
-  take?: number;
-
-  @ApiPropertyOptional({
-    description: 'Fuzzy search by linked user account (optional)',
-  })
-  @IsOptional()
-  @IsString()
-  search?: string;
 }
 
 /** Super-admin access cannot be granted through account-management APIs. */

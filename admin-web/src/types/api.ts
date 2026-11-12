@@ -76,6 +76,9 @@ export interface WebAuthnLoginBegin {
 
 // User row (backend no longer exposes hashPwd; Date fields are serialized to ms-epoch numbers by the global interceptor)
 export interface User {
+  adminId?: number | null;
+  adminEnabled?: boolean | null;
+  adminTwoFactorEnabled?: boolean | null;
   /** Present even when the associated admin access is disabled. */
   adminRole?: AdminRole | null;
   id: number;
@@ -99,8 +102,7 @@ export interface UserListResult {
 }
 
 // Active sessions of a user (POST /admin/users/:id/sessions + embedded in the 360° detail).
-// SessionToken rows: client is 'app' | 'web' | 'desktop'; expiresAt is null for trusted (permanent)
-// devices whose token lives in OS secure storage (flagged by `trusted`).
+// Every client has a sliding inactivity deadline and a user-selected timeout in days.
 export interface Session {
   id: number;
   client: string;
@@ -110,8 +112,8 @@ export interface Session {
   lastSeenIp: string | null;
   createdAt: number;
   lastSeenAt: number;
-  expiresAt: number | null;
-  trusted: boolean;
+  expiresAt: number;
+  autoTerminateDays: number;
 }
 
 // Admin-issued one-time login codes (POST /admin/users/:id/login-codes + issue-login-code).
@@ -120,7 +122,7 @@ export interface Session {
 // Dates are ms-epoch numbers (global interceptor serializes backend Date → number).
 export interface LoginCodeView {
   id: number;
-  issuedAt: number;
+  createdAt: number;
   expiresAt: number;
   consumedAt: number | null;
   consumedIp: string | null;
@@ -134,18 +136,8 @@ export interface IssuedLoginCode extends LoginCodeView {
 }
 
 // System-wide active session overview entry (POST /admin/sessions; joins user for the account)
-interface SessionListItem {
-  id: number;
+interface SessionListItem extends Session {
   userId: number;
-  client: string;
-  device: string | null;
-  userAgent: string | null;
-  ip: string | null;
-  lastSeenIp: string | null;
-  createdAt: number;
-  lastSeenAt: number;
-  expiresAt: number | null;
-  trusted: boolean;
   user: { id: number; account: string } | null;
 }
 
@@ -156,6 +148,7 @@ export interface SessionListResult {
 
 // Admin active session entry (POST /admin/admin-sessions; joins Admin for the account; no device field)
 interface AdminSessionListItem {
+  canRevoke: boolean;
   isCurrent: boolean;
   adminId: number;
   id: string;
@@ -175,8 +168,10 @@ export interface AdminSessionListResult {
 // Active login ban entry (POST /admin/bans; type is the locked login surface — IP / password-account /
 // one-time-code-account, the brute-force dimensions shared across login methods)
 export interface Ban {
+  /** Exact local-person match; IP restrictions and unknown accounts have no user. */
+  userId: number | null;
   key: string;
-  type: 'ip' | 'user' | 'otp';
+  type: 'ip' | 'user' | 'otp' | 'admin_pwd' | 'admin_2fa';
   value: string;
   until: number;
   remainingMs: number;
@@ -230,14 +225,43 @@ export type FederationTrustLevel =
   | 'halted';
 
 export interface FederationFeedProgress {
+  lastHandshakeAt: number | null;
+  latestHealthCheck: FederationHealthObservation | null;
   namespaceId: number;
   outboundStateFeedEndId: string;
   inboundStateFeedPulledThrough: string | null;
-  remoteProfileNamespaceFeedEndId: string;
+  stateFeedSourceGeneratedAt: number;
+  profileNamespaceFeedSourceGeneratedAt: number;
   inboundProfileNamespaceFeedPulledThrough: string;
 }
 
+export interface FederationFeedHeadReceipt {
+  namespaceId: number;
+  stateFeedEndId: string;
+  profileNamespaceFeedEndId: string;
+  generatedAt: number;
+  sentAt: number;
+  receivedAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FederationHealthObservation {
+  namespaceId: number;
+  domain: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status: 'available' | 'degraded' | 'unavailable' | null;
+  error: string | null;
+  source: 'automatic' | 'manual';
+}
+
 export interface FederationPeerState {
+  rootPublicKey: string | null;
+  identityPinnedAt: number | null;
+  peerAssignedLocalNamespaceId: number | null;
+  signingKeyCreatedAt: number;
   domain: string;
   trustLevel: FederationTrustLevel;
   addedBy: string | null;
@@ -256,6 +280,7 @@ export interface FederationPeerState {
   localServiceAvailable: boolean;
   remoteServiceReachable: boolean;
   feedProgress: FederationFeedProgress;
+  latestFeedHeadReceipt: FederationFeedHeadReceipt | null;
 }
 
 export interface FederationPeerStateListResult {
@@ -340,18 +365,26 @@ export interface FederationRecognizeResult {
 }
 
 // ─── Federated peer daily quotas (POST /admin/quota/nodes) ───
-export type QuotaCategory = 'messages' | 'files' | 'requests';
+export type QuotaDimension =
+  | 'messages'
+  | 'files'
+  | 'requests'
+  | 'signals'
+  | 'fileBytes';
+export type QuotaCountDimension = Exclude<QuotaDimension, 'fileBytes'>;
 
 /** Per-entity override set (null/absent = use the global default). */
 export interface QuotaOverrides {
+  maxFileBytes?: number | null;
   dailyMsgLimit?: number | null;
   dailyRequestLimit?: number | null;
+  dailySignalLimit?: number | null;
   dailyFileLimit?: number | null;
   dailyFileBytesLimit?: number | null;
 }
 
 /** Today's usage for one category (count against the effective limit). */
-interface QuotaCategoryUsage {
+interface QuotaCountDimensionUsage {
   count: number;
   limit: number;
 }
@@ -362,19 +395,24 @@ export interface QuotaNode {
   namespaceId: number;
   trustLevel: FederationTrustLevel;
   overrides: QuotaOverrides;
-  usage: Record<QuotaCategory, QuotaCategoryUsage>;
+  usage: Record<QuotaCountDimension, QuotaCountDimensionUsage>;
+  breaker: BreakerStatus;
 }
 
 /** One entity's circuit-breaker snapshot (msg cnt / file cnt / file total size). `fileBytes.bytes` is a
  *  decimal string because file-total-size is a backend bigint that can exceed JS safe-integer range. */
 export interface BreakerStatus {
+  maxFileBytes: number;
   entity: string;
   scope: 'peer' | 'user';
+  userId?: number;
   tripped: boolean;
-  trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
+  trippedDims: QuotaDimension[];
   retryAfter: number;
   msg: { count: number; limit: number };
   file: { count: number; limit: number };
+  requests: { count: number; limit: number };
+  signals: { count: number; limit: number };
   fileBytes: { bytes: string; limit: number };
 }
 
@@ -387,6 +425,8 @@ export interface Breakers {
 /** Additive daily quota bump for the "continue" action (bytes, before the backend BigInt conversion). */
 export interface ContinueQuotaInput {
   addMsg?: number;
+  addRequest?: number;
+  addSignal?: number;
   addFile?: number;
   addFileBytes?: number;
 }
@@ -406,6 +446,9 @@ export interface MeResult {
 // ── User 360° detail (POST /admin/users/:id/detail) ──────────────────────────
 interface UserDetailUser {
   adminRole?: AdminRole | null;
+  adminEnabled: boolean | null;
+  adminTwoFactorEnabled: boolean | null;
+  adminLastLoginAt: number | null;
   id: number;
   account: string;
   name: string;
@@ -442,10 +485,11 @@ export interface UserDetail {
 
 export interface UserQuotaState {
   overrides: QuotaOverrides;
-  usage: Record<QuotaCategory, QuotaCategoryUsage>;
+  usage: Record<QuotaCountDimension, QuotaCountDimensionUsage>;
   breaker: {
+    maxFileBytes: number;
     tripped: boolean;
-    trippedDims: Array<'msg' | 'file' | 'fileBytes'>;
+    trippedDims: QuotaDimension[];
     msg: { count: number; limit: number };
     file: { count: number; limit: number };
     fileBytes: { bytes: string; limit: number };
@@ -473,11 +517,24 @@ interface DashboardAction {
   status: 'STARTED' | 'SUCCEEDED' | 'FAILED';
   errorMessage: string | null;
   ip: string | null;
-  at: number;
+  createdAt: number;
+}
+
+export interface DashboardTasks {
+  processing: number;
+  pending: number;
+  failed: number;
+}
+
+export interface DashboardTransfers {
+  activeUploads: number;
+  activeDownloads: number;
+  failedTransfers: number;
 }
 
 export interface DashboardSummary {
   online: { totalConnections: number; uniqueUsers: number };
+  totalUsers: number;
   activeSessions: number;
   federation: DashboardFederation;
   media: {
@@ -486,6 +543,8 @@ export interface DashboardSummary {
     live: number;
     deleted: number;
   };
+  tasks: DashboardTasks;
+  transfers: DashboardTransfers;
   recentActions: DashboardAction[];
 }
 
@@ -505,7 +564,9 @@ interface DurableTaskEntry {
   scopeType: 'USER_PAIR' | 'GROUP';
   scopeKey: string;
   taskType: string;
-  actorUserId: number | null;
+  /** Account on whose authority the task runs; '$system' marks the reserved system identity. */
+  actorUserId: number;
+  actorAccount: string | null;
   payload: Record<string, unknown>;
   checkpoint: Record<string, unknown>;
   coalescingKey: string | null;
@@ -519,37 +580,6 @@ interface DurableTaskEntry {
 
 export interface DurableTaskListResult {
   list: DurableTaskEntry[];
-  total: number;
-}
-
-// ── Media storage (POST /admin/media/stats) ──────────────────────────────────
-// BigInt byte sums are serialized to strings by the global interceptor.
-export interface MediaStats {
-  db: {
-    bytes: string;
-    assetCount: number;
-    live: number;
-    deleted: number;
-  };
-  onDisk: { files: number; bytes: string };
-}
-
-// ── Admin self-management (POST /admin/admins*) ──────────────────────────────
-export interface AdminAccount {
-  id: number;
-  userId: number;
-  account: string;
-  name: string;
-  role: AdminRole;
-  enabled: boolean;
-  twoFactorEnabled: boolean;
-  lastLoginAt: number | null;
-  lastLoginIp: string | null;
-  createdAt: number;
-}
-
-export interface AdminListResult {
-  list: AdminAccount[];
   total: number;
 }
 
@@ -587,7 +617,9 @@ export interface ServerKeyStatus {
     | 'two-factor'
     | 'firebase-service-account';
   kind: 'asymmetric' | 'symmetric' | 'external';
-  configured: boolean;
+  filePath?: string;
+  databaseTable?: string;
+  configured?: boolean;
   valid?: boolean;
   available?: boolean;
   reason?: string;
@@ -605,6 +637,7 @@ export interface ServerKeyStatus {
  *  needed for the admin display — parallel to the VAPID descriptor omitting privateKey).
  *  projectId/appId/gcmSenderId are shown as proof of which Firebase project is configured. */
 interface FirebaseConfigDescriptor {
+  filePath?: string;
   configured: boolean;
   projectId?: string;
   appId?: string;
@@ -613,6 +646,7 @@ interface FirebaseConfigDescriptor {
 
 /** Response of /admin/settings — the Settings page's read model. */
 export interface AdminSettings {
+  configurationDirectory?: string;
   vapid: VapidDescriptor;
   firebase: FirebaseConfigDescriptor;
   /** FCM SEND transport configured (data/firebase-service-account.json loaded server-side). */
@@ -633,18 +667,20 @@ export interface AdminSettings {
   federationTransport: {
     keyCacheTtlSec: number;
     connectTimeoutSec: number;
-    callTimeoutSec: number;
+    requestIdleTimeoutSec: number;
     mediaChunkBytes: number;
-    mediaChunkTimeoutSec: number;
     mediaMaxChunkRetries: number;
   };
   userQuotaDefaults: {
+    maxFileBytes: number;
     dailyMsgLimit: number;
     dailyRequestLimit: number;
+    dailySignalLimit: number;
     dailyFileLimit: number;
-    dailyFileBytesLimit: string;
+    dailyFileBytesLimit: number;
   };
   federationQuotaDefaults: {
+    maxFileBytes: number;
     dailyMsgLimit: number;
     dailyRequestLimit: number;
     dailySignalLimit: number;

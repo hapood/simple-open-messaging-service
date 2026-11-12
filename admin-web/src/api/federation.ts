@@ -11,6 +11,14 @@ import type {
   LocalFederationRootUnpublishResult,
 } from '@/types/api';
 
+export function probeFederationHealth(
+  namespaceId: number,
+): Promise<FederationPeerState> {
+  return request<FederationPeerState>('/admin/federation/health/probe', {
+    namespaceId,
+  });
+}
+
 export interface FederationPeersQuery {
   skip?: number;
   take?: number;

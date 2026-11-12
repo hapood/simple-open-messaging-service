@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { DurableTaskAdminController } from './durable-task-admin.controller.js';
+import { account, durableTask } from '../database/schema.js';
 
 describe('DurableTaskAdminController', () => {
-  it('returns newest tasks with pagination metadata', async () => {
+  it('returns newest tasks with pagination metadata and actor kind', async () => {
     const task = {
       id: 9n,
       taskType: 'DISBAND_GROUP',
@@ -10,14 +12,17 @@ describe('DurableTaskAdminController', () => {
       scopeKey: 'GROUP:!example@local',
       status: 'SUCCEEDED',
     };
+    const row = { ...task, actorAccount: 'owner@local' };
     const listQuery = {
       from: vi.fn(),
+      leftJoin: vi.fn(),
       where: vi.fn(),
       orderBy: vi.fn(),
       offset: vi.fn(),
-      limit: vi.fn().mockResolvedValue([task]),
+      limit: vi.fn().mockResolvedValue([row]),
     };
     listQuery.from.mockReturnValue(listQuery);
+    listQuery.leftJoin.mockReturnValue(listQuery);
     listQuery.where.mockReturnValue(listQuery);
     listQuery.orderBy.mockReturnValue(listQuery);
     listQuery.offset.mockReturnValue(listQuery);
@@ -39,8 +44,12 @@ describe('DurableTaskAdminController', () => {
 
     await expect(
       controller.list({ skip: 10, take: 25, status: 'SUCCEEDED' }),
-    ).resolves.toEqual({ list: [task], total: 1 });
+    ).resolves.toEqual({ list: [row], total: 1 });
     expect(listQuery.offset).toHaveBeenCalledWith(10);
     expect(listQuery.limit).toHaveBeenCalledWith(25);
+    expect(listQuery.leftJoin).toHaveBeenCalledWith(
+      account,
+      eq(durableTask.actorUserId, account.id),
+    );
   });
 });

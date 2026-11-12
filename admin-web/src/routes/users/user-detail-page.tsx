@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { ArrowLeft } from 'lucide-react';
 import { useUserDetail } from '@/hooks/use-user-detail';
-import { useIsAdminPlus, useMe } from '@/hooks/use-me';
+import { useIsAdminPlus, useIsSuperAdmin, useMe } from '@/hooks/use-me';
 import { usePublicConfig } from '@/hooks/use-public-config';
 import { isPasswordLoginEnabled } from '@/lib/constants';
 import {
@@ -31,6 +31,9 @@ import { IssueLoginCodeDialog } from './issue-login-code-dialog';
 import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog';
 import { LoginCodesSection } from './login-codes-section';
 import { UserQuotaPanel } from './user-quota-panel';
+import { SessionTable } from '@/routes/sessions/session-table';
+import { UserAccessStatus } from './user-access-status';
+import { UserMediaPanel } from '@/routes/media/user-media-panel';
 
 function Field({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -50,11 +53,12 @@ export function UserDetailPage() {
   const userId = id ? Number(id) : null;
   const { data, isLoading, error } = useUserDetail(userId);
   const canManage = useIsAdminPlus();
+  const canManageFiles = useIsSuperAdmin();
   const { data: publicConfig } = usePublicConfig();
-  // Password bootstrap only exists when the deployment's loginMode includes password login; the
+  // Password bootstrap only exists when the deployment's loginMethods includes password; the
   // backend refuses LOGIN_METHOD_DISABLED otherwise, so the affordance disables instead of erroring.
   const passwordLoginEnabled = publicConfig
-    ? isPasswordLoginEnabled(publicConfig.loginMode)
+    ? isPasswordLoginEnabled(publicConfig.loginMethods)
     : false;
   const disable = useDisableUser();
   const enable = useEnableUser();
@@ -202,9 +206,66 @@ export function UserDetailPage() {
             </CardContent>
           </Card>
 
+          {u.adminRole && (
+            <Card>
+              <CardHeader>
+                <CardTitle>{t('userDetail.adminAccess')}</CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 gap-4 text-sm leading-[20px] sm:grid-cols-2">
+                <Field
+                  label={t('users.backendRole')}
+                  value={t(
+                    u.adminRole === 'SUPER_ADMIN'
+                      ? 'roles.super'
+                      : u.adminRole === 'ADMIN'
+                        ? 'roles.admin'
+                        : 'roles.viewer',
+                  )}
+                />
+                <Field
+                  label={t('userDetail.adminAccess')}
+                  value={t(
+                    u.adminEnabled
+                      ? 'userDetail.adminEnabled'
+                      : 'users.adminAccessDisabled',
+                  )}
+                />
+                <Field
+                  label={t('userDetail.adminAuthenticator')}
+                  value={t(
+                    u.adminTwoFactorEnabled
+                      ? 'security.totp.on'
+                      : 'security.totp.off',
+                  )}
+                />
+                <Field
+                  label={t('userDetail.adminLastLogin')}
+                  value={
+                    u.adminLastLoginAt !== null ? (
+                      <Timestamp value={u.adminLastLoginAt} />
+                    ) : (
+                      '—'
+                    )
+                  }
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {userId !== null && (
+            <UserAccessStatus
+              userId={userId}
+              account={u.account}
+              disabled={u.isDeleted}
+              pushRegistrations={data.pushTokens.length}
+            />
+          )}
+
           {u.namespaceId === 0 && userId !== null ? (
             <UserQuotaPanel userId={userId} canManage={canManage} />
           ) : null}
+
+          {canManageFiles && userId !== null ? <UserMediaPanel key={userId} userId={userId} /> : null}
 
           <Card>
             <CardHeader>
@@ -267,71 +328,21 @@ export function UserDetailPage() {
               </p>
             </CardHeader>
             <CardContent>
-              {data.sessions.length === 0 ? (
-                <p className="py-4 text-center text-sm text-muted-foreground">
-                  {t('userDetail.empty.sessions')}
-                </p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>{t('userSessions.col.device')}</TableHead>
-                        <TableHead>{t('userSessions.col.client')}</TableHead>
-                        <TableHead>{t('userSessions.col.ua')}</TableHead>
-                        <TableHead>{t('userSessions.col.ip')}</TableHead>
-                        <TableHead>{t('userSessions.col.lastIp')}</TableHead>
-                        <TableHead>{t('userSessions.col.created')}</TableHead>
-                        <TableHead>
-                          {t('userSessions.col.lastActive')}
-                        </TableHead>
-                        <TableHead>{t('userSessions.col.expires')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {data.sessions.map((s) => (
-                        <TableRow key={s.id}>
-                          <TableCell>{s.device ?? '—'}</TableCell>
-                          <TableCell>
-                            <Badge variant="secondary">
-                              {t(`common.client.${s.client}`, {
-                                defaultValue: s.client,
-                              })}
-                            </Badge>
-                          </TableCell>
-                          <TableCell
-                            className="max-w-[280px] truncate text-xs text-muted-foreground"
-                            title={s.userAgent ?? ''}
-                          >
-                            {s.userAgent ?? '—'}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {s.ip ?? '—'}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {s.lastSeenIp ?? '—'}
-                          </TableCell>
-                          <TableCell>
-                            <Timestamp value={s.createdAt} />
-                          </TableCell>
-                          <TableCell>
-                            <Timestamp value={s.lastSeenAt} />
-                          </TableCell>
-                          <TableCell>
-                            {s.expiresAt ? (
-                              <Timestamp value={s.expiresAt} />
-                            ) : (
-                              <span className="text-xs text-muted-foreground">
-                                {t('common.neverExpires')}
-                              </span>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
+              <div className="mb-3 flex gap-4 text-sm leading-[20px]">
+                <Link
+                  className="hover:underline"
+                  to={`/sessions?userId=${userId}`}
+                >
+                  {t('userSessions.viewAll')}
+                </Link>
+                <Link
+                  className="hover:underline"
+                  to={`/connections?userId=${userId}`}
+                >
+                  {t('nav.connections')}
+                </Link>
+              </div>
+              <SessionTable key={userId} sessions={data.sessions} />
             </CardContent>
           </Card>
 

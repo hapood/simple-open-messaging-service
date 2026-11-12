@@ -1,66 +1,66 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  abortResumableUpload,
-  cleanFederationDownload,
-  getMediaStats,
-  listFederationDownloads,
-  listResumableUploads,
-  retryFederationDownload,
+  cleanMediaTemporary,
+  cleanMediaDownload,
+  listMediaDownloads,
+  listMediaFiles,
+  listMediaUploads,
+  reclaimMediaFile,
+  retryMediaDownload,
+  stopMediaDownload,
+  stopMediaUpload,
+  stopPhysicalDownload,
+  type FileQuery,
+  type MediaQuery,
 } from '@/api/media';
 
-function useInvalidateTransfers() {
+export function useMediaFiles(query: FileQuery, temporary = false) {
+  return useQuery({
+    queryKey: ['admin', 'media', temporary ? 'temporary' : 'files', query],
+    queryFn: () => listMediaFiles(query, temporary),
+  });
+}
+export function useMediaUploads(query: MediaQuery) {
+  return useQuery({
+    queryKey: ['admin', 'media', 'uploads', query],
+    queryFn: () => listMediaUploads(query),
+    refetchInterval: 5000,
+  });
+}
+export function useMediaDownloads(query: MediaQuery & { status?: string }) {
+  return useQuery({
+    queryKey: ['admin', 'media', 'downloads', query],
+    queryFn: () => listMediaDownloads(query),
+    refetchInterval: 5000,
+  });
+}
+
+export type MediaCommand =
+  | {
+      kind:
+        | 'upload-stop'
+        | 'download-stop'
+        | 'download-retry'
+        | 'download-clean';
+      id: string;
+    }
+  | { kind: 'reclaim' | 'physical-stop' | 'temporary-clean'; id: string };
+const commands = {
+  'upload-stop': stopMediaUpload,
+  'download-stop': stopMediaDownload,
+  'download-retry': retryMediaDownload,
+  'download-clean': cleanMediaDownload,
+  reclaim: reclaimMediaFile,
+  'temporary-clean': cleanMediaTemporary,
+  'physical-stop': stopPhysicalDownload,
+};
+export function useMediaCommand() {
   const client = useQueryClient();
-  return () => {
-    client.invalidateQueries({ queryKey: ['admin', 'media'] });
-    client.invalidateQueries({ queryKey: ['admin', 'dashboard'] });
-  };
-}
-
-export function useMediaStats() {
-  return useQuery({
-    queryKey: ['admin', 'media', 'stats'],
-    queryFn: getMediaStats,
-  });
-}
-
-export function useFederationDownloads(enabled: boolean) {
-  return useQuery({
-    queryKey: ['admin', 'media', 'downloads'],
-    queryFn: listFederationDownloads,
-    enabled,
-    refetchInterval: enabled ? 5000 : false,
-  });
-}
-
-export function useRetryFederationDownload() {
-  const invalidate = useInvalidateTransfers();
   return useMutation({
-    mutationFn: retryFederationDownload,
-    onSuccess: invalidate,
-  });
-}
-
-export function useCleanFederationDownload() {
-  const invalidate = useInvalidateTransfers();
-  return useMutation({
-    mutationFn: cleanFederationDownload,
-    onSuccess: invalidate,
-  });
-}
-
-export function useResumableUploads(enabled: boolean) {
-  return useQuery({
-    queryKey: ['admin', 'media', 'uploads'],
-    queryFn: listResumableUploads,
-    enabled,
-    refetchInterval: enabled ? 5000 : false,
-  });
-}
-
-export function useAbortResumableUpload() {
-  const invalidate = useInvalidateTransfers();
-  return useMutation({
-    mutationFn: abortResumableUpload,
-    onSuccess: invalidate,
+    mutationFn: (command: MediaCommand) => commands[command.kind](command.id),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ['admin', 'media'] });
+      void client.invalidateQueries({ queryKey: ['admin', 'dashboard'] });
+    },
   });
 }

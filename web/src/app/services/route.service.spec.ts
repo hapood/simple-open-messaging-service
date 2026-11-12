@@ -39,6 +39,22 @@ describe('RouteService adaptive account surfaces', () => {
     service = TestBed.inject(RouteService);
   });
 
+  it.each(['add', 'pending'] as const)(
+    'shares the friend request popup contract for %s',
+    (initialTab) => {
+      expect(service.openFriendRequests(initialTab)).toEqual({ id: 42 });
+      expect(nav.pushPane).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'dialog',
+          inputs: { initialTab },
+          presentation: 'page',
+          desktopHeight: 'workspace',
+          component: expect.any(Function),
+        }),
+      );
+    },
+  );
+
   it('opens Profile as a page dialog in compact mode', () => {
     const popupDlg = vi.spyOn(service, 'popupDlg').mockReturnValue({ id: 42 });
     service.openProfile();
@@ -156,6 +172,13 @@ describe('RouteService adaptive account surfaces', () => {
           namespaceId: 0,
           name: 'Alice',
           bio: '',
+          profile: {
+            account: 'alice',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            rev: 1,
+            linked: true,
+          },
         },
       },
       undefined,
@@ -166,6 +189,29 @@ describe('RouteService adaptive account surfaces', () => {
       expect.objectContaining({
         presentation: 'chatbox',
         scopeThreadId: 17,
+      }),
+    );
+  });
+
+  it('opens group announcement with disableClose=true and chatbox presentation', () => {
+    service.popupDlg(
+      PopupType.GROUP_ANNOUNCEMENT,
+      {
+        threadId: 2,
+        feedId: '1',
+        text: 'Important announcement',
+        createdAt: 1_000,
+        originCreatedAt: null,
+      },
+      undefined,
+      { scopeThreadId: 2 },
+    );
+
+    expect(nav.pushPane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        presentation: 'chatbox',
+        scopeThreadId: 2,
+        disableClose: true,
       }),
     );
   });

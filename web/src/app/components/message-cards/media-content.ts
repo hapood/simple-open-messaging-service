@@ -94,8 +94,12 @@ export function parseFileContent(
   if (!item) return null;
   const url = resolveUrl(item);
   if (!url) return null;
+  const meta = item['meta'] as Record<string, unknown> | undefined;
   return {
     url,
+    ...(meta?.['thumbnail']
+      ? { thumbnail: url.replace('/msg-assets/', '/thumbnails/') }
+      : {}),
     name: String(item['name'] ?? 'file'),
     size: Number(item['size']) || 0,
     mimeType: String(item['mimeType'] ?? ''),

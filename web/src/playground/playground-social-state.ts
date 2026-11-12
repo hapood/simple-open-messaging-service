@@ -6,6 +6,7 @@ import type {
   RequestRecord,
   RequestPage,
 } from '../../../shared/relationship-request';
+import type { ProfileDemand } from '../../../shared/profile-demand';
 import type { RequestSnapshot } from '../../../shared/request-snapshot';
 import {
   createGroupConversation,
@@ -15,16 +16,67 @@ import {
 } from '../app/services/model';
 import type { ResolvedMemberProfile } from '../app/services/member-profile-store.service';
 import { PlaygroundConversationList } from './playground-conversation-list.mock';
+import { playgroundAvatars } from './playground-avatars';
+import {
+  serializeAudienceMention,
+  serializeUserMention,
+  toDisplayText,
+  toRenderMessageEntities,
+} from '../app/lib/message-entity';
+import { deriveMessagePreview } from '../../../shared/message-preview';
+import {
+  parseTextMessageContent,
+  stringifyTextMessageContent,
+} from '../../../shared/text-message-content';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const sameIdentity = (a: RequestEndpoint, b: RequestEndpoint) =>
   a.account === b.account && a.namespaceId === b.namespaceId;
 
+/** The seeded "Playground Team" group, the demo surface for live activity. */
+export const PLAYGROUND_TEAM_THREAD_ID = 2;
+
+/** One committed group message from the live ticker, in the production message
+ *  shape: a content type plus the persisted `Message.content` body. The adapter
+ *  renders it into an open thread; the state commits it into the thread list. */
+export interface PlaygroundLiveMessage {
+  threadId: number;
+  sender: ResolvedMemberProfile;
+  contentType: string;
+  content: string;
+  createdAtMs: number;
+}
+
+const liveGroupTexts = [
+  'Trying the playground controls again — latency looks fine.',
+  'The virtual scroll handles this burst nicely.',
+  'Anyone else seeing the announcement popup reset?',
+  'Pinned rows stay above the feed order, right?',
+  'The unread badge should only move with server feed updates.',
+  'Mentions render as chips once the body parses.',
+  'Scroll position survives the FLIP animation here.',
+  'Drafts are per-thread now, check the composer.',
+];
+
+const seededBios: Record<string, string> = {
+  alice: 'Curious mind, coffee lover, and weekend explorer.',
+  maya: 'Designing little things that make everyday life better.',
+  noah: 'Music, good conversations, and a new trail to explore.',
+  liam: 'Building things and sharing what I learn along the way.',
+  ivy: 'Here to learn, collaborate, and meet the community.',
+  '!playground': 'A place to try things out together.',
+  '!bookclub':
+    'A cozy community for book lovers to share reads, reviews, and thoughtful discussions.',
+};
+
 /** Shared in-memory server/projection state. Reloading the standalone entry resets all fixtures. */
 @Injectable({ providedIn: 'root' })
 export class PlaygroundSocialState {
-  readonly conversations = inject(PlaygroundConversationList);
+  readonly conversations: PlaygroundConversationList;
   readonly membersChanged$ = new Subject<readonly number[]>();
+  /** Live group messages committed by {@link startGroupTicker}. */
+  readonly groupLive$ = new Subject<PlaygroundLiveMessage>();
+  private groupTicker: ReturnType<typeof setInterval> | null = null;
   readonly users: User[] = [
     'me',
     'alice',
@@ -46,14 +98,21 @@ export class PlaygroundSocialState {
         ? 'Playground Team'
         : account === '!bookclub'
           ? 'Book Club'
-          : account[0].toUpperCase() + account.slice(1),
-    avatar: '',
-    bio: '',
-    namespaceId: 0,
-    profileRev: 1,
+          : playgroundAvatars[account]
+            ? account[0].toUpperCase() + account.slice(1)
+            : account,
+    avatar: playgroundAvatars[account] ?? '',
+    bio: seededBios[account] ?? '',
+    namespaceId: account === 'liam' ? 1 : 0,
+    profileRev: playgroundAvatars[account] ? 1 : 0,
     isDeleted: false,
     isGroup: account.startsWith('!'),
   }));
+  private readonly profiles = new Map(
+    this.users
+      .filter((user) => user.profileRev > 0)
+      .map((user) => [this.profileKey(user), { ...user }]),
+  );
   readonly self = this.users[0];
   readonly requests: Array<{ record: RequestRecord; groupId?: number }> = [];
   readonly incomingHead = signal({ requestEndId: '0', requestReadId: '0' });
@@ -62,41 +121,62 @@ export class PlaygroundSocialState {
   private nextThreadId = 20;
   private initialized = false;
 
+  /** Plain construction stays available for node-runnable specs; DI resolves
+   *  the same root-provided list when constructed through the injector. */
+  constructor(conversations?: PlaygroundConversationList) {
+    this.conversations = conversations ?? inject(PlaygroundConversationList);
+  }
+
   initialize(): void {
     if (this.initialized) return;
     this.initialized = true;
     this.activateFriend(this.user('alice')!, 1);
-    this.activateFriend(this.user('liam')!, 6);
+    this.activateFriend(this.user('liam', 1)!, 6);
     this.conversations.setRelatedConversations([
-      createGroupConversation(
-        2,
-        {
-          id: 2,
-          account: '!playground',
+      createGroupConversation({
+        threadId: 2,
+        account: '!playground',
+        publisherNamespaceId: 0,
+        profileRev: 1,
+        profile: {
           name: 'Playground Team',
-          namespaceId: 0,
-          description: 'Alice · Maya · Noah · Olivia · You',
+          bio: 'Alice · Maya · Noah · Olivia · You',
+          avatarDigest: null,
+        },
+        meta: {
           memberCount: 5,
-          profileRev: 1,
           groupMetaFeedId: '1',
-          announcement: { feedId: '1', text: null },
+          announcementFeedId: '1',
+          announcementText:
+            'Welcome to Playground Team! This group is for exploring group chat, announcements, and member management. All modifications are stored only in the current session; refresh the page to reset.',
+          announcementCreatedAt: Date.now() - 120_000,
+          announcementOriginCreatedAt: null,
         },
-        {
-          role: 'OWNER',
-          groupMetaTargetFeedId: '1',
-          lastMessageAt: Date.now() - 120_000,
-          lastMessagePreview: 'Welcome to the team',
-          lastMessageSeq: 100,
-          joinRequestEndFeedId: 2,
-          joinRequestReadFeedId: 0,
-        },
-      ),
+        role: 'OWNER',
+        groupMetaFeedEndId: '1',
+        announcementReadFeedId: 0,
+        lastMessageAt: Date.now() - 120_000,
+        lastMessagePreview: 'Welcome to the team',
+        messageEndSeq: 100,
+        joinRequestEndFeedId: 2,
+        joinRequestReadFeedId: 0,
+      }),
     ]);
     this.conversations.applyThreadMeta(1, {
       lastMessageAt: Date.now() - 60_000,
       lastMessagePreview: 'See you in the playground!',
-      lastMessageSeq: 100,
-      unreadCount: 2,
+      messageEndSeq: 100,
+      muted: true,
+      pinned: true,
+    });
+    this.conversations.applyThreadMeta(2, {
+      unreadCount: 3,
+      mentionUnread: ['me'],
+    });
+    this.conversations.applyThreadMeta(6, {
+      blocked: true,
+      lastMessageAt: Date.now() - 180_000,
+      lastMessagePreview: 'Hey, are you free to chat?',
     });
     this.rosters.set(
       2,
@@ -146,6 +226,79 @@ export class PlaygroundSocialState {
     );
   }
 
+  private profileKey(
+    user: Pick<User, 'namespaceId' | 'account' | 'profileRev'>,
+  ): string {
+    return JSON.stringify([user.namespaceId, user.account, user.profileRev]);
+  }
+
+  profile(
+    account: string,
+    namespaceId: number,
+    profileRev: number,
+  ): User | undefined {
+    if (profileRev === 0) return undefined;
+    const key = this.profileKey({ account, namespaceId, profileRev });
+    const snapshot = this.profiles.get(key);
+    if (snapshot) return { ...snapshot };
+    const current = this.user(account, namespaceId);
+    if (current?.profileRev !== profileRev) return undefined;
+    this.profiles.set(key, { ...current });
+    return { ...current };
+  }
+
+  /** Map an immutable profile demand onto the seeded fixtures.
+   * ACCOUNT_PROFILE: an account's own profile lives at namespace 0 inside
+   * its home (publisher) namespace's store, mirroring homeProfileDemand.
+   * GROUP_MEMBER_PROFILE: the group's publisher namespace authorizes the
+   * lookup; the member's home namespace is the subject profile namespace
+   * inside that publisher's store. */
+  profileOfDemand(demand: ProfileDemand): User | undefined {
+    if (demand.lookup === 'ACCOUNT_PROFILE') {
+      if (demand.target.profileNamespaceId !== 0) return undefined;
+      return this.profile(
+        demand.target.account,
+        demand.publisherNamespaceId,
+        demand.target.rev,
+      );
+    }
+    const group = this.user(demand.groupAccount, demand.publisherNamespaceId);
+    if (!group?.isGroup) return undefined;
+    return this.profile(
+      demand.target.account,
+      demand.target.profileNamespaceId,
+      demand.target.rev,
+    );
+  }
+
+  publishProfile(
+    user: User,
+    patch: Pick<User, 'name' | 'bio' | 'avatar'>,
+  ): void {
+    if (user.profileRev > 0)
+      this.profiles.set(this.profileKey(user), { ...user });
+    Object.assign(user, patch, { profileRev: user.profileRev + 1 });
+    this.profiles.set(this.profileKey(user), { ...user });
+  }
+
+  publishSelfProfile(patch: Pick<User, 'name' | 'bio' | 'avatar'>): void {
+    this.publishProfile(this.self, patch);
+    const changed: number[] = [];
+    for (const [threadId, roster] of this.rosters) {
+      if (!roster.some((member) => sameIdentity(member, this.self))) continue;
+      this.rosters.set(
+        threadId,
+        roster.map((member) =>
+          sameIdentity(member, this.self)
+            ? this.member(this.self, member.role)
+            : member,
+        ),
+      );
+      changed.push(threadId);
+    }
+    if (changed.length) this.membersChanged$.next(changed);
+  }
+
   allocateThreadId(): number {
     return this.nextThreadId++;
   }
@@ -153,14 +306,24 @@ export class PlaygroundSocialState {
   activateFriend(user: User, threadId?: number): number {
     const previous = this.conversations
       .items()
-      .find((item) => item.type === 'P2P' && sameIdentity(item.peerUser, user));
+      .find(
+        (item) =>
+          item.type === 'P2P' &&
+          sameIdentity(
+            { account: item.account, namespaceId: item.publisherNamespaceId },
+            user,
+          ),
+      );
     const id = previous?.threadId ?? threadId ?? this.allocateThreadId();
     this.conversations.setRelatedConversations([
-      createP2PConversation(id, user, {
-        ...(previous?.type === 'P2P' ? previous : {}),
-        friendshipActive: true,
+      createP2PConversation({
+        ...previous,
+        threadId: id,
+        account: user.account,
+        publisherNamespaceId: user.namespaceId,
+        profileRev: user.profileRev,
         conversationState: 'ACTIVE',
-        peerUser: { ...user, isGroup: false },
+        profile: { name: user.name, bio: user.bio ?? '', avatarDigest: null },
       }),
     ]);
     return id;
@@ -178,7 +341,6 @@ export class PlaygroundSocialState {
       role,
       isOwner: role === 'OWNER',
       name: user.name,
-      avatar: user.avatar,
       bio: user.bio,
       profileRev: user.profileRev,
       profileResolved: true,
@@ -187,9 +349,121 @@ export class PlaygroundSocialState {
 
   publishRoster(groupId: number): void {
     this.conversations.applyGroupUpdate(groupId, {
-      memberCount: this.rosters.get(groupId)?.length ?? 0,
+      meta: { memberCount: this.rosters.get(groupId)?.length ?? 0 },
     });
     this.membersChanged$.next([groupId]);
+  }
+
+  /** Commit one message row the way a production thread-feed snapshot would:
+   *  preview/sender/attention advance together with the feed ordering key.
+   *  Takes the production message shape (contentType + persisted content) and
+   *  derives the preview through the shared deriveMessagePreview, so previews
+   *  cannot drift from server-hydrated rows. Mentions are detected from the
+   *  PURE_TEXT body against the viewer identity. */
+  commitMessage(
+    threadId: number,
+    message: {
+      senderAccount: string;
+      senderNamespaceId: number;
+      contentType: string;
+      content: string;
+      createdAtMs?: number;
+      isSelf: boolean;
+    },
+  ): void {
+    const thread = this.conversations
+      .items()
+      .find((item) => item.threadId === threadId);
+    if (!thread) return;
+    const body =
+      message.contentType === 'PURE_TEXT'
+        ? (parseTextMessageContent(message.content)?.text ?? '')
+        : message.content;
+    const rendered = toRenderMessageEntities(body, {
+      account: this.self.account,
+      namespaceId: 0,
+    });
+    this.conversations.applyThreadMeta(threadId, {
+      lastMessageAt: message.createdAtMs ?? Date.now(),
+      lastMessagePreview: deriveMessagePreview(
+        message.contentType,
+        message.content,
+        toDisplayText,
+      ),
+      lastMessageSenderAccount: message.senderAccount,
+      lastMessageSenderNamespaceId: message.senderNamespaceId,
+      messageEndSeq: (thread.messageEndSeq ?? 0) + 1,
+      ...(message.isSelf
+        ? {}
+        : {
+            unreadCount: thread.unreadCount + 1,
+            mentionUnread:
+              rendered.mentionState === 'none'
+                ? thread.mentionUnread
+                : Array.from(
+                    new Set([...thread.mentionUnread, rendered.mentionState]),
+                  ),
+          }),
+    });
+  }
+
+  /** Simulate a live group: every interval a random Playground Team member
+   *  posts a text message, occasionally mentioning the viewer or the whole
+   *  audience. Bodies use the persisted PURE_TEXT JSON envelope. */
+  startGroupTicker(intervalMs = 5000): void {
+    if (this.groupTicker !== null) return;
+    this.groupTicker = setInterval(
+      () => this.tickLiveGroupMessage(),
+      intervalMs,
+    );
+  }
+
+  private tickLiveGroupMessage(): void {
+    // The ticker may speak only while the viewer is an active member. Leaving
+    // (role null + READ_ONLY) or dissolving (READ_ONLY) ends the feed: no
+    // member may post into a group the viewer no longer belongs to, even
+    // though the roster still holds the remaining members.
+    const team = this.conversations
+      .items()
+      .find((item) => item.threadId === PLAYGROUND_TEAM_THREAD_ID);
+    if (
+      team?.type !== 'GROUP' ||
+      team.role == null ||
+      team.conversationState === 'READ_ONLY'
+    )
+      return;
+    // Senders are always current members: kicks and leaves prune the roster,
+    // so a removed member is never picked again.
+    const roster = this.rosters.get(PLAYGROUND_TEAM_THREAD_ID);
+    if (!roster?.length) return;
+    const sender = roster[Math.floor(Math.random() * roster.length)];
+    const isSelf = sameIdentity(sender, this.self);
+    const roll = Math.random();
+    const text =
+      liveGroupTexts[Math.floor(Math.random() * liveGroupTexts.length)];
+    const body =
+      !isSelf && roll < 0.15
+        ? `${serializeUserMention('You', 0, this.self.account)} ${text}`
+        : !isSelf && roll < 0.25
+          ? `${serializeAudienceMention('all', 'all')} ${text}`
+          : text;
+    const content = stringifyTextMessageContent({ text: body });
+    const createdAtMs = Date.now();
+    this.commitMessage(PLAYGROUND_TEAM_THREAD_ID, {
+      senderAccount: sender.account,
+      senderNamespaceId: sender.namespaceId,
+      contentType: 'PURE_TEXT',
+      content,
+      createdAtMs,
+      isSelf,
+    });
+    this.groupLive$.next({
+      threadId: PLAYGROUND_TEAM_THREAD_ID,
+      sender,
+      contentType: 'PURE_TEXT',
+      content,
+      createdAtMs,
+    });
   }
 
   addMember(groupId: number, user: User): void {
@@ -234,7 +508,7 @@ export class PlaygroundSocialState {
               ...base.author,
               profileNamespaceId: 0,
               profileRev:
-                this.user(author.account, author.namespaceId)?.profileRev ?? 1,
+                this.user(author.account, author.namespaceId)?.profileRev ?? 0,
             },
           }
         : {

@@ -71,7 +71,7 @@ describe('permanent request history and intent reference storage', () => {
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
         note: row.note,
-        requestedAt: row.requestedAt,
+        statusChangedAt: row.requestedAt,
         expiresAt: status === 'REQUESTED' ? row.expiresAt : null,
       })
       .returning();
@@ -125,7 +125,7 @@ describe('permanent request history and intent reference storage', () => {
         requestId: second.id,
         status: 'REQUESTED',
         note: second.note,
-        requestedAt: second.requestedAt,
+        statusChangedAt: second.requestedAt,
         expiresAt: second.expiresAt,
       })
       .where(intentScope(first));

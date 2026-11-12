@@ -11,7 +11,6 @@ import {
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { ImageDownloadService } from '../../../services/image-download.service';
-import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { LinkCardService } from '../../../services/link-card.service';
 import { RouteService } from '../../../services/route.service';
 import type { ChatMsgData } from '../chat-item';
@@ -59,10 +58,6 @@ describe('TextRowComponent — forwarded quote navigation', () => {
         {
           provide: ImageDownloadService,
           useValue: { thumbnailUrl: ({ src }: { src: string }) => src },
-        },
-        {
-          provide: MediaSizeThresholdService,
-          useValue: { shouldDefer: (size: number) => size > 1024 },
         },
         {
           provide: LinkCardService,
@@ -224,7 +219,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     ref.destroy();
   });
 
-  it('uses a placeholder instead of requesting an oversized reply image', () => {
+  it('requests a reply thumbnail regardless of original image size', () => {
     const ref = mount(
       message({
         seq: 1,
@@ -238,8 +233,8 @@ describe('TextRowComponent — forwarded quote navigation', () => {
       ref.location.nativeElement as HTMLElement
     ).querySelector<HTMLElement>('.msg-quote')!;
 
-    expect(quote.querySelector('.msg-quote-placeholder')).not.toBeNull();
-    expect(quote.querySelector('img.msg-quote-visual')).toBeNull();
+    expect(quote.querySelector('.msg-quote-placeholder')).toBeNull();
+    expect(quote.querySelector('img.msg-quote-visual')).not.toBeNull();
 
     ref.destroy();
   });

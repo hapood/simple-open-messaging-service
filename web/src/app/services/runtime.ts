@@ -21,6 +21,7 @@
 
 import { signal } from '@angular/core';
 import type { StandardMessage } from './realtime-transport';
+import type { CallTerminalReason } from './call-adapter';
 
 /**
  * The persistence surface for state that must survive WebView/renderer death and be readable with no
@@ -30,16 +31,19 @@ import type { StandardMessage } from './realtime-transport';
  *    reads, so the web and the native realtime layer can never disagree on the host.
  *  - Desktop / browser: `window.SomsSecureStore` is absent, so `secureStore` falls back to an inert
  *    stub (reads return null, writes no-op) — the desktop origin's persistence is the Rust app-data
- *    config file (`set_api_origin`), synced into the signal by the config-guard self-heal. The web
+ *    configuration file, synced into the signal by the config guard. The web
  *    talks to this single interface regardless of platform — no isAndroid() branching at the call sites.
  */
 interface SomsSecureStore {
   getApiOrigin(): string | null;
-  setApiOrigin(origin: string | null): void;
+  recordServerOrigins(
+    primary: string,
+    secondary: string | null,
+    mode: 'primary' | 'secondary',
+  ): void;
   /** Secondary (LAN) origin for native fallback — null when no fallback is configured. Same surface so the
    *  Android Kotlin SSE (RealtimeService) reads the same store the web writes. */
   getApiOriginSecondary(): string | null;
-  setApiOriginSecondary(origin: string | null): void;
 }
 
 declare global {
@@ -53,6 +57,9 @@ declare global {
      *  Tauri surface is unreachable outside the shell. */
     __TAURI__?: {
       core?: {
+        Channel?: new <T>(onmessage?: (message: T) => void) => {
+          onmessage: (message: T) => void;
+        };
         invoke: (
           cmd: string,
           args?: Record<string, unknown>,
@@ -204,6 +211,8 @@ declare global {
      *  main.ts before bootstrap for a FOUC-free first paint. IME exposure is atomic: a snapshot seeds state,
      *  one command requests visibility, and runtime geometry arrives through {@link __SOMS_IME_EVENT__}. */
     SomsShell?: {
+      /** Render the database-first resolved launch theme; the adapter only owns the transition. */
+      setSplashTheme?: (dark: boolean) => void;
       getSafeInsets: () => string;
       /** Update the native-localized launch label using a small, allow-listed stage key. */
       setSplashStage?: (stage: 'session' | 'config' | 'interface') => void;
@@ -226,13 +235,10 @@ declare global {
     __SOMS_COMPOSER_EVENT__?: (
       event: import('./native-composer.service').NativeComposerEvent,
     ) => void;
-    /** Native call command rejection (for example, the previous call is still being released). */
-    __SOMS_CALL_REJECTED__?: (reason: 'busy') => void;
-    /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): the COMMAND direction of the native
-     *  1:1-call bridge. On Android the RTCPeerConnection + the call lifecycle FSM live in native
-     *  (CallController); the Angular layer is the call "chrome" and drives it through these. The EVENT
-     *  direction rides the existing {@link __SOMS_EVENT__} (CALL_EVENT/CALL_SIGNAL, fanned by RealtimeService)
-     *  PLUS the {@link __SOMS_CALL_EVENT__} snapshot push (phase/mediaState transitions the native FSM owns).
+    /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): commands enter the Rust-owned
+     *  call lifecycle through this bridge. Kotlin adapts platform media and OS capabilities; Angular
+     *  renders the call controls. Events arrive through {@link __SOMS_EVENT__} for server frames and
+     *  {@link __SOMS_CALL_EVENT__} for Rust-owned snapshots.
      *  Android-only; guaranteed present after the isAndroidNative() gate, so call sites use `!`. */
     SomsCall?: {
       initiate: (
@@ -306,15 +312,9 @@ declare global {
     };
     /** Android Media3 chat-video bridge. Only canonical CAS paths are accepted natively. */
     SomsVideo?: {
-      open: (
-        streamUrl: string,
-        thumbnailUploadUrl: string,
-        digest: string,
-        hasThumbnail: boolean,
-      ) => void;
+      open: (streamUrl: string, digest: string) => void;
     };
     /** Emitted after the native player has persisted the first rendered frame as a local WebP. */
-    __SOMS_VIDEO_THUMBNAIL__?: (digest: string) => void;
     __SOMS_MEDIA_SAVE_RESULT__?: (payload: {
       requestId: string;
       success: boolean;
@@ -346,13 +346,14 @@ declare global {
       code?: number;
       retryAfter?: number;
     }) => void;
-    /** Kotlin→JS push (CallController.pushSnapshot): the native call FSM's current snapshot
+    /** Native media adapter→JS push: the Rust call runtime's current snapshot
      *  ({phase, callSid, …, mediaState, startedAt, muted}) whenever a transition the native layer owns
      *  fires (media connect/disconnect/failed, mute, phase changes). Installed by {@link CallEventService};
      *  absent on browser/desktop (no native call layer there). CallEventService merges this into its
      *  `callState` signal alongside the SSE CALL_EVENT lifecycle frames. */
     __SOMS_CALL_EVENT__?: (snapshot: {
       phase: string;
+      terminalReason?: CallTerminalReason | null;
       callSid: string | null;
       threadId: number;
       peerUserId: number;
@@ -505,7 +506,7 @@ export function originIsInsecure(origin: string): boolean {
 
 /** The concrete persistence surface: the native `@JavascriptInterface` on Android; an inert stub
  *  (reads return null, writes no-op) on desktop/browser, where the origin's persistence is the Rust
- *  config file (see `setApiOrigin`). Resolved once at module load — `window.SomsSecureStore` is injected before
+ *  configuration file. Resolved once at module load — `window.SomsSecureStore` is injected before
  *  any page script by the Android shell (same window as the other @JavascriptInterface surfaces), so the
  *  native store is available synchronously at seed time, with no async and no race. */
 const secureStore: SomsSecureStore =
@@ -513,9 +514,8 @@ const secureStore: SomsSecureStore =
     ? window.SomsSecureStore
     : {
         getApiOrigin: () => null,
-        setApiOrigin: () => {},
+        recordServerOrigins: () => {},
         getApiOriginSecondary: () => null,
-        setApiOriginSecondary: () => {},
       };
 
 /** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin (browser) /
@@ -523,7 +523,7 @@ const secureStore: SomsSecureStore =
  *  the data layer points. Seeded from the persisted store (`secureStore`), NOT from a frozen init-script
  *  global, so a renderer-reclaim reload after a server-config change re-reads the live value instead of
  *  a stale snapshot. `''` (not a localhost default) means "no server configured yet"; the server-config
- *  form pre-fills a placeholder. Read via `apiOrigin()`; only `setApiOrigin` writes it. */
+ *  form pre-fills a placeholder. Updated from Rust's committed server configuration. */
 export const apiOrigin = signal<string>(
   canonicalOrigin(secureStore.getApiOrigin() ?? ''),
 );
@@ -531,7 +531,7 @@ export const apiOrigin = signal<string>(
 /** The configured LAN (secondary) origin for native fallback, or null when no fallback is configured (dev /
  *  a server without SOMS_LAN_DOMAIN). Seeded from the same persistence surface as {@link apiOrigin}. This is
  *  the user's field-2 CONFIG — it does NOT track the swapping ACTIVE origin (Rust-internal; read
- *  {@link getOriginMode} for which is active). Written only by {@link setApiOriginSecondary}. */
+ *  {@link getOriginMode} for which is active). Updated from Rust's committed server configuration. */
 export const apiOriginSecondary = signal<string | null>(
   ((): string | null => {
     const raw = secureStore.getApiOriginSecondary();
@@ -569,43 +569,21 @@ export function assetUrl(path: string | null | undefined): string {
   return `${MEDIA_SCHEME}://${MEDIA_HOST}${path}`;
 }
 
-/** Native chat-card image URL. The original `/uploads/*` URL remains the canonical detail/download
- * path; this alternate media-protocol path asks Rust for a 960px cached WebP and falls back to the
- * original bytes when the source cannot be decoded. Browser builds keep using the server URL unchanged. */
+/** Contextual server thumbnail URL; native hosts handle the same request through Rust's cache. */
 export function chatThumbnailUrl(path: string | null | undefined): string {
   if (!path) return '';
-  if (!isTauri() || !path.startsWith('/uploads/')) return assetUrl(path);
-  return assetUrl(`/chat-thumbnails${path}`);
-}
-
-/** Native cache-only chat thumbnail URL. Unlike chatThumbnailUrl(), a miss returns 404 and never fetches
- * the original, so oversized list-card images can probe the local cache without bypassing the size gate. */
-export function cachedChatThumbnailUrl(
-  path: string | null | undefined,
-): string {
-  if (!path || !isTauri() || !path.startsWith('/uploads/')) return '';
-  return assetUrl(`/cached-chat-thumbnails${path}`);
+  if (!path.startsWith('/uploads/msg-assets/')) return assetUrl(path);
+  return assetUrl(path.replace('/uploads/msg-assets/', '/uploads/thumbnails/'));
 }
 
 const VIDEO_CAS_PATH =
-  /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\.[A-Za-z0-9]+$/;
+  /^\/uploads\/msg-assets\/([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})(?:\?threadId=[1-9][0-9]*&seq=[1-9][0-9]*)?$/;
 
 /** The server-side content digest is the only identity accepted for a native video or thumbnail. */
 export function videoCasDigest(path: string | null | undefined): string | null {
-  return path?.match(VIDEO_CAS_PATH)?.[1] ?? null;
-}
-
-/** Local thumbnail URL served by the existing Tauri media protocol. It legitimately returns 404 until
- * Android Media3 has rendered and captured this video's first frame. */
-export function nativeVideoThumbnailUrl(
-  path: string | null | undefined,
-  revision = 0,
-): string {
-  const digest = videoCasDigest(path);
-  if (!digest || !isTauri() || !isAndroid()) return '';
-  return assetUrl(
-    `/video-thumbnails${path}${revision > 0 ? `?v=${revision}` : ''}`,
-  );
+  const match = path?.match(VIDEO_CAS_PATH);
+  if (!match || !match[3].startsWith(match[1] + match[2])) return null;
+  return match[3];
 }
 
 /** Kept as a rollback switch while Android uses the WebView player over the Rust loopback stream. */
@@ -613,8 +591,6 @@ export const ANDROID_MEDIA3_ENABLED = false;
 
 export interface LocalVideoStream {
   streamUrl: string;
-  thumbnailUploadUrl: string;
-  hasThumbnail: boolean;
 }
 
 /** Allocate a capability route on the process-wide Rust loopback video server. */
@@ -638,12 +614,7 @@ export async function openNativeVideo(path: string): Promise<boolean> {
   if (!digest) return false;
   const stream = await createLocalVideoStream(path);
   if (!stream) return false;
-  window.SomsVideo.open(
-    stream.streamUrl,
-    stream.thumbnailUploadUrl,
-    digest,
-    stream.hasThumbnail,
-  );
+  window.SomsVideo.open(stream.streamUrl, digest);
   return true;
 }
 
@@ -662,68 +633,33 @@ export async function openExternalUrl(url: string): Promise<void> {
 
 /** True when no backend origin is configured yet (the signal is empty). Under Tauri the app gates
  *  first-run on this to force the server-config page before login; the form pre-fills a placeholder
- *  origin for the user to edit. Once `setApiOrigin` persists a real origin this reads false. The browser
+ *  origin for the user to edit. Once server setup persists a real origin this reads false. The browser
  *  build is same-origin (`''`) but never hits this gate — the guard requires `isTauri()`. */
 export function apiOriginIsEmpty(): boolean {
   return apiOrigin() === '';
 }
 
-/**
- * Persist a new backend origin and repoint the live data layer to it (Tauri only). Rust validates +
- * canonicalizes the URL, writes the app-data config file, AND updates the media proxy's live Arc (so
- * `/uploads/*` immediately uses the new host); here we mirror the same value into the Android platform
- * store (EncryptedSharedPreferences via `window.SomsSecureStore`; the desktop call is a no-op — the
- * Rust config file just written is the persistence) — the same store the native SSE reads — and mirror
- * it into the {@link apiOrigin} signal so every in-process
- * consumer (HttpClient via `apiPrefix()`, the SSE worker's reconnect, the guest guard, the Settings
- * label) picks up the new host at once, with NO page reload. Returns the canonical origin Rust stored.
- */
-export async function setApiOrigin(url: string): Promise<string> {
-  if (!isTauri())
-    throw new Error('setApiOrigin is only available under the Tauri shell');
-  const normalized = await tauriInvoke<string>('set_api_origin', { url });
-  apiOrigin.set(normalized);
-  secureStore.setApiOrigin(normalized);
-  return normalized;
+/** Mirror one committed Rust configuration. Android records the pair without sending an
+ * intermediate configuration back into Rust; the Rust configuration is authoritative at restart. */
+export function syncServerOrigins(
+  primary: string,
+  secondary: string | null,
+  active: string,
+): void {
+  loginPickPromise = null;
+  apiOrigin.set(primary);
+  apiOriginSecondary.set(secondary);
+  window.SomsSecureStore?.recordServerOrigins(
+    primary,
+    secondary,
+    secondary === active ? 'secondary' : 'primary',
+  );
 }
 
-/** Sync the apiOrigin signal + secureStore from an authoritative value WITHOUT re-persisting to Rust
- *  (the origin is already in the Rust config file — this is the self-heal path the configGuard uses when
- *  `is_origin_configured` is true but the SPA signal is empty, i.e. secureStore drift on a device that
- *  configured via an older build). Cheaper than `setApiOrigin`, which would re-run the Rust writer. */
+/** Restore the presentation signal from Rust without writing configuration or platform mirrors. */
 export function syncApiOriginSignal(origin: string): void {
   const c = canonicalOrigin(origin);
   apiOrigin.set(c);
-  secureStore.setApiOrigin(c);
-}
-
-/** Persist the LAN (secondary) origin (field-2) and mirror it into {@link apiOriginSecondary} (Tauri only).
- *  `null`/empty clears it (disables fallback). Rust validates + persists it (a separate file from the
- *  primary) and `select_origin` begins using it; the same value is written to the platform store (Android
- *  EncryptedSharedPreferences — the store RealtimeService reads). Returns the canonical value Rust stored. */
-export async function setApiOriginSecondary(
-  url: string | null,
-): Promise<string | null> {
-  if (!isTauri())
-    throw new Error(
-      'setApiOriginSecondary is only available under the Tauri shell',
-    );
-  const normalized = await tauriInvoke<string | null>(
-    'set_api_origin_secondary',
-    { url },
-  );
-  const canonical = normalized ? canonicalOrigin(normalized) : null;
-  apiOriginSecondary.set(canonical);
-  secureStore.setApiOriginSecondary(canonical);
-  return canonical;
-}
-
-/** Sync {@link apiOriginSecondary} from an authoritative value WITHOUT re-persisting to Rust (the value is
- *  already in the Rust config — the self-heal path). */
-function syncApiOriginSecondarySignal(origin: string | null): void {
-  const canonical = origin ? canonicalOrigin(origin) : null;
-  apiOriginSecondary.set(canonical);
-  secureStore.setApiOriginSecondary(canonical);
 }
 
 /** Which origin is currently ACTIVE — `'primary'` (normal) or `'secondary'` (a switch moved to the LAN
@@ -754,15 +690,7 @@ export function pickLoginOrigin(force = false): Promise<string> {
   if (!isTauri()) return Promise.resolve(apiOrigin());
   if (force) loginPickPromise = null;
   if (!loginPickPromise) {
-    const pick =
-      isAndroidNative() && window.SomsFcm?.pickActiveOrigin
-        ? Promise.resolve(
-            window.SomsFcm.pickActiveOrigin() ?? apiOrigin(),
-          ).then(async (origin) => {
-            await tauriInvoke('set_active_origin', { url: origin });
-            return origin;
-          })
-        : tauriInvoke<string>('init_pick_origin');
+    const pick = tauriInvoke<string>('init_pick_origin');
     loginPickPromise = pick
       .then((origin) => {
         return origin;

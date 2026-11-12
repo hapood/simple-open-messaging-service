@@ -13,6 +13,7 @@ import {
   recordCase,
   registerCases,
   progressSummary,
+  roundPrefixOf,
   saveRun,
   validateDeployment,
   deploymentNode,
@@ -138,7 +139,7 @@ describe('acceptance run configuration and gates', () => {
       navigationUrl('federation', 'alpha', nodes.bravo.edge, configured),
     ).toThrow();
   });
-  it('persists progress/issues and stays paused through repair until explicit retry', () => {
+  it('persists progress/issues and resumes on operator continue', () => {
     const root = mkdtempSync(join(tmpdir(), 'soms-acceptance-'));
     try {
       const run = createRun(root, 'quick', nodes);
@@ -162,16 +163,7 @@ describe('acceptance run configuration and gates', () => {
       expect(() => assertBrowserAction(run.state, 'eval')).toThrow('paused');
       expect(() => assertBrowserAction(run.state, 'open')).toThrow('paused');
       expect(() => assertBrowserAction(run.state, 'shot')).not.toThrow();
-      decideRun(run.state, 'repair');
-      expect(run.state.phase).toBe('paused');
-      expect(() =>
-        recordCase(run.state, {
-          id: 'Q0',
-          title: 'Setup',
-          outcome: 'PASS',
-          evidence: 'not yet retried',
-        }),
-      ).toThrow();
+      expect(() => decideRun(run.state, 'repair')).toThrow('Invalid decision');
       saveRun(run.directory, run.state);
       expect(
         readFileSync(join(run.directory, 'bugs/issue-1.md'), 'utf8'),
@@ -184,14 +176,17 @@ describe('acceptance run configuration and gates', () => {
       expect(readFileSync(join(run.directory, 'handoff.md'), 'utf8')).toContain(
         'Fixture alice-alpha retained',
       );
-      decideRun(restored.state, 'retry');
+      decideRun(restored.state, 'continue');
+      expect(restored.state.phase).toBe('running');
+      expect(restored.state.issues[0].decision).toBe('continue');
+      expect(restored.state.next).toContain('proposal');
       expect(() => assertBrowserAction(restored.state, 'eval')).not.toThrow();
       expect(() => loadRun(root, '../../escape')).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
-  it('BUG and BLOCKED results pause automatically and skipping preserves defect evidence', () => {
+  it('BUG and BLOCKED results pause automatically and continue preserves defect evidence', () => {
     const state: RunState = {
       version: 1,
       id: 'fixture',
@@ -210,11 +205,12 @@ describe('acceptance run configuration and gates', () => {
       evidence: 'UI action then reproducible peer assertion failure.',
     });
     expect(state.phase).toBe('paused');
-    expect(() => decideRun(state, 'repair')).toThrow('proposal');
+    expect(() => decideRun(state, 'skip')).toThrow('Invalid decision');
     expect(state.issues[0].decision).toBeUndefined();
-    decideRun(state, 'skip');
+    decideRun(state, 'continue');
+    expect(state.phase).toBe('running');
     expect(state.cases[0].outcome).toBe('BUG');
-    expect(state.issues[0].decision).toBe('skip');
+    expect(state.issues[0].decision).toBe('continue');
     expect(() =>
       recordCase(state, {
         id: '../bad',
@@ -279,13 +275,20 @@ describe('acceptance run configuration and gates', () => {
       ),
     ).toContain('paused');
     expect(localOperationBlockReason(state, 'read')).toBeUndefined();
-    decideRun(state, 'repair');
+    decideRun(state, 'continue');
+    expect(state.phase).toBe('running');
     expect(
       localOperationBlockReason(state, 'edit', 'test/browser-e2e/driver.mjs'),
     ).toBeUndefined();
     expect(localOperationBlockReason(state, 'bash')).toBeUndefined();
-    expect(() => assertBrowserAction(state, 'eval')).toThrow('paused');
-    decideRun(state, 'retry');
+    expect(() => assertBrowserAction(state, 'eval')).not.toThrow();
+    pauseRun(state, {
+      kind: 'DRIVER_MISMATCH',
+      summary: 'Another stale selector',
+      evidence: 'Changed UI again',
+    });
+    expect(localOperationBlockReason(state, 'bash')).toContain('paused');
+    decideRun(state, 'continue');
     expect(
       localOperationBlockReason(state, 'edit', 'test/browser-e2e/driver.mjs'),
     ).toContain('Source changes');
@@ -306,7 +309,7 @@ describe('acceptance run configuration and gates', () => {
         outcome: 'BUG',
         evidence: 'reproduced',
       });
-      decideRun(run.state, 'retry');
+      decideRun(run.state, 'continue');
       const before = structuredClone(run.state);
       expect(
         registerCases(run.state, [
@@ -314,7 +317,7 @@ describe('acceptance run configuration and gates', () => {
           { id: 'Q1.bug', title: 'Bug' },
           { id: 'Q4.text.send', title: 'Text exact-once receipt' },
         ]),
-      ).toEqual({ requested: 3, added: 1, preserved: 2 });
+      ).toEqual({ requested: 3, added: 1, preserved: 2, round: 'Q0' });
       expect(run.state.cases.slice(0, -1)).toEqual(before.cases);
       expect(run.state.issues).toEqual(before.issues);
       expect(run.state.cases.at(-1)).toEqual({
@@ -325,6 +328,11 @@ describe('acceptance run configuration and gates', () => {
       });
       saveRun(run.directory, run.state);
       expect(loadRun(root, run.state.id).state.cases).toEqual(run.state.cases);
+      expect(loadRun(root, run.state.id).state.roundCaseIds).toEqual([
+        'Q0.pass',
+        'Q1.bug',
+        'Q4.text.send',
+      ]);
       expect(
         readFileSync(join(run.directory, 'progress.md'), 'utf8'),
       ).toContain('Q4.text.send');
@@ -357,6 +365,41 @@ describe('acceptance run configuration and gates', () => {
         expect(() => registerCases(run.state, [valid])).toThrow('operator');
         expect(run.state).toEqual(snapshot);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('switches the active round from the registration batch prefix', () => {
+    const root = mkdtempSync(join(tmpdir(), 'soms-round-'));
+    try {
+      const { state } = createRun(root, 'quick', nodes);
+      // Leaf segments are never consumed; mixed batches fall back to chapter.
+      expect(roundPrefixOf(['Q1.local-alpha.accept'])).toBe('Q1.local-alpha');
+      expect(
+        roundPrefixOf(['Q1.local-alpha.accept', 'Q1.local-alpha.cancel']),
+      ).toBe('Q1.local-alpha');
+      expect(
+        roundPrefixOf([
+          'Q4.dm-a.text.send',
+          'Q4.dm-a.audio.send',
+          'Q4.dm-b.text.send',
+        ]),
+      ).toBe('Q4');
+      expect(
+        registerCases(state, [
+          { id: 'Q1.local-alpha.accept', title: 'Accept' },
+          { id: 'Q1.local-alpha.cancel', title: 'Cancel' },
+        ]),
+      ).toMatchObject({ added: 2, round: 'Q1.local-alpha' });
+      expect(state.round).toBe('Q1.local-alpha');
+      // Re-registration preserves results but still switches the round.
+      expect(
+        registerCases(state, [
+          { id: 'Q2.local-alpha.create', title: 'Create' },
+          { id: 'Q2.local-alpha.invite', title: 'Invite' },
+        ]),
+      ).toMatchObject({ added: 2, round: 'Q2.local-alpha' });
+      expect(state.round).toBe('Q2.local-alpha');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

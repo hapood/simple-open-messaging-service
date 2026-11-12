@@ -1,21 +1,17 @@
-import { Injectable } from '@angular/core';
 import {
-  HttpClient,
-  HttpContext,
-  HttpEventType,
-  HttpHeaders,
-  HttpResponse,
-} from '@angular/common/http';
+  consumeSse,
+  SseDecoder,
+  type SseFrame,
+} from '../../../../shared/sse-client';
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpContext, HttpHeaders } from '@angular/common/http';
 import {
   defer,
-  filter,
   firstValueFrom,
   fromEvent,
-  map,
   Observable,
   switchMap,
   takeUntil,
-  tap,
   timeout,
 } from 'rxjs';
 import {
@@ -27,7 +23,10 @@ import {
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
 import type { ThreadAliasApplied } from '../../../../shared/thread-attention';
-import { SessionLifecycleService, type SessionWorkScope } from './session-lifecycle.service';
+import {
+  SessionLifecycleService,
+  type SessionWorkScope,
+} from './session-lifecycle.service';
 import { REPLAY_SAFE } from '../request-context';
 import type { ForwardWireBundle } from '../components/forward-detail/forward-bundle.model';
 
@@ -249,7 +248,6 @@ export class MsgService {
         let settled = false;
         void this.streamUpload<T>(
           file,
-          '/upload',
           this.partFields(identity),
           identity.clientMessageId,
           onProgress
@@ -306,20 +304,18 @@ export class MsgService {
 
   /** True when the upload can stream from disk: the Tauri DESKTOP shell, where Tauri's `<input type=file>`
    *  handling injects the real on-disk path as `File.path`. Otherwise (browser; Android — no `File.path`)
-   *  the File is an in-memory blob with no path → fall back to HttpClient (buffered, same as before — no
-   *  regression; the api:// proxy buffers, but there's no disk path to stream from). */
+   *  the File is an in-memory blob with no path, so sequential HttpClient chunks are used. */
   private canStream(file: File): boolean {
     return isTauri() && typeof (file as { path?: string }).path === 'string';
   }
 
   /** Stream-upload a file via the Rust `upload_stream_file` command, which reads + sends it in chunks
    *  straight from disk (peak memory = one chunk, NOT the whole file — the api:// URI-scheme proxy can't
-   *  do this: Tauri hands it a fully-buffered `Request<Vec<u8>>` at the IPC boundary). `endpoint` is the
-   *  path suffix after /api/v1. `fields` carry the stable upload-part identity. Returns the
+   *  do this: Tauri hands it a fully-buffered `Request<Vec<u8>>` at the IPC boundary).
+   *  `fields` carry the stable upload-part identity. Returns the
    *  raw {code,message,data} envelope so callers read it exactly like the HttpClient response. */
   private async streamUpload<T>(
     file: File,
-    endpoint: string,
     fields: Record<string, string>,
     clientMessageId?: string,
     onProgress?: UploadProgressHandler,
@@ -331,7 +327,6 @@ export class MsgService {
     try {
       return await tauriInvoke<StandardResponse<T>>('upload_stream_file', {
         path: (file as { path?: string }).path,
-        endpoint,
         filename: file.name,
         mime: file.type || 'application/octet-stream',
         size: file.size,
@@ -360,45 +355,6 @@ export class MsgService {
       );
     }).then(() => undefined);
     return this.streamProgressListener;
-  }
-
-  private httpUpload<T>(
-    url: string,
-    body: FormData,
-    clientMessageId?: string,
-    onProgress?: UploadProgressHandler,
-  ): Observable<T> {
-    if (!onProgress) {
-      return this.http.post<T>(
-        url,
-        body,
-        clientMessageId
-          ? {
-              headers: this.cmidHeader(clientMessageId),
-              context: new HttpContext().set(REPLAY_SAFE, true),
-            }
-          : undefined,
-      );
-    }
-    return this.http
-      .post<T>(url, body, {
-        headers: clientMessageId ? this.cmidHeader(clientMessageId) : undefined,
-        context: clientMessageId
-          ? new HttpContext().set(REPLAY_SAFE, true)
-          : undefined,
-        observe: 'events',
-        reportProgress: true,
-      })
-      .pipe(
-        tap((event) => {
-          if (event.type !== HttpEventType.UploadProgress) return;
-          onProgress(event.loaded, event.total ?? bodyFileSize(body));
-        }),
-        filter(
-          (event): event is HttpResponse<T> => event instanceof HttpResponse,
-        ),
-        map((event) => event.body as T),
-      );
   }
 
   /** Sequential resumable upload. Session state lives on the server; retrying this method first
@@ -481,11 +437,6 @@ export class MsgService {
       message: completed.message,
       data: completed.data.result as T,
     };
-  }
-
-  /** The header that tells an upload route to promote a staged send after writing the file. */
-  private cmidHeader(clientMessageId: string): HttpHeaders {
-    return new HttpHeaders({ 'x-client-message-id': clientMessageId });
   }
 
   /** Raw page contract used by the browser history walker. Cursor recovery, range reduction, commit,
@@ -620,6 +571,76 @@ export class MsgService {
     >(`${apiPrefix()}/relocalize-media`, { threadId, seq });
   }
 
+  mediaDownloadProgress(
+    threadId: number,
+    seq: number,
+  ): Observable<import('./model').MediaStatus> {
+    const url = `${apiPrefix()}/message/media-message-progress?threadId=${threadId}&seq=${seq}`;
+    return new Observable((subscriber) => {
+      let revision = 0;
+      const onFrame = (frame: SseFrame) => {
+        if (frame.event !== 'MEDIA_MESSAGE_DOWNLOAD_PROGRESS' || !frame.data)
+          return;
+        const data = JSON.parse(frame.data) as { status?: string };
+        if (
+          data.status === 'downloading' ||
+          data.status === 'ready' ||
+          data.status === 'failed'
+        ) {
+          revision += 1;
+          subscriber.next(data.status);
+        }
+      };
+      if (isTauri()) {
+        return this.http
+          .get(url, {
+            responseType: 'text',
+            headers: { Accept: 'text/event-stream' },
+          })
+          .subscribe({
+            next: (text) => new SseDecoder().push(text, onFrame),
+            error: (error) => subscriber.error(error),
+            complete: () => subscriber.complete(),
+          });
+      }
+      const aborter = new AbortController();
+      let snapshot: import('rxjs').Subscription | undefined;
+      void consumeSse(url, {
+        signal: aborter.signal,
+        onFrame,
+        onOpen: () => {
+          // Subscribe before reading the snapshot so completion during stream setup is not lost.
+          const before = revision;
+          snapshot = this.queryMediaStatus(threadId, [seq]).subscribe({
+            next: (response) => {
+              const status = response.data?.statuses.find(
+                (item) => item.seq === seq,
+              )?.status;
+              if (
+                response.code === 0 &&
+                status &&
+                revision === before &&
+                !subscriber.closed
+              ) {
+                subscriber.next(status);
+              }
+            },
+            error: () => undefined,
+          });
+        },
+      }).then(
+        () => subscriber.complete(),
+        (error: unknown) => {
+          if (!aborter.signal.aborted) subscriber.error(error);
+        },
+      );
+      return () => {
+        aborter.abort();
+        snapshot?.unsubscribe();
+      };
+    });
+  }
+
   /** Read the authoritative federated media status for mounted messages. Used on mount and reconnect. */
   queryMediaStatus(threadId: number, seqs: number[]) {
     return this.http.post<
@@ -631,9 +652,4 @@ export class MsgService {
       }>
     >(`${apiPrefix()}/media-status`, { threadId, seqs });
   }
-}
-
-function bodyFileSize(body: FormData): number {
-  const value = body.get('file');
-  return value instanceof Blob ? value.size : 0;
 }

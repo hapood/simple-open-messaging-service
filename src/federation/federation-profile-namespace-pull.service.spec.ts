@@ -12,7 +12,7 @@ function page(
   opts: { scannedThrough?: string; hasMore?: boolean } = {},
 ): ProfileNamespaceFeedPage {
   return {
-    items: [{ namespaceId, feedId }],
+    items: [{ namespaceId, feedId, generatedAt: 1000 }],
     scannedThrough: opts.scannedThrough ?? feedId,
     feedEndId,
     hasMore: opts.hasMore ?? false,
@@ -272,7 +272,7 @@ describe('FederationProfileNamespacePullService', () => {
     it('builds the bare feed path with no cursor parameters', async () => {
       const { service, captured } = urlHarness();
       const result = await service.pullFeedPage('peer.test');
-      expect(captured[0]).toBe('/s2s/v1/profile-namespace-feed');
+      expect(captured[0]).toBe('/somfp/v1/profile-namespace-feed');
       expect(result.feedEndId).toBe('1');
     });
 
@@ -280,14 +280,14 @@ describe('FederationProfileNamespacePullService', () => {
       const { service, captured } = urlHarness();
       await service.pullFeedPage('peer.test', 2n, 100, 5n);
       expect(captured[0]).toBe(
-        '/s2s/v1/profile-namespace-feed?after=2&take=100&through=5',
+        '/somfp/v1/profile-namespace-feed?after=2&take=100&through=5',
       );
     });
 
     it('accepts after alone', async () => {
       const { service, captured } = urlHarness();
       await service.pullFeedPage('peer.test', 2n);
-      expect(captured[0]).toBe('/s2s/v1/profile-namespace-feed?after=2');
+      expect(captured[0]).toBe('/somfp/v1/profile-namespace-feed?after=2');
     });
 
     it('rejects take without after', async () => {

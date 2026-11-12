@@ -71,7 +71,14 @@ describe('RelationshipService conversation notification capture', () => {
       { id: 1, account: 'alice', namespaceId: 0, availability: 'AVAILABLE' },
       { id: 2, account: 'bob', namespaceId: 0, availability: 'REMOVED' },
     ];
-    const updates = [{ userId: 1, feedId: 10, threadFeedEndId: 14 }];
+    const updates = [
+      {
+        kind: 'thread-feed' as const,
+        userId: 1,
+        feedId: 10,
+        threadFeedEndId: 14,
+      },
+    ];
     const captureWhere = vi.fn().mockResolvedValue(updates);
     const recipientWhere = vi.fn((_where: SQL) => ({
       orderBy: vi.fn().mockResolvedValue(recipients),

@@ -1,6 +1,22 @@
-import { computed, inject, Injectable, signal } from '@angular/core';
+import {
+  DestroyRef,
+  computed,
+  inject,
+  Injectable,
+  signal,
+} from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import {
+  EMPTY,
+  Subscription,
+  expand,
+  finalize,
+  firstValueFrom,
+  map,
+  switchMap,
+  tap,
+  timer,
+} from 'rxjs';
 import { apiPrefix } from './constants';
 import type { StandardResponse } from './model';
 
@@ -35,7 +51,15 @@ export class LinkCardGenerationService {
   private readonly states = signal<
     Readonly<Record<string, LinkGenerationView>>
   >({});
-  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly polls = new Map<string, Subscription>();
+
+  constructor() {
+    inject(DestroyRef).onDestroy(() => {
+      for (const subscription of this.polls.values())
+        subscription.unsubscribe();
+      this.polls.clear();
+    });
+  }
 
   state(generationId: string) {
     return computed(() => this.states()[generationId]);
@@ -58,20 +82,30 @@ export class LinkCardGenerationService {
     );
   }
 
-  async begin(
+  /** Cold request: the caller owns HTTP cancellation until the response arrives.
+   * Cancelling transport does not undo a generation already admitted by the server. */
+  begin$(url: string, text = '', generationId?: string) {
+    return this.start(url, text, generationId).pipe(
+      map((response): LinkGenerationView => {
+        if (!response.data) throw new Error('link generation was not started');
+        return {
+          ...response.data,
+          polling: response.data.status === 'pending',
+        };
+      }),
+      tap((state) => {
+        this.setState(state);
+        if (state.status === 'pending') this.poll(state.generationId);
+      }),
+    );
+  }
+
+  begin(
     url: string,
     text = '',
     generationId?: string,
   ): Promise<LinkGenerationView> {
-    const response = await firstValueFrom(this.start(url, text, generationId));
-    if (!response.data) throw new Error('link generation was not started');
-    const state = {
-      ...response.data,
-      polling: response.data.status === 'pending',
-    };
-    this.setState(state);
-    if (state.status === 'pending') this.poll(state.generationId);
-    return state;
+    return firstValueFrom(this.begin$(url, text, generationId));
   }
 
   resume(generation: LinkCardGeneration): void {
@@ -80,51 +114,62 @@ export class LinkCardGenerationService {
   }
 
   forget(generationId: string): void {
-    const timer = this.timers.get(generationId);
-    if (timer) clearTimeout(timer);
-    this.timers.delete(generationId);
+    this.stopPoll(generationId);
     const next = { ...this.states() };
     delete next[generationId];
     this.states.set(next);
   }
 
   pause(generationId: string): void {
-    const timer = this.timers.get(generationId);
-    if (timer) clearTimeout(timer);
-    this.timers.delete(generationId);
+    this.stopPoll(generationId);
     const previous = this.states()[generationId];
     if (previous) this.setState({ ...previous, polling: false });
   }
 
-  private poll(generationId: string): void {
-    if (this.timers.has(generationId)) return;
-    const tick = async () => {
-      this.timers.delete(generationId);
-      try {
-        const response = await firstValueFrom(this.get(generationId));
-        const generation = response.data;
-        if (!generation) throw new Error('generation expired');
-        this.setState({
-          ...generation,
-          polling: generation.status === 'pending',
-        });
-        if (generation.status === 'pending') this.schedule(generationId, tick);
-      } catch {
-        const previous = this.states()[generationId];
-        if (previous)
-          this.setState({
-            ...previous,
-            status: 'failed',
-            polling: false,
-            unavailable: true,
-          });
-      }
-    };
-    this.schedule(generationId, tick, 0);
+  private stopPoll(generationId: string): void {
+    const subscription = this.polls.get(generationId);
+    this.polls.delete(generationId);
+    subscription?.unsubscribe();
   }
 
-  private schedule(generationId: string, tick: () => void, delay = 600): void {
-    this.timers.set(generationId, setTimeout(tick, delay));
+  private poll(generationId: string): void {
+    if (this.polls.has(generationId)) return;
+    const owner = new Subscription();
+    this.polls.set(generationId, owner);
+    const request = (delay: number) =>
+      timer(delay).pipe(
+        switchMap(() => this.get(generationId)),
+        map((response) => {
+          if (!response.data) throw new Error('generation expired');
+          return response.data;
+        }),
+      );
+    owner.add(
+      request(0)
+        .pipe(
+          expand((generation) =>
+            generation.status === 'pending' ? request(600) : EMPTY,
+          ),
+          finalize(() => this.polls.delete(generationId)),
+        )
+        .subscribe({
+          next: (generation) =>
+            this.setState({
+              ...generation,
+              polling: generation.status === 'pending',
+            }),
+          error: () => {
+            const previous = this.states()[generationId];
+            if (previous)
+              this.setState({
+                ...previous,
+                status: 'failed',
+                polling: false,
+                unavailable: true,
+              });
+          },
+        }),
+    );
   }
 
   private setState(state: LinkGenerationView): void {

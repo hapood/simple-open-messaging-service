@@ -4,6 +4,7 @@ import { PlaygroundSocialState } from './playground-social-state';
 import { PlaygroundUserService } from './playground-user.mock';
 import { PlaygroundGroupService } from './playground-group.mock';
 import { PlaygroundMemberProfiles } from './playground-profile.mock';
+import { BusinessCode } from '../app/services/biz-code';
 import { currentGroupAnnouncement } from '../app/services/group-announcement';
 import { parseIncomingRequestHead } from '../../../shared/relationship-request';
 
@@ -23,6 +24,22 @@ describe('playground social contracts', () => {
     members = TestBed.inject(PlaygroundMemberProfiles);
   });
   afterEach(() => vi.useRealTimers());
+
+  it('initializes the federated friend with the correct namespace only once', () => {
+    expect(state.user('liam')).toBeUndefined();
+    expect(state.user('liam', 1)).toBeDefined();
+    const conversations = [...state.conversations.items()];
+    expect(conversations.find((item) => item.threadId === 6)).toMatchObject({
+      type: 'P2P',
+      account: 'liam',
+      publisherNamespaceId: 1,
+      conversationState: 'ACTIVE',
+      blocked: true,
+    });
+
+    state.initialize();
+    expect(state.conversations.items()).toEqual(conversations);
+  });
 
   it('pages the seven-day online window with decimal bigint IDs and no totals', async () => {
     const first = (
@@ -81,10 +98,13 @@ describe('playground social contracts', () => {
   it('resolves exact accounts, not display-name or prefix searches', async () => {
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emma' }))).data?.name,
-    ).toBe('Emma');
+    ).toBe('emma');
     expect(
       (await firstValueFrom(users.resolveUser({ account: 'emm' }))).code,
-    ).not.toBe(0);
+    ).toBe(BusinessCode.NOT_FOUND);
+    expect(
+      (await firstValueFrom(users.resolveUser({ account: 'liam' }))).code,
+    ).toBe(BusinessCode.NOT_FOUND);
     expect(
       (
         await firstValueFrom(
@@ -177,7 +197,6 @@ describe('playground social contracts', () => {
         .items()
         .find((item) => item.threadId === result.threadId),
     ).toMatchObject({
-      friendshipActive: false,
       conversationState: 'READ_ONLY',
     });
     expect(await users.localRelationship(state.user('maya')!)).toBe('NONE');
@@ -228,10 +247,9 @@ describe('playground social contracts', () => {
     );
     const group = state.conversations
       .items()
-      .find(
-        (item) => item.type === 'GROUP' && item.group.account === '!bookclub',
-      )!;
+      .find((item) => item.type === 'GROUP' && item.account === '!bookclub')!;
     await firstValueFrom(groups.leaveGroup({ groupId: group.threadId }));
+
     await firstValueFrom(
       users.requestRelationship({
         account: '!bookclub',
@@ -258,40 +276,35 @@ describe('playground social contracts', () => {
       .find((item) => item.threadId === result.threadId)!;
     expect(thread).toMatchObject({
       role: 'OWNER',
-      group: { name: 'New team', memberCount: 1 },
-      groupMetaTargetFeedId: '1',
+      profile: { name: 'New team' },
+      meta: { memberCount: 1 },
+      groupMetaFeedEndId: '1',
     });
     await expect(
       firstValueFrom(groups.leaveGroup({ groupId: result.groupId })),
     ).rejects.toThrow('Transfer ownership');
   });
 
-  it('distinguishes MEMBER, AVAILABLE and INVITED candidates without auto-joining', async () => {
-    const candidates = (
-      await firstValueFrom(groups.queryInviteCandidates({ groupId: 2 }))
-    ).data!.data;
-    expect(candidates).toMatchObject([
-      { account: 'alice', state: 'MEMBER' },
-      { account: 'liam', state: 'AVAILABLE' },
-    ]);
+  it('retains sent snapshots and rejects duplicate invitations without auto-joining', async () => {
+    state.activateFriend(state.user('emma')!);
     const params = {
       groupId: 2,
       users: [
         {
-          account: 'liam',
+          account: 'emma',
           namespaceId: 0,
-          snapshot: { displayName: 'Liam snapshot', avatar: null },
+          snapshot: { displayName: 'Emma snapshot', avatar: null },
         },
       ],
     };
     const response = (await firstValueFrom(groups.inviteUsers(params))).data!;
-    expect(response.invited).toEqual([{ account: 'liam', namespaceId: 0 }]);
+    expect(response.invited).toEqual([{ account: 'emma', namespaceId: 0 }]);
     expect(response.skipped).toEqual([]);
     expect(await members.queryPage(2, { take: 50 })).toHaveLength(5);
     expect(
       (await firstValueFrom(groups.inviteUsers(params))).data!.skipped[0]
         .reason,
-    ).toBe('INVITED');
+    ).toBe('ALREADY_INVITED');
     const invite = (
       await firstValueFrom(groups.queryInvitations({ groupId: 2 }))
     ).data!.items[0];
@@ -302,13 +315,6 @@ describe('playground social contracts', () => {
     await firstValueFrom(
       groups.revokeInvitation({ groupId: 2, requestId: invite.id }),
     );
-    expect(
-      (
-        await firstValueFrom(
-          groups.queryInviteCandidates({ groupId: 2, search: 'Liam' }),
-        )
-      ).data!.data[0].state,
-    ).toBe('AVAILABLE');
     expect(
       (await firstValueFrom(groups.queryInvitations({ groupId: 2 }))).data!
         .items[0].status,
@@ -337,10 +343,11 @@ describe('playground social contracts', () => {
     expect(
       await members.queryPage(2, { take: 50, search: 'Ivy' }),
     ).toMatchObject([{ account: 'ivy', role: 'MEMBER' }]);
-    expect(
-      state.conversations.items().find((item) => item.threadId === 2)?.group
-        ?.memberCount,
-    ).toBe(6);
+    const updatedGroup = state.conversations
+      .items()
+      .find((item) => item.threadId === 2);
+    if (updatedGroup?.type !== 'GROUP') throw new Error('group expected');
+    expect(updatedGroup.meta.memberCount).toBe(6);
     const jack = page.items.find((record) => record.author.account === 'jack')!;
     await firstValueFrom(
       groups.rejectJoinRequest({ groupId: 2, requestId: jack.id }),
@@ -414,15 +421,15 @@ describe('playground social contracts', () => {
     await firstValueFrom(groups.setAnnouncement(2, 'Announcement'));
     const thread = () =>
       state.conversations.items().find((item) => item.threadId === 2)!;
-    expect(thread().group).toMatchObject({
+    expect(thread().profile).toMatchObject({
       name: 'Updated',
-      description: 'New description',
-      avatar: '',
+      bio: 'New description',
     });
-    expect(currentGroupAnnouncement(thread())).toEqual({
-      feedId: '2',
-      text: 'Announcement',
-    });
+    const announcement = currentGroupAnnouncement(thread())!;
+    expect(announcement.feedId).toBe('2');
+    expect(announcement.text).toBe('Announcement');
+    expect(announcement.createdAt).toBeGreaterThan(0);
+    expect(announcement.originCreatedAt).toBeNull();
     await firstValueFrom(groups.markAnnouncementRead(2, 2));
     await firstValueFrom(groups.markAnnouncementRead(2, 1));
     expect(thread().announcementReadFeedId).toBe(2);
@@ -433,7 +440,6 @@ describe('playground social contracts', () => {
     ).toBe('PENDING');
     expect(thread()).toMatchObject({
       conversationState: 'READ_ONLY',
-      group: { dissolvedAt: expect.any(Number) },
     });
   });
 });

@@ -13,7 +13,6 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AllExceptionsFilter } from '../common/exception.filter.js';
 import { BusinessCode } from '../common/business-code.js';
-import { DatabaseService } from '../database/database.service.js';
 import {
   AuthPolicyRegistry,
   AUTH_RATE_LIMIT_POLICIES,
@@ -73,7 +72,7 @@ describe('rate-limit HTTP integration', () => {
     expectNewLimiterResponse(blocked);
   });
 
-  it('aggregates distinct IPv6 clients in the same /64 prefix', async () => {
+  it('aggregates distinct IPv6 clients in the same /56 prefix', async () => {
     const app = await createApp('enforce', true);
 
     await post(app, '2001:db8:1234:5678::1').expect(HttpStatus.OK);
@@ -132,22 +131,12 @@ async function createApp(
     controllers: [ProbeController],
     providers: [
       ClientIdentityService,
-      RateLimitModeService,
       {
-        // Cover the production configuration path (defaults -> DB override):
-        // the stub answers the systemSetting row the service loads in
-        // onModuleInit, replacing the former SOMS_TEST_* token seam.
-        provide: DatabaseService,
-        useValue: {
-          db: {
-            query: {
-              systemSetting: {
-                findFirst: async () => ({
-                  value: JSON.stringify(configuration),
-                }),
-              },
-            },
-          },
+        provide: RateLimitModeService,
+        useFactory: () => {
+          const service = new RateLimitModeService();
+          service.setConfiguration(configuration);
+          return service;
         },
       },
       RateLimitService,

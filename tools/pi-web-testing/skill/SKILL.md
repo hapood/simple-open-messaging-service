@@ -30,7 +30,10 @@ credentials, restarting services or mutating pre-existing business data.
 
 Read `docs/development/browser-testing.md`, then the selected plan:
 
-- Quick: `docs/development/browser-e2e-quick-test-plan.md` (two nodes).
+- Quick: `docs/development/browser-e2e-quick-test-plan.md` (two nodes). Its
+  chapter sections are the assertion contract; execute one round manifest at a
+  time from `docs/development/browser-e2e-quick-rounds/` (each enumerates at
+  most ~32 case IDs) and register exactly the manifest's cases.
 - Full: `docs/development/browser-e2e-test-plan.md` (three nodes, including
   cross-cutting and viewport matrices). Browser runs never include Android 11.x.
 
@@ -46,14 +49,27 @@ their language.
 
 - `run.json` is authoritative. `progress.md`, `handoff.md`, and `bugs/` are
   tool-generated projections; do not edit them with shell/file tools.
-- Before business mutations, expand every selected matrix into stable,
-  assertion-sized case IDs with `webtest_run register`, using `cases: [{id, title}]`
-  in batches of up to 200. Registration creates only `NOT RUN` cases, preserves
-  existing results and evidence, and rejects duplicate IDs or changed existing
-  titles atomically. Use `record` for individual verdicts. Both actions return
-  compact summaries; use `status` when the full run state is needed.
-  Initial chapter placeholders are NOT coverage. Complete a chapter only after
-  every required child item has a recorded verdict.
+- Before business mutations in quick mode, register exactly one round manifest
+  from `docs/development/browser-e2e-quick-rounds/` (each enumerates at most ~32
+  case IDs) with `webtest_run register`, using `cases: [{id, title}]`.
+  In full mode, expand the selected full-plan matrices into stable,
+  assertion-sized IDs and register one bounded round at a time (up to 200 cases).
+  Registration creates only `NOT RUN` cases, preserves existing results and
+  evidence, rejects duplicate IDs or changed existing titles atomically, and
+  switches the status round to exactly that batch of case IDs; the common
+  prefix is its label, not its membership. Use `record`
+  for individual verdicts. All mutation actions (`register`, `record`, `pause`,
+  `decision`, `recover`, `checkpoint`, `finish`) return compact summaries —
+  progress counts, the latest issue digest and the next step.
+- `status` returns the active round view: the round's complete case list with
+  outcomes and evidence plus issue digests attached to the round's cases;
+  `status` with `id` returns that one case with its full issues. Rounds outside
+  the active one stay out of context — audit them with bounded reads/greps of
+  `run.json`, never a whole-file load. Initial chapter placeholders are NOT
+  coverage. Complete a round only after every registered item has a verdict.
+  Record each initial chapter placeholder as an aggregate only after all of
+  its required rounds have verdicts; preserve any defects and coverage gaps.
+  Register every required round before claiming the selected plan is complete.
 - Record each completed item immediately using `record`: ID, scope/title,
   outcome and concrete evidence. Use `checkpoint` with `next` for fixture,
   cleanup, profile mappings, build identities, next action and unresolved gaps.
@@ -61,7 +77,8 @@ their language.
   UI actions, assertions, expected/actual, observation deadline and artifact paths.
 - `finish` refuses unfinished items. Execution completion is not a PASS when
   BUG, BLOCKED, SKIPPED or NOT VERIFIED gaps remain.
-- `/webtest-status` shows progress. `/webtest-resume RUN_ID` reloads an existing
+- `/webtest-status` shows the active round view with the full document path.
+  `/webtest-resume RUN_ID` reloads an existing
   run with the shared local configuration, provided its mode/endpoints/account
   match. Startup offers use/modify; selecting use skips credential entry. `/reload`
   restores the session's progress run ID, not a session-specific credential copy.
@@ -150,20 +167,23 @@ other failures still require classification and an operator decision:
   unavailable fixture. Do not automatically reset/restart anything.
 
 For failures outside the routine test-error exception, call `webtest_run pause`
-with kind, title, evidence, optional case ID, and a
-concrete `proposal` describing exact files/behavior and required verification
-when a repair is appropriate. This persists an issue BEFORE showing the operator
-choices: retry, skip, stop, or authorize that proposed repair. Cancellation leaves
-the run paused. `webtest_run decision` reopens the decision dialog.
+with kind, title, evidence, optional case ID, and a concrete `proposal`
+describing exact files/behavior and required verification when a repair is
+appropriate. This persists an issue BEFORE showing the operator the two
+choices: approve and continue, or stop. Approving resumes the run; when the
+issue carries a repair proposal, the same approval authorizes only that
+proposal. Cancellation leaves the run paused. `webtest_run decision` reopens
+the decision dialog.
 
-For driver/shared-harness or product repairs, authorization applies ONLY to that issue/proposal. Once approved, perform
-its scoped edits and verification commands without asking again for each operation.
-Request new approval if scope expands. Do not use shell commands to evade source
-edit approval or perform unauthorized destructive operations. Browser mutations
-stay paused during repair. Run the focused harness checks, then request a new operator retry decision;
-re-run the failed case before assigning a verdict. A later driver mismatch needs
-new authorization; earlier approval never becomes blanket permission. A shell
-command or temporary step must not be used to evade these gates.
+For driver/shared-harness or product repairs, authorization applies ONLY to
+that issue/proposal. Once approved, perform its scoped edits and verification
+commands without asking again for each operation, then rerun the failed case
+before assigning a verdict. Request new approval if scope expands. Do not use
+shell commands to evade source edit approval or perform unauthorized
+destructive operations. A later pause needs new authorization; earlier
+approval never becomes blanket permission. Skipping a defective case is not
+an operator choice: record SKIPPED with a reason and continue with independent
+cases. A shell command or temporary step must not be used to evade these gates.
 
 ## Result discipline and reusable knowledge
 

@@ -1,10 +1,10 @@
 [package]
 name = "soms-client"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 description = "SOMS cross-platform client (Tauri v2 shell around the Angular consumer client)"
 authors = ["hapood"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.89"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -19,6 +19,7 @@ cc = "1.2"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -39,7 +40,7 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 # rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
 # "stream" feeds the desktop SSE supervisor's `resp.bytes_stream()` + the shell-wide
 # `upload_stream_file` file stream;
@@ -62,9 +63,6 @@ uuid = { version = "1", features = ["v4"] }
 # backend requests and media responses. They are unrelated to frontend application updates.
 sha2 = { version = "0.10", default-features = false }
 base64 = "0.22"
-# Chat-list thumbnails are generated beside the authenticated native media cache. Keep codecs explicit
-# so the shell does not pull image formats the message composer cannot produce.
-image = { version = "0.24.9", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 flate2 = "1"
 futures-util = "0.3"
 tar = "0.4"
@@ -88,15 +86,20 @@ tauri-plugin-barcode-scanner = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Kotlin hands ContentResolver/recorder file descriptors to the shared Rust uploader directly.
-# `jni` is only the thin command boundary (file bytes never cross JNI).
+# Upload file bytes stay in Rust; notification and presentation avatars use binary JNI delivery.
 jni = "0.21"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Create the native window before attaching its sole WebView so launch rendering never waits for WebKit.
+tauri = { version = "=2.12.5", features = ["unstable"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
-# Retain desktop notification handles for replacement and dismissal.
-notify-rust = "4.18"
+# Address the exact notification daemon for submission, replacement and callbacks.
 zbus = "5.16"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Attach the WebView only after the native launch presentation is visible.
+tauri = { version = "=2.12.5", features = ["unstable"] }
 windows = { version = "0.61.3", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

@@ -1,80 +1,163 @@
 import { prefersReducedMotion } from './motion-utils';
 
-/**
- * First-Last-Invert-Play for a reordered DOM list, mirroring the kernel's `cb-move` technique
- * (chat-box-scroller.ts flipMove): compute each moved row's old→new delta, set it as a CSS var
- * synchronously, then on the next rAF add a class whose @keyframes animate `translateY(var)` →
- * `translateY(0)`. A row with no previous rect (a newly-inserted row) gets the enter class instead
- * (opacity + downward slide). The @keyframes / classes live in the host component's SCSS
- * (`.tl-flip-move` / `.tl-flip-enter`) so the animation is pure CSS — no Motion/WAAPI typing — and
- * rAF timing means the `from` keyframe applies on the first painted frame after the reorder (no
- * flash, no forced reflow).
- *
- * Rows are matched by a `data-flip-key` attribute (the threadId, kept stable across updates by the
- * `@for … track` in the host template, so Angular reuses — not recreates — moved DOM nodes; that is
- * what makes the translate delta meaningful). Returns the fresh rect map (the new "before" snapshot
- * for the next insert). `prefers-reduced-motion` skips the class adds (rows snap) but still refreshes
- * the rect map.
+export type FlipListRow = {
+  /** Position in the complete list, independent of the rendered window. */
+  top: number;
+  /** Changes only when the owning row may have actively changed order. */
+  revision: string;
+};
+
+export type FlipListLayout = ReadonlyMap<string, FlipListRow>;
+
+type RowSnapshot = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+  ghost?: HTMLElement;
+};
+
+/** Animates a fixed-height virtual window against the complete keyed layout.
+ * Scrolling/recycling is not an insertion. Only visible rows retain visual clones;
+ * the full layout contains data only. The virtual window owns its outer transform,
+ * while these animations affect the inner rows without changing layout height.
  */
-export function playFlipList(
-  container: HTMLElement,
-  prevRects: Map<string, DOMRect>,
-): Map<string, DOMRect> {
-  const reduced = prefersReducedMotion();
-  const next = new Map<string, DOMRect>();
-  // INVERT + queue PLAY for each row.
-  for (const el of Array.from(container.querySelectorAll<HTMLElement>('[data-flip-key]'))) {
-    const key = el.dataset['flipKey'];
-    if (!key) continue;
-    const rect = el.getBoundingClientRect();
-    next.set(key, rect);
-    if (reduced) continue;
-    const prev = prevRects.get(key);
-    if (prev) {
-      const dy = prev.top - rect.top;
-      if (Math.abs(dy) > 1) queueMove(el, dy);
-    } else {
-      queueEnter(el);
-    }
-  }
-  return next;
-}
+export class FlipListAnimator {
+  private previous = new Map<string, RowSnapshot>();
+  private previousLayout?: FlipListLayout;
+  private previousScrollTop = 0;
+  private cleanups: (() => void)[] = [];
 
-/** FLIP a moved row: set the delta var now, add the @keyframes class on the next frame so the
- *  `from` (translateY(dy) = old position) paints first; clear on animationend. */
-function queueMove(el: HTMLElement, dy: number): void {
-  el.style.setProperty('--tl-flip-dy', `${dy}px`);
-  // Restart-safe: clear a stale class so re-adding actually restarts the animation.
-  el.classList.remove('tl-flip-move');
-  requestAnimationFrame(() => {
-    el.classList.add('tl-flip-move');
-    el.addEventListener(
-      'animationend',
-      () => {
-        el.classList.remove('tl-flip-move');
-        el.style.removeProperty('--tl-flip-dy');
-      },
-      { once: true },
+  play(container: HTMLElement, layout: FlipListLayout): void {
+    const scrollTop = container.scrollTop;
+    const scrolled = scrollTop !== this.previousScrollTop;
+    const changed = layout !== this.previousLayout;
+    if (changed || scrolled) this.cancel();
+    const next = new Map<string, RowSnapshot>();
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-flip-key]'),
     );
-  });
-}
-
-/** Enter animation for a newly-inserted row: opacity + downward slide, cleared on animationend. */
-function queueEnter(el: HTMLElement): void {
-  el.classList.remove('tl-flip-enter');
-  requestAnimationFrame(() => {
-    el.classList.add('tl-flip-enter');
-    el.addEventListener('animationend', () => el.classList.remove('tl-flip-enter'), { once: true });
-  });
-}
-
-/** Snapshot the current rects of every keyed row, with no animation. Use to keep the "before" map
- *  fresh across renders that should NOT animate (initial load, normal message bumps, filter changes). */
-export function snapshotFlipRects(container: HTMLElement): Map<string, DOMRect> {
-  const map = new Map<string, DOMRect>();
-  for (const el of Array.from(container.querySelectorAll<HTMLElement>('[data-flip-key]'))) {
-    const key = el.dataset['flipKey'];
-    if (key) map.set(key, el.getBoundingClientRect());
+    // Read all layout before writing animations or inserting outgoing overlays.
+    for (const row of rows) {
+      const key = row.dataset['flipKey'];
+      const position = key ? layout.get(key) : undefined;
+      if (!key || !position) continue;
+      const top = position.top;
+      const height = row.offsetHeight;
+      const visible =
+        top + height > scrollTop && top < scrollTop + container.clientHeight;
+      next.set(key, {
+        top,
+        left: row.offsetLeft,
+        width: row.offsetWidth,
+        height,
+        ghost: visible ? (row.cloneNode(true) as HTMLElement) : undefined,
+      });
+    }
+    if (
+      this.previousLayout &&
+      changed &&
+      !scrolled &&
+      !prefersReducedMotion()
+    ) {
+      // A row can leave the rendered window because it was promoted out of view.
+      // Preserve its visible exit, but do not mistake ordinary recycling for removal.
+      for (const [key, old] of this.previous) {
+        const before = this.previousLayout.get(key);
+        const after = layout.get(key);
+        const outgoing =
+          !after ||
+          (before?.top !== after.top && before?.revision !== after.revision);
+        if (outgoing && old.ghost && typeof old.ghost.animate === 'function')
+          this.fadeOutgoing(container, old);
+      }
+      for (const row of rows) {
+        const key = row.dataset['flipKey']!;
+        const current = next.get(key);
+        if (!current || typeof row.animate !== 'function') continue;
+        // Look up the old position even if the row was previously off screen.
+        const before = this.previousLayout.get(key);
+        const after = layout.get(key)!;
+        const dy = before ? before.top - current.top : 0;
+        const incoming =
+          !before || (dy !== 0 && before.revision !== after.revision);
+        if (incoming) {
+          if (current.ghost) {
+            this.animate(row, [
+              { opacity: 0, transform: 'translateX(-32px)' },
+              { opacity: 1, transform: 'translateX(0)' },
+            ]);
+          }
+        } else if (
+          dy !== 0 &&
+          Math.abs(dy) <= container.clientHeight &&
+          (this.previous.get(key)?.ghost || current.ghost)
+        ) {
+          this.animate(row, [
+            { transform: `translateY(${dy}px)` },
+            { transform: 'translateY(0)' },
+          ]);
+        }
+      }
+    }
+    this.previous = next;
+    this.previousLayout = layout;
+    this.previousScrollTop = scrollTop;
   }
-  return map;
+
+  destroy(): void {
+    this.cancel();
+    this.previous.clear();
+    this.previousLayout = undefined;
+    this.previousScrollTop = 0;
+  }
+
+  private cancel(): void {
+    for (const cleanup of this.cleanups.splice(0)) cleanup();
+  }
+
+  private animate(row: HTMLElement, frames: Keyframe[]): void {
+    const animation = row.animate(frames, {
+      duration: 300,
+      easing: 'cubic-bezier(0.32, 0.72, 0, 1)',
+    });
+    this.cleanups.push(() => animation.cancel());
+  }
+
+  private fadeOutgoing(container: HTMLElement, old: RowSnapshot): void {
+    const ghost = old.ghost!;
+    ghost.removeAttribute('data-flip-key');
+    ghost.removeAttribute('id');
+    ghost
+      .querySelectorAll('[id]')
+      .forEach((node) => node.removeAttribute('id'));
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.inert = true;
+    Object.assign(ghost.style, {
+      position: 'absolute',
+      top: `${old.top}px`,
+      left: `${old.left}px`,
+      width: `${old.width}px`,
+      height: `${old.height}px`,
+      pointerEvents: 'none',
+      zIndex: '1',
+    });
+    container.append(ghost);
+    const animation = ghost.animate(
+      [
+        { opacity: 1, transform: 'translateX(0)' },
+        { opacity: 0, transform: 'translateX(32px)' },
+      ],
+      {
+        duration: 300,
+        easing: 'cubic-bezier(0.32, 0.72, 0, 1)',
+        fill: 'forwards',
+      },
+    );
+    animation.onfinish = () => ghost.remove();
+    this.cleanups.push(() => {
+      animation.cancel();
+      ghost.remove();
+    });
+  }
 }

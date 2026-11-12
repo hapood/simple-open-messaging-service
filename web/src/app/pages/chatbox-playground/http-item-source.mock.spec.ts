@@ -5,7 +5,11 @@
  * positive seq), ascending order, and boundary. latency=0 makes init/getOlder/getNewer resolve in the same frame.
  * Mirrors production semantics (raw single-image msgs; album merging is the kernel's mergeItems job).
  */
-import { MockItemSource, MockUserService } from './http-item-source.mock';
+import {
+  MockItemSource,
+  MockUserService,
+  mockSender,
+} from './http-item-source.mock';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type {
   ChatItemData,
@@ -94,6 +98,36 @@ describe('MockItemSource (cursor contract)', () => {
     const newer = await s.getNewer(100, 10);
     expect(newer.map((i) => i.id)).toEqual([101, 102]);
     expect(newer[1].boundary).toBe('newest');
+  });
+
+  it('a sender-carrying live push under a real-account creator keeps its name (no Unknown fallback)', async () => {
+    const s = new MockItemSource(100, 0, new MockUserService(), 1);
+    await s.init(-1, 100, 0);
+    // Live ticker pushes are authored under real playground accounts, which the
+    // synthetic user-N profile table cannot resolve; the push carries its own
+    // revision-backed sender (mirroring production toMsgData). shape must pass
+    // that sender and the item's name through — the creator lookup misses.
+    const base = msg(101, false).data;
+    if (base.type !== 'msg') throw new Error('expected a msg item');
+    const live: CbItem<ChatItemData> = {
+      id: 101,
+      data: {
+        ...base,
+        creator: JSON.stringify([0, 'alice']),
+        name: 'Alice',
+        sender: mockSender(
+          { account: 'alice', namespaceId: 0, profileRev: 1 },
+          'Alice',
+        ),
+      },
+    };
+    s.pushLive([live]);
+    const newer = await s.getNewer(100, 10);
+    expect(newer).toHaveLength(1);
+    expect(newer[0].data.type).toBe('msg');
+    if (newer[0].data.type !== 'msg') return;
+    expect(newer[0].data.name).toBe('Alice');
+    expect(newer[0].data.sender?.kind).toBe('demand');
   });
 
   it('getNewer returns reals only + reconciles pending by clientMessageId (never appends pending)', async () => {
@@ -187,14 +221,10 @@ describe('MockItemSource (cursor contract)', () => {
     )!;
     expect(self.data.name).toBe('Me'); // ensureProfiles from MockUserService (buildItems raw msg name placeholder '')
     expect(self.data.isSelf).toBe(true); // isSelf = creator === userId(1)
-    expect(self.data.avatarIdentityId).toBe(
-      JSON.stringify([0, 'user-1']),
-    );
+    expect(self.data.avatarIdentityId).toBe(JSON.stringify([0, 'user-1']));
     expect(other.data.name).toBe('Alice');
     expect(other.data.isSelf).toBe(false);
-    expect(other.data.avatarIdentityId).toBe(
-      JSON.stringify([0, 'user-2']),
-    );
+    expect(other.data.avatarIdentityId).toBe(JSON.stringify([0, 'user-2']));
   });
 
   // failPending / retryPending: a failed send stays the SAME entity (stable clientMessageId) and sinks to the tail of

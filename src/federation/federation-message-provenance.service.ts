@@ -9,7 +9,7 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
-/** A single provenance query in a `POST /s2s/v1/message-provenance` request. */
+/** A single provenance query in a `POST /somfp/v1/message-provenance` request. */
 export interface MessageProvenanceQuery {
   thread: { account: string; peerAccount: string } | { account: string };
   seq: number;
@@ -24,7 +24,7 @@ export interface MessageProvenanceResult {
 }
 
 /**
- * Implements `POST /s2s/v1/message-provenance` (Federation v1 Message Provenance Query). A
+ * Implements `POST /somfp/v1/message-provenance` (Federation v1 Message Provenance Query). A
  * recognized peer asks whether this server published a message at a given `(thread, seq)` whose
  * canonical `content` hashes to the supplied `payloadDigest`. The answer is per-query and one of
  * `yes`, `no`, or `declined`.

@@ -1,6 +1,5 @@
-import { accountProfileFields } from '../user/account-profile.js';
 import { Injectable } from '@nestjs/common';
-import { and, count, desc, eq, ilike, isNull } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   admin,
@@ -13,7 +12,7 @@ import { AdminAuthService } from './admin-auth.service.js';
 import { AdminRole } from '../database/enums.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import type { AdminManageListDto, AdminSetRoleDto } from './admin.dto.js';
+import type { AdminSetRoleDto } from './admin.dto.js';
 
 import { SessionTokenService } from '../auth/session-token.service.js';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -42,53 +41,6 @@ export class AdminManageService {
     private readonly sessions: SessionTokenService,
     private readonly events: EventEmitter2,
   ) {}
-
-  async list(dto: AdminManageListDto) {
-    const where = dto.search
-      ? ilike(user.account, `%${dto.search}%`)
-      : undefined;
-    const [rows, total] = await Promise.all([
-      this.database.db
-        .select({
-          id: admin.id,
-          userId: admin.userId,
-          role: admin.role,
-          enabled: admin.enabled,
-          twoFactorEnabled: admin.twoFactorEnabled,
-          lastLoginAt: admin.lastLoginAt,
-          lastLoginIp: admin.lastLoginIp,
-          createdAt: admin.createdAt,
-          account: user.account,
-          name: accountProfileFields(user).name,
-        })
-        .from(admin)
-        .innerJoin(user, eq(user.id, admin.userId))
-        .where(where)
-        .orderBy(desc(admin.createdAt))
-        .offset(dto.skip ?? 0)
-        .limit(dto.take ?? 50),
-      this.database.db
-        .select({ value: count() })
-        .from(admin)
-        .innerJoin(user, eq(user.id, admin.userId))
-        .where(where)
-        .then(([row]) => row.value),
-    ]);
-    // Flatten user.account/name onto the row so the response is a flat admin record.
-    const list = rows.map((r) => ({
-      id: r.id,
-      userId: r.userId,
-      account: r.account,
-      name: r.name,
-      role: r.role,
-      enabled: r.enabled,
-      twoFactorEnabled: r.twoFactorEnabled,
-      lastLoginAt: r.lastLoginAt,
-      lastLoginIp: r.lastLoginIp,
-      createdAt: r.createdAt,
-    }));
-    return { list, total };
-  }
 
   /** Grant only read-only access. Role escalation is a separate super-admin operation. */
   async grantViewer(userId: number) {

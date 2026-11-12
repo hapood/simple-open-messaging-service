@@ -45,7 +45,7 @@ export interface RelationshipIntentState extends Record<string, unknown> {
   note: string;
   messageEndSeq: number;
   tombstoneEndSeq: number;
-  requestedAt: Date | null;
+  statusChangedAt: Date;
   expiresAt: Date | null;
   snapshot?: RequestSnapshot | null;
 }
@@ -101,7 +101,7 @@ type RawIntent = {
   note: string;
   messageEndSeq: number;
   tombstoneEndSeq: number;
-  requestedAt: Date | null;
+  statusChangedAt: Date;
   expiresAt: Date | null;
   snapshot?: RequestSnapshot | null;
 };
@@ -571,11 +571,13 @@ export class RelationshipIntentService {
       if (params.status === 'REQUESTED' && reverseIsCurrent)
         status = 'ACCEPTED';
     }
-    const requestedAt = status !== 'REVOKED' ? new Date() : null;
+    const statusChangedAt = new Date();
     const expiresAt =
       status === 'REQUESTED'
         ? (params.expiresAt ??
-          new Date(requestedAt!.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS))
+          new Date(
+            statusChangedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
+          ))
         : null;
     const direction = params.direction;
 
@@ -603,7 +605,7 @@ export class RelationshipIntentService {
         },
         threadId: params.threadId,
         note: params.note ?? '',
-        requestedAt,
+        statusChangedAt,
         expiresAt,
         ...requestWrite,
       }),
@@ -1000,7 +1002,7 @@ export class RelationshipIntentService {
         note: true,
         messageEndSeq: true,
         tombstoneEndSeq: true,
-        requestedAt: true,
+        statusChangedAt: true,
         expiresAt: true,
       },
     });
@@ -1028,7 +1030,7 @@ export class RelationshipIntentService {
         status: relationshipIntent.status,
         profileRev: relationshipIntent.profileRev,
         note: relationshipIntent.note,
-        requestedAt: relationshipIntent.requestedAt,
+        statusChangedAt: relationshipIntent.statusChangedAt,
         expiresAt: relationshipIntent.expiresAt,
       })
       .from(relationshipIntent)

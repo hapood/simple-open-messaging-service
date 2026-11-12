@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Message
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document is the entry point for the federation message specification:
 

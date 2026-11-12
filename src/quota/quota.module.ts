@@ -4,7 +4,8 @@ import { UserQuotaService } from './user-quota.service.js';
 
 /**
  * Quota services share infrastructure but keep separate accounting boundaries: federated peers are
- * domain-scoped, while local accounts are userId-scoped. Enforcement and admin surfaces import
+ * keyed by namespace ID, while local accounts are keyed by account. Only policy is durable;
+ * daily usage and temporary grants are process-local. Enforcement and admin surfaces import
  * this module explicitly to inject the appropriate service.
  */
 @Module({

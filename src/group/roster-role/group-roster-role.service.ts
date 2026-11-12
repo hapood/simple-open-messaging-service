@@ -1,4 +1,9 @@
 import { and, eq, sql } from 'drizzle-orm';
+import { captureThreadStateUpdatesInTx } from '../../client-state-feed/capture-thread-state-updates.js';
+import type {
+  ClientStateFeedService,
+  PendingClientStateFeedUpdate,
+} from '../../client-state-feed/client-state-feed.service.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import {
   requireGroupThreadContentLockUnderGroupInTx,
@@ -59,6 +64,7 @@ type RosterRoleRefusal = Exclude<GroupRosterRoleOutcome, { status: 'APPLIED' }>;
 
 export interface GroupRosterRoleDependencies {
   database: DatabaseService;
+  clientFeed: Pick<ClientStateFeedService, 'notifyFeedUpdates'>;
   groupMeta: Pick<GroupMetaFeedService, 'reconcileMembersInTx'>;
   messages: Pick<MessageService, 'writeSystemMessageInTx'>;
 }
@@ -110,12 +116,33 @@ export class GroupRosterRoleService {
   async execute(
     params: GroupRosterRoleCommand,
   ): Promise<GroupRosterRoleOutcome> {
-    return this.deps.database.db.transaction(async (tx) => {
-      const validated = await this.lockAndValidateInTx(tx, params);
-      if ('outcome' in validated) return validated.outcome;
-      await this.applyInTx(validated);
-      return { status: 'APPLIED' };
-    });
+    let updates: PendingClientStateFeedUpdate[] = [];
+    const outcome = await this.deps.database.db.transaction(
+      async (tx): Promise<GroupRosterRoleOutcome> => {
+        const validated = await this.lockAndValidateInTx(tx, params);
+        if ('outcome' in validated) return validated.outcome;
+        await this.applyInTx(validated);
+        // A demoted manager is absent from the manager fanout audience. Capture
+        // its committed thread head explicitly so offline request cards can clear.
+        const demoted = validated.changes
+          .filter(
+            (change) =>
+              change.localId !== null &&
+              change.previousRole !== GroupRole.MEMBER &&
+              change.role === GroupRole.MEMBER,
+          )
+          .map((change) => change.localId!);
+        if (demoted.length)
+          updates = await captureThreadStateUpdatesInTx(
+            tx,
+            demoted,
+            'group-request-read',
+          );
+        return { status: 'APPLIED' };
+      },
+    );
+    if (updates.length) this.deps.clientFeed.notifyFeedUpdates(updates);
+    return outcome;
   }
 
   private async lockAndValidateInTx(

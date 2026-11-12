@@ -16,6 +16,7 @@ describe('RootPopupComponent presentation policy', () => {
     paneStack: signal<
       readonly {
         kind: string;
+        disableClose?: boolean;
       }[]
     >([]),
     back: vi.fn().mockName('back'),
@@ -119,5 +120,18 @@ describe('RootPopupComponent presentation policy', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(nav.back).toHaveBeenCalled();
+  });
+
+  it('does not dismiss via Escape when topmost dialog has disableClose=true', () => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      cancelable: true,
+    });
+    nav.paneStack.set([{ kind: 'dialog', disableClose: true }]);
+
+    component.onEscape(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(nav.back).not.toHaveBeenCalled();
   });
 });

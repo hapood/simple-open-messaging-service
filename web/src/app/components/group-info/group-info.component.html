@@ -23,14 +23,14 @@
     @if (!readOnly()) {
       <div class="identity">
         <span class="profile-avatar">
-          @if (group(); as identity) {
+          @if (userMsgTrd(); as thread) {
             <app-demand-avatar
               [type]="UserAvatarType.GROUP"
-              [name]="identity.name"
-              [account]="identity.account"
+              [name]="thread.profile.name"
+              [account]="thread.account"
               [domainSource]="{
                 type: 'namespace',
-                namespaceId: identity.namespaceId,
+                namespaceId: thread.publisherNamespaceId,
               }"
               [profile]="groupProfileRef()"
             />
@@ -39,10 +39,9 @@
       </div>
       <mat-card appearance="outlined" class="group-profile-card">
         <div class="profile-meta">
-          {{ group()?.account }}
-          @if (displayDomain()) {
-            &#64;{{ displayDomain() }}
-          }
+          {{ userMsgTrd()?.account }}{{
+            displayDomain() ? '@' + displayDomain() : ''
+          }}
         </div>
         <button
           class="group-profile-row"
@@ -51,9 +50,9 @@
           (click)="beginEdit()"
         >
           <span class="profile-copy">
-            <strong>{{ group()?.name }}</strong>
+            <strong>{{ userMsgTrd()?.profile?.name }}</strong>
             <span class="profile-description">{{
-              group()?.description || ('group.noDescription' | transloco)
+              userMsgTrd()?.profile?.bio || ('group.noDescription' | transloco)
             }}</span>
           </span>
           @if (isAdmin()) {
@@ -114,7 +113,7 @@
               >
                 {{ 'common.cancel' | transloco }}
               </button>
-              @if (group()?.announcement?.text) {
+              @if (groupMeta()?.announcementText) {
                 <button
                   type="button"
                   [disabled]="busy()"
@@ -195,7 +194,8 @@
           [disabled]="readOnly()"
           (click)="openMemberManager()"
           [attr.aria-label]="
-            'group.allMembers' | transloco: { count: group()?.memberCount ?? 0 }
+            'group.allMembers'
+              | transloco: { count: groupMeta()?.memberCount ?? 0 }
           "
         >
           <span class="avatar-stack" aria-hidden="true">
@@ -204,7 +204,11 @@
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [account]="m.account"
-                [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: m.publisherNamespaceId, profileNamespaceId: m.namespaceId }"
+                [domainSource]="{
+                  type: 'profile-namespace',
+                  publisherNamespaceId: m.publisherNamespaceId,
+                  profileNamespaceId: m.namespaceId,
+                }"
                 [profile]="memberProfileRef(m)"
                 [title]="m.name"
               />
@@ -223,7 +227,7 @@
             <span>
               {{
                 'group.members'
-                  | transloco: { count: group()?.memberCount ?? 0 }
+                  | transloco: { count: groupMeta()?.memberCount ?? 0 }
               }}
             </span>
           </span>
@@ -314,11 +318,6 @@
         }
       </div>
     }
-    @if (dissolved() && !readOnly()) {
-      <div class="muted center hint">
-        {{ 'group.dissolvedNote' | transloco }}
-      </div>
-    }
   </div>
 
   @if (editing()) {
@@ -341,17 +340,30 @@
       </app-page-header>
       <div class="profile-editor-body">
         <label class="avatar-edit">
-          @if (group(); as identity) {
-            <app-snapshot-avatar
-              [type]="UserAvatarType.GROUP"
-              [name]="nameEdit()"
-              [account]="identity.account"
-              [src]="avatarUrl()"
-              [domainSource]="{
-                type: 'namespace',
-                namespaceId: identity.namespaceId,
-              }"
-            />
+          @if (userMsgTrd(); as thread) {
+            @if (avatarPreviewUrl(); as preview) {
+              <app-snapshot-avatar
+                [type]="UserAvatarType.GROUP"
+                [name]="nameEdit()"
+                [account]="thread.account"
+                [src]="preview"
+                [domainSource]="{
+                  type: 'namespace',
+                  namespaceId: thread.publisherNamespaceId,
+                }"
+              />
+            } @else {
+              <app-demand-avatar
+                [type]="UserAvatarType.GROUP"
+                [name]="nameEdit()"
+                [account]="thread.account"
+                [domainSource]="{
+                  type: 'namespace',
+                  namespaceId: thread.publisherNamespaceId,
+                }"
+                [profile]="groupProfileRef()"
+              />
+            }
           }
           <span class="avatar-hint">{{
             'group.changeAvatarHint' | transloco
@@ -394,26 +406,32 @@
         "
         (back)="goBack()"
       />
-      <div class="manager-body" (scroll)="onRosterScroll($event)">
+      <div class="manager-body">
         <input
           class="member-search"
+          autocapitalize="off"
           [ngModel]="memberQuery()"
           (ngModelChange)="memberQuery.set($event)"
           [placeholder]="'group.searchMembers' | transloco"
         />
         <div class="section-label">
           {{
-            'group.allMembers' | transloco: { count: group()?.memberCount ?? 0 }
+            'group.allMembers'
+              | transloco: { count: groupMeta()?.memberCount ?? 0 }
           }}
         </div>
-        @for (m of filteredRoster(); track m.identityKey) {
+        <ng-template #memberRow let-m>
           <div class="member">
             <div class="member-main">
               <app-demand-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [account]="m.account"
-                [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: m.publisherNamespaceId, profileNamespaceId: m.namespaceId }"
+                [domainSource]="{
+                  type: 'profile-namespace',
+                  publisherNamespaceId: m.publisherNamespaceId,
+                  profileNamespaceId: m.namespaceId,
+                }"
                 [profile]="memberProfileRef(m)"
               />
               <div class="member-info">
@@ -471,6 +489,26 @@
               </mat-menu>
             }
           </div>
+        </ng-template>
+        <app-virtual-infinite-list
+          [items]="roster()"
+          [itemTemplate]="memberRow"
+          [itemKey]="memberItemKey"
+          [itemSize]="64"
+          [resetKey]="rosterReset()"
+          [loading]="loading() || loadingMore()"
+          [hasMore]="rosterHasMore() && !rosterError()"
+          (loadMore)="loadMoreMembers()"
+        />
+        @if (loading() || loadingMore()) {
+          <div class="muted center" role="status">
+            {{ 'common.loading' | transloco }}
+          </div>
+        }
+        @if (rosterError()) {
+          <button mat-button (click)="retryMembers()">
+            {{ 'common.retry' | transloco }}
+          </button>
         }
       </div>
     </div>

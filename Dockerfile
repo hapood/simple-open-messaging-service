@@ -8,7 +8,7 @@
 # caddy). The server build uses soms-build-base (Node + native compiler toolchain), which is never
 # copied into the published image. The server is API-only (Fastify); Caddy is the TLS edge and serves
 # frontends (web at /, admin at /admin/) + reverse-proxies /api/* and /uploads/* to the app. See
-# docker/init.sh (Caddyfile generation) + src/bootstrap.ts + Dockerfile.base (soms-base).
+# src/edge/caddyfile-renderer.ts (Caddyfile generation) + src/bootstrap.ts + Dockerfile.base (soms-base).
 
 # Base for the compile stages. Override via NODE_IMAGE if Docker Hub is unreachable (any reachable
 # registry mirror serving the same image):
@@ -36,6 +36,7 @@ COPY admin-web/package.json admin-web/package-lock.json ./admin-web/
 RUN --mount=type=cache,target=/root/.npm \
     cd admin-web && npm ci
 COPY admin-web ./admin-web
+COPY shared ./shared
 RUN cd admin-web && npm run build
 
 # ---- Stage 3: build server (reusable base supplies python/make/g++ for native Node dependencies) ----
@@ -51,7 +52,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY web/package.json web/package-lock.json ./web/
 COPY admin-web/package.json admin-web/package-lock.json ./admin-web/
 COPY src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
-COPY scripts/check-version-sync.mjs scripts/migrate-db.ts ./scripts/
+COPY scripts/check-version-sync.mjs scripts/android-version.mjs scripts/migrate-db.ts scripts/render-caddyfile.ts ./scripts/
 RUN node scripts/check-version-sync.mjs
 COPY src ./src
 COPY shared ./shared
@@ -76,7 +77,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 # App version, injected at build time (scripts/build-image.sh reads package.json). Surfaces in
-# `docker image inspect`, /client/compat (serverVersion), and /.well-known/somfp. Default "dev".
+# `docker image inspect`, /client/compat (serverVersion), and /somfp/discovery. Default "dev".
 ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 ENV NODE_ENV=production APP_VERSION=${APP_VERSION} SOMS_RUNTIME=docker
@@ -95,13 +96,14 @@ COPY --chown=node:node --from=web-build /build/web/dist/web/browser ./public/web
 COPY --chown=node:node --from=admin-build /build/admin-web/dist ./public/admin
 # Persistent state dir, mounted as a bind by compose. Pre-created + chowned to `node`.
 RUN mkdir -p data && chown -R node:node data
-# Image ENTRYPOINT (env-loader) + the node+caddy supervisor + the custom init program.
-COPY --chown=node:node docker/entrypoint.sh docker/supervisor.sh docker/init.sh /app/
-# Validate the renderer with the image's actual Caddy modules; test files are not stored in the image.
+# The node+caddy supervisor; Caddyfile rendering runs inside it as a bootstrap step
+# (node dist/scripts/render-caddyfile.js, compiled from scripts/render-caddyfile.ts).
+COPY --chown=node:node docker/supervisor.sh /app/
+# Validate the compiled renderer with the image's actual Caddy modules; test files are not stored in the image.
 RUN --mount=type=bind,source=docker,target=/checks \
-    chmod +x /app/entrypoint.sh /app/supervisor.sh /app/init.sh \
+    chmod +x /app/supervisor.sh \
     && mkdir -p /app/data/caddy && chown -R node:node /app/data/caddy \
-    && CADDY_BIN=/usr/bin/caddy bash /checks/init.test.sh
+    && CADDY_BIN=/usr/bin/caddy node /checks/caddy-render.check.mjs
 USER node
 # Reuse the existing pre-login client bootstrap response for HTTP liveness;
 # the federation health endpoint retains its separate signed contract.
@@ -112,7 +114,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
 # Only 7667 is published (Caddy edge: HTTPS web UI + API + SSE + federation S2S; +udp for HTTP/3).
 EXPOSE 7667/tcp
 EXPOSE 7667/udp
-# ENTRYPOINT renders Caddy's internal configuration for the default supervisor command, then execs it.
-# One-shot commands such as migrations receive their environment directly from Compose.
-ENTRYPOINT ["/app/entrypoint.sh"]
+# The supervisor renders Caddy's internal configuration itself (bootstrap step 0); one-shot commands
+# such as migrations receive their environment directly from Compose without any rendering.
 CMD ["/app/supervisor.sh"]

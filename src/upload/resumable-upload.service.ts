@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   appendFile,
   mkdir,
@@ -24,12 +24,10 @@ import { UserQuotaService } from '../quota/user-quota.service.js';
 import { MAX_FILE_NAME_LEN, type OutboundFilePayload } from './file-content.js';
 import { ContentType } from '../database/enums.js';
 import { dataDirectory } from '../common/data-directory.js';
-import { UploadService } from './upload.service.js';
+import { InvalidMediaDataError } from './media-tool.js';
+import { InvalidUploadMediaError, UploadService } from './upload.service.js';
 
-import {
-  MAX_MEDIA_FILE_BYTES,
-  MEDIA_UPLOAD_CHUNK_BYTES,
-} from '../../shared/media-upload-limits.js';
+import { MEDIA_UPLOAD_CHUNK_BYTES } from '../../shared/media-upload-limits.js';
 
 export const RESUMABLE_CHUNK_SIZE = MEDIA_UPLOAD_CHUNK_BYTES;
 
@@ -59,7 +57,7 @@ export interface UploadSessionView {
  *
  * Session status meanings:
  *   UPLOADING  — chunks still arriving (sidecar authoritative for the offset)
- *   COMPLETING — per-file done: digest + result recorded, staging retained, awaiting batch commit
+ *   COMPLETING — complete bytes accepted; server processing or batch commit remains pending
  *   COMPLETED  — the batch committed (message exists, bytes in the shard tree, staging removed)
  *   ABORTED    — terminal failure (admin abort / staged part lost); re-init resets for retry
  *
@@ -84,13 +82,7 @@ export class ResumableUploadService {
     dto: InitResumableUploadDto,
   ): Promise<UploadSessionView> {
     const stage = await this.requireStageForPart(userId, dto);
-    // The complete attachment limit is independent of transport chunk size and daily quota.
-    if (dto.totalBytes > MAX_MEDIA_FILE_BYTES) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'file too large',
-      );
-    }
+    await this.quota.assertFileSize(userId, dto.totalBytes);
     const originalName = basename(dto.originalName).slice(0, MAX_FILE_NAME_LEN);
     if (!originalName) {
       throw new BusinessException(
@@ -146,9 +138,7 @@ export class ResumableUploadService {
         .onConflictDoNothing()
         .returning();
       if (!row) return null;
-      await this.quota.preCheckFile(userId, 1, BigInt(dto.totalBytes), tx);
-      await this.quota.tickLax(userId, 'files', tx);
-      await this.quota.tickFileBytes(userId, BigInt(dto.totalBytes), tx);
+      await this.quota.claimFile(userId, 1, BigInt(dto.totalBytes), tx);
       return row;
     });
     if (!created) {
@@ -170,179 +160,7 @@ export class ResumableUploadService {
     return this.viewOf(created);
   }
 
-  /**
-   * Buffered transport ingestion onto the SAME session state machine as the resumable transport
-   * (batch-commit model). The whole file arrives in one request body: it is written wholesale to a
-   * fresh staging file, hashed and recorded (record-first), then the identical batch commit runs.
-   * Quota is claimed only by the transaction that inserts the session row — a retry of the same
-   * part identity reuses the row and is free, exactly like resumable init.
-   */
-  async ingestBuffered(
-    userId: number,
-    dto: {
-      clientMessageId: string;
-      partId: string;
-      position: number;
-      intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
-      originalName: string;
-      mimeType: string;
-    },
-    body: Buffer,
-  ): Promise<UploadSessionView> {
-    if (body.length === 0) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'empty upload part',
-      );
-    }
-    if (body.length > MAX_MEDIA_FILE_BYTES) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'file too large',
-      );
-    }
-    const originalName = basename(dto.originalName).slice(0, MAX_FILE_NAME_LEN);
-    if (!originalName) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid filename',
-      );
-    }
-    let session = await this.database.db.query.uploadSession.findFirst({
-      where: and(
-        eq(uploadSession.clientMessageId, dto.clientMessageId),
-        eq(uploadSession.partId, dto.partId),
-      ),
-    });
-    if (
-      session &&
-      (session.status === 'COMPLETING' || session.status === 'COMPLETED') &&
-      session.result
-    ) {
-      // The stage may already have been consumed by a previous commit attempt. A recorded result is
-      // sufficient to resume the batch commit without requiring PendingMedia to still exist.
-      await this.tryCommitBatch(dto.clientMessageId, userId);
-      return this.viewOf(await this.owned(userId, session.uploadId));
-    }
-    const stage = await this.requireStageForPart(userId, dto);
-    if (!session) {
-      const created = await this.database.db.transaction(async (tx) => {
-        const [row] = await tx
-          .insert(uploadSession)
-          .values({
-            clientMessageId: dto.clientMessageId,
-            partId: dto.partId,
-            position: dto.position,
-            partIntent: dto.intent,
-            creatorId: userId,
-            contentType: stage.contentType,
-            originalName,
-            mimeType: dto.mimeType || 'application/octet-stream',
-            totalBytes: BigInt(body.length),
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (!row) return null;
-        await this.quota.preCheckFile(userId, 1, BigInt(body.length), tx);
-        await this.quota.tickLax(userId, 'files', tx);
-        await this.quota.tickFileBytes(userId, BigInt(body.length), tx);
-        return row;
-      });
-      if (!created) {
-        const winner = await this.database.db.query.uploadSession.findFirst({
-          where: and(
-            eq(uploadSession.clientMessageId, dto.clientMessageId),
-            eq(uploadSession.position, dto.position),
-          ),
-        });
-        if (winner?.partId !== dto.partId) {
-          throw new BusinessException(
-            BusinessCode.VALIDATION_FAILED,
-            'upload position is already assigned to another part',
-          );
-        }
-        return this.ingestBuffered(userId, dto, body);
-      }
-      session = created;
-    }
-    return this.exclusive(session.uploadId, async () => {
-      let current = await this.owned(userId, session!.uploadId);
-      if (
-        current.creatorId !== userId ||
-        current.position !== dto.position ||
-        current.partIntent !== dto.intent ||
-        current.originalName !== originalName ||
-        current.mimeType !== (dto.mimeType || 'application/octet-stream') ||
-        current.totalBytes !== BigInt(body.length)
-      ) {
-        throw new BusinessException(
-          BusinessCode.VALIDATION_FAILED,
-          'upload metadata does not match the existing session',
-        );
-      }
-      const stored = current.result as {
-        payload?: OutboundFilePayload;
-      } | null;
-      if (
-        stored?.payload &&
-        (current.status === 'COMPLETING' || current.status === 'COMPLETED')
-      ) {
-        // Idempotent retry: the part is already recorded (and possibly committed).
-        await this.tryCommitBatch(dto.clientMessageId, userId);
-        return this.viewOf(await this.owned(userId, session!.uploadId));
-      }
-      if (current.status === 'ABORTED') {
-        current = await this.resetForRetry(current);
-      }
-      // UPLOADING: a fresh row, or a stale resumable attempt — the buffered body is authoritative
-      // and is written wholesale over the staging file.
-      const path = this.partPath(current.tmpKey);
-      await mkdir(this.tmpDir, { recursive: true });
-      await writeFile(path, body);
-      await this.writeSidecar(current.tmpKey, BigInt(body.length));
-      const resolved = await this.upload.resolveStagedPart(
-        path,
-        dto.intent,
-        originalName,
-        dto.mimeType,
-      );
-      if (resolved.overrideContentType !== undefined) {
-        await this.messages.updateStagedContentType(
-          dto.clientMessageId,
-          userId,
-          resolved.overrideContentType,
-        );
-      }
-      if (this.upload.casShardExists(resolved.digest)) {
-        await this.discardStaging(current.tmpKey);
-      }
-      const [updated] = await this.database.db
-        .update(uploadSession)
-        .set({
-          status: 'COMPLETING',
-          digest: resolved.digest,
-          result: {
-            payload: resolved.payload,
-            ...(resolved.overrideContentType
-              ? { overrideContentType: resolved.overrideContentType }
-              : {}),
-          },
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(uploadSession.id, current.id),
-            eq(uploadSession.status, 'UPLOADING'),
-          ),
-        )
-        .returning();
-      if (!updated) return this.invalid('upload aborted');
-      await this.tryCommitBatch(dto.clientMessageId, userId);
-      return this.viewOf(await this.owned(userId, session!.uploadId));
-    });
-  }
-
-  /** Shared stage validation for one upload part (both transports): the staged send must be pending,
+  /** Stage validation for one sequential upload part: the staged send must be pending,
    *  authored by the caller, and the part must match the staged message's shape — single-file types
    *  take position 0 with the message type equal to the intent; GALLERY takes any position below
    *  fileCnt. */
@@ -445,6 +263,10 @@ export class ResumableUploadService {
       let session = await this.owned(userId, uploadId);
       if (session.status === 'COMPLETED') return this.viewOf(session);
       if (session.status === 'ABORTED') return this.invalid('upload aborted');
+      if (session.status === 'COMPLETING' && session.digest && session.result) {
+        await this.tryCommitBatch(session.clientMessageId, userId);
+        return this.viewOf(await this.owned(userId, uploadId));
+      }
       const offset = await this.readSidecarOffset(session);
       if (offset !== session.totalBytes) {
         return this.invalid('upload is incomplete');
@@ -456,6 +278,21 @@ export class ResumableUploadService {
       if (BigInt(actual) !== session.totalBytes) {
         return this.invalid('temporary file size mismatch');
       }
+      // Persist the server-owned continuation before decoding or generating derivatives.
+      if (session.status === 'UPLOADING') {
+        const [completing] = await this.database.db
+          .update(uploadSession)
+          .set({ status: 'COMPLETING', updatedAt: new Date() })
+          .where(
+            and(
+              eq(uploadSession.id, session.id),
+              eq(uploadSession.status, 'UPLOADING'),
+            ),
+          )
+          .returning();
+        if (!completing) return this.invalid('upload state changed');
+        session = completing;
+      }
       let stored = session.result as {
         payload?: OutboundFilePayload;
         overrideContentType?: ContentType;
@@ -463,12 +300,30 @@ export class ResumableUploadService {
       if (!stored || !stored.payload) {
         // Record-first: hash + resolve the staged bytes and durably record digest/result. The CAS
         // shard tree is NOT touched here — landing happens at the batch barrier.
-        const resolved = await this.upload.resolveStagedPart(
-          path,
-          session.partIntent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
-          session.originalName,
-          session.mimeType,
-        );
+        const resolved = await this.upload
+          .resolveStagedPart(
+            path,
+            session.partIntent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+            session.originalName,
+            session.mimeType,
+          )
+          .catch(async (error: unknown) => {
+            if (
+              !(error instanceof InvalidUploadMediaError) &&
+              !(error instanceof InvalidMediaDataError)
+            )
+              throw error;
+            await this.abortSession(session.id, error.message);
+            await this.messages.failStaged(
+              userId,
+              session.clientMessageId,
+              error.message,
+            );
+            throw new BusinessException(
+              BusinessCode.VALIDATION_FAILED,
+              error.message,
+            );
+          });
         if (resolved.overrideContentType !== undefined) {
           await this.messages.updateStagedContentType(
             session.clientMessageId,
@@ -482,11 +337,6 @@ export class ResumableUploadService {
             ? { overrideContentType: resolved.overrideContentType }
             : {}),
         };
-        // Dedup fast path: identical bytes already in the shard tree — the staging file is
-        // immediately droppable; the batch commit's move phase will skip this digest.
-        if (this.upload.casShardExists(resolved.digest)) {
-          await this.discardStaging(session.tmpKey);
-        }
         const [updated] = await this.database.db
           .update(uploadSession)
           .set({
@@ -498,7 +348,7 @@ export class ResumableUploadService {
           .where(
             and(
               eq(uploadSession.id, session.id),
-              eq(uploadSession.status, 'UPLOADING'),
+              eq(uploadSession.status, 'COMPLETING'),
             ),
           )
           .returning();
@@ -579,7 +429,13 @@ export class ResumableUploadService {
       });
       if (items.some((item) => !item.digest || !item.payload)) return null;
       for (const item of items) {
-        if (this.upload.casShardExists(item.digest)) continue; // dedup or a prior crash's landing
+        // Processing errors retain COMPLETING for retry; only actual missing bytes abort the part.
+        item.payload.localMeta = await this.upload.prepareStagedMetadata(
+          this.partPath(item.session.tmpKey),
+          item.digest,
+          item.payload.localMeta,
+        );
+        if (this.upload.casShardExists(item.digest)) continue;
         try {
           await this.upload.landStagedPart(
             this.partPath(item.session.tmpKey),
@@ -894,6 +750,13 @@ export class ResumableUploadService {
     sessions: Array<typeof uploadSession.$inferSelect>,
   ) {
     for (const session of sessions) {
+      const payload = (session.result as { payload: OutboundFilePayload })
+        .payload;
+      payload.localMeta = await this.upload.prepareStagedMetadata(
+        this.partPath(session.tmpKey),
+        session.digest!,
+        payload.localMeta,
+      );
       if (!this.upload.casShardExists(session.digest!)) {
         await this.upload.landStagedPart(
           this.partPath(session.tmpKey),
@@ -913,64 +776,98 @@ export class ResumableUploadService {
     return committed;
   }
 
-  async listForAdmin() {
-    const rows = await this.database.db
-      .select()
-      .from(uploadSession)
-      .where(inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']))
-      .orderBy(desc(uploadSession.createdAt))
-      .limit(200);
-    return Promise.all(
-      rows.map(async (row) => ({
-        ...(await this.viewOf(row)),
-        creatorId: row.creatorId,
-        contentType: row.contentType,
-        updatedAt: row.updatedAt,
-      })),
+  async listForAdmin(query: { skip?: number; take?: number; userId?: number }) {
+    const where = and(
+      inArray(uploadSession.status, ['UPLOADING', 'COMPLETING', 'ABORTED']),
+      query.userId === undefined
+        ? undefined
+        : eq(uploadSession.creatorId, query.userId),
     );
+    const [rows, [aggregate]] = await Promise.all([
+      this.database.db
+        .select({
+          uploadId: uploadSession.uploadId,
+          creatorId: uploadSession.creatorId,
+          digest: uploadSession.digest,
+          bytes: uploadSession.totalBytes,
+          status: uploadSession.status,
+          tmpKey: uploadSession.tmpKey,
+        })
+        .from(uploadSession)
+        .where(where)
+        .orderBy(desc(uploadSession.id))
+        .offset(query.skip ?? 0)
+        .limit(query.take ?? 50),
+      this.database.db
+        .select({
+          total: count(),
+          bytes: sql<string>`coalesce(sum(${uploadSession.totalBytes}), 0)::text`,
+        })
+        .from(uploadSession)
+        .where(where),
+    ]);
+    return {
+      ...aggregate,
+      list: await Promise.all(
+        rows.map(async (row) => ({
+          uploadId: row.uploadId,
+          userId: row.creatorId,
+          digest: row.digest,
+          bytes: row.bytes.toString(),
+          status: row.status,
+          bytesReceived: (
+            await this.readSidecarOffset({
+              tmpKey: row.tmpKey,
+              totalBytes: row.bytes,
+            } as typeof uploadSession.$inferSelect)
+          ).toString(),
+        })),
+      ),
+    };
   }
 
-  async abortForAdmin(
-    uploadId: string,
-    reason = 'terminated by administrator',
-  ) {
-    return this.exclusive(uploadId, async () => {
-      const session = await this.database.db.query.uploadSession.findFirst({
-        where: eq(uploadSession.uploadId, uploadId),
-      });
-      if (!session) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'upload not found',
-          404,
-        );
-      }
-      if (session.status === 'COMPLETED') {
-        return this.invalid('completed upload cannot be aborted');
-      }
-      const [aborted] = await this.database.db
-        .update(uploadSession)
-        .set({
-          status: 'ABORTED',
-          errorReason: reason.slice(0, 255),
-          abortedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(uploadSession.id, session.id),
-            inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']),
-          ),
-        )
-        .returning();
-      await this.discardStaging(session.tmpKey);
-      await this.messages.failStaged(
-        session.creatorId,
-        session.clientMessageId,
-        reason,
-      );
-      return this.viewOf(aborted ?? session);
+  /** Stop a complete staged batch: partial cancellation cannot leave an uncommittable sibling set. */
+  async stopForAdmin(uploadId: string) {
+    const session = await this.database.db.query.uploadSession.findFirst({
+      where: eq(uploadSession.uploadId, uploadId),
     });
+    if (!session) return { removed: 0 };
+    await this.cancelBatch(session.creatorId, session.clientMessageId);
+    const rows = await this.database.db
+      .select({
+        uploadId: uploadSession.uploadId,
+        tmpKey: uploadSession.tmpKey,
+      })
+      .from(uploadSession)
+      .where(
+        and(
+          eq(uploadSession.clientMessageId, session.clientMessageId),
+          eq(uploadSession.status, 'ABORTED'),
+        ),
+      );
+    for (const row of rows) {
+      await this.exclusive(row.uploadId, async () => {
+        // Only ENOENT is success. Keep the row on an IO failure so cleanup remains retryable.
+        for (const path of [
+          this.partPath(row.tmpKey),
+          this.sidecarPath(row.tmpKey),
+          `${this.sidecarPath(row.tmpKey)}.tmp`,
+        ]) {
+          await unlink(path).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+          });
+        }
+        await this.database.db
+          .delete(uploadSession)
+          .where(
+            and(
+              eq(uploadSession.uploadId, row.uploadId),
+              eq(uploadSession.status, 'ABORTED'),
+            ),
+          );
+      });
+    }
+    return { removed: rows.length };
   }
 
   private async owned(userId: number, uploadId: string) {
@@ -1002,6 +899,8 @@ export class ResumableUploadService {
         : session.status === 'ABORTED'
           ? 0n
           : await this.readSidecarOffset(session);
+    const result = stored?.payload ? { ...stored.payload } : undefined;
+    if (result) delete result.localMeta;
     return {
       uploadId: session.uploadId,
       clientMessageId: session.clientMessageId,
@@ -1013,7 +912,7 @@ export class ResumableUploadService {
       offset: Number(offset),
       chunkSize: RESUMABLE_CHUNK_SIZE,
       status: session.status,
-      ...(stored?.payload ? { result: stored.payload } : {}),
+      ...(result ? { result } : {}),
     };
   }
 

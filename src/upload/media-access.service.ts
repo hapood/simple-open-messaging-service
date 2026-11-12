@@ -2,7 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { ContentType } from '../database/enums.js';
 import { DatabaseService } from '../database/database.service.js';
-import { forwardMessage, messageAsset } from '../database/schema.js';
+import {
+  forwardMessage,
+  messageAsset,
+  mediaAsset,
+} from '../database/schema.js';
+import { isStoredMediaMetadata } from './stored-media-metadata.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
 
 /** Object-level authorization for the single contextual CAS URL shape. */
@@ -12,6 +17,20 @@ export class MediaAccessService {
     private readonly database: DatabaseService,
     private readonly visibility: MessageVisibilityService,
   ) {}
+
+  /** Called only after contextual original-file authorization succeeds. */
+  async thumbnail(digest: string) {
+    const asset = await this.database.db.query.mediaAsset.findFirst({
+      where: and(
+        eq(mediaAsset.digest, digest),
+        eq(mediaAsset.isDeleted, false),
+      ),
+      columns: { meta: true },
+    });
+    if (!isStoredMediaMetadata(asset?.meta) || !('thumbnail' in asset.meta))
+      return null;
+    return asset.meta.thumbnail;
+  }
 
   async canReadMessageAsset(
     userId: number,

@@ -12,6 +12,5 @@ interface RealtimeCallbacks {
     fun onForceLogout(generation: Long, envelopeJson: String)
     fun onOriginActive(generation: Long, origin: String, mode: String)
     fun onIdentity(generation: Long, userId: Int, sessionId: Long)
-    fun onNotifications(generation: Long, batch: NativeNotificationBatch)
     fun onIncomingCall(generation: Long, dataJson: String)
 }

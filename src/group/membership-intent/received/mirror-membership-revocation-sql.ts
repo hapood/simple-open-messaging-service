@@ -19,7 +19,7 @@ export interface MirrorMembershipRevocationInput {
  * the owning transaction. Its guarded RETURNING reports whether this delivery
  * actually moved the mirrored group direction. */
 export function mirrorMembershipRevocationIntentWrite(
-  input: MirrorMembershipRevocationInput,
+  input: MirrorMembershipRevocationInput & { statusChangedAt: Date },
 ): SQL {
   const { author, receiver } = mirrorGroupDirection(
     input.presentation,
@@ -30,7 +30,7 @@ export function mirrorMembershipRevocationIntentWrite(
     receiver,
     status: 'REVOKED',
     note: '',
-    requestedAt: null,
+    statusChangedAt: input.statusChangedAt,
     expiresAt: null,
     profileNamespaceId: 0,
     profileRev: 0,

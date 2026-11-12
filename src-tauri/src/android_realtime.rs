@@ -118,24 +118,19 @@ impl Sink for Callbacks {
                     )?;
                 }
                 Output::Notifications(batch) => {
-                    let login_current = crate::login_session_store::LoginSessionId::try_from(
-                        batch.login_session_id.clone(),
-                    )
-                    .map(|id| crate::native_db::is_login_session_current(&id))
-                    .unwrap_or(false);
-                    if !login_current {
-                        return Ok(());
-                    }
-                    if let Ok(batch) = crate::android_runtime::notification_object(env, &batch) {
-                        env.call_method(
-                            callback,
-                            "onNotifications",
-                            "(JLcom/soms/client/NativeNotificationBatch;)V",
-                            &[JValue::Long(lease as i64), JValue::Object(&batch)],
-                        )?;
-                    }
+                    tauri::async_runtime::spawn(async move {
+                        if crate::android_notifications::deliver_batch(batch, true).await.is_err() {
+                            log::warn!("Android notification delivery failed");
+                        }
+                    });
                 }
-                Output::IncomingCall(data) => {
+                Output::IncomingCall(mut data) => {
+                    let Some(envelope) =
+                        run.event_payload("CALL_RECOVERY", "", serde_json::Value::Null)
+                    else {
+                        return Ok(());
+                    };
+                    data["loginSessionId"] = envelope["loginSessionId"].clone();
                     let data = JObject::from(env.new_string(data.to_string())?);
                     env.call_method(
                         callback,

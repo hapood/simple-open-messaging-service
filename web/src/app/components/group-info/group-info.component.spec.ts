@@ -1,6 +1,41 @@
 import { signal } from '@angular/core';
+import { of } from 'rxjs';
 import { GroupInfoComponent } from './group-info.component';
 import type { ResolvedMemberProfile } from '../../services/member-profile-store.service';
+
+describe('GroupInfoComponent dissolution acknowledgement', () => {
+  it('closes the panel and synchronizes server state without inventing a local lifecycle result', async () => {
+    const component = Object.create(GroupInfoComponent.prototype);
+    const applyThreadMeta = vi.fn();
+    const applyGroupUpdate = vi.fn();
+    const refreshAfterMutation = vi.fn().mockResolvedValue(undefined);
+    const closeAside = vi.fn();
+    Object.assign(component, {
+      groupId: () => 42,
+      isOwner: () => true,
+      readOnly: () => false,
+      busy: signal(false),
+      groupService: {
+        dissolveGroup: vi.fn(() =>
+          of({ code: 0, data: { status: 'PENDING' } }),
+        ),
+      },
+      convList: {
+        applyThreadMeta,
+        applyGroupUpdate,
+        refreshAfterMutation,
+        load: vi.fn(),
+      },
+      nav: { closeAside },
+    });
+    await component['dissolve']();
+    expect(closeAside).toHaveBeenCalledOnce();
+    expect(refreshAfterMutation).toHaveBeenCalledOnce();
+    expect(applyThreadMeta).not.toHaveBeenCalled();
+    expect(applyGroupUpdate).not.toHaveBeenCalled();
+    expect(component.busy()).toBe(false);
+  });
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -21,6 +56,9 @@ function harness() {
     readOnly: () => false,
     roster: signal<ResolvedMemberProfile[]>([]),
     rosterHasMore: signal(true),
+    rosterError: signal(false),
+    rosterReset: signal(0),
+    showNetworkError: vi.fn(),
     memberProfiles: { queryPage },
   };
   return {
@@ -42,6 +80,50 @@ describe('GroupInfoComponent roster query ordering', () => {
 
     expect(queryPage).not.toHaveBeenCalled();
     expect(state.loading()).toBe(false);
+  });
+
+  it('clears loaded pages immediately for a new search and rejects the old page', async () => {
+    const { state, component, queryPage } = harness();
+    state.roster.set([member('Old')]);
+    const oldPage = deferred<ResolvedMemberProfile[]>();
+    const newPage = deferred<ResolvedMemberProfile[]>();
+    queryPage
+      .mockReturnValueOnce(oldPage.promise)
+      .mockReturnValueOnce(newPage.promise);
+    const append = GroupInfoComponent.prototype.loadMoreMembers.call(component);
+    state.memberQuery.set('New');
+    const reset = GroupInfoComponent.prototype.loadMembers.call(component);
+    expect(state.roster()).toEqual([]);
+    expect(state.rosterHasMore()).toBe(false);
+    expect(state.rosterReset()).toBe(1);
+    expect(queryPage).toHaveBeenLastCalledWith(42, { take: 50, search: 'New' });
+    oldPage.resolve([member('Old page')]);
+    await append;
+    expect(state.roster()).toEqual([]);
+    newPage.resolve([member('New')]);
+    await reset;
+    expect(state.roster().map((row) => row.name)).toEqual(['New']);
+  });
+
+  it('prevents duplicate next-page requests and retains rows on failure', async () => {
+    const { state, component, queryPage } = harness();
+    state.roster.set([member('Current')]);
+    let reject!: (reason: Error) => void;
+    queryPage.mockReturnValue(
+      new Promise((_resolve, fail) => {
+        reject = fail;
+      }),
+    );
+    const pending =
+      GroupInfoComponent.prototype.loadMoreMembers.call(component);
+    await GroupInfoComponent.prototype.loadMoreMembers.call(component);
+    expect(queryPage).toHaveBeenCalledOnce();
+    reject(new Error('offline'));
+    await pending;
+    expect(state.roster()[0].name).toBe('Current');
+    expect(state.rosterError()).toBe(true);
+    expect(state.loadingMore()).toBe(false);
+    expect(state.showNetworkError).toHaveBeenCalledOnce();
   });
 
   it('does not let an older query overwrite a refreshed roster', async () => {
@@ -81,9 +163,9 @@ describe('GroupInfoComponent privileged-role action gating', () => {
     name: 'Bob',
     account: 'bob',
     namespaceId: 0,
+    publisherNamespaceId: 0,
     role: 'MEMBER' as const,
     isOwner: false,
-    avatar: '',
     bio: '',
     profileRev: 0,
     profileResolved: false,
@@ -93,9 +175,9 @@ describe('GroupInfoComponent privileged-role action gating', () => {
     name: 'Charlie',
     account: 'charlie',
     namespaceId: 12,
+    publisherNamespaceId: 0,
     role: 'MEMBER' as const,
     isOwner: false,
-    avatar: '',
     bio: '',
     profileRev: 0,
     profileResolved: false,

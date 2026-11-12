@@ -198,7 +198,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       await h.executor.runMessages(31, 'origin.test', 7, 50);
       expect(h.threadResources.fetch).toHaveBeenCalledWith(
         31,
-        `/s2s/v1/messages?${demand}&after=10&through=100&take=50&includeSelf=${includeSelf}`,
+        `/somfp/v1/messages?${demand}&after=10&through=100&take=50&includeSelf=${includeSelf}`,
         'origin.test',
         16 * 1024 * 1024,
       );
@@ -215,7 +215,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
 
     expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
-      '/s2s/v1/messages?account=%21group&after=10&through=100&take=50&includeSelf=true',
+      '/somfp/v1/messages?account=%21group&after=10&through=100&take=50&includeSelf=true',
       'origin.test',
       16 * 1024 * 1024,
     );
@@ -236,7 +236,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
 
     expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
-      '/s2s/v1/message-tombstones?account=%21group&after=4&through=9&take=50&includeSelf=true&maxMessageSeq=42',
+      '/somfp/v1/message-tombstones?account=%21group&after=4&through=9&take=50&includeSelf=true&maxMessageSeq=42',
       'origin.test',
       4 * 1024 * 1024,
     );
@@ -296,7 +296,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
 
     expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
-      '/s2s/v1/message-tombstones?account=%21group&after=9&through=12&take=50&includeSelf=true',
+      '/somfp/v1/message-tombstones?account=%21group&after=9&through=12&take=50&includeSelf=true',
       'origin.test',
       4 * 1024 * 1024,
     );

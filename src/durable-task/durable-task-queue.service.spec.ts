@@ -127,6 +127,7 @@ describe('DurableTaskQueueService', () => {
         address: { account: '!group', profileNamespaceId: 0 },
       },
       taskType: 'FORCE_REVOKE_GROUP_MEMBER',
+      actorUserId: 7,
       payload: {
         threadId: 10,
         memberUserId: {
@@ -199,7 +200,7 @@ describe('DurableTaskQueueService', () => {
     expect(firstValues.payload).not.toBe(firstPayload);
   });
 
-  it('locks the group scope before inserting and stores a null actor', async () => {
+  it('locks the group scope before inserting and records the actor', async () => {
     const harness = createHarness([9n]);
 
     await harness.service.enqueueTask({
@@ -208,6 +209,7 @@ describe('DurableTaskQueueService', () => {
         address: { profileNamespaceId: 3, account: 'group-1' },
       },
       taskType: 'DISBAND_GROUP',
+      actorUserId: 7,
       payload: { threadId: 10 },
     });
 
@@ -216,7 +218,7 @@ describe('DurableTaskQueueService', () => {
         kind: 'MUTATION',
         scopeType: 'GROUP',
         scopeKey: JSON.stringify(['business-scope', 'ACCOUNT', 3, 'group-1']),
-        actorUserId: null,
+        actorUserId: 7,
       }),
     );
     expect(harness.execute.mock.invocationCallOrder[0]).toBeLessThan(
@@ -264,6 +266,7 @@ describe('DurableTaskQueueService', () => {
           address: { profileNamespaceId: 3, account: 'group-1' },
         },
         taskType: 'DISBAND_GROUP',
+        actorUserId: 7,
         payload: cyclic,
       }),
     ).rejects.toThrow('must not contain cycles');
@@ -276,6 +279,7 @@ describe('DurableTaskQueueService', () => {
           address: { profileNamespaceId: 3, account: 'group-1' },
         },
         taskType: 'DISBAND_GROUP',
+        actorUserId: 7,
         payload: { threadId: 10 },
       }),
     ).rejects.toThrow('durable task insert returned no row');

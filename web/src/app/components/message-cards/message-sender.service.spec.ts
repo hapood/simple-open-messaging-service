@@ -44,11 +44,13 @@ const message: ChatMsgData = {
 
 describe('MessageSenderService', () => {
   it('applies live P2P aliases to the one shared presentation, never group or snapshot authors', async () => {
-    const conversation = createP2PConversation(
-      42,
-      { account: 'alice', namespaceId: 4, profileRev: 2 },
-      { alias: 'Friend' },
-    );
+    const conversation = createP2PConversation({
+      threadId: 42,
+      account: 'alice',
+      publisherNamespaceId: 4,
+      profileRev: 2,
+      alias: 'Friend',
+    });
     const conversations = signal<ConversationItem[]>([conversation]);
     TestBed.configureTestingModule({
       providers: [
@@ -103,11 +105,13 @@ describe('MessageSenderService', () => {
 
   it('rejects an alias belonging to a different account or namespace', () => {
     const conversations = signal<ConversationItem[]>([
-      createP2PConversation(
-        42,
-        { account: 'alice', namespaceId: 9, profileRev: 2 },
-        { alias: 'Wrong' },
-      ),
+      createP2PConversation({
+        threadId: 42,
+        account: 'alice',
+        publisherNamespaceId: 9,
+        profileRev: 2,
+        alias: 'Wrong',
+      }),
     ]);
     TestBed.configureTestingModule({
       providers: [

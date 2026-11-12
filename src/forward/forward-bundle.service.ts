@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { publishMediaAsset } from '../upload/media-asset.service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -1485,18 +1486,18 @@ export class ForwardBundleService {
       let renamed = false;
       try {
         await writeFile(temporary, buffer);
-        await rename(temporary, target);
-        renamed = true;
+        await publishMediaAsset(
+          this.database,
+          digest,
+          BigInt(buffer.length),
+          async () => {
+            await rename(temporary, target);
+            renamed = true;
+          },
+        );
       } finally {
         if (!renamed) await unlink(temporary).catch(() => {});
       }
-      await this.database.db
-        .insert(mediaAsset)
-        .values({ digest, bytes: BigInt(buffer.length), isDeleted: false })
-        .onConflictDoUpdate({
-          target: mediaAsset.digest,
-          set: { bytes: BigInt(buffer.length), isDeleted: false },
-        });
       return {
         digest,
         bytes: buffer.length,

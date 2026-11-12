@@ -159,7 +159,7 @@ describe('ThreadAudience schema', () => {
       `SELECT conname, pg_get_constraintdef(oid) AS definition
        FROM pg_constraint
        WHERE conrelid IN (
-         '"IdentityNamespace"'::regclass,
+         '"FederationFeedState"'::regclass,
          '"ProfileNamespaceFeed"'::regclass,
          '"FederationThreadSyncState"'::regclass
        )`,
@@ -167,12 +167,12 @@ describe('ThreadAudience schema', () => {
     const cursorChecks = new Map(
       cursorConstraints.rows.map((row) => [row.conname, row.definition]),
     );
-    expect(
-      cursorChecks.get('IdentityNamespace_stateFeedEndId_check'),
-    ).toContain('stateFeedEndId');
-    expect(
-      cursorChecks.get('IdentityNamespace_stateFeedPulledThrough_check'),
-    ).toContain('stateFeedPulledThrough');
+    expect(cursorChecks.get('FederationFeedState_coordinates_check')).toContain(
+      'outboundStateFeedEndId',
+    );
+    expect(cursorChecks.get('FederationFeedState_coordinates_check')).toContain(
+      'inboundStateFeedPulledThrough',
+    );
     expect(cursorChecks.get('ProfileNamespaceFeed_feedId_check')).toContain(
       'feedId',
     );

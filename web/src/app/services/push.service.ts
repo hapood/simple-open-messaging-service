@@ -1,11 +1,13 @@
+import { parseNotificationOpening } from '../../../../shared/notification-opening';
 import { Injectable, Injector, inject, isDevMode } from '@angular/core';
-import { apiOrigin, isAndroidNative, isTauri } from './runtime';
+import { isAndroidNative, isTauri } from './runtime';
 import { ThreadNavigationIntentService } from './thread-navigation-intent.service';
 import {
   PushRegistrationService,
   type PushRegistration,
 } from './push-registration.service';
 import { uuid } from '../lib/uuid';
+import { notificationTarget } from './notification-routing';
 
 /** Android FCM adapter and notification navigation. The shared session coordinator owns registration. */
 /** The Firebase client config payload (folded into /client/compat). `{configured:false}` when the server has
@@ -175,13 +177,18 @@ export class PushService {
     const pending = bridge?.getPendingThreadId();
     if (!pending) return;
     try {
-      const tap = JSON.parse(pending) as { id: string; threadId: number; sessionId: number; origin: string } | null;
-      if (!tap || typeof tap.id !== 'string' || !tap.id.trim() ||
-          !Number.isSafeInteger(tap.threadId) || tap.threadId <= 0 ||
-          !Number.isSafeInteger(tap.sessionId) || tap.sessionId <= 0 ||
-          !tap.origin || tap.origin !== apiOrigin()) return;
+      const tap = JSON.parse(pending) as {
+        id: string;
+        target?: unknown;
+            latestSeq?: unknown;
+      } | null;
+      const opening = parseNotificationOpening(tap);
+      if (!tap || typeof tap.id !== 'string' || !tap.id.trim() || !opening)
+        return;
       this.injector.get(ThreadNavigationIntentService).offer({
-        source: 'android', id: tap.id, threadId: tap.threadId, sessionId: tap.sessionId,
+        source: 'android',
+        id: tap.id,
+        ...opening,
         acknowledge: () => bridge!.acknowledgeThreadId(pending),
       });
     } catch {

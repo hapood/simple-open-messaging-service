@@ -39,8 +39,8 @@ export function userSessions(id: number): Promise<Session[]> {
 
 /** Create a user account (admin-provisioned). Account-only: the account is born at profile rev 0
  *  and the user sets their own display name later. Password is required iff password login is
- *  enabled (loginMode ALL / PASSWORD_ONLY); omitted under APP_OTP_AND_QR → a passwordless OTP/QR
- *  account. */
+ *  enabled (GET /config loginMethods includes password); omitted otherwise → a passwordless
+ *  OTP/QR account. */
 export function createUser(body: {
   account: string
   password?: string

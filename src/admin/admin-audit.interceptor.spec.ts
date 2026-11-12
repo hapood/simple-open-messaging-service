@@ -1,4 +1,7 @@
-import { InternalServerErrorException } from '@nestjs/common';
+import {
+  BadRequestException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { lastValueFrom, of, throwError } from 'rxjs';
@@ -66,6 +69,7 @@ describe('AdminAuditInterceptor', () => {
         action: 'user.disable',
         targetId: '42',
         status: 'STARTED',
+        meta: {},
       }),
     );
     expect(next.handle).not.toHaveBeenCalled();
@@ -93,6 +97,56 @@ describe('AdminAuditInterceptor', () => {
     );
   });
 
+  it('collects allowlisted data before execution and excludes credentials', async () => {
+    reflector.getAllAndOverride.mockReturnValueOnce({
+      action: 'user.create',
+      options: { targetType: 'user' },
+    });
+    const originalBody = request.body;
+    const originalUrl = request.url;
+    Object.assign(request, {
+      body: { account: 'alice', password: 'secret', token: 'secret' },
+      url: '/admin/users/create?token=secret',
+    });
+    try {
+      await lastValueFrom(
+        interceptor.intercept(context, {
+          handle: () => of({ password: 'response-secret' }),
+        }),
+      );
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          meta: { account: 'alice' },
+          route: '/admin/users/create',
+        }),
+      );
+      expect(JSON.stringify(insertValues.mock.calls)).not.toContain('secret');
+      expect(JSON.stringify(updateSet.mock.calls)).not.toContain('secret');
+    } finally {
+      request.body = originalBody;
+      request.url = originalUrl;
+    }
+  });
+
+  it('records composite message targets', async () => {
+    reflector.getAllAndOverride.mockReturnValueOnce({
+      action: 'message.delete',
+      options: { targetType: 'message', targetBody: ['threadId', 'seq'] },
+    });
+    const originalBody = request.body;
+    Object.assign(request, { body: { threadId: 99, seq: 12 } });
+    try {
+      await lastValueFrom(
+        interceptor.intercept(context, { handle: () => of(null) }),
+      );
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ targetId: '99:12' }),
+      );
+    } finally {
+      request.body = originalBody;
+    }
+  });
+
   it('refuses the action when the STARTED row cannot be persisted', async () => {
     returningInsert.mockRejectedValue(new Error('database unavailable'));
     const next: CallHandler = { handle: vi.fn(() => of('must not run')) };
@@ -115,7 +169,22 @@ describe('AdminAuditInterceptor', () => {
     ).rejects.toBe(actionError);
     expect(updateSet).toHaveBeenCalledWith({
       status: 'FAILED',
-      errorMessage: 'last super admin',
+      errorMessage: 'Operation failed',
+    });
+  });
+
+  it('records a safe HTTP failure category without exposing exception details', async () => {
+    const error = new BadRequestException('password=secret');
+    await expect(
+      lastValueFrom(
+        interceptor.intercept(context, {
+          handle: () => throwError(() => error),
+        }),
+      ),
+    ).rejects.toBe(error);
+    expect(updateSet).toHaveBeenCalledWith({
+      status: 'FAILED',
+      errorMessage: 'HTTP 400',
     });
   });
 

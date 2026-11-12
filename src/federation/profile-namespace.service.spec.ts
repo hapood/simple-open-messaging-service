@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ProfileNamespaceService } from './profile-namespace.service.js';
-import { identityNamespace, profileNamespace } from '../database/schema.js';
+import {
+  identityNamespace,
+  profileNamespace,
+  profileNamespaceFeedHead,
+} from '../database/schema.js';
 
 const ROOT_KEY = 'k'.repeat(44);
 function harness(
@@ -13,6 +17,7 @@ function harness(
     from: (table: unknown) => ({
       where: () => ({
         limit: async () => {
+          if (table === profileNamespaceFeedHead) return [{ feedEndId: 7n }];
           if (table === identityNamespace)
             return [{ feedEndId: 7n, ...options.registryRow }];
           if (table === profileNamespace)

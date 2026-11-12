@@ -36,12 +36,21 @@ shared progress dashboard or retained-session history to this plan.
   byte counts and hashes. No personal files. Record unsupported UI capabilities
   as gaps, never replace them with API-only PASS results.
 
-## Case expansion and execution order
+## Rounds and case manifests
 
-Before mutations, expand these matrices into stable assertion-sized IDs such as
-`Q1.local-alpha.accept` or `Q5.personal.federated.live`. Record every planned item
-as NOT RUN. Header placeholders cannot earn PASS from a subset of their children.
-Record each result as it completes; do not wait until the end to write progress.
+Execution is round-based. Every round is one manifest under
+[browser-e2e-quick-rounds/](browser-e2e-quick-rounds/) that enumerates its exact
+case IDs and titles (at most ~32 cases per manifest). Before mutations, register
+exactly the active manifest's cases as NOT RUN — no extra chapter-level
+placeholders, and a placeholder can never earn PASS from a subset of its
+children. Record each result as it completes; do not wait until the end to
+write progress.
+
+Run one manifest at a time in the chapter order below, and finish or park a
+round before loading the next. Within chapter Q4, run each matrix's `.send`
+manifest first; its `.interactions` manifest quotes, forwards and withdraws the
+payloads recorded by the `.send` round. The chapter sections that follow remain
+the assertion contract for every manifest of that chapter.
 
 ### Q0 — Preflight, Admin and user setup
 
@@ -194,10 +203,12 @@ expected/actual and evidence through `webtest_run pause`. For a proposed repair,
 name exact files/behavior and verification. Ask before changing drivers, selectors,
 helper contracts or product source; do not silently repair and continue.
 
-The operator may retry, skip, stop, or authorize that one repair. Cancellation
-keeps the run paused. Repair does not authorize resuming: run focused checks and
-request retry approval, then rerun the failed assertion. Preserve defects and
-coverage gaps even when continuing. See [Pi tooling](../../tools/pi-web-testing/README.md).
+The operator may approve and continue, or stop. Cancellation keeps the run
+paused. Approving resumes the run and, when a repair was proposed, authorizes
+only that proposal: run focused checks, then rerun the failed assertion.
+Skipping a defective case is recorded by the agent as SKIPPED with a reason.
+Preserve defects and coverage gaps even when continuing. See
+[Pi tooling](../../tools/pi-web-testing/README.md).
 
 A final PASS means **two-node Web main workflows, exact recorded matrix only**.
 If any required combination remains unverified, report BUG or BLOCKED/NOT VERIFIED

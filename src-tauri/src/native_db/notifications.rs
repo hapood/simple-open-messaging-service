@@ -1,7 +1,42 @@
+pub(crate) mod alert;
+pub(crate) mod target;
+pub(crate) mod opening;
+pub(crate) mod requests;
+pub(crate) use target::NotificationTarget;
+pub(crate) mod content;
+pub(crate) mod delivery;
+pub(crate) mod presentation;
+pub(crate) mod runtime;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod macos_observation;
+
+static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+pub(crate) fn initialize(app: tauri::AppHandle) { let _ = APP.set(app); }
+
+/// Local reads update OS cards without waiting for the next server wake.
+pub(crate) fn refresh_requests(work: DatabaseWork, user_id: i64) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = refresh_requests_owned(work, user_id).await { log::warn!("request notification refresh failed: {error}"); }
+    });
+}
+async fn refresh_requests_owned(work: DatabaseWork, user_id: i64) -> Result<(), String> {
+    let mut batch = from_result_at(work, user_id, vec![], 0, None).await?;
+    batch.requests_existing_only = true;
+    #[cfg(target_os = "android")]
+    { crate::android_notifications::deliver_batch(batch, false).await }
+    #[cfg(not(target_os = "android"))]
+    {
+        #[cfg(desktop)]
+        if let Some(app) = APP.get() {
+            return super::desktop_notifications::deliver_batch(app.clone(), batch).await;
+        }
+        Ok(())
+    }
+}
+
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 use super::attention::{read_state, LocalThreadAttention};
 use super::messages::{count_unread_message_slots, MessageCountOwner};
@@ -10,22 +45,35 @@ use crate::login_connection::DatabaseWork;
 /// Metadata and image bytes travel separately across JNI. Images are encoded files, not pixels.
 /// `login_session_id` is the immutable owner that assembled this batch.
 pub(crate) struct NotificationBatch {
+    /// In-process cancellation context, never serialized into an OS notification.
+    pub(crate) work: Option<DatabaseWork>,
+    pub(crate) user_id: i64,
+    /// A partial feed drain must not authorize full notification reconstruction.
+    pub(crate) sync_error: Option<String>,
     pub(crate) login_session_id: String,
     pub(crate) metadata: String,
     pub(crate) avatars: Vec<Vec<u8>>,
+    /// Native consumers reuse the assembled projection without decoding the JNI envelope.
+    pub(crate) threads: Vec<NotificationThread>,
+    /// Complete account total, not the sum of this delta's notification cards.
+    pub(crate) unread_total: i64,
+    pub(crate) requests: Vec<requests::RequestAttention>,
+    pub(crate) reconstruction: bool,
+    pub(crate) requests_existing_only: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct NotificationThread {
-    thread_id: i32,
-    thread_feed_id: i32,
-    unread_count: i64,
-    last_read_seq: i32,
-    has_unread_mention: bool,
-    muted: bool,
-    title: String,
-    previews: Vec<Value>,
+pub(crate) struct NotificationThread {
+    pub(crate) thread_id: i32,
+    pub(crate) thread_feed_id: i32,
+    pub(crate) message_end_seq: i32,
+    pub(crate) unread_count: i64,
+    pub(crate) last_read_seq: i32,
+    pub(crate) has_unread_mention: bool,
+    pub(crate) muted: bool,
+    pub(crate) title: String,
+    pub(crate) previews: Vec<Value>,
 }
 
 fn projected_count(
@@ -76,22 +124,49 @@ fn sender_profile(
     )
 }
 
+/// Background notification wake. `None` is an intentional pre-sync admission skip,
+/// not a failed feed drain or an empty projection. Online SSE uses `from_result`.
 #[cfg(any(target_os = "android", test))]
 pub(crate) fn synchronize(
     proxy: &crate::ServerSessionState,
     user_id: i64,
     target: i32,
-) -> impl std::future::Future<Output = Result<NotificationBatch, String>> + Send + 'static {
-    let captured = super::attention::NativeThreadFeedIntent::capture(None, proxy, user_id, target);
-    async move {
-        let intent = captured?;
-        let work = intent.database_work();
-        let result = intent.synchronize().await?;
-        from_result_at(work, user_id, result.states, result.cursor, result.error).await
-    }
+) -> impl std::future::Future<Output = Result<Option<NotificationBatch>, String>> + Send + 'static {
+    synchronize_heads(proxy, user_id, target, if target < 0 { -1 } else { 0 })
 }
 
 #[cfg(any(target_os = "android", test))]
+pub(crate) fn synchronize_heads(
+    proxy: &crate::ServerSessionState,
+    user_id: i64,
+    target: i32,
+    state_target: i64,
+) -> impl std::future::Future<Output = Result<Option<NotificationBatch>, String>> + Send + 'static {
+    // Offline admission is decided once, before any asynchronous synchronization.
+    // Do not wait for reconstruction to finish and then admit a stale background wake.
+    let captured: Result<_, String> = (|| {
+        let intent = super::attention::NativeThreadFeedIntent::capture(None, proxy, user_id, target)?;
+        let work = intent.database_work();
+        let paused = match work.owner().notification_reconstruction.try_lock() {
+            Ok(restoration) => restoration.is_some(),
+            Err(_) => true,
+        };
+        if paused {
+            return Ok(None);
+        }
+        Ok(Some(intent))
+    })();
+    async move {
+        let Some(intent) = captured? else { return Ok(None) };
+        let work = intent.database_work();
+        // Background polls and push wakes must also consume personal request heads.
+        intent.state_barrier(state_target).await?;
+        let result = intent.synchronize().await?;
+        from_result_at(work, user_id, result.states, result.cursor, result.error).await.map(Some)
+    }
+}
+
+#[cfg(any(target_os = "android", desktop, test))]
 pub(crate) async fn from_result(
     work: DatabaseWork,
     user_id: i64,
@@ -105,6 +180,34 @@ pub(crate) async fn from_result(
         result.error.clone(),
     )
     .await
+}
+
+/// Project an explicit complete post-merge state set, including unchanged cards.
+/// The caller must finish synchronization before invoking this; a page/delta is
+/// never interpreted as the complete set of eligible notification threads.
+pub(crate) async fn for_reconstruction(
+    work: DatabaseWork,
+    user_id: i64,
+    merged_states: Vec<LocalThreadAttention>,
+) -> Result<NotificationBatch, String> {
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
+        let mut batch = assemble_selected(conn, user_id, merged_states, None)?;
+        batch.reconstruction = true;
+        batch.login_session_id = String::from(work.owner().id().clone());
+        batch.work = Some(work);
+        Ok(batch)
+    })
+    .await
+    .map_err(|e| format!("join notification reconstruction projection: {e}"))?
+}
+
+/// Read the complete merged set explicitly; never substitute a feed delta.
+pub(crate) async fn reconstruction_states(
+    work: DatabaseWork,
+    user_id: i64,
+) -> Result<Vec<LocalThreadAttention>, String> {
+    super::spawn_owned_database(Ok(work), move |conn| super::attention::read_states(conn, user_id))
+        .await.map_err(|e| format!("join notification reconstruction states: {e}"))?
 }
 
 async fn from_result_at(
@@ -136,6 +239,7 @@ async fn from_result_at(
         );
         batch.metadata = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
         batch.login_session_id = String::from(work.owner().id().clone());
+        batch.work = Some(work);
         Ok(batch)
     })
     .await
@@ -224,37 +328,30 @@ mod tests {
             .is_none()
         {
             let server = state.server.as_ref().unwrap();
-            let mut base = serde_json::to_value(server).unwrap();
-            base["type"] = server.kind.clone().into();
-            base["authorityNamespaceId"] = server.authority_namespace_id.into();
-            base["threadProfileRev"] = server.thread_profile_rev.into();
-            base["serverLastReadSeq"] = server.last_read_seq.into();
-            base["serverUnreadCount"] = server.unread_count.into();
-            base["localReadSeq"] = state.local_read_seq.unwrap_or(server.last_read_seq).into();
-            // The presentation object is the publisher-space profile coordinate.
-            let profile = serde_json::json!({
-                "account": server.subject_account,
-                "namespaceId": server.authority_namespace_id,
-                "profileRev": server.thread_profile_rev,
-            });
-            if server.kind == "GROUP" {
-                let mut group = profile;
-                group["id"] = (server.thread_id as i64).into();
-                base["group"] = group;
-            } else {
-                base["peerUser"] = profile;
-            }
-            super::super::thread_store::write(conn, 1, state.thread_id as i64, &base).unwrap();
+            super::super::thread_store::insert(
+                conn,
+                1,
+                server,
+                state.local_read_seq.unwrap_or(server.last_read_seq),
+            )
+            .unwrap();
         }
         super::super::attention::write_state(conn, 1, state).unwrap();
     }
 
     #[test]
-    fn notification_count_rebases_known_slots_including_tombs_and_excluding_self() {
+    fn notification_count_rebases_live_non_self_slots_but_not_deletion_markers() {
         let conn = db();
         for (seq, account) in [(3, "peer"), (4, "me"), (5, "peer")] {
-            conn.execute("INSERT INTO messages(user_id,thread_id,seq,created_at,payload_json) VALUES(1,7,?1,0,?2)", params![seq,
-                serde_json::json!({"isDeleted":true,"creator":{"account":account,"namespaceId":0}}).to_string()]).unwrap();
+            let payload = if seq == 5 {
+                serde_json::json!({"threadId":7,"seq":seq,"contentType":"TOMB",
+                    "isDeleted":true,"deletionType":"USER_RETRACTION"})
+            } else {
+                serde_json::json!({"threadId":7,"seq":seq,"contentType":"TEXT",
+                    "isDeleted":false,"creator":{"account":account,"namespaceId":0}})
+            };
+            conn.execute("INSERT INTO messages(user_id,thread_id,seq,created_at,payload_json) VALUES(1,7,?1,0,?2)",
+                params![seq, payload.to_string()]).unwrap();
         }
         let owner = MessageCountOwner {
             account: "me".into(),
@@ -262,18 +359,37 @@ mod tests {
         };
         assert_eq!(
             projected_count(&conn, 1, &state(5), Some(&owner)).unwrap(),
-            6
+            7
         );
         assert_eq!(
             projected_count(&conn, 1, &state(20), Some(&owner)).unwrap(),
-            6
+            7
         );
         let mut rollback = state(2);
         rollback.server.as_mut().unwrap().last_read_seq = 5;
         assert_eq!(
             projected_count(&conn, 1, &rollback, Some(&owner)).unwrap(),
-            10
+            9
         );
+    }
+
+    #[test]
+    fn reconstruction_includes_unchanged_state_without_changing_delta_selection() {
+        let _filesystem = avatar_store();
+        let mut conn = db();
+        let mut merged = state(2);
+        merged.notification_changed = false;
+        save(&conn, &merged);
+        assert!(assemble(&mut conn, 1, vec![merged.clone()], None).unwrap().threads.is_empty());
+        let rebuilt = assemble_selected(&mut conn, 1, vec![merged.clone()], None).unwrap();
+        assert_eq!(rebuilt.threads.len(), 1);
+        assert_eq!(rebuilt.threads[0].thread_id, merged.thread_id);
+        assert_eq!(rebuilt.threads[0].message_end_seq, merged.server.as_ref().unwrap().message_end_seq);
+        assert!(!merged.notification_changed);
+        assert!(assemble_selected(&mut conn, 1, vec![], None).unwrap().threads.is_empty());
+        merged.notification_changed = true;
+        let delta = assemble(&mut conn, 1, vec![merged], None).unwrap();
+        assert_eq!(serde_json::to_value(&rebuilt.threads).unwrap(), serde_json::to_value(&delta.threads).unwrap());
     }
 
     #[test]
@@ -312,6 +428,30 @@ mod tests {
             1
         );
         assert_eq!(metadata["threads"][0]["hasUnreadMention"], false);
+    }
+
+    #[test]
+    fn assembly_projects_rfc3339_timestamps_for_native_consumers() {
+        let _filesystem = avatar_store();
+        for (timestamp, expected) in [
+            ("2026-01-01T00:00:00Z", 1767225600000_i64),
+            ("2026-01-01T00:00:00.123Z", 1767225600123_i64),
+            ("2026-01-01T08:00:00+08:00", 1767225600000_i64),
+        ] {
+            let mut conn = db();
+            let mut delivered = state(2);
+            let mut value = serde_json::to_value(preview(6, 1, "LIVE", Some("hello"))).unwrap();
+            value["createdAt"] = serde_json::json!(timestamp);
+            delivered.server.as_mut().unwrap().previews =
+                vec![serde_json::from_value(value).unwrap()];
+            save(&conn, &delivered);
+            let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();
+            let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+            let preview = &metadata["threads"][0]["previews"][0];
+            assert_eq!(preview["timestamp"].as_i64(), Some(expected));
+            assert!(preview.get("createdAt").is_none());
+            assert_eq!(batch.threads[0].previews[0]["timestamp"].as_i64(), Some(expected));
+        }
     }
 
     #[test]
@@ -395,19 +535,16 @@ mod tests {
         server.subject_account = "!group".into();
         delivered.server.as_mut().unwrap().alias = Some("Private name".into());
         save(&conn, &delivered);
-        let mut presentation = super::super::thread_store::read(&conn, 1, 7)
-            .unwrap()
-            .unwrap();
-        presentation["group"]["name"] = "Profile name".into();
-        super::super::thread_store::write(&conn, 1, 7, &presentation).unwrap();
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"][0]["title"], "Private name");
+        assert_eq!(batch.threads[0].title, "Private name");
+        assert_eq!(serde_json::to_value(&batch.threads).unwrap(), metadata["threads"]);
         delivered.server.as_mut().unwrap().alias = None;
         save(&conn, &delivered);
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
-        assert_eq!(metadata["threads"][0]["title"], "Profile name");
+        assert_eq!(metadata["threads"][0]["title"], "!group");
         delivered.server.as_mut().unwrap().thread_profile_rev = 3;
         save(&conn, &delivered);
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
@@ -420,8 +557,8 @@ mod tests {
         assert_eq!(
             super::super::thread_store::read(&conn, 1, 7)
                 .unwrap()
-                .unwrap()["group"]["name"],
-            "Profile name"
+                .unwrap()["profile"]["name"],
+            "!group"
         );
         delivered.notification_changed = false;
         let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();
@@ -430,13 +567,34 @@ mod tests {
     }
 
     #[test]
+    fn blocked_notification_clears_card_without_changing_account_badge_total() {
+        let mut conn = db();
+        let mut blocked = state(2);
+        blocked.server.as_mut().unwrap().blocked = true;
+        save(&conn, &blocked);
+        conn.execute("UPDATE threads SET unread_count=8 WHERE user_id=1", []).unwrap();
+        let batch = assemble(&mut conn, 1, vec![blocked], None).unwrap();
+        assert_eq!(batch.unread_total, 8);
+        assert_eq!(batch.threads.len(), 1);
+        assert_eq!(batch.threads[0].unread_count, 0);
+        assert!(batch.threads[0].previews.is_empty());
+        assert!(batch.avatars.is_empty());
+        let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+        assert_eq!(metadata["threads"][0]["unreadCount"], 0);
+        assert_eq!(metadata["unreadTotal"], 8);
+    }
+
+    #[test]
     fn no_consumed_states_means_no_notification_even_if_database_has_unread() {
         let mut conn = db();
         save(&conn, &state(2));
+        conn.execute("UPDATE threads SET unread_count=17 WHERE user_id=1", []).unwrap();
         let batch = assemble(&mut conn, 1, vec![], None).unwrap();
+        assert_eq!(batch.unread_total, 17);
         assert_eq!(batch.login_session_id, "");
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"], serde_json::json!([]));
+        assert_eq!(metadata["unreadTotal"], 17);
         assert!(batch.avatars.is_empty());
     }
 
@@ -471,8 +629,12 @@ mod tests {
             "LOCAL_THREAD_FEED_COMMITTED"
         );
         assert_eq!(metadata["commitEvent"]["data"], metadata["commit"]);
+        let captured = batch.work.as_ref().expect("runtime batch retains its work");
+        assert!(std::sync::Arc::ptr_eq(captured.owner(), &owner));
+        captured.assert_current().unwrap();
         let stale = owner.capture_database_work().unwrap();
         owner.end().unwrap();
+        assert!(captured.assert_current().is_err());
         match from_result(stale, 1, &result).await {
             Err(error) => assert_eq!(error, "native login superseded"),
             Ok(_) => panic!("an ended login assembled a notification batch"),
@@ -481,6 +643,18 @@ mod tests {
 }
 
 fn assemble(
+    conn: &mut Connection,
+    user_id: i64,
+    states: Vec<LocalThreadAttention>,
+    error: Option<String>,
+) -> Result<NotificationBatch, String> {
+    let selected = states.into_iter().filter(|state| state.notification_changed).collect();
+    assemble_selected(conn, user_id, selected, error)
+}
+
+/// Content assembly is shared; incremental selection is done by `assemble` and
+/// reconstruction passes its explicitly supplied complete state set directly.
+fn assemble_selected(
     conn: &mut Connection,
     user_id: i64,
     states: Vec<LocalThreadAttention>,
@@ -511,12 +685,8 @@ fn assemble(
             namespace_id: 0,
         });
     let mut notifications = Vec::new();
-    let mut avatars = Vec::new();
-    let mut avatar_indices = BTreeMap::new();
+    let mut avatars = super::profile_avatars::AvatarBatch::default();
     for delivered in states {
-        if !delivered.notification_changed {
-            continue;
-        }
         // UI reads may have advanced since the page commit. Reconcile against the current local position.
         let current = read_state(&tx, user_id, delivered.thread_id)?;
         let Some(server) = current.server.as_ref() else {
@@ -530,7 +700,10 @@ fn assemble(
             continue;
         }
         let local = current.local_read_seq.unwrap_or(server.last_read_seq);
-        let count = projected_count(&tx, user_id, &current, owner.as_ref())?;
+        // Blocking suppresses notification presentation, not the shared unread total.
+        let count = if server.blocked { 0 } else {
+            projected_count(&tx, user_id, &current, owner.as_ref())?
+        };
         let mut thread = super::thread_store::read(&tx, user_id, i64::from(current.thread_id))?
             .unwrap_or(Value::Null);
         if !thread.is_null() {
@@ -548,7 +721,7 @@ fn assemble(
             .ok_or("missing delivered notification snapshot")?
             .previews
             .iter()
-            .filter(|preview| preview.seq > local)
+            .filter(|preview| !server.blocked && preview.seq > local)
             .take(5)
         {
             let preview = serde_json::to_value(preview)
@@ -588,23 +761,19 @@ fn assemble(
                     None => account.to_owned(),
                 });
             let mut value = preview.clone();
+            let timestamp = preview["createdAt"].as_str()
+                .ok_or("missing notification timestamp")?
+                .parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .map_err(|e| format!("invalid notification timestamp: {e}"))?
+                .timestamp_millis();
+            value.as_object_mut().ok_or("invalid notification preview")?.remove("createdAt");
+            value["timestamp"] = serde_json::json!(timestamp);
             value["senderName"] = Value::String(name);
             if let Some(digest) = profile
                 .as_ref()
                 .and_then(|value| value["avatarDigest"].as_str())
             {
-                let index = match avatar_indices.get(digest) {
-                    Some(index) => Some(*index),
-                    None => match super::profile_avatars::read(user_id, digest)? {
-                        Some(bytes) => {
-                            let index = avatars.len();
-                            avatars.push(bytes);
-                            avatar_indices.insert(digest.to_owned(), index);
-                            Some(index)
-                        }
-                        None => None,
-                    },
-                };
+                let index = avatars.index(user_id, digest)?;
                 if let Some(index) = index {
                     value["avatarIndex"] = serde_json::json!(index);
                 }
@@ -615,8 +784,7 @@ fn assemble(
             .alias
             .as_deref()
             .filter(|alias| !alias.is_empty())
-            .or_else(|| thread["group"]["name"].as_str())
-            .or_else(|| thread["peerUser"]["name"].as_str())
+            .or_else(|| thread["profile"]["name"].as_str())
             .filter(|name| !name.is_empty())
             .map(str::to_owned)
             .or_else(|| {
@@ -629,6 +797,7 @@ fn assemble(
         notifications.push(NotificationThread {
             thread_id: current.thread_id,
             thread_feed_id: server.thread_feed_id,
+            message_end_seq: server.message_end_seq,
             unread_count: count,
             last_read_seq: local,
             has_unread_mention: server.last_mention_seq.is_some_and(|seq| seq > local),
@@ -637,13 +806,23 @@ fn assemble(
             previews,
         });
     }
+    let requests = requests::read(&tx, user_id)?;
+    let unread_total = super::unread::unread_total(&tx, user_id)?;
     let metadata =
-        serde_json::to_string(&serde_json::json!({ "threads": notifications, "error": error }))
+        serde_json::to_string(&serde_json::json!({ "threads": &notifications, "unreadTotal": unread_total, "error": error }))
             .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(NotificationBatch {
+        work: None,
+        user_id,
+        sync_error: error,
+        unread_total,
+        threads: notifications,
+        requests,
+        reconstruction: false,
+        requests_existing_only: false,
         metadata,
-        avatars,
+        avatars: avatars.bytes,
         login_session_id: String::new(),
     })
 }

@@ -104,12 +104,20 @@ export class UserManageService {
     ]);
     const operator = await this.database.db.query.admin.findFirst({
       where: eq(admin.userId, id),
-      columns: { role: true },
+      columns: {
+        role: true,
+        enabled: true,
+        twoFactorEnabled: true,
+        lastLoginAt: true,
+      },
     });
     return {
       user: {
         ...profile,
         adminRole: operator?.role ?? null,
+        adminEnabled: operator?.enabled ?? null,
+        adminTwoFactorEnabled: operator?.twoFactorEnabled ?? null,
+        adminLastLoginAt: operator?.lastLoginAt ?? null,
         isDeleted: localAccount.disabledAt !== null,
       },
       groups,
@@ -138,6 +146,9 @@ export class UserManageService {
         .select({
           id: user.id,
           adminRole: admin.role,
+          adminId: admin.id,
+          adminEnabled: admin.enabled,
+          adminTwoFactorEnabled: admin.twoFactorEnabled,
           account: user.account,
           name: accountProfileFields(user).name,
           avatar: accountProfileFields(user).avatar,
@@ -213,7 +224,7 @@ export class UserManageService {
    *  profile rev 0 (no Profile row): the display name is the user's own first profile edit, never
    *  admin-authored. The password is optional: provided → hashed + stored; omitted → the account is
    *  created with NO password (an OTP/QR-only account, bootstrapped by the one-time code the admin
-   *  issues next). Whether a password is allowed/required is a loginMode policy enforced by the
+   *  issues next). Whether a password is allowed/required is a loginMethods policy enforced by the
    *  controller; this service persists exactly what it's given. Returns the new {id, account}; throws
    *  ALREADY_EXISTS on a duplicate account. */
   async createUser(params: {

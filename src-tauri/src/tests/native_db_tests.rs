@@ -210,37 +210,12 @@ fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::V
 }
 
 /// Translate a wire thread-feed snapshot into the nested structural shape
-/// `client_state::apply_thread_state` consumes (the shape `merge_states` builds).
-fn nested_state_body(wire: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "type": wire["type"], "threadId": wire["threadId"],
-        "authorityNamespaceId": wire["publisherNamespaceId"],
-        "selfMentionNamespaceId": wire["selfMentionNamespaceId"],
-        "conversationState": wire["conversationState"], "blocked": wire["blocked"],
-        "role": wire["role"],
-        "profile": {"account": wire["profileAccount"], "namespaceId": wire["publisherNamespaceId"],
-                    "profileRev": wire["profileRev"]},
-        "alias": wire["alias"], "threadProfileRev": wire["profileRev"],
-        "messageEndSeq": wire["messageEndSeq"], "tombstoneEndSeq": wire["tombstoneEndSeq"],
-        "groupMetaFeedEndId": wire["groupMetaFeedEndId"],
-        "joinRequestEndFeedId": wire["joinRequestEndFeedId"],
-        "joinRequestReadFeedId": wire["joinRequestReadFeedId"],
-        "groupInviteEndFeedId": wire["groupInviteEndFeedId"],
-        "lastReadSeq": wire["lastReadSeq"], "announcementReadFeedId": wire["announcementReadFeedId"],
-        "unreadCount": wire["unreadCount"], "lastMentionSeq": wire["lastMentionSeq"],
-    })
-}
-
+/// `client_state::ensure_thread_identity` consumes (the shape `merge_states` builds).
 fn commit_test_thread_state(conn: &mut Connection, body: &serde_json::Value) {
+    let snapshot: super::attention::ThreadFeedSnapshot =
+        serde_json::from_value(body.clone()).unwrap();
     let tx = conn.transaction().unwrap();
-    let nested = nested_state_body(body);
-    super::client_state::apply_thread_state(
-        &tx,
-        1,
-        &nested,
-        body["threadFeedId"].as_i64().unwrap(),
-    )
-    .unwrap();
+    super::client_state::ensure_thread_identity(&tx, 1, &snapshot).unwrap();
     tx.commit().unwrap();
     let local: super::attention::LocalThreadAttention =
         serde_json::from_value(serde_json::json!({"threadId":52,"server":body,"localReadSeq":0}))
@@ -252,16 +227,21 @@ fn commit_test_thread_state(conn: &mut Connection, body: &serde_json::Value) {
 fn native_thread_state_restores_history_and_ignores_old_snapshots() {
     let mut conn = profile_cache_db();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 5, "ACTIVE"));
-    conn.execute(
-        "UPDATE threads SET last_message_at=900,unread_count=4 WHERE thread_id=52",
-        [],
-    )
-    .unwrap();
-    commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 6, "READ_ONLY"));
+    conn.execute("UPDATE threads SET unread_count=4 WHERE thread_id=52", [])
+        .unwrap();
+    let mut current = test_thread_snapshot("P2P", 6, "READ_ONLY");
+    current["previews"] = serde_json::json!([{
+        "seq": 1, "createdAt": "1970-01-01T00:00:00.900Z",
+        "sender": {"account":"bob", "profileNamespaceId":0, "profileRev":3},
+        "status":"LIVE", "text":"Latest preview",
+    }]);
+    commit_test_thread_state(&mut conn, &current);
     let mut stale = test_thread_snapshot("P2P", 5, "ACTIVE");
     stale["profileRev"] = 99.into();
+    let stale_snapshot: super::attention::ThreadFeedSnapshot =
+        serde_json::from_value(stale).unwrap();
     let tx = conn.transaction().unwrap();
-    super::client_state::apply_thread_state(&tx, 1, &nested_state_body(&stale), 5).unwrap();
+    super::client_state::ensure_thread_identity(&tx, 1, &stale_snapshot).unwrap();
     tx.commit().unwrap();
     let thread = super::client_state::read_threads(&conn, 1)
         .unwrap()
@@ -270,11 +250,150 @@ fn native_thread_state_restores_history_and_ignores_old_snapshots() {
     assert_eq!(thread["profileRev"], 3);
     assert_eq!(thread["blocked"], true);
     assert_eq!(thread["lastMessageAt"], 900);
+    assert_eq!(thread["lastMessagePreview"], "Latest preview");
+    assert_eq!(thread["lastMessageSenderAccount"], "bob");
+    assert_eq!(thread["lastMessageSenderNamespaceId"], 0);
     assert_eq!(thread["unreadCount"], 4);
+    for (status, text) in [
+        ("USER_RETRACTION", "[Message retracted]"),
+        ("MODERATION_REMOVAL", "[Message removed by administrator]"),
+    ] {
+        conn.execute("UPDATE thread_previews SET status=?1,text=NULL", [status])
+            .unwrap();
+        let item = super::client_state::read_threads(&conn, 1)
+            .unwrap()
+            .remove(0);
+        assert_eq!(item["lastMessagePreview"], text);
+        assert_eq!(item["lastMessageAt"], 900);
+    }
+    conn.execute("DELETE FROM thread_previews", []).unwrap();
+    let item = super::client_state::read_threads(&conn, 1)
+        .unwrap()
+        .remove(0);
+    for field in [
+        "lastMessageAt",
+        "lastMessagePreview",
+        "lastMessageSenderAccount",
+        "lastMessageSenderNamespaceId",
+    ] {
+        assert!(item[field].is_null());
+    }
 }
 
 #[test]
-fn native_read_only_and_reestablishment_preserve_group_roster() {
+fn newer_thread_snapshot_with_lower_revision_moves_the_selection() {
+    let mut conn = profile_cache_db();
+    let mut high = test_thread_snapshot("P2P", 5, "ACTIVE");
+    high["profileRev"] = 5.into();
+    commit_test_thread_state(&mut conn, &high);
+    // The rev-3 profile is cached; a newer feed position selecting it must win
+    // over the locally higher rev-5 number: feed order decides, never magnitude.
+    super::contacts::write_profile(
+        &conn,
+        1,
+        &serde_json::json!({
+            "account":"bob","domain":serde_json::Value::Null,
+            "publisherNamespaceId":0,"profileNamespaceId":0,
+            "profileRev":3,"name":"Bob Three","avatarDigest":null,"bio":"third"
+        }),
+    )
+    .unwrap();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 6, "ACTIVE"));
+    let thread = super::client_state::read_threads(&conn, 1)
+        .unwrap()
+        .remove(0);
+    assert_eq!(thread["profileRev"], 3);
+    assert_eq!(thread["profile"]["name"], "Bob Three");
+    assert_eq!(thread["profile"]["bio"], "third");
+    let stored: i64 = conn
+        .query_row(
+            "SELECT thread_profile_rev FROM threads WHERE user_id=1 AND thread_id=52",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, 3);
+}
+
+#[test]
+fn thread_ipc_selects_and_invalidates_complete_home_profile_snapshots() {
+    for kind in ["P2P", "GROUP"] {
+        let mut conn = profile_cache_db();
+        let mut high = test_thread_snapshot(kind, 5, "ACTIVE");
+        high["publisherNamespaceId"] = 7.into();
+        high["profileRev"] = 5.into();
+        commit_test_thread_state(&mut conn, &high);
+        let account = high["profileAccount"].as_str().unwrap();
+        for (revision, name, bio, digest) in [
+            (5, "Rev Five", "Five bio", "a".repeat(64)),
+            (3, "Rev Three", "Three bio", "b".repeat(64)),
+        ] {
+            super::contacts::write_profile(
+                &conn,
+                1,
+                &serde_json::json!({
+                    "account":account,"domain":null,"publisherNamespaceId":7,
+                    "profileNamespaceId":0,"profileRev":revision,
+                    "name":name,"bio":bio,"avatarDigest":digest
+                }),
+            )
+            .unwrap();
+        }
+        let first = super::client_state::read_threads(&conn, 1)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            first["profile"],
+            serde_json::json!({
+                "name":"Rev Five","bio":"Five bio","avatarDigest":"a".repeat(64)
+            })
+        );
+        let mut lower = high.clone();
+        lower["threadFeedId"] = 6.into();
+        lower["profileRev"] = 3.into();
+        commit_test_thread_state(&mut conn, &lower);
+        let selected = super::client_state::read_threads(&conn, 1)
+            .unwrap()
+            .remove(0);
+        assert_eq!(selected["account"], account);
+        assert_eq!(selected["publisherNamespaceId"], 7);
+        assert_eq!(selected["profileRev"], 3);
+        assert_eq!(
+            selected["profile"],
+            serde_json::json!({
+                "name":"Rev Three","bio":"Three bio","avatarDigest":"b".repeat(64)
+            })
+        );
+        assert_eq!(selected.get("meta").is_some(), kind == "GROUP");
+        for obsolete in [
+            "group",
+            "peerUser",
+            "authorityNamespaceId",
+            "threadProfileRev",
+            "serverLastReadSeq",
+            "serverUnreadCount",
+            "localReadSeq",
+        ] {
+            assert!(selected.get(obsolete).is_none(), "IPC leaked {obsolete}");
+        }
+        lower["threadFeedId"] = 7.into();
+        lower["profileRev"] = 2.into();
+        commit_test_thread_state(&mut conn, &lower);
+        let missing = super::client_state::read_threads(&conn, 1)
+            .unwrap()
+            .remove(0);
+        assert_eq!(missing["profileRev"], 2);
+        assert_eq!(
+            missing["profile"],
+            serde_json::json!({
+                "name":account,"bio":"","avatarDigest":null
+            })
+        );
+    }
+}
+
+#[test]
+fn native_group_roster_rebuilds_through_departure_and_reestablishment() {
     let mut conn = profile_cache_db();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
     conn.execute(
@@ -284,39 +403,13 @@ fn native_read_only_and_reestablishment_preserve_group_roster() {
     )
     .unwrap();
     conn.execute(
-        "UPDATE threads SET group_member_count=1,group_meta_feed_id='20'
+        "UPDATE group_meta SET member_count=1,feed_id='20'
         WHERE thread_id=52",
         [],
     )
     .unwrap();
-    for (feed, lifecycle) in [(6, "READ_ONLY"), (7, "ACTIVE")] {
-        commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", feed, lifecycle));
-        if lifecycle == "READ_ONLY" {
-            let retained = super::thread_store::read(&conn, 1, 52).unwrap();
-            super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
-            let page = serde_json::from_value(serde_json::json!({
-                "threadId":52,"namespaceId":0,"page":{
-                    "account":"!dev","mode":"full","items":[],
-                    "hasMore":false,"scannedThrough":"21","groupMetaFeedEndId":"21"
-                }
-            }))
-            .unwrap();
-            assert!(
-                super::client_state::apply_group_meta_page(&mut conn, 1, page)
-                    .unwrap()
-                    .is_none()
-            );
-            assert_eq!(super::thread_store::read(&conn, 1, 52).unwrap(), retained);
-        }
-        let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
-        assert_eq!(thread["group"]["memberCount"], 1);
-        assert_eq!(thread["group"]["groupMetaFeedId"], "20");
-        assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-    }
+    // Departure no longer vetoes local meta writes; recovery resets normally.
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 6, "READ_ONLY"));
     super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
@@ -324,7 +417,227 @@ fn native_read_only_and_reestablishment_preserve_group_roster() {
         0
     );
     let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
-    assert_eq!(thread["group"]["groupMetaFeedId"], "0");
+    assert_eq!(thread["meta"]["groupMetaFeedId"], "0");
+    assert_eq!(thread["meta"]["recoveryThrough"], "21");
+    // Re-establishment rebuilds the roster from the server's full page.
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 7, "ACTIVE"));
+    let page = serde_json::from_value(serde_json::json!({
+        "threadId":52,"namespaceId":0,"page":{
+            "account":"!dev","mode":"full","items":[
+                {"feedId":"21","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
+                    "account":"bob","namespaceId":0,"role":"MEMBER","profileRev":3
+                }}
+            ],
+            "hasMore":false,"scannedThrough":"21","groupMetaFeedEndId":"21"
+        }
+    }))
+    .unwrap();
+    let patch = super::client_state::apply_group_meta_page(&mut conn, 1, page)
+        .unwrap()
+        .unwrap();
+    assert_eq!(patch.group_meta_feed_id, "21");
+    assert_eq!(patch.member_count, 1);
+    let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
+    assert_eq!(thread["meta"]["memberCount"], 1);
+    assert_eq!(thread["meta"]["groupMetaFeedId"], "21");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
+    assert_eq!(thread["meta"]["groupMetaFeedId"], "0");
+}
+
+#[test]
+fn meta_commits_and_thread_operations_never_write_each_others_table() {
+    let mut conn = profile_cache_db();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
+    conn.execute_batch(
+        "CREATE TEMP TRIGGER reject_thread_updates BEFORE UPDATE ON threads
+         BEGIN SELECT RAISE(ABORT, 'Meta must not write thread fields'); END;",
+    )
+    .unwrap();
+    super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "2").unwrap();
+    let page = serde_json::from_value(serde_json::json!({
+        "threadId":52,"namespaceId":0,"page":{
+            "account":"!dev","mode":"full","hasMore":false,
+            "scannedThrough":"2","groupMetaFeedEndId":"2","items":[
+                {"feedId":"1","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
+                    "account":"bob","namespaceId":0,"role":"MEMBER","profileRev":3
+                }},
+                {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_ANNOUNCEMENT","body":{"text":"Notice"}}
+            ]
+        }
+    }))
+    .unwrap();
+    super::client_state::apply_group_meta_page(&mut conn, 1, page).unwrap();
+    let committed = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
+    assert_eq!(committed["meta"]["memberCount"], 1);
+    assert_eq!(committed["meta"]["announcementText"], "Notice");
+    conn.execute_batch(
+        "DROP TRIGGER reject_thread_updates;
+         CREATE TEMP TRIGGER reject_meta_updates BEFORE UPDATE ON group_meta
+         BEGIN SELECT RAISE(ABORT, 'thread operations must not update Meta'); END;
+         CREATE TEMP TRIGGER reject_meta_inserts BEFORE INSERT ON group_meta
+         BEGIN SELECT RAISE(ABORT, 'thread operations must not reinitialize Meta'); END;",
+    )
+    .unwrap();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 6, "ACTIVE"));
+    super::thread_patch::apply(&conn, 1, 52, &serde_json::json!({"muted":true})).unwrap();
+    let restored = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
+    assert_eq!(restored["meta"], committed["meta"]);
+    assert_eq!(restored["muted"], true);
+    assert_eq!(restored["threadFeedId"], 6);
+}
+
+#[test]
+fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
+    let mut conn = profile_cache_db();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
+    super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
+    // Roles outside the enum must be rejected instead of stored, and a missing
+    // or non-string role must not silently coerce to MEMBER. profileRev must
+    // be present and non-negative on both member operations.
+    let invalid_bodies = [
+        serde_json::json!({"account":"bob","namespaceId":0,"role":"SUPERUSER","profileRev":3}),
+        serde_json::json!({"account":"bob","namespaceId":0,"profileRev":3}),
+        serde_json::json!({"account":"bob","namespaceId":0,"role":42,"profileRev":3}),
+        serde_json::json!({"account":"bob","namespaceId":0,"role":"MEMBER"}),
+        serde_json::json!({"account":"bob","namespaceId":0,"role":"MEMBER","profileRev":-1}),
+    ];
+    for (operation, body) in invalid_bodies
+        .into_iter()
+        .flat_map(|body| [("MEMBER_UPSERT", body.clone()), ("MEMBER_DEPART", body)])
+    {
+        let page = serde_json::from_value(serde_json::json!({
+            "threadId":52,"namespaceId":0,"page":{
+                "account":"!dev","mode":"full","hasMore":false,
+                "scannedThrough":"21","groupMetaFeedEndId":"21","items":[
+                    {"feedId":"21","createdAt":1000,"originCreatedAt":null,
+                     "operation":operation,"body":body}
+                ]
+            }
+        }))
+        .unwrap();
+        assert!(
+            super::client_state::apply_group_meta_page(&mut conn, 1, page).is_err(),
+            "{operation} with an out-of-contract body must be rejected"
+        );
+        let members: i64 = conn
+            .query_row("SELECT COUNT(*) FROM members", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(members, 0);
+        let feed_id: String = conn
+            .query_row(
+                "SELECT feed_id FROM group_meta WHERE user_id=1 AND thread_id=52",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(feed_id, "0", "a rejected page must not advance the cursor");
+    }
+    // Pages carrying the complete member contract still apply, on both
+    // operations: rebuild the roster, then depart through a delta page.
+    let page = serde_json::from_value(serde_json::json!({
+        "threadId":52,"namespaceId":0,"page":{
+            "account":"!dev","mode":"full","hasMore":false,
+            "scannedThrough":"21","groupMetaFeedEndId":"21","items":[
+                {"feedId":"21","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
+                    "account":"bob","namespaceId":0,"role":"ADMIN","profileRev":3
+                }}
+            ]
+        }
+    }))
+    .unwrap();
+    let patch = super::client_state::apply_group_meta_page(&mut conn, 1, page)
+        .unwrap()
+        .unwrap();
+    assert_eq!(patch.member_count, 1);
+    let page = serde_json::from_value(serde_json::json!({
+        "threadId":52,"namespaceId":0,"page":{
+            "account":"!dev","mode":"delta","hasMore":false,
+            "scannedThrough":"22","groupMetaFeedEndId":"22","items":[
+                {"feedId":"22","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_DEPART","body":{
+                    "account":"bob","namespaceId":0,"role":"ADMIN","profileRev":3
+                }}
+            ]
+        }
+    }))
+    .unwrap();
+    let patch = super::client_state::apply_group_meta_page(&mut conn, 1, page)
+        .unwrap()
+        .unwrap();
+    assert_eq!(patch.member_count, 0);
+    let left_state: i64 = conn
+        .query_row("SELECT left_state FROM members", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(left_state, 1);
+}
+
+#[test]
+fn late_meta_page_commits_server_truth_even_after_departure() {
+    let mut conn = profile_cache_db();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
+    // The HTTP page was requested while active, but the feed commits departure first.
+    // The page is server truth for the group; it commits regardless of lifecycle.
+    let page = serde_json::from_value(serde_json::json!({
+        "threadId":52,"namespaceId":0,"page":{
+            "account":"!dev","mode":"delta","hasMore":false,
+            "scannedThrough":"2","groupMetaFeedEndId":"2","items":[
+                {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
+                    "account":"late","namespaceId":0,"role":"MEMBER","profileRev":3
+                }}
+            ]
+        }
+    }))
+    .unwrap();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 6, "READ_ONLY"));
+    let patch = super::client_state::apply_group_meta_page(&mut conn, 1, page)
+        .unwrap()
+        .unwrap();
+    assert_eq!(patch.group_meta_feed_id, "2");
+    assert_eq!(patch.member_count, 1);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM members", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn missing_group_meta_is_an_invariant_error_and_recovery_rolls_back() {
+    let mut conn = profile_cache_db();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
+    conn.execute(
+        "DELETE FROM group_meta WHERE user_id=1 AND thread_id=52",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role)
+         VALUES(1,52,'bob',0,'MEMBER')",
+        [],
+    )
+    .unwrap();
+    assert!(super::thread_store::read(&conn, 1, 52).is_err());
+    assert_eq!(
+        super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "2").unwrap_err(),
+        "stored group thread is missing its meta row"
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM members", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -344,7 +657,7 @@ fn deleting_a_thread_clears_its_state_preview_and_roster_together() {
     )
     .unwrap();
     super::client_state::delete_thread(&mut conn, 1, 52).unwrap();
-    for table in ["threads", "thread_previews", "members"] {
+    for table in ["threads", "group_meta", "thread_previews", "members"] {
         let count: i64 = conn
             .query_row(
                 &format!("SELECT COUNT(*) FROM {table} WHERE user_id=1 AND thread_id=52"),
@@ -372,9 +685,15 @@ fn quote_tombstones_are_scoped_to_user_and_thread() {
     )
     .unwrap();
     assert_eq!(
-        super::messages::load_deleted_message_seqs(&conn, 1, 42, vec![4, 4, 5, 6, 7, 8, 9])
-            .unwrap(),
-        vec![4, 6]
+        serde_json::to_value(
+            super::messages::load_message_deletions(&conn, 1, 42, vec![4, 4, 5, 6, 7, 8, 9],)
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::json!([
+            {"seq":4,"type":"USER_RETRACTION"},
+            {"seq":6,"type":"MODERATION_REMOVAL"},
+        ])
     );
 }
 
@@ -388,18 +707,41 @@ fn profile_cache_db() -> Connection {
 
 #[test]
 fn old_message_cache_is_rejected_and_rebuilt_without_importing_bodies() {
-    let conn = profile_cache_db();
+    let mut conn = Connection::open_in_memory().unwrap();
+    super::configure(&conn).unwrap();
+    super::create_cache_schema(&conn).unwrap();
+    // Version 1 kept history progress outside threads and persisted derived preview columns.
     conn.execute_batch(
-        "INSERT INTO cache_meta(key,value_json) VALUES('schemaVersion','19')
-           ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json;
+        "UPDATE cache_meta SET value_json='1' WHERE key='schemaVersion';
+         ALTER TABLE threads DROP COLUMN message_head;
+         ALTER TABLE threads DROP COLUMN deleted_hwm;
+         ALTER TABLE threads ADD COLUMN last_message_at INTEGER;
+         ALTER TABLE threads ADD COLUMN last_message_preview TEXT;
+         ALTER TABLE threads ADD COLUMN last_message_sender_account TEXT;
+         ALTER TABLE threads ADD COLUMN last_message_sender_namespace_id INTEGER;
+         CREATE TABLE thread_sync_state (
+           user_id INTEGER NOT NULL, thread_id INTEGER NOT NULL,
+           message_head INTEGER, deleted_hwm INTEGER,
+           PRIMARY KEY(user_id,thread_id)
+         );
+         INSERT INTO thread_sync_state VALUES(1,42,4,3);
          INSERT INTO messages VALUES(1,42,4,100,'{\"isDeleted\":true,\"content\":\"old body\"}');",
     )
     .unwrap();
     assert!(super::validate_cache_schema(&conn)
         .unwrap_err()
         .contains("schema version mismatch"));
-    super::drop_cache_schema(&conn).unwrap();
-    super::create_cache_schema(&conn).unwrap();
+    // A current version marker cannot hide the incompatible physical layout either.
+    conn.execute(
+        "UPDATE cache_meta SET value_json=?1 WHERE key='schemaVersion'",
+        [super::CACHE_SCHEMA_VERSION.to_string()],
+    )
+    .unwrap();
+    assert_eq!(
+        super::validate_cache_schema(&conn).unwrap_err(),
+        "incompatible thread layout"
+    );
+    super::recreate_cache_schema(&mut conn).unwrap();
     super::validate_cache_schema(&conn).unwrap();
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM messages", [], |row| row
@@ -407,6 +749,82 @@ fn old_message_cache_is_rejected_and_rebuilt_without_importing_bodies() {
             .unwrap(),
         0
     );
+    let fresh = Connection::open_in_memory().unwrap();
+    super::create_cache_schema(&fresh).unwrap();
+    assert_eq!(
+        persistent_cache_objects(&conn),
+        persistent_cache_objects(&fresh)
+    );
+    super::thread_store::insert_test_thread(&conn, 1, 42, 3);
+    assert_eq!(
+        conn.query_row("SELECT message_head,deleted_hwm FROM threads", [], |row| {
+            Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?))
+        })
+        .unwrap(),
+        (None, 3)
+    );
+}
+
+fn persistent_cache_objects(conn: &Connection) -> Vec<(String, String)> {
+    conn.prepare(
+        "SELECT type,name FROM main.sqlite_schema
+         WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name",
+    )
+    .unwrap()
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+}
+
+#[test]
+fn cache_schema_rejects_each_missing_history_progress_column() {
+    for column in ["message_head", "deleted_hwm"] {
+        let conn = profile_cache_db();
+        conn.execute_batch(&format!("ALTER TABLE threads DROP COLUMN {column};"))
+            .unwrap();
+        assert_eq!(
+            super::validate_cache_schema(&conn).unwrap_err(),
+            "incompatible thread layout"
+        );
+    }
+}
+
+#[test]
+fn cache_rebuild_discards_unknown_objects_and_restores_foreign_keys() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    super::configure(&conn).unwrap();
+    super::create_cache_schema(&conn).unwrap();
+    let expected = persistent_cache_objects(&conn);
+    conn.execute_batch(
+        r#"CREATE TABLE "unknown""parent"(id INTEGER PRIMARY KEY, child INTEGER REFERENCES z_child(id));
+           CREATE TABLE z_child(id INTEGER PRIMARY KEY, parent INTEGER REFERENCES "unknown""parent"(id) ON DELETE RESTRICT);
+           INSERT INTO "unknown""parent" VALUES(1,NULL);
+           INSERT INTO z_child VALUES(1,1);
+           UPDATE "unknown""parent" SET child=1;
+           CREATE INDEX obsolete_index ON z_child(parent);
+           CREATE TRIGGER obsolete_trigger AFTER INSERT ON z_child BEGIN SELECT 1; END;
+           CREATE VIEW obsolete_view AS SELECT * FROM z_child;
+           CREATE TEMP TABLE z_child(value INTEGER);
+           INSERT INTO temp.z_child VALUES(17);"#,
+    ).unwrap();
+    super::recreate_cache_schema(&mut conn).unwrap();
+    assert_eq!(persistent_cache_objects(&conn), expected);
+    super::validate_cache_schema(&conn).unwrap();
+    assert!(conn
+        .pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0))
+        .unwrap());
+    assert_eq!(
+        conn.query_row("SELECT value FROM temp.z_child", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        17
+    );
+    assert!(conn
+        .execute_batch(
+            "INSERT INTO thread_previews VALUES(1,42,1,'now','peer',0,1,'LIVE','orphan');"
+        )
+        .is_err());
 }
 
 #[test]
@@ -499,7 +917,9 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         "unreadCount":0,"lastMentionSeq":null,"previews":[],
     });
     let tx = conn.transaction().unwrap();
-    super::client_state::apply_thread_state(&tx, 1, &nested_state_body(&body), 1).unwrap();
+    let mirror: super::attention::ThreadFeedSnapshot =
+        serde_json::from_value(body.clone()).unwrap();
+    super::client_state::ensure_thread_identity(&tx, 1, &mirror).unwrap();
     tx.commit().unwrap();
     let local: super::attention::LocalThreadAttention =
         serde_json::from_value(serde_json::json!({"threadId":90,"server":body,"localReadSeq":0}))
@@ -507,9 +927,9 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     super::attention::write_state(&conn, 1, &local).unwrap();
     let page = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"full","scannedThrough":"3","items":[
-        {"feedId":"1","operation":"MEMBER_UPSERT","body":{"account":"me","namespaceId":0,"role":"ADMIN","profileRev":2}},
-        {"feedId":"2","operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"MEMBER","profileRev":2}},
-        {"feedId":"3","operation":"GROUP_PROFILE","body":{"account":"!mirror","namespaceId":7,"profileRev":4}}
+        {"feedId":"1","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"me","namespaceId":0,"role":"ADMIN","profileRev":2}},
+        {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"MEMBER","profileRev":2}},
+        {"feedId":"3","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_PROFILE","body":{"account":"!mirror","namespaceId":7,"profileRev":4}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,
@@ -553,9 +973,9 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     // Coordinate-only feed and roster references do not invent display bindings.
     assert_eq!(source_count, 0);
     let thread = super::thread_store::read(&conn, 1, 90).unwrap().unwrap();
-    assert_eq!(thread["authorityNamespaceId"], 7);
+    assert_eq!(thread["publisherNamespaceId"], 7);
     assert_eq!(thread["role"], "MEMBER"); // Roster updates do not replace the thread-feed role.
-    assert!(thread.get("profileRev").is_none());
+    assert_eq!(thread["profileRev"], 0);
     let cursor: Option<i64> = conn
         .query_row(
             "SELECT state_feed_id FROM account_state WHERE user_id=1",
@@ -567,7 +987,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
 
     let delta = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"delta","scannedThrough":"4","items":[
-        {"feedId":"4","operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"ADMIN","profileRev":2}}
+        {"feedId":"4","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"ADMIN","profileRev":2}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,

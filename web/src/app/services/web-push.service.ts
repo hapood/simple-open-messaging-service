@@ -4,7 +4,10 @@ import { apiPrefix } from './constants';
 import { isTauri } from './runtime';
 import { ToastService } from './toast.service';
 import { PreferenceStore } from './preference-store.service';
+import { SessionStore } from './session/session-store';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { uuid } from '../lib/uuid';
+import { getPushWorkerRegistration } from './push-worker-registration';
 import {
   PushRegistrationService,
   type PushRegistration,
@@ -17,6 +20,8 @@ export class WebPushService {
   private readonly toast = inject(ToastService);
   private readonly preferences = inject(PreferenceStore);
   private readonly registration = inject(PushRegistrationService);
+  private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly sessionStore = new SessionStore(this.preferences);
   private deviceIdPromise: Promise<string> | null = null;
   private initialized = false;
 
@@ -76,6 +81,12 @@ export class WebPushService {
 
   /** Ensure the notification renderer is active before forwarding a projected worker batch. */
   async worker(): Promise<ServiceWorkerRegistration | null> {
+    if (isTauri()) return null;
+    const scope = this.lifecycle.capture();
+    if (!scope.sessionId || !this.lifecycle.isCurrent(scope)) return null;
+    const saved = await this.sessionStore.read();
+    if (!this.lifecycle.isCurrent(scope) || saved?.phase !== 'active' ||
+        saved.session?.id !== scope.sessionId || !saved.identity) return null;
     if (
       typeof Notification === 'undefined' ||
       Notification.permission !== 'granted'
@@ -110,7 +121,22 @@ export class WebPushService {
         changed();
       });
     }
-    return reg;
+    return this.lifecycle.isCurrent(scope) ? reg : null;
+  }
+
+  /** Release an existing subscription only. Logout must never register a new worker. */
+  async unsubscribe(): Promise<void> {
+    if (isTauri() || !('serviceWorker' in navigator)) return;
+    const release = async () => {
+      const reg = await getPushWorkerRegistration();
+      const subscription = await reg?.pushManager.getSubscription();
+      if (subscription && !(await subscription.unsubscribe())) {
+        throw new Error('Could not cancel push subscription');
+      }
+    };
+    // Serialize with registration recovery so an older subscribe cannot finish after logout.
+    if (navigator.locks) await navigator.locks.request('soms-push-registration', release);
+    else await release();
   }
 
   private async read(): Promise<PushRegistration | null> {
@@ -120,24 +146,33 @@ export class WebPushService {
   }
 
   private async create(replace: boolean): Promise<PushRegistration | null> {
+    const scope = this.lifecycle.capture();
     const reg = await this.worker();
-    if (!reg) return null;
+    if (!reg || !this.lifecycle.isCurrent(scope)) return null;
     const response = await fetch(`${apiPrefix()}/notifications/vapid-key`, {
       signal: AbortSignal.timeout(20000),
     });
     if (!response.ok) throw new Error('VAPID key unavailable');
+    if (!this.lifecycle.isCurrent(scope)) return null;
     const publicKey = (await response.json())?.data?.publicKey;
     if (typeof publicKey !== 'string' || !publicKey) return null;
     let sub = await reg.pushManager.getSubscription();
     if (sub && replace) {
+      if (!this.lifecycle.isCurrent(scope)) return null;
       if (!(await sub.unsubscribe()))
         throw new Error('Could not remove expired subscription');
       sub = null;
     }
+    if (!this.lifecycle.isCurrent(scope)) return null;
     sub ??= await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
+    if (!this.lifecycle.isCurrent(scope)) {
+      // A subscription created by a cancelled login must not survive as an orphan.
+      if (!(await sub.unsubscribe())) throw new Error('Could not remove cancelled push subscription');
+      return null;
+    }
     return this.serialize(sub);
   }
 

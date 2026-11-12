@@ -167,8 +167,9 @@ function publicUserQuotaDefaults(value) {
   return {
     dailyMsgLimit: value.dailyMsgLimit,
     dailyRequestLimit: value.dailyRequestLimit,
+    dailySignalLimit: value.dailySignalLimit,
     dailyFileLimit: value.dailyFileLimit,
-    dailyFileBytesLimit: String(value.dailyFileBytesLimit),
+    dailyFileBytesLimit: Number(value.dailyFileBytesLimit),
   };
 }
 
@@ -517,10 +518,9 @@ async function main() {
             dailyRequestLimit: requestLimit,
             dailyMsgLimit: Math.max(user.dailyMsgLimit, operationCount * 2),
             dailyFileLimit: Math.max(user.dailyFileLimit, operationCount),
-            dailyFileBytesLimit: String(
-              BigInt(user.dailyFileBytesLimit) > BigInt(operationCount * 1024)
-                ? user.dailyFileBytesLimit
-                : operationCount * 1024,
+            dailyFileBytesLimit: Math.max(
+              user.dailyFileBytesLimit,
+              operationCount * 1024,
             ),
           }),
           admin.setFederationQuotaDefaults({

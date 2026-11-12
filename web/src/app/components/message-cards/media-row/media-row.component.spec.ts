@@ -10,7 +10,6 @@ import {
   ImageDownloadService,
   type ImageDownloadTask,
 } from '../../../services/image-download.service';
-import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import type {
   AlbumMedia,
   AuthoredContentType,
@@ -36,14 +35,6 @@ describe('MediaRowComponent — deferred image loading', () => {
         }),
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
         { provide: ImageDownloadService, useValue: downloads },
-        {
-          provide: MediaSizeThresholdService,
-          useValue: {
-            shouldDefer: (size: number) => size > 1024,
-            isLoaded: () => false,
-            markLoaded: () => undefined,
-          },
-        },
       ],
     });
   });
@@ -75,6 +66,88 @@ describe('MediaRowComponent — deferred image loading', () => {
     },
   );
 
+  it.each([false, true])(
+    'fades the entire completed video badge (confirmation marker: %s), including after remount',
+    async (confirmed) => {
+      const video: AlbumMedia = { ...image(1, 4096), kind: 'video' };
+      for (let mount = 0; mount < 2; mount++) {
+        const fixture = await render([video], 'VIDEO');
+        fixture.nativeElement.classList.toggle('cb-confirmed', confirmed);
+        fixture.componentRef.setInput('data', {
+          ...message([video], 'VIDEO'),
+          isSelf: true,
+          status: 'sending',
+        });
+        fixture.detectChanges();
+        const sending = fixture.nativeElement.querySelector('.msg-status');
+        expect(getComputedStyle(sending).animationName).toBe('none');
+        fixture.componentRef.setInput('data', {
+          ...message([video], 'VIDEO'),
+          isSelf: true,
+          status: 'sent',
+        });
+        fixture.detectChanges();
+        const badge = fixture.nativeElement.querySelector('.msg-status');
+        const animation = badge
+          .getAnimations()
+          .find(
+            (entry: Animation) =>
+              entry instanceof CSSAnimation &&
+              entry.animationName.includes('msg-media-sent-badge'),
+          );
+        expect(animation).toBeDefined();
+        animation.finish();
+        expect(getComputedStyle(badge).opacity).toBe('0');
+        fixture.destroy();
+      }
+    },
+  );
+
+  it('waits for video readiness before probing a first frame, then mounts without a refresh', async () => {
+    const video: AlbumMedia = {
+      ...image(1, 4096),
+      kind: 'video',
+      status: 'downloading',
+    };
+    const fixture = await render([video], 'VIDEO');
+    expect(fixture.nativeElement.querySelector('video')).toBeNull();
+    fixture.componentRef.setInput(
+      'data',
+      message([{ ...video, status: 'ready' }], 'VIDEO'),
+    );
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const element = fixture.nativeElement.querySelector(
+      'video',
+    ) as HTMLVideoElement;
+    expect(element).toBeNull();
+    expect(
+      fixture.nativeElement.querySelector('.msg-media-video--thumbnail'),
+    ).not.toBeNull();
+    fixture.destroy();
+  });
+
+  it('does not carry a failed optimistic video probe to the authoritative source', async () => {
+    const video: AlbumMedia = {
+      ...image(1, 4096),
+      kind: 'video',
+      src: 'blob:pending-video',
+    };
+    const fixture = await render([video], 'VIDEO');
+    fixture.componentInstance.onVideoError(0);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('video')).toBeNull();
+    fixture.componentRef.setInput(
+      'data',
+      message([{ ...video, src: '/uploads/final-video' }], 'VIDEO'),
+    );
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('video')).toBeNull();
+    expect(fixture.componentInstance.cells()[0].unplayable).toBe(false);
+    fixture.destroy();
+  });
+
   it('opens the viewer without rendering the old click-to-load copy', async () => {
     const images = [image(1, 4096)];
     const fixture = await render(images);
@@ -84,8 +157,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     const gate = fixture.nativeElement.querySelector(
       '.msg-media-tap',
     ) as HTMLElement;
-    expect(gate).not.toBeNull();
-    expect(gate.textContent?.trim()).toBe('');
+    expect(gate).toBeNull();
 
     (
       fixture.nativeElement.querySelector('.msg-media-cell') as HTMLElement
@@ -122,8 +194,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     const progress = fixture.nativeElement.querySelector(
       '.msg-media-download-progress',
     ) as HTMLElement;
-    expect(progress).not.toBeNull();
-    expect(progress.textContent?.trim()).toBe('40%');
+    expect(progress).toBeNull();
     expect(
       (
         fixture.nativeElement.querySelector(
@@ -152,7 +223,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     ).toBe(3);
     expect(
       fixture.nativeElement.querySelectorAll('.msg-gallery-thumbnail').length,
-    ).toBe(1);
+    ).toBe(2);
     const thumbnail = fixture.nativeElement.querySelector(
       '.msg-gallery-thumbnail',
     ) as HTMLImageElement;
@@ -162,7 +233,7 @@ describe('MediaRowComponent — deferred image loading', () => {
       fixture.nativeElement.querySelector(
         '.msg-gallery-icon--image:not(:has(.msg-gallery-thumbnail)) .msg-gallery-icon-svg',
       ),
-    ).not.toBeNull();
+    ).toBeNull();
     expect(
       fixture.nativeElement.querySelector('.msg-gallery-row mat-icon'),
     ).toBeNull();
@@ -199,7 +270,7 @@ describe('MediaRowComponent — deferred image loading', () => {
     ) as HTMLImageElement;
 
     expect(thumbnail).not.toBeNull();
-    expect(thumbnail.getAttribute('src')).toBe('cache:/uploads/1.jpg');
+    expect(thumbnail.getAttribute('src')).toBe('/uploads/1.jpg');
   });
 
   it('shows an oversized local blob preview without applying the remote cache gate', async () => {

@@ -76,7 +76,6 @@ function subject(
   };
   const recordNamespaceChangeInTx = vi.fn();
   const recordClientChangeInTx = vi.fn(async () => 1n);
-  const scheduleRefresh = vi.fn();
   const notifyProfileNamespaceChange = vi.fn();
   const service = new FederationNamespaceAdminService(
     database as never,
@@ -84,11 +83,11 @@ function subject(
       recordNamespaceChangeInTx,
       recordClientChangeInTx,
     } as never,
-    { scheduleRefresh } as never,
     { notifyProfileNamespaceChange } as never,
     {
       fetchWellKnown: vi.fn().mockResolvedValue({
         protocolVersions: [1],
+        signingKeyCreatedAt: 1700000000000,
         roots: [
           { ed25519: claimedRoot, notBefore: 0, notAfter: 253402300799999 },
         ],
@@ -137,7 +136,6 @@ function subject(
     database,
     recordNamespaceChangeInTx,
     recordClientChangeInTx,
-    scheduleRefresh,
     notifyProfileNamespaceChange,
   };
 }
@@ -232,7 +230,6 @@ describe('FederationNamespaceAdminService', () => {
       recordNamespaceChangeInTx,
       recordClientChangeInTx,
       notifyProfileNamespaceChange,
-      scheduleRefresh,
     } = subject([[reviewRow()], [namespaceRow()]]);
     await expect(service.reject(7)).resolves.toMatchObject({
       reviewId: 7,
@@ -247,7 +244,7 @@ describe('FederationNamespaceAdminService', () => {
     expect(recordNamespaceChangeInTx).not.toHaveBeenCalled();
     expect(recordClientChangeInTx).not.toHaveBeenCalled();
     expect(notifyProfileNamespaceChange).not.toHaveBeenCalled();
-    expect(scheduleRefresh).not.toHaveBeenCalled();
+    expect(statements).not.toContain('INSERT INTO "ProfileNamespace"');
   });
 
   it('approves a root replacement while preserving both namespace coordinates in one commit', async () => {
@@ -257,7 +254,6 @@ describe('FederationNamespaceAdminService', () => {
       recordNamespaceChangeInTx,
       recordClientChangeInTx,
       notifyProfileNamespaceChange,
-      scheduleRefresh,
     } = subject([
       [reviewRow()], // evidence captured before network I/O
       [reviewRow()], // evidence revalidated at commit
@@ -295,9 +291,9 @@ describe('FederationNamespaceAdminService', () => {
       profileNamespaceId: 0,
     });
     expect(notifyProfileNamespaceChange).toHaveBeenCalledWith(1n);
-    expect(scheduleRefresh).toHaveBeenCalledWith(
-      { publisherNamespaceId: 12, profileNamespaceId: 0 },
-      0n,
+    expect(statements).toContain('INSERT INTO "ProfileNamespace"');
+    expect(statements).toContain(
+      'ON CONFLICT ("publisherNamespaceId", "profileNamespaceId") DO UPDATE',
     );
     // A root replacement keeps the lifelong nsid: no successor epoch row is
     // created, the epoch is never retired, and business facts bound to the
@@ -433,7 +429,7 @@ describe('FederationNamespaceAdminService', () => {
     'requires a real sealed challenge on approval: %s',
     async (answer) => {
       const verify = vi.fn(async (url: URL, init: RequestInit) => {
-        expect(url.href).toBe('https://peer.example/s2s/v1/verify');
+        expect(url.href).toBe('https://peer.example/somfp/v1/verify');
         const body = JSON.parse(init.body as string) as {
           publicKey: string;
           encryptedValue: string;

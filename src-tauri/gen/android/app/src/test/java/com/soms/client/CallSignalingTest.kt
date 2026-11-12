@@ -4,9 +4,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CallSignalingTest {
-    private val a = "00000000-0000-4000-8000-00000000000a"
-    private val b = "00000000-0000-4000-8000-00000000000b"
-    private val c = "00000000-0000-4000-8000-00000000000c"
     private val candidate = "candidate:1 1 udp 2122260223 192.0.2.1 5000 typ host"
 
     private fun sdp(ufrag: String, video: Boolean = false, direction: String = "sendrecv",
@@ -22,84 +19,6 @@ class CallSignalingTest {
         for (invalid in listOf("", "abc", "abcd ", "a_b-", "éabc", "a".repeat(257))) {
             assertFalse(CallSignaling.validIceUfrag(invalid))
         }
-    }
-
-    @Test fun canonicalUuidOnly() {
-        assertTrue(CallSignaling.canonicalId(a))
-        assertFalse(CallSignaling.canonicalId(a.uppercase()))
-        assertFalse(CallSignaling.canonicalId(" $a"))
-        assertFalse(CallSignaling.canonicalId(""))
-        assertFalse(CallSignaling.canonicalId("negotiation-1"))
-        for (version in 1..8) for (variant in listOf('8', '9', 'a', 'b')) {
-            assertTrue(CallSignaling.canonicalId("00000000-0000-${version}000-${variant}000-000000000000"))
-        }
-        for (invalid in listOf("00000000-0000-0000-0000-000000000000",
-                "00000000-0000-9000-8000-000000000000",
-                "00000000-0000-4000-7000-000000000000")) {
-            assertFalse(CallSignaling.canonicalId(invalid))
-            assertFalse(CallSignaling.validReference("answer", true, invalid))
-        }
-    }
-
-    @Test fun answerOnlyReferenceHasNoMissingFieldFallback() {
-        assertTrue(CallSignaling.validReference("answer", true, a))
-        assertFalse(CallSignaling.validReference("answer", false, a))
-        assertFalse(CallSignaling.validReference("answer", true, ""))
-        assertFalse(CallSignaling.validReference("answer", true, a.uppercase()))
-        for (kind in listOf("offer", "ice", "video-state")) {
-            assertTrue(CallSignaling.validReference(kind, false, ""))
-            assertFalse(CallSignaling.validReference(kind, true, a))
-            assertFalse(CallSignaling.validReference(kind, true, "")) // Includes explicit null on the wire.
-        }
-    }
-
-    @Test fun initialAndMultipleRenegotiationsUseOneLane() {
-        val lane = CallSignaling.OfferLane()
-        for (id in listOf(a, b, c)) {
-            assertTrue(lane.begin(id))
-            assertFalse(lane.begin(a)) // No speculative replacement, even before createOffer completes.
-            assertFalse(lane.complete(id)) // HTTP admission alone does not complete SDP.
-            assertEquals(CallSignaling.AnswerDecision.APPLY, lane.beginAnswer(id, true))
-            assertFalse(lane.begin(b)) // setRemoteDescription is still asynchronous.
-            assertEquals(CallSignaling.AnswerDecision.IGNORE, lane.beginAnswer(id, true))
-            assertTrue(lane.complete(id))
-            assertNull(lane.activeId)
-            assertEquals(CallSignaling.AnswerDecision.IGNORE, lane.beginAnswer(id, false))
-        }
-    }
-
-    @Test fun staleAnswerNeverReleasesCurrentOffer() {
-        val lane = CallSignaling.OfferLane()
-        assertTrue(lane.begin(a))
-        assertEquals(CallSignaling.AnswerDecision.APPLY, lane.beginAnswer(a, true))
-        assertTrue(lane.complete(a))
-        assertTrue(lane.begin(b))
-        assertEquals(CallSignaling.AnswerDecision.IGNORE, lane.beginAnswer(a, true))
-        assertEquals(b, lane.activeId)
-        assertFalse(lane.complete(a))
-        assertEquals(CallSignaling.AnswerDecision.CONFLICT, lane.beginAnswer(c, true))
-        assertEquals(CallSignaling.AnswerDecision.CONFLICT, lane.beginAnswer("", true))
-        assertEquals(b, lane.activeId)
-        assertFalse(lane.applying)
-    }
-
-    @Test fun jsepAndTeardownGuards() {
-        val lane = CallSignaling.OfferLane()
-        assertTrue(lane.begin(a))
-        assertEquals(CallSignaling.AnswerDecision.CONFLICT, lane.beginAnswer(a, false))
-        assertFalse(lane.applying)
-        lane.reset()
-        assertFalse(lane.complete(a)) // Delayed completion from disposed call.
-        assertTrue(lane.begin(b))
-        assertEquals(CallSignaling.AnswerDecision.CONFLICT, lane.beginAnswer(a, true))
-        assertEquals(b, lane.activeId)
-    }
-
-    @Test fun bufferedOfferRetainsIdentityAndOpaqueSdpForMediaRetry() {
-        val original = sdp("first")
-        val buffered = CallSignaling.Offer(a, original)
-        assertEquals(a, buffered.copy().id)
-        assertEquals(original, buffered.copy().sdp)
     }
 
     @Test fun localCandidatesUseActualMediaSectionCredentials() {

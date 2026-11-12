@@ -1,14 +1,10 @@
-import {
-  groupState as groupStateTable,
-  groupStateFields,
-} from '../group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
 import { and, eq, inArray } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { MediaStatus } from '../common/media-status.js';
 import { DatabaseService } from '../database/database.service.js';
-import { ContentType, MessageThreadType } from '../database/enums.js';
+import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import type { ForwardWireBundle } from '../forward/forward-bundle.service.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
@@ -18,15 +14,13 @@ import {
   extractDigestEntries,
   extractDigests,
 } from '../upload/file-content.js';
-import { UploadService } from '../upload/upload.service.js';
-import {
-  federationFileSyncKind,
-  isFederatedMediaContentType,
-} from './federation-inbound-file-sync.js';
+import { FederationMediaTransferService } from './federation-media-transfer.service.js';
+import { isFederatedMediaContentType } from './federation-inbound-file-sync.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
-import { localIdentityDomain } from '../common/local-identity.js';
+import { QuotaService } from '../quota/quota.service.js';
+import { resolveMessageMediaRoute } from './media/media-download-context.js';
 
 export interface FederationForwardAssetAuthorization {
   fromAccount: string;
@@ -40,33 +34,32 @@ export interface FederationForwardAssetAuthorization {
 export class FederationMediaLocalizationService {
   constructor(
     private readonly database: DatabaseService,
-    private readonly upload: UploadService,
+    private readonly transfers: FederationMediaTransferService,
     private readonly mediaRanges: FederationMediaRangeClient,
     private readonly visibility: MessageVisibilityService,
     private readonly forwardBundles: ForwardBundleService,
     private readonly inboundBatches: FederationInboundMediaBatchService,
     private readonly threadAccess: FederationThreadAccessService,
+    private readonly quota: QuotaService,
   ) {}
 
   async localizeForwardAssets(
     closure: ForwardWireBundle,
     peerDomain: string,
     authorization: FederationForwardAssetAuthorization,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    let ready = true;
     // Only validated per-bundle manifests authorize downloads; the top-level assets array is a
     // convenience summary and is not an independent authority.
     for (const asset of this.forwardBundles.assetsFromClosure(closure)) {
       try {
-        const have = await this.database.db.query.mediaAsset.findFirst({
-          where: and(
-            eq(tables.mediaAsset.digest, asset.digest),
-            eq(tables.mediaAsset.isDeleted, false),
-          ),
-          columns: { digest: true },
-        });
-        if (have) continue;
-        await this.upload.saveCasFromStream(
-          (offset) =>
+        const namespaceId = await this.quota.activeNamespaceId(peerDomain);
+        await this.transfers.receive({
+          namespaceId,
+          peerDomain,
+          digest: asset.digest,
+          declaredBytes: asset.bytes,
+          chunks: (offset, signal) =>
             this.mediaRanges.fetch(
               peerDomain,
               asset.digest,
@@ -75,13 +68,16 @@ export class FederationMediaLocalizationService {
               authorization.toAccount,
               authorization.sourceSeq,
               offset,
+              asset.bytes,
+              signal,
             ),
-          asset.digest,
-        );
+        });
       } catch {
+        ready = false;
         // Bundle JSON remains usable and a later manual localization can retry the asset.
       }
     }
+    return ready;
   }
 
   async localizeMediaForMessage(
@@ -111,54 +107,17 @@ export class FederationMediaLocalizationService {
       return this.readInboundMediaJobStatus(msg.id);
     }
 
-    const sourcePeerDomain =
-      msg.publisherNamespaceId === 0
-        ? null
-        : await this.readSourceDomain(msg.publisherNamespaceId);
-    const { toAccount, peerDomain: threadPeerDomain } =
-      await this.resolveMediaContext(
-        msg.threadId,
-        msg.creatorAccount,
-        msg.profileNamespaceId === 0 && msg.publisherNamespaceId !== 0
-          ? msg.publisherNamespaceId
-          : msg.profileNamespaceId,
-        await localIdentityDomain(this.database.db),
-      );
-    const peerDomain = sourcePeerDomain ?? threadPeerDomain;
     if (msg.localState === 'FAILED') {
-      if (msg.originSeq === null || sourcePeerDomain === null) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'failed placeholder has no retryable federation source',
-        );
-      }
-      const batchId = await this.restageFailedInboundMessage(msg, {
-        peerDomain,
-        fromAccount: msg.creatorAccount,
-        fromDomain: peerDomain,
-        toAccount,
-      });
-      if (batchId) {
-        void this.inboundBatches
-          .runFileSyncBatch(batchId, (digest, offset) =>
-            this.mediaRanges.fetch(
-              peerDomain,
-              digest,
-              msg.creatorAccount!,
-              peerDomain,
-              toAccount,
-              msg.originSeq!,
-              offset,
-            ),
-          )
-          .catch(() => undefined);
-        return 'pending';
-      }
-      return this.readInboundMediaJobStatus(msg.id);
+      const retried = await this.inboundBatches.retryInboundMessage(msg);
+      return retried ? 'pending' : this.readInboundMediaJobStatus(msg.id);
     }
+    const { toAccount, peerDomain } = await resolveMessageMediaRoute(
+      this.database,
+      msg,
+    );
 
     await this.threadAccess.assertThreadExists(msg.threadId, peerDomain);
-    await this.localizeMedia(
+    const admitted = await this.localizeMedia(
       msg,
       peerDomain,
       msg.creatorAccount,
@@ -166,7 +125,7 @@ export class FederationMediaLocalizationService {
       toAccount,
       msg.originSeq ?? msg.seq,
     );
-    return (await this.isMessageMediaReady(msg.id, msg.content))
+    return admitted && (await this.isMessageMediaReady(msg.id, msg.content))
       ? 'ready'
       : 'failed';
   }
@@ -177,23 +136,12 @@ export class FederationMediaLocalizationService {
     if (msg.creatorAccount === null) {
       throw new Error('user-authored forward message has no creator');
     }
-    const sourcePeerDomain =
-      msg.publisherNamespaceId === 0
-        ? null
-        : await this.readSourceDomain(msg.publisherNamespaceId);
-    const { toAccount, peerDomain } = await this.resolveMediaContext(
-      msg.threadId,
-      msg.creatorAccount,
-      msg.profileNamespaceId === 0 && msg.publisherNamespaceId !== 0
-        ? msg.publisherNamespaceId
-        : msg.profileNamespaceId,
-      await localIdentityDomain(this.database.db),
-    );
+    const route = await resolveMessageMediaRoute(this.database, msg);
     return {
-      fromAccount: msg.creatorAccount,
-      fromDomain: sourcePeerDomain ?? peerDomain,
-      toAccount,
-      sourceSeq: msg.originSeq ?? msg.seq,
+      fromAccount: route.fromAccount,
+      fromDomain: route.fromDomain,
+      toAccount: route.toAccount,
+      sourceSeq: route.sourceSeq,
     };
   }
 
@@ -208,31 +156,30 @@ export class FederationMediaLocalizationService {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
-  ): Promise<void> {
-    for (const { digest } of extractDigestEntries(msg.content)) {
+  ): Promise<boolean> {
+    let ready = true;
+    const namespaceId = await this.quota.activeNamespaceId(peerDomain);
+    for (const { digest, size } of extractDigestEntries(msg.content)) {
       try {
-        const have = await this.database.db.query.mediaAsset.findFirst({
-          where: and(
-            eq(tables.mediaAsset.digest, digest),
-            eq(tables.mediaAsset.isDeleted, false),
-          ),
-          columns: { digest: true },
+        if (size === undefined) throw new Error('missing media size');
+        await this.transfers.receive({
+          namespaceId,
+          peerDomain,
+          digest,
+          declaredBytes: size,
+          chunks: (offset, signal) =>
+            this.mediaRanges.fetch(
+              peerDomain,
+              digest,
+              fromAccount,
+              fromDomain,
+              toAccount,
+              sourceSeq,
+              offset,
+              size,
+              signal,
+            ),
         });
-        if (!have) {
-          await this.upload.saveCasFromStream(
-            (offset) =>
-              this.mediaRanges.fetch(
-                peerDomain,
-                digest,
-                fromAccount,
-                fromDomain,
-                toAccount,
-                sourceSeq,
-                offset,
-              ),
-            digest,
-          );
-        }
         await this.database.db.transaction(async (tx) => {
           await this.threadAccess.assertResponseWritable(
             tx,
@@ -245,9 +192,11 @@ export class FederationMediaLocalizationService {
             .onConflictDoNothing();
         });
       } catch {
+        ready = false;
         // Best effort per file: a later manual retry can localize an inert cross-origin URL.
       }
     }
+    return ready;
   }
 
   private async isMessageMediaReady(
@@ -292,81 +241,6 @@ export class FederationMediaLocalizationService {
       : 'failed';
   }
 
-  private async restageFailedInboundMessage(
-    msg: Message,
-    authorization: {
-      peerDomain: string;
-      fromAccount: string;
-      fromDomain: string;
-      toAccount: string;
-    },
-  ): Promise<string | null> {
-    const digests = extractDigestEntries(msg.content);
-    if (digests.length === 0) return null;
-    if (msg.publisherNamespaceId === 0) {
-      throw new Error('failed inbound message has no publisher namespace');
-    }
-    const namespaceId = msg.publisherNamespaceId;
-    return this.database.db.transaction(async (tx) => {
-      const [locked] = await tx
-        .select({
-          localState: tables.message.localState,
-          authorizationEpoch: tables.messageThread.authorizationEpoch,
-        })
-        .from(tables.message)
-        .innerJoin(
-          tables.messageThread,
-          eq(tables.messageThread.id, tables.message.threadId),
-        )
-        .where(eq(tables.message.id, msg.id))
-        .for('no key update', { of: tables.message })
-        .limit(1);
-      if (!locked || locked.localState !== 'FAILED') return null;
-      const pending = await tx.query.pendingMedia.findFirst({
-        where: and(
-          eq(tables.pendingMedia.messageId, msg.id),
-          eq(tables.pendingMedia.direction, 'INBOUND'),
-          eq(tables.pendingMedia.status, 'failed'),
-        ),
-        columns: { id: true, batchId: true },
-      });
-      if (!pending) return null;
-      const batchId = pending.batchId;
-      await tx
-        .delete(tables.fileSyncProgress)
-        .where(eq(tables.fileSyncProgress.batchId, batchId));
-      await tx
-        .update(tables.pendingMedia)
-        .set({
-          status: 'pending',
-          failReason: null,
-          fileCnt: digests.length,
-          originDomain: authorization.peerDomain,
-          publisherNamespaceId: namespaceId,
-          expectedAuthorizationEpoch: locked.authorizationEpoch,
-          updatedAt: new Date(),
-        })
-        .where(eq(tables.pendingMedia.id, pending.id));
-      for (const { digest, size } of digests) {
-        await tx.insert(tables.fileSyncProgress).values({
-          batchId,
-          digest,
-          kind: federationFileSyncKind(msg.contentType),
-          status: 'PENDING',
-          bytesTotal: BigInt(size ?? 0),
-          originDomain: authorization.peerDomain,
-          publisherNamespaceId: namespaceId,
-          payload: authorization,
-        });
-      }
-      await tx
-        .update(tables.message)
-        .set({ localState: 'STUB', updatedAt: new Date() })
-        .where(eq(tables.message.id, msg.id));
-      return batchId;
-    });
-  }
-
   private async relocalizeForwardMessage(
     msg: Message,
   ): Promise<'ready' | 'failed'> {
@@ -389,11 +263,12 @@ export class FederationMediaLocalizationService {
     }
     const closure = await this.forwardBundles.buildClosure(binding.bundleId);
     if (root.sourceDomain && root.sourceBundleId) {
-      await this.localizeForwardAssets(
+      const admitted = await this.localizeForwardAssets(
         closure,
         root.sourceDomain,
         await this.resolveForwardAssetAuth(msg),
       );
+      if (!admitted) return 'failed';
     }
     const digests = [
       ...new Set(
@@ -414,93 +289,5 @@ export class FederationMediaLocalizationService {
         })
       ).length === digests.length;
     return ready ? 'ready' : 'failed';
-  }
-
-  private async resolveMediaContext(
-    threadId: number,
-    creatorAccount: string,
-    authorNamespaceId: number,
-    sourceDomain: string,
-  ): Promise<{ toAccount: string; peerDomain: string }> {
-    const [thread] = await this.database.db
-      .select({
-        type: tables.messageThread.type,
-        group: {
-          account: groupStateFields.account,
-          authorityDomain: tables.identityNamespace.domain,
-        },
-      })
-      .from(tables.messageThread)
-      .leftJoin(
-        groupStateTable,
-        eq(groupStateTable.id, tables.messageThread.id),
-      )
-      .leftJoin(
-        tables.identityNamespace,
-        eq(
-          tables.identityNamespace.id,
-          tables.messageThread.authorityNamespaceId,
-        ),
-      )
-      .where(eq(tables.messageThread.id, threadId))
-      .limit(1);
-    if (thread?.type === MessageThreadType.GROUP && thread.group) {
-      // Transport target resolved from the authority namespace binding at
-      // request time; the group itself carries no domain.
-      return {
-        toAccount: thread.group.account,
-        peerDomain: thread.group.authorityDomain,
-      };
-    }
-    const [pair] = await this.database.db
-      .select({
-        endpointAAccount: tables.relationshipPair.endpointAAccount,
-        endpointBAccount: tables.relationshipPair.endpointBAccount,
-      })
-      .from(tables.relationshipPair)
-      .where(
-        and(
-          eq(tables.relationshipPair.threadId, threadId),
-          eq(tables.relationshipPair.kind, 'P2P'),
-          eq(tables.relationshipPair.active, true),
-          authorNamespaceId === 0
-            ? and(
-                eq(tables.relationshipPair.endpointAType, 'USER'),
-                eq(tables.relationshipPair.endpointAAccount, creatorAccount),
-                eq(tables.relationshipPair.endpointBNamespaceId, 0),
-              )
-            : and(
-                eq(tables.relationshipPair.endpointBType, 'USER'),
-                eq(tables.relationshipPair.endpointBAccount, creatorAccount),
-                eq(
-                  tables.relationshipPair.endpointBNamespaceId,
-                  authorNamespaceId,
-                ),
-              ),
-        ),
-      )
-      .limit(1);
-    if (!pair) {
-      throw new BusinessException(
-        BusinessCode.FORBIDDEN,
-        'message thread is no longer mutually authorized',
-      );
-    }
-    return {
-      toAccount:
-        authorNamespaceId === 0 ? pair.endpointBAccount : pair.endpointAAccount,
-      peerDomain: sourceDomain,
-    };
-  }
-
-  private async readSourceDomain(namespaceId: number): Promise<string | null> {
-    if (namespaceId === 0) return null;
-    const source = await this.database.db.query.identityNamespace.findFirst({
-      where: eq(tables.identityNamespace.id, namespaceId),
-      columns: { domain: true },
-    });
-    if (!source)
-      throw new Error(`message publisher namespace ${namespaceId} is missing`);
-    return source.domain;
   }
 }

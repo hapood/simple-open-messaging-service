@@ -10,10 +10,11 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import type { UserRef } from '../../services/model';
+import type { ProfileUserRef } from '../../services/model';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 import { UserService } from '../../services/user.service';
 import { LocalDomainService } from '../../services/local-domain.service';
-import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { UserAvatarType } from '../user-avatar/model';
 import { DialogActionFooterComponent } from '../dialog-action-footer/dialog-action-footer.component';
 
@@ -21,7 +22,8 @@ export interface ContactIdentityDialogData {
   userId?: number;
   account: string;
   name: string;
-  avatar?: string;
+  /** Pinned profile reference; the avatar renders through the demand pipeline. */
+  profile: AvatarProfileRef;
   bio: string;
   domain: string;
   /** Resolved identity coordinate. Fixed address snapshots enter the address-query flow instead. */
@@ -41,7 +43,7 @@ export type RelationshipState =
 @Component({
   selector: 'app-contact-identity-dialog',
   standalone: true,
-  imports: [SnapshotAvatarComponent, TranslocoPipe, DialogActionFooterComponent],
+  imports: [DemandAvatarComponent, TranslocoPipe, DialogActionFooterComponent],
   templateUrl: './contact-identity-dialog.component.html',
   styleUrl: './contact-identity-dialog.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -163,7 +165,7 @@ export class ContactIdentityDialogComponent {
         id: identity.namespaceId === 0 ? (identity.userId ?? 0) : 0,
         account: identity.account,
         name: identity.name,
-        avatar: identity.avatar ?? '',
+        profile: identity.profile,
         bio: identity.bio ?? '',
         domain: identity.domain,
         namespaceId: identity.namespaceId,
@@ -173,15 +175,15 @@ export class ContactIdentityDialogComponent {
   }
 
   private openGroupJoinRequest(identity: ContactIdentityDialogData): void {
-    const open = (user: UserRef) => {
+    const open = (user: ProfileUserRef) => {
       this.route.closeDlg();
       this.route.popupDlg(PopupType.FRIEND_INVITE, { user, standalone: true });
     };
-    const user: UserRef = {
+    const user: ProfileUserRef = {
       id: identity.userId ?? 0,
       account: identity.account,
       name: identity.name,
-      avatar: identity.avatar ?? '',
+      profile: identity.profile,
       bio: identity.bio ?? '',
       domain: identity.domain,
       isGroup: true,

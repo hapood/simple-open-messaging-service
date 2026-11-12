@@ -4,9 +4,12 @@
     <string name="notif_private_body">You have new messages</string>
     <string name="app_name">"SOMS"</string>
     <string name="main_activity_title">"SOMS"</string>
+    <string name="splash_tagline">Open chat. Simple and instant.</string>
     <string name="splash_preparing">Preparing</string>
+    <string name="splash_recovery_slow">Recovery is taking longer than expected.</string>
+    <string name="splash_retry">Retry interface</string>
     <string name="splash_restoring_session">Restoring session</string>
-    <string name="splash_loading_config">Loading configuration</string>
+    <string name="splash_loading_config">Requesting remote configuration</string>
     <string name="splash_preparing_interface">Preparing interface</string>
     <!-- Foreground-service persistent notification (FGS-required, IMPORTANCE_LOW). -->
     <string name="notif_fgs_running">"Running in background"</string>
@@ -21,6 +24,7 @@
     <string name="pip_hang_up">Hang up</string>
     <string name="composer_emoji">Emoji</string>
     <string name="composer_system_keyboard">System keyboard</string>
+    <string name="composer_link_card">Generate link card</string>
     <string name="composer_attach">Attach</string>
     <string name="composer_gallery">Gallery</string>
     <string name="composer_file">File</string>

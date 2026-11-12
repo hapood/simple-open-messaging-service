@@ -5,20 +5,23 @@
   justify-content: center;
   padding: 48px;
   overflow: hidden;
-  color: #ffffff;
+  color: var(--app-text);
   background:
-    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.09), transparent 30%),
-    radial-gradient(circle at 82% 76%, rgba(255, 255, 255, 0.05), transparent 34%),
-    linear-gradient(145deg, #34383c 0%, #25282c 48%, #151719 100%);
+    radial-gradient(circle at 18% 22%, color-mix(in srgb, var(--app-action-primary) 6%, transparent), transparent 32%),
+    radial-gradient(circle at 82% 76%, color-mix(in srgb, var(--app-brand) 5%, transparent), transparent 36%),
+    linear-gradient(145deg, var(--app-bg-muted) 0%, var(--app-surface-elevated) 48%, var(--app-bg) 100%);
+  border-right: 1px solid var(--app-border);
+  transition: background 200ms ease, border-color 200ms ease, color 200ms ease;
 
-  // soft decorative bubbles, low opacity so the wordmark keeps contrast
+  // soft decorative bubbles
   &::before,
   &::after {
     content: "";
     position: absolute;
     border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid color-mix(in srgb, var(--app-text) 8%, transparent);
+    background: color-mix(in srgb, var(--app-text) 3%, transparent);
+    transition: border-color 200ms ease, background-color 200ms ease;
   }
   &::before {
     width: 320px;
@@ -34,24 +37,38 @@
   }
 }
 
-// Dark theme keeps the panel close to black while preserving a subtle material gradient.
-:host-context([data-theme="dark"]) {
-  background: linear-gradient(135deg, #24272a 0%, #111315 100%);
-}
-
 .brand-stack {
   position: relative;
   max-width: 320px;
   text-align: center;
 
-  // Sits on the brand-gradient panel with white text and larger sizes.
-  // CSS variables pierce into <app-brand-logo> — no ::ng-deep needed.
   app-brand-logo {
     --bl-word: 27px;
     --bl-tag: 14px;
+    --bl-word-color: var(--app-text);
+    --bl-tag-color: var(--app-text-muted);
+    --bl-mark-radius: 22.222%;
+  }
+}
+
+// Dark theme keeps the panel close to black while preserving a subtle material gradient.
+:host-context([data-theme="dark"]) {
+  color: #ffffff;
+  background:
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.08), transparent 30%),
+    radial-gradient(circle at 82% 76%, rgba(255, 255, 255, 0.04), transparent 34%),
+    linear-gradient(135deg, #24272a 0%, #151719 50%, #111315 100%);
+  border-right-color: var(--app-border-strong);
+
+  &::before,
+  &::after {
+    border-color: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .brand-stack app-brand-logo {
     --bl-word-color: #ffffff;
     --bl-tag-color: rgba(255, 255, 255, 0.85);
-    --bl-mark-radius: 22.222%;
   }
 }
 

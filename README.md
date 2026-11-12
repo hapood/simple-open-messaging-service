@@ -13,20 +13,28 @@
   <a href="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://hapood.github.io/simple-open-messaging-service/"><img alt="Playground deployment" src="https://github.com/hapood/simple-open-messaging-service/actions/workflows/pages.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f855a.svg"></a>
-  <img alt="SOMS 0.1.0 alpha 1" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.1-7c3aed.svg">
-  <a href="spec/v1/README.md"><img alt="SOMFP v1.0.0 draft 1" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.1-e95420.svg"></a>
+  <img alt="SOMS 0.1.0 alpha 2" src="https://img.shields.io/badge/SOMS-0.1.0--alpha.2-7c3aed.svg">
+  <a href="spec/v1/README.md"><img alt="SOMFP v1.0.0 draft 2" src="https://img.shields.io/badge/SOMFP-v1.0.0--draft.2-e95420.svg"></a>
 </p>
 
 <p align="center">
-  <img src="docs/design/assets/playground-preview.png" alt="SOMS Web Client Preview - Self-Hosted Federated Chat UI" width="850">
+  <a href="docs/design/assets/playground-composite.png"><img src="docs/design/assets/playground-composite.png" alt="SOMS responsive chat client on desktop and mobile" width="100%"></a>
 </p>
 
 <p align="center">
-  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live playground</strong></a> — client-only demo.
+  <a href="https://hapood.github.io/simple-open-messaging-service/"><img src="https://img.shields.io/badge/▶_Live_Demo-Try_Playground-0284c7?style=for-the-badge&logoColor=white" alt="Live Demo"></a>
+  &nbsp;
+  <a href="https://hapood.github.io/simple-open-messaging-service/#/deploy"><img src="https://img.shields.io/badge/⚡_Docker_Generator-Quick_Setup-059669?style=for-the-badge&logoColor=white" alt="Docker Generator"></a>
+  <br>
+  <sub>Interactive in-browser simulation running fully local state. No setup required.</sub>
 </p>
 
 > [!IMPORTANT]
-> SOMS `0.1.0-alpha.1` and SOMFP `v1.0.0-draft.1` are currently available for **technical preview only**. Before beta, stable operation and upgrade compatibility are not guaranteed; APIs, the federation wire contract, and storage formats may change incompatibly. Use isolated test deployments with disposable data, not production or critical communications.
+> SOMS `0.1.0-alpha.2` aligns with the latest SOMFP protocol draft, **`v1.0.0-draft.2`**. Both are **technical previews only**. Before beta, stable operation and upgrade compatibility are not guaranteed; APIs, the federation wire contract, and storage formats may change incompatibly. Use isolated test deployments with disposable data, not production or critical communications.
+
+Web / PWA, Android, macOS, and Linux clients are **available in alpha**.
+See [Platform Status](#platform-status) for packages and [the changelog](CHANGELOG.md)
+for release changes and compatibility notes.
 
 ## Features
 
@@ -97,7 +105,7 @@ The generator and deployment templates use
 `ghcr.io/hapood/simple-open-messaging-service:latest`. The application container applies database
 migrations during startup. Published images support Linux amd64 and arm64; `:latest` follows
 published versions, including alpha releases. Select an explicit version tag to control upgrades.
-The current source version is `0.1.0-alpha.1`; its release image becomes available only after the
+The current source version is `0.1.0-alpha.2`; its release image becomes available only after the
 corresponding release tag is published from `main`. See
 [GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases) for availability
 and release notes. The rolling `:dev` image is intended for development testing and never updates
@@ -128,14 +136,18 @@ See the [deployment guide](docs/deployment/deployment.md) for domains, DNS, conf
 ## Platform Status
 
 The Angular client runs in the browser and is shared with the Tauri native applications.
-Native platform availability is tracked separately below; planned applications are not yet available.
 
-| Platform                | Status                | Delivery                                                  |
-| ----------------------- | --------------------- | --------------------------------------------------------- |
-| Web / PWA               | **Available (Alpha)** | Modern desktop and mobile browsers                        |
-| Android                 | In development        | Tauri application with native calling and FCM integration |
-| Windows / macOS / Linux | Planned               | Tauri desktop applications                                |
-| iOS                     | Deferred              | Paused due to App Store distribution constraints          |
+| Platform        | Status                | Delivery                                                                       |
+| --------------- | --------------------- | ------------------------------------------------------------------------------ |
+| Web / PWA       | **Available (Alpha)** | Modern desktop and mobile browsers                                             |
+| Android         | **Available (Alpha)** | APKs with native calling, notifications, and FCM integration                   |
+| macOS           | **Available (Alpha)** | Universal DMG for Apple Silicon and Intel; native notifications and Dock badge |
+| Linux           | **Available (Alpha)** | AppImage and deb for x86_64; native DBus notifications; Ubuntu 22.04+/Debian 12+ |
+| Windows         | **Available (Alpha)** | NSIS installers for x64 and ARM64; unsigned builds |
+| iOS             | Deferred              | Paused due to App Store distribution constraints                               |
+
+Download native packages from
+[GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases).
 
 ## Documentation
 

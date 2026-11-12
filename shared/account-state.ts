@@ -14,12 +14,10 @@ export interface AccountState {
   intentRequestOptimisticReadId: string | null;
 }
 
+/** Self account facts only. Display content belongs to the revision-keyed profile store. */
 export interface AccountSelfProfile {
   id: number;
   account: string;
-  name: string;
-  avatar: string;
-  bio: string;
   isGroup: boolean;
   namespaceId: number;
   profileRev: number;

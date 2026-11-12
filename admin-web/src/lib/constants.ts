@@ -33,22 +33,26 @@ export const CODE = {
 export const PASSWORD_REGEX = /^([a-zA-Z0-9.@!#$%^&*()]){6,20}$/;
 
 // Login-method policy advertised by the backend GET /config (mirrors src/config/public-config.ts).
-// A `const` object + derived type (not an enum): cleaner runtime output than an enum's IIFE, and the
-// consumer web uses the same shape for its BusinessCode.
-const LoginMode = {
-  ALL: 1, // password everywhere; OTP on Android; QR on desktop/web
-  APP_OTP_AND_QR: 2, // password disabled; Android logs in via OTP; desktop/web via QR
-  PASSWORD_ONLY: 3, // password only on every client
-} as const;
-export type LoginMode = (typeof LoginMode)[keyof typeof LoginMode];
+// The backend sends a plain item list; the consumer web uses the same shape for its BusinessCode.
+export type LoginMethod = 'password' | 'otp' | 'qr';
 
-/** Password login is available under ALL and PASSWORD_ONLY; disabled under APP_OTP_AND_QR. */
-export function isPasswordLoginEnabled(mode: number): boolean {
-  return mode === LoginMode.ALL || mode === LoginMode.PASSWORD_ONLY;
+/** One advertised login method; array order is the clients' presentation order. */
+export interface LoginMethodOption {
+  key: LoginMethod;
+  disabled: boolean;
+}
+
+/** Password login is enabled iff the `password` entry is advertised and not disabled. */
+export function isPasswordLoginEnabled(
+  methods: LoginMethodOption[],
+): boolean {
+  const item = methods.find((m) => m.key === 'password');
+  return item !== undefined && !item.disabled;
 }
 
 /** Public site config (GET /config) — drives client-side gating (e.g. the create-user password field). */
 export interface PublicConfig {
   registrationOpen: boolean;
-  loginMode: number;
+  loginMethods: LoginMethodOption[];
+  defaultLoginMethod: LoginMethod;
 }

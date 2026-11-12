@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, inArray } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -77,6 +76,7 @@ describe('canonical Group Meta feed', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Owner',
     });
     const [control] = await database.db
@@ -167,7 +167,7 @@ describe('canonical Group Meta feed', () => {
       status: 'ACCEPTED',
       profileRev: 1,
       note: '',
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     });
     await database.db.insert(threadAudience).values({
@@ -191,6 +191,7 @@ describe('canonical Group Meta feed', () => {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev,
+        generatedAt: 1_700_000_000_000,
         displayName: `Group revision ${profileRev}`,
         avatar: '',
         bio: '',
@@ -283,8 +284,12 @@ describe('canonical Group Meta feed', () => {
     await database.db.insert(groupMeta).values({
       threadId: groupId,
       metaEndId: 1,
-      announcementFeedId: 1,
-      announcementText: 'Welcome',
+    });
+    await database.db.insert(groupMetaMemberFeed).values({
+      threadId: groupId,
+      feedId: 1,
+      operation: 'GROUP_ANNOUNCEMENT',
+      body: { text: 'Welcome' },
     });
     const page = await clientFeed.serve(
       ownerUserId,
@@ -301,6 +306,8 @@ describe('canonical Group Meta feed', () => {
       items: [
         {
           feedId: '1',
+          createdAt: expect.any(Number),
+          originCreatedAt: null,
           operation: 'GROUP_ANNOUNCEMENT',
           body: { text: 'Welcome' },
         },
@@ -312,8 +319,12 @@ describe('canonical Group Meta feed', () => {
     await database.db.insert(groupMeta).values({
       threadId: groupId,
       metaEndId: 1,
-      announcementFeedId: 1,
-      announcementText: null,
+    });
+    await database.db.insert(groupMetaMemberFeed).values({
+      threadId: groupId,
+      feedId: 1,
+      operation: 'GROUP_ANNOUNCEMENT',
+      body: { text: null },
     });
     const read = async (
       mode: 'full' | 'delta',
@@ -341,6 +352,8 @@ describe('canonical Group Meta feed', () => {
     expect((await read('full', 0)).items).toEqual([
       {
         feedId: 1,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'GROUP_ANNOUNCEMENT',
         body: { text: null },
       },
@@ -358,6 +371,8 @@ describe('canonical Group Meta feed', () => {
     expect((await read('delta', 1)).items).toEqual([
       {
         feedId: 2,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'GROUP_ANNOUNCEMENT',
         body: { text: 'Welcome' },
       },
@@ -370,6 +385,8 @@ describe('canonical Group Meta feed', () => {
     expect((await read('full', 0)).items).toEqual([
       {
         feedId: 3,
+        createdAt: expect.any(Number),
+        originCreatedAt: null,
         operation: 'GROUP_ANNOUNCEMENT',
         body: { text: null },
       },
@@ -475,7 +492,18 @@ describe('canonical Group Meta feed', () => {
         after: 0,
         through: 5,
       });
-      for (const item of page.items) operations.add(item.operation);
+      for (const item of page.items) {
+        operations.add(item.operation);
+        expect(item).not.toHaveProperty('createdAt');
+        const source = await database.db.query.groupMetaMemberFeed.findFirst({
+          where: and(
+            eq(groupMetaMemberFeed.threadId, groupId),
+            eq(groupMetaMemberFeed.feedId, item.feedId),
+          ),
+        });
+        expect(source!.originCreatedAt).toBeNull();
+        expect(item.originCreatedAt).toBe(source!.createdAt.getTime());
+      }
       expect(page.scannedThrough).toBe(5);
       expect(page.hasMore).toBe(false);
     }
@@ -517,11 +545,17 @@ describe('canonical Group Meta feed', () => {
       expect(state).toMatchObject({
         metaProcessedThroughId: 5,
         metaRecoveryThroughId: null,
-        announcementText: 'Wire contract',
       });
       const facts = await database.db.query.groupMetaMemberFeed.findMany({
         where: eq(groupMetaMemberFeed.threadId, mirror.id),
       });
+      expect(
+        facts.find((fact) => fact.operation === 'GROUP_ANNOUNCEMENT')?.body,
+      ).toEqual({ text: 'Wire contract' });
+      for (const fact of facts) {
+        expect(fact.createdAt).toBeInstanceOf(Date);
+        expect(fact.originCreatedAt).toBeInstanceOf(Date);
+      }
       expect(facts.map(({ operation, body }) => ({ operation, body }))).toEqual(
         expect.arrayContaining([
           {
@@ -569,6 +603,7 @@ describe('canonical Group Meta feed', () => {
     expect(full.items).toEqual([
       {
         feedId: 1,
+        originCreatedAt: expect.any(Number),
         operation: 'MEMBER_UPSERT',
         body: {
           account: ownerAccount,
@@ -579,6 +614,7 @@ describe('canonical Group Meta feed', () => {
       },
       {
         feedId: 3,
+        originCreatedAt: expect.any(Number),
         operation: 'GROUP_PROFILE',
         body: { account: groupAccount, namespaceId: 0, profileRev: 1 },
       },
@@ -593,6 +629,7 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       {
         feedId: 4,
+        originCreatedAt: expect.any(Number),
         operation: 'MEMBER_DEPART',
         body: {
           account: memberAccount,
@@ -739,6 +776,7 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       {
         feedId: 5,
+        originCreatedAt: expect.any(Number),
         operation: 'MEMBER_UPSERT',
         body: {
           account: memberAccount,

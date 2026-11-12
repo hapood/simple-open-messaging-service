@@ -197,18 +197,26 @@ describe('departure system message paths', () => {
       namespaceId,
     };
     const sourceMembers = [
-      { account: `remote-owner-${++serial}`, domain: peerDomain, namespaceId },
+      {
+        account: `remote-owner-${++serial}`,
+        domain: peerDomain,
+        namespaceId: 0,
+      },
       {
         account: member.account,
         domain: localIdentityDomain(),
-        namespaceId: 0,
+        namespaceId: 1,
       },
       {
         account: observer.account,
         domain: localIdentityDomain(),
+        namespaceId: 1,
+      },
+      {
+        account: `remote-member-${++serial}`,
+        domain: peerDomain,
         namespaceId: 0,
       },
-      { account: `remote-member-${++serial}`, domain: peerDomain, namespaceId },
     ];
     await database.db.insert(groupMetaMemberFeed).values(
       sourceMembers.map((row, index) => ({
@@ -259,12 +267,13 @@ describe('departure system message paths', () => {
               : target.groupAccount,
             eventType: 'RELATIONSHIP_INTENT',
             feedId: '20',
+            generatedAt: 0,
             body: {
               status: 'REVOKED',
               namespaceId: 0,
               note: '',
               profileRev: 0,
-              requestedAt: null,
+              statusChangedAt: Date.now(),
               expiresAt: null,
             },
           },
@@ -503,6 +512,7 @@ describe('departure system message paths', () => {
             peerAccount: revoke!.subjectAccount,
             eventType: 'RELATIONSHIP_INTENT',
             feedId: revoke!.feedId.toString(),
+            generatedAt: revoke!.updatedAt.getTime(),
             body: revoke!.body,
           },
         ],
@@ -685,9 +695,10 @@ describe('departure system message paths', () => {
           },
           item: {
             feedId: 6,
+            originCreatedAt: 1700000000000,
             operation: 'MEMBER_DEPART',
             account: h.member.account,
-            namespaceId: 0,
+            namespaceId: 1,
             role: GroupRole.MEMBER,
             profileRev: 1,
           },
@@ -811,7 +822,7 @@ describe('departure system message paths', () => {
                   .namespaceId,
                 profileRev: 0,
                 note: '',
-                requestedAt: Date.now(),
+                statusChangedAt: Date.now(),
                 expiresAt: null,
                 messageEndSeq: 0,
                 tombstoneEndSeq: 0,
@@ -861,7 +872,7 @@ describe('departure system message paths', () => {
                   .namespaceId,
                 profileRev: 0,
                 note: '',
-                requestedAt: null,
+                statusChangedAt: Date.now(),
                 expiresAt: null,
               },
             });

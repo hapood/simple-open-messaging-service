@@ -1,3 +1,5 @@
+import { hydrateAttachmentMetadata } from './attachment-metadata.js';
+import type { StoredMediaMetadata } from '../upload/stored-media-metadata.js';
 import { enqueueDepartureFanoutsInTx } from './account-thread-fanout-task.js';
 import { wirePayloadDigest } from '../federation/federated-message-content.js';
 import {
@@ -932,9 +934,9 @@ export class MessageService {
     return stage.contentType;
   }
 
-  /** Apply the IMAGE→FILE family fallback (HEIC/AVIF bytes that cannot inline-render) to a
-   * single-file staged batch before the batch commit. Valid only for N=1, where no sibling part
-   * can race the contentType swap. */
+  /** Align the staged message type with the detected attachment family, including FILE→media
+   * promotion and IMAGE→FILE fallback for formats that cannot inline-render.
+   * Valid only for N=1, where no sibling part can race the contentType swap. */
   async updateStagedContentType(
     clientMessageId: string,
     userId: number,
@@ -1148,6 +1150,7 @@ export class MessageService {
           const stagedAssets = items.map((item) => ({
             digest: item.digest,
             bytes: Number(item.payload.size),
+            meta: item.payload.localMeta,
           }));
           // Durable liveness claim, asserted in the SAME transaction as the Message: the bytes are
           // already in the shard tree (the caller's idempotent move phase landed them), so the row
@@ -1159,12 +1162,14 @@ export class MessageService {
               .values({
                 digest: asset.digest,
                 bytes: BigInt(asset.bytes),
+                meta: asset.meta,
                 isDeleted: false,
               })
               .onConflictDoUpdate({
                 target: mediaAsset.digest,
                 set: {
                   bytes: BigInt(asset.bytes),
+                  meta: asset.meta,
                   isDeleted: false,
                   createdAt: sql`CURRENT_TIMESTAMP`,
                 },
@@ -1273,7 +1278,8 @@ export class MessageService {
             scope.visibleThroughSeq ?? scope.currentEnd,
           ) + 1;
         const cursorData = { resumeAfter: lower, resumeBefore: upper };
-        let { after, before } = query;
+        const { after } = query;
+        let { before } = query;
         const { through } = query;
         let resolvedAnchorSeq: number | null = null;
         const hasAnchor =
@@ -1840,10 +1846,17 @@ export class MessageService {
         columns: { messageId: true, digest: true },
       }),
       allDigests.size === 0
-        ? Promise.resolve([] as { digest: string; isDeleted: boolean }[])
+        ? Promise.resolve(
+            [] as {
+              digest: string;
+              isDeleted: boolean;
+              meta: StoredMediaMetadata | null;
+              bytes: bigint;
+            }[],
+          )
         : this.database.db.query.mediaAsset.findMany({
             where: inArray(mediaAsset.digest, [...allDigests]),
-            columns: { digest: true, isDeleted: true },
+            columns: { digest: true, isDeleted: true, meta: true, bytes: true },
           }),
       this.database.db.query.pendingMedia.findMany({
         where: and(
@@ -1858,6 +1871,9 @@ export class MessageService {
     const auth = new Set(authRows.map((r) => `${r.messageId}:${r.digest}`));
     const present = new Set(
       assetRows.filter((a) => !a.isDeleted).map((a) => a.digest),
+    );
+    const metadata = new Map(
+      assetRows.filter((a) => !a.isDeleted).map((a) => [a.digest, a]),
     );
     const jobs = new Map(
       pendingRows
@@ -1885,6 +1901,10 @@ export class MessageService {
         ds.every((d) => auth.has(`${m.id}:${d}`) && present.has(d));
       return {
         ...stripMessageId(m),
+        ...(ready &&
+        ['IMAGE', 'VIDEO', 'AUDIO', 'FILE', 'GALLERY'].includes(m.contentType)
+          ? { content: hydrateAttachmentMetadata(m.content, metadata) }
+          : {}),
         mediaStatus: ready ? MEDIA_STATUS.READY : MEDIA_STATUS.FAILED,
       };
     });

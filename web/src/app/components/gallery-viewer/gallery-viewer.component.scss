@@ -140,9 +140,9 @@
   display: grid;
   grid-template-columns: 48px 1fr 48px;
   align-items: center;
-  min-height: calc(60px + env(safe-area-inset-top));
+  min-height: calc(60px + var(--soms-safe-top, 0px));
   box-sizing: border-box;
-  padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0
+  padding: var(--soms-safe-top, 0px) max(8px, env(safe-area-inset-right)) 0
     max(8px, env(safe-area-inset-left));
   color: #fff;
   background: linear-gradient(
@@ -220,7 +220,7 @@
   position: absolute;
   z-index: 3;
   left: 50%;
-  bottom: max(14px, env(safe-area-inset-bottom));
+  bottom: max(14px, var(--soms-safe-bottom, 0px));
   transform: translateX(-50%);
   display: flex;
   gap: 8px;
@@ -343,7 +343,7 @@
 
 .gv-load {
   position: absolute;
-  inset: 0;
+  inset: auto 16px 112px;
   z-index: 2;
   display: flex;
   flex-direction: column;
@@ -358,6 +358,7 @@
 }
 
 .gv-load-icon {
+  display: none;
   width: 72px;
   height: 72px;
   fill: none;

@@ -23,6 +23,7 @@ function subject(overrides?: {
     parseSigner: vi.fn().mockReturnValue({
       keyId: 'peer.example/key-1',
       domain: 'peer.example',
+      created: 100,
       expires: 123,
     }),
     signedRequest: vi.fn().mockReturnValue({}),
@@ -46,7 +47,7 @@ function subject(overrides?: {
     recognition as never,
   );
   const request = {
-    url: '/s2s/v1/accounts/alice',
+    url: '/somfp/v1/accounts/alice',
     body: undefined as unknown,
   };
   const context = {
@@ -68,6 +69,8 @@ describe('S2sSignatureGuard recognition and reachability ordering', () => {
       peer: {
         domain: 'peer.example',
         namespaceId: 9,
+        signatureCreatedAtSec: 100,
+        signatureExpiresAtSec: 123,
       },
     });
   });

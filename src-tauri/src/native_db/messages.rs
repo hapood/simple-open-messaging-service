@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
 #[cfg(test)]
+#[path = "../tests/native_deletion_baseline_tests.rs"]
+mod deletion_baseline_tests;
+#[cfg(test)]
 #[path = "../tests/native_history_owner_tests.rs"]
 mod owner_tests;
 
@@ -65,423 +68,106 @@ pub(super) fn normalize_message_creator(message: &mut Value) {
     }
 }
 
-enum MessageSlotWrite {
-    Message(Value),
-    Deletion {
-        thread_id: i64,
-        seq: i64,
-        reason: String,
-    },
-}
-
-fn message_tomb(identity: &Value, reason: &str) -> Result<Value, String> {
+fn message_tomb(thread_id: i64, seq: i64, reason: &str) -> Result<Value, String> {
+    if thread_id <= 0 || seq <= 0 {
+        return Err("message has invalid coordinates".into());
+    }
     if !matches!(reason, "USER_RETRACTION" | "MODERATION_REMOVAL") {
         return Err("invalid message deletion type".into());
     }
-    let mut tomb = serde_json::json!({
-        "threadId": identity["threadId"], "seq": identity["seq"],
+    Ok(serde_json::json!({
+        "threadId": thread_id, "seq": seq,
         "contentType": "TOMB", "isDeleted": true, "deletionType": reason,
-    });
-    // A deletion can precede its message. Never invent a sender or retain body fields.
-    if identity.get("creator").is_some() {
-        for field in ["creator", "profileRev", "createdAt", "updatedAt"] {
-            tomb[field] = identity
-                .get(field)
-                .ok_or_else(|| format!("message identity has no {field}"))?
-                .clone();
-        }
-    }
-    // Preserve the publisher-space profile reference independently of the projected creator.
-    for field in ["publisherNamespaceId", "profileNamespaceId", "namespaceId"] {
-        if let Some(value) = identity.get(field) {
-            tomb[field] = value.clone();
-        }
-    }
-    normalize_message_creator(&mut tomb);
-    Ok(tomb)
+    }))
 }
 
-/// All message writes share this merge inside the caller's existing transaction.
-fn write_message_slot(
+fn prepare_message(mut message: Value) -> Result<Value, String> {
+    let thread_id = message
+        .get("threadId")
+        .and_then(Value::as_i64)
+        .filter(|id| *id > 0)
+        .ok_or("message has invalid threadId")?;
+    let seq = message_seq(&message, thread_id)?;
+    if message.get("contentType").and_then(Value::as_str) == Some("TOMB") {
+        let reason = message
+            .get("deletionType")
+            .and_then(Value::as_str)
+            .ok_or("tomb has no deletion type")?;
+        return message_tomb(thread_id, seq, reason);
+    }
+    if message.get("isDeleted").and_then(Value::as_bool) == Some(true) {
+        return Err("deleted messages must use the TOMB contract".into());
+    }
+    normalize_message_creator(&mut message);
+    Ok(message)
+}
+
+/// No slot reads or merges: deletion feeds replace every matched row with anonymous coordinates.
+fn upsert_message_batch(
     tx: &rusqlite::Transaction<'_>,
     user_id: i64,
-    write: MessageSlotWrite,
-) -> Result<Value, String> {
-    let (thread_id, seq) = match &write {
-        MessageSlotWrite::Message(message) => (
-            message
-                .get("threadId")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "message has no numeric threadId".to_string())?,
-            message
-                .get("seq")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "message has no numeric seq".to_string())?,
-        ),
-        MessageSlotWrite::Deletion { thread_id, seq, .. } => (*thread_id, *seq),
-    };
-    if user_id <= 0 || thread_id <= 0 || seq <= 0 {
-        return Err("message has invalid coordinates".into());
+    messages: &[Value],
+) -> Result<(), String> {
+    if user_id <= 0 {
+        return Err("message has invalid owner".into());
     }
-    let current = tx
-        .query_row(
-            "SELECT payload_json FROM messages WHERE user_id=?1 AND thread_id=?2 AND seq=?3",
-            params![user_id, thread_id, seq],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| format!("read message slot: {e}"))?
-        .map(parse_json)
-        .transpose()?;
-    let merged = match write {
-        MessageSlotWrite::Message(mut message) => {
-            normalize_message_creator(&mut message);
-            let is_tomb = message.get("contentType").and_then(Value::as_str) == Some("TOMB");
-            if message.get("isDeleted").and_then(Value::as_bool) == Some(true) && !is_tomb {
-                return Err("deleted messages must use the TOMB contract".into());
-            }
-            let existing_tomb = current
-                .as_ref()
-                .filter(|value| value.get("contentType").and_then(Value::as_str) == Some("TOMB"));
-            if let Some(tomb) = existing_tomb.or(if is_tomb { Some(&message) } else { None }) {
-                let reason = tomb
-                    .get("deletionType")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| "tomb has no deletion type".to_string())?;
-                message_tomb(&message, reason)?
-            } else {
-                if message.get("contentType").and_then(Value::as_str) == Some("SYSTEM") {
-                    if let Some(existing) = current.as_ref().filter(|existing| {
-                        existing.get("contentType").and_then(Value::as_str) == Some("SYSTEM")
-                            && existing.get("content") == message.get("content")
-                    }) {
-                        if let Some(revisions) = existing.get("localSystemProfileRevs") {
-                            message["localSystemProfileRevs"] = revisions.clone();
-                        }
-                    }
-                }
-                message
-            }
-        }
-        MessageSlotWrite::Deletion { reason, .. } => {
-            let coordinates = serde_json::json!({ "threadId": thread_id, "seq": seq });
-            message_tomb(current.as_ref().unwrap_or(&coordinates), &reason)?
-        }
-    };
-    let created_at = merged
-        .get("createdAt")
-        .and_then(Value::as_i64)
-        .unwrap_or_default();
-    tx.execute(
-        "INSERT INTO messages(user_id, thread_id, seq, created_at, payload_json)
-         VALUES(?1, ?2, ?3, ?4, ?5)
+    let mut statement = tx
+        .prepare(
+            "INSERT INTO messages(user_id, thread_id, seq, created_at, payload_json)
+         SELECT ?1, json_extract(value, '$.threadId'), json_extract(value, '$.seq'),
+                COALESCE(json_extract(value, '$.createdAt'), 0), value
+         FROM json_each(?2) WHERE 1
          ON CONFLICT(user_id, thread_id, seq) DO UPDATE SET
            created_at=excluded.created_at, payload_json=excluded.payload_json",
-        params![user_id, thread_id, seq, created_at, json_text(&merged)?],
-    )
-    .map_err(|e| format!("write message slot: {e}"))?;
-    Ok(merged)
+        )
+        .map_err(|e| format!("prepare message batch: {e}"))?;
+    // Bound serialized statement size without imposing SQLite's per-variable limit on a page.
+    for chunk in messages.chunks(256) {
+        statement
+            .execute(params![
+                user_id,
+                serde_json::to_string(chunk).map_err(|e| e.to_string())?
+            ])
+            .map_err(|e| format!("write message batch: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The login's single SQLite connection mutex encloses this entire read/filter/write transaction,
+/// including tomb feeds and body eviction. A second per-thread mutex adds no exclusion. Never move
+/// these reads outside the owned database callback or open a parallel physical connection.
+fn insert_uncovered_messages(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    thread_id: i64,
+    current: &[MessageRange],
+    messages: Vec<Value>,
+) -> Result<(), String> {
+    let mut candidates: Vec<Value> = messages
+        .into_iter()
+        .filter(|message| {
+            let seq = message["seq"]
+                .as_i64()
+                .expect("validated message coordinate");
+            !range_containing(current, seq)
+                .is_some_and(|range| range.state == MessageRangeState::LocalCovered)
+        })
+        .collect();
+    let seqs = candidates
+        .iter()
+        .map(|message| message["seq"].as_i64().unwrap())
+        .collect();
+    let tombs: BTreeSet<i64> = load_message_deletions(tx, user_id, thread_id, seqs)?
+        .into_iter()
+        .map(|deletion| deletion.seq)
+        .collect();
+    candidates.retain(|message| !tombs.contains(&message["seq"].as_i64().unwrap()));
+    upsert_message_batch(tx, user_id, &candidates)
 }
 
 #[cfg(test)]
-mod tomb_tests {
-    use super::*;
-    use serde_json::json;
-
-    fn database() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE messages (
-            user_id INTEGER NOT NULL, thread_id INTEGER NOT NULL, seq INTEGER NOT NULL,
-            created_at INTEGER NOT NULL, payload_json TEXT NOT NULL,
-            PRIMARY KEY(user_id, thread_id, seq)
-        )",
-        )
-        .unwrap();
-        conn
-    }
-
-    fn message() -> Value {
-        json!({
-            "threadId": 42, "seq": 4,
-            "creator": {"account": "alice", "namespaceId": 1},
-            "profileRev": 3, "createdAt": 100, "updatedAt": 101,
-            "contentType": "IMAGE", "isDeleted": false, "localState": "READY",
-            "content": "private body", "quote": {"content": "private quote"},
-            "mediaStatus": "ready", "clientMessageId": "private-id"
-        })
-    }
-
-    fn deletion(reason: &str) -> MessageSlotWrite {
-        MessageSlotWrite::Deletion {
-            thread_id: 42,
-            seq: 4,
-            reason: reason.into(),
-        }
-    }
-
-    #[test]
-    fn origin_lookup_is_scoped_and_tombs_keep_only_local_identity() {
-        let mut conn = database();
-        let mut remote = message();
-        remote["publisherNamespaceId"] = json!(3);
-        remote["originSeq"] = json!(104);
-        let tx = conn.transaction().unwrap();
-        write_message_slot(&tx, 1, MessageSlotWrite::Message(remote.clone())).unwrap();
-        tx.commit().unwrap();
-        assert_eq!(
-            load_origin_message(&conn, 1, 42, 3, 104).unwrap(),
-            Some(remote)
-        );
-        assert!(load_origin_message(&conn, 2, 42, 3, 104).unwrap().is_none());
-        assert!(load_origin_message(&conn, 1, 99, 3, 104).unwrap().is_none());
-        assert!(load_origin_message(&conn, 1, 42, 0, 4).unwrap().is_some());
-        let tx = conn.transaction().unwrap();
-        let tomb = write_message_slot(&tx, 1, deletion("USER_RETRACTION")).unwrap();
-        tx.commit().unwrap();
-        assert!(tomb.get("originSeq").is_none());
-        assert_eq!(tomb["publisherNamespaceId"], 3);
-        assert!(load_origin_message(&conn, 1, 42, 3, 104).unwrap().is_none());
-    }
-
-    #[test]
-    fn local_system_profile_correction_survives_refills_of_only_its_row() {
-        let mut conn = database();
-        let tx = conn.transaction().unwrap();
-        let system = json!({"threadId":42,"seq":4,"creator":{"account":"$system","namespaceId":0},
-            "profileRev":0,"createdAt":100,"updatedAt":101,"contentType":"SYSTEM","content":"group joined",
-            "isDeleted":false,"localState":"READY"});
-        write_message_slot(&tx, 1, MessageSlotWrite::Message(system.clone())).unwrap();
-        let mut other = system.clone();
-        other["seq"] = json!(5);
-        write_message_slot(&tx, 1, MessageSlotWrite::Message(other)).unwrap();
-        tx.commit().unwrap();
-        assert!(correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 0, 2).unwrap());
-        assert!(!correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 0, 2).unwrap());
-        let tx = conn.transaction().unwrap();
-        write_message_slot(&tx, 1, MessageSlotWrite::Message(system.clone())).unwrap();
-        tx.commit().unwrap();
-        let read = |seq| -> Value {
-            let payload: String = conn
-                .query_row(
-                    "SELECT payload_json FROM messages WHERE user_id=1 AND thread_id=42 AND seq=?1",
-                    [seq],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            parse_json(payload).unwrap()
-        };
-        assert_eq!(read(4)["localSystemProfileRevs"]["[7,0,\"alice\"]"], 2);
-        assert!(read(5).get("localSystemProfileRevs").is_none());
-    }
-
-    #[test]
-    fn arrival_orders_converge_and_duplicates_cannot_restore_bodies() {
-        for reason in ["USER_RETRACTION", "MODERATION_REMOVAL"] {
-            for deletion_first in [false, true] {
-                let mut conn = database();
-                let tx = conn.transaction().unwrap();
-                if deletion_first {
-                    let marker = write_message_slot(&tx, 1, deletion(reason)).unwrap();
-                    assert_eq!(
-                        marker,
-                        json!({
-                            "threadId": 42, "seq": 4, "contentType": "TOMB",
-                            "isDeleted": true, "deletionType": reason,
-                        })
-                    );
-                    write_message_slot(&tx, 1, MessageSlotWrite::Message(message())).unwrap();
-                } else {
-                    write_message_slot(&tx, 1, MessageSlotWrite::Message(message())).unwrap();
-                    write_message_slot(&tx, 1, deletion(reason)).unwrap();
-                }
-                let expected = json!({
-                    "threadId": 42, "seq": 4,
-                    "creator": {"account": "alice", "namespaceId": 1},
-                    "profileRev": 3, "createdAt": 100, "updatedAt": 101,
-                    "contentType": "TOMB", "isDeleted": true, "deletionType": reason,
-                });
-                assert_eq!(
-                    write_message_slot(&tx, 1, MessageSlotWrite::Message(message())).unwrap(),
-                    expected
-                );
-                assert_eq!(
-                    write_message_slot(&tx, 1, MessageSlotWrite::Message(expected.clone()))
-                        .unwrap(),
-                    expected
-                );
-                assert_eq!(
-                    write_message_slot(&tx, 1, deletion(reason)).unwrap(),
-                    expected
-                );
-                tx.commit().unwrap();
-                let (created_at, payload): (i64, String) = conn
-                    .query_row("SELECT created_at, payload_json FROM messages", [], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    })
-                    .unwrap();
-                assert_eq!(created_at, 100);
-                assert_eq!(parse_json(payload).unwrap(), expected);
-                assert_eq!(
-                    load_deleted_message_seqs(&conn, 1, 42, vec![4]).unwrap(),
-                    vec![4]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn query_tombs_preserve_null_creator_and_coordinate_only_profile_references() {
-        let mut conn = database();
-        let tx = conn.transaction().unwrap();
-        let mut source = message();
-        source["creator"] = Value::Null;
-        let tomb = message_tomb(&source, "USER_RETRACTION").unwrap();
-        assert_eq!(
-            write_message_slot(&tx, 1, MessageSlotWrite::Message(tomb.clone())).unwrap(),
-            tomb
-        );
-        source["seq"] = json!(5);
-        source["creator"] = json!({"account": "alice", "namespaceId": 0});
-        source["publisherNamespaceId"] = json!(7);
-        source["profileNamespaceId"] = json!(2);
-        let merged = write_message_slot(
-            &tx,
-            1,
-            MessageSlotWrite::Message(message_tomb(&source, "MODERATION_REMOVAL").unwrap()),
-        )
-        .unwrap();
-        assert!(merged["creator"].get("domain").is_none());
-        assert_eq!(merged["publisherNamespaceId"], 7);
-        assert_eq!(merged["profileNamespaceId"], 2);
-    }
-
-    #[test]
-    fn deletion_is_scoped_to_account_and_thread() {
-        let mut conn = database();
-        let tx = conn.transaction().unwrap();
-        write_message_slot(&tx, 1, deletion("USER_RETRACTION")).unwrap();
-        assert_eq!(
-            write_message_slot(&tx, 2, MessageSlotWrite::Message(message())).unwrap(),
-            message()
-        );
-        let mut other = message();
-        other["threadId"] = json!(99);
-        assert_eq!(
-            write_message_slot(&tx, 1, MessageSlotWrite::Message(other.clone())).unwrap(),
-            other
-        );
-    }
-
-    #[test]
-    fn rejects_old_deleted_bodies_and_invalid_reasons_without_committing_batch() {
-        let mut conn = database();
-        {
-            let tx = conn.transaction().unwrap();
-            write_message_slot(&tx, 1, MessageSlotWrite::Message(message())).unwrap();
-            let mut old = message();
-            old["isDeleted"] = json!(true);
-            assert!(write_message_slot(&tx, 1, MessageSlotWrite::Message(old))
-                .unwrap_err()
-                .contains("TOMB contract"));
-            assert!(write_message_slot(&tx, 1, deletion("UNKNOWN")).is_err());
-        }
-        assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn counts_known_slots_including_tombs_with_exact_bounds_and_owner_identity() {
-        let mut conn = database();
-        let owner = MessageCountOwner {
-            account: "me".into(),
-            namespace_id: 0,
-        };
-        let tx = conn.transaction().unwrap();
-        for seq in [1, 3, 4, 5, 6, 8, 9, 10] {
-            let mut slot = message();
-            slot["seq"] = json!(seq);
-            if seq == 4 || seq == 5 || seq == 10 {
-                slot["creator"] =
-                    json!({"account":"me", "namespaceId": if seq == 10 { 2 } else { 0 }});
-            }
-            if seq == 6 {
-                slot["creator"] = Value::Null;
-                slot["contentType"] = json!("SYSTEM");
-            }
-            if seq == 8 {
-                slot["localState"] = json!("STUB");
-            }
-            if seq == 9 {
-                slot["localState"] = json!("FAILED");
-            }
-            if seq == 3 || seq == 5 {
-                slot = message_tomb(&slot, "USER_RETRACTION").unwrap();
-            }
-            write_message_slot(&tx, 1, MessageSlotWrite::Message(slot)).unwrap();
-        }
-        write_message_slot(
-            &tx,
-            1,
-            MessageSlotWrite::Deletion {
-                thread_id: 42,
-                seq: 7,
-                reason: "USER_RETRACTION".into(),
-            },
-        )
-        .unwrap();
-        write_message_slot(&tx, 2, MessageSlotWrite::Message(message())).unwrap();
-        let mut other = message();
-        other["threadId"] = json!(99);
-        write_message_slot(&tx, 1, MessageSlotWrite::Message(other)).unwrap();
-        assert_eq!(
-            count_unread_message_slots(&tx, 1, 42, 0, 11, &owner).unwrap(),
-            6
-        );
-        assert_eq!(
-            count_unread_message_slots(&tx, 1, 42, 1, 3, &owner).unwrap(),
-            1
-        );
-        assert_eq!(
-            count_unread_message_slots(&tx, 1, 42, 3, 7, &owner).unwrap(),
-            1
-        );
-        assert_eq!(
-            count_unread_message_slots(&tx, 1, 42, 7, 7, &owner).unwrap(),
-            0
-        );
-        let mut late = message();
-        late["seq"] = json!(7);
-        write_message_slot(&tx, 1, MessageSlotWrite::Message(late)).unwrap();
-        assert_eq!(
-            count_unread_message_slots(&tx, 1, 42, 0, 11, &owner).unwrap(),
-            7
-        );
-        assert!(count_unread_message_slots(&tx, 1, 42, 5, 4, &owner).is_err());
-    }
-
-    #[test]
-    fn unread_count_is_not_capped_at_100() {
-        let mut conn = database();
-        let tx = conn.transaction().unwrap();
-        for seq in 1..=120 {
-            let mut slot = message();
-            slot["seq"] = json!(seq);
-            write_message_slot(&tx, 1, MessageSlotWrite::Message(slot)).unwrap();
-        }
-        let owner = MessageCountOwner {
-            account: "me".into(),
-            namespace_id: 0,
-        };
-        assert_eq!(
-            count_unread_message_slots(&tx, 1, 42, 0, 120, &owner).unwrap(),
-            120
-        );
-    }
-}
+#[path = "../tests/native_message_write_tests.rs"]
+mod tomb_tests;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -490,7 +176,8 @@ pub(crate) struct MessageCountOwner {
     pub(super) namespace_id: i32,
 }
 
-/// Count actual slots, not sequence distance. Deletion-only markers lack creator identity.
+/// Count non-self message slots, not sequence distance. Deletion markers are not messages and
+/// contribute zero, independently of any identity or timestamp in an incoming server tomb.
 pub(super) fn count_unread_message_slots(
     conn: &Connection,
     user_id: i64,
@@ -512,6 +199,7 @@ pub(super) fn count_unread_message_slots(
     conn.query_row(
         "SELECT COUNT(*) FROM messages
          WHERE user_id=?1 AND thread_id=?2 AND seq>?3 AND seq<=?4
+           AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
            AND json_type(payload_json, '$.creator') IN ('object', 'null')
            AND NOT COALESCE(
              json_extract(payload_json, '$.creator.account')=?5
@@ -558,6 +246,7 @@ pub(crate) async fn native_db_query_messages(
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq < ?3
                    AND json_type(payload_json, '$.createdAt') IS NOT NULL
+                    AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq DESC LIMIT ?4",
                 anchor,
             ),
@@ -565,6 +254,7 @@ pub(crate) async fn native_db_query_messages(
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq > ?3
                    AND json_type(payload_json, '$.createdAt') IS NOT NULL
+                    AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq ASC LIMIT ?4",
                 anchor,
             ),
@@ -572,6 +262,7 @@ pub(crate) async fn native_db_query_messages(
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq <= ?3
                    AND json_type(payload_json, '$.createdAt') IS NOT NULL
+                    AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq DESC LIMIT ?4",
                 i64::MAX,
             ),
@@ -579,6 +270,7 @@ pub(crate) async fn native_db_query_messages(
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq >= ?3
                    AND json_type(payload_json, '$.createdAt') IS NOT NULL
+                    AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq ASC LIMIT ?4",
                 i64::MIN,
             ),
@@ -667,6 +359,9 @@ pub(crate) struct CommittedMessagePage {
     rename_all_fields = "camelCase"
 )]
 pub(crate) enum NativeHistoryDemand {
+    LocalLatest {
+        count: i64,
+    },
     Latest {
         count: i64,
         known_newest_seq: Option<i64>,
@@ -1048,13 +743,18 @@ async fn read_native_message_head(
     super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let head: Option<i64> = conn
             .query_row(
-                "SELECT message_head FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
+                // A committed thread feed can advance beyond the last history scan. Both
+                // are known server bounds, not proof that message bodies are cached.
+                // Preserve unknown for a structural placeholder with no history/head yet.
+                "SELECT CASE WHEN message_head IS NULL AND message_end_seq=0 THEN NULL
+                   ELSE MAX(COALESCE(message_head,0),message_end_seq) END
+                 FROM threads WHERE user_id=?1 AND thread_id=?2",
                 params![user_id, thread_id],
                 |row| row.get::<_, Option<i64>>(0),
             )
             .optional()
-            .map(|head| head.flatten())
-            .map_err(|error| format!("read native message head: {error}"))?;
+            .map_err(|error| format!("read native message head: {error}"))?
+            .ok_or("thread message progress is not initialized")?;
         Ok(head)
     })
     .await
@@ -1076,6 +776,7 @@ async fn query_native_messages(
                 "SELECT payload_json FROM messages
                  WHERE user_id=?1 AND thread_id=?2 AND seq<?3 AND seq>?4
                    AND json_type(payload_json, '$.createdAt') IS NOT NULL
+                    AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq DESC LIMIT ?5",
                 params![user_id, thread_id, cursor, boundary, take as i64],
             ),
@@ -1083,6 +784,7 @@ async fn query_native_messages(
                 "SELECT payload_json FROM messages
                  WHERE user_id=?1 AND thread_id=?2 AND seq>?3 AND seq<=?4
                    AND json_type(payload_json, '$.createdAt') IS NOT NULL
+                    AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
                  ORDER BY seq ASC LIMIT ?5",
                 params![user_id, thread_id, cursor, boundary, take as i64],
             ),
@@ -1101,6 +803,39 @@ async fn query_native_messages(
     })
     .await
     .map_err(|error| format!("join native history message query: {error}"))?
+}
+
+fn load_live_messages_by_seqs(
+    conn: &Connection,
+    user_id: i64,
+    thread_id: i64,
+    seqs: &[i64],
+) -> Result<Vec<Value>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT payload_json FROM json_each(?3) AS requested
+         JOIN messages ON seq=requested.value
+         WHERE user_id=?1 AND thread_id=?2
+           AND json_type(payload_json, '$.createdAt') IS NOT NULL
+           AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
+         ORDER BY CAST(requested.key AS INTEGER)",
+        )
+        .map_err(|e| format!("prepare committed message lookup: {e}"))?;
+    let rows = statement
+        .query_map(
+            params![
+                user_id,
+                thread_id,
+                serde_json::to_string(seqs).map_err(|e| e.to_string())?
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|e| format!("query committed messages: {e}"))?;
+    rows.map(|row| {
+        row.map_err(|e| format!("read committed message: {e}"))
+            .and_then(parse_json)
+    })
+    .collect()
 }
 
 fn message_seq(message: &Value, thread_id: i64) -> Result<i64, String> {
@@ -1441,6 +1176,14 @@ pub(crate) async fn commit_native_message_page(
         if known_newest_seq.is_some_and(|seq| seq < 0) {
             return Err("known newest message sequence is invalid".to_string());
         }
+        if user_id <= 0 || thread_id <= 0 {
+            return Err("message page has invalid owner or thread".into());
+        }
+        // Validate the raw response, including rows that coverage or tombs will later exclude.
+        let messages = messages
+            .into_iter()
+            .map(prepare_message)
+            .collect::<Result<Vec<_>, _>>()?;
         let message_seqs = messages
             .iter()
             .map(|message| {
@@ -1461,48 +1204,35 @@ pub(crate) async fn commit_native_message_page(
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin message page commit: {e}"))?;
+        if read_deleted_hwm(&tx, user_id, thread_id)?.is_none() {
+            return Err("thread message progress is not initialized".into());
+        }
         let current = load_message_ranges(&tx, user_id, thread_id)?;
         let ranges = reduce_message_ranges(thread_id, &current, scan, &gaps, &message_seqs)?;
 
-        let mut committed_messages = Vec::with_capacity(messages.len());
-        for message in messages {
-            let message_thread_id = message
-                .get("threadId")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "message has no numeric threadId".to_string())?;
-            let seq = message
-                .get("seq")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "message has no numeric seq".to_string())?;
-            if message_thread_id != thread_id || seq <= 0 {
-                return Err("message page contains an invalid message coordinate".to_string());
-            }
-            let merged = write_message_slot(&tx, user_id, MessageSlotWrite::Message(message))?;
-            if merged.get("createdAt").and_then(Value::as_i64).is_some() {
-                committed_messages.push(merged);
-            }
-        }
+        insert_uncovered_messages(&tx, user_id, thread_id, &current, messages)?;
+        // Return stored live values for response coordinates only: preserve covered local values
+        // without exposing deletion markers or adding other cached messages from the scan.
+        let committed_messages =
+            load_live_messages_by_seqs(&tx, user_id, thread_id, &message_seqs)?;
 
         tx.execute(
             "DELETE FROM message_ranges WHERE user_id=?1 AND thread_id=?2",
             params![user_id, thread_id],
         )
         .map_err(|e| format!("replace message ranges: {e}"))?;
-        for range in &ranges {
-            tx.execute(
-                "INSERT INTO message_ranges(
-                   user_id, thread_id, left_exclusive, right_inclusive, state
-                 ) VALUES(?1,?2,?3,?4,?5)",
-                params![
-                    user_id,
-                    thread_id,
-                    range.left,
-                    range.right,
-                    range.state.as_str()
-                ],
-            )
-            .map_err(|e| format!("insert canonical message range: {e}"))?;
-        }
+        tx.execute(
+            "INSERT INTO message_ranges(
+               user_id, thread_id, left_exclusive, right_inclusive, state
+             ) SELECT ?1, ?2, json_extract(value, '$.left'), json_extract(value, '$.right'),
+                      json_extract(value, '$.state') FROM json_each(?3)",
+            params![
+                user_id,
+                thread_id,
+                serde_json::to_string(&ranges).map_err(|e| e.to_string())?
+            ],
+        )
+        .map_err(|e| format!("insert canonical message ranges: {e}"))?;
 
         if let Some(incoming) = known_newest_seq {
             update_message_head(&tx, user_id, thread_id, incoming)?;
@@ -1518,20 +1248,31 @@ pub(crate) async fn commit_native_message_page(
     .map_err(|e| format!("join message page commit: {e}"))?
 }
 
-#[tauri::command]
-pub(crate) async fn native_message_history_get(
-    app: tauri::AppHandle,
-    proxy: tauri::State<'_, ServerSessionState>,
-    user_id: i64,
-    thread_id: i64,
-    demand: NativeHistoryDemand,
-) -> Result<NativeHistoryResult, String> {
-    NativeHistoryIntent::capture(Some(&app), &proxy, user_id, thread_id)?
-        .get(demand)
-        .await
-}
-
 impl NativeHistoryIntent {
+    /// Retain an opening/live hint under the captured login before walking history.
+    /// This is a server ceiling only; it never certifies local range coverage.
+    pub(super) async fn get_with_head(
+        self,
+        demand: NativeHistoryDemand,
+        known_newest_seq: Option<i64>,
+    ) -> Result<NativeHistoryResult, String> {
+        if let Some(seq) = known_newest_seq {
+            if seq < 0 {
+                return Err("native history has an invalid newest hint".into());
+            }
+            let user_id = self.user_id;
+            let thread_id = self.thread_id;
+            super::spawn_owned_database(Ok(self.work.clone()), move |conn| {
+                let tx = conn.transaction().map_err(|error| error.to_string())?;
+                update_message_head(&tx, user_id, thread_id, seq)?;
+                tx.commit().map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| format!("join native history head retention: {error}"))??;
+        }
+        self.get(demand).await
+    }
+
     pub(super) async fn get(
         mut self,
         demand: NativeHistoryDemand,
@@ -1549,16 +1290,45 @@ impl NativeHistoryIntent {
             }
         };
         let result = match demand {
+            NativeHistoryDemand::LocalLatest { count } => {
+                let count = validate_count(count)?;
+                let mut messages = query_native_messages(
+                    &work,
+                    user_id,
+                    thread_id,
+                    HistoryDirection::Older,
+                    i64::MAX,
+                    0,
+                    count as usize,
+                )
+                .await?;
+                messages.reverse();
+                Ok(NativeHistoryResult {
+                    items: messages
+                        .into_iter()
+                        .map(|message| NativeHistoryItem::Message { message })
+                        .collect(),
+                    // Local absence does not establish either server boundary.
+                    has_older: true,
+                    has_newer: true,
+                    failed: false,
+                })
+            }
             NativeHistoryDemand::Latest {
                 count,
                 known_newest_seq,
             } => {
                 let count = validate_count(count)?;
-                let (server_lower, upper) = match known_newest_seq {
-                    Some(seq) if seq >= 0 => (lower, seq),
-                    Some(_) => {
-                        return Err("native latest demand has an invalid newest hint".to_string())
-                    }
+                if known_newest_seq.is_some_and(|seq| seq < 0) {
+                    return Err("native latest demand has an invalid newest hint".to_string());
+                }
+                let known = read_native_message_head(&work, user_id, thread_id)
+                    .await?
+                    .into_iter()
+                    .chain(known_newest_seq)
+                    .max();
+                let (server_lower, upper) = match known {
+                    Some(seq) => (lower, seq),
                     None => bootstrap_message_bounds(&work, &mut self.request, thread_id).await?,
                 };
                 let lower = lower.max(server_lower);
@@ -1591,11 +1361,16 @@ impl NativeHistoryIntent {
                 }
                 let older_count = validate_count(older_count)?;
                 let newer_count = validate_count(newer_count)?;
-                let (server_lower, upper) = match known_newest_seq {
-                    Some(seq) if seq >= 0 => (lower, seq),
-                    Some(_) => {
-                        return Err("native around demand has an invalid newest hint".to_string())
-                    }
+                if known_newest_seq.is_some_and(|seq| seq < 0) {
+                    return Err("native around demand has an invalid newest hint".to_string());
+                }
+                let known = read_native_message_head(&work, user_id, thread_id)
+                    .await?
+                    .into_iter()
+                    .chain(known_newest_seq)
+                    .max();
+                let (server_lower, upper) = match known {
+                    Some(seq) => (lower, seq),
                     None => bootstrap_message_bounds(&work, &mut self.request, thread_id).await?,
                 };
                 let lower = lower.max(server_lower);
@@ -1689,6 +1464,33 @@ impl NativeHistoryIntent {
     }
 }
 
+fn put_cached_messages(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    messages: Vec<Value>,
+) -> Result<(), String> {
+    if user_id <= 0 {
+        return Err("message has invalid owner".into());
+    }
+    let mut by_thread = std::collections::BTreeMap::<i64, Vec<Value>>::new();
+    let mut coordinates = BTreeSet::new();
+    for message in messages {
+        let message = prepare_message(message)?;
+        let thread_id = message["threadId"].as_i64().unwrap();
+        let seq = message["seq"].as_i64().unwrap();
+        if !coordinates.insert((thread_id, seq)) {
+            return Err("duplicate cached message coordinate".into());
+        }
+        by_thread.entry(thread_id).or_default().push(message);
+    }
+    for (thread_id, messages) in by_thread {
+        let current = load_message_ranges(tx, user_id, thread_id)?;
+        validate_message_ranges(thread_id, &current)?;
+        insert_uncovered_messages(tx, user_id, thread_id, &current, messages)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_put_cached_messages(
     app: tauri::AppHandle,
@@ -1705,9 +1507,7 @@ pub(crate) async fn native_db_put_cached_messages(
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("begin cached message write: {error}"))?;
-        for message in messages {
-            write_message_slot(&tx, user_id, MessageSlotWrite::Message(message))?;
-        }
+        put_cached_messages(&tx, user_id, messages)?;
         tx.commit()
             .map_err(|error| format!("commit cached message write: {error}"))
     })
@@ -1741,18 +1541,25 @@ pub(crate) async fn native_db_put_message_head(
     .map_err(|error| format!("join message head write: {error}"))?
 }
 
+pub(super) fn read_deleted_hwm(
+    conn: &Connection,
+    user_id: i64,
+    thread_id: i64,
+) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "SELECT deleted_hwm FROM threads WHERE user_id=?1 AND thread_id=?2",
+        params![user_id, thread_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(|e| format!("get deleted hwm: {e}"))
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_get_deleted_hwm(user_id: i64, thread_id: i64) -> Result<i64, String> {
     super::spawn_login_database(move |conn| {
-        let hwm: Option<i64> = conn
-            .query_row(
-                "SELECT deleted_hwm FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
-                params![user_id, thread_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("get deleted hwm: {e}"))?;
-        Ok(hwm.unwrap_or(0))
+        read_deleted_hwm(conn, user_id, thread_id)?
+            .ok_or_else(|| "thread deletion progress is not initialized".to_string())
     })
     .await
     .map_err(|e| format!("join deleted hwm read: {e}"))?
@@ -1779,12 +1586,13 @@ pub(super) async fn apply_deleted_messages(
     hwm: i64,
 ) -> Result<(), String> {
     super::spawn_owned_database(Ok(work), move |conn| {
-        if hwm < 0 {
-            return Err("deleted hwm must be a non-negative integer".to_string());
+        if user_id <= 0 || thread_id <= 0 || hwm < 0 {
+            return Err("invalid deletion owner, thread or high-water mark".to_string());
         }
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin deleted-message write: {e}"))?;
+        let mut tombs = Vec::with_capacity(items.len());
         for item in items {
             let item_thread_id = item
                 .get("threadId")
@@ -1809,23 +1617,19 @@ pub(super) async fn apply_deleted_messages(
                 .get("type")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "deleted message has no deletion type".to_string())?;
-            write_message_slot(
-                &tx,
-                user_id,
-                MessageSlotWrite::Deletion {
-                    thread_id,
-                    seq: message_seq,
-                    reason: reason.to_string(),
-                },
-            )?;
+            tombs.push(message_tomb(thread_id, message_seq, reason)?);
         }
-        tx.execute(
-            "INSERT INTO thread_sync_state(user_id, thread_id, deleted_hwm)
-             VALUES(?1, ?2, ?3)
-             ON CONFLICT(user_id, thread_id) DO UPDATE SET deleted_hwm=excluded.deleted_hwm",
-            params![user_id, thread_id, hwm],
-        )
-        .map_err(|e| format!("advance deleted hwm: {e}"))?;
+        upsert_message_batch(&tx, user_id, &tombs)?;
+        let updated = tx
+            .execute(
+                "UPDATE threads SET deleted_hwm=MAX(deleted_hwm,?3)
+             WHERE user_id=?1 AND thread_id=?2",
+                params![user_id, thread_id, hwm],
+            )
+            .map_err(|e| format!("advance deleted hwm: {e}"))?;
+        if updated != 1 {
+            return Err("thread deletion progress is not initialized".to_string());
+        }
         tx.commit()
             .map_err(|e| format!("commit deleted-message write: {e}"))
     })
@@ -1842,61 +1646,81 @@ fn update_message_head(
     if incoming < 0 {
         return Err("known newest message sequence is invalid".to_string());
     }
-    let old: Option<i64> = tx
-        .query_row(
-            "SELECT message_head FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
-            params![user_id, thread_id],
-            |row| row.get(0),
+    let updated = tx
+        .execute(
+            "UPDATE threads SET message_head=CASE
+           WHEN message_head IS NULL THEN ?3 ELSE MAX(message_head,?3) END
+         WHERE user_id=?1 AND thread_id=?2",
+            params![user_id, thread_id, incoming],
         )
-        .optional()
-        .map_err(|error| format!("read message head: {error}"))?;
-    let next = incoming.max(old.unwrap_or_default());
-    tx.execute(
-        "INSERT INTO thread_sync_state(user_id, thread_id, message_head)
-         VALUES(?1, ?2, ?3)
-         ON CONFLICT(user_id, thread_id) DO UPDATE SET message_head=excluded.message_head",
-        params![user_id, thread_id, next],
-    )
-    .map_err(|error| format!("put message head: {error}"))?;
+        .map_err(|error| format!("put message head: {error}"))?;
+    if updated != 1 {
+        return Err("thread message progress is not initialized".into());
+    }
     Ok(())
 }
 
-pub(crate) fn load_deleted_message_seqs(
+#[derive(Debug, Eq, PartialEq, Serialize)]
+pub(crate) enum MessageDeletionType {
+    #[serde(rename = "USER_RETRACTION")]
+    UserRetraction,
+    #[serde(rename = "MODERATION_REMOVAL")]
+    ModerationRemoval,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct MessageDeletion {
+    pub(crate) seq: i64,
+    #[serde(rename = "type")]
+    pub(crate) deletion_type: MessageDeletionType,
+}
+
+pub(crate) fn load_message_deletions(
     conn: &Connection,
     user_id: i64,
     thread_id: i64,
     seqs: Vec<i64>,
-) -> Result<Vec<i64>, String> {
+) -> Result<Vec<MessageDeletion>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT seq FROM messages WHERE user_id = ?1 AND thread_id = ?2 AND seq = ?3
-             AND json_extract(payload_json, '$.isDeleted') = 1",
+            "SELECT seq, json_extract(payload_json, '$.deletionType') FROM messages
+             WHERE user_id = ?1 AND thread_id = ?2
+             AND seq IN (SELECT value FROM json_each(?3))
+             AND json_extract(payload_json, '$.contentType') = 'TOMB'
+             ORDER BY seq",
         )
         .map_err(|e| format!("prepare tombstone read: {e}"))?;
-    let mut deleted = Vec::new();
-    for seq in seqs.into_iter().collect::<BTreeSet<_>>() {
-        if let Some(seq) = stmt
-            .query_row(params![user_id, thread_id, seq], |row| row.get(0))
-            .optional()
-            .map_err(|e| format!("read tombstone: {e}"))?
-        {
-            deleted.push(seq);
-        }
-    }
-    Ok(deleted)
+    let rows = stmt
+        .query_map(
+            params![
+                user_id,
+                thread_id,
+                serde_json::to_string(&seqs).map_err(|e| e.to_string())?
+            ],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|e| format!("query tombstones: {e}"))?;
+    rows.map(|row| {
+        let (seq, reason) = row.map_err(|e| format!("read tombstone: {e}"))?;
+        let deletion_type = match reason.as_str() {
+            "USER_RETRACTION" => MessageDeletionType::UserRetraction,
+            "MODERATION_REMOVAL" => MessageDeletionType::ModerationRemoval,
+            _ => return Err("stored tomb has invalid deletion type".into()),
+        };
+        Ok(MessageDeletion { seq, deletion_type })
+    })
+    .collect()
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_get_deleted_message_seqs(
+pub(crate) async fn native_db_get_message_deletions(
     user_id: i64,
     thread_id: i64,
     seqs: Vec<i64>,
-) -> Result<Vec<i64>, String> {
-    super::spawn_login_database(move |conn| {
-        load_deleted_message_seqs(conn, user_id, thread_id, seqs)
-    })
-    .await
-    .map_err(|e| format!("join tombstone read: {e}"))?
+) -> Result<Vec<MessageDeletion>, String> {
+    super::spawn_login_database(move |conn| load_message_deletions(conn, user_id, thread_id, seqs))
+        .await
+        .map_err(|e| format!("join tombstone read: {e}"))?
 }
 
 fn load_origin_message(
@@ -2091,28 +1915,40 @@ pub(crate) async fn native_db_delete_messages_by_thread(
     user_id: i64,
     thread_id: i64,
 ) -> Result<(), String> {
-    super::spawn_login_database(move |conn| {
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|e| format!("begin delete thread messages: {e}"))?;
-        tx.execute(
-            "DELETE FROM messages WHERE user_id = ?1 AND thread_id = ?2",
-            params![user_id, thread_id],
-        )
-        .map_err(|e| format!("delete thread messages: {e}"))?;
-        tx.execute(
-            "DELETE FROM message_ranges WHERE user_id = ?1 AND thread_id = ?2",
-            params![user_id, thread_id],
-        )
-        .map_err(|e| format!("delete thread message ranges: {e}"))?;
-        tx.execute(
-            "DELETE FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
-            params![user_id, thread_id],
-        )
-        .map_err(|e| format!("delete message head: {e}"))?;
-        tx.commit()
-            .map_err(|e| format!("commit delete thread messages: {e}"))
+    let owner = super::login_connections::LOGIN_CONNECTIONS.capture()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        reset_thread_message_cache(&owner, user_id, thread_id)
     })
     .await
     .map_err(|e| format!("join thread-message delete: {e}"))?
+}
+
+fn reset_thread_message_cache(
+    owner: &crate::login_connection::LoginConnection,
+    user_id: i64,
+    thread_id: i64,
+) -> Result<(), String> {
+    // Tomb stubs are synchronization facts, not disposable bodies. Retain them
+    // with the deletion cursor so an in-flight body cannot resurrect a deletion.
+    owner
+        .with_database(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|e| format!("begin delete thread messages: {e}"))?;
+            tx.execute(
+                "DELETE FROM messages WHERE user_id = ?1 AND thread_id = ?2
+             AND COALESCE(json_extract(payload_json, '$.contentType'), '') != 'TOMB'",
+                params![user_id, thread_id],
+            )
+            .map_err(|e| format!("delete thread messages: {e}"))?;
+            tx.execute(
+                "DELETE FROM message_ranges WHERE user_id = ?1 AND thread_id = ?2",
+                params![user_id, thread_id],
+            )
+            .map_err(|e| format!("delete thread message ranges: {e}"))?;
+            // Thread-owned progress outlives disposable message bodies.
+            tx.commit()
+                .map_err(|e| format!("commit delete thread messages: {e}"))
+        })
+        .map_err(|e| e.to_string())
 }

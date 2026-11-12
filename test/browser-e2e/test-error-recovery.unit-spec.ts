@@ -124,7 +124,7 @@ describe('routine acceptance test-error recovery', () => {
     },
   );
 
-  it.each(['repair', 'stop', 'skip', 'retry'])(
+  it.each(['continue', 'stop', 'agent-retry'] as const)(
     'cannot override operator decision %s',
     (decision) => {
       const state = pending();

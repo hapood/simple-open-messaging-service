@@ -271,7 +271,21 @@ async function writeObservedMembershipTransitionInTx(
     item.operation === 'MEMBER_DEPART' &&
     previousFact?.operation === 'MEMBER_UPSERT';
   if (!joined && !left) return { transitioned: false };
-  if (left && member.namespaceId === 0) return { transitioned: false };
+  // Meta identities remain in the publisher's coordinate space. Recognition
+  // records the nonzero coordinate that this publisher assigned to our server;
+  // publisher namespace zero identifies the publisher, never a mirror member.
+  const publisher = await tx.execute<{ localNamespaceId: number | null }>(sql`
+    SELECT "peerAssignedLocalNamespaceId" AS "localNamespaceId"
+    FROM "IdentityNamespace"
+    WHERE id = ${group.publisherNamespaceId} AND "retiredAt" IS NULL
+  `);
+  const localNamespaceId = publisher.rows[0]?.localNamespaceId;
+  if (localNamespaceId == null)
+    throw new Error(
+      'mirror publisher has no recognized local namespace binding',
+    );
+  const localMember = member.namespaceId === localNamespaceId;
+  if (left && localMember) return { transitioned: false };
   const profileNamespaceId =
     item.operation === 'MEMBER_UPSERT'
       ? item.namespaceId
@@ -284,7 +298,7 @@ async function writeObservedMembershipTransitionInTx(
     throw new Error('departing member has no previous profile revision');
   if (profileRev > 0 && profileNamespaceId === null)
     throw new Error('member profile revision has no profile namespace');
-  if (member.namespaceId === 0) {
+  if (localMember) {
     const pair = await tx.execute<{ active: boolean }>(sql`
       SELECT active FROM "RelationshipPair"
       WHERE kind = 'GROUP_MEMBER' AND "threadId" = ${threadId}

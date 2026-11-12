@@ -4,7 +4,8 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { identityNamespace } from '../database/schema.js';
+import { federationFeedState } from '../database/schema.js';
+import { assertProfileNamespaceFeedPage } from './profile-namespace-wire.js';
 import type { ProfileNamespaceFeedPage } from './profile-namespace-feed.service.js';
 import type { ProfileNamespaceItemEffect } from './profile-namespace-feed-consumer.service.js';
 
@@ -110,10 +111,11 @@ export class ProfileNamespaceFeedPullService {
   ): Promise<bigint | undefined> {
     const [row] = await this.database.db
       .select({
-        pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
+        pulledThrough:
+          federationFeedState.inboundProfileNamespaceFeedPulledThrough,
       })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, namespaceId))
+      .from(federationFeedState)
+      .where(eq(federationFeedState.namespaceId, namespaceId))
       .limit(1);
     if (!row) return undefined;
     return row.pulledThrough;
@@ -127,10 +129,11 @@ export class ProfileNamespaceFeedPullService {
   ) {
     const [epoch] = await this.database.db
       .select({
-        pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
+        pulledThrough:
+          federationFeedState.inboundProfileNamespaceFeedPulledThrough,
       })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, namespaceId))
+      .from(federationFeedState)
+      .where(eq(federationFeedState.namespaceId, namespaceId))
       .limit(1);
     if (!epoch) return null;
     const committedThrough = epoch.pulledThrough;
@@ -139,6 +142,8 @@ export class ProfileNamespaceFeedPullService {
     // first-pull convenience for consumers without a coordinate, not a state
     // this engine can be in.
     const page = await callbacks.fetch(committedThrough, through);
+    // Validate the complete page before any invalidation or cursor commits.
+    assertProfileNamespaceFeedPage(page);
     const scannedThrough = this.parseRev(page.scannedThrough, 'scannedThrough');
     const sourceEndId = this.parseRev(page.feedEndId, 'feedEndId');
     const scanEnd =
@@ -171,11 +176,11 @@ export class ProfileNamespaceFeedPullService {
           throw new Error('profile namespace feed single-flight is busy');
         const [current] = await tx
           .select({
-            pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
-            observedEndId: identityNamespace.profileNamespaceFeedEndId,
+            pulledThrough:
+              federationFeedState.inboundProfileNamespaceFeedPulledThrough,
           })
-          .from(identityNamespace)
-          .where(eq(identityNamespace.id, namespaceId))
+          .from(federationFeedState)
+          .where(eq(federationFeedState.namespaceId, namespaceId))
           .limit(1);
         if (!current)
           throw new Error('profile namespace pull namespace row disappeared');
@@ -183,18 +188,15 @@ export class ProfileNamespaceFeedPullService {
           return null;
         const effect = await callbacks.apply(tx, item);
         await tx
-          .update(identityNamespace)
+          .update(federationFeedState)
           .set({
-            profileNamespaceFeedEndId:
-              sourceEndId > current.observedEndId
-                ? sourceEndId
-                : current.observedEndId,
-            profileNamespaceFeedPulledThrough: this.parseRev(
+            profileNamespaceFeedSourceGeneratedAt: item.generatedAt,
+            inboundProfileNamespaceFeedPulledThrough: this.parseRev(
               item.feedId,
               'item.feedId',
             ),
           })
-          .where(eq(identityNamespace.id, namespaceId));
+          .where(eq(federationFeedState.namespaceId, namespaceId));
         return effect;
       });
       if (applied) await callbacks.afterCommit?.(applied);
@@ -209,34 +211,23 @@ export class ProfileNamespaceFeedPullService {
         throw new Error('profile namespace feed single-flight is busy');
       const [current] = await tx
         .select({
-          pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
-          observedEndId: identityNamespace.profileNamespaceFeedEndId,
+          pulledThrough:
+            federationFeedState.inboundProfileNamespaceFeedPulledThrough,
         })
-        .from(identityNamespace)
-        .where(eq(identityNamespace.id, namespaceId))
+        .from(federationFeedState)
+        .where(eq(federationFeedState.namespaceId, namespaceId))
         .limit(1);
       if (!current)
         throw new Error('profile namespace pull namespace row disappeared');
       if (current.pulledThrough < appliedThrough)
         throw new Error('profile namespace item cursor did not commit');
-      if (current.pulledThrough >= scannedThrough) {
-        if (current.observedEndId >= sourceEndId) return;
-        await tx
-          .update(identityNamespace)
-          .set({ profileNamespaceFeedEndId: sourceEndId })
-          .where(eq(identityNamespace.id, namespaceId));
-        return;
-      }
+      if (current.pulledThrough >= scannedThrough) return;
       await tx
-        .update(identityNamespace)
+        .update(federationFeedState)
         .set({
-          profileNamespaceFeedEndId:
-            sourceEndId > current.observedEndId
-              ? sourceEndId
-              : current.observedEndId,
-          profileNamespaceFeedPulledThrough: scannedThrough,
+          inboundProfileNamespaceFeedPulledThrough: scannedThrough,
         })
-        .where(eq(identityNamespace.id, namespaceId));
+        .where(eq(federationFeedState.namespaceId, namespaceId));
     });
     return {
       requestedAfter: committedThrough,

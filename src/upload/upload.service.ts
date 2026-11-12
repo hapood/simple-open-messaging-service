@@ -20,10 +20,7 @@ import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
 import { dataDirectory } from '../common/data-directory.js';
 import {
-  MAX_AUDIO_BYTES,
-  MAX_FILE_BYTES,
   MAX_FILE_NAME_LEN,
-  MAX_VIDEO_BYTES,
   parseFileExt,
   resolveFileType,
   type OutboundFilePayload,
@@ -32,7 +29,14 @@ import { ContentType } from '../database/enums.js';
 import { MediaAssetService } from './media-asset.service.js';
 import { detectMedia, type DetectedMedia } from './media-sig.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
+import { FileSizeLimitError } from './file-size-limit.js';
 import { MediaMetadataService } from './media-metadata.service.js';
+import {
+  isStoredMediaMetadata,
+  type StoredMediaMetadata,
+} from './stored-media-metadata.js';
+
+export class InvalidUploadMediaError extends Error {}
 
 const writeFileAsync = promisify(writeFile);
 const readFileAsync = promisify(readFile);
@@ -67,87 +71,10 @@ export type ConsumedImage =
   | { kind: 'rejected'; reason: 'no-file' | 'wrong-type' | 'too-large' };
 
 /**
- * Chat-image upload result. Unlike consumeImage (used by avatars too), the chat upload keeps an
- * unsupported image selection as a generic file so formats such as HEIC/AVIF can still be sent.
- * Supported image MIME types remain subject to the controller's magic-byte check; a corrupt or
- * forged JPEG/PNG/GIF/WebP is preserved through the same forced-download file fallback.
- */
-export type ConsumedChatImage =
-  | {
-      kind: 'file';
-      mimetype: string;
-      buffer: Buffer;
-      filename: string;
-      w: number;
-      h: number;
-    }
-  | {
-      kind: 'fallback-file';
-      mimetype: string;
-      buffer: Buffer;
-      filename: string;
-    }
-  | { kind: 'rejected'; reason: 'no-file' | 'wrong-type' | 'too-large' };
-
-/**
- * consumeFile return: success carries buffer + original filename; failure is discriminated by
- * reason (the controller maps reason → business code). The size cap MAX_FILE_BYTES is backed by
- * main.ts's multipart limits.fileSize (raised) + a second check here.
- */
-export type ConsumedFile =
-  | {
-      kind: 'file';
-      mimetype: string;
-      buffer: Buffer;
-      filename: string;
-    }
-  | {
-      kind: 'rejected';
-      reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name';
-    };
-
-/**
- * consumeVideo / consumeAudio return: on success carries the trusted ext (derived from magic bytes,
- * NOT the client filename), the display mime, the buffer, and the original filename. ext is what gets
- * written to disk and served; the controller maps a 'rejected' to the matching business code.
- */
-export type ConsumedMedia =
-  | {
-      kind: 'file';
-      ext: string;
-      mime: string;
-      buffer: Buffer;
-      filename: string;
-    }
-  | {
-      kind: 'rejected';
-      reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name';
-    };
-
-/** One buffered file part collected by {@link UploadService.consumeParts} (Phase 7 type-agnostic upload). */
-interface ConsumedPartFile {
-  mimetype: string;
-  buffer: Buffer;
-  filename?: string;
-}
-
-/** Multi-file multipart consumer result. The primary contract is ONE file per request (GALLERY is the
- *  client sending N parallel single-file requests sharing one x-client-message-id); multiple files in
- *  one request are tolerated, with companion form fields shared across them. */
-export type ConsumedParts =
-  | {
-      kind: 'ok';
-      files: ConsumedPartFile[];
-      fields: Record<string, string>;
-    }
-  | { kind: 'rejected'; reason: 'no-file' | 'too-large' };
-
-/**
  * Image / media upload service.
  *
- * Chat images (albums): zero image-library dependency — @fastify/multipart reads into a buffer +
- * magic-number check; width/height are read client-side via createImageBitmap and sent with the
- * FormData (the backend never parses the image content).
+ * Message attachments are inspected from sequential staging files; media metadata and family
+ * are derived from the bytes before the batch is published.
  *
  * Avatars are fully validated against the federation byte, format, and dimension limits, then stored
  * byte-for-byte as one file. Invalid or oversized input is rejected rather than transformed.
@@ -159,7 +86,7 @@ export type ConsumedParts =
  *
  * Storage lives below the configured application data directory, aligned with bootstrap.ts's
  * @fastify/static prefix '/uploads/'.
- * Switching to object storage (S3/OSS/MinIO) in production means changing only save()/saveAvatar()'s
+ * Switching to object storage (S3/OSS/MinIO) in production requires changing the CAS/avatar
  * write target + url generation — the interface contract stays the same.
  */
 @Injectable()
@@ -170,6 +97,7 @@ export class UploadService {
    *  `*.tmp` crash-leftovers from the buffer publish paths. Kept out of the shard tree so the formal CAS
    *  dirs hold only published blobs and the GC temp pass is a single flat scan (design doc §12.4/§12.6). */
   readonly casTmpDir = dataDirectory('cas', 'tmp');
+  readonly thumbnailDir = dataDirectory('thumbnails');
   private readonly casIngestLocks = new KeyedMutex();
 
   constructor(
@@ -181,8 +109,7 @@ export class UploadService {
   static readonly MAX_AVATAR_EDGE = 512;
   static readonly MAX_AVATAR_PIXELS =
     UploadService.MAX_AVATAR_EDGE * UploadService.MAX_AVATAR_EDGE;
-  /** Image size cap (avatars + chat images). Enforced in consumeImage so the global multipart
-   * ceiling can be raised for generic files (MAX_FILE_BYTES) without also raising it for images. */
+  /** Avatar buffer cap, independent of message attachment policies. */
   static readonly MAX_IMAGE_BYTES = 10 * 1024 * 1024;
   /** Federation's strict pre-decode Base64 ceiling. */
   static readonly MAX_AVATAR_WIRE_B64_LEN = 1024 * 1024;
@@ -214,141 +141,7 @@ export class UploadService {
   }
 
   /**
-   * Consume the chat-image route without discarding unsupported MIME types. The photo picker can
-   * yield HEIC/HEIF/AVIF (or application/octet-stream on less capable WebViews); those bytes are
-   * stored through the generic-file path and served as an attachment. This deliberately retains the
-   * image route's 10 MiB cap rather than inheriting the generic-file route's larger allowance.
-   */
-  async consumeChatImage(req: FastifyRequest): Promise<ConsumedChatImage> {
-    const r = await this.consumeSingle(req, {
-      maxBytes: UploadService.MAX_IMAGE_BYTES,
-    });
-    if (r.kind === 'rejected') {
-      return { kind: 'rejected', reason: r.reason };
-    }
-    if (r.buffer.length === 0) {
-      return { kind: 'rejected', reason: 'no-file' };
-    }
-    if (!r.filename) {
-      return { kind: 'rejected', reason: 'wrong-type' };
-    }
-    if (!(r.mimetype in IMG_EXT)) {
-      return {
-        kind: 'fallback-file',
-        mimetype: r.mimetype,
-        buffer: r.buffer,
-        filename: r.filename,
-      };
-    }
-    return {
-      kind: 'file',
-      mimetype: r.mimetype,
-      buffer: r.buffer,
-      filename: r.filename,
-      w: Number(r.fields.w) || 0,
-      h: Number(r.fields.h) || 0,
-    };
-  }
-
-  /**
-   * Consume a single generic file from multipart/form-data: buffer it (capped at MAX_FILE_BYTES),
-   * require a filename, reject an empty body, then resolve a safe on-disk extension + a display
-   * MIME. The open model accepts ANY file type — there is no whitelist, and the client-declared
-   * Content-Type is used only for the display MIME (icon tint), never for a security decision.
-   * Serving-side headers (Content-Disposition: attachment + nosniff for non-images) are what make
-   * an uploaded .html/.svg/.exe safe. Delegates the multipart draining to consumeSingle with no
-   * `allowed` MIME filter; url/name/size/mimeType are all server-generated downstream.
-   */
-  async consumeFile(req: FastifyRequest): Promise<ConsumedFile> {
-    const r = await this.consumeSingle(req, {
-      maxBytes: MAX_FILE_BYTES,
-    });
-    if (r.kind === 'rejected') {
-      return { kind: 'rejected', reason: r.reason };
-    }
-    if (!r.filename) {
-      return { kind: 'rejected', reason: 'bad-name' };
-    }
-    if (r.buffer.length === 0) {
-      return { kind: 'rejected', reason: 'no-file' };
-    }
-    const ft = resolveFileType(r.filename, r.mimetype);
-    return {
-      kind: 'file',
-      mimetype: ft.mime,
-      buffer: r.buffer,
-      filename: r.filename,
-    };
-  }
-
-  /**
-   * Consume a single video from multipart/form-data: buffer it (capped at MAX_VIDEO_BYTES), require a
-   * filename, then gate on a video-container magic-byte signature (detectMedia family === 'video').
-   * The client-declared MIME is NOT trusted for the on-disk extension — detectMedia derives ext from
-   * the actual bytes. w/h/duration are NOT read server-side; the client probes them via <video>
-   * loadedmetadata and carries them in the VIDEO message content.
-   */
-  async consumeVideo(req: FastifyRequest): Promise<ConsumedMedia> {
-    return this.consumeMedia(req, 'video', MAX_VIDEO_BYTES);
-  }
-
-  /** Consume a single audio clip. Same contract as consumeVideo with the audio family + cap. */
-  async consumeAudio(req: FastifyRequest): Promise<ConsumedMedia> {
-    return this.consumeMedia(req, 'audio', MAX_AUDIO_BYTES);
-  }
-
-  /**
-   * Shared video/audio consumer: drain the multipart (single-file contract via consumeSingle), then
-   * detect the container family from magic bytes and gate on the expected family. The on-disk ext is
-   * the detected ext (trusted); the display mime is `<family>/<ext>` (display only — @fastify/static
-   * maps ext→Content-Type at serving time, and the message content carries this mime for the UI).
-   */
-  private async consumeMedia(
-    req: FastifyRequest,
-    family: 'video' | 'audio',
-    maxBytes: number,
-  ): Promise<ConsumedMedia> {
-    const r = await this.consumeSingle(req, { maxBytes });
-    if (r.kind === 'rejected') {
-      return { kind: 'rejected', reason: r.reason };
-    }
-    if (!r.filename) {
-      return { kind: 'rejected', reason: 'bad-name' };
-    }
-    if (r.buffer.length === 0) {
-      return { kind: 'rejected', reason: 'no-file' };
-    }
-    const detected = detectMedia(r.buffer);
-    if (!detected) {
-      return { kind: 'rejected', reason: 'wrong-type' };
-    }
-    // detectMedia cannot split a shared container by family alone: EBML is BOTH webm-audio
-    // (what MediaRecorder emits on Chrome / Android WebView / Tauri webview2 / webkit2gtk) and
-    // webm-video, and ISO-BMFF `ftyp` is BOTH m4a (audio) and mp4 (video). The route name carries
-    // the client's media intent, so the AUDIO route additionally accepts those recorder-emitted
-    // containers (webm, mp4) as audio. detectMedia still proved a real container signature
-    // (anti-forgery — not a forged MIME or arbitrary file), serving is per-object authz-gated
-    // (MediaMessage) + nosniff, and <audio> plays webm/opus + mp4 natively. The VIDEO route stays
-    // strict (no shared-container acceptance) — a video uploaded to /upload/video is unambiguous.
-    const sharedAsAudio =
-      family === 'audio' &&
-      detected.family === 'video' &&
-      (detected.ext === 'webm' || detected.ext === 'mp4');
-    if (detected.family !== family && !sharedAsAudio) {
-      return { kind: 'rejected', reason: 'wrong-type' };
-    }
-    return {
-      kind: 'file',
-      ext: detected.ext,
-      mime: `${family}/${detected.ext}`,
-      buffer: r.buffer,
-      filename: r.filename,
-    };
-  }
-
-  /**
-   * Core single-file multipart consumer shared by every upload route (avatar, chat image, chat
-   * file). Owns the one copy of the @fastify/multipart draining logic so the backpressure bug
+   * Single-file multipart consumer for avatars. Owns the @fastify/multipart draining logic so the backpressure bug
    * below can never again diverge across routes:
    *
    * Each file part MUST be drained inside the loop. The parser can only find the next part (or
@@ -424,57 +217,14 @@ export class UploadService {
     return { kind: 'file', ...file, fields };
   }
 
-  // ─── Phase 7: type-agnostic upload (design doc §12.3) ─────────────────────────────────────
-
-  /**
-   * Type-agnostic multi-file multipart consumer (Phase 7). Iterates req.parts(), buffering each file
-   * part up to the global per-part cap and collecting the companion form fields ({name, mimeType, w,
-   * h, duration}) that describe it. The upload transport no longer branches on media family; staged
-   * inspection detects the family from the bytes.
-   *
-   * Backpressure: every file part is drained inside the loop (toBuffer before the iterator advances) —
-   * the same invariant consumeSingle owns. Deferring the drain stalls the parts() iterator once a file
-   * spans more than one read chunk. A 0-byte part is dropped; if no non-empty file arrived → 'no-file'.
-   */
-  async consumeParts(
-    req: FastifyRequest,
-    opts: { maxBytes: number },
-  ): Promise<ConsumedParts> {
-    const files: ConsumedPartFile[] = [];
-    const fields: Record<string, string> = {};
-    for await (const part of req.parts()) {
-      if (part.type !== 'file') {
-        fields[part.fieldname] = String(part.value);
-        continue;
-      }
-      let buffer: Buffer;
-      try {
-        buffer = await part.toBuffer();
-      } catch {
-        return { kind: 'rejected', reason: 'too-large' };
-      }
-      if (buffer.length > opts.maxBytes) {
-        return { kind: 'rejected', reason: 'too-large' };
-      }
-      if (buffer.length === 0) continue; // drop empty parts
-      files.push({
-        mimetype: part.mimetype,
-        buffer,
-        ...(part.filename ? { filename: part.filename } : {}),
-      });
-    }
-    if (files.length === 0) return { kind: 'rejected', reason: 'no-file' };
-    return { kind: 'ok', files, fields };
-  }
-
   /**
    * Shared family/ext/mime/name resolution for one outbound file (Phase 7). Used by
-   * {@link resolveStagedPart} so both transports gate identically on the staged `intent`:
+   * {@link resolveStagedPart} to gate each part on the staged `intent`:
    *   - IMAGE intent whose bytes are not an inline-renderable image (HEIC/AVIF/…) → downloadable FILE,
    *     signaling `overrideContentType: FILE`;
-   *   - VIDEO/AUDIO intent rejects a non-matching container (AUDIO accepts the recorder-shared
-   *     webm/mp4 containers, mapped to audio);
-   *   - GALLERY detects freely (a webm in a bundle is VIDEO by signature — an accepted limitation).
+   *   - FILE intent adopts the detected media family as the final message type;
+   *   - VIDEO/AUDIO intent rejects files without the corresponding actual streams;
+   *   - GALLERY detects every member independently, including audio-only MP4/WebM.
    * Returns the detected family, the trusted on-disk ext, the display MIME (omitted for IMAGE), and the
    * sanitized display name.
    */
@@ -508,22 +258,24 @@ export class UploadService {
         }
         break;
       case ContentType.FILE:
-        family = 'FILE';
-        ext = parseFileExt(filename) || 'bin';
+        family = detected
+          ? (detected.family.toUpperCase() as OutboundFilePayload['family'])
+          : 'FILE';
+        ext = detected?.ext ?? (parseFileExt(filename) || 'bin');
+        // The picker entry point is not the final message type. Keep the staged message in sync
+        // with the verified attachment family so clients render media instead of a download card.
+        if (family !== 'FILE') overrideContentType = ContentType[family];
         break;
       case ContentType.VIDEO:
         if (!detected || detected.family !== 'video') {
-          throw new Error('invalid video');
+          throw new InvalidUploadMediaError('invalid video');
         }
         family = 'VIDEO';
         ext = detected.ext;
         break;
       case ContentType.AUDIO: {
-        const sharedAsAudio =
-          detected?.family === 'video' &&
-          (detected.ext === 'webm' || detected.ext === 'mp4');
-        if (!detected || (detected.family !== 'audio' && !sharedAsAudio)) {
-          throw new Error('invalid audio');
+        if (!detected || detected.family !== 'audio') {
+          throw new InvalidUploadMediaError('invalid audio');
         }
         family = 'AUDIO';
         ext = detected.ext;
@@ -618,14 +370,22 @@ export class UploadService {
     ext: string,
     buf: Buffer,
   ): Promise<{ url: string; digest: string; ext: string; size: number }> {
-    const digest = await saveContentAddressedBuffer(
-      buf,
-      (hash) => this.casShardPath(hash).abs,
-      this.casTmpDir,
-    );
-    await this.mediaAsset.publishReady(digest, BigInt(buf.length));
-    const { url } = this.casShardPath(digest);
-    return { url, digest, ext, size: buf.length };
+    const digest = createHash('sha256').update(buf).digest('hex');
+    return this.withCasDigestLock(digest, async () => {
+      await this.mediaAsset.publishReady(
+        digest,
+        BigInt(buf.length),
+        async () => {
+          await saveContentAddressedBuffer(
+            buf,
+            (hash) => this.casShardPath(hash).abs,
+            this.casTmpDir,
+          );
+        },
+      );
+      const { url } = this.casShardPath(digest);
+      return { url, digest, ext, size: buf.length };
+    });
   }
 
   /**
@@ -649,29 +409,30 @@ export class UploadService {
   }> {
     const info = await statAsync(tmpPath);
     const hash = createHash('sha256');
-    const headerChunks: Buffer[] = [];
-    let headerBytes = 0;
     for await (const chunk of createReadStream(tmpPath)) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      hash.update(buffer);
-      if (headerBytes < 4096) {
-        const part = buffer.subarray(0, 4096 - headerBytes);
-        headerChunks.push(part);
-        headerBytes += part.length;
-      }
+      hash.update(chunk);
     }
-    const header = Buffer.concat(headerChunks);
+    const digest = hash.digest('hex');
+    const localMeta = await this.prepareMetadata(tmpPath, digest);
+    const detected = detectMedia(await this.readHeader(tmpPath));
+    const actualDetected =
+      detected && localMeta.kind !== 'FILE'
+        ? {
+            ...detected,
+            family: localMeta.kind.toLowerCase() as DetectedMedia['family'],
+          }
+        : detected;
     const resolved = this.resolveOutboundFile(
-      detectMedia(header),
+      actualDetected,
       intent,
       originalName,
       declaredMime,
     );
-    const metadata = await this.mediaMetadata.fromFile(
-      tmpPath,
-      resolved.family,
-    );
-    const digest = hash.digest('hex');
+    const media = localMeta;
+    const metadata = {
+      ...('width' in media ? { w: media.width, h: media.height } : {}),
+      ...('duration' in media ? { duration: media.duration } : {}),
+    };
     const payload: OutboundFilePayload = {
       digest,
       url: this.casShardPath(digest).url,
@@ -680,6 +441,7 @@ export class UploadService {
       name: resolved.name,
       ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
       ...metadata,
+      localMeta,
     };
     return {
       digest,
@@ -688,6 +450,91 @@ export class UploadService {
         ? { overrideContentType: resolved.overrideContentType }
         : {}),
     };
+  }
+
+  private async readHeader(path: string): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of createReadStream(path, { start: 0, end: 4095 }))
+      chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  }
+
+  /** Recheck an already-landed original when recovering without a durable asset result. */
+  private async verifyOriginal(path: string, digest: string): Promise<void> {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(path)) hash.update(chunk);
+    if (hash.digest('hex') !== digest) throw new Error('CAS digest mismatch');
+  }
+
+  /** Prepare one complete local result; publication of the JSON happens after file landing. */
+  private async prepareMetadata(
+    path: string,
+    digest: string,
+  ): Promise<StoredMediaMetadata> {
+    const existing = await this.mediaAsset.metadata(digest);
+    if (existing) return existing;
+    const processed = await this.mediaMetadata.processFile(path);
+    if (!isStoredMediaMetadata(processed.meta))
+      throw new Error('invalid processed metadata');
+    if (processed.thumbnail) {
+      await saveContentAddressedBuffer(
+        processed.thumbnail,
+        (hash) =>
+          join(this.thumbnailDir, hash.slice(0, 2), hash.slice(2, 4), hash),
+        join(this.thumbnailDir, 'tmp'),
+      );
+    }
+    return processed.meta;
+  }
+
+  async prepareStagedMetadata(
+    tmpPath: string,
+    digest: string,
+    prepared?: StoredMediaMetadata,
+  ): Promise<StoredMediaMetadata> {
+    return this.withCasDigestLock(digest, async () => {
+      if (isStoredMediaMetadata(prepared)) {
+        const media = prepared;
+        if (
+          !('thumbnail' in media) ||
+          existsSync(
+            join(
+              this.thumbnailDir,
+              media.thumbnail.digest.slice(0, 2),
+              media.thumbnail.digest.slice(2, 4),
+              media.thumbnail.digest,
+            ),
+          )
+        )
+          return prepared;
+      }
+      const finalExists = this.casShardExists(digest);
+      if (finalExists)
+        await this.verifyOriginal(this.casShardPath(digest).abs, digest);
+      return this.prepareMetadata(
+        finalExists ? this.casShardPath(digest).abs : tmpPath,
+        digest,
+      );
+    });
+  }
+
+  /** Resume processing from a verified final original without requesting its bytes again. */
+  async ensureLocalMetadata(digest: string): Promise<StoredMediaMetadata> {
+    return this.withCasDigestLock(digest, async () => {
+      const path = this.casShardPath(digest).abs;
+      const size = (await statAsync(path)).size;
+      const existing = await this.mediaAsset.metadata(digest);
+      if (existing) return existing;
+      await this.verifyOriginal(path, digest);
+      const meta = await this.prepareMetadata(path, digest);
+      await this.mediaAsset.publishReady(
+        digest,
+        BigInt(size),
+        async () => {},
+        meta,
+      );
+      return meta;
+    });
   }
 
   /** Shard-tree destination for a digest. Public read-only view for the batch-commit orchestrator. */
@@ -712,33 +559,20 @@ export class UploadService {
     tmpPath: string,
     digest: string,
   ): Promise<'landed' | 'dedup'> {
-    const { abs } = this.casShardPath(digest);
-    await mkdirAsync(dirname(abs), { recursive: true });
-    if (existsSync(abs)) return 'dedup';
-    try {
-      await renameAsync(tmpPath, abs);
-      return 'landed';
-    } catch (error) {
-      if (existsSync(abs)) return 'dedup'; // lost the rename race to an identical digest
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-        throw new Error('staged part lost');
-      throw error;
-    }
-  }
-
-  /**
-   * Chat image save — content-addressed + deduped. Stored RAW (EXIF preserved, no sharp re-encode);
-   * only the on-disk extension is derived from the magic-byte-validated mimetype. Returns the serving
-   * URL and byte size so the client can store both in the IMAGE message content ({url,w,h,size}) for
-   * size-tiered lazy loading.
-   */
-  async save(
-    mimetype: string,
-    buf: Buffer,
-  ): Promise<{ url: string; size: number }> {
-    const ext = IMG_EXT[mimetype];
-    const { url, size } = await this.saveCas(ext, buf);
-    return { url, size };
+    return this.withCasDigestLock(digest, async () => {
+      const { abs } = this.casShardPath(digest);
+      await mkdirAsync(dirname(abs), { recursive: true });
+      if (existsSync(abs)) return 'dedup';
+      try {
+        await renameAsync(tmpPath, abs);
+        return 'landed';
+      } catch (error) {
+        if (existsSync(abs)) return 'dedup';
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+          throw new Error('staged part lost');
+        throw error;
+      }
+    });
   }
 
   /** Store a server-generated WebP in the shared CAS and expose its digest to non-message owners. */
@@ -749,80 +583,35 @@ export class UploadService {
     return { url: saved.url, digest: saved.digest, size: saved.size };
   }
 
+  /** Serialize maintenance with physical ingest; callers must separately protect database references. */
+  withCasDigestLock<T>(
+    digest: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error('invalid CAS digest');
+    return this.casIngestLocks.runExclusive(digest, operation);
+  }
+
+  async removeCasTemporary(digest: string): Promise<void> {
+    for (const suffix of [
+      '.part',
+      '.resume.json',
+      '.resume.json.tmp',
+      '.complete',
+      '.complete.tmp',
+    ]) {
+      await unlinkAsync(join(this.casTmpDir, `${digest}${suffix}`)).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOENT') throw error;
+        },
+      );
+    }
+  }
+
   /** Resolve immutable CAS bytes for an authenticated semantic serving endpoint. */
   casPath(digest: string): string | null {
     if (!/^[0-9a-f]{64}$/.test(digest)) return null;
     return this.casShardPath(digest).abs;
-  }
-
-  /**
-   * Generic file save — content-addressed + deduped via the shared CAS pipeline (sha256 → shard path
-   * → MediaAsset ref++). The on-disk ext is sanitized from the client's original filename by
-   * parseFileExt ([a-z0-9]{1,16} only); when the filename has no safe extension it falls back to
-   * 'bin' so the shard path always carries one. Returns { url, name, size, mimeType } as the FILE
-   * message content. The display `name` is the client's original filename, sanitized (strip directory
-   * + control chars + length cap). The url shape matches save() so parseFileContent validates it.
-   */
-  async saveFile(
-    mimetype: string,
-    originalName: string,
-    buf: Buffer,
-    forceAttachment = false,
-  ): Promise<{ url: string; name: string; size: number; mimeType: string }> {
-    const ext = parseFileExt(originalName);
-    // Open model: any file type is accepted, so the on-disk ext comes from the sanitized client
-    // filename (there is no trustworthy magic byte for arbitrary file types). Fall back to 'bin' so
-    // the CAS path always carries an extension — served as application/octet-stream + attachment.
-    // Image-route fallbacks use .bin even when the claimed filename ends in .png/.jpg. Static
-    // serving decides inline-vs-attachment from the trusted CAS extension, so .bin guarantees that
-    // corrupt/forged image bytes are downloaded rather than fed to an inline image decoder.
-    const casExt = forceAttachment ? 'bin' : ext || 'bin';
-    const { url, size } = await this.saveCas(casExt, buf);
-    return {
-      url,
-      name: this.sanitizeName(originalName, ext),
-      size,
-      mimeType: mimetype,
-    };
-  }
-
-  /**
-   * Persist a video/audio asset through the SAME CAS pipeline as images/files (sha256 dedup + ref
-   * count). The on-disk ext is the magic-byte-derived `ext` (trusted); the display name preserves the
-   * client's original extension (sanitizeName with ext='' keeps the original as-is), so a .mov
-   * uploaded and detected as mp4 still shows as "clip.mov" while the CAS blob remains extensionless.
-   * Returns the shape stored verbatim in a VIDEO/AUDIO message's content.
-   */
-  async saveMedia(
-    ext: string,
-    mime: string,
-    originalName: string,
-    buf: Buffer,
-  ): Promise<{ url: string; name: string; size: number; mimeType: string }> {
-    const { url, size } = await this.saveCas(ext, buf);
-    return {
-      url,
-      name: this.sanitizeName(originalName, ''),
-      size,
-      mimeType: mime,
-    };
-  }
-
-  /**
-   * Persist a media asset fetched from a federated peer — receiver-side media localize (Step 2 §3.3 /
-   * §4.5). Same CAS pipeline as a local upload (sha256 → shard path → MediaAsset ref++), so a
-   * peer-sourced file is byte-identical on disk to a locally-uploaded one and serves same-origin via
-   * /uploads/cas/* with no new serving code. The caller passes the on-disk `ext` (from the peer's
-   * content URL) + the fetched bytes; the returned `digest` lets the caller VERIFY integrity (it must
-   * equal the digest the peer advertised — a mismatch means corrupt/tampered bytes → drop the file).
-   * Idempotent: a re-fetch of the same digest overwrites the byte-identical file + re-bumps the ref.
-   */
-  async saveCasFromPeer(
-    ext: string,
-    buf: Buffer,
-  ): Promise<{ url: string; digest: string; size: number }> {
-    const { url, digest, size } = await this.saveCas(ext, buf);
-    return { url, digest, size };
   }
 
   /**
@@ -839,33 +628,50 @@ export class UploadService {
    *   `<digest>.part`       — the accumulated bytes (resumable across restarts)
    *   `<digest>.resume.json` — the verified-offset sidecar (atomically rewritten per chunk)
    *   `<digest>.complete`    — written AFTER the digest verifies, BEFORE the DB publish + rename
-   * On verification success the order is: drop `.complete` → publishReady (commit the live MediaAsset
-   * row) → atomic rename `.part` → shard. The `.complete` marker therefore means "bytes verified, only
-   * the final landing was interrupted"; GC salvage re-runs publishReady + rename idempotently from the
-   * `.part`, recovering a crash anywhere after the marker. A transport failure retains the `.part` +
+   * On verification success, write `.complete`, then serialize atomic shard landing and asset
+   * publication against reclamation. The marker is removed only after the asset transaction commits;
+   * interrupted publication can be retried from the verified part or already-landed shard.
+   * A transport failure retains the `.part` +
    * `.resume.json` for a later resume; a digest mismatch removes all three (no prefix can be trusted).
    * Per-digest FIFO locking prevents concurrent writers; only a whole-file SHA-256 match is published.
    */
   async saveCasFromStream(
     chunksFromOffset: (offset: number) => AsyncIterable<Buffer>,
     expectedDigest: string,
-    opts?: {
+    opts: {
       /** Notified as bytes are appended (throttle at the caller — fires once per buffered chunk). */
       onProgress?: (received: number) => void;
       /** Declared file size; if the stream exceeds it, {@link CasOversizeError} is thrown (excess still counts
        *  toward quota — the caller charges it before abandoning the file). */
-      declaredBytes?: number;
+      maxFileBytes: number;
+      declaredBytes: number;
+      signal?: AbortSignal;
     },
   ): Promise<{ url: string; digest: string; size: number }> {
     if (!/^[0-9a-f]{64}$/.test(expectedDigest))
       throw new Error('invalid CAS digest');
+    FileSizeLimitError.assert(opts.declaredBytes, opts.maxFileBytes);
     return this.casIngestLocks.runExclusive(expectedDigest, async () => {
+      opts.signal?.throwIfAborted();
       const { abs, url } = this.casShardPath(expectedDigest);
       await mkdirAsync(dirname(abs), { recursive: true });
       await mkdirAsync(this.casTmpDir, { recursive: true });
       if (existsSync(abs)) {
         const size = (await statAsync(abs)).size;
-        await this.mediaAsset.publishReady(expectedDigest, BigInt(size));
+        if (size !== opts.declaredBytes)
+          throw new Error('CAS file size mismatch');
+        FileSizeLimitError.assert(size, opts.maxFileBytes);
+        await this.verifyOriginal(abs, expectedDigest);
+        const meta = await this.prepareMetadata(abs, expectedDigest);
+        await this.mediaAsset.publishReady(
+          expectedDigest,
+          BigInt(size),
+          async () => {
+            if ((await statAsync(abs)).size !== size)
+              throw new Error('CAS file changed before publication');
+          },
+          meta,
+        );
         return { url, digest: expectedDigest, size };
       }
 
@@ -957,10 +763,16 @@ export class UploadService {
         await persistOffset();
       }
 
-      // Drop the `.complete` marker (digest verified), then commit the live row and atomically land the
-      // shard. GC salvage re-runs exactly these two steps from the `.part` if this process dies between
-      // them, so a crash after the marker never loses a verified blob.
+      // Keep the verified marker until shard landing and the live row have both committed.
+      // Interrupted publication can be recovered without trusting unverified bytes.
       const markComplete = async () => {
+        if (offset !== opts.declaredBytes) {
+          await unlinkAsync(part).catch(() => {});
+          await unlinkAsync(resume).catch(() => {});
+          await unlinkAsync(complete).catch(() => {});
+          throw new Error('CAS file size mismatch');
+        }
+        FileSizeLimitError.assert(offset, opts.maxFileBytes);
         await writeFileAsync(
           completeTmp,
           JSON.stringify({
@@ -972,8 +784,17 @@ export class UploadService {
         await renameAsync(completeTmp, complete);
       };
       const finishPublish = async () => {
-        await this.mediaAsset.publishReady(expectedDigest, BigInt(offset));
-        await renameAsync(part, abs);
+        opts.signal?.throwIfAborted();
+        const meta = await this.prepareMetadata(part, expectedDigest);
+        opts.signal?.throwIfAborted();
+        await this.mediaAsset.publishReady(
+          expectedDigest,
+          BigInt(offset),
+          async () => {
+            await renameAsync(part, abs);
+          },
+          meta,
+        );
         await unlinkAsync(complete).catch(() => {});
         await unlinkAsync(resume).catch(() => {});
       };
@@ -1000,6 +821,7 @@ export class UploadService {
         for (;;) {
           let partialLost = false;
           for await (const buf of chunksFromOffset(offset)) {
+            opts.signal?.throwIfAborted();
             if (buf.length === 0) continue;
             const actualSize = await statAsync(part)
               .then((value) => value.size)
@@ -1008,6 +830,15 @@ export class UploadService {
               partialLost = true;
               break;
             }
+            if (offset + buf.length > opts.declaredBytes) {
+              await unlinkAsync(part).catch(() => {});
+              await unlinkAsync(resume).catch(() => {});
+              await unlinkAsync(complete).catch(() => {});
+              throw new CasOversizeError(
+                BigInt(offset + buf.length - opts.declaredBytes),
+              );
+            }
+            FileSizeLimitError.assert(offset + buf.length, opts.maxFileBytes);
             const chunkOffset = offset;
             await appendFileAsync(part, buf);
             offset += buf.length;
@@ -1018,17 +849,6 @@ export class UploadService {
             });
             await persistOffset();
             opts?.onProgress?.(offset);
-            if (
-              opts?.declaredBytes !== undefined &&
-              offset > opts.declaredBytes
-            ) {
-              // The stream exceeded its declared size — abandon. The excess bytes still counts toward quota;
-              // the caller (driveFileSync) charges the delta via addFileBytesDelta before this surfaces as FAILED.
-              await unlinkAsync(part).catch(() => {});
-              await unlinkAsync(resume).catch(() => {});
-              await unlinkAsync(complete).catch(() => {});
-              throw new CasOversizeError(BigInt(offset - opts.declaredBytes));
-            }
           }
           const finalPartSize = await statAsync(part)
             .then((value) => value.size)

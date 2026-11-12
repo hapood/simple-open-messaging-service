@@ -41,9 +41,9 @@ export enum BusinessCode {
   REGISTRATION_DISABLED = 10010, // self-registration is closed (admin-provisioned accounts only); POST user/register
   // refuses. Advertised via GET /config registrationOpen=false, so the UI hides the
   // register affordance; this is the defense-in-depth server gate.
-  LOGIN_METHOD_DISABLED = 10011, // the requested login method is disabled under the current loginMode (GET /config).
-  // Returned by the password-login path under APP_OTP_AND_QR, and by OTP/QR under
-  // PASSWORD_ONLY.
+  LOGIN_METHOD_DISABLED = 10011, // the requested login method is absent from the enabled loginMethods list (GET /config).
+  // Returned by the password-login path when password is disabled, and by
+  // OTP/QR when they are disabled.
   OTP_INVALID = 10012, // admin-issued one-time login code does not match / no active code for the account
   OTP_EXPIRED = 10013, // one-time login code is past its expiresAt
   OTP_CONSUMED = 10014, // one-time login code was already used (single-use)
@@ -59,6 +59,7 @@ export enum BusinessCode {
   WEBAUTHN_CHALLENGE_EXPIRED = 10024, // a WebAuthn pending token (registration or assertion) is invalid or past its TTL — the admin must restart the enroll/login flow.
   WEBAUTHN_VERIFICATION_FAILED = 10025, // verifyRegistrationResponse / verifyAuthenticationResponse rejected the credential (tampered, wrong RP/origin, counter regression / suspected clone). Counted toward the admin-2FA brute-force lock at the login boundary.
   PROFILE_RESOLUTION_CAPACITY = 10026, // bounded profile scheduler cannot admit another immutable key or evidence method; retry later
+  FILE_TOO_LARGE = 10027, // attachment exceeds the account/peer object limit; not a daily quota pause
   INTERNAL = 10999, // server error
 
   // 20xxx friend / invite state
@@ -135,9 +136,9 @@ export enum BusinessCode {
   CALL_NOT_PARTICIPANT = 70003, // you are neither the caller nor the callee of this call
   CALL_BUSY = 70004, // the callee — or the caller — is already in an active call (one active call per user)
   CALL_INVALID_TRANSITION = 70005, // this call state transition is not allowed (e.g. accept a non-ringing call)
-  CALL_PEER_UNREACHABLE = 70006, // a federated call's ring/setup failed — the peer server was unreachable / busy / rejected.
+  CALL_PEER_UNREACHABLE = 70006, // new-call peer readiness or incoming delivery failed; explicit peer busy uses CALL_BUSY.
   CALL_CANCELLED = 70007, // a federated call was already cancelled; converge pending local state to cancelled.
   CALL_TERMINATED = 70008, // a federated call already reached another terminal outcome; stop dependent frames.
-  // Thrown by the caller's server when the S2S `incoming` POST fails; the `unreachable` terminal
-  // bubble is already written before this surfaces to the caller's client.
+  // For CALL_PEER_UNREACHABLE, the caller's server writes the local `unreachable` terminal
+  // notice before surfacing a peer readiness or incoming-delivery failure to the client.
 }

@@ -29,7 +29,7 @@ vi.mock('node:dns/promises', () => ({
 const noRecord = (code: string) => Object.assign(new Error(code), { code });
 const service = () =>
   new TargetNetworkDiagnosticsService({
-    get: () => ({ connectTimeoutSec: 12, callTimeoutSec: 15 }),
+    get: () => ({ connectTimeoutSec: 12, requestIdleTimeoutSec: 15 }),
   } as never);
 let policy: TransportPolicy;
 beforeEach(() => {
@@ -104,12 +104,13 @@ describe('target diagnostics adapter', () => {
       expect.any(Object),
     );
     expect(mocks.request).toHaveBeenCalledWith(
-      'https://example.com:7668/.well-known/somfp',
+      'https://example.com:7668/somfp/discovery',
       expect.any(Object),
       expect.objectContaining({
-        signal: expect.any(AbortSignal),
         headers: { accept: 'application/json' },
       }),
+      undefined,
+      15000,
     );
     expect(mocks.read).toHaveBeenCalledWith(
       'example.com',

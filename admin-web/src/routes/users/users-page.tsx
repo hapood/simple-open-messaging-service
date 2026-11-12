@@ -48,6 +48,10 @@ import { SessionsDialog } from './sessions-dialog';
 import { CreateUserDialog } from './create-user-dialog';
 import { IssueLoginCodeDialog } from './issue-login-code-dialog';
 import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog';
+import {
+  AdminAccessDialog,
+  type AdminAccessTarget,
+} from './admin-access-dialog';
 
 const PAGE_SIZE = 20;
 
@@ -58,12 +62,15 @@ export function UsersPage() {
   const isSuper = me?.role === 'SUPER_ADMIN';
   const grantViewer = useGrantViewer();
   const [grantTarget, setGrantTarget] = useState<User | null>(null);
+  const [adminTarget, setAdminTarget] = useState<AdminAccessTarget | null>(
+    null,
+  );
   const canManageUser = (u: User) =>
     canManage && u.namespaceId === 0 && !u.adminRole;
   const { data: publicConfig } = usePublicConfig();
-  // Same gate as the detail page: password bootstrap exists only under a password loginMode.
+  // Same gate as the detail page: password bootstrap exists only when password login is enabled.
   const passwordLoginEnabled = publicConfig
-    ? isPasswordLoginEnabled(publicConfig.loginMode)
+    ? isPasswordLoginEnabled(publicConfig.loginMethods)
     : false;
   const [sessionsUser, setSessionsUser] = useState<User | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -155,6 +162,9 @@ export function UsersPage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <h1 className="text-2xl font-semibold leading-[32px]">
+        {t('users.title')}
+      </h1>
       <div className="flex items-center justify-end gap-4">
         <div className="flex items-center gap-2">
           <div className="relative w-72">
@@ -163,6 +173,7 @@ export function UsersPage() {
               type="search"
               aria-label={t('users.searchPlaceholder')}
               placeholder={t('users.searchPlaceholder')}
+              autoCapitalize="off"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               className="pl-8"
@@ -231,6 +242,7 @@ export function UsersPage() {
               </TableHead>
               <TableHead className="w-16">{t('users.col.id')}</TableHead>
               <TableHead>{t('users.col.account')}</TableHead>
+              <TableHead>{t('users.backendRole')}</TableHead>
               <TableHead className="w-20">{t('users.col.status')}</TableHead>
               <TableHead className="w-28">{t('users.col.quota')}</TableHead>
               <TableHead>{t('users.col.createdAt')}</TableHead>
@@ -244,7 +256,7 @@ export function UsersPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={7}
+              colSpan={8}
             >
               {data?.list.map((u) => (
                 <TableRow key={u.id}>
@@ -265,6 +277,26 @@ export function UsersPage() {
                     <Link to={`/users/${u.id}`} className="hover:underline">
                       {u.account}
                     </Link>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap gap-1">
+                      <Badge variant="outline">
+                        {t(
+                          u.adminRole === 'SUPER_ADMIN'
+                            ? 'roles.super'
+                            : u.adminRole === 'ADMIN'
+                              ? 'roles.admin'
+                              : u.adminRole === 'VIEWER'
+                                ? 'roles.viewer'
+                                : 'users.ordinaryRole',
+                        )}
+                      </Badge>
+                      {u.adminRole && u.adminEnabled === false && (
+                        <Badge variant="secondary">
+                          {t('users.adminAccessDisabled')}
+                        </Badge>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell>
                     {u.isDeleted ? (
@@ -340,6 +372,46 @@ export function UsersPage() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           {isSuper &&
+                            u.adminId &&
+                            u.adminRole !== 'SUPER_ADMIN' && (
+                              <>
+                                <DropdownMenuItem
+                                  onClick={() =>
+                                    setAdminTarget({ user: u, action: 'role' })
+                                  }
+                                >
+                                  {t('admins.action.setRole')}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() =>
+                                    setAdminTarget({
+                                      user: u,
+                                      action: 'toggle',
+                                    })
+                                  }
+                                >
+                                  {t(
+                                    u.adminEnabled
+                                      ? 'admins.action.disable'
+                                      : 'admins.action.enable',
+                                  )}
+                                </DropdownMenuItem>
+                                {u.adminTwoFactorEnabled &&
+                                  u.account !== me?.account && (
+                                    <DropdownMenuItem
+                                      onClick={() =>
+                                        setAdminTarget({
+                                          user: u,
+                                          action: 'reset',
+                                        })
+                                      }
+                                    >
+                                      {t('admins.action.reset2fa')}
+                                    </DropdownMenuItem>
+                                  )}
+                              </>
+                            )}
+                          {isSuper &&
                           u.namespaceId === 0 &&
                           !u.adminRole &&
                           !u.isDeleted ? (
@@ -414,6 +486,15 @@ export function UsersPage() {
         />
       </div>
 
+      <AdminAccessDialog
+        key={
+          adminTarget
+            ? `${adminTarget.user.id}:${adminTarget.action}`
+            : 'closed'
+        }
+        target={adminTarget}
+        onClose={() => setAdminTarget(null)}
+      />
       <Dialog
         open={!!grantTarget}
         onOpenChange={(open) =>

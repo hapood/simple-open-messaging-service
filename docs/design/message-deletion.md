@@ -78,7 +78,7 @@ receiving server creates its corresponding local notice when it first applies th
 
 Federation v1 discovers withdrawals and effective moderation deletions through
 `THREAD_CONTENT_HEAD.tombstoneEndSeq`, then reads them through
-`GET /s2s/v1/message-tombstones`; see the normative
+`GET /somfp/v1/message-tombstones`; see the normative
 [Message Tombstone Query](../../spec/v1/message-tombstone-feed.md). The ordinary message query keeps
 authored message bodies immutable and does not encode deletion through `updatedAt` or a special content type.
 

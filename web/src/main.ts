@@ -1,10 +1,9 @@
+import { failNativeLaunch, setLaunchStage } from './app/services/native-launch';
 import { runAsActivePage } from './app/services/active-page';
+import { prepareTheme } from './app/services/theme-bootstrap';
 import { installKeyboardInsetBridge } from './app/services/keyboard-inset.service';
 import { installConsoleBuffer } from './app/services/log-buffer';
-import {
-  applySafeInsets,
-  isTauri,
-} from './app/services/runtime';
+import { applySafeInsets, isTauri } from './app/services/runtime';
 
 /**
  * Install window-level listeners that surface errors no local handler caught into the webview console —
@@ -63,11 +62,11 @@ applySafeInsets();
 // is never missed. No-op in the browser build (the global is installed but never called there).
 installKeyboardInsetBridge();
 
-// The native launch overlay is already visible at this point. Session restoration is an APP_INITIALIZER,
-// so label that otherwise quiet wait before Angular constructs AppComponent. No-op outside Android.
-window.SomsShell?.setSplashStage?.('session');
+// Label the session restoration wait before Angular constructs the root component.
+setLaunchStage('session');
 
 async function startApplication(): Promise<void> {
+  await prepareTheme();
   // Do not evaluate account services or open their databases in a waiting page.
   const [{ bootstrapApplication }, { appConfig }, { AppComponent }] =
     await Promise.all([
@@ -79,5 +78,5 @@ async function startApplication(): Promise<void> {
 }
 
 void (isTauri() ? startApplication() : runAsActivePage(startApplication)).catch(
-  (err) => console.error(err),
+  failNativeLaunch,
 );

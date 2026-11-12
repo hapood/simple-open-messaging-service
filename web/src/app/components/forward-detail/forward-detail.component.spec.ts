@@ -5,6 +5,77 @@ import type {
   ForwardWireBundle,
 } from './forward-bundle.model';
 
+describe('forward snapshot window ownership', () => {
+  function setup() {
+    const component = Object.create(
+      ForwardDetailComponent.prototype,
+    ) as ForwardDetailComponent;
+    const pending: Array<{ resolve(): void; reject(error: Error): void }> = [];
+    let boundSource: { destroy(): void } | undefined;
+    const kernel = {
+      unbind: vi.fn(() => {
+        boundSource?.destroy();
+        boundSource = undefined;
+      }),
+      destroy: vi.fn(),
+      bind: vi.fn((source: { destroy(): void }) => {
+        boundSource = source;
+      }),
+      getMountedGeometry: vi.fn(() => ({})),
+      init: vi.fn(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            pending.push({ resolve, reject });
+          }),
+      ),
+    };
+    Object.assign(component, { scroller: kernel, snapshotItems: [] });
+    return { component, kernel, pending };
+  }
+
+  it.each(['resolve', 'reject'] as const)(
+    'replacing a window cancels its caller before late %s',
+    async (outcome) => {
+      const { component, kernel, pending } = setup();
+      const first = component['openSnapshotWindow']({ startMsgId: 1 });
+      const source = component['snapshotSource']!;
+      const destroy = vi.spyOn(source, 'destroy');
+      const next = component['openSnapshotWindow']({ startMsgId: 2 });
+      expect(await first).toBe(false);
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(component['snapshotSource']).not.toBe(source);
+      expect(kernel.destroy).not.toHaveBeenCalled();
+      if (outcome === 'resolve') pending[0].resolve();
+      else pending[0].reject(new Error('old snapshot failure'));
+      await Promise.resolve();
+      expect(kernel.getMountedGeometry).not.toHaveBeenCalled();
+      pending[1].resolve();
+      expect(await next).toBe(true);
+      expect(kernel.getMountedGeometry).toHaveBeenCalledExactlyOnceWith(2);
+      component.ngOnDestroy();
+    },
+  );
+
+  it('destroy settles pending navigation and releases window resources once', async () => {
+    const { component, kernel, pending } = setup();
+    const navigation = component['openSnapshotWindow']({ startMsgId: 1 });
+    const source = component['snapshotSource']!;
+    const destroy = vi.spyOn(source, 'destroy');
+    component.ngOnDestroy();
+    expect(await navigation).toBe(false);
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(kernel.destroy).toHaveBeenCalledOnce();
+    expect(component['snapshotInitialization']).toBeUndefined();
+    expect(component['snapshotSource']).toBeUndefined();
+    pending[0].resolve();
+    await Promise.resolve();
+    expect(kernel.getMountedGeometry).not.toHaveBeenCalled();
+    component.ngOnDestroy();
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(kernel.destroy).toHaveBeenCalledOnce();
+  });
+});
+
 // Exercise the display projection without mounting the modal or its injected services.
 describe('forward reply display', () => {
   const original: ForwardManifestMessage = {

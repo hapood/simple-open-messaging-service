@@ -1,14 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:profile-namespace-feed",
-  "title": "GET /s2s/v1/profile-namespace-feed response data",
+  "title": "GET /somfp/v1/profile-namespace-feed response data",
   "$defs": {
     "item": {
       "type": "object",
-      "required": ["namespaceId", "feedId"],
+      "required": ["namespaceId", "feedId", "generatedAt"],
       "properties": {
+        "generatedAt": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        },
         "namespaceId": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+          "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
         "feedId": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveDecimalString"

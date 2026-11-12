@@ -73,8 +73,8 @@ Remaining hygiene defects:
    they exercise production paths.
 4. **A cache or fact store does not perform network IO.** Outbound fetches
    belong to orchestration services; stores answer from local rows only.
-5. **Guard rail:** `npx madge --circular --extensions ts src` must report no
-   runtime cycles once Section 4 lands.
+5. **Guard rail:** `npm run check:cycles` must report no source cycles,
+   including type-only imports, and no unresolved dependencies.
 
 ---
 
@@ -117,7 +117,7 @@ Verification:
 npm run build:be
 npx vitest run src/federation/profile-namespace-info.service.spec.ts
 npx vitest run src/federation src/admin
-npx madge --circular --extensions ts src
+npm run check:cycles
 ```
 
 ## 2. Split resumable upload out of UploadModule
@@ -177,14 +177,15 @@ npx vitest run src/rate-limit src/settings src/push
 
 Goal: no new cycles land.
 
-- [x] Add a check (npm script + CI step) running
-      `madge --circular --extensions ts src` and failing on any runtime cycle.
-      Added `npm run check:cycles` (devDep `madge@8`) + a `Check circular
-    dependencies` step in `.github/workflows/ci.yml`.
-- [x] Decide the type-only policy: either configure the gate to skip
-      type-only imports until Section 5 clears them, or fix Section 5 first.
-      Fixed Section 5 first (see below); the gate runs plain `madge` with no
-      skip and reports zero cycles on `src/`.
+- [x] Add `npm run check:cycles` and the `Check circular dependencies` step
+      in `.github/workflows/verify.yml`. The standalone
+      [cycle-check package](../../tools/cycle-check/README.md) owns Madge 8 and
+      its TypeScript 5.9 peer, independently of the application's TypeScript 6.
+      Install it with `npm ci --prefix tools/cycle-check` before running the gate.
+- [x] Include type-only imports rather than skipping them; Section 5 removed
+      the corresponding cycles. The gate also rejects unresolved imports,
+      analysis errors, and empty source trees. CI runs its regression fixtures
+      before analyzing `src/`.
 
 ## 5. Deferred hygiene (non-blocking)
 
@@ -213,7 +214,9 @@ Goal: no new cycles land.
 ```bash
 npm run build:be
 npx vitest run shared/ src/
-npx madge --circular --extensions ts src
+npm ci --prefix tools/cycle-check
+npm test --prefix tools/cycle-check
+npm run check:cycles
 cd web && npm run build
 cd admin-web && npm test && npm run build
 ```

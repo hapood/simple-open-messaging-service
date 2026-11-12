@@ -90,7 +90,10 @@ export class AdminDiagnosticsController {
   }
 
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('diagnostics.delete')
+  @Audit('diagnostics.delete', {
+    targetType: 'diagnostic_report',
+    targetParam: 'id',
+  })
   @HttpCode(HttpStatus.OK)
   @Post('admin/diagnostics/:id/delete')
   @ApiOperation({

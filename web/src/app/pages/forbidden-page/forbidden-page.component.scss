@@ -3,136 +3,290 @@
   min-height: 100%;
 }
 
-// Mirrors the 404 page's structure; the difference is the danger palette (halo + code
-// gradient) and the padlock hero. All colors are --app-* / danger tokens, so light↔dark
-// theme switches need no overrides here.
-.pnf {
+.error-page {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  padding: 48px 24px 64px;
   box-sizing: border-box;
-  text-align: center;
-  overflow: hidden;
+  padding: 40px 20px 48px;
+  background: var(--app-bg);
 }
 
-// Soft danger-tinted halo for depth. --app-danger-soft is a pale wash in light and a
-// red-tinted translucent wash in dark, so it reads well in both.
-.pnf::before {
-  content: "";
-  position: absolute;
-  top: 42%;
-  left: 50%;
-  width: 540px;
-  height: 540px;
-  max-width: 120vw;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background: radial-gradient(circle, var(--app-danger-soft) 0%, transparent 65%);
-  z-index: 0;
-  pointer-events: none;
-}
-
-.pnf > * {
+// ---- Material 3 Elevated Card ----------------------------------------------
+.error-card {
   position: relative;
   z-index: 1;
-}
-
-// ---- Hero illustration -----------------------------------------------------
-.pnf-art {
-  position: relative;
+  width: 100%;
+  max-width: 580px;
+  box-sizing: border-box;
+  padding: 36px 32px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  width: 120px;
-  height: 124px;
-  margin-bottom: 18px;
+  text-align: center;
+  border-radius: var(--app-radius-xl, 24px);
+  border: 1px solid var(--app-border);
+  background: var(--app-surface-elevated);
+  box-shadow: var(--app-shadow-2);
 }
 
-.pnf-lock {
-  filter: drop-shadow(0 16px 26px rgba(220, 38, 38, 0.30));
-}
-
-// Gentle float, opt-in only for users who haven't requested reduced motion.
-@media (prefers-reduced-motion: no-preference) {
-  .pnf-lock { animation: pnf-float 5s ease-in-out infinite; }
-
-  @keyframes pnf-float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-7px); }
-  }
-}
-
-// ---- Copy ------------------------------------------------------------------
-.pnf-code {
-  margin: 0;
-  font-size: clamp(72px, 16vw, 132px);
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -2px;
-  // Two-stop danger gradient; color-mix derives a darker shade from the theme token so
-  // the depth stop tracks light (#dc2626) and dark (#ef4444) automatically.
-  background: linear-gradient(135deg, var(--app-danger) 0%, color-mix(in srgb, var(--app-danger), #000 18%) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-.pnf-title {
-  margin: 16px 0 8px;
-  font-size: clamp(20px, 4vw, 26px);
-  font-weight: 600;
-  color: var(--app-text);
-}
-
-.pnf-desc {
-  max-width: 420px;
-  margin: 0 0 28px;
-  font-size: 15px;
-  line-height: 1.6;
+// ---- Status Badge (M3 Tonal Container) -------------------------------------
+.error-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  padding: 4px 12px;
+  margin-bottom: 16px;
+  border-radius: var(--app-radius-pill, 9999px);
+  border: 1px solid var(--app-border);
+  background: var(--app-bg-muted);
   color: var(--app-text-muted);
 }
 
-// ---- Actions ---------------------------------------------------------------
-// The primary CTA uses the accessible interaction vermilion; danger semantics
-// remain on the stronger denied signal in the hero/code.
-.pnf-actions {
+.error-badge__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--app-action-primary);
+  flex-shrink: 0;
+}
+
+.error-badge__text {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  letter-spacing: 0.1px;
+}
+
+// ---- Hero Illustration -----------------------------------------------------
+.error-art {
+  position: relative;
+  width: 200px;
+  height: 140px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.error-illustration {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.m3-lock {
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.08));
+}
+
+// ---- Typography & Content --------------------------------------------------
+.error-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.error-code {
+  margin: 0 0 8px;
+  font-size: 56px;
+  font-weight: 700;
+  line-height: 56px;
+  letter-spacing: -1px;
+  color: var(--app-brand);
+}
+
+.error-title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 28px;
+  color: var(--app-text);
+}
+
+.error-desc {
+  margin: 0 0 16px;
+  max-width: 440px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--app-text-muted);
+}
+
+.error-path-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  padding: 4px 10px;
+  margin-bottom: 24px;
+  border-radius: var(--app-radius-sm, 6px);
+  background: var(--app-bg-muted);
+  border: 1px solid var(--app-border);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--app-text-muted);
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      monospace;
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--app-text);
+  }
+}
+
+// ---- Actions Bar (Angular Material Buttons) --------------------------------
+.error-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 12px;
+  margin-bottom: 28px;
 }
 
-.pnf-btn {
-  font: inherit;
-  cursor: pointer;
-  border-radius: var(--app-radius-pill);
-  transition: background-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+.error-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 40px;
+  border-radius: var(--app-radius-pill, 9999px) !important;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
 
-  &:focus-visible { outline: 2px solid var(--app-brand); outline-offset: 3px; }
-  &:active { transform: translateY(1px); }
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
 }
 
-.pnf-btn--primary {
-  padding: 12px 26px;
-  border: 0;
-  background: var(--app-brand);
-  color: #ffffff;
+// ---- Quick Shortcuts Grid (Identical to 404) --------------------------------
+.error-shortcuts {
+  width: 100%;
+  box-sizing: border-box;
+  border-top: 1px solid var(--app-border);
+  padding-top: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.error-shortcuts__title {
+  font-size: 12px;
   font-weight: 600;
-  box-shadow: 0 6px 16px rgba(198, 60, 47, 0.3);
-
-  &:hover { background: var(--app-brand-hover); }
+  line-height: 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--app-text-faint);
 }
 
-.pnf-btn--ghost {
-  padding: 12px 22px;
-  border: 1px solid var(--app-border-strong);
-  background: var(--app-surface);
-  color: var(--app-text);
+.error-shortcuts__grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
 
-  &:hover { background: var(--app-hover); }
+.error-shortcut-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  box-sizing: border-box;
+  padding: 12px;
+  text-align: left;
+  text-decoration: none;
+  border-radius: var(--app-radius-md, 12px);
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+
+  &:hover {
+    background: var(--app-hover);
+    border-color: var(--app-border-strong);
+    box-shadow: var(--app-shadow-1);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
+}
+
+.error-shortcut-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-action-primary);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.error-shortcut-card__content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.error-shortcut-card__name {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--app-text);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-shortcut-card__desc {
+  display: block;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--app-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+// ---- Responsive ------------------------------------------------------------
+@media (max-width: 600px) {
+  .error-card {
+    padding: 24px 16px;
+    border-radius: var(--app-radius-lg, 16px);
+  }
+
+  .error-code {
+    font-size: 44px;
+    line-height: 44px;
+  }
+
+  .error-title {
+    font-size: 18px;
+    line-height: 24px;
+  }
+
+  .error-shortcuts__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .error-shortcut-card {
+    padding: 10px 12px;
+  }
 }

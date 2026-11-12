@@ -1,4 +1,5 @@
 use crate::*;
+use futures_util::StreamExt;
 
 pub(crate) async fn proxy_media(
     app: tauri::AppHandle,
@@ -10,97 +11,20 @@ pub(crate) async fn proxy_media(
         Some(pq) => pq.as_str().to_string(),
         None => "/".to_string(),
     };
-    // First-frame thumbnails live inside the authenticated Rust media-cache namespace and therefore share
-    // its quota, eviction, clear-cache and account isolation. The URL contains the canonical source path;
-    // no digest-only global namespace can leak a prior account's frame.
-    if let Some(source_path) = request.uri().path().strip_prefix("/video-thumbnails") {
-        if !source_path.starts_with("/uploads/") {
-            responder.respond(empty(StatusCode::NOT_FOUND));
-            return;
-        }
-        match media_cache::get_video_thumbnail(&app, &st, source_path).await {
-            Ok(bytes) => {
-                responder.respond(
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header("content-type", "image/webp")
-                        .header("content-length", bytes.len().to_string())
-                        .header("cache-control", "no-store")
-                        .header("x-content-type-options", "nosniff")
-                        .body(Cow::Owned(bytes))
-                        .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
-                );
-            }
-            Err(_) => responder.respond(empty(StatusCode::NOT_FOUND)),
-        }
-        return;
-    }
-    // Alternate chat-card path: the suffix is the canonical authenticated `/uploads/*` path. Rust
-    // reuses the original cache/download, creates a bounded WebP once, and falls back to original bytes
-    // for unsupported/corrupt image formats. The canonical `/uploads/*` branch below always stays original.
-    if let Some(source_path) = request.uri().path().strip_prefix("/chat-thumbnails") {
-        if !source_path.starts_with("/uploads/") {
-            responder.respond(empty(StatusCode::NOT_FOUND));
-            return;
-        }
-        if let Some(bytes) = media_cache::read_chat_thumbnail(&app, &st, source_path).await {
-            responder.respond(
+    if path_and_query.starts_with("/uploads/thumbnails/") {
+        match media_cache::fetch_thumbnail(&app, &st, &path_and_query).await {
+            Ok(bytes) => responder.respond(
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "image/webp")
-                    .header("content-length", bytes.len().to_string())
                     .header("cache-control", "no-store")
-                    .header("x-content-type-options", "nosniff")
                     .body(Cow::Owned(bytes))
                     .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
-            );
-            return;
-        }
-        match media_cache::get_or_fetch(&app, &st, source_path).await {
-            Ok(media) => {
-                // Do not put WebP encoding on the first-paint path. The original displays now; completion
-                // emits chat-thumbnail-ready and the mounted card reloads this same alternate URL.
-                media_cache::warm_chat_thumbnail(app.clone(), st.clone(), source_path.to_string());
-                let mut builder = Response::builder()
-                    .status(StatusCode::OK)
-                    .header("content-length", media.bytes.len().to_string())
-                    .header("cache-control", "no-store");
-                if let Some(content_type) = media.content_type {
-                    builder = builder.header("content-type", content_type);
-                }
-                responder.respond(
-                    builder
-                        .body(Cow::Owned(media.bytes))
-                        .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
-                );
-            }
+            ),
             Err(error) => {
-                warn!("chat thumbnail source failed for {source_path}: {error}");
-                responder.respond(empty(StatusCode::BAD_GATEWAY));
+                warn!("thumbnail request failed: {error}");
+                responder.respond(empty(StatusCode::NOT_FOUND));
             }
-        }
-        return;
-    }
-    // Cache-only variant used by oversized gallery-card icons. A miss must stay a 404: probing this
-    // route is not permission to fetch the original bytes across the user's configured size gate.
-    if let Some(source_path) = request.uri().path().strip_prefix("/cached-chat-thumbnails") {
-        if !source_path.starts_with("/uploads/") {
-            responder.respond(empty(StatusCode::NOT_FOUND));
-            return;
-        }
-        if let Ok(bytes) = media_cache::get_cached_chat_thumbnail(&app, &st, source_path).await {
-            responder.respond(
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header("content-type", "image/webp")
-                    .header("content-length", bytes.len().to_string())
-                    .header("cache-control", "no-store")
-                    .header("x-content-type-options", "nosniff")
-                    .body(Cow::Owned(bytes))
-                    .unwrap_or_else(|_| empty(StatusCode::INTERNAL_SERVER_ERROR)),
-            );
-        } else {
-            responder.respond(empty(StatusCode::NOT_FOUND));
         }
         return;
     }
@@ -147,13 +71,6 @@ pub(crate) async fn proxy_media(
     // first-frame delay versus passthrough and prevents a later duplicate download.
     match media_cache::get_or_fetch(&app, &st, &path_and_query).await {
         Ok(media) => {
-            let should_warm_thumbnail = media
-                .content_type
-                .as_deref()
-                .is_some_and(|value| value.starts_with("image/"));
-            if should_warm_thumbnail {
-                media_cache::warm_chat_thumbnail(app.clone(), st.clone(), path_and_query.clone());
-            }
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header("content-length", media.bytes.len().to_string())
@@ -183,18 +100,52 @@ fn empty(status: StatusCode) -> Response<Cow<'static, [u8]>> {
         .unwrap()
 }
 
-// --- IPC api_request (the webview→backend HTTP transport under Tauri) ---------------------
+// --- IPC http_request (the webview→backend HTTP transport under Tauri) ---------------------
+
+/// Read an upstream body stream into memory, enforcing an inactivity timeout between successive chunks.
+/// If no chunk arrives within `inactivity_timeout`, the read aborts and drops the stream.
+pub(crate) async fn read_body_with_inactivity_timeout<B>(
+    mut stream: impl futures_util::Stream<Item = Result<B, reqwest::Error>> + Unpin,
+    inactivity_timeout: Duration,
+    cancel: Option<&CancellationToken>,
+) -> Result<Vec<u8>, String>
+where
+    B: AsRef<[u8]>,
+{
+    let mut out = Vec::new();
+    loop {
+        let chunk_step = tokio::time::timeout(inactivity_timeout, stream.next());
+        let chunk_result = if let Some(cancel) = cancel {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err("http_request cancelled".to_string()),
+                res = chunk_step => res,
+            }
+        } else {
+            chunk_step.await
+        };
+        match chunk_result {
+            Ok(Some(Ok(chunk))) => {
+                out.extend_from_slice(chunk.as_ref());
+            }
+            Ok(Some(Err(e))) => {
+                return Err(format!("http_request read: {e}"));
+            }
+            Ok(None) => break,
+            Err(_) => {
+                return Err("http_request body inactivity timeout".to_string());
+            }
+        }
+    }
+    Ok(out)
+}
 
 /// Why a bounded-headers send did not yield a `reqwest::Response`.
 #[derive(Debug)]
 pub(crate) enum HeadersError {
-    /// The request could not be sent at all (DNS / connect / TLS / mid-send reset). A connect-level
-    /// failure — the JS side maps this `Err` to `HttpErrorResponse(status: 0)` → "network".
     SendFailed(reqwest::Error),
-    /// The server accepted the connection but sent no headers within the deadline — a gateway timeout.
-    /// Kept distinct from `SendFailed` so the caller surfaces a real HTTP 504 (the JS side then reports
-    /// "HTTP 504") instead of conflating a hung upstream with a connect-level failure.
     Timeout,
+    Cancelled,
 }
 
 /// Send `req`, bounding only the HEADERS phase (connect + send + server processing) to `deadline`. The
@@ -202,14 +153,44 @@ pub(crate) enum HeadersError {
 /// upload is legitimate and must not be aborted (a total-duration timeout would wrongly kill it; see
 /// `BACKEND_CONNECT_TIMEOUT`'s comment). Extracted from the `tokio::time::timeout` block `api_request`
 /// and `media_request` previously inlined, so the deadline + its 504 outcome are unit-testable.
+#[cfg(any(not(desktop), test))]
 pub(crate) async fn send_with_headers_deadline(
     req: reqwest::RequestBuilder,
     deadline: Duration,
 ) -> Result<reqwest::Response, HeadersError> {
-    match tokio::time::timeout(deadline, req.send()).await {
-        Ok(Ok(r)) => Ok(r),
-        Ok(Err(e)) => Err(HeadersError::SendFailed(e)),
-        Err(_) => Err(HeadersError::Timeout),
+    send_with_headers_deadline_and_cancel(req, deadline, None).await
+}
+
+pub(crate) async fn send_with_headers_deadline_and_cancel(
+    req: reqwest::RequestBuilder,
+    deadline: Duration,
+    cancel: Option<&CancellationToken>,
+) -> Result<reqwest::Response, HeadersError> {
+    await_headers_with_deadline(req.send(), deadline, cancel).await
+}
+
+pub(crate) async fn await_headers_with_deadline<T>(
+    send: impl std::future::Future<Output = Result<T, reqwest::Error>>,
+    deadline: Duration,
+    cancel: Option<&CancellationToken>,
+) -> Result<T, HeadersError> {
+    let send_fut = tokio::time::timeout(deadline, send);
+    if let Some(cancel) = cancel {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(HeadersError::Cancelled),
+            res = send_fut => match res {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(e)) => Err(HeadersError::SendFailed(e)),
+                Err(_) => Err(HeadersError::Timeout),
+            },
+        }
+    } else {
+        match send_fut.await {
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(e)) => Err(HeadersError::SendFailed(e)),
+            Err(_) => Err(HeadersError::Timeout),
+        }
     }
 }
 
@@ -319,6 +300,7 @@ pub(crate) async fn pick_origin_race_with_commit(
     state: &ServerSessionState,
     commit: impl FnOnce(&str, OriginMode) -> bool,
 ) -> Option<String> {
+    let _guard = state.select_lock.lock().await;
     let Some(secondary) = state
         .api_origin_secondary
         .lock()
@@ -340,7 +322,6 @@ pub(crate) async fn pick_origin_race_with_commit(
 
     // Single-flight the race. Do not serially "cheap-check" the current address first: when it is down,
     // every such check burns a full timeout before the reachable fallback is even considered.
-    let _guard = state.select_lock.lock().await;
     let chosen = race_origin_candidates(&primary, &secondary).await;
     let Some((origin, mode)) = chosen else {
         warn!("pick_origin_race: both origins unreachable; staying on {active}");
@@ -354,59 +335,135 @@ pub(crate) async fn runtime_switch(state: &ServerSessionState) {
     let _ = pick_origin_race(state).await;
 }
 
-/// The webview→backend HTTP transport under the Tauri shell. The frontend `TauriHttpBackend`
-/// (web/.../tauri-http.backend.ts) invokes this instead of `fetch()`: Android's Chromium WebView rejects
-/// non-standard schemes in `fetch()`, so the old `api://` custom-scheme proxy could not be fetched there;
-/// routing through IPC also lets RUST own the session token (JS never touches it). Mirrors what the
-/// former `proxy_api` did, but as an IPC command: build a reqwest request to `${api_origin}${path}`
-/// (`path` already includes `/api/v1…` + query), forward a whitelist of JS headers (NEVER `authorization`
-/// — Rust injects the Bearer from `ServerSessionState.token`), buffer the response, return status + headers +
-/// UTF-8 body. Uses the cached `api_client` (one connection pool per origin). Message/API JSON replies
-/// have a bounded body read as well as bounded headers; media downloads use a separate transport.
-/// Redirects are never followed (same posture as `http_client_for`).
+/// Validate allowed path prefixes for the unified http transport.
+pub(crate) fn is_allowed_http_path(path: &str) -> bool {
+    path.starts_with("/api/v1/") || path == "/api/v1" || path.starts_with("/uploads/")
+}
+
+/// The webview→backend HTTP transport under the Tauri shell. Replaces the former `api_request` and
+/// `media_request` commands with a single unified transport.
+///
+/// Paths are restricted to `/api/v1/*` and `/uploads/*`.
+/// Authorization Bearer is injected by Rust from the active login owner (JS never handles it).
+/// Headers send is bounded by `API_HEADERS_TIMEOUT`.
+/// Body stream consumption is bounded by `API_BODY_INACTIVITY_TIMEOUT` between chunks.
 #[derive(serde::Serialize)]
-pub(crate) struct ApiRequestResult {
+pub(crate) struct HttpResponseResult {
     pub(crate) status: u16,
     pub(crate) headers: std::collections::HashMap<String, String>,
-    pub(crate) body: String,
+    pub(crate) text: Option<String>,
+    pub(crate) bytes: Option<Vec<u8>>,
+}
+
+/// One caller's cancellation registration. The guard removes its entry even
+/// when its future is dropped. Cancelling keeps the entry reserved until this
+/// guard exits, so a late cleanup cannot remove a replacement with the same ID.
+pub(crate) struct RequestCancellation {
+    token: CancellationToken,
+    request_id: Option<String>,
+    registry:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, CancellationToken>>>,
+}
+impl RequestCancellation {
+    pub(crate) fn register(
+        proxy: &ServerSessionState,
+        request_id: Option<String>,
+    ) -> Result<Self, String> {
+        let token = CancellationToken::new();
+        if let Some(id) = &request_id {
+            let mut registry = proxy
+                .http_cancels
+                .lock()
+                .map_err(|_| "http cancellation registry poisoned")?;
+            if registry.contains_key(id) {
+                return Err("duplicate request cancellation ID".into());
+            }
+            registry.insert(id.clone(), token.clone());
+        }
+        Ok(Self {
+            token,
+            request_id,
+            registry: proxy.http_cancels.clone(),
+        })
+    }
+    pub(crate) fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+}
+impl Drop for RequestCancellation {
+    fn drop(&mut self) {
+        if let Some(id) = &self.request_id {
+            if let Ok(mut registry) = self.registry.lock() {
+                registry.remove(id);
+            }
+        }
+    }
+}
+
+pub(crate) fn cancel_registered_request(proxy: &ServerSessionState, request_id: &str) -> bool {
+    let Ok(registry) = proxy.http_cancels.lock() else {
+        return false;
+    };
+    if let Some(token) = registry.get(request_id) {
+        if !token.is_cancelled() {
+            token.cancel();
+            return true;
+        }
+    }
+    false
 }
 
 #[tauri::command]
-pub(crate) async fn api_request(
+pub(crate) async fn http_request(
     app: tauri::AppHandle,
     proxy: tauri::State<'_, ServerSessionState>,
+    req_id: Option<String>,
     method: String,
     path: String,
     headers: std::collections::HashMap<String, String>,
     body: Option<Vec<u8>>,
+    binary: bool,
     replay_safe: bool,
-) -> Result<ApiRequestResult, String> {
-    perform_api_request(&app, &proxy, method, path, headers, body, replay_safe).await
+) -> Result<HttpResponseResult, String> {
+    if !is_allowed_http_path(&path) {
+        return Err(format!(
+            "http_request: only /api/v1/* and /uploads/* allowed (got {path})"
+        ));
+    }
+    let cancellation = RequestCancellation::register(&proxy, req_id)?;
+    perform_http_request_with_events(
+        Some(&app),
+        &proxy,
+        method,
+        path,
+        headers,
+        body,
+        binary,
+        replay_safe,
+        Some(cancellation.token()),
+    )
+    .await
 }
 
-pub(crate) async fn perform_api_request(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
-    method: String,
-    path: String,
-    headers: std::collections::HashMap<String, String>,
-    body: Option<Vec<u8>>,
-    replay_safe: bool,
-) -> Result<ApiRequestResult, String> {
-    perform_api_request_with_events(Some(app), proxy, method, path, headers, body, replay_safe)
-        .await
+#[tauri::command]
+pub(crate) fn cancel_http_request(
+    proxy: tauri::State<'_, ServerSessionState>,
+    req_id: String,
+) -> bool {
+    cancel_registered_request(&proxy, &req_id)
 }
 
-/// Background consumers use the same HTTP policy without a shell event sink.
-pub(crate) async fn perform_api_request_with_events(
+pub(crate) async fn perform_http_request_with_events(
     app: Option<&tauri::AppHandle>,
     proxy: &ServerSessionState,
     method: String,
     path: String,
     headers: std::collections::HashMap<String, String>,
     body: Option<Vec<u8>>,
+    binary: bool,
     replay_safe: bool,
-) -> Result<ApiRequestResult, String> {
+    cancel: Option<&CancellationToken>,
+) -> Result<HttpResponseResult, String> {
     let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
     let mut attempt = 0u8;
     let upstream = loop {
@@ -414,7 +471,7 @@ pub(crate) async fn perform_api_request_with_events(
         let target = format!("{}{}", api_origin, path);
         let client = proxy.api_client(&api_origin);
         let mut req = client.request(method.clone(), &target);
-        if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
+        if let Some(t) = proxy.session_token() {
             req = req.header("authorization", format!("Bearer {}", t));
         }
         for name in [
@@ -433,47 +490,53 @@ pub(crate) async fn perform_api_request_with_events(
             req = req.body(b);
         }
 
-        match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
+        match send_with_headers_deadline_and_cancel(req, API_HEADERS_TIMEOUT, cancel).await {
             Ok(r) => break r,
+            Err(HeadersError::Cancelled) => {
+                return Err("http_request cancelled".to_string());
+            }
             Err(failure) => {
                 let is_reachability_failure = match &failure {
                     HeadersError::SendFailed(e) => is_network_failure(e),
                     HeadersError::Timeout => true,
+                    HeadersError::Cancelled => false,
                 };
                 if !is_reachability_failure {
                     let HeadersError::SendFailed(e) = failure else {
                         unreachable!()
                     };
-                    return Err(format!("api_request send: {e}"));
+                    return Err(format!("http_request send: {e}"));
                 }
 
-                // Every reachability failure immediately races the configured addresses. A winner becomes
-                // the single active origin for subsequent HTTP and SSE. Only explicitly replay-safe
-                // requests are issued again; unsafe writes still benefit from the switch but surface their
-                // original ambiguous failure to the caller.
-                let selected = pick_origin_race(&proxy).await;
+                let selected = pick_origin_race(proxy).await;
                 if let (Some(app), Some(origin)) = (app, selected.as_ref()) {
                     let _ = app.emit("active-origin-changed", origin);
                 }
                 if replay_safe && attempt == 0 && selected.is_some() {
                     attempt = 1;
-                    warn!("api_request {target} failed; replaying on active origin");
+                    warn!("http_request {target} failed; replaying on active origin");
                     continue;
                 }
 
                 return match failure {
                     HeadersError::SendFailed(e) => {
-                        warn!("api_request {target} upstream send failed: {e}");
-                        Err(format!("api_request send: {e}"))
+                        warn!("http_request {target} upstream send failed: {e}");
+                        Err(format!("http_request send: {e}"))
                     }
                     HeadersError::Timeout => {
-                        warn!("api_request {target} upstream headers timed out → 504");
-                        Ok(ApiRequestResult {
+                        warn!("http_request {target} upstream headers timed out → 504");
+                        Ok(HttpResponseResult {
                             status: 504,
                             headers: std::collections::HashMap::new(),
-                            body: "Gateway Timeout".to_string(),
+                            text: if !binary {
+                                Some("Gateway Timeout".to_string())
+                            } else {
+                                None
+                            },
+                            bytes: if binary { Some(Vec::new()) } else { None },
                         })
                     }
+                    HeadersError::Cancelled => unreachable!(),
                 };
             }
         }
@@ -481,9 +544,6 @@ pub(crate) async fn perform_api_request_with_events(
     let status = upstream.status().as_u16();
     let mut out_headers = std::collections::HashMap::new();
     for (name, value) in upstream.headers().iter() {
-        // Drop hop-by-hop + content-encoding/length: reqwest already decompressed the body, and the JS
-        // side derives length from the returned bytes. Multiple same-name headers collapse (last wins) —
-        // acceptable for /api/v1 JSON responses (no repeated headers in practice).
         if matches!(
             name.as_str(),
             "transfer-encoding"
@@ -498,104 +558,28 @@ pub(crate) async fn perform_api_request_with_events(
             out_headers.insert(name.as_str().to_string(), vs.to_string());
         }
     }
-    // A server can return headers then stall forever before completing a JSON reply. This deadline
-    // bounds that gap independently of the header deadline. Uploads use their own progress-aware
-    // transport; do not impose a total-duration deadline on a streaming upload here.
-    let bytes = tokio::time::timeout(API_HEADERS_TIMEOUT, upstream.bytes())
-        .await
-        .map_err(|_| "api_request body timed out".to_string())?
-        .map_err(|e| format!("api_request read: {e}"))?;
-    Ok(ApiRequestResult {
-        status,
-        headers: out_headers,
-        body: String::from_utf8_lossy(&bytes).into_owned(),
-    })
-}
+    let raw_bytes = read_body_with_inactivity_timeout(
+        upstream.bytes_stream(),
+        API_BODY_INACTIVITY_TIMEOUT,
+        cancel,
+    )
+    .await?;
 
-// --- IPC media_request (the webview→backend MEDIA transport under Tauri) ------------------
-
-/// The webview→backend MEDIA transport under the Tauri shell. `assetUrl` rewrites `/uploads/*`
-/// to `media://localhost/...` under Tauri. `media://` works for a bare `<img src>`
-/// (the resource loader consults `shouldInterceptRequest` → the `proxy_media` scheme handler), but
-/// Android's Chromium WebView rejects non-standard schemes in `fetch()`. `TauriHttpBackend` routes `media://`
-/// requests to THIS command: a reqwest GET to `${api_origin}${path}` with the Bearer injected from
-/// `ServerSessionState.token` (so JS still never touches the token), returning the raw bytes. Mirrors `proxy_media`
-/// but as an IPC command returning bytes (not a scheme-handler `Response`); reuses the cached per-origin
-/// `api_client` (the IP/http permissive-TLS posture + one warm connection pool), so uploads served from a
-/// self-signed LAN IP server resolve the same way API calls do.
-#[derive(serde::Serialize)]
-pub(crate) struct MediaRequestResult {
-    pub(crate) status: u16,
-    pub(crate) content_type: Option<String>,
-    pub(crate) body: Vec<u8>,
-}
-
-#[tauri::command]
-pub(crate) async fn media_request(
-    app: tauri::AppHandle,
-    proxy: tauri::State<'_, ServerSessionState>,
-    path: String,
-) -> Result<MediaRequestResult, String> {
-    // Only /uploads/* is ever proxied as media (parity with `proxy_media`'s gate); reject anything else so
-    // the command can't be turned into an arbitrary-origin GET by a compromised renderer.
-    if !path.starts_with("/uploads/") {
-        return Err(format!(
-            "media_request: only /uploads/* allowed (got {path})"
-        ));
+    if binary {
+        Ok(HttpResponseResult {
+            status,
+            headers: out_headers,
+            text: None,
+            bytes: Some(raw_bytes),
+        })
+    } else {
+        Ok(HttpResponseResult {
+            status,
+            headers: out_headers,
+            text: Some(String::from_utf8_lossy(&raw_bytes).into_owned()),
+            bytes: None,
+        })
     }
-    let mut attempt = 0u8;
-    let upstream = loop {
-        let api_origin = proxy.api_origin.lock().expect("origin lock").clone();
-        let target = format!("{}{}", api_origin, path);
-        let mut req = proxy.api_client(&api_origin).get(&target);
-        if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
-            req = req.header("authorization", format!("Bearer {}", t));
-        }
-        match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
-            Ok(r) => break r,
-            Err(failure) => {
-                let switchable = match &failure {
-                    HeadersError::SendFailed(e) => is_network_failure(e),
-                    HeadersError::Timeout => true,
-                };
-                let selected = if switchable {
-                    pick_origin_race(&proxy).await
-                } else {
-                    None
-                };
-                if let Some(origin) = selected.as_ref() {
-                    let _ = app.emit("active-origin-changed", origin);
-                }
-                if attempt == 0 && selected.is_some() {
-                    attempt = 1;
-                    continue;
-                }
-                return match failure {
-                    HeadersError::SendFailed(e) => Err(format!("media_request send: {e}")),
-                    HeadersError::Timeout => Ok(MediaRequestResult {
-                        status: 504,
-                        content_type: None,
-                        body: vec![],
-                    }),
-                };
-            }
-        }
-    };
-    let status = upstream.status().as_u16();
-    let content_type = upstream
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let bytes = upstream
-        .bytes()
-        .await
-        .map_err(|e| format!("media_request read: {e}"))?;
-    Ok(MediaRequestResult {
-        status,
-        content_type,
-        body: bytes.to_vec(),
-    })
 }
 
 #[cfg(test)]

@@ -40,8 +40,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.ImageView
-import android.util.Base64
-import android.util.LruCache
 import androidx.appcompat.widget.ListPopupWindow
 import org.json.JSONArray
 import org.json.JSONObject
@@ -106,6 +104,19 @@ class NativeComposerController(
         isClickable = false
         isFocusable = false
         setPadding(dp(8), dp(8), dp(8), dp(8))
+    }
+    private val linkAction = iconButton(
+        R.drawable.ic_composer_link,
+        activity.getString(R.string.composer_link_card),
+    ).apply {
+        visibility = View.GONE
+        setOnClickListener {
+            emit(JSONObject().apply {
+                put("kind", "openLinkCard")
+                put("text", input.text?.toString().orEmpty())
+                put("url", input.urlMarkers().firstOrNull()?.href ?: "")
+            })
+        }
     }
     private val input = MentionEditText(activity).apply {
         hint = "Message"
@@ -190,7 +201,7 @@ class NativeComposerController(
         val kind: String,
         val id: String,
         val label: String,
-        val avatarUrl: String,
+        val avatar: Bitmap?,
         val fallbackText: String,
         val colorSeed: String,
     )
@@ -199,11 +210,23 @@ class NativeComposerController(
     private var mentionRequestId = 0L
     private var latestMentionRequestId = 0L
     private var mentionsEnabled = false
-    private val requestedMedia = mutableSetOf<String>()
-    private val mediaRequestUrls = mutableMapOf<Long, String>()
-    private val avatarCache = object : LruCache<String, Bitmap>(2 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
-    }
+    private var mentionUserId = 0L
+    private var mentionAllLabel = ""
+    @Volatile private var mentionDestroyed = false
+    private val mentionLease = RustMentionBridge.open(object : RustMentionBridge.Callbacks {
+        override fun onResults(contextId: Long, requestId: Long, metadata: String, avatars: Array<ByteArray>) {
+            if (mentionDestroyed) return
+            val result = runCatching { JSONObject(metadata) }.getOrNull() ?: return
+            // Decode platform images off the UI thread. Rust delivers binary bytes,
+            // not WebView object URLs or base64 renderer messages.
+            val images = avatars.map { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            activity.runOnUiThread {
+                if (mentionDestroyed || this@NativeComposerController.contextId != contextId ||
+                    !RustRuntimeBridge.isLoginSessionCurrent(result.optString("loginSessionId"))) return@runOnUiThread
+                applyMentionResults(requestId, result, images)
+            }
+        }
+    })
     private val mentionAdapter = object : BaseAdapter() {
         override fun getCount() = mentionCandidates.size
         override fun getItem(position: Int) = mentionCandidates[position]
@@ -251,7 +274,7 @@ class NativeComposerController(
             }
             avatar.clearColorFilter()
             avatar.setPadding(0, 0, 0, 0)
-            val bitmap = avatarCache.get(candidate.avatarUrl)
+            val bitmap = candidate.avatar
             if (bitmap != null) {
                 avatar.setImageBitmap(bitmap)
             } else {
@@ -262,7 +285,6 @@ class NativeComposerController(
                         darkTheme,
                     ),
                 )
-                requestMentionAvatar(candidate.avatarUrl)
             }
             return item
         }
@@ -271,6 +293,7 @@ class NativeComposerController(
         anchorView = input
         setAdapter(mentionAdapter)
         isModal = true
+        setOnDismissListener { cancelMentions() }
         setOnItemClickListener { _, _, position, _ ->
             insertMentionCandidate(mentionCandidates[position])
         }
@@ -451,6 +474,7 @@ class NativeComposerController(
                 put("end", marker.end)
             })
         }
+        linkAction.visibility = if (links.length() > 0) View.VISIBLE else View.GONE
         emit(JSONObject().apply {
             put("kind", "linkMarkers")
             put("text", input.text?.toString().orEmpty())
@@ -473,7 +497,6 @@ class NativeComposerController(
     private var lastEmittedComposerHeightCss: Int? = null
     private var lastEmittedKeyboardHeightCss: Int? = null
     private var imeAnimationRunning = false
-    private var deferredInsetsCommit: Runnable? = null
     private val actionIds = AtomicLong(System.currentTimeMillis() * 1000)
     private var pendingSend: Long? = null
     private var voiceCancelArmed = false
@@ -525,6 +548,7 @@ class NativeComposerController(
                 gravity = Gravity.START or Gravity.BOTTOM
             },
         )
+        row.addView(linkAction, LinearLayout.LayoutParams(dp(40), dp(48)))
         row.addView(attachSlot, LinearLayout.LayoutParams(dp(40), dp(48)))
         val inputWrap = FrameLayout(activity).apply {
             clipChildren = false
@@ -724,6 +748,9 @@ class NativeComposerController(
     fun show(json: String) {
         val context = runCatching { JSONObject(json) }.getOrNull() ?: return
         if (context.optInt("version") != 1) return
+        cancelMentions()
+        mentionUserId = context.optLong("userId")
+        mentionAllLabel = context.optString("mentionAllLabel")
         contextId = context.optLong("contextId")
         threadId = context.optString("threadId").toLongOrNull() ?: 0L
         sequence = 0
@@ -746,6 +773,7 @@ class NativeComposerController(
             },
         )
         input.hint = context.optString("placeholder", "Message")
+        linkAction.visibility = View.GONE
         input.setText(context.optString("initialDraft", ""))
         input.setSelection(input.length())
         setQuote(context.optJSONObject("quote"))
@@ -793,7 +821,9 @@ class NativeComposerController(
     fun update(json: String) {
         val patch = runCatching { JSONObject(json) }.getOrNull() ?: return
         if (patch.optLong("contextId") != contextId) return
+        if (patch.has("clearDraft") && patch.optBoolean("clearDraft")) input.text?.clear()
         if (patch.has("placeholder")) input.hint = patch.optString("placeholder")
+        if (patch.has("mentionAllLabel")) mentionAllLabel = patch.optString("mentionAllLabel")
         if (patch.has("sending")) setSending(patch.optBoolean("sending"))
         if (patch.has("quote")) setQuote(patch.optJSONObject("quote"))
         if (patch.has("theme")) {
@@ -805,8 +835,6 @@ class NativeComposerController(
                 },
             )
         }
-        patch.optJSONObject("mentionResults")?.let(::applyMentionResults)
-        patch.optJSONObject("mediaResolved")?.let(::applyResolvedMedia)
     }
 
     fun acknowledge(actionId: Long, accepted: Boolean) {
@@ -894,6 +922,7 @@ class NativeComposerController(
     fun hide(requestContextId: Long) {
         if (requestContextId != contextId) return
         input.removeCallbacks(emitLinkMarkers)
+        cancelMentions()
         mentionPopup.dismiss()
         closeAttachmentDrawer(immediate = true)
         dismissKeyboard()
@@ -920,6 +949,9 @@ class NativeComposerController(
     /** Final lifecycle notification. Unlike [hide], this is called only when the Activity-owned composer
      * is genuinely being destroyed, so transient overlays never publish a draft to the thread list. */
     fun destroy() {
+        mentionDestroyed = true
+        RustMentionBridge.close(mentionLease)
+        mentionCandidates.clear()
         if (!visible) return
         emit(JSONObject().apply {
             put("kind", "destroy")
@@ -932,8 +964,6 @@ class NativeComposerController(
     }
 
     fun updateInsets(imeBottomDevicePx: Int, safeBottomDevicePx: Int) {
-        deferredInsetsCommit?.let(root::removeCallbacks)
-        deferredInsetsCommit = null
         committedImeBottomPx = imeBottomDevicePx.coerceAtLeast(0)
         // On Android R+ onApplyWindowInsets is dispatched with the destination inset after onPrepare but
         // before onProgress restarts at the source. Retain that state, but let onProgress own the visual
@@ -946,24 +976,19 @@ class NativeComposerController(
         root.post(::emitGeometry)
     }
 
-    /** Animation progress is native-visual state only. Composer geometry is a final-value protocol and
-     *  must never expose these intermediate IME frames to JS. */
+    /** R+ animation frames move only the native surface. Legacy observations have no reliable
+     *  destination prediction, so publish their measured geometry immediately, with emission deduplication. */
     fun updateImeAnimationProgress(imeBottomDevicePx: Int, safeBottomDevicePx: Int) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            committedImeBottomPx = imeBottomDevicePx.coerceAtLeast(0)
+        }
         updateInsetsState(
             imeBottomDevicePx,
             safeBottomDevicePx,
             updateVisualPosition = true,
         )
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            // Pre-R has no trustworthy predicted endpoint. Some OEMs report the new visible-frame height
-            // from onApplyWindowInsets before the global-layout observer sees it, so scheduling only when
-            // globalLayout detects a delta can miss the commit entirely. Debounce every observed visual
-            // frame here; the last one becomes the single committed geometry value.
-            deferredInsetsCommit?.let(root::removeCallbacks)
-            deferredInsetsCommit = Runnable {
-                deferredInsetsCommit = null
-                updateInsets(imeBottomDevicePx, safeBottomDevicePx)
-            }.also { root.postDelayed(it, PRE_R_INSETS_COMMIT_DELAY_MS) }
+            emitGeometry()
         }
     }
 
@@ -1175,17 +1200,31 @@ class NativeComposerController(
                 maxOf(imeBottomPx, safeBottomPx)
             }
         val decor = activity.window.decorView
+        // DOM bounds use the WebView origin; the overlay uses the decor origin.
+        // Freeform captions can inset the WebView even when system-bar insets are zero.
+        val webView = SomsBridge.webView ?: return
+        val webLocation = IntArray(2)
+        val decorLocation = IntArray(2)
+        webView.getLocationInWindow(webLocation)
+        decor.getLocationInWindow(decorLocation)
+        val offsetX = webLocation[0] - decorLocation[0]
+        val offsetY = webLocation[1] - decorLocation[1]
         val boundsGap =
             if (hasBounds) {
-                (decor.height - boundsBottomPx).coerceAtLeast(0)
+                NativeComposerGeometry.bottomGap(decor.height, boundsBottomPx, offsetY)
             } else {
                 0
-        }
-        params.bottomMargin = keyboardBottom + boundsGap
-        if (hasBounds) {
-            params.leftMargin = boundsLeftPx
-            params.width = boundsWidthPx
-        }
+            }
+        val bottomMargin = keyboardBottom + boundsGap
+        val leftMargin = if (hasBounds) boundsLeftPx + offsetX else params.leftMargin
+        val width = if (hasBounds) boundsWidthPx else params.width
+        // Global-layout observations also refresh IME geometry on pre-R. Reassigning unchanged
+        // LayoutParams requests another layout and unnecessarily feeds that observer again.
+        if (params.bottomMargin == bottomMargin &&
+            params.leftMargin == leftMargin && params.width == width) return
+        params.bottomMargin = bottomMargin
+        params.leftMargin = leftMargin
+        params.width = width
         root.layoutParams = params
     }
 
@@ -1241,6 +1280,7 @@ class NativeComposerController(
 
     private fun queryMentionsAtCursor() {
         if (!mentionsEnabled || !visible || input.selectionStart != input.selectionEnd) {
+            cancelMentions()
             mentionQueryStart = -1
             mentionPopup.dismiss()
             return
@@ -1248,6 +1288,7 @@ class NativeComposerController(
         val editable = input.text ?: return
         val query = NativeMentionLogic.query(editable, input.selectionStart)
         if (query == null) {
+            cancelMentions()
             mentionQueryStart = -1
             mentionPopup.dismiss()
             return
@@ -1255,16 +1296,18 @@ class NativeComposerController(
         mentionQueryStart = query.start
         val requestId = ++mentionRequestId
         latestMentionRequestId = requestId
-        emit(JSONObject().apply {
-            put("kind", "queryMentions")
-            put("requestId", requestId)
-            put("query", query.query)
-        })
+        runCatching {
+            RustMentionBridge.query(mentionLease, mentionUserId, threadId, contextId, requestId, query.query, mentionAllLabel)
+        }.onFailure {
+            android.util.Log.w("NativeComposer", "Mention query unavailable", it)
+            cancelMentions()
+            mentionPopup.dismiss()
+        }
     }
 
-    private fun applyMentionResults(result: JSONObject) {
+    private fun applyMentionResults(requestId: Long, result: JSONObject, images: List<Bitmap?>) {
         if (
-            result.optLong("requestId") != latestMentionRequestId ||
+            requestId != latestMentionRequestId ||
             mentionQueryStart < 0 ||
             !visible
         ) return
@@ -1276,18 +1319,10 @@ class NativeComposerController(
             val id = item.optString("id")
             val label = item.optString("label")
             if ((kind != "user" && kind != "all") || id.isBlank() || label.isBlank()) continue
-            val avatar = item.optJSONObject("avatar")
             mentionCandidates += MentionCandidate(
-                kind,
-                id,
-                label,
-                if (avatar?.optString("kind") == "user") avatar.optString("url") else "",
-                if (avatar?.optString("kind") == "user") {
-                    avatar.optString("fallbackText", label.take(1))
-                } else {
-                    ""
-                },
-                if (avatar?.optString("kind") == "user") avatar.optString("colorSeed", id) else id,
+                kind, id, label,
+                images.getOrNull(item.optInt("avatarIndex", -1)),
+                label.take(1), item.optString("colorSeed", id),
             )
         }
         mentionAdapter.notifyDataSetChanged()
@@ -1323,25 +1358,10 @@ class NativeComposerController(
         )
     }
 
-    private fun requestMentionAvatar(url: String) {
-        if (url.isBlank() || avatarCache.get(url) != null || !requestedMedia.add(url)) return
-        val requestId = ++mentionRequestId
-        mediaRequestUrls[requestId] = url
-        emit(JSONObject().apply {
-            put("kind", "resolveMedia")
-            put("requestId", requestId)
-            put("url", url)
-        })
-    }
-
-    private fun applyResolvedMedia(result: JSONObject) {
-        val requestId = result.optLong("requestId")
-        val url = mediaRequestUrls.remove(requestId) ?: return
-        val encoded = result.optString("base64")
-        if (encoded.isBlank()) return
-        val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: return
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
-        avatarCache.put(url, bitmap)
+    private fun cancelMentions() {
+        latestMentionRequestId = ++mentionRequestId
+        RustMentionBridge.cancel(mentionLease)
+        mentionCandidates.clear()
         mentionAdapter.notifyDataSetChanged()
     }
 
@@ -1497,8 +1517,8 @@ class NativeComposerController(
             keyboardHeightPx = keyboardHeightPx,
         )
         val occupiedHeightCss = NativeComposerGeometry.toCssPx(occupiedDevicePx, density)
-        // Composer height follows completed Android layout; keyboard height retains the existing final-value
-        // surface policy. Emit when either independent endpoint changes, even when their sum stays constant
+        // Composer height follows completed Android layout. Keyboard height uses the system destination
+        // on R+ and the latest measured height on legacy devices.
         // during an emoji/system handoff.
         if (
             !NativeComposerGeometry.shouldEmit(lastEmittedComposerHeightCss, composerHeightCss) &&
@@ -1546,6 +1566,7 @@ class NativeComposerController(
         )
         updateAttachmentButtonState()
         updateKeyboardButtonState()
+        linkAction.setColorFilter(secondary)
         attachmentIcons.forEach { it.setColorFilter(PRIMARY) }
         attachmentLabels.forEach { it.setTextColor(onSurface) }
         keyboard.setColorFilter(secondary)
@@ -1728,7 +1749,6 @@ class NativeComposerController(
         private const val DEFAULT_EMOJI_HEIGHT_DP = 280
         private const val EMOJI_GAP_DP = 8
         private const val IME_HANDOFF_FALLBACK_MS = 420L
-        private const val PRE_R_INSETS_COMMIT_DELAY_MS = 80L
         private const val SHOW_DURATION_MS = 140L
         private const val HIDE_DURATION_MS = 90L
         private const val LINK_MARKER_DEBOUNCE_MS = 500L
@@ -1753,6 +1773,9 @@ class NativeComposerController(
 
 /** Pure native-composer geometry policy, kept Android-free so handoff invariants can be unit tested. */
 internal object NativeComposerGeometry {
+    fun bottomGap(decorHeightPx: Int, webBottomPx: Int, webOffsetYPx: Int): Int =
+        (decorHeightPx - (webOffsetYPx + webBottomPx)).coerceAtLeast(0)
+
     fun occupiedDevicePx(
         visible: Boolean,
         composerBasePx: Int,

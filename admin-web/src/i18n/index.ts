@@ -5,6 +5,10 @@ import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 import en from '@/locales/en/translation.json'
 import zhCN from '@/locales/zh-CN/translation.json'
+import credentialsEn from '@/locales/en/credentials.json'
+import credentialsZhCN from '@/locales/zh-CN/credentials.json'
+import auditEn from '@/locales/en/audit.json'
+import auditZhCN from '@/locales/zh-CN/audit.json'
 
 export const SUPPORTED_LANGS = ['zh-CN', 'en'] as const
 export type AppLang = (typeof SUPPORTED_LANGS)[number]
@@ -19,8 +23,10 @@ const FALLBACK_LANG: AppLang = 'en'
 export const LANG_STORAGE_KEY = 'admin_lang'
 
 const resources = {
-  'zh-CN': { translation: zhCN },
-  en: { translation: en },
+  'zh-CN': {
+    translation: { ...zhCN, credentials: credentialsZhCN, audit: auditZhCN },
+  },
+  en: { translation: { ...en, credentials: credentialsEn, audit: auditEn } },
 } as const
 
 // Bind dayjs locale to the active language so timestamps render with the right

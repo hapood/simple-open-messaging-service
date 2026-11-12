@@ -37,6 +37,66 @@ export const playgroundHttp: HttpInterceptorFn = (request, next) => {
         ),
       );
   }
+  if (path.endsWith('/config')) {
+    return of(
+      new HttpResponse({
+        body: {
+          code: 0,
+          message: 'ok',
+          data: {
+            registrationOpen: true,
+            loginMethods: [
+              { key: 'password', disabled: false },
+              { key: 'otp', disabled: false },
+              { key: 'qr', disabled: false },
+            ],
+            defaultLoginMethod: 'password',
+          },
+        },
+      }),
+    );
+  }
+  if (path.endsWith('/auth/login') || path.endsWith('/auth/otp')) {
+    return of(
+      new HttpResponse({
+        body: {
+          code: 0,
+          message: 'ok',
+          data: {
+            token: 'mock-playground-token',
+            mustChangePassword: false,
+          },
+        },
+      }),
+    );
+  }
+  if (path.endsWith('/auth/qr/create')) {
+    return of(
+      new HttpResponse({
+        body: {
+          code: 0,
+          message: 'ok',
+          data: {
+            qrToken: 'playground-mock-qr-token',
+            expiresAt: Date.now() + 120000,
+          },
+        },
+      }),
+    );
+  }
+  if (path.endsWith('/auth/qr/poll')) {
+    return of(
+      new HttpResponse({
+        body: {
+          code: 0,
+          message: 'ok',
+          data: {
+            status: 'pending',
+          },
+        },
+      }),
+    );
+  }
   return throwError(
     () =>
       new HttpErrorResponse({

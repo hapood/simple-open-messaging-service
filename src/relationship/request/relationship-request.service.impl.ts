@@ -10,7 +10,10 @@ import {
 } from '../../database/schema.js';
 import { RequestTransactionCapability } from './request-transaction.contract.js';
 import { RelationshipRequestService } from './relationship-request.service.js';
-import { SseService } from '../../gateway/sse.service.js';
+import {
+  ClientStateFeedService,
+  type PendingClientStateFeedUpdate,
+} from '../../client-state-feed/client-state-feed.service.js';
 import type {
   GroupRequestPage,
   IncomingRequestHead,
@@ -23,7 +26,7 @@ export class RelationshipRequestServiceImpl extends RelationshipRequestService {
   constructor(
     private readonly database: DatabaseService,
     private readonly capability: RequestTransactionCapability,
-    private readonly sse: SseService,
+    private readonly clientStateFeed: ClientStateFeedService,
   ) {
     super();
   }
@@ -78,7 +81,7 @@ export class RelationshipRequestServiceImpl extends RelationshipRequestService {
     requestReadId: string,
   ): Promise<IncomingRequestHead> {
     const targetId = BigInt(requestReadId);
-    let effectsToDeliver: { userId: number; feedId: number }[] = [];
+    let effectsToDeliver: PendingClientStateFeedUpdate[] = [];
 
     const resultHead = await this.database.db.transaction(async (tx) => {
       const result = await this.capability.markIncomingRequestsReadInTx(
@@ -97,11 +100,7 @@ export class RelationshipRequestServiceImpl extends RelationshipRequestService {
       return result.head;
     });
 
-    for (const update of effectsToDeliver) {
-      this.sse.onThreadFeedUpdated(update.userId, {
-        threadFeedEndId: update.feedId,
-      });
-    }
+    this.clientStateFeed.notifyFeedUpdates(effectsToDeliver);
 
     return {
       requestEndId: resultHead.requestEndId.toString(),

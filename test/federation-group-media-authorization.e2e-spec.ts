@@ -8,7 +8,6 @@ import { ContentType } from '../src/database/enums.js';
 import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { dataDirectory } from '../src/common/data-directory.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { FederationPeerResourceService } from '../src/federation/federation-peer-resource.service.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 import { wirePayloadDigest } from '../src/federation/federated-message-content.js';
@@ -94,7 +93,7 @@ describe('group authority media authorization for a different member peer', () =
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
       profileRev: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
     });
     await database.db.insert(tables.threadAudience).values({
       threadId: thread.id,
@@ -279,7 +278,7 @@ describe('group authority media authorization for a different member peer', () =
       status: 'ACCEPTED',
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
     });
     await database.db
       .update(tables.message)
@@ -325,7 +324,7 @@ describe('group authority media authorization for a different member peer', () =
       status: 'ACCEPTED',
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
     });
     await database.db.insert(tables.peerStateFeed).values({
       namespaceId: authorNs,

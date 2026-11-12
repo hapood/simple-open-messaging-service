@@ -52,11 +52,19 @@ The signed-in mock user is `me`. All seeded identities belong to the mock local
 namespace, displayed as `chat.example.test`.
 
 - Existing friends: `alice` and `liam`.
+- Published profile fixtures (`profileRev = 1`): `alice`, `maya`, `noah`,
+  `liam`, `ivy`, and `!playground`. Each has a display name, bio, and embedded
+  WebP avatar. The other six identities, including `me`, start without a
+  published profile (`profileRev = 0`) and display their account handles.
+- Avatar fixtures use the [DiceBear Avataaars style](https://www.dicebear.com/styles/avataaars/)
+  for personal profiles and a custom-designed team emblem for the group avatar,
+  licensed under [Free for personal and commercial use](https://avataaars.com/).
+  Images are bundled locally; rendering does not contact DiceBear.
 - Incoming friend requests: `maya` and `noah`.
 - Outgoing friend request: `zoe`.
 - Exact search/add target: `emma` (a prefix such as `emm` does not match).
 - Existing group: `!playground`, with Me as owner, Alice as admin, and Maya,
-  Noah, and Olivia as members.
+  Noah, and Olivia as members, pre-seeded with a welcome group announcement.
 - Join applications to that group: `ivy` and `jack`.
 - Liam is available to invite; Alice is already a member. Sending an invitation
   does not immediately add the recipient to the roster.
@@ -66,6 +74,14 @@ Requests use decimal bigint IDs, seven-day online pages, immutable outgoing
 snapshots, and exact-round decisions. Accepted/rejected/withdrawn records remain
 in history. Reads advance the incoming request head without conflating unread
 attention with actionable request count.
+
+The existing Edit profile entry supports changing the signed-in user's display
+name, bio, and cropped avatar. Saves update only in-memory state, increment the
+profile revision, and notify session/roster presentation consumers. Profile
+resolution selects immutable revision snapshots, so a new save does not rewrite
+old message or request presentation. New messages retain the current author
+presentation selected by the shared optimistic-message builder. Reloading resets
+all profile changes; there is no profile persistence or real update API request.
 
 Group mutations update the roster, current role, profile, announcement, and
 conversation projections. Ownership transfer leaves the previous owner as an

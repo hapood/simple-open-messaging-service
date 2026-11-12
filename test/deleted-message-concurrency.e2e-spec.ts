@@ -81,6 +81,7 @@ describe('federated message deletion transaction ordering', () => {
         await database.db
           .insert(identityNamespace)
           .values({
+            signingKeyCreatedAt: 1700000000000,
             domain: peerDomain,
             rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
             identityPinnedAt: now,

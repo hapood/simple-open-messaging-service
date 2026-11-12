@@ -26,7 +26,7 @@
       @for (s of currentSessions(); track s.id) {
         <mat-card
           appearance="outlined"
-          class="device-card current"
+          class="settings-card device-card current"
           (click)="showDetails(s)"
           tabindex="0"
           (keydown.enter)="showDetails(s)"
@@ -69,7 +69,7 @@
         @for (s of otherSessions(); track s.id) {
           <mat-card
             appearance="outlined"
-            class="device-card"
+            class="settings-card device-card"
             (click)="showDetails(s)"
             tabindex="0"
             (keydown.enter)="showDetails(s)"
@@ -98,7 +98,7 @@
         }
       </div>
     }
-    <mat-card appearance="outlined" class="terminate-card">
+    <mat-card appearance="outlined" class="settings-card terminate-card">
       <mat-card-content>
         <div class="terminate-heading">
           <div>
@@ -114,7 +114,7 @@
           }
         </div>
         <mat-select
-          class="terminate-select"
+          class="settings-select terminate-select"
           [value]="autoTerminateDays()"
           [disabled]="savingDays() !== null"
           [attr.aria-label]="'session.autoTerminateTitle' | transloco"

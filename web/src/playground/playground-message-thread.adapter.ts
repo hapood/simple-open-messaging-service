@@ -1,5 +1,6 @@
-import { Injectable, signal } from '@angular/core';
-import { of } from 'rxjs';
+import { inject, Injectable, signal } from '@angular/core';
+import { of, Subject } from 'rxjs';
+import type { MessageDeletionFact } from '../app/components/message-thread/mounted-message-deletion';
 import type {
   CbConfig,
   CbItem,
@@ -31,7 +32,21 @@ import type {
 import {
   MockItemSource,
   MockUserService,
+  mockSender,
 } from '../app/pages/chatbox-playground/http-item-source.mock';
+import {
+  PlaygroundLiveMessage,
+  PlaygroundSocialState,
+  sameIdentity,
+} from './playground-social-state';
+import {
+  toDisplayText,
+  toRenderMessageEntities,
+} from '../app/lib/message-entity';
+import {
+  parseTextMessageContent,
+  stringifyTextMessageContent,
+} from '../../../shared/text-message-content';
 
 @Injectable({ providedIn: 'root' })
 export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
@@ -53,10 +68,40 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     vhExtra: 2000,
     initBatch: 100,
     deferInitFill: true,
+    followBottom: true,
   });
+
+  private readonly deletions = new Map<
+    number,
+    Map<number, MessageDeletionFact>
+  >();
+  private readonly deletionEvents = new Subject<{
+    threadId: number;
+    deletions: MessageDeletionFact[];
+  }>();
+  readonly deletedLive$ = this.deletionEvents.asObservable();
+
+  override async getMessageDeletions(threadId: number, seqs: number[]) {
+    const facts = this.deletions.get(threadId);
+    return [...new Set(seqs)].flatMap((seq) => {
+      const fact = facts?.get(seq);
+      return fact ? [{ ...fact }] : [];
+    });
+  }
 
   private readonly sources = new Map<number, MockItemSource>();
   private readonly groupSources = new WeakSet<MessageThreadSource>();
+  private readonly state = inject(PlaygroundSocialState);
+
+  constructor() {
+    super();
+    // Live ticker messages reach an open thread through the source; the
+    // conversation-list commit already happened in the shared state.
+    this.state.groupLive$.subscribe((event) =>
+      this.deliverLiveGroupMessage(event),
+    );
+  }
+
   override createSource(
     conversation: ConversationItem,
     _callbacks: MessageThreadLiveCallbacks,
@@ -71,6 +116,9 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       this.groupSenderCount(),
     );
     if (isGroupConversation) this.groupSources.add(source);
+    for (const seq of this.deletions.get(conversation.threadId)?.keys() ?? []) {
+      source.withdraw(seq);
+    }
     this.sources.set(conversation.threadId, source);
     return source;
   }
@@ -105,9 +153,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       data: {
         ...request.optimistic.data,
         msgId: sentId,
-        creator: JSON.stringify([0, 'user-1']),
         isSelf: true,
-        name: 'Me',
         // The real production source carries `sent` when the push echo wins the HTTP-response race.
         // Keeping it here lets the kernel-tagged real play the same spinner-to-check choreography.
         status: 'sent',
@@ -119,7 +165,8 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       ? this.groupPushCount()
       : this.opponentPushCount();
     const incoming = this.makeReplies(source, replies, isGroupConversation);
-    void this.deliverEcho(source, sent, incoming);
+    this.commitSentMessage(request);
+    void this.deliverEcho(request.threadId, source, sent, incoming);
     return { code: 0, message: 'ok' };
   }
 
@@ -134,7 +181,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     const optimistic = source?.pendingByClientMessageId(
       request.clientMessageId,
     );
-    if (source && optimistic) {
+    if (source && optimistic?.data.type === 'msg') {
       const sentId = source.allocateMsgId();
       const now = new Date();
       source.pushLive([
@@ -142,12 +189,10 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
           id: sentId,
           clientMessageId: request.clientMessageId,
           data: {
-            ...(optimistic.data as ChatMsgData),
+            ...optimistic.data,
             type: 'msg' as const,
             msgId: sentId,
-            creator: JSON.stringify([0, 'user-1']),
             isSelf: true,
-            name: 'Me',
             text: optimistic.data.text,
             time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
             contentType: 'LINK',
@@ -158,6 +203,16 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
           },
         },
       ]);
+      if (optimistic.data.text) {
+        this.state.commitMessage(request.threadId, {
+          senderAccount: this.state.self.account,
+          senderNamespaceId: 0,
+          contentType: 'LINK',
+          content: optimistic.data.text,
+          createdAtMs: now.getTime(),
+          isSelf: true,
+        });
+      }
     }
     return { code: 0, message: 'ok' };
   }
@@ -176,6 +231,22 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   override withdrawMessage(request: { threadId: number; seq: number }) {
     this.sources.get(request.threadId)?.withdraw(request.seq);
+    let facts = this.deletions.get(request.threadId);
+    if (!facts) {
+      facts = new Map();
+      this.deletions.set(request.threadId, facts);
+    }
+    if (!facts.has(request.seq)) {
+      const fact: MessageDeletionFact = {
+        seq: request.seq,
+        type: 'USER_RETRACTION',
+      };
+      facts.set(request.seq, fact);
+      this.deletionEvents.next({
+        threadId: request.threadId,
+        deletions: [{ ...fact }],
+      });
+    }
     return of({ code: 0, message: 'ok' });
   }
 
@@ -212,7 +283,11 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   }
 
   override cancelUploadBatch(clientMessageId: string) {
-    return of({ code: 0, message: 'ok', data: { clientMessageId, cancelled: 1 } });
+    return of({
+      code: 0,
+      message: 'ok',
+      data: { clientMessageId, cancelled: 1 },
+    });
   }
 
   override sendCompletedUploadBatch(clientMessageId: string) {
@@ -292,19 +367,111 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   }
 
   private async deliverEcho(
+    threadId: number,
     source: MockItemSource,
     sent: CbItem<ChatItemData>,
     incoming: CbItem<ChatItemData>[],
   ): Promise<void> {
     await wait(this.pushSignalDelay());
-    source.pushLive(
+    const interleaved =
       this.opponentInterleave() && incoming.length > 0
-        ? [incoming.shift()!, sent]
-        : [sent],
-    );
+        ? incoming.shift()!
+        : null;
+    source.pushLive(interleaved ? [interleaved, sent] : [sent]);
+    if (interleaved) this.commitIncoming(threadId, interleaved.data);
     if (incoming.length === 0) return;
     await wait(this.replyDelay());
     source.pushLive(incoming);
+    for (const item of incoming) this.commitIncoming(threadId, item.data);
+  }
+
+  /** Replies update the thread list like committed feed rows: preview, unread,
+   *  and feed order advance together. Display text is wrapped back into the
+   *  persisted PURE_TEXT envelope so previews use the production shape. */
+  private commitIncoming(threadId: number, data: ChatItemData): void {
+    if (data.type !== 'msg') return;
+    const thread = this.state.conversations
+      .items()
+      .find((item) => item.threadId === threadId);
+    if (!thread) return;
+    const senderAccount =
+      thread.type === 'P2P'
+        ? thread.account
+        : (data.name?.toLowerCase() ?? thread.account);
+    this.state.commitMessage(threadId, {
+      senderAccount,
+      senderNamespaceId: thread.publisherNamespaceId,
+      contentType: data.contentType ?? 'PURE_TEXT',
+      content: stringifyTextMessageContent({ text: data.text }),
+      createdAtMs: data.createdAtMs,
+      isSelf: false,
+    });
+  }
+
+  /** Commit the confirmed optimistic row: PURE_TEXT carries the wire envelope
+   *  from the send request; CONTACT_CARD/LINK keep their persisted JSON bodies. */
+  private commitSentMessage(
+    request: SendTextRequest | SendContactRequest,
+  ): void {
+    const data = request.optimistic.data;
+    if (data.type !== 'msg') return;
+    const contentType = data.contentType;
+    const content =
+      contentType === 'PURE_TEXT' && 'content' in request
+        ? request.content
+        : data.text;
+    this.state.commitMessage(request.threadId, {
+      senderAccount: this.state.self.account,
+      senderNamespaceId: 0,
+      contentType,
+      content,
+      createdAtMs: Date.now(),
+      isSelf: true,
+    });
+  }
+
+  /** Render one live ticker message into the open group thread, reusing the
+   *  production mention parser for segments and viewer-relative state. */
+  private deliverLiveGroupMessage(event: PlaygroundLiveMessage): void {
+    const source = this.sources.get(event.threadId);
+    if (!source) return;
+    const id = source.allocateMsgId();
+    const body =
+      event.contentType === 'PURE_TEXT'
+        ? (parseTextMessageContent(event.content)?.text ?? '')
+        : event.content;
+    const rendered = toRenderMessageEntities(body, {
+      account: this.state.self.account,
+      namespaceId: 0,
+    });
+    const at = new Date(event.createdAtMs);
+    source.pushLive([
+      {
+        id,
+        data: {
+          type: 'msg',
+          msgId: id,
+          creator: event.sender.identityKey,
+          isSelf: sameIdentity(event.sender, this.state.self),
+          isGroupConversation: true,
+          name: event.sender.name,
+          // Live pushes are authored under real playground accounts, which the
+          // source's synthetic `user-N` profile table cannot resolve; without a
+          // sender the shaping fallback would render "Unknown". Mirror
+          // production toMsgData: attach the roster member's revision-backed
+          // sender so the shared pipeline resolves name and avatar.
+          sender: mockSender(event.sender, event.sender.name),
+          text: toDisplayText(body),
+          textSegments: rendered.segments,
+          mentionState: rendered.mentionState,
+          time: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
+          contentType: 'PURE_TEXT',
+          images: null,
+          file: null,
+          createdAtMs: event.createdAtMs,
+        },
+      },
+    ]);
   }
 
   private mockResponse(): StandardResponse<unknown> {
@@ -325,13 +492,12 @@ function mockConversation(
   alias: string,
   peerName: string,
 ): ConversationItem {
-  return createP2PConversation(
+  return createP2PConversation({
     threadId,
-    {
-      account: peerName.toLocaleLowerCase(),
-      namespaceId: 0,
-      profileRev: 1,
-    },
-    { alias },
-  );
+    account: peerName.toLocaleLowerCase(),
+    publisherNamespaceId: 0,
+    profileRev: 1,
+    profile: { name: peerName, bio: '', avatarDigest: null },
+    alias,
+  });
 }

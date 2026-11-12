@@ -18,15 +18,23 @@ import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { InputDeviceService } from '../../services/input-device.service';
 import { baseKeymap } from '@tiptap/pm/commands';
+import { detectComposerUrls } from '../../../../../shared/composer-url';
 import { serializeEditorBlocks } from './editor-message-serializer';
 import { ALL_MENTION_ID } from '../../lib/message-entity';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
+import { Subscription } from 'rxjs';
+import {
+  AvatarPresentationService,
+  initialAvatarView,
+} from '../user-avatar/avatar-presentation.service';
+import { avatarBackground, avatarInitial } from '../user-avatar/avatar-view';
 
 /** A mention candidate — id is stored on the chip (data-id, a full SOMFP user address), label is
  *  shown. Produced by the host's memberSearch lookup. */
 export interface ChatMember {
   id: string;
   label: string;
-  avatarUrl?: string;
+  profile?: AvatarProfileRef;
 }
 
 export interface ComposerLinkMarker {
@@ -71,13 +79,14 @@ export class ChatEditorComponent {
   readonly placeholder = input('');
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
+  private readonly presentations = inject(AvatarPresentationService);
   /** INPUT axis (physical vs soft keyboard) — drives the Enter convention
    *  ({@link InputDeviceService.enterToSend}). Injected rather than threaded through every host. */
   private readonly inputDevice = inject(InputDeviceService);
 
   /** Fires on every keystroke with the current inline-HTML content (the value to store/send). */
   readonly html = output<string>();
-  /** Structured links already recognized by Tiptap. Consumers must not parse the full draft again. */
+  /** Scheme-based candidates, independent of Tiptap's whitespace-triggered autolink marks. */
   readonly linkMarkers = output<readonly ComposerLinkMarker[]>();
   /** Fires on Enter (desktop, non-empty) — the parent sends the last html it received, then clear()s. */
   readonly send = output<void>();
@@ -136,7 +145,7 @@ export class ChatEditorComponent {
             // all there: showing an empty popup makes a literal @ look like a supported P2P mention.
             allow: () => this.mentionsEnabled(),
             items: ({ query }) => this.memberSearch()?.(query) ?? [],
-            render: () => suggestionPopup(),
+            render: () => suggestionPopup(this.presentations),
           },
         }),
       ],
@@ -214,22 +223,23 @@ export class ChatEditorComponent {
     return this.editor?.getText() ?? '';
   }
 
-  /** Read existing link marks without rerunning URL recognition over the draft text. */
+  /** Scan textblocks with inline atoms as boundaries, matching the native editor's URL rules. */
   getLinkMarkers(): ComposerLinkMarker[] {
     const editor = this.editor;
     if (!editor) return [];
     const markers: ComposerLinkMarker[] = [];
     editor.state.doc.descendants((node, pos) => {
-      if (!node.isText || !node.text) return;
-      const link = node.marks.find((mark) => mark.type.name === 'link');
-      const href = link?.attrs['href'];
-      if (typeof href !== 'string' || !href) return;
-      const previous = markers.at(-1);
-      if (previous?.href === href && previous.end === pos) {
-        previous.end = pos + node.nodeSize;
-      } else {
-        markers.push({ href, start: pos, end: pos + node.nodeSize });
+      if (!node.isTextblock) return;
+      // Preserve offsets and join text split by formatting; mentions and hard breaks end a run.
+      const text = node.textBetween(0, node.content.size, '', ' ');
+      for (const marker of detectComposerUrls(text)) {
+        markers.push({
+          href: marker.href,
+          start: pos + 1 + marker.start,
+          end: pos + 1 + marker.end,
+        });
       }
+      return false;
     });
     return markers;
   }
@@ -340,7 +350,8 @@ function SendKeymapExtension(opts: {
  * to document.body so it escapes any overflow/transform on the host; keyboard-nav + click both call the
  * mention command with { id, label } (the atom node attrs). Returns the render() handlers Tiptap expects.
  */
-function suggestionPopup() {
+export function suggestionPopup(presentations: AvatarPresentationService) {
+  let subscriptions = new Subscription();
   let popup: HTMLDivElement | null = null;
   let items: ChatMember[] = [];
   let selected = 0;
@@ -348,6 +359,8 @@ function suggestionPopup() {
 
   const renderList = (): void => {
     if (!popup) return;
+    subscriptions.unsubscribe();
+    subscriptions = new Subscription();
     popup.innerHTML = '';
     if (items.length === 0) {
       popup.classList.add('cb-mention-popup--empty');
@@ -368,7 +381,68 @@ function suggestionPopup() {
         label.textContent = `@${m.label}`;
         row.append(icon, label);
       } else {
-        row.textContent = m.label;
+        const label = document.createElement('span');
+        label.className = 'cb-mention-label';
+        label.textContent = m.label;
+        const avatar = document.createElement('span');
+        avatar.className = 'cb-mention-avatar';
+        avatar.setAttribute('aria-hidden', 'true');
+        avatar.textContent = avatarInitial(m.label);
+        // Same identity coordinates as the sender/list surfaces so fallback colors match.
+        const identity = m.profile
+          ? {
+              account: m.profile.account,
+              domainSource: {
+                type: 'profile-namespace' as const,
+                publisherNamespaceId: m.profile.publisherNamespaceId,
+                profileNamespaceId: m.profile.profileNamespaceId,
+              },
+            }
+          : { account: m.id, domainSource: undefined };
+        avatar.style.background = avatarBackground(
+          initialAvatarView({
+            kind: 'snapshot',
+            name: m.label,
+            imageUrl: null,
+            ...identity,
+          }),
+        );
+        row.append(avatar, label);
+        if (m.profile) {
+          subscriptions.add(
+            presentations
+              .resolve({
+                kind: 'demand',
+                profile: m.profile,
+                account: m.profile.account,
+                fallbackName: m.label,
+                domainSource: identity.domainSource,
+              })
+              .subscribe((view) => {
+                // The selected reference is fixed for this result page. Presentation
+                // arrival updates only its row, never reruns the search.
+                m.label = view.name;
+                label.textContent = view.name;
+                avatar.style.background = avatarBackground(view);
+                let image = avatar.querySelector('img');
+                if (view.imageUrl) {
+                  if (!image) {
+                    image = document.createElement('img');
+                    image.alt = '';
+                    image.width = 32;
+                    image.height = 32;
+                    image.onerror = () => {
+                      avatar.textContent = avatarInitial(m.label);
+                    };
+                    avatar.replaceChildren(image);
+                  }
+                  image.src = view.imageUrl;
+                } else {
+                  avatar.textContent = avatarInitial(view.name);
+                }
+              }),
+          );
+        }
       }
       // mousedown (not click) so the editor does not blur before the command runs.
       row.addEventListener('mousedown', (e) => {
@@ -402,7 +476,14 @@ function suggestionPopup() {
     popup.style.top = `${Math.round(top)}px`;
   };
 
+  const paintSelection = (): void => {
+    popup?.querySelectorAll('.cb-mention-item').forEach((row, index) => {
+      row.classList.toggle('cb-mention-item--active', index === selected);
+    });
+  };
+
   const close = (): void => {
+    subscriptions.unsubscribe();
     popup?.remove();
     popup = null;
     command = null;
@@ -437,12 +518,12 @@ function suggestionPopup() {
       const n = items.length;
       if (props.event.key === 'ArrowDown') {
         selected = (selected + 1) % n;
-        renderList();
+        paintSelection();
         return true;
       }
       if (props.event.key === 'ArrowUp') {
         selected = (selected - 1 + n) % n;
-        renderList();
+        paintSelection();
         return true;
       }
       if (props.event.key === 'Enter') {

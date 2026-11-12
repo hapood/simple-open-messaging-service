@@ -16,4 +16,6 @@ export interface S2SProfile {
   avatar: InlineProfileAvatar | null;
   bio: string;
   profileRev: number;
+  /** Original revision generation time, preserved across publishers; zero for no profile. */
+  generatedAt: number;
 }

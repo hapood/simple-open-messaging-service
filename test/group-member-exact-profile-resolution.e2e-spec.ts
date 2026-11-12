@@ -86,6 +86,7 @@ describe('exact profile completion for a federated group member', () => {
         publisherNamespaceId: namespaceId,
         profileNamespaceId: namespaceId,
         profileRev,
+        generatedAt: 1_700_000_000_000,
         displayName: profileRev === 2 ? 'Updated member' : 'Historical member',
       })),
     );

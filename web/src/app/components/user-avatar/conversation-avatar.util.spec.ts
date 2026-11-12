@@ -2,41 +2,31 @@ import {
   conversationAvatarType,
   conversationAvatarAccount,
   conversationAvatarNamespaceId,
-  conversationAvatarSrc,
 } from './conversation-avatar.util';
 import {
   conversationAvatarProfile,
   avatarProfileDemand,
 } from '../../services/avatar-profile-ref';
 import { UserAvatarType } from './model';
-import type { ConversationItem } from '../../services/model';
+import {
+  createGroupConversation,
+  createP2PConversation,
+} from '../../services/model';
 
-/**
- * Covers the shared conversation→avatar derivation. The util reads only `type` + the active party's
- * (`peerUser` | `group`) identity/avatar fields, so minimal partial shapes (cast through `unknown`) suffice — no
- * need to construct a full ConversationItem. This is the high-value, low-pain test for the DRY'd logic; the
- * consumers (thread-list, the empty-thread hero) are thin pass-throughs over it.
- */
+/** Covers conversation identity projection and authorized/cache-only avatar demands. */
 describe('conversation-avatar util', () => {
-  const p2p = {
-    type: 'P2P',
-    peerUser: {
-      account: 'alice',
-      namespaceId: 0,
-      avatar: '/uploads/u7.png',
-    },
-    group: { id: 0, account: '!zero', avatar: '' },
-  } as unknown as ConversationItem;
-  const group = {
-    type: 'GROUP',
-    peerUser: { avatar: '' },
-    group: {
-      id: 12,
-      account: '!group-12',
-      namespaceId: 7,
-      avatar: '/uploads/g12.png',
-    },
-  } as unknown as ConversationItem;
+  const p2p = createP2PConversation({
+    threadId: 7,
+    publisherNamespaceId: 0,
+    account: 'alice',
+    profileRev: 1,
+  });
+  const group = createGroupConversation({
+    threadId: 12,
+    publisherNamespaceId: 7,
+    account: '!group-12',
+    profileRev: 1,
+  });
 
   it('sends an authorized demand while the conversation is active', () => {
     const ref = conversationAvatarProfile({
@@ -70,18 +60,16 @@ describe('conversation-avatar util', () => {
   it('uses the publisher home namespace but subject namespace zero for foreign peers', () => {
     const ref = conversationAvatarProfile({
       ...p2p,
-      peerUser: {
-        account: 'alice',
-        namespaceId: 7,
+      publisherNamespaceId: 7,
+      account: 'alice',
+      profile: {
         name: 'Alice',
-        avatar: '',
         bio: '',
-        isGroup: false,
-        isDeleted: false,
+        avatarDigest: null,
       },
       profileRev: 3,
       conversationState: 'READ_ONLY',
-    } as ConversationItem);
+    });
     const demand = avatarProfileDemand(ref);
     expect(demand && 'demand' in demand ? demand.demand : demand).toEqual({
       publisherNamespaceId: 7,
@@ -135,11 +123,6 @@ describe('conversation-avatar util', () => {
   it('maps P2P → OTHER and GROUP → GROUP', () => {
     expect(conversationAvatarType(p2p)).toBe(UserAvatarType.OTHER);
     expect(conversationAvatarType(group)).toBe(UserAvatarType.GROUP);
-  });
-
-  it('derives the avatar src from the active party', () => {
-    expect(conversationAvatarSrc(p2p)).toBe('/uploads/u7.png');
-    expect(conversationAvatarSrc(group)).toBe('/uploads/g12.png');
   });
 
   it('derives required identity coordinates without a domain', () => {

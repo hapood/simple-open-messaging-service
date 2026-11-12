@@ -1,4 +1,5 @@
 import { bootstrapApplication } from '@angular/platform-browser';
+import { prepareTheme } from '../app/services/theme-bootstrap';
 import { playgroundConfig } from './playground.config';
 import { PlaygroundShellComponent } from './playground-shell.component';
 
@@ -21,6 +22,6 @@ if (projectOverview) {
   });
 }
 
-bootstrapApplication(PlaygroundShellComponent, playgroundConfig).catch(
-  (error) => console.error('[playground] bootstrap failed:', error),
-);
+void prepareTheme()
+  .then(() => bootstrapApplication(PlaygroundShellComponent, playgroundConfig))
+  .catch((error) => console.error('[playground] bootstrap failed:', error));

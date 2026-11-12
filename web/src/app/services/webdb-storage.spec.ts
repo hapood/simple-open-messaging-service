@@ -1,9 +1,7 @@
-import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import type { ProfileNamespacePairKey } from './webdb-storage';
 import { WebdbService } from './webdb.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { createP2PConversation } from './model';
 import { syncThreadFeed } from './thread-feed-sync';
 import { threadFeedSnapshot, threadStructure } from './thread-feed.test-helper';
 import { prepareTestSessionCache as prepareSession } from './session/session-cache.test-helper';
@@ -132,6 +130,56 @@ describe('shared background storage', () => {
     });
   });
 
+  it('joins preview display fields on reads without duplicating them in thread projections', async () => {
+    await storage.openForUser(userId);
+    const state = threadFeedSnapshot(7, {
+      profileAccount: 'peer',
+      publisherNamespaceId: 0,
+      profileRev: 1,
+      messageEndSeq: 1,
+      previews: [
+        {
+          seq: 1,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          sender: { account: 'peer', profileNamespaceId: 0, profileRev: 1 },
+          status: 'LIVE',
+          text: 'Independent preview',
+        },
+      ],
+    });
+    await storage.mergeThreadStates([state], 1);
+    const expected = {
+      lastMessagePreview: 'Independent preview',
+      lastMessageAt: Date.parse('2026-01-01T00:00:00.000Z'),
+      lastMessageSenderAccount: 'peer',
+      lastMessageSenderNamespaceId: 0,
+    };
+    // Reads must not depend on a prior attention projection.
+    expect((await storage.getThreads())[0]).toMatchObject(expected);
+    expect(
+      await storage.projectThreadAttention(7, {
+        account: 'self',
+        namespaceId: 0,
+      }),
+    ).toMatchObject(expected);
+    const db = await storage.db();
+    const stored = await db.get('threads', 7);
+    for (const field of Object.keys(expected))
+      expect(stored).not.toHaveProperty(field);
+    expect((await storage.getThreads())[0]).toMatchObject(expected);
+
+    await storage.mergeThreadStates(
+      [{ ...state, threadFeedId: 2, previews: [] }],
+      2,
+    );
+    expect((await storage.getThreads())[0]).toMatchObject({
+      lastMessagePreview: null,
+      lastMessageAt: null,
+      lastMessageSenderAccount: null,
+      lastMessageSenderNamespaceId: null,
+    });
+  });
+
   it('does not publish a partial page when a required preview array is absent', async () => {
     await storage.openForUser(userId);
     const snapshot = threadFeedSnapshot(7, {
@@ -201,30 +249,15 @@ describe('shared background storage', () => {
     ]);
     expect((await storage.getThreads())[0].profileRev).toBe(4);
     expect(await db.get('threads', 7)).not.toHaveProperty('threadProfileRev');
-    await storage.putThread(
-      createP2PConversation(
-        7,
-        {
-          account: 'peer',
-          namespaceId: 0,
-          profileRev: 99,
-        },
-        { threadFeedId: 1 },
-      ),
-    );
+    await storage.patchThread(7, { pinned: true, pinnedAt: 100 });
     expect((await storage.getThreads())[0].profileRev).toBe(4);
     expect(await db.get('threads', 7)).not.toHaveProperty('threadProfileRev');
   });
 
-  it('rejects presentation-only writes and atomically rejects a mixed replacement', async () => {
+  it('rejects local patches without feed state and leaves other threads unchanged', async () => {
     await storage.openForUser(userId);
-    const peer = createP2PConversation(7, {
-      account: 'peer',
-      namespaceId: 0,
-      profileRev: 0,
-    });
-    await expect(storage.putThread(peer)).rejects.toThrow(
-      'matching feed state',
+    await expect(storage.patchThread(7, { muted: true })).rejects.toThrow(
+      'cannot patch thread before feed state exists',
     );
     expect(await (await storage.db()).get('threads', 7)).toBeUndefined();
     await storage.mergeThreadStates([
@@ -235,16 +268,9 @@ describe('shared background storage', () => {
       }),
     ]);
     const before = await (await storage.db()).get('threads', 7);
-    await expect(
-      storage.replaceThreads([
-        { ...peer, threadFeedId: 1 },
-        createP2PConversation(8, {
-          account: 'other',
-          namespaceId: 0,
-          profileRev: 0,
-        }),
-      ]),
-    ).rejects.toThrow('matching feed state');
+    await expect(storage.patchThread(8, { muted: true })).rejects.toThrow(
+      'cannot patch thread before feed state exists',
+    );
     expect(await (await storage.db()).get('threads', 7)).toEqual(before);
     expect(await (await storage.db()).get('threads', 8)).toBeUndefined();
   });
@@ -340,30 +366,57 @@ describe('shared background storage', () => {
         profileRev: 0,
       }),
     ]);
-    const thread = createP2PConversation(
-      7,
-      {
-        account: 'peer',
-        namespaceId: 0,
-        profileRev: 0,
-      },
-      { threadFeedId: 1 },
-    );
-    await storage.putThread(thread);
     const restored = (await storage.getThreads())[0];
     expect(restored.type).toBe('P2P');
-    if (restored.type === 'P2P') expect(restored.peerUser.account).toBe('peer');
+    if (restored.type === 'P2P') expect(restored.account).toBe('peer');
     const persisted = await (await storage.db()).get('threads', 7);
     expect(persisted).toMatchObject({
       type: 'P2P',
       profileAccount: 'peer',
-      subjectName: '',
     });
+    for (const field of ['subjectName', 'subjectAvatar', 'subjectBio'])
+      expect(persisted).not.toHaveProperty(field);
     expect(persisted).not.toHaveProperty('peerUser');
     expect(persisted).not.toHaveProperty('group');
   });
 
-  it('restores aliases from feed state after structural writes, stale replay and reopening', async () => {
+  it('materializes only the exact selected home profile without storing display copies in threads', async () => {
+    await storage.openForUser(userId);
+    await storage.mergeThreadStates([
+      threadFeedSnapshot(7, {
+        profileAccount: 'peer',
+        publisherNamespaceId: 7,
+        profileRev: 2,
+      }),
+    ]);
+    const db = await storage.db();
+    const original = await db.get('threads', 7);
+    for (const profile of [
+      { profileNamespaceId: 7, rev: 2, name: 'Wrong namespace' },
+      { profileNamespaceId: 0, rev: 3, name: 'Newer revision' },
+      { profileNamespaceId: 0, rev: 2, name: 'Selected peer' },
+    ]) {
+      await storage.commitResolvedProfile({
+        publisherNamespaceId: 7,
+        account: 'peer',
+        bio: 'Exact bio',
+        avatarBase64: null,
+        ...profile,
+      });
+    }
+    expect(await db.get('threads', 7)).toEqual(original);
+    expect((await storage.getThreads())[0].profile).toMatchObject({
+      name: 'Selected peer',
+      bio: 'Exact bio',
+    });
+    await storage.patchThread(7, { muted: true });
+    expect((await storage.getThreads())[0].profile.name).toBe('Selected peer');
+    await storage.close();
+    await storage.openForUser(userId);
+    expect((await storage.getThreads())[0].profile.name).toBe('Selected peer');
+  });
+
+  it('preserves feed aliases across local patches, stale replay and reopening', async () => {
     await storage.openForUser(userId);
     const state = {
       ...threadStructure(7, {
@@ -388,17 +441,7 @@ describe('shared background storage', () => {
       previews: [],
     };
     await storage.mergeThreadStates([state], 1);
-    await storage.putThread(
-      createP2PConversation(
-        7,
-        {
-          account: 'peer',
-          namespaceId: 0,
-          profileRev: 0,
-        },
-        { alias: 'Stale structure' },
-      ),
-    );
+    await storage.patchThread(7, { muted: true });
     expect((await storage.getThreads())[0].alias).toBe('Private');
     expect(await (await storage.db()).get('threads', 7)).toHaveProperty(
       'alias',

@@ -17,6 +17,7 @@ import { setSessionCookies } from '../auth/media-token.js';
 import { Public } from '../common/public.decorator.js';
 import { QrCreateDto, QrPollDto, QrTokenDto } from '../dto/auth.dto.js';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard.js';
+import { loginMethodEnabledGuard } from '../auth/login-method-enabled.guard.js';
 import { UseRateLimitPolicy } from '../rate-limit/rate-limit.decorator.js';
 import { AUTH_RATE_LIMIT_POLICIES } from '../rate-limit/auth-policy.registry.js';
 
@@ -37,7 +38,7 @@ export class AuthQrController {
 
   @Public()
   @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.qrCreate)
-  @UseGuards(RateLimitGuard)
+  @UseGuards(RateLimitGuard, loginMethodEnabledGuard('qr'))
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/create')
   @ApiOperation({
@@ -49,7 +50,7 @@ export class AuthQrController {
 
   @Public()
   @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.qrPoll)
-  @UseGuards(RateLimitGuard)
+  @UseGuards(RateLimitGuard, loginMethodEnabledGuard('qr'))
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/poll')
   @ApiOperation({
@@ -74,7 +75,7 @@ export class AuthQrController {
   }
 
   @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.qrScan)
-  @UseGuards(RateLimitGuard)
+  @UseGuards(RateLimitGuard, loginMethodEnabledGuard('qr'))
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/scan')
   @ApiOperation({
@@ -91,7 +92,7 @@ export class AuthQrController {
   }
 
   @UseRateLimitPolicy(AUTH_RATE_LIMIT_POLICIES.qrConfirm)
-  @UseGuards(RateLimitGuard)
+  @UseGuards(RateLimitGuard, loginMethodEnabledGuard('qr'))
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/confirm')
   @ApiOperation({ summary: 'Phone confirms a scanned QR token' })

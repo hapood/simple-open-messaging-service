@@ -93,7 +93,7 @@ describe('federation domain and signing-certificate rotation together', () => {
     oldNamespaceId = original!.id;
     oldRoot = original!.rootPublicKey!;
     const originalDocument = await fetch(
-      `http://127.0.0.1:${appB.port}/.well-known/somfp`,
+      `http://127.0.0.1:${appB.port}/somfp/discovery`,
     ).then(
       (response) =>
         response.json() as Promise<{ keys: Array<{ ed25519: string }> }>,
@@ -117,7 +117,7 @@ describe('federation domain and signing-certificate rotation together', () => {
       .where(eq(localFederationSigningKey.publicKey, oldSigningKey));
     await appB.restart({ domain: NEW_DOMAIN });
     const document = await fetch(
-      `http://127.0.0.1:${appB.port}/.well-known/somfp`,
+      `http://127.0.0.1:${appB.port}/somfp/discovery`,
     ).then(
       (response) =>
         response.json() as Promise<{

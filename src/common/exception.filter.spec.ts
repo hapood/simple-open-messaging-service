@@ -12,7 +12,7 @@ import { AllExceptionsFilter } from './exception.filter.js';
 describe('AllExceptionsFilter federation mapping', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  function capture(exception: unknown, url = '/s2s/v1/messages') {
+  function capture(exception: unknown, url = '/somfp/v1/messages') {
     const send = vi.fn();
     const reply = {
       sent: false,

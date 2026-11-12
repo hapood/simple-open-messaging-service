@@ -231,6 +231,7 @@ export class FederationNamespaceService {
       domain: string;
       rootPublicKey: string;
       identityPinnedAt: Date;
+      signingKeyCreatedAt: number;
     },
   ): Promise<VerifiedFederationNamespace> {
     const [active] = await tx

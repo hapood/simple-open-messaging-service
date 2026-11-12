@@ -15,6 +15,7 @@ import {
 } from '../../../../shared/request-snapshot.js';
 import { Injectable } from '@nestjs/common';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
+import { captureGroupDepartureUpdatesInTx } from '../../shared/capture-group-departure-updates.js';
 import { and, eq, sql } from 'drizzle-orm';
 import {
   ClientStateFeedService,
@@ -89,6 +90,129 @@ export class GroupRelationshipMutationService {
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly groupRelationships: GroupRelationshipFoldService,
   ) {}
+
+  /** Seed the creator of a new local group, not a user-visible invitation.
+   * The caller holds the group's business scope and writes the creation notice
+   * before this activation so the owner's read window includes that notice. */
+  async initializeFoundingMembershipInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    creatorUserId: number,
+    clientFeedUpdates: PendingClientStateFeedUpdate[],
+  ): Promise<void> {
+    const locked = await this.relationshipIntents.lockGroupMutationInTx(tx, {
+      threadId,
+      groupId: threadId,
+      memberUserId: creatorUserId,
+      feedAllocatorUserIds: [creatorUserId],
+    });
+    const [group] = await tx
+      .select({
+        account: tables.groupAccount.account,
+        namespaceId: tables.messageThread.authorityNamespaceId,
+        profileRev: tables.groupAccount.defaultProfileRev,
+        dissolvedAt: tables.groupAccount.dissolvedAt,
+        threadDissolvedAt: tables.messageThread.groupDissolvedAt,
+      })
+      .from(tables.messageThread)
+      .innerJoin(
+        tables.groupAccount,
+        and(
+          eq(tables.groupAccount.id, tables.messageThread.groupAccountId),
+          eq(tables.groupAccount.account, tables.messageThread.groupAccount),
+        ),
+      )
+      .where(eq(tables.messageThread.id, threadId))
+      .limit(1);
+    if (
+      !group ||
+      group.namespaceId !== 0 ||
+      group.profileRev !== 0 ||
+      group.dissolvedAt !== null ||
+      group.threadDissolvedAt !== null
+    )
+      throw new Error(
+        'founding membership requires an unpublished local group',
+      );
+    const creator = await tx.query.account.findFirst({
+      where: eq(tables.account.id, creatorUserId),
+      columns: { account: true, namespaceId: true, defaultProfileRev: true },
+    });
+    if (!creator || creator.namespaceId !== 0)
+      throw new Error('group creator must be a local account');
+    if (
+      !Number.isSafeInteger(creator.defaultProfileRev) ||
+      creator.defaultProfileRev < 0
+    )
+      throw new Error('group creator profile revision is invalid');
+    if (creator.defaultProfileRev > 0) {
+      const profile = await tx.query.profileTable.findFirst({
+        where: and(
+          eq(tables.profileTable.account, creator.account),
+          eq(tables.profileTable.publisherNamespaceId, 0),
+          eq(tables.profileTable.profileNamespaceId, 0),
+          eq(tables.profileTable.profileRev, creator.defaultProfileRev),
+        ),
+        columns: { profileRev: true },
+      });
+      if (!profile) throw new Error('group creator profile is unavailable');
+    }
+    // Check the whole group's history, not only this creator's pair. Even an
+    // unpublished group must never acquire another founding owner on reuse.
+    // The canonical lock may have just inserted one inactive, unestablished
+    // pair shell; every other membership artifact disqualifies initialization.
+    const existing = await tx.execute<{ present: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM "RelationshipPair"
+        WHERE "threadId" = ${threadId}
+          AND (id <> ${locked.id} OR active OR established)
+        UNION ALL
+        SELECT 1 FROM "RelationshipIntent"
+        WHERE ("authorAccount" = ${group.account} AND "authorNamespaceId" = 0)
+          OR ("receiverAccount" = ${group.account} AND "receiverNamespaceId" = 0)
+        UNION ALL
+        SELECT 1 FROM "GroupMetaMemberFeed"
+        WHERE "threadId" = ${threadId}
+          AND operation IN ('MEMBER_UPSERT', 'MEMBER_DEPART')
+        UNION ALL
+        SELECT 1 FROM "AccountThreadState" WHERE "threadId" = ${threadId}
+      ) AS present
+    `);
+    if (existing.rows[0]?.present !== false)
+      throw new Error('founding membership requires pristine membership state');
+
+    const memberDirection = buildIntentDirection(creator, group);
+    const common = {
+      threadId,
+      groupId: threadId,
+      memberUserId: creatorUserId,
+      pairId: locked.id,
+      memberLocal: true,
+      memberDirection,
+      threadLock: locked.threadLock,
+      hostedLocally: true,
+      status: 'ACCEPTED' as const,
+      snapshot: null,
+      initialRole: GroupRole.OWNER,
+    };
+    // Founding itself authorizes both directions. Seed the group declaration
+    // without activation, then activate with the creator's profile evidence.
+    // No REQUESTED presentation or permanent request round is involved.
+    await this.groupRelationships.writeLockedAuthoredIntentInTx(tx, {
+      ...common,
+      author: 'GROUP',
+      direction: buildIntentDirection(group, creator),
+      validatedPairActive: false,
+    });
+    await this.groupRelationships.writeLockedAuthoredIntentInTx(tx, {
+      ...common,
+      author: 'MEMBER',
+      direction: memberDirection,
+    });
+    clientFeedUpdates.push(
+      ...(await captureThreadStateUpdatesInTx(tx, [creatorUserId])),
+    );
+  }
 
   /** Call after the group command lock, before departure messages allocate client state. */
   async lockMemberRelationshipFeedInTx(
@@ -218,7 +342,9 @@ export class GroupRelationshipMutationService {
         .where(eq(tables.messageThread.id, threadId));
     if (clientFeedUpdates && membership.pairChanged)
       clientFeedUpdates.push(
-        ...(await captureThreadStateUpdatesInTx(tx, [memberUserId])),
+        ...(status === 'REVOKED'
+          ? await captureGroupDepartureUpdatesInTx(tx, threadId, memberUserId)
+          : await captureThreadStateUpdatesInTx(tx, [memberUserId])),
       );
     if (membership.changed) {
       const effects = await this.writeGroupRequestEffectsInTx(
@@ -253,7 +379,7 @@ export class GroupRelationshipMutationService {
         note: membership.request.note,
         messageEndSeq: membership.request.messageEndSeq,
         tombstoneEndSeq: membership.request.tombstoneEndSeq,
-        requestedAt: membership.request.requestedAt,
+        statusChangedAt: membership.request.statusChangedAt,
         expiresAt: membership.request.expiresAt,
       },
     };
@@ -373,7 +499,13 @@ export class GroupRelationshipMutationService {
         throw new Error('local invitation recipient is missing');
       if (membership.pairChanged)
         clientFeedUpdates.push(
-          ...(await captureThreadStateUpdatesInTx(tx, [localAccount.id])),
+          ...(status === 'REVOKED'
+            ? await captureGroupDepartureUpdatesInTx(
+                tx,
+                threadId,
+                localAccount.id,
+              )
+            : await captureThreadStateUpdatesInTx(tx, [localAccount.id])),
         );
       return new Map();
     }
@@ -390,7 +522,7 @@ export class GroupRelationshipMutationService {
         note: membership.request.note,
         messageEndSeq: membership.request.messageEndSeq,
         tombstoneEndSeq: membership.request.tombstoneEndSeq,
-        requestedAt: membership.request.requestedAt,
+        statusChangedAt: membership.request.statusChangedAt,
         expiresAt: membership.request.expiresAt,
       },
     };
@@ -476,7 +608,7 @@ export class GroupRelationshipMutationService {
         profileNamespaceId: tables.relationshipIntent.profileNamespaceId,
         profileRev: tables.relationshipIntent.profileRev,
         note: tables.relationshipIntent.note,
-        requestedAt: tables.relationshipIntent.requestedAt,
+        statusChangedAt: tables.relationshipIntent.statusChangedAt,
         expiresAt: tables.relationshipIntent.expiresAt,
       })
       .from(tables.relationshipIntent)
@@ -498,7 +630,7 @@ export class GroupRelationshipMutationService {
     if (!intent) return unchanged;
 
     if (status === 'REQUESTED') {
-      if (!intent.requestedAt || !intent.expiresAt) return unchanged;
+      if (!intent.statusChangedAt || !intent.expiresAt) return unchanged;
       if (!createIfMissing && !intent.requestId) return unchanged;
       const result = await this.requestCapability.openRequestInTx(tx, {
         flow,
@@ -506,7 +638,7 @@ export class GroupRelationshipMutationService {
           authorProfileNamespaceId: intent.profileNamespaceId,
           authorProfileRev: intent.profileRev,
           note: intent.note,
-          requestedAt: intent.requestedAt,
+          requestedAt: intent.statusChangedAt,
           expiresAt: intent.expiresAt,
           snapshot: await this.resolveRoundSnapshotInTx(tx, snapshot, flow),
         },

@@ -4,7 +4,7 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { identityNamespace } from '../database/schema.js';
+import { federationFeedState } from '../database/schema.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
 import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
 
@@ -98,16 +98,17 @@ export class PeerStateFeedPullService {
     }
   }
 
-  /** The drain progress lives on the peer's epoch row; NULL means the feed was
-   * never bootstrapped. */
+  /** NULL inbound progress means the feed was never bootstrapped. */
   private async readPulledThrough(
     peerDomain: string,
     namespaceId: number,
   ): Promise<bigint | undefined> {
     const [row] = await this.database.db
-      .select({ pulledThrough: identityNamespace.stateFeedPulledThrough })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, namespaceId))
+      .select({
+        pulledThrough: federationFeedState.inboundStateFeedPulledThrough,
+      })
+      .from(federationFeedState)
+      .where(eq(federationFeedState.namespaceId, namespaceId))
       .limit(1);
     if (!row) throw new Error(`peer ${peerDomain} has no namespace row`);
     return row.pulledThrough ?? undefined;
@@ -121,10 +122,10 @@ export class PeerStateFeedPullService {
   ) {
     const [epoch] = await this.database.db
       .select({
-        pulledThrough: identityNamespace.stateFeedPulledThrough,
+        pulledThrough: federationFeedState.inboundStateFeedPulledThrough,
       })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, namespaceId))
+      .from(federationFeedState)
+      .where(eq(federationFeedState.namespaceId, namespaceId))
       .limit(1);
     if (!epoch) return null;
     const initialized = epoch.pulledThrough !== null;
@@ -149,11 +150,11 @@ export class PeerStateFeedPullService {
         throw new Error('peer returned an invalid state-feed bootstrap cursor');
       await this.database.db.transaction(async (tx) => {
         await tx
-          .update(identityNamespace)
+          .update(federationFeedState)
           .set({
-            stateFeedPulledThrough: error.resumeAfter,
+            inboundStateFeedPulledThrough: sql`COALESCE(${federationFeedState.inboundStateFeedPulledThrough}, ${error.resumeAfter})`,
           })
-          .where(eq(identityNamespace.id, namespaceId));
+          .where(eq(federationFeedState.namespaceId, namespaceId));
       });
       this.logger.log(
         `initialized state-feed cursor for peer ${peerDomain} (namespace ${namespaceId}) at 0`,
@@ -177,6 +178,8 @@ export class PeerStateFeedPullService {
 
     let previous = committedThrough;
     const items = page.items.map((item) => {
+      if (!Number.isSafeInteger(item.generatedAt) || item.generatedAt < 0)
+        throw new Error('invalid state feed item generation time');
       const feedId = this.parseRev(item.feedId, 'item.feedId');
       if (feedId <= previous || feedId > scannedThrough)
         throw new Error('peer returned unordered state feed items');
@@ -199,10 +202,10 @@ export class PeerStateFeedPullService {
           throw new Error('state-feed database single-flight is busy');
         const [current] = await tx
           .select({
-            pulledThrough: identityNamespace.stateFeedPulledThrough,
+            pulledThrough: federationFeedState.inboundStateFeedPulledThrough,
           })
-          .from(identityNamespace)
-          .where(eq(identityNamespace.id, namespaceId))
+          .from(federationFeedState)
+          .where(eq(federationFeedState.namespaceId, namespaceId))
           .limit(1);
         if (!current)
           throw new Error('state-feed pull namespace row disappeared');
@@ -210,11 +213,12 @@ export class PeerStateFeedPullService {
         if (currentThrough >= feedId) return false;
         await callbacks.apply(tx, itemPage);
         await tx
-          .update(identityNamespace)
+          .update(federationFeedState)
           .set({
-            stateFeedPulledThrough: feedId,
+            inboundStateFeedPulledThrough: feedId,
+            stateFeedSourceGeneratedAt: item.generatedAt,
           })
-          .where(eq(identityNamespace.id, namespaceId));
+          .where(eq(federationFeedState.namespaceId, namespaceId));
         return true;
       });
       if (applied) await callbacks.afterCommit?.(itemPage);
@@ -229,23 +233,25 @@ export class PeerStateFeedPullService {
         throw new Error('state-feed database single-flight is busy');
       const [current] = await tx
         .select({
-          pulledThrough: identityNamespace.stateFeedPulledThrough,
+          pulledThrough: federationFeedState.inboundStateFeedPulledThrough,
         })
-        .from(identityNamespace)
-        .where(eq(identityNamespace.id, namespaceId))
+        .from(federationFeedState)
+        .where(eq(federationFeedState.namespaceId, namespaceId))
         .limit(1);
       if (!current)
         throw new Error('state-feed pull namespace row disappeared');
       const currentThrough = current.pulledThrough ?? 0n;
       if (currentThrough < appliedThrough)
         throw new Error('state-feed item cursor did not commit');
+      // Empty scans and compaction gaps advance only the cursor, never the
+      // generation time of the last processed item.
       if (currentThrough >= scannedThrough) return;
       await tx
-        .update(identityNamespace)
+        .update(federationFeedState)
         .set({
-          stateFeedPulledThrough: scannedThrough,
+          inboundStateFeedPulledThrough: scannedThrough,
         })
-        .where(eq(identityNamespace.id, namespaceId));
+        .where(eq(federationFeedState.namespaceId, namespaceId));
     });
     return {
       requestedAfter: committedThrough,

@@ -44,6 +44,11 @@
 .lang-select {
   display: inline-flex;
   align-items: center;
+  // Material defaults to width: 100%, which is unsuitable for a compact
+  // shrink-to-fit toolbar. Keep both controls inside the host's right inset.
+  width: auto;
+  flex: 0 0 auto;
+  line-height: 20px;
 
   ::ng-deep .mat-mdc-select-trigger {
     display: inline-flex;

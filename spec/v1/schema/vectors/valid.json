@@ -1,21 +1,47 @@
 {
   "vectors": [
     {
+      "name": "file presentation retains actual media kind",
+      "schema": "urn:somfp:v1:message-content",
+      "value": {
+        "contentType": "FILE",
+        "content": {
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": "video.mp4",
+          "meta": { "kind": "VIDEO", "width": 1920, "height": 1080, "duration": 12.5 }
+        }
+      }
+    },
+    {
+      "name": "state item generation times need not follow feed order",
+      "schema": "urn:somfp:v1:state-feed",
+      "value": {
+        "items": [
+          { "account": "alice", "peerAccount": "bob", "eventType": "THREAD_CONTENT_HEAD", "feedId": "1", "generatedAt": 9007199254740991, "body": { "messageEndSeq": 0, "tombstoneEndSeq": 0 } },
+          { "account": "!team", "eventType": "THREAD_CONTENT_HEAD", "feedId": "2", "generatedAt": 0, "body": { "messageEndSeq": 0, "tombstoneEndSeq": 0, "groupMetaFeedEndId": 0 } }
+        ],
+        "scannedThrough": "2",
+        "stateFeedEndId": "2",
+        "profileNamespaceFeedEndId": "0",
+        "hasMore": false
+      }
+    },
+    {
       "name": "existing user or live group without a profile",
       "schema": "urn:somfp:v1:profile",
       "values": [
-        { "account": "alice", "profileRev": 0, "profile": null, "proof": "Y2hhbGxlbmdl" },
-        { "account": "!team", "profileRev": 0, "profile": null, "proof": "Y2hhbGxlbmdl" }
+        { "account": "alice", "generatedAt": 0, "profileRev": 0, "profile": null, "proof": "Y2hhbGxlbmdl" },
+        { "account": "!team", "generatedAt": 0, "profileRev": 0, "profile": null, "proof": "Y2hhbGxlbmdl" }
       ]
     },
     {
       "name": "Group Meta item variants accept the maximum allocatable coordinate",
       "schema": "urn:somfp:v1:group-meta#/$defs/item",
       "values": [
-        { "feedId": 9007199254740990, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
-        { "feedId": 9007199254740990, "operation": "MEMBER_DEPART", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 1 } },
-        { "feedId": 9007199254740990, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
-        { "feedId": 9007199254740990, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } }
+        { "feedId": 9007199254740990, "originCreatedAt": 0, "operation": "MEMBER_UPSERT", "body": { "account": "alice", "namespaceId": 0, "role": "OWNER", "profileRev": 1 } },
+        { "feedId": 9007199254740990, "originCreatedAt": 0, "operation": "MEMBER_DEPART", "body": { "account": "bob", "namespaceId": 7, "role": "MEMBER", "profileRev": 1 } },
+        { "feedId": 9007199254740990, "originCreatedAt": 0, "operation": "GROUP_PROFILE", "body": { "account": "!team", "namespaceId": 0, "profileRev": 1 } },
+        { "feedId": 9007199254740990, "originCreatedAt": 0, "operation": "GROUP_ANNOUNCEMENT", "body": { "text": null } }
       ]
     },
     {
@@ -96,6 +122,7 @@
       "values": [
         {
           "feedId": 11,
+          "originCreatedAt": 1700000000000,
           "operation": "GROUP_ANNOUNCEMENT",
           "body": {
             "text": "Welcome to the group.\nPlease read the rules."
@@ -103,6 +130,7 @@
         },
         {
           "feedId": 12,
+          "originCreatedAt": 1700000000001,
           "operation": "GROUP_ANNOUNCEMENT",
           "body": {
             "text": null
@@ -119,6 +147,7 @@
         "items": [
           {
             "feedId": 12,
+            "originCreatedAt": 1700000000001,
             "operation": "GROUP_ANNOUNCEMENT",
             "body": {
               "text": null
@@ -189,6 +218,7 @@
       "schema": "urn:somfp:v1:discovery",
       "value": {
         "software": "example/1.0",
+        "signingKeyCreatedAt": 1699990000000,
         "protocolVersions": [1, 2],
         "roots": [
           {
@@ -260,7 +290,8 @@
       "schema": "urn:somfp:v1:identity#/$defs/feedHeadHint",
       "value": {
         "stateFeedEndId": "12",
-        "profileNamespaceFeedEndId": "12"
+        "profileNamespaceFeedEndId": "12",
+        "generatedAt": 1699999999000
       }
     },
     {
@@ -271,6 +302,7 @@
           {
             "account": "alice",
             "eventType": "RELATIONSHIP_INTENT",
+            "generatedAt": 1700000000000,
             "peerAccount": "bob",
             "feedId": "1",
             "body": {
@@ -278,7 +310,7 @@
               "namespaceId": 0,
               "profileRev": 3,
               "note": "",
-              "requestedAt": 1700000000000,
+              "statusChangedAt": 1700000000000,
               "expiresAt": null,
               "messageEndSeq": 0,
               "tombstoneEndSeq": 0
@@ -287,6 +319,7 @@
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
             "eventType": "RELATIONSHIP_INTENT",
+            "generatedAt": 1700000000000,
             "peerAccount": "bob",
             "feedId": "3",
             "body": {
@@ -294,7 +327,7 @@
               "namespaceId": 0,
               "profileRev": 4,
               "note": "",
-              "requestedAt": 1700000000000,
+              "statusChangedAt": 1700000000000,
               "expiresAt": null,
               "messageEndSeq": 0,
               "tombstoneEndSeq": 0
@@ -303,6 +336,7 @@
           {
             "account": "!01arz3ndektsv4rrffq69g5fav",
             "eventType": "THREAD_CONTENT_HEAD",
+            "generatedAt": 1700000000000,
             "feedId": "6",
             "body": {
               "messageEndSeq": 8,
@@ -326,14 +360,15 @@
             {
               "account": "alice",
               "eventType": "RELATIONSHIP_INTENT",
+              "generatedAt": 1700000000000,
               "peerAccount": "bob",
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
                 "namespaceId": 0,
                 "profileRev": 3,
-                "note": "hello",
-                "requestedAt": 1700000000000,
+                "note": "",
+                "statusChangedAt": 1700000000000,
                 "expiresAt": 1700604800000,
                 "messageEndSeq": 0,
                 "tombstoneEndSeq": 0
@@ -350,15 +385,18 @@
             {
               "account": "alice",
               "eventType": "RELATIONSHIP_INTENT",
+              "generatedAt": 1700000000000,
               "peerAccount": "bob",
               "feedId": "1",
               "body": {
-                "status": "REVOKED",
+                "status": "ACCEPTED",
                 "namespaceId": 0,
                 "profileRev": 3,
                 "note": "",
-                "requestedAt": null,
-                "expiresAt": null
+                "statusChangedAt": 1700000001000,
+                "expiresAt": null,
+                "messageEndSeq": 0,
+                "tombstoneEndSeq": 0
               }
             }
           ],
@@ -372,6 +410,7 @@
             {
               "account": "alice",
               "eventType": "RELATIONSHIP_INTENT",
+              "generatedAt": 1700000000000,
               "peerAccount": "bob",
               "feedId": "1",
               "body": {
@@ -379,7 +418,7 @@
                 "namespaceId": 0,
                 "profileRev": 3,
                 "note": "",
-                "requestedAt": 1700000000000,
+                "statusChangedAt": 1700000002000,
                 "expiresAt": null
               }
             }
@@ -400,6 +439,7 @@
         "items": [
           {
             "feedId": 7,
+            "originCreatedAt": 1700000000000,
             "operation": "MEMBER_UPSERT",
             "body": {
               "account": "alice",
@@ -410,6 +450,7 @@
           },
           {
             "feedId": 8,
+            "originCreatedAt": 1700000000001,
             "operation": "MEMBER_UPSERT",
             "body": {
               "account": "bob",
@@ -420,6 +461,7 @@
           },
           {
             "feedId": 9,
+            "originCreatedAt": 1700000000002,
             "operation": "GROUP_PROFILE",
             "body": {
               "account": "!01arz3ndektsv4rrffq69g5fav",
@@ -442,6 +484,7 @@
         "items": [
           {
             "feedId": 10,
+            "originCreatedAt": 1700000000003,
             "operation": "MEMBER_DEPART",
             "body": {
               "account": "bob",
@@ -523,8 +566,7 @@
           "content": {
             "name": "photo.png",
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
-            "width": 1,
-            "height": 1
+            "meta": { "kind": "IMAGE", "width": 1, "height": 1 }
           }
         },
         {
@@ -532,10 +574,7 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "v",
-            "mimeType": "video/webm",
-            "width": 1,
-            "height": 1,
-            "duration": 1
+            "meta": { "kind": "VIDEO", "width": 1, "height": 1, "duration": 1 }
           }
         },
         {
@@ -543,7 +582,7 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "f",
-            "mimeType": "application/octet-stream"
+            "meta": { "kind": "FILE" }
           }
         },
         {
@@ -551,8 +590,7 @@
           "content": {
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "name": "a",
-            "mimeType": "audio/opus",
-            "duration": 1
+            "meta": { "kind": "AUDIO", "duration": 1 }
           }
         },
         {
@@ -596,11 +634,9 @@
           "content": {
             "items": [
               {
-                "kind": "IMAGE",
                 "name": "photo.png",
                 "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
-                "width": 1,
-                "height": 1
+                "meta": { "kind": "IMAGE", "width": 1, "height": 1 }
               }
             ]
           }
@@ -723,12 +759,14 @@
       "values": [
         {
           "account": "alice",
+          "generatedAt": 1700000000000,
           "displayName": "Alice",
           "bio": "",
           "avatar": null
         },
         {
           "account": "!group",
+          "generatedAt": 1700000000000,
           "displayName": "Example Group",
           "bio": "",
           "avatar": null
@@ -767,6 +805,7 @@
       "name": "profile response",
       "schema": "urn:somfp:v1:profile",
       "value": {
+        "generatedAt": 1700000000000,
         "account": "alice",
         "profile": {
           "displayName": "Alice",

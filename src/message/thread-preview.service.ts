@@ -53,7 +53,7 @@ export class ThreadPreviewService {
         threadId,
         localReadHwm: owner.lastReadSeq,
       });
-      await tx.execute(sql`UPDATE "AccountThreadState" SET "previewSeqs" = '{}'
+      await tx.execute(sql`UPDATE "AccountThreadState" SET "updatedAt" = CURRENT_TIMESTAMP, "previewSeqs" = '{}'
         WHERE "accountId" = ${owner.accountId} AND "threadId" = ${threadId} AND "previewSeqs" <> '{}'::integer[]`);
     }
   }

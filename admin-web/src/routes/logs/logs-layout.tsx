@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { RouteTabs } from '@/components/common/route-tabs';
 
 /** Logs hub shell: runtime logs plus client-submitted diagnostic bundles. Admin action audit records
- *  live under Access & Activity because they are governance data, not runtime logs. */
+ * live under Security because they are governance data, not runtime logs. */
 export function LogsLayout() {
   const { t } = useTranslation();
   return (

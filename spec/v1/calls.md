@@ -1,13 +1,13 @@
 # Simple Open Messaging Federation Protocol v1 Call Signaling
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document defines normative requirements. Examples and the explicitly
 non-normative operational defaults illustrate those requirements without
 adding to them.
 
 This document defines the mandatory end-to-end interoperability profile for
-one-to-one calls. It covers both the signed `POST /s2s/v1/call`
+one-to-one calls. It covers both the signed `POST /somfp/v1/call`
 server-to-server operation and the WebRTC/JSEP behavior required of the endpoint
 subsystems that produce and consume its signaling. Media, SDP, ICE, STUN, and
 TURN remain governed by the external standards listed in Section 13.
@@ -43,7 +43,7 @@ Call is a mandatory v1 feature, not a negotiated capability. A node publishing
 claim v1 conformance if its supported endpoints cannot perform the required
 WebRTC/JSEP behavior.
 
-Media does not pass through `/s2s/v1/call`, the state feed, or the message feed.
+Media does not pass through `/somfp/v1/call`, the state feed, or the message feed.
 Federation servers MUST NOT decrypt, transcode, mix, or relay media, and MUST
 NOT parse or rewrite SDP or ICE to make negotiation decisions for endpoints.
 
@@ -100,7 +100,7 @@ After accepting `incoming`, the receiver MUST bind
 | Property           | Requirement                                                                |
 | ------------------ | -------------------------------------------------------------------------- |
 | Method             | `POST`                                                                     |
-| Path               | `/s2s/v1/call`                                                             |
+| Path               | `/somfp/v1/call`                                                             |
 | Query              | None                                                                       |
 | Request media type | UTF-8 `application/json`                                                   |
 | Authentication     | Federation v1 HTTP Message Signature using the `recognized signed` context |
@@ -857,14 +857,14 @@ Their senders and delivery prerequisites are defined in Sections 5 and 6.
 ### 12.3 HTTP Message Signature
 
 ```http
-POST /s2s/v1/call HTTP/1.1
+POST /somfp/v1/call HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:5Vam5Hnx5PiCFCTArcBqNj7xOJbq4ew+8MqnYTZLtDU=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:y1SUIdFIzCUFImKmlzx+FGEXURckBJ0iTG3W/jdxA7im1bsAd2i+1my7pAJYGZsl1gq+YQZfHuzywHjjV/a1Cg==:
+Signature: sig1=:PHWGaPbRk82UDreF1TAquoP3RypNDfUWPZAsiO6OHd3R01HybCIOABLW+Dv85SsanADBNbjiwZpdGVVyBBKYAQ==:
 
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"incoming","mediaType":"AUDIO","payload":{"callerAccount":"alice","calleeAccount":"bob"}}
 ```

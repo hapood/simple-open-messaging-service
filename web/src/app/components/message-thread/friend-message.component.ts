@@ -1,5 +1,6 @@
 import {
   Component,
+  DestroyRef,
   computed,
   effect,
   ElementRef,
@@ -15,12 +16,28 @@ import {
   viewChild,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { catchError, firstValueFrom, map, of, Subscription } from 'rxjs';
-import { HttpClient } from '@angular/common/http';
+import {
+  ChatSurfaceLifecycle,
+  type ChatSurfaceState,
+} from './chat-surface-lifecycle';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import {
+  catchError,
+  defer,
+  EMPTY,
+  firstValueFrom,
+  map,
+  of,
+  Subscriber,
+  Subscription,
+  tap,
+} from 'rxjs';
+import { MatIconModule } from '@angular/material/icon';
+import { MatButtonModule } from '@angular/material/button';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
   ChatBoxScroller,
-  type ScrollerApi,
+  type CbInitOpts,
   type CbElement,
   type CbItem,
   type CbScrollInfo,
@@ -64,6 +81,7 @@ import {
 import {
   avatarProfileDemand,
   conversationAvatarProfile,
+  groupMemberAvatarProfile,
   type AvatarProfileRef,
 } from '../../services/avatar-profile-ref';
 import {
@@ -78,12 +96,12 @@ import { LinkCardGenerationService } from '../../services/link-card-generation.s
 import { ChatboxStickyOverlaysComponent } from '../message-cards/chatbox-sticky-overlays/chatbox-sticky-overlays.component';
 import { uuid } from '../../lib/uuid';
 import { assetUrl, isAndroidNative } from '../../services/runtime';
-import { MessageRepository } from '../../services/message-repository.service';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import {
   MediaAvailabilityRegistration,
   MediaAvailabilityService,
 } from '../../services/media-availability.service';
-import { avatarUrl, UserService } from '../../services/user.service';
+import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -96,8 +114,8 @@ import {
   type ConversationItem,
   type StandardResponse,
 } from '../../services/model';
+import { mentionSearchPlan } from '../chat-editor/mention-candidates';
 import { serializeNativeComposerText } from '../chat-editor/editor-message-serializer';
-import { isSelfMentionMember } from '../chat-editor/mention-candidates';
 import {
   MediaTransferService,
   type MediaTransferKind,
@@ -133,14 +151,16 @@ import {
 } from '../../services/profile-store.service';
 import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import { namespaceDisplayDomain } from '../../services/profile-namespace-domain';
-import { PopupType, RouteService } from '../../services/route.service';
+import {
+  PopupType,
+  RouteService,
+  type DlgRef,
+} from '../../services/route.service';
 import { currentGroupAnnouncement } from '../../services/group-announcement';
 import { GroupAnnouncementComponent } from '../group-announcement/group-announcement.component';
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
-import { MAX_MEDIA_FILE_BYTES } from '../../../../../shared/media-upload-limits';
-import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import {
   ALL_MENTION_ID,
   escapePlainText,
@@ -148,7 +168,7 @@ import {
 } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
-import { messageOpenOptions } from './message-open-position';
+import { watchMountedMessageDeletions } from './mounted-message-deletion';
 import {
   applyMessageSelectionState,
   messageMemberIds,
@@ -229,6 +249,8 @@ let nativeComposerContextSequence = Date.now() * 1000;
   selector: 'app-message-thread',
   standalone: true,
   imports: [
+    MatButtonModule,
+    MatIconModule,
     MessageHeaderComponent,
     CallBannerComponent,
     ChatInputComponent,
@@ -294,9 +316,7 @@ export class MessageThreadComponent implements OnDestroy {
   });
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
-  private readonly msgRepo = inject(MessageRepository);
   private readonly mediaAvailability = inject(MediaAvailabilityService);
-  private readonly deletedSub: Subscription;
   private readonly userService = inject(UserService);
   readonly selfUserId = computed(() => this.userService.sessionProfile()?.id);
   private readonly profileRepo = inject(ProfileRepository);
@@ -429,6 +449,7 @@ export class MessageThreadComponent implements OnDestroy {
       failPending: (item) => this.failPending(item),
       markAccepted: (item) => this.markAccepted(item),
       surfaceQuota: (response) => this.surfaceSendQuota(response),
+      maxFileBytes: () => this.currentMaxFileBytes(),
     },
   );
   private readonly messageSender = new ThreadMessageSendController(
@@ -448,8 +469,7 @@ export class MessageThreadComponent implements OnDestroy {
       source: () => this.source,
       fail: (item) => this.failPending(item),
       accept: (item) => this.markAccepted(item),
-      surfaceFailure: (response, threadId) =>
-        this.surfaceSendFailure(response, threadId),
+      surfaceFailure: (response) => this.surfaceSendFailure(response),
     },
   );
   private readonly composer = new ThreadComposerController({
@@ -473,15 +493,14 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly theme = inject(ThemeService);
   private readonly forwarding = new MessageForwardController(
     this.threadAdapter,
-    this.convList,
     this.route,
     this.toast,
     this.transloco,
     () => this.newClientMessageId(),
   );
   private readonly memberProfiles = inject(MemberProfileRepository);
-  private readonly chatAppearance = inject(ChatAppearanceService);
-  private readonly http = inject(HttpClient);
+  private readonly profileSession = inject(SessionLifecycleService);
+  private readonly destroyRef = inject(DestroyRef);
   readonly nativeComposer = inject(NativeComposerService);
   private readonly composerDrafts = inject(ComposerDraftService);
   private readonly linkGenerations = inject(LinkCardGenerationService);
@@ -492,43 +511,43 @@ export class MessageThreadComponent implements OnDestroy {
   readonly searchMentionMembers = async (
     query: string,
   ): Promise<ChatMember[]> => {
-    const threadId = this.threadId();
+    const binding = this.lifecycle.binding;
+    const session = this.profileSession.capture();
+    const threadId = binding?.threadId;
     const trd = this.userMsgTrd();
     if (threadId === undefined || trd?.type !== 'GROUP') return [];
-    const roster = await this.memberProfiles.queryPage(threadId, {
-      take: 20,
+    const allLabel = this.transloco.translate('chat.mentionAll');
+    const { includeAll, memberLimit } = mentionSearchPlan(
+      query,
+      allLabel,
+      this.canAdministerGroup(),
+    );
+    const eligible = await this.memberProfiles.queryPage(threadId, {
+      take: memberLimit,
       search: query,
+      exclude: selfMentionIdentity(
+        trd,
+        this.userService.sessionProfile()?.account,
+      ),
     });
-    const members = roster
-      .filter(
-        (member) =>
-          !isSelfMentionMember(
-            selfMentionIdentity(
-              trd,
-              this.userService.sessionProfile()?.account,
-            ),
-            member,
-          ),
-      )
-      .map((member) => ({
-        // Mention entity ids are serialized as v1 user entities:
-        // somfp://user/<namespaceId>/<account>. The member's namespaceId is the
-        // group origin's subject namespace (0 for a member hosted by the origin).
-        id: `${member.namespaceId}/${member.account}`,
-        label: member.name,
-        avatarUrl: assetUrl(avatarUrl(member.avatar)),
-      }));
     if (
-      this.canAdministerGroup() &&
-      this.transloco
-        .translate('chat.mentionAll')
-        .toLocaleLowerCase()
-        .includes(query.toLocaleLowerCase())
+      !binding ||
+      binding.signal.aborted ||
+      !this.profileSession.isCurrent(session)
     )
+      return [];
+    const members: ChatMember[] = eligible.map((member) => ({
+      // Mention entity ids are serialized as v1 user entities:
+      // somfp://user/<namespaceId>/<account>. The member's namespaceId is the
+      // group origin's subject namespace (0 for a member hosted by the origin).
+      id: `${member.namespaceId}/${member.account}`,
+      label: member.name,
+      profile: groupMemberAvatarProfile(trd, member),
+    }));
+    if (includeAll)
       members.unshift({
         id: ALL_MENTION_ID,
-        label: this.transloco.translate('chat.mentionAll'),
-        avatarUrl: '',
+        label: allLabel,
       });
     return members;
   };
@@ -568,16 +587,30 @@ export class MessageThreadComponent implements OnDestroy {
     },
   );
 
-  private scroller?: ScrollerApi<ChatItemData>;
+  private scroller?: ChatBoxScroller<ChatItemData>;
   private source?: MessageThreadSource;
-  private currentTrdId: number | null = null;
-  private blockedReadyTrdId: number | null = null;
-  /** True only once `initScroller`'s async `init()` has settled (set in its `.finally`, cleared at init
-   *  start + in `teardown`). Distinct from `currentTrdId === trd.id` (which is set synchronously at init
-   *  START): a pane mid-init has the right `currentTrdId` but is NOT yet ready. {@link reset} uses this to
-   *  tell a WARM resident (init done → emit `ready` now, no re-fetch) from a COLD one (idled via
-   *  `teardownKernel` → reinit). */
-  private kernelReady = false;
+  readonly lifecycle = new ChatSurfaceLifecycle();
+  private readonly presentation = signal<
+    'unbound' | 'loading' | 'history' | 'blocked' | 'error'
+  >('unbound');
+  readonly interactionActive = computed(() => {
+    const state = this.lifecycle.state();
+    return state.phase === 'bound' && state.foreground;
+  });
+  readonly composerBinding = computed(() =>
+    this.blockedPeer() ||
+    this.friendshipEnded() ||
+    this.readOnlyGroup() ||
+    this.sendPaused()
+      ? undefined
+      : this.lifecycle.binding,
+  );
+  private get currentTrdId(): number | null {
+    return this.lifecycle.binding?.threadId ?? null;
+  }
+  private get kernelReady(): boolean {
+    return this.presentation() === 'history';
+  }
   private readonly scrollState = new ThreadScrollController();
   private readonly appVisible = signal(
     typeof document === 'undefined' || document.visibilityState === 'visible',
@@ -587,7 +620,11 @@ export class MessageThreadComponent implements OnDestroy {
   private pendingDividerRefresh: number[] = [];
   private readonly stableRead = new StableReadTracker((seq) => {
     const threadId = this.threadId();
-    if (threadId !== undefined) {
+    if (
+      threadId !== undefined &&
+      threadId === this.currentTrdId &&
+      this.interactionActive()
+    ) {
       this.convList.markReadStable(threadId, seq);
     }
   });
@@ -601,6 +638,12 @@ export class MessageThreadComponent implements OnDestroy {
   readonly newMessageLabel = this.scrollState.newMessageLabel;
   /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Used only to
    *  keep the empty-thread state hidden until init settles; ChatPane owns the switch-loading spinner. */
+  readonly windowJumpState = signal<'idle' | 'loading' | 'missing' | 'failed'>(
+    'idle',
+  );
+  private windowJumpOptions?: CbInitOpts;
+  private finishWindowJump?: (found: boolean) => void;
+
   readonly initialLoading = signal(true);
   readonly initialLoadFailed = signal(false);
   private readonly messageInteraction = new MessageInteractionController();
@@ -624,18 +667,12 @@ export class MessageThreadComponent implements OnDestroy {
   readonly friendshipEnded = computed(
     () =>
       this.userMsgTrd()?.type === 'P2P' &&
-      this.userMsgTrd()?.friendshipActive === false,
-  );
-  readonly leftGroup = computed(
-    () =>
-      this.userMsgTrd()?.type === 'GROUP' &&
-      this.userMsgTrd()?.group?.dissolvedAt == null &&
       this.userMsgTrd()?.conversationState === 'READ_ONLY',
   );
-  readonly dissolvedGroup = computed(
+  readonly readOnlyGroup = computed(
     () =>
       this.userMsgTrd()?.type === 'GROUP' &&
-      this.userMsgTrd()?.group?.dissolvedAt != null,
+      this.userMsgTrd()?.conversationState === 'READ_ONLY',
   );
   /** Per-user quota breaker tripped for the local user → sending/uploading is paused server-side. Set when a
    *  send returns QUOTA_EXCEEDED; cleared on the next successful send (which implies the breaker was lifted,
@@ -724,6 +761,23 @@ export class MessageThreadComponent implements OnDestroy {
   private openedAnnouncementKey: string | null = null;
 
   constructor() {
+    this.lifecycle.state$
+      .pipe(takeUntilDestroyed())
+      .subscribe((state) => untracked(() => this.applyLifecycle(state)));
+    effect(() => {
+      const binding = this.lifecycle.binding;
+      const presented = this.presentation();
+      const foreground =
+        this.nativeComposerActive() &&
+        this.convList.openThreadId() === binding?.threadId;
+      if (binding)
+        untracked(() =>
+          this.lifecycle.activate(
+            binding,
+            foreground && presented !== 'loading',
+          ),
+        );
+    });
     effect(() => {
       const thread = this.userMsgTrd();
       const active = this.nativeComposerActive();
@@ -763,18 +817,13 @@ export class MessageThreadComponent implements OnDestroy {
           threadId: thread.threadId,
           feedId: announcement.feedId,
           text: announcement.text,
+          createdAt: announcement.createdAt,
+          originCreatedAt: announcement.originCreatedAt,
         },
         undefined,
         { scopeThreadId: thread.threadId },
       );
     });
-    this.deletedSub = this.msgRepo.deletedLive$.subscribe(
-      ({ threadId, deletions }) => {
-        if (threadId !== this.currentTrdId || !this.scroller) return;
-        for (const { seq, type } of deletions)
-          this.onMessageDeleted(threadId, seq, type);
-      },
-    );
     // The aggregate attachment card is a single kernel tail item. Moving the Angular-owned node into the
     // kernel's measured tail cap makes it part of the scrollable content/total-height model instead of a
     // fixed row above the composer. The cap's ResizeObserver accounts for show/hide and progress updates.
@@ -795,52 +844,13 @@ export class MessageThreadComponent implements OnDestroy {
       // Reading the nonce makes repeated clicks for the same thread distinct. The kernel may still be
       // initializing after navigation; init's normal bottom positioning handles that cold case.
       request.nonce;
-      queueMicrotask(() => this.scroller?.scrollToBottom());
+      if (this.lifecycle.binding) this.scroller?.scrollToBottom();
     });
-    effect(() => {
-      const vp = this.viewportRef();
-      const ct = this.contentRef();
-      const trd = this.userMsgTrd();
-      if (!vp || !ct || !trd) return;
-      if (this.blockedPeer()) {
-        this.presentBlockedThread(trd.threadId);
-        return;
-      }
-      // Leaving the parallel blocked-state branch makes this pane eligible for
-      // normal message-kernel initialization again.
-      this.blockedReadyTrdId = null;
-      // Native background delivery can outlive the WebView's list projection. The
-      // unread count and divider are computed from the live thread state at mount,
-      // so mounting before the foreground drain catches up is safe.
-      if (isAndroidNative() && !this.appVisible()) return;
-      if (this.resumeAfterBackground && this.currentTrdId === trd.threadId) {
-        // A pane already mounted before backgrounding keeps its kernel, draft and
-        // viewport. Replace only the measured divider rows, then catch up newer.
-        if (!this.kernelReady) {
-          this.initialLoading();
-          return;
-        }
-        this.resumeAfterBackground = false;
-        untracked(() => {
-          this.applyUnreadDivider(trd.threadId);
-          const latestSeq = Math.max(
-            this.convList.latestSeq(trd.threadId) ?? -1,
-            trd.lastMessageSeq ?? -1,
-          );
-          this.source?.resumeLiveUpdates?.(latestSeq);
-          this.unreadDividerReady.set(true);
-        });
-        return;
-      }
-      if (this.currentTrdId === trd.threadId) return;
-      this.teardown();
-      this.initScroller(vp.nativeElement, ct.nativeElement, trd);
-      this.currentTrdId = trd.threadId;
-    });
+    effect(() => this.synchronizeKernel());
     // A background A/B pane may finish initialization before it is promoted. Only the foreground pane starts
     // read tracking; start() immediately commits the fully-visible HWM collected during kernel layout.
     effect(() => {
-      const active = this.nativeComposerActive();
+      const active = this.interactionActive();
       const loading = this.initialLoading();
       if (
         active &&
@@ -855,6 +865,8 @@ export class MessageThreadComponent implements OnDestroy {
         this.stableRead.startFromViewport(
           this.scroller?.getFullyVisibleIds() ?? [],
         );
+      } else {
+        this.stableRead.reset();
       }
     });
     // Immunity frame drain: when a route-transition freeze ends, apply any viewport resize the kernel
@@ -868,13 +880,13 @@ export class MessageThreadComponent implements OnDestroy {
       const threadId = this.threadId();
       const shouldShow =
         this.nativeComposer.supported &&
-        this.nativeComposerActive() &&
+        !!this.composerBinding() &&
+        this.interactionActive() &&
         threadId !== undefined &&
-        !this.initialLoading() &&
+        this.presentation() !== 'loading' &&
         !this.blockedPeer() &&
         !this.friendshipEnded() &&
-        !this.leftGroup() &&
-        !this.dissolvedGroup() &&
+        !this.readOnlyGroup() &&
         !this.nativeComposerOccluded() &&
         !this.chatboxDialogOpen() &&
         !this.selectionMode();
@@ -895,6 +907,7 @@ export class MessageThreadComponent implements OnDestroy {
         if (this.nativeComposerContextId !== null)
           this.nativeComposer.update(this.nativeComposerContextId, {
             theme,
+            mentionAllLabel: this.transloco.translate('chat.mentionAll'),
             quote: quote ?? null,
           });
         return;
@@ -915,6 +928,8 @@ export class MessageThreadComponent implements OnDestroy {
         canRecord: true,
         canUpload: true,
         mentionsEnabled: this.userMsgTrd()?.type === 'GROUP',
+        userId: this.userService.sessionProfile()?.id ?? 0,
+        mentionAllLabel: this.transloco.translate('chat.mentionAll'),
         quote,
         theme,
       });
@@ -941,49 +956,63 @@ export class MessageThreadComponent implements OnDestroy {
     });
   }
 
-  private onMessageDeleted(
-    threadId: number,
-    seq: number,
-    deletionType: 'USER_RETRACTION' | 'MODERATION_REMOVAL',
-    reinitializeAlbum = true,
-  ): void {
+  private closeDeletedMessageSurfaces(threadId: number, seq: number): void {
+    // These surfaces can outlive the message's mounted row.
     this.galleryViewer.closeIfDeleted(threadId, seq);
     this.fileDetail.closeIfDeleted(threadId, seq);
     this.messageInteraction.removeMessage(seq);
-    let deletedAlbumMember = false;
+  }
+
+  private replaceMountedDeletedMessage(
+    seq: number,
+    deletionType: 'USER_RETRACTION' | 'MODERATION_REMOVAL',
+  ): void {
+    // Only mutate a currently mounted body. The source/cache never retain these
+    // notices, so trimming, reloading or reopening cannot resurrect a deletion.
     this.scroller?.mutateItem(seq, (item) => {
       if (item.data.type !== 'msg') return item;
       const images = item.data.images;
-      if (!images || images.length < 2)
+      if (!images || !item.ids || item.ids.length < 2)
         return this.deletedPlaceholder(item, seq, deletionType);
-      deletedAlbumMember = true;
-      const remaining = images.filter((image) => image.msgId !== seq);
-      if (remaining.length === images.length) return null;
-      if (remaining.length === 0) return null;
-      const head = remaining[0];
-      const headId = head.msgId;
-      if (headId === undefined) return null;
-      const ids = remaining
-        .map((image) => image.msgId)
-        .filter((id): id is number => id !== undefined);
-      return {
-        ...item,
-        id: headId,
-        ids: ids.length > 1 ? ids : undefined,
-        data: {
-          ...item.data,
-          msgId: headId,
-          contentType: head.kind === 'video' ? 'VIDEO' : 'IMAGE',
-          images: remaining,
-        },
+      const index = images.findIndex((image) => image.msgId === seq);
+      if (index < 0) return item;
+      const data = item.data;
+      const replacements: CbItem<ChatItemData>[] = [];
+      const appendMedia = (members: typeof images) => {
+        if (!members.length) return;
+        const head = members[0];
+        const ids = [...new Set(members.map((image) => image.msgId!))];
+        replacements.push({
+          id: ids[0],
+          ids: ids.length > 1 ? ids : undefined,
+          data: {
+            ...data,
+            msgId: ids[0],
+            contentType: head.kind === 'video' ? 'VIDEO' : 'IMAGE',
+            images: members,
+          },
+        });
       };
+      appendMedia(images.slice(0, index));
+      replacements.push(
+        this.deletedPlaceholder(
+          { ...item, boundary: undefined },
+          seq,
+          deletionType,
+        ),
+      );
+      appendMedia(
+        images.slice(index + 1).filter((image) => image.msgId !== seq),
+      );
+      if (item.boundary === 'oldest' || item.boundary === 'both')
+        replacements[0].boundary = 'oldest';
+      if (item.boundary === 'newest' || item.boundary === 'both')
+        replacements[replacements.length - 1].boundary =
+          replacements.length === 1 && item.boundary === 'both'
+            ? 'both'
+            : 'newest';
+      return replacements;
     });
-    // One source album can represent several durable coordinates. Rebuild it from the now-authoritative
-    // cache so the deleted coordinate becomes its own tombstone row and the remaining media regroup around it.
-    if (deletedAlbumMember && reinitializeAlbum)
-      queueMicrotask(() => {
-        if (this.currentTrdId === threadId) this.reinit();
-      });
   }
 
   private deletedPlaceholder(
@@ -993,6 +1022,7 @@ export class MessageThreadComponent implements OnDestroy {
   ): CbItem<ChatItemData> {
     return {
       id: seq,
+      ...(item.boundary ? { boundary: item.boundary } : {}),
       data: {
         type: 'system',
         contentType: 'SYSTEM',
@@ -1002,7 +1032,7 @@ export class MessageThreadComponent implements OnDestroy {
         isGroupConversation: item.data.isGroupConversation,
         name: '',
         text: '',
-        time: item.data.time,
+        time: '',
         images: null,
         file: null,
         createdAtMs: item.data.createdAtMs,
@@ -1059,15 +1089,8 @@ export class MessageThreadComponent implements OnDestroy {
         }
         return;
       }
-      case 'queryMentions': {
-        void this.answerNativeMentionQuery(event);
-        return;
-      }
       case 'cancelQuote':
         this.cancelQuote();
-        return;
-      case 'resolveMedia':
-        void this.resolveNativeMentionMedia(event);
         return;
       case 'pickAttachment':
         void this.pickNativeComposerAttachment(event);
@@ -1079,9 +1102,12 @@ export class MessageThreadComponent implements OnDestroy {
         this.nativeDraft.set(event.text);
         this.saveNativeComposerDraft();
         return;
+      case 'openLinkCard':
+        this.openComposerLinkWebDialog(event.url, event.text);
+        return;
       case 'linkMarkers':
         this.nativeDraft.set(event.text);
-        this.nativeDraft.consumeLink(event.links[0]?.href ?? null, event.text);
+        this.nativeDraft.selectLink(event.links[0]?.href ?? null);
         this.saveNativeComposerDraft();
         return;
       case 'destroy':
@@ -1094,74 +1120,65 @@ export class MessageThreadComponent implements OnDestroy {
     }
   }
 
-  /** The native composer owns no roster of its own: every mention popup, native or web, resolves
-   *  through searchMentionMembers so both surfaces present the same candidates (self excluded).
-   *  A failed lookup answers with an empty page — the native popup renders it as "no matches". */
-  private async answerNativeMentionQuery(
-    event: Extract<NativeComposerEvent, { kind: 'queryMentions' }>,
-  ): Promise<void> {
-    try {
-      const members = await this.searchMentionMembers(event.query);
-      const items = members.map((member) => ({
-        kind:
-          member.id === ALL_MENTION_ID ? ('all' as const) : ('user' as const),
-        id: member.id,
-        label: member.label,
-        avatar:
-          member.id === ALL_MENTION_ID
-            ? ({ kind: 'builtin', icon: 'everyone' } as const)
-            : ({
-                kind: 'user',
-                url: member.avatarUrl || undefined,
-                fallbackText: avatarFallbackText(member.label),
-                colorSeed: member.id,
-              } as const),
-      }));
-      this.nativeComposer.update(event.contextId, {
-        mentionResults: { requestId: event.requestId, items },
-      });
-    } catch {
-      this.nativeComposer.update(event.contextId, {
-        mentionResults: { requestId: event.requestId, items: [] },
-      });
-    }
-  }
+  /** Existing Web dialog opened by the native composer's link action. */
+  private composerLinkWebDialog?: DlgRef;
 
-  private async resolveNativeMentionMedia(
-    event: Extract<NativeComposerEvent, { kind: 'resolveMedia' }>,
-  ): Promise<void> {
-    try {
-      // HttpClient is intentional: TauriHttpBackend routes media:// and http://media.localhost through
-      // Rust's authenticated media_request command. Android WebView fetch() rejects custom schemes.
-      const blob = await firstValueFrom(
-        this.http.get(event.url, { responseType: 'blob' }),
-      );
-      if (blob.size > 512 * 1024) throw new Error('avatar is too large');
-      const base64 = await blobToBase64(blob);
-      this.nativeComposer.update(event.contextId, {
-        mediaResolved: {
-          requestId: event.requestId,
-          mimeType: blob.type || 'application/octet-stream',
-          base64,
-        },
-      });
-    } catch {
-      this.nativeComposer.update(event.contextId, {
-        mediaResolved: { requestId: event.requestId, error: 'unavailable' },
-      });
-    }
+  private openComposerLinkWebDialog(url: string, text: string): void {
+    const binding = this.lifecycle.binding;
+    if (!binding || !url || this.composerLinkWebDialog) return;
+    this.nativeDraft.set(text);
+    this.nativeDraft.consumeLink(
+      url,
+      text,
+      (generationId) => {
+        if (binding.signal.aborted || this.lifecycle.binding !== binding)
+          return;
+        this.saveNativeComposerDraft();
+        const close = () => {
+          const dialog = this.composerLinkWebDialog;
+          this.composerLinkWebDialog = undefined;
+          if (dialog) this.route.closeDialogAndAbove(dialog);
+        };
+        binding.signal.addEventListener('abort', close, { once: true });
+        this.composerLinkWebDialog = this.route.popupDlg(
+          PopupType.LINK_CARD_GENERATION,
+          { generationId, originalText: text, mode: 'composer' },
+          (result) => {
+            binding.signal.removeEventListener('abort', close);
+            this.composerLinkWebDialog = undefined;
+            if (binding.signal.aborted || this.lifecycle.binding !== binding)
+              return;
+            if (result?.kind === 'retry') {
+              this.nativeDraft.clearLink();
+              this.openComposerLinkWebDialog(url, text);
+            } else if (result?.kind === 'link') {
+              this.onSendIntent(result);
+            }
+          },
+          { scopeThreadId: binding.threadId },
+        );
+      },
+      () => {
+        if (!binding.signal.aborted)
+          this.toast.warn(this.transloco.translate('linkCard.generateFailed'));
+      },
+    );
   }
 
   private async pickNativeComposerAttachment(
     event: Extract<NativeComposerEvent, { kind: 'pickAttachment' }>,
   ): Promise<void> {
+    const binding = this.lifecycle.binding;
+    if (!binding) return;
     try {
       const files = await this.nativeUploads.pick(
         event.source === 'gallery' ? 'image' : 'file',
       );
+      if (binding.signal.aborted) return;
       if (files.length) this.onSendIntent({ kind: 'native-files', files });
       this.nativeComposer.acknowledge(event.actionId, true);
     } catch {
+      if (binding.signal.aborted) return;
       this.nativeComposer.acknowledge(event.actionId, false);
       this.toast.warn(this.transloco.translate('transfer.pickFailed'));
     }
@@ -1171,11 +1188,146 @@ export class MessageThreadComponent implements OnDestroy {
     this.nativeVoiceUploads.handle(event);
   }
 
-  private initScroller(
+  /** Synchronize input changes without reviving a resident explicitly idled by the host. */
+  private synchronizeKernel(): void {
+    const vp = this.viewportRef();
+    const ct = this.contentRef();
+    const trd = this.userMsgTrd();
+    const opening = this.nav.chatOpening();
+    if (!vp || !ct) return;
+    if (!this.scroller)
+      this.prepareScroller(vp.nativeElement, ct.nativeElement);
+    const binding = this.lifecycle.binding;
+    if (!binding || !trd || binding.threadId !== trd.threadId) return;
+    const presentation = this.presentation();
+    if (this.blockedPeer()) {
+      if (presentation !== 'blocked') {
+        untracked(() => {
+          this.reload();
+        });
+      }
+      return;
+    }
+    if (presentation === 'blocked') {
+      untracked(() => this.reload());
+      return;
+    }
+    // Native delivery can outlive the WebView projection. Mount from live thread state;
+    // the foreground drain need not finish before the cached page can be presented.
+    if (isAndroidNative() && !this.appVisible()) return;
+    // Metadata advances and repeated entries feed the existing source, never a new window.
+    const latestSeq = Math.max(
+      trd.messageEndSeq,
+      this.convList.latestSeq(trd.threadId) ?? 0,
+      opening?.threadId === trd.threadId ? opening.latestSeq : 0,
+    );
+    untracked(() => this.source?.refreshLatest?.(latestSeq));
+    if (this.resumeAfterBackground && this.currentTrdId === trd.threadId) {
+      if (!this.kernelReady) {
+        this.initialLoading();
+        return;
+      }
+      this.resumeAfterBackground = false;
+      untracked(() => {
+        this.applyUnreadDivider(trd.threadId);
+        const latestSeq = Math.max(
+          this.convList.latestSeq(trd.threadId) ?? -1,
+          trd.messageEndSeq,
+        );
+        this.source?.resumeLiveUpdates?.(latestSeq);
+        this.unreadDividerReady.set(true);
+      });
+      return;
+    }
+  }
+
+  /** Lifecycle notifications are synchronous; Angular effects only project metadata. */
+  private applyLifecycle(state: ChatSurfaceState): void {
+    if (state.phase === 'bound') {
+      if (this.presentation() !== 'unbound') return;
+      const thread = this.userMsgTrd();
+      if (!thread || thread.threadId !== state.binding.threadId) return;
+      this.presentation.set('loading');
+      if (thread.blocked) this.presentBlockedThread(thread.threadId);
+      else this.initScroller(thread);
+      return;
+    }
+    this.hideNativeComposer();
+    this.teardown();
+    this.presentation.set('unbound');
+    this.initialLoading.set(false);
+    this.initialLoadFailed.set(false);
+    if (state.phase === 'destroyed') this.scroller?.destroy();
+  }
+
+  private prepareScroller(
     viewport: HTMLDivElement,
     content: HTMLDivElement,
-    trd: ConversationItem,
   ): void {
+    this.scroller = new ChatBoxScroller<ChatItemData>({
+      viewport,
+      content,
+      hooks: {
+        createItem: (item, prev) => this.createItem(item, prev),
+        createSkeleton: () => createGhostCbElement(),
+        mergeItems: (items) =>
+          mergeAlbumItemsAtBoundary(items, this.scrollState.firstUnreadSeq),
+        absorbTail: (target, incoming) =>
+          incoming.id === this.scrollState.firstUnreadSeq
+            ? null
+            : absorbAlbumTail(target, incoming),
+      },
+      onWindowJump: (options) => this.replaceMessageWindow(options),
+      onScroll: (info) => this.onScroll(info),
+      onViewportPaint: () => this.updateStickyOverlays(),
+      onItemMounted: (item, rendered) =>
+        this.bindMessageDeletion(rendered, item),
+      onFullyVisibleEnter: (entries) => {
+        for (const entry of entries) {
+          this.pulseVisibleMention(entry.item, entry.el);
+          this.stableRead.noteFullyVisible(entry.item.ids ?? [entry.item.id]);
+        }
+      },
+      // History availability only authorizes loading. Demand delivery and later
+      // measurements must preserve the reading anchor, including initial catch-up.
+      // Initial positioning and explicit send/go-to-bottom commands remain separate.
+      config: {
+        ...this.threadAdapter.scrollerConfig(),
+        deferInitFill: true,
+        followBottom: false,
+      },
+      isFrozen: () => this.layout.reflowFrozen(),
+    });
+    this.threadAdapter.configureScroller(this.scroller);
+  }
+
+  private initializationSubscription?: Subscription;
+  private backfillSubscription?: Subscription;
+  private deletionSurfaceSubscription?: Subscription;
+  private unreadReanchorTimer?: ReturnType<typeof setTimeout>;
+
+  private initScroller(trd: ConversationItem): void {
+    const binding = this.lifecycle.binding;
+    if (!binding || !this.scroller) return;
+    this.deletionSurfaceSubscription =
+      this.threadAdapter.deletedLive$.subscribe({
+        next: ({ threadId, deletions }) => {
+          if (threadId !== binding.threadId) return;
+          // The thread subscription owns detached surfaces only. Each mounted body
+          // owns its own row mutation, including the durable post-mount recheck.
+          for (const { seq } of deletions)
+            this.closeDeletedMessageSurfaces(threadId, seq);
+        },
+      });
+    this.openMessageWindow(trd);
+  }
+
+  /** Message-window resources only. Conversation/editor ownership is unchanged. */
+  private openMessageWindow(
+    trd: ConversationItem,
+    jumpOptions?: CbInitOpts,
+  ): void {
+    if (!this.scroller) return;
     const initStartedAt = performance.now();
     if (isDevMode()) {
       console.log('[chat-perf] scroller:init', {
@@ -1224,73 +1376,31 @@ export class MessageThreadComponent implements OnDestroy {
         }));
       },
     });
-    this.scroller = new ChatBoxScroller<ChatItemData>({
-      viewport,
-      content,
-      source: this.source,
-      initOpts: { chatId: trd.threadId },
-      hooks: {
-        createItem: (item, prev) => this.createItem(item, prev),
-        createSkeleton: () => createGhostCbElement(),
-        mergeItems: (items) =>
-          mergeAlbumItemsAtBoundary(items, this.scrollState.firstUnreadSeq),
-        absorbTail: (target, incoming) =>
-          incoming.id === this.scrollState.firstUnreadSeq
-            ? null
-            : absorbAlbumTail(target, incoming),
-      },
-      onScroll: (info) => this.onScroll(info),
-      onViewportPaint: () => this.updateStickyOverlays(),
-      onFullyVisibleEnter: (entries) => {
-        for (const entry of entries) {
-          this.pulseVisibleMention(entry.item, entry.el);
-          const ids = entry.item.ids ?? [entry.item.id];
-          this.stableRead.noteFullyVisible(ids);
-        }
-      },
-      // Reveal the locally cached latest page immediately. Older history is backfilled after ready,
-      // so a one-message preview cache never makes pane switching wait for the network.
-      config: {
-        ...this.threadAdapter.scrollerConfig(),
-        deferInitFill: true,
-      },
-      // Immunity frame: hold the kernel's viewport reflow while a route-transition slide is in flight.
-      isFrozen: () => this.layout.reflowFrozen(),
-    });
-    this.threadAdapter.configureScroller(this.scroller);
+    this.scroller.bind(this.source, { chatId: trd.threadId });
     this.optimistic.bind(this.scroller, this.source);
     for (const item of this.source.getPending())
       this.registerMediaDiscard(item);
     for (const item of this.source.acceptedPending?.() ?? [])
       this.registerMediaDiscard(item);
-    // The tail cap is created synchronously with the scroller. If transfers survived a pane remount, the
-    // conditional stack may already exist and needs one post-construction placement pass.
-    queueMicrotask(() => {
-      const stack = this.transferStackRef()?.nativeElement;
-      const tailCap =
-        this.contentRef()?.nativeElement.querySelector<HTMLElement>(
-          '.cb-tail-cap',
-        );
-      if (stack && tailCap && stack.parentElement !== tailCap)
-        tailCap.appendChild(stack);
-    });
+    // bind() creates the tail cap synchronously. Already-rendered transfers can
+    // be placed now; the transfer view effect handles later Angular rendering.
+    const stack = this.transferStackRef()?.nativeElement;
+    const tailCap =
+      this.contentRef()?.nativeElement.querySelector<HTMLElement>(
+        '.cb-tail-cap',
+      );
+    if (stack && tailCap && stack.parentElement !== tailCap)
+      tailCap.appendChild(stack);
     this.initialLoading.set(true);
     this.initialLoadFailed.set(false);
-    this.kernelReady = false;
     this.unreadDividerReady.set(false);
-    const initialPosition = this.convList.previewUnreadEntryBoundary(
-      trd.threadId,
-    );
     this.scrollState.open(null);
-    const openOptions = messageOpenOptions(
-      this.chatAppearance.openPosition(),
-      initialPosition?.firstUnreadSeq ?? null,
-    );
+    const openOptions = jumpOptions;
     let missedUnreadAnchor = false;
     const source = this.source;
     const scroller = this.scroller;
-    void scroller
-      .init(
+    this.initializationSubscription = defer(() =>
+      scroller.init(
         openOptions
           ? {
               ...openOptions,
@@ -1300,52 +1410,87 @@ export class MessageThreadComponent implements OnDestroy {
               },
             }
           : undefined,
-      )
-      .then(() => {
-        if (this.source !== source || this.scroller !== scroller) return;
-        this.kernelReady = true;
-        if (!isAndroidNative() || this.appVisible()) {
-          this.applyUnreadDivider(trd.threadId);
-          if (missedUnreadAnchor && this.scrollState.firstUnreadSeq !== null)
-            this.scrollState.markUnreadReanchorNeeded();
-          this.unreadDividerReady.set(true);
-        }
-        this.initialLoading.set(false);
-        // `onScroll` normally runs after the initial batch mounts, but the first paint must not depend on that
-        // kernel callback: explicitly recompute once init has settled so a top-anchored unread divider suppresses
-        // the floating date pill before the pane is handed to the user.
-        this.updateStickyOverlays();
-        if (isDevMode()) {
-          console.log('[chat-perf] scroller:ready', {
-            threadId: trd.threadId,
-            elapsedMs: Math.round(performance.now() - initStartedAt),
+      ),
+    )
+      .pipe(
+        tap(() => {
+          if (
+            jumpOptions?.startMsgId != null &&
+            !scroller.getMountedGeometry(jumpOptions.startMsgId)
+          ) {
+            this.initialLoading.set(false);
+            this.windowJumpState.set('missing');
+            this.settleWindowJump(false);
+            return;
+          }
+          this.windowJumpState.set('idle');
+          this.presentation.set('history');
+          if (!isAndroidNative() || this.appVisible()) {
+            this.applyUnreadDivider(trd.threadId);
+            if (missedUnreadAnchor && this.scrollState.firstUnreadSeq !== null)
+              this.scrollState.markUnreadReanchorNeeded();
+            this.unreadDividerReady.set(true);
+          }
+          this.initialLoading.set(false);
+          // `onScroll` normally runs after the initial batch mounts, but the first paint must not depend on that
+          // kernel callback: explicitly recompute once init has settled so a top-anchored unread divider suppresses
+          // the floating date pill before the pane is handed to the user.
+          this.updateStickyOverlays();
+          if (isDevMode()) {
+            console.log('[chat-perf] scroller:ready', {
+              threadId: trd.threadId,
+              elapsedMs: Math.round(performance.now() - initStartedAt),
+            });
+          }
+          // Only after the DB/scroller phase is complete may the source compare the locally-loaded tail with
+          // BOTH remote ceilings and fall through to HTTP: the live-session HWM plus the durable thread
+          // metadata. The latter is load-bearing after an IndexedDB→SQLite migration / fresh install, where
+          // the thread row can say messageEndSeq=258 while the local messages table is legitimately empty.
+          source.finishLocalInit?.(
+            this.convList.latestSeq(trd.threadId),
+            Math.max(
+              trd.messageEndSeq,
+              this.nav.chatOpening()?.threadId === trd.threadId
+                ? this.nav.chatOpening()!.latestSeq
+                : 0,
+            ),
+          );
+          // A missed-message sync commonly leaves exactly one preview body in IDB after login. Backfill one
+          // older page only after the pane is ready; the kernel preserves the bottom/current-item anchor.
+          this.backfillSubscription = defer(() =>
+            scroller.backfillOlder(),
+          ).subscribe({
+            error: (error) =>
+              console.error('[chat] history backfill rejected', error),
           });
-        }
-        this.ready.emit(trd.threadId);
-        // Only after the DB/scroller phase is complete may the source compare the locally-loaded tail with
-        // BOTH remote ceilings and fall through to HTTP: the live-session HWM plus the durable thread
-        // metadata. The latter is load-bearing after an IndexedDB→SQLite migration / fresh install, where
-        // the thread row can say lastMessageSeq=258 while the local messages table is legitimately empty.
-        source.finishLocalInit?.(
-          this.convList.latestSeq(trd.threadId),
-          trd.lastMessageSeq,
-        );
-        // A missed-message sync commonly leaves exactly one preview body in IDB after login. Backfill one
-        // older page only after the pane is ready; the kernel preserves the bottom/current-item anchor.
-        void scroller
-          .backfillOlder?.()
-          .catch((e) => console.error('[chat] history backfill rejected', e));
-      })
-      .catch((error) => {
-        if (this.source !== source || this.scroller !== scroller) return;
-        this.initialLoading.set(false);
-        this.initialLoadFailed.set(true);
-        this.kernelReady = false;
-        // The error surface is ready for presentation too; otherwise the host hides its retry button.
-        this.ready.emit(trd.threadId);
-        if (isDevMode())
-          console.warn('[chat] initial message load failed', error);
-      });
+          // Notify last: the host may synchronously unbind this pane on readiness.
+          if (jumpOptions) this.settleWindowJump(true);
+          else this.ready.emit(trd.threadId);
+          void source
+            .restoreMediaStages?.()
+            .then(async () => {
+              if (this.source === source && this.scroller === scroller)
+                await scroller.reconcilePending();
+            })
+            .catch(() => {});
+        }),
+        catchError((error) => {
+          this.initialLoading.set(false);
+          if (jumpOptions) {
+            this.windowJumpState.set('failed');
+            this.settleWindowJump(false);
+          } else {
+            this.initialLoadFailed.set(true);
+            this.presentation.set('error');
+            // The error surface is ready for presentation too.
+            this.ready.emit(trd.threadId);
+          }
+          if (isDevMode())
+            console.warn('[chat] initial message load failed', error);
+          return EMPTY;
+        }),
+      )
+      .subscribe();
   }
 
   /** Kernel createItem hook: compute grouping flags from the older neighbor prev, wrap the real component.
@@ -1415,6 +1560,54 @@ export class MessageThreadComponent implements OnDestroy {
       };
     }
     return rendered;
+  }
+
+  private bindMessageDeletion(
+    rendered: CbElement<ChatItemData>,
+    initialItem: CbItem<ChatItemData>,
+  ): void {
+    const binding = this.lifecycle.binding;
+    const scroller = this.scroller;
+    if (!binding || !scroller) return;
+    let unregister: (() => void) | undefined;
+    let key = '';
+    const sync = (item: CbItem<ChatItemData>) => {
+      const seqs =
+        item.data.type === 'msg'
+          ? (item.ids ?? [item.id]).filter((seq) => seq >= 0)
+          : [];
+      const nextKey = JSON.stringify(seqs);
+      if (nextKey === key) return;
+      key = nextKey;
+      unregister?.();
+      unregister = undefined;
+      if (!seqs.length) return;
+      unregister = watchMountedMessageDeletions(
+        this.threadAdapter,
+        binding.threadId,
+        seqs,
+        binding.signal,
+        ({ seq, type }) => {
+          if (this.lifecycle.binding !== binding || this.scroller !== scroller)
+            return;
+          // A replaced row with the same coordinate belongs to a new registration.
+          if (scroller.getMountedGeometry(seq)?.el !== rendered.el) return;
+          this.replaceMountedDeletedMessage(seq, type);
+        },
+        (error) => console.error('[chat] mounted deletion check failed', error),
+      );
+    };
+    sync(initialItem);
+    const update = rendered.update.bind(rendered);
+    rendered.update = (item, prev) => {
+      update(item, prev);
+      sync(item);
+    };
+    const destroy = rendered.destroy.bind(rendered);
+    rendered.destroy = () => {
+      unregister?.();
+      destroy();
+    };
   }
 
   private bindMediaAvailability(
@@ -1647,12 +1840,12 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const conversation = this.userMsgTrd();
     if (conversation?.type === 'P2P') {
-      if (!profileRef || conversation.peerUser.account !== profileRef.account)
-        return;
+      if (!profileRef || conversation.account !== profileRef.account) return;
       this.dismissContextMenu();
       this.nav.openAside('profile');
       return;
     }
+    const session = this.profileSession.capture();
     const threadId = this.threadId();
     if (threadId === undefined || !profileRef) return;
     const demand = avatarProfileDemand(profileRef);
@@ -1678,13 +1871,15 @@ export class MessageThreadComponent implements OnDestroy {
           catchError(() => of(null)),
         ),
     );
+    if (!this.profileSession.isCurrent(session) || this.threadId() !== threadId)
+      return;
     const friendThreadId = this.convList
       .items()
       .find(
         (item) =>
           item.type === 'P2P' &&
-          item.peerUser.account === profile.account &&
-          item.friendshipActive !== false,
+          item.account === profile.account &&
+          item.conversationState === 'ACTIVE',
       )?.threadId;
     this.route.popupDlg(
       PopupType.CONTACT_IDENTITY,
@@ -1692,7 +1887,7 @@ export class MessageThreadComponent implements OnDestroy {
         identity: {
           account: profile.account,
           name: profile.name,
-          avatar: profile.avatarDigest ?? '',
+          profile: profileRef,
           bio: profile.bio,
           domain: memberHomeDomain ?? '',
           namespaceId: profile.namespaceId,
@@ -1725,10 +1920,9 @@ export class MessageThreadComponent implements OnDestroy {
   private canWithdraw(message: ChatMsgData): boolean {
     if (!message.isSelf) return false;
     const thread = this.userMsgTrd();
-    if (thread?.type === 'P2P' && thread.friendshipActive === false)
+    if (thread?.type === 'P2P' && thread.conversationState === 'READ_ONLY')
       return false;
-    if (thread?.type === 'GROUP' && this.leftGroup()) return false;
-    if (thread?.type === 'GROUP' && this.dissolvedGroup()) return false;
+    if (thread?.type === 'GROUP' && this.readOnlyGroup()) return false;
     return true;
   }
 
@@ -1784,7 +1978,8 @@ export class MessageThreadComponent implements OnDestroy {
           this.toast.warn(translateBizResult(res, this.transloco));
           return;
         }
-        this.onMessageDeleted(threadId, seq, 'USER_RETRACTION', false);
+        // Row replacement and detached-surface cleanup are owned by the
+        // authoritative deletion notification, not this HTTP acknowledgement.
         // The backend enqueues a thread-content fan-out that pushes a
         // THREAD_FEED_UPDATED wake; the SSE → DB-worker pipeline advances
         // tombstoneEndSeq and re-drains the tombstone stream. No eager pull.
@@ -2012,10 +2207,16 @@ export class MessageThreadComponent implements OnDestroy {
     this.optimistic.drainAtNewest(info.noNewer);
     const unreadReanchor = this.scrollState.update(info, this.scroller);
     this.stableRead.noteScroll();
-    if (unreadReanchor !== null)
-      queueMicrotask(
-        () => void jumpToMessage(this.scroller, unreadReanchor, 'top'),
-      );
+    if (unreadReanchor !== null) {
+      if (this.lifecycle.binding) {
+        // Re-anchoring mutates the scroller: defer until its scroll callback returns.
+        clearTimeout(this.unreadReanchorTimer);
+        this.unreadReanchorTimer = setTimeout(() => {
+          this.unreadReanchorTimer = undefined;
+          void jumpToMessage(this.scroller, unreadReanchor, 'top');
+        }, 0);
+      }
+    }
   }
 
   private pulseVisibleMention(
@@ -2028,16 +2229,28 @@ export class MessageThreadComponent implements OnDestroy {
       (item.data.mentionState !== 'me' && item.data.mentionState !== 'all')
     )
       return;
-    const className =
-      item.data.mentionState === 'me'
-        ? 'cb-mention-me-pulse'
-        : 'cb-mention-all-pulse';
+    const isMe = item.data.mentionState === 'me';
+    const className = isMe ? 'cb-mention-me-pulse' : 'cb-mention-all-pulse';
+    const animName = isMe ? 'mention-me-visible' : 'mention-all-visible';
     host.classList.remove(className);
     void host.offsetWidth;
     host.classList.add(className);
-    const clear = () => host.classList.remove(className);
-    host.addEventListener('animationend', clear, { once: true });
-    setTimeout(clear, 1600);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      host.removeEventListener('animationend', onEnd);
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      host.classList.remove(className);
+    };
+    const onEnd = (event: AnimationEvent) => {
+      if (event.animationName === animName) {
+        cleanup();
+      }
+    };
+    host.addEventListener('animationend', onEnd);
+    timer = setTimeout(cleanup, 1600);
   }
 
   updateStickyOverlays(): void {
@@ -2104,6 +2317,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** The composer emits one structured intent; route it to the matching optimistic-send path. */
   onSendIntent(intent: ChatSendIntent): void {
+    if (!this.composerBinding() || !this.interactionActive()) return;
     this.composer.dispatch(intent);
   }
 
@@ -2128,10 +2342,12 @@ export class MessageThreadComponent implements OnDestroy {
   private async sendChosenWebAttachments(
     files: readonly File[],
   ): Promise<void> {
+    const binding = this.lifecycle.binding;
+    if (!binding) return;
     const list = Array.from(files);
     if (list.length === 0) return;
     const combined = await this.chooseCombinedSend(list.length);
-    if (combined === null) return;
+    if (combined === null || binding.signal.aborted) return;
     if (combined) await this.sendWebGallery(list);
     else await this.sendAttachments(list);
   }
@@ -2139,8 +2355,10 @@ export class MessageThreadComponent implements OnDestroy {
   private async sendChosenNativeAttachments(
     files: readonly NativeUploadSelection[],
   ): Promise<void> {
+    const binding = this.lifecycle.binding;
+    if (!binding) return;
     const combined = await this.chooseCombinedSend(files.length);
-    if (combined === null) return;
+    if (combined === null || binding.signal.aborted) return;
     // Native gallery upload uses the same atomic server barrier; its streaming implementation is
     // added alongside the batch retry resource. Until then, the secondary behavior remains exact.
     if (combined) await this.sendNativeGallery(files);
@@ -2583,17 +2801,13 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** Daily quota failures are business responses (HTTP 200), so the HTTP error interceptor never sees
    * them. Keep the failed bubble/retry affordance and also explain why retrying today cannot succeed. */
-  private surfaceSendFailure(
-    res: StandardResponse<unknown>,
-    threadId: number,
-  ): void {
-    if (res.code === BusinessCode.FRIEND_NOT_FOUND) {
-      this.convList.applyThreadMeta(threadId, { friendshipActive: false });
-      this.toast.warn(translateBizResult(res, this.transloco));
-      return;
-    }
-    if (res.code === BusinessCode.GROUP_DISSOLVED) {
-      this.convList.applyGroupUpdate(threadId, { dissolvedAt: Date.now() });
+  private surfaceSendFailure(res: StandardResponse<unknown>): void {
+    if (
+      res.code === BusinessCode.FRIEND_NOT_FOUND ||
+      res.code === BusinessCode.GROUP_DISSOLVED
+    ) {
+      // Business refusals only explain the failed send. Relationship state
+      // continues to arrive through the normal server feed.
       this.toast.warn(translateBizResult(res, this.transloco));
       return;
     }
@@ -2615,7 +2829,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private surfaceSendQuota(res: StandardResponse<unknown>): void {
-    this.surfaceSendFailure(res, this.threadId() ?? 0);
+    this.surfaceSendFailure(res);
   }
 
   /** Append one non-audio upload to the component-wide FIFO. The returned promise represents this
@@ -2770,15 +2984,28 @@ export class MessageThreadComponent implements OnDestroy {
     });
   }
 
+  private async currentMaxFileBytes(): Promise<number | undefined> {
+    try {
+      const response = await firstValueFrom(this.userService.getMyQuota());
+      return response.code === 0
+        ? response.data?.breaker.maxFileBytes
+        : undefined;
+    } catch {
+      // A failed preflight must not substitute a stale hard-coded policy; upload admission is authoritative.
+      return undefined;
+    }
+  }
+
   private async rejectOversizedUpload(
     clientMessageId: string,
     item: CbItem<ChatItemData>,
     file: File,
   ): Promise<boolean> {
-    if (file.size <= MAX_MEDIA_FILE_BYTES) return false;
+    const limit = await this.currentMaxFileBytes();
+    if (limit === undefined || (limit > 0 && file.size <= limit)) return false;
     this.transfers.fail(
       clientMessageId,
-      this.transloco.translate('transfer.attachmentTooLarge'),
+      this.transloco.translate('transfer.attachmentTooLarge', { limit }),
       false,
     );
     await this.failPending(item);
@@ -2949,46 +3176,81 @@ export class MessageThreadComponent implements OnDestroy {
   /** Present the non-kernel blocked state and satisfy ChatPane's ready handshake.
    *  Keep the pane cold so unblocking the same thread starts a fresh message kernel. */
   private presentBlockedThread(threadId: number): void {
-    if (this.currentTrdId !== null || this.scroller) {
-      untracked(() => this.teardown());
-      this.currentTrdId = null;
-    }
+    const binding = this.lifecycle.binding;
+    if (!binding || binding.threadId !== threadId) return;
     this.initialLoading.set(false);
     this.initialLoadFailed.set(false);
-    this.kernelReady = false;
     this.unreadDividerReady.set(false);
-    if (this.blockedReadyTrdId === threadId) return;
-    this.blockedReadyTrdId = threadId;
+    this.presentation.set('blocked');
     this.ready.emit(threadId);
   }
 
+  private settleWindowJump(found: boolean): void {
+    const finish = this.finishWindowJump;
+    this.finishWindowJump = undefined;
+    finish?.(found);
+  }
+
+  private replaceMessageWindow(options: CbInitOpts): Promise<boolean> {
+    const thread = this.userMsgTrd();
+    if (!thread || !this.lifecycle.binding || !this.scroller)
+      return Promise.resolve(false);
+    this.closeMessageWindow();
+    this.windowJumpOptions = options;
+    this.windowJumpState.set('loading');
+    const result = new Promise<boolean>((resolve) => {
+      this.finishWindowJump = resolve;
+    });
+    this.openMessageWindow(thread, options);
+    return result;
+  }
+
+  retryWindowJump(): void {
+    if (this.windowJumpOptions)
+      void this.replaceMessageWindow(this.windowJumpOptions);
+  }
+
+  returnToLatest(): void {
+    void this.replaceMessageWindow({ startMsgId: null });
+  }
+
   private teardown(): void {
+    this.deletionSurfaceSubscription?.unsubscribe();
+    this.deletionSurfaceSubscription = undefined;
     this.cancelPaste();
     this.nativeDraft.reset();
     this.messageInteraction.reset();
+    this.closeMessageWindow();
+    // Search visibility belongs to the navigation state, not the window.
+  }
+
+  /** Release data/geometry before replacing a window, without ending the conversation. */
+  private closeMessageWindow(): void {
+    this.stopAnchorResolution();
+    this.settleWindowJump(false);
+    this.windowJumpOptions = undefined;
+    this.windowJumpState.set('idle');
+    // Stop result delivery before unbind cancels the kernel's underlying work.
+    this.initializationSubscription?.unsubscribe();
+    this.initializationSubscription = undefined;
+    this.backfillSubscription?.unsubscribe();
+    this.backfillSubscription = undefined;
+    clearTimeout(this.unreadReanchorTimer);
+    this.unreadReanchorTimer = undefined;
     this.stableRead.flush();
     this.stableRead.reset();
     this.unreadDividerReady.set(false);
     this.pendingDividerRefresh = [];
     this.scrollState.reset();
     this.stickyOverlays()?.clear();
-    this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
-    this.scroller = undefined;
+    this.scroller?.unbind();
     this.source = undefined;
     this.optimistic.reset();
-    this.kernelReady = false;
-    // (In-chat search visibility lives on NavStateMachineService now — cleared by openChat/closeChat on
-    // thread switch / going home — so no per-pane reset is needed here.)
   }
 
-  /** Tear down the kernel + source but keep the COMPONENT instance alive. The A/B buffer host demotes a pane
-   *  to background and idles its kernel here (bounding memory + SSE to one warm pane). Resets `currentTrdId`
-   *  so the pane is COLD — a subsequent re-selection of this thread drives {@link reset} to re-initialize
-   *  via {@link reinit}; idempotent. */
-  teardownKernel(): void {
-    this.chatInput()?.saveDraft();
-    this.teardown();
-    this.currentTrdId = null;
+  /** Revoke the shared chatbox/composer binding, retaining prepared infrastructure. */
+  unbind(): void {
+    this.lifecycle.unbind();
   }
 
   /** Persist while the native context still owns the text. hide() clears its EditText after releasing
@@ -2999,69 +3261,56 @@ export class MessageThreadComponent implements OnDestroy {
     this.nativeDraft.save(threadId, escapeComposerText);
   }
 
-  /** Force an in-place re-init for the current bound thread (teardown + rebuild), emitting `ready` when the
-   *  fresh kernel settles. The constructor init effect does NOT re-fire here (its deps — viewport/content/
-   *  userMsgTrd — are unchanged), so this is the sole re-init path when the data beneath a pane changes
-   *  (for example, after a server-applied history boundary) or when a resident pane is cold
-   *  ({@link reset}). */
-  private reinit(): void {
+  /** Only the host may create a binding; input updates never do so. */
+  bind(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
     const trd = this.userMsgTrd();
     if (!vp || !ct || !trd) return;
-    this.teardown();
-    this.currentTrdId = null;
-    this.initScroller(vp, ct, trd);
-    this.currentTrdId = trd.threadId;
+    const existing = this.lifecycle.binding;
+    if (existing?.threadId === trd.threadId) {
+      if (this.presentation() !== 'loading') this.ready.emit(existing.threadId);
+      return;
+    }
+    this.unbind();
+    if (!this.scroller) this.prepareScroller(vp, ct);
+    this.lifecycle.bind(trd.threadId);
   }
 
   retryInitialLoad(): void {
-    if (!this.initialLoadFailed()) return;
+    const thread = this.userMsgTrd();
+    if (
+      !this.initialLoadFailed() ||
+      !thread ||
+      this.lifecycle.binding?.threadId !== thread.threadId
+    )
+      return;
+    // Retry data loading, not conversation ownership or composer setup.
+    this.closeMessageWindow();
     this.initialLoadFailed.set(false);
     this.initialLoading.set(true);
-    this.reinit();
+    this.openMessageWindow(thread);
   }
 
-  /** Whether this pane has a reusable message or retry surface for the currently-bound thread. The A/B
+  /** Whether this pane has a reusable message, retry, or blocked surface for the currently-bound thread. The A/B
    *  host's fg-resident branch reads this so it only re-inits a genuinely COLD pane (re-open after a close)
    *  and skips a spurious reset on an already-warm one — which matters because every `promote()` flips
    *  `fgSlot` and re-triggers the coordinator, so without this guard a warm pane would be reset on every
    *  switch. A plain method (not a signal): a synchronous snapshot read, intentionally untracked. */
   isWarm(): boolean {
-    const trd = this.userMsgTrd();
     return (
-      !!trd &&
-      (this.kernelReady || this.initialLoadFailed()) &&
-      this.currentTrdId === trd.threadId
+      this.presentation() !== 'loading' &&
+      this.presentation() !== 'unbound' &&
+      this.lifecycle.binding?.threadId === this.userMsgTrd()?.threadId
     );
-  }
-
-  /** Ensure this pane is initialized for its CURRENT bound thread, emitting `ready` when so. The A/B host
-   *  calls this when re-selecting a thread already bound to a (possibly idled) pane: the input-keyed init
-   *  effect cannot re-fire on an unchanged ConversationItem, so without this nudge `ready` would never emit
-   *  and the switch would strand. WARM (kernel already settled for this thread) → `ready` now, preserving
-   *  the instant fast-flip-back the A/B buffer exists for (no re-fetch); COLD (idled via teardownKernel, or
-   *  mid-init) → {@link reinit} → `ready`. The warm emit is deferred to a microtask so it lands outside the
-   *  host's coordinator effect run, mirroring the async `ready` of a cold reinit. */
-  reset(): void {
-    const trd = this.userMsgTrd();
-    if (!trd) return;
-    if (this.kernelReady && this.currentTrdId === trd.threadId) {
-      queueMicrotask(() => this.ready.emit(trd.threadId));
-      return;
-    }
-    this.reinit();
   }
 
   // ---------- chat header MORE-menu integration ----------
 
-  /** Jump the kernel to a search match seq (from the search bar's prev/next). The kernel re-seeds around
-   *  an unmounted seq and flashes the row via the existing highlight path. */
+  /** Window navigation owns loading/missing/error presentation. A false result
+   * can also mean superseded navigation; never turn it into a second toast. */
   async onSearchJump(id: number): Promise<void> {
-    const found = await this.jumpToMessage(id);
-    if (!found) {
-      this.toast.warn(this.transloco.translate('chat.messageNotFound'));
-    }
+    await this.jumpToMessage(id);
   }
 
   /** Host-level navigation controls. These preserve the chatbox abstraction without exposing its scroller. */
@@ -3077,56 +3326,83 @@ export class MessageThreadComponent implements OnDestroy {
     return this.jumpToHistoryAnchor({ kind: 'local', seq: id });
   }
 
-  async jumpToHistoryAnchor(anchor: HistoryAnchor): Promise<boolean> {
-    const source = this.source;
-    const scroller = this.scroller;
-    if (!source || !scroller) return false;
-    const seq = source.resolveHistoryAnchor
-      ? await source.resolveHistoryAnchor(anchor)
-      : anchor.kind === 'local'
-        ? anchor.seq
-        : null;
-    if (seq === null || source !== this.source || scroller !== this.scroller)
-      return false;
-    return (await jumpToMessage(scroller, seq)) !== false;
+  private anchorRequest?: AbortController;
+  private anchorSubscription?: Subscription;
+  private finishAnchorRequest?: (found: boolean) => void;
+
+  private stopAnchorResolution(): void {
+    this.anchorSubscription?.unsubscribe();
+    this.anchorSubscription = undefined;
+    this.anchorRequest?.abort();
+    this.anchorRequest = undefined;
+    const finish = this.finishAnchorRequest;
+    this.finishAnchorRequest = undefined;
+    finish?.(false);
   }
 
-  /** Quote navigation entry: only an unresolvable coordinate is a user-visible
-   * "not found". A session switch during resolution stays silent, and resolution
-   * errors surface as their own notice instead of an unhandled rejection. */
-  private async jumpToQuoteAnchor(anchor: HistoryAnchor): Promise<void> {
+  jumpToHistoryAnchor(anchor: HistoryAnchor): Promise<boolean> {
+    this.stopAnchorResolution();
     const source = this.source;
-    if (!source) return;
-    let seq: number | null;
-    try {
-      seq = source.resolveHistoryAnchor
-        ? await source.resolveHistoryAnchor(anchor)
-        : anchor.kind === 'local'
-          ? anchor.seq
-          : null;
-    } catch {
-      this.toast.warn(this.transloco.translate('chat.messageJumpFailed'));
-      return;
-    }
-    if (seq === null) {
-      this.toast.warn(this.transloco.translate('chat.messageNotFound'));
-      return;
-    }
-    if (source !== this.source) return;
     const scroller = this.scroller;
-    if (!scroller) return;
-    await jumpToMessage(scroller, seq);
+    if (!source || !scroller) return Promise.resolve(false);
+    if (anchor.kind === 'local')
+      return jumpToMessage(scroller, anchor.seq).then(
+        (found) => found !== false,
+      );
+    const request = new AbortController();
+    this.anchorRequest = request;
+    return new Promise<boolean>((resolve) => {
+      this.finishAnchorRequest = resolve;
+      const subscriber = new Subscriber<number | null>({
+        complete: () => this.stopAnchorResolution(),
+        next: (seq) => {
+          // Release ownership before invoking navigation or UI callbacks:
+          // either may synchronously start another request.
+          subscriber.unsubscribe();
+          this.anchorSubscription = undefined;
+          this.finishAnchorRequest = undefined;
+          this.anchorRequest = undefined;
+          if (seq === null) {
+            this.toast.warn(this.transloco.translate('chat.messageNotFound'));
+            resolve(false);
+          } else {
+            void jumpToMessage(scroller, seq).then(
+              (found) => resolve(found !== false),
+              () => resolve(false),
+            );
+          }
+        },
+        error: () => {
+          subscriber.unsubscribe();
+          this.anchorSubscription = undefined;
+          this.finishAnchorRequest = undefined;
+          this.anchorRequest = undefined;
+          this.toast.warn(this.transloco.translate('chat.messageJumpFailed'));
+          resolve(false);
+        },
+      });
+      this.anchorSubscription = subscriber;
+      defer(() =>
+        source.resolveHistoryAnchor
+          ? source.resolveHistoryAnchor(anchor, request.signal)
+          : Promise.resolve(null),
+      ).subscribe(subscriber);
+    });
+  }
+
+  private async jumpToQuoteAnchor(anchor: HistoryAnchor): Promise<void> {
+    await this.jumpToHistoryAnchor(anchor);
   }
 
   /** Recreate the injected source while keeping the production chatbox shell mounted. */
   reload(): void {
-    this.reinit();
+    if (!this.lifecycle.binding) return;
+    this.unbind();
+    this.bind();
   }
 
   ngOnDestroy(): void {
-    this.deletedSub.unsubscribe();
-    this.hideNativeComposer();
-    this.teardown();
+    this.lifecycle.destroy();
   }
 }
 
@@ -3168,28 +3444,6 @@ function readFileAsDataURL(f: File): Promise<string> {
     r.onerror = () => resolve('');
     r.readAsDataURL(f);
   });
-}
-
-/** Bridge-safe avatar payload. Return only the base64 body; MIME travels in a separate field. */
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const comma = result.indexOf(',');
-      if (comma < 0) reject(new Error('invalid data URL'));
-      else resolve(result.slice(comma + 1));
-    };
-    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
-    reader.readAsDataURL(blob);
-  });
-}
-
-function avatarFallbackText(label: string): string {
-  const words = label.trim().split(/\s+/).filter(Boolean);
-  if (words.length > 1)
-    return `${Array.from(words[0])[0] ?? ''}${Array.from(words[1])[0] ?? ''}`.toLocaleUpperCase();
-  return (Array.from(words[0] ?? '')[0] ?? '?').toLocaleUpperCase();
 }
 
 /** Probe a video's real dimensions + duration via <video> loadedmetadata (for the optimistic cell +

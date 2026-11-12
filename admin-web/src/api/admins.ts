@@ -1,15 +1,5 @@
 import { request } from '@/api/client';
-import type { AdminListResult, AdminRole } from '@/types/api';
-
-export interface AdminsQuery {
-  skip?: number;
-  take?: number;
-  search?: string;
-}
-
-export function listAdmins(q: AdminsQuery): Promise<AdminListResult> {
-  return request<AdminListResult>('/admin/admins', q);
-}
+import type { AdminRole } from '@/types/api';
 
 export function grantViewer(userId: number): Promise<{ id: number }> {
   return request<{ id: number }>(`/admin/users/${userId}/grant-viewer`);

@@ -23,6 +23,25 @@ mechanism: exact request ceilings suit high-frequency polling and data APIs bett
 authentication buckets. Their limits and window lengths are also database-backed and editable on the
 same page. Counters remain process-local, bounded to the configured window, and reset on restart.
 
+## Session credential IP bans
+
+Client session-token validation shares the password-login IP failure counter and ban list.
+This applies to authenticated API requests and `/uploads/*`, not federation signatures or admin
+session cookies. Missing credentials do not count; malformed, unknown, expired, and revoked tokens
+count as failures. Storage errors do not count, and successful validation never clears the shared
+IP counter. Malformed tokens are rejected before storage access.
+
+Within the shared 15-minute sliding window, more than 10 failures trigger a 30-minute ban;
+the existing higher tiers are more than 20 failures for 3 hours and more than 40 for 24 hours.
+Active bans reject token-bearing requests before session lookup, including otherwise valid tokens
+from the same IP. Token requests return HTTP 429 with `RATE_LIMITED` and `data.bannedUntil`.
+IPv4-mapped addresses share the IPv4 identity; IPv6 addresses share the existing `/56` ban identity.
+Administrators clear these restrictions through the existing IP unban action.
+
+This is failure-based protection, not a request-rate or concurrent-validation ceiling: requests
+already validating when a ban is triggered may complete. Clients must stop retrying invalidated
+credentials; bursts of stale media requests can otherwise contribute to a shared NAT ban.
+
 ## Configuration
 
 Administrators can set each policy to `disabled`, `shadow`, or `enforce` and edit its token refill
@@ -68,7 +87,7 @@ rejecting requests. Before returning a changed policy to enforcement, record the
 3. The `wouldBlock / evaluated` ratio, the absolute would-block count, and `maxRetryAfterMs` from the
    five-minute summaries. Investigate sharp changes and retry times that exceed the client workflow.
 4. A review of sampled application/authentication logs around would-block intervals. Confirm that
-   shared NATs, IPv6 `/64` aggregation, retries, and QR polling are not producing legitimate lockouts.
+   shared NATs, IPv6 `/56` aggregation, retries, and QR polling are not producing legitimate lockouts.
    Rate-limit summaries themselves are intentionally aggregate and contain no identifying subjects.
 5. A rollback owner and the exact rollback value (`shadow`).
 

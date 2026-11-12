@@ -1,11 +1,11 @@
 # Simple Open Messaging Federation Protocol v1 Message Provenance Query
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document is entirely normative.
 
 This document defines the batch provenance query
-`POST /s2s/v1/message-provenance`. A recognized peer asks the server that
+`POST /somfp/v1/message-provenance`. A recognized peer asks the server that
 published a message whether it still recognizes a given content digest as the
 content it published at a given direct-origin coordinate. The answer is
 per-query and one of three states.

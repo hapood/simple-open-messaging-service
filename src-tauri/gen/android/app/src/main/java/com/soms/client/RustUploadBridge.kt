@@ -9,7 +9,6 @@ object RustUploadBridge {
         fd: Int,
         uploadId: String,
         attemptId: String,
-        endpoint: String,
         filename: String,
         mime: String,
         size: Long,

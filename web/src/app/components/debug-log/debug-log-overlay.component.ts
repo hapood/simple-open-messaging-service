@@ -181,6 +181,7 @@ type UploadState = 'idle' | 'confirming' | 'uploading';
           </select>
           <input
             class="dbg-search"
+            autocapitalize="off"
             type="search"
             aria-label="Filter logs"
             placeholder="Filter logs…"

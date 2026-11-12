@@ -14,7 +14,6 @@ import {
   IsOptional,
   IsString,
   Matches,
-  Max,
   MaxLength,
   Min,
   ValidateNested,
@@ -78,7 +77,8 @@ export class GroupInviteAddressDto {
 export class InviteGroupDto {
   @ApiProperty({
     type: [GroupInviteAddressDto],
-    description: 'Existing friends to invite by public address.',
+    description:
+      'Users to invite by public address; friendship is not required.',
   })
   @IsArray()
   @ArrayMinSize(1)
@@ -128,37 +128,6 @@ export class ReadGroupAnnouncementDto extends GroupIdDto {
   announcementFeedId!: number;
 }
 
-/** Server-authoritative friend page for the group invitation picker. */
-export class QueryGroupInviteCandidatesDto extends GroupIdDto {
-  @ApiPropertyOptional({
-    example: 42,
-    description: 'Exclusive P2P thread-id cursor. Omit for the first page.',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  afterThreadId?: number;
-
-  @ApiPropertyOptional({
-    example: 'alice',
-    description: 'Optional case-insensitive account or display-name search.',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  search?: string;
-
-  @ApiPropertyOptional({ default: 20, description: 'Page size (1-50)' })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(50)
-  take?: number;
-}
-
-/** Newest-first keyset page of projected USER→GROUP applications. */
 export class QueryGroupJoinRequestsDto extends RequestPageDto {
   @ApiProperty({ example: 12 })
   @Type(() => Number)

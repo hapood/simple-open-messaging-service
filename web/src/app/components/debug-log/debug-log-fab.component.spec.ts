@@ -35,8 +35,14 @@ describe('DebugLogFabComponent', () => {
     ) as HTMLButtonElement;
     const style = getComputedStyle(fab);
 
-    expect(style.left).toBe('calc(50% - 22px)');
-    expect(style.top).toBe('calc(50% - 22px)');
+    expect(Number.parseFloat(style.left)).toBeCloseTo(
+      window.innerWidth / 2 - 22,
+      1,
+    );
+    expect(Number.parseFloat(style.top)).toBeCloseTo(
+      window.innerHeight / 2 - 22,
+      1,
+    );
     expect(style.width).toBe('44px');
     expect(style.height).toBe('44px');
   });

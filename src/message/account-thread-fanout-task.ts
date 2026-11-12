@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
 import { insertPendingTaskInTx } from '../durable-task/task-admission.js';
+import { systemAccountIdInTx } from '../user/system-account.js';
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
@@ -78,6 +79,7 @@ export async function enqueueDepartureFanoutsInTx(
       scopeType: 'THREAD',
       scopeKey: accountThreadFanoutScope(target.threadId, recipient.id),
       taskType: DurableTaskType.FAN_OUT_ACCOUNT_THREAD_CONTENT,
+      actorUserId: await systemAccountIdInTx(tx),
       payload: { ...payload },
     });
   }

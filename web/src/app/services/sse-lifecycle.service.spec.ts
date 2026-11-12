@@ -6,6 +6,9 @@ import { PushRegistrationService } from './push-registration.service';
 import { SseLifecycleService } from './sse-lifecycle.service';
 import { WebsocketService } from './websocket.service';
 import { ThreadRepository } from './thread-store.service';
+import { BROWSER_SESSION } from './browser-session.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
+import { createSessionCacheDescriptor } from './session/session-identity';
 import { apiOrigin } from './runtime';
 
 describe('SseLifecycleService application orchestration', () => {
@@ -23,6 +26,7 @@ describe('SseLifecycleService application orchestration', () => {
     eventSubject: Subject<any>;
   };
   let onEvent: ReturnType<typeof vi.fn>;
+  let browserOwner: { currentSession: ReturnType<typeof createSessionCacheDescriptor> | null; bindIdentity: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     const loggedIn = signal(false);
@@ -39,9 +43,11 @@ describe('SseLifecycleService application orchestration', () => {
       eventSubject: new Subject(),
     };
     onEvent = vi.fn();
+    browserOwner = { currentSession: null, bindIdentity: vi.fn().mockResolvedValue(undefined) };
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
+        { provide: BROWSER_SESSION, useValue: browserOwner },
         { provide: AuthService, useValue: auth },
         { provide: ThreadRepository, useValue: {} },
         { provide: WebsocketService, useValue: ws },
@@ -76,12 +82,16 @@ describe('SseLifecycleService application orchestration', () => {
   });
 
   it('subscribes before restoration and forwards revocation reasons and HELLO to their owners', async () => {
+    const session = createSessionCacheDescriptor();
+    browserOwner.currentSession = session;
+    TestBed.inject(SessionLifecycleService).bindSession(session.id);
     auth.restoreSession.mockImplementation(async () => {
-      ws.eventSubject.next({ event: 'HELLO', data: { userId: 42 } });
+      ws.eventSubject.next({ event: 'HELLO', data: { userId: 42, sessionId: 11 } });
       ws.forcedLogout$.next('device_revoke');
     });
     await TestBed.inject(SseLifecycleService).restoreSession();
-    expect(onEvent).toHaveBeenCalledWith('HELLO', { userId: 42 });
+    expect(browserOwner.bindIdentity).toHaveBeenCalledWith({ userId: 42, serverSessionId: 11 });
+    expect(onEvent).toHaveBeenCalledWith('HELLO', { userId: 42, sessionId: 11 });
     expect(auth.redoLoginAuth).toHaveBeenCalledWith('device_revoke');
     TestBed.resetTestingModule();
     ws.forcedLogout$.next('late');

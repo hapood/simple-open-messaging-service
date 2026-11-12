@@ -2,7 +2,72 @@ import { describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { GroupRole } from '../database/enums.js';
-import { FederationThreadMetaRoundExecutorService } from './federation-thread-meta-round-executor.service.js';
+import {
+  FederationThreadMetaRoundExecutorService,
+  validateOriginGroupMetaItem,
+} from './federation-thread-meta-round-executor.service.js';
+import type { GroupMetaFeedItem } from './group-meta-feed.service.js';
+
+describe('origin Group Meta copy times', () => {
+  const member = {
+    account: 'alice',
+    namespaceId: 0,
+    role: 'MEMBER',
+    profileRev: 0,
+  };
+  it.each([
+    ['MEMBER_UPSERT', member],
+    ['MEMBER_DEPART', member],
+    ['GROUP_PROFILE', { account: '!team', namespaceId: 0, profileRev: 0 }],
+    ['GROUP_ANNOUNCEMENT', { text: null }],
+  ] as const)(
+    'requires creation time and rejects replica fields on %s',
+    (operation, body) => {
+      const item = {
+        feedId: 1,
+        originCreatedAt: 0,
+        operation,
+        body,
+      } as GroupMetaFeedItem;
+      expect(validateOriginGroupMetaItem(item, 'delta')).toMatchObject({
+        originCreatedAt: 0,
+      });
+      for (const field of ['originCreatedAt']) {
+        const missing: Record<string, unknown> = { ...item };
+        delete missing[field];
+        expect(() =>
+          validateOriginGroupMetaItem(
+            missing as unknown as GroupMetaFeedItem,
+            'delta',
+          ),
+        ).toThrow();
+      }
+      for (const originCreatedAt of [
+        undefined,
+        null,
+        -1,
+        0.5,
+        '0',
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        expect(() =>
+          validateOriginGroupMetaItem(
+            { ...item, originCreatedAt } as GroupMetaFeedItem,
+            'delta',
+          ),
+        ).toThrow();
+      }
+      for (const createdAt of [undefined, null, 0, '0', false]) {
+        expect(() =>
+          validateOriginGroupMetaItem(
+            { ...item, createdAt } as unknown as GroupMetaFeedItem,
+            'delta',
+          ),
+        ).toThrow();
+      }
+    },
+  );
+});
 
 describe('federation Group Meta round profile behavior', () => {
   it('schedules only Meta progress, without revision comparison or a profile pull', async () => {
@@ -73,6 +138,7 @@ describe('federation Group Meta round profile behavior', () => {
       items: [
         {
           feedId: 2,
+          originCreatedAt: 0,
           operation: 'MEMBER_UPSERT',
           body: {
             account: 'alice',

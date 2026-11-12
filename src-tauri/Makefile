@@ -1,8 +1,9 @@
-# SOMS native client builder — Android (native LINUX host) + macOS (native Mac host). Produces signed
-# Android APKs directly on a Linux (Ubuntu/Debian) host using its own JDK / Android SDK / NDK / Rust
-# toolchain; macOS .app/.dmg are built natively on a Mac (macOS can't be cross-built on Linux — needs
-# hdiutil/codesign + the macOS SDK). Windows / Linux-desktop artifacts are NOT built here — each needs
-# its own native host; they slot into dist/<platform>/ later.
+# SOMS native client builder — Android + Linux desktop (native LINUX host) + macOS (native Mac
+# host). Produces signed Android APKs directly on a Linux (Ubuntu/Debian) host using its own JDK /
+# Android SDK / NDK / Rust toolchain; Linux desktop AppImage/deb bundles build on the same native
+# host; macOS .app/.dmg are built natively on a Mac (macOS can't be cross-built on Linux — needs
+# hdiutil/codesign + the macOS SDK). Windows artifacts are NOT built here — needs its own native
+# host; they slot into dist/windows/ later.
 #
 # Build types (all land in dist/android/ as soms-<ver>[-debug]-<abi>.apk; future: apk-aab/AAB):
 #   make apk        — RELEASE APKs, per-ABI + universal (release-signed via gen/android keystore.properties).
@@ -11,20 +12,19 @@
 #   make run        — install + launch the app on the connected device.
 #   make clean      — drop generated Android build outputs (the ~/.gradle cache persists).
 #   make help       — this list.
+# Linux desktop (native LINUX host — Ubuntu 22.04+/Debian 12+, the WebKitGTK 4.1 baseline):
+#   make linux      — RELEASE AppImage + deb into dist/linux/ (x86_64; no rpm — see do_linux).
 # macOS desktop (native Mac host):
 #   make macos      — universal RELEASE .app + .dmg into dist/macos/ (ad-hoc signed; APPLE_SIGNING_IDENTITY for real).
 #   make macos-run  — open the newest built SOMS.app.
 #   make dev        — cargo tauri dev (hot-reload; beforeDevCommand runs ng serve on :4200).
 #
-# Variants: by default `make apk` builds ONE universal APK (bundles exactly MULTI_ABIS = aarch64
-# armv7) → dist/android/soms-<ver>-universal.apk. The universal variant compiles every ABI in
-# MULTI_ABIS, so it alone covers all real devices (x86/x86_64 are emulator-only and left out — keeps
-# the universal ~half the size of a 4-ABI build). Set SPLIT=1 to ALSO emit per-ABI APKs
-# (soms-<ver>-arm64-v8a.apk / -armeabi-v7a.apk) for Play-Store-style per-device distribution;
+# Variants: by default `make apk` (or ABI=all) builds ONE universal APK containing all four
+# Android ABIs. Override MULTI_ABIS to choose a subset. SPLIT=1 additionally emits per-ABI APKs.
 # ABI=<arch> builds just that one.
 #
 # Single-arch fast build: `make apk ABI=aarch64` builds ONLY that variant (~4× faster/smaller than
-# the full set). Valid ABI values: aarch64 armv7 i686 x86_64. Example: `make apk-debug ABI=aarch64 run`.
+# the full set). Valid ABI values: all aarch64 armv7 i686 x86_64. Example: `make apk-debug ABI=aarch64 run`.
 #
 # Invoke from anywhere — paths anchor to this file's location, so all of these are equivalent:
 #   make -C src-tauri apk          # from the repo root
@@ -36,21 +36,26 @@
 # (set HTTP_PROXY/HTTPS_PROXY or a ~/.cargo/config.toml mirror if you're behind a proxy); later warm
 # builds need no network.
 #
-# Host prerequisites (all on PATH): Rust toolchain + 4 android targets (rustup target add
-# aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android), Android SDK
-# with NDK r27b (27.1.12297006) — ANDROID_HOME set, JDK 17, tauri-cli 2.11.4 (cargo install tauri-cli),
-# Node (for the frontend `npm run build:native` in ../web), and adb (for `make install`/`run`).
+# Host prerequisites (all on PATH): Rust toolchain + the selected Android targets, Android SDK
+# with NDK r27b (27.1.12297006) — ANDROID_HOME set, JDK 17,
+# Node with frontend dependencies installed (`npm ci --prefix web`), and adb.
 
 # Anchor every path to this Makefile's own location so it runs identically regardless of CWD:
 # MAKE_DIR = the directory holding this file (.../src-tauri/), ROOT = the repo root.
 MAKE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ROOT     := $(abspath $(MAKE_DIR)..)
+# Do not let Tauri discover a vendored plugin's package.json as the frontend.
+export TAURI_APP_PATH := $(abspath $(MAKE_DIR))
+export TAURI_FRONTEND_PATH := $(ROOT)
+
+# Use the prebuilt CLI from the frontend lockfile on every host and in CI.
+TAURI := node "$(ROOT)/web/node_modules/@tauri-apps/cli/tauri.js"
 
 # LOCAL host toolchain (the build runs natively — no container). ANDROID_HOME is the SDK root; override
 # if yours lives elsewhere. The NDK is auto-detected under $ANDROID_HOME/ndk/<ver> (override
-# ANDROID_NDK_HOME). JAVA_HOME is derived from `java` on PATH. tauri-cli (cargo install tauri-cli
-# 2.11.4) MUST match web/package.json's @tauri-apps/cli — move them together or `tauri dev` and the
-# build CLI diverge. All exported so every recipe shell — and the gradle/cargo subprocesses — see them.
+# ANDROID_NDK_HOME). JAVA_HOME is derived from `java` on PATH. The Tauri CLI version is resolved
+# by web/package-lock.json; local builds and CI use the same prebuilt package.
+# Toolchain paths are exported to Gradle and Cargo subprocesses.
 ANDROID_HOME     ?= $(HOME)/Android/Sdk
 ANDROID_NDK_HOME ?= $(firstword $(wildcard $(ANDROID_HOME)/ndk/*))
 ANDROID_NDK_ROOT ?= $(ANDROID_NDK_HOME)
@@ -61,19 +66,17 @@ export ANDROID_HOME ANDROID_SDK_ROOT ANDROID_NDK_HOME ANDROID_NDK_ROOT JAVA_HOME
 # Per-ABI variants built by the default `make apk`. The universal variant bundles EXACTLY these
 # (repeated --target), so this list is the single knob for the whole variant set — override e.g.
 # `make apk MULTI_ABIS="aarch64"` for arm64-only (the universal then degenerates to arm64 too).
-MULTI_ABIS := aarch64 armv7
-# Build variants: ABI=<arch> → just that one; otherwise default to ONE universal APK (bundles exactly
-# MULTI_ABIS) — enough for sideloading + most distribution, and 3× fewer gradle assembles than per-ABI
-# splits + universal (the universal variant already compiles every ABI in MULTI_ABIS, so per-ABI
-# variants only add redundant packaging). Set SPLIT=1 to ALSO emit per-ABI APKs (arm64-v8a /
-# armeabi-v7a) for Play-Store-style per-device distribution.
-VARIANTS   := $(if $(ABI),$(ABI),$(if $(SPLIT),$(MULTI_ABIS) universal,universal))
+MULTI_ABIS := aarch64 armv7 i686 x86_64
+ABI ?= all
+SELECTED_ABIS := $(if $(filter-out all,$(ABI)),$(ABI),$(MULTI_ABIS))
+# Multi-arch builds use one universal package unless SPLIT=1 also requests individual packages.
+VARIANTS := $(if $(filter-out all,$(ABI)),$(ABI),$(if $(filter 1,$(SPLIT)),$(MULTI_ABIS) universal,universal))
 # Skip the merged-SPA `ng build` when it is already built (WEB_BUILD=0). The APK bundles the SPA
 # (frontendDist → web/dist/native/browser); updates require installing a new app package.
 WEB_BUILD  ?= 1
 # Versioned APKs (gitignored) land under dist/<platform>/ — Android here (dist/android/). Raw gradle
-# output stays under gen/android/app/build (ignored in-tree by gen/android/.gitignore). Future desktop
-# builds slot into dist/{linux,windows,macos}/ without touching this Makefile's Android recipes.
+# output stays under gen/android/app/build (ignored in-tree by gen/android/.gitignore). Windows
+# desktop builds slot into dist/windows/ later without touching this Makefile's existing recipes.
 DIST_DIR   := $(MAKE_DIR)dist/android
 # Version: tauri.conf.json is the single source of truth (gen/android/.../tauri.properties is
 # auto-generated from it). CARGO_VER mirrors Cargo.toml [package].version; do_build asserts equality
@@ -89,7 +92,7 @@ APK_FIND := find $(RAW_APK_DIR) $(DIST_DIR) -name '*.apk'
 # Caching & proxying are native now: cargo (~/.cargo) + gradle (~/.gradle) caches persist on the host;
 # set HTTP_PROXY/HTTPS_PROXY or a ~/.cargo/config.toml mirror in your shell if behind a proxy.
 
-.PHONY: help apk apk-debug apk-e2e-debug install run clean macos macos-run dev
+.PHONY: help apk apk-debug apk-e2e-debug install run clean macos macos-run linux dev
 help:  ## show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 
@@ -118,16 +121,22 @@ endef
 # gradle assembles. NOTE: no `@` after `;` — `@` is only a make quiet-prefix at line start; mid-line
 # it is passed to the shell as a literal and fails with "command not found".
 define do_build
+	@cd "$(ROOT)" && node scripts/check-version-sync.mjs
 	@# Single source of truth gate: tauri.conf.json version (VERSION) must equal Cargo.toml [package]
 	@# version (CARGO_VER). Drift => the APK's embedded version disagrees with the Rust crate version.
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
 	@# Host toolchain gate (the build runs natively — no container). Fail fast with the exact install
 	@# command rather than letting gradle/NDK fail opaquely. Mirrors do_macos's rust-target check.
 	@command -v cargo >/dev/null 2>&1 || { echo "✗ cargo not on PATH — install the Rust toolchain (https://rustup.rs)."; exit 1; }
-	@cargo tauri --version >/dev/null 2>&1 || { echo "✗ tauri-cli not installed — run: cargo install tauri-cli --version 2.11.4 --locked"; exit 1; }
+	@$(TAURI) --version >/dev/null 2>&1 || { echo "✗ Tauri CLI unavailable — run: npm ci --prefix web"; exit 1; }
 	@test -d "$(ANDROID_HOME)" || { echo "✗ ANDROID_HOME not found ($(ANDROID_HOME)) — install the Android SDK and set ANDROID_HOME."; exit 1; }
 	@test -n "$(ANDROID_NDK_HOME)" -a -d "$(ANDROID_NDK_HOME)" || { echo "✗ NDK not found under $(ANDROID_HOME)/ndk/ — run: sdkmanager \"ndk;27.1.12297006\" (or set ANDROID_NDK_HOME)."; exit 1; }
-	@for t in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android; do \
+	@for abi in $(SELECTED_ABIS); do \
+	  case "$$abi" in \
+	    aarch64) t=aarch64-linux-android;; armv7) t=armv7-linux-androideabi;; \
+	    x86_64) t=x86_64-linux-android;; i686) t=i686-linux-android;; \
+	    *) echo "✗ unknown ABI: $$abi"; exit 1;; \
+	  esac; \
 	  rustup target list --installed 2>/dev/null | grep -qx "$$t" || { echo "✗ missing rust target $$t — run: rustup target add $$t"; exit 1; }; \
 	done
 	@# Frontend build (host-side): the merged SPA (frontendDist → web/dist/native/browser). The APK bundles
@@ -164,15 +173,22 @@ define do_build
 	    *) echo "  ✗ unknown variant: $$v"; exit 1;; \
 	  esac; \
 	  echo "▶ building [$(1)] $$tag"; \
-	  cargo tauri android build --apk $$dbflag $$targs --config '{"build":{"beforeBuildCommand":""}}' >/dev/null; \
+	  $(TAURI) android build --apk $$dbflag $$targs --config '{"build":{"beforeBuildCommand":""}}'; \
 	  built=$$(find $(RAW_APK_DIR) -name '*$(1).apk' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); \
 	  test -n "$$built" || { echo "  ✗ no APK produced for $$tag"; exit 1; }; \
+	  python3 "$(MAKE_DIR)scripts/check-apk-alignment.py" "$$built"; \
 	  out=$(DIST_DIR)/soms-$(VERSION)$$dsuffix-$$tag.apk; \
 	  cp "$$built" "$$out"; \
 	  echo "✓ $$(basename $$out)  ($$(du -h "$$built" | cut -f1))  ABIs: [$(call apk_abis,$$built)]"; \
 	done
 	@echo "✓ $(DIST_DIR)/:"; ls -lh $(DIST_DIR)/*.apk 2>/dev/null | awk '{print "    "$$5"  "$$NF}'
 endef
+
+.PHONY: check-ipc-permissions
+check-ipc-permissions:
+	@cd "$(ROOT)" && npm run test:native-contracts
+
+apk apk-debug apk-e2e-debug linux macos: check-ipc-permissions
 
 apk:  ## build per-ABI + universal RELEASE APKs into dist/android/. ABI=aarch64 → one fast variant.
 	$(call do_build,release)
@@ -218,6 +234,7 @@ MAC_DIST_DIR := $(MAKE_DIR)dist/macos
 MAC_BUNDLE   := $(MAKE_DIR)target/universal-apple-darwin/release/bundle
 
 define do_macos
+	@cd "$(ROOT)" && node scripts/check-version-sync.mjs
 	@# Version gate — same single-source-of-truth assertion as the Android do_build.
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
 	@# Both Apple targets must be installed (universal-apple-darwin compiles each, then lipo-merges).
@@ -236,10 +253,11 @@ define do_macos
 	  npm --prefix $(ROOT)/web run verify:native || exit $$?; \
 	  cfg='--config {"build":{"beforeBuildCommand":""}}'; \
 	fi; \
-	cargo tauri build --target universal-apple-darwin $$cfg
+	$(TAURI) build --target universal-apple-darwin $$cfg
+	@# Select newest artifacts because older versioned bundles persist under target/.
 	@mkdir -p $(MAC_DIST_DIR); set -e; \
-	dmg=$$(ls $(MAC_BUNDLE)/dmg/*.dmg 2>/dev/null | head -1); \
-	app=$$(ls -d $(MAC_BUNDLE)/macos/*.app 2>/dev/null | head -1); \
+	dmg=$$(ls -t $(MAC_BUNDLE)/dmg/*.dmg 2>/dev/null | head -1); \
+	app=$$(ls -dt $(MAC_BUNDLE)/macos/*.app 2>/dev/null | head -1); \
 	test -f "$$dmg" -a -d "$$app" || { echo "  ✗ no .app/.dmg produced under $(MAC_BUNDLE)"; exit 1; }; \
 	bin=$$(find "$$app/Contents/MacOS" -type f | head -1); \
 	archs=$$(lipo -archs "$$bin"); \
@@ -258,5 +276,50 @@ macos-run:  ## open the newest built SOMS.app (dist/macos/ preferred, else raw b
 	test -n "$$APP" || { echo "No SOMS.app found — run 'make macos' first."; exit 1; }; \
 	echo "opening: $$APP"; open "$$APP"
 
+# ─── Linux desktop (native host — Ubuntu 22.04+/Debian 12+, the WebKitGTK 4.1 baseline) ────────
+# AppImage + deb for x86_64 via `cargo tauri build --bundles appimage,deb`. --bundles narrows
+# tauri.conf.json's "all" (which would also demand rpmbuild for an rpm we don't ship). The bundles
+# link against the BUILD host's glibc + WebKitGTK, and the AppImage does NOT bundle WebKitGTK/GTK
+# either — so build AND run on Ubuntu 22.04+ (glibc 2.35 / webkit2gtk-4.1; Debian 12+ or any distro
+# providing 4.1, e.g. Kylin V10 SP2, works too). Older 4.0-only systems (Ubuntu 20.04, Kylin V10 SP1)
+# are out of support. A 24.04 host (glibc 2.39) emits binaries that refuse to start on 22.04-era
+# distros — fine for local self-use, but DISTRIBUTED artifacts must come from an ubuntu-22.04 build
+# (the release workflow pins its Linux job there). aarch64 Linux desktop needs a native arm64 host
+# (same native-host policy as macOS/Windows) — not this target.
+LINUX_DIST_DIR := $(MAKE_DIR)dist/linux
+LINUX_BUNDLE   := $(MAKE_DIR)target/x86_64-unknown-linux-gnu/release/bundle
+
+define do_linux
+	@cd "$(ROOT)" && node scripts/check-version-sync.mjs
+	@# Version gate — same single-source-of-truth assertion as the Android/macOS recipes.
+	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
+	@# Host toolchain gate — same pins as the other recipes.
+	@command -v cargo >/dev/null 2>&1 || { echo "✗ cargo not on PATH — install the Rust toolchain (https://rustup.rs)."; exit 1; }
+	@$(TAURI) --version >/dev/null 2>&1 || { echo "✗ Tauri CLI unavailable — run: npm ci --prefix web"; exit 1; }
+	@rustup target list --installed 2>/dev/null | grep -qx "x86_64-unknown-linux-gnu" || { echo "✗ missing rust target x86_64-unknown-linux-gnu — run: rustup target add x86_64-unknown-linux-gnu"; exit 1; }
+	@# WebKitGTK gate: wry pkg-config-resolves webkit2gtk-4.1 at build time (gtk-3/soup-3 ride along as
+	@# its dependencies). Ubuntu 22.04 is the oldest host that ships 4.1 — this doubles as the host-floor
+	@# check; 20.04-era distros (webkit 4.0 only) can neither build nor run this client.
+	@command -v pkg-config >/dev/null 2>&1 || { echo "✗ pkg-config not on PATH — install it (apt install pkg-config)."; exit 1; }
+	@pkg-config --exists webkit2gtk-4.1 || { echo "✗ webkit2gtk-4.1 not found — Ubuntu 22.04+: sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev"; exit 1; }
+	@# beforeBuildCommand (npm --prefix web run build:native) runs natively on this host, so we let
+	@# Tauri run it directly — EXCEPT WEB_BUILD=0 blanks it (reuse the existing SPA build after verify).
+	@cfg=; if [ "$(WEB_BUILD)" != 1 ]; then \
+	  npm --prefix $(ROOT)/web run verify:native || exit $$?; \
+	  cfg='--config {"build":{"beforeBuildCommand":""}}'; \
+	fi; \
+	$(TAURI) build --target x86_64-unknown-linux-gnu --bundles appimage,deb $$cfg
+	@mkdir -p $(LINUX_DIST_DIR); set -e; \
+	appimage=$$(ls -t $(LINUX_BUNDLE)/appimage/*.AppImage 2>/dev/null | head -1); \
+	deb=$$(ls -t $(LINUX_BUNDLE)/deb/*.deb 2>/dev/null | head -1); \
+	test -n "$$appimage" -a -n "$$deb" || { echo "  ✗ no AppImage/deb produced under $(LINUX_BUNDLE)"; exit 1; }; \
+	cp "$$appimage" "$(LINUX_DIST_DIR)/SOMS-$(VERSION)-x86_64.AppImage"; \
+	cp "$$deb" "$(LINUX_DIST_DIR)/SOMS-$(VERSION)-x86_64.deb"; \
+	echo "✓ $(LINUX_DIST_DIR)/:"; ls -lh $(LINUX_DIST_DIR)/SOMS-$(VERSION)-*.AppImage $(LINUX_DIST_DIR)/SOMS-$(VERSION)-*.deb | awk '{print "    "$$5"  "$$NF}'
+endef
+
+linux:  ## build the Linux desktop AppImage + deb into dist/linux/ (host: Ubuntu 22.04+/Debian 12+)
+	$(call do_linux)
+
 dev:  ## run the desktop app in dev mode (cargo tauri dev — ng serve on :4200 + hot-reload)
-	cargo tauri dev
+	$(TAURI) dev

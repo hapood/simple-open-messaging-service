@@ -1,11 +1,11 @@
 # Simple Open Messaging Federation Protocol v1 Message Tombstone Query
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 This document is entirely normative.
 
 This document defines the per-thread authoritative deletion query
-`GET /s2s/v1/message-tombstones`. The compacted `thread + messageEndSeq +
+`GET /somfp/v1/message-tombstones`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
 [State Feed](./state-feed.md#5-thread_content_head).
 
@@ -83,7 +83,7 @@ previous hop's `messageSeq` without translating coordinates.
 
 ## 2. Tombstone query
 
-`GET /s2s/v1/message-tombstones` uses the same account-grammar-discriminated
+`GET /somfp/v1/message-tombstones` uses the same account-grammar-discriminated
 thread demand and P2P `peerAccount` as the message query, but it is
 forward-only. `after` is the exclusive cursor and `through` is the fixed
 inclusive upper bound. Both belong to the thread-local `deletionSeq` space,

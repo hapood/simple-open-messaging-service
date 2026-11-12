@@ -12,9 +12,9 @@
 > `LocalFederationRoot` epoch and disables the predecessor, and an own domain
 > replacement still swaps the binding directly. The current root-rotation
 > implementation announces its own change with a `namespaceId` `0` Profile
-> Namespace Feed item. `POST /s2s/v1/verify` is now sealed-challenge
+> Namespace Feed item. `POST /somfp/v1/verify` is now sealed-challenge
 > only; the namespace-id to bindings resolution it used to carry inline lives
-> on `GET /s2s/v1/profile-namespaces/:nsid`.
+> on `GET /somfp/v1/profile-namespaces/:nsid`.
 
 Status: historical redesign rationale with the supersession notes above. The current normative working package is the final-review draft under [spec/](../../spec/README.md); this record does not define its release status.
 This document records the threat-model reasoning, the wire decisions, and the
@@ -30,7 +30,7 @@ normative reference.
 | Health answered authentication failures with stable error envelopes.                                                | Health emits no error envelope: every failure uniformly returns `200 unavailable`; only transport-level rate limiting may answer `503`.                                                                                                                                         |
 | A peer recognized only through inbound Recognize had no cached certificates.                                        | The recognition commit persists the sender's pinned-root-authorized certificate set (recognition §5.2 step 6).                                                                                                                                                                  |
 | Root fingerprints existed as a local implementation concept with three duplicated builders.                         | Deleted everywhere. The root public key itself is the identity coordinate on the wire and in the database.                                                                                                                                                                      |
-| Nothing could verify a peer's historical artifacts after rotation.                                                  | A stateless sealed-challenge service (`POST /s2s/v1/verify`) proves possession of any retained key — current or retired — and discloses namespace pins; the public profile lookup carries the same primitive inline.                                                            |
+| Nothing could verify a peer's historical artifacts after rotation.                                                  | A stateless sealed-challenge service (`POST /somfp/v1/verify`) proves possession of any retained key — current or retired — and discloses namespace pins; the public profile lookup carries the same primitive inline.                                                            |
 
 ## 2. The one primitive: sealed challenges
 
@@ -43,10 +43,10 @@ no state, and replay protection is the caller's fresh challenge.
 
 - **Rotation review evidence**: the reviewer challenges the pinned
   predecessor root; only the party operating the peer's domain can open it.
-- **Card authenticity**: `GET /s2s/v1/accounts/:account?publicKey=&challenge=`
+- **Card authenticity**: `GET /somfp/v1/accounts/:account?publicKey=&challenge=`
   returns the card plus `proof` = recovered plaintext, so the card is bound
   to the holder of the named key, not merely to the current domain endpoint.
-- **Generic verification and namespace identity** (`POST /s2s/v1/verify`):
+- **Generic verification and namespace identity** (`POST /somfp/v1/verify`):
   `{publicKey, encryptedValue}` → `{value}` or `FEDERATION_PUBLIC_KEY_UNRECOGNIZED`;
   `{namespaceId}` → `{root, domain}` or `NOT_FOUND` (0 = the responder's
   current root), enabling introducer corroboration and historical re-checks.
@@ -127,7 +127,7 @@ One identity table, local and peer rows alike:
 ## 6. Phasing
 
 1. Spec, schemas, vectors, this document (done, reviewable).
-2. Unified identity table + destructive migration; well-known group
+2. Unified identity table + destructive migration; discovery group
    publisher/validator; key-history retention.
 3. Inbound resolution by root key; uniform Health `unavailable`; Recognize
    rotation-arrival resolution and review queue.

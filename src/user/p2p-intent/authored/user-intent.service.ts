@@ -1,3 +1,4 @@
+import { UserQuotaService } from '../../../quota/user-quota.service.js';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
 import type { RequestTransactionCapability } from '../../../relationship/request/request-transaction.contract.js';
@@ -45,12 +46,8 @@ import {
 } from '../shared/user-intent-state-sql.js';
 import { Logger } from '@nestjs/common';
 import { MeasureBusinessOperation } from '../../../diagnostics/execution-measurement.js';
-import { and, eq, sql } from 'drizzle-orm';
-import {
-  account,
-  relationshipIntent,
-  relationshipRequest,
-} from '../../../database/schema.js';
+import { and, eq } from 'drizzle-orm';
+import { account, relationshipRequest } from '../../../database/schema.js';
 import type {
   RequestDecision,
   RequestDecisionResult,
@@ -199,6 +196,7 @@ export class UserIntentService {
     private readonly federation: FederationStateFeedPusher,
     private readonly namespaces: FederationNamespaceService,
     private readonly requestCapability: RequestTransactionCapability,
+    private readonly quota: UserQuotaService,
   ) {}
 
   async decidePersonalRequest(
@@ -264,7 +262,12 @@ export class UserIntentService {
   ): Promise<UserIntentOutcome> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const applied = await this.database.db.transaction((tx) =>
-      this.executeInTx(tx, params, clientUpdates, options),
+      this.executeInTx(tx, params, clientUpdates, {
+        ...options,
+        admissionInTx: options?.expectedAuthorization
+          ? undefined
+          : (runner) => this.quota.tick(params.userId, 'requests', runner),
+      }),
     );
     this.publishIntentEffects(applied, clientUpdates);
     return applied.outcome;
@@ -318,6 +321,8 @@ export class UserIntentService {
         { userId: params.userId, decision: 'REVOKED', target },
         clientUpdates,
         {
+          admissionInTx: (runner) =>
+            this.quota.tick(params.userId, 'requests', runner),
           establishedRelationship: {
             threadId: params.threadId,
             epoch: row.authorizationEpoch,
@@ -698,9 +703,9 @@ export class UserIntentService {
       });
     }
 
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     const expiresAt = new Date(
-      requestedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
+      statusChangedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
     );
     return this.finalize(base, {
       kind: 'request',
@@ -708,7 +713,7 @@ export class UserIntentService {
         ...feedInput(base),
         snapshot: base.params.snapshot,
         note: (base.params.note ?? '').slice(0, 255),
-        requestedAt,
+        statusChangedAt,
         expiresAt,
       },
     });
@@ -928,7 +933,7 @@ export class UserIntentService {
           authorProfileNamespaceId: 0,
           authorProfileRev: context.authorization.actorProfileRev,
           note: context.input.note,
-          requestedAt: context.input.requestedAt,
+          requestedAt: context.input.statusChangedAt,
           expiresAt: context.input.expiresAt,
           snapshot: context.input.snapshot,
         },
@@ -1066,7 +1071,7 @@ export class UserIntentService {
             threadId: context.threadId,
             status: 'REVOKED',
             note: '',
-            requestedAt: null,
+            statusChangedAt: new Date(),
             expiresAt: null,
           }),
         );
@@ -1102,7 +1107,7 @@ export class UserIntentService {
           threadId: context.threadId,
           status: 'REVOKED',
           note: '',
-          requestedAt: null,
+          statusChangedAt: new Date(),
           expiresAt: null,
         }),
       );

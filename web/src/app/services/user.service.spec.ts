@@ -1,5 +1,4 @@
 import type { Mock } from 'vitest';
-import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import {
@@ -38,7 +37,8 @@ const profile = (
     name: 'A',
     avatar: '',
     bio: '',
-    domain: 'local',
+    isGroup: false,
+    isDeleted: false,
     account: 'alice',
     namespaceId: 0,
     profileRev: 1,
@@ -46,12 +46,43 @@ const profile = (
   } as User,
 });
 
+describe('UserService federated resolve SSE', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('ignores heartbeats, decodes fragmented progress, and closes on the terminal result', async () => {
+    const service = Object.create(UserService.prototype) as UserService;
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const text =
+          'event: heartbeat\r\ndata: {}\r\n\r\nevent: progress\r\ndata: {"stage":"DISCOVERING"}\r\n\r\nevent: resolved\r\ndata: {"user":{"account":"bob"}}\r\n\r\n';
+        for (const character of text)
+          controller.enqueue(new TextEncoder().encode(character));
+      },
+      cancel,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)));
+    const progress = vi.fn();
+    const result = await firstValueFrom(
+      service.resolveFederatedUser(
+        { account: 'bob', domain: 'peer.example' },
+        progress,
+      ),
+    );
+    expect(result.user.account).toBe('bob');
+    expect(progress).toHaveBeenCalledExactlyOnceWith('DISCOVERING');
+    // Allow attempt cleanup after Observable completion to release the locked reader.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
+});
+
 describe('UserService.localRelationship', () => {
   it.each([
-    { namespaceId: 7, state: 'ACTIVE', dissolvedAt: null, expected: 'FRIEND' },
-    { namespaceId: 8, state: 'ACTIVE', dissolvedAt: null, expected: 'NONE' },
-    { namespaceId: 7, state: 'READ_ONLY', dissolvedAt: null, expected: 'NONE' },
-    { namespaceId: 7, state: 'ACTIVE', dissolvedAt: 1, expected: 'NONE' },
+    { namespaceId: 7, state: 'ACTIVE', expected: 'FRIEND' },
+    { namespaceId: 8, state: 'ACTIVE', expected: 'NONE' },
+    { namespaceId: 7, state: 'READ_ONLY', expected: 'NONE' },
   ])('checks group membership by namespace and account: %j', async (value) => {
     const service = Object.create(UserService.prototype) as UserService;
     Object.assign(service, {
@@ -60,11 +91,8 @@ describe('UserService.localRelationship', () => {
           {
             type: 'GROUP',
             conversationState: value.state,
-            group: {
-              account: '!team',
-              namespaceId: value.namespaceId,
-              dissolvedAt: value.dissolvedAt,
-            },
+            account: '!team',
+            publisherNamespaceId: value.namespaceId,
           },
         ],
       },
@@ -115,7 +143,7 @@ describe('UserService.localRelationship', () => {
         getThreads: async () => [
           {
             type: 'P2P',
-            friendshipActive: true,
+            conversationState: 'ACTIVE',
             peerUser: {
               id: 0,
               account: 'someone-else',
@@ -219,7 +247,11 @@ describe('UserService profile refresh', () => {
     expect(request.request.context.get(REQUEST_SCOPE)).toBe(
       RequestScope.Authentication,
     );
-    const response = { code: 0, message: 'ok', data: { id: 1, account: 'alice' } };
+    const response = {
+      code: 0,
+      message: 'ok',
+      data: { id: 1, account: 'alice' },
+    };
     request.flush(response);
     expect(next).toHaveBeenCalledWith(response);
   });
@@ -235,11 +267,11 @@ describe('UserService profile refresh', () => {
       isDeleted: false,
     };
     httpMock.expectOne(isMyProfile).flush({ code: 0, data: account });
-    const expected = { ...account, name: 'qifaai2', bio: '', avatar: '' };
+    const expected = { ...account, name: 'qifaai2', bio: '' };
     expect(await result).toEqual(expected);
     expect(svc.sessionProfile()).toEqual(expected);
     expect(TestBed.inject(WebdbService).writeSelfProfile).toHaveBeenCalledWith(
-      expected,
+      account,
     );
     expect(TestBed.inject(ProfileRepository).resolve).not.toHaveBeenCalled();
   });
@@ -317,7 +349,7 @@ describe('UserService profile refresh', () => {
     await vi.waitFor(() => expect(svc.sessionProfile()?.name).toBe('B'));
   });
 
-  it('uses runtime avatar presence without caching base64 in the self profile', async () => {
+  it('persists only account facts and derives self display from the runtime profile', async () => {
     const result = firstValueFrom(svc.ensureProfile());
     vi.mocked(TestBed.inject(ProfileRepository).resolve).mockReturnValue(
       of({
@@ -336,10 +368,12 @@ describe('UserService profile refresh', () => {
     (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
       profile({ profileRev: 2, avatar: '/uploads/old-path.webp' }),
     );
-    expect(await result).toMatchObject({
+    const view = await result;
+    expect(view).toMatchObject({
       name: 'Resolved Alice',
-      avatar: '',
+      bio: 'Resolved bio',
     });
+    expect(view).not.toHaveProperty('avatar');
     expect(TestBed.inject(ProfileRepository).resolve).toHaveBeenCalledWith({
       publisherNamespaceId: 0,
       lookup: 'ACCOUNT_PROFILE',
@@ -349,9 +383,14 @@ describe('UserService profile refresh', () => {
         rev: 2,
       },
     });
-    expect(TestBed.inject(WebdbService).writeSelfProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ avatar: '' }),
-    );
+    expect(TestBed.inject(WebdbService).writeSelfProfile).toHaveBeenCalledWith({
+      id: 1,
+      account: 'alice',
+      namespaceId: 0,
+      profileRev: 2,
+      isGroup: false,
+      isDeleted: false,
+    });
   });
 
   // Contrast: ensureProfile() (no force) is the idempotent get-or-load — it DOES short-circuit to the
@@ -367,7 +406,7 @@ describe('UserService profile refresh', () => {
     expect(svc.sessionProfile()?.name).toBe('A');
 
     // Second call: sessionProfile is set → returns of(cached) synchronously, NO HTTP request.
-    let emitted: User | undefined;
+    let emitted: ReturnType<UserService['sessionProfile']>;
     svc.ensureProfile().subscribe((u) => (emitted = u));
     expect(emitted?.name).toBe('A'); // served from cache, not the network
     httpMock.expectNone(isMyProfile);
@@ -394,18 +433,26 @@ describe('UserService profile refresh', () => {
 
   it('keeps the revoke route but sends only the P2P thread id', async () => {
     const result = firstValueFrom(svc.revokeRelationship({ threadId: 12 }));
-    const request = httpMock.expectOne((req) =>
-      req.method === 'POST' && req.url.endsWith('/relationship/revoke'),
+    const request = httpMock.expectOne(
+      (req) =>
+        req.method === 'POST' && req.url.endsWith('/relationship/revoke'),
     );
     expect(request.request.body).toEqual({ threadId: 12 });
     request.flush({ code: 0, message: 'ok', data: { status: 'OK' } });
-    expect(await result).toEqual({ code: 0, message: 'ok', data: { status: 'OK' } });
+    expect(await result).toEqual({
+      code: 0,
+      message: 'ok',
+      data: { status: 'OK' },
+    });
   });
 
   it('derives the friend-request badge from the synchronized read watermark', async () => {
     expect(svc.friendReqBadge()).toBe(false);
 
-    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '20',
+      requestReadId: '0',
+    });
     expect(svc.friendReqBadge()).toBe(true);
 
     svc.sessionId.set(11);
@@ -421,12 +468,18 @@ describe('UserService profile refresh', () => {
     await marked;
     expect(svc.friendReqBadge()).toBe(false);
 
-    svc.applyRelationshipRequestHead({ requestEndId: '21', requestReadId: '20' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '21',
+      requestReadId: '20',
+    });
     expect(svc.friendReqBadge()).toBe(true);
   });
 
   it('publishes the optimistic read only after it is durable and submits afterwards', async () => {
-    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '20',
+      requestReadId: '0',
+    });
     svc.sessionId.set(11);
     const webdbStub = TestBed.inject(WebdbService) as unknown as {
       advanceIntentRequestRead: ReturnType<typeof vi.fn>;
@@ -458,7 +511,10 @@ describe('UserService profile refresh', () => {
   });
 
   it('retires the optimistic target once a confirmed read covers it', async () => {
-    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '20',
+      requestReadId: '0',
+    });
     const webdbStub = TestBed.inject(WebdbService) as unknown as {
       advanceIntentRequestRead: ReturnType<typeof vi.fn>;
     };
@@ -478,7 +534,10 @@ describe('UserService profile refresh', () => {
     await observed;
     expect(svc.friendReqBadge()).toBe(false);
     // A confirmed read covering the target retires it: newer end shows again.
-    svc.applyRelationshipRequestHead({ requestEndId: '21', requestReadId: '20' });
+    svc.applyRelationshipRequestHead({
+      requestEndId: '21',
+      requestReadId: '20',
+    });
     expect(svc.friendReqBadge()).toBe(true);
   });
 });
@@ -548,9 +607,6 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
                 selfProfile: {
                   id: 1,
                   profileRev: 0,
-                  name: 'A',
-                  avatar: '',
-                  bio: '',
                   isGroup: false,
                   account: 'me',
                   namespaceId: 0,
@@ -641,15 +697,15 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       code: 0,
       data: account,
     });
-    const expected = { ...account, name: 'qifaai2', bio: '', avatar: '' };
+    const expected = { ...account, name: 'qifaai2', bio: '' };
     await vi.waitFor(() => expect(svc.sessionProfile()).toEqual(expected));
-    expect(webdb.writeSelfProfile).toHaveBeenCalledWith(expected);
+    expect(webdb.writeSelfProfile).toHaveBeenCalledWith(account);
     expect(TestBed.inject(ProfileRepository).resolve).not.toHaveBeenCalled();
 
     svc.resetSessionState();
     webdb.readAccountState.mockResolvedValue({
       ...accountStateBase(),
-      selfProfile: expected,
+      selfProfile: account,
     });
     await svc.establishSession(3, 0, 14);
     await vi.waitFor(() => expect(svc.sessionProfile()).toEqual(expected));
@@ -724,11 +780,16 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
     await svc.establishSession(1, 0, 11);
 
-    const request = httpMock.expectOne(
-      (req) => req.url.endsWith('/relationship/requests/read'),
+    const request = httpMock.expectOne((req) =>
+      req.url.endsWith('/relationship/requests/read'),
     );
-    expect((request.request.body as { requestReadId: string }).requestReadId).toBe('12');
-    request.flush({ code: 0, data: { requestEndId: '12', requestReadId: '12' } });
+    expect(
+      (request.request.body as { requestReadId: string }).requestReadId,
+    ).toBe('12');
+    request.flush({
+      code: 0,
+      data: { requestEndId: '12', requestReadId: '12' },
+    });
     await vi.waitFor(() => expect(svc.friendReqBadge()).toBe(false));
   });
 
@@ -780,12 +841,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('rebuilds an unreadable cache discovered when HELLO establishes the session', async () => {
     webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
-
     await expect(svc.establishSession(1, 0, 11)).resolves.not.toThrow();
-
-    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
-
-    expect(webdb.recreateForUser).toHaveBeenCalledWith('1');
+    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('1');
   });
 
   it('establishSession is idempotent for the same user on reconnect', async () => {
@@ -904,18 +961,30 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('restoreWebdb opens the DB and restores the matching self profile for offline eager paint', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    const cached = profile({
+    const cached = {
       id: 7,
-      name: 'Cached Alice',
-      avatar: '/cached.webp',
-    }).data;
+      account: 'alice',
+      namespaceId: 0,
+      profileRev: 1,
+      isGroup: false,
+      isDeleted: false,
+    };
     webdb.readAccountState.mockResolvedValue({
       ...accountStateBase(),
       selfProfile: cached,
     });
     await svc.restoreWebdb();
     expect(webdb.openExistingForUser).toHaveBeenCalledWith('7');
-    expect(svc.sessionProfile()).toEqual(cached);
+    expect(svc.sessionProfile()).toEqual({
+      ...cached,
+      name: 'A',
+      bio: '',
+    });
+    expect(TestBed.inject(ProfileRepository).resolve).toHaveBeenCalledWith({
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 0, account: 'alice', rev: 1 },
+    });
     // sessionUserId is NOT set by restoreWebdb — it stays HELLO-driven (establishSession owns it on HELLO).
     expect(svc.sessionUserId()).toBeNull();
   });
@@ -926,12 +995,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       new LocalCacheVersionMismatchError('soms-webdb-u7'),
     );
     webdb.readAccountState.mockResolvedValue(accountStateBase());
-
     await svc.restoreWebdb();
-
-    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
-
-    expect(webdb.recreateForUser).toHaveBeenCalledWith('7');
+    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('7');
     expect(svc.sessionUserId()).toBeNull();
   });
 
@@ -939,12 +1004,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
     webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
     webdb.readAccountState.mockResolvedValue(accountStateBase());
-
     await svc.restoreWebdb();
-
-    expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
-
-    expect(webdb.recreateForUser).toHaveBeenCalledWith('7');
+    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('7');
     expect(svc.sessionUserId()).toBeNull();
   });
 

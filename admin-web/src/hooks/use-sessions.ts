@@ -1,46 +1,55 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { listAllSessions, purgeAllSessions, revokeSession } from '@/api/sessions'
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
+import {
+  listAllSessions,
+  purgeAllSessions,
+  revokeSession,
+} from '@/api/sessions';
 
 export interface SessionsQuery {
-  skip: number
-  take: number
-  userId?: number
-  ip?: string
+  skip: number;
+  take: number;
+  userId?: number;
+  ip?: string;
+  client?: string;
 }
 
-export function useAllSessions(q: SessionsQuery) {
+/** Session mutations affect credentials, embedded detail views, and online summaries. */
+export function invalidateSessionViews(queryClient: QueryClient) {
+  return queryClient.invalidateQueries({
+    predicate: ({ queryKey: key }) =>
+      key[0] === 'admin' &&
+      (key[1] === 'sessions' ||
+        key[1] === 'connections' ||
+        key[1] === 'dashboard' ||
+        (key[1] === 'users' && (key[3] === 'sessions' || key[3] === 'detail'))),
+  });
+}
+
+export function useAllSessions(query: SessionsQuery, enabled = true) {
   return useQuery({
-    queryKey: ['admin', 'sessions', q],
-    queryFn: () => listAllSessions(q),
-    placeholderData: (prev) => prev,
-  })
+    queryKey: ['admin', 'sessions', query],
+    queryFn: () => listAllSessions(query),
+    enabled,
+  });
 }
 
 export function usePurgeSessions() {
-  const qc = useQueryClient()
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => purgeAllSessions(),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'sessions'] }),
-  })
+    mutationFn: purgeAllSessions,
+    onSuccess: () => invalidateSessionViews(queryClient),
+  });
 }
 
-/** Revoke one user session. Invalidates the system-wide list (['admin','sessions']) AND every user's
- *  device list (['admin','users', id, 'sessions']) — either may be the source of the action — but NOT
- *  the user list ['admin','users'] itself: a single session revoke changes neither the roster nor any
- *  user row, so needlessly refetching it is wasted work. */
 export function useRevokeSession() {
-  const qc = useQueryClient()
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => revokeSession(id),
-    onSuccess: () =>
-      qc.invalidateQueries({
-        predicate: (q) => {
-          const k = q.queryKey
-          return (
-            (k[0] === 'admin' && k[1] === 'sessions') ||
-            (k[0] === 'admin' && k[1] === 'users' && k[3] === 'sessions')
-          )
-        },
-      }),
-  })
+    mutationFn: revokeSession,
+    onSuccess: () => invalidateSessionViews(queryClient),
+  });
 }

@@ -1,11 +1,22 @@
-import { Injectable, effect, inject, signal, untracked } from '@angular/core';
+import {
+  Injectable,
+  Injector,
+  effect,
+  inject,
+  signal,
+  untracked,
+} from '@angular/core';
+
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ConversationListService } from './conversation-list.service';
 import { NavStateMachineService } from './nav-state.service';
 import { UserService } from './user.service';
 import { apiOrigin } from './runtime';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { ThreadNavigationIntentCoordinator, type ThreadNavigationIntent } from './thread-navigation-intent';
+import {
+  ThreadNavigationIntentCoordinator,
+  type ThreadNavigationIntent,
+} from './thread-navigation-intent';
 
 @Injectable({ providedIn: 'root' })
 export class ThreadNavigationIntentService {
@@ -13,6 +24,10 @@ export class ThreadNavigationIntentService {
   private readonly nav = inject(NavStateMachineService);
   private readonly user = inject(UserService);
   private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly injector = inject(Injector);
+  // Resolve the dialog graph only on demand, outside service construction.
+  private readonly friendPopup = signal<(() => void) | undefined>(undefined);
+  private loadingFriendPopup = false;
   private readonly coordinator = new ThreadNavigationIntentCoordinator();
   private readonly revision = signal(0);
   private offeredNavigationRevision = 0;
@@ -30,18 +45,46 @@ export class ThreadNavigationIntentService {
       const items = this.conversations.items();
       const navigationRevision = this.nav.navigationRevision();
       const origin = apiOrigin();
+      const friendPopup = this.friendPopup();
       untracked(() => {
-        if (navigationRevision !== this.offeredNavigationRevision || origin !== this.offeredOrigin) {
+        if (
+          navigationRevision !== this.offeredNavigationRevision ||
+          origin !== this.offeredOrigin
+        ) {
           this.coordinator.invalidate();
           this.offeredNavigationRevision = navigationRevision;
           this.offeredOrigin = origin;
           return;
         }
-        this.coordinator.select(sessionId, ready, (threadId) => {
-          // A tap can precede the feed that creates its thread row. Do not
-          // acknowledge or expose a target until its projection exists.
-          if (!items.some((item) => item.threadId === threadId)) return false;
-          return this.nav.openExternalChat(threadId);
+        this.coordinator.select(sessionId, ready, (target, latestSeq) => {
+          if (target.kind === 'friend-requests') {
+            if (!friendPopup) {
+              this.loadFriendPopup();
+              return false;
+            }
+            if (!this.nav.returnToThreadList()) {
+              return false;
+            }
+            friendPopup();
+          } else {
+            // A tap can precede its thread projection. Wait without exposing it.
+            const thread = items.find(
+              (item) => item.threadId === target.threadId,
+            );
+            if (!thread) return false;
+            if (!this.nav.openExternalChat(target.threadId, Math.max(thread.messageEndSeq, latestSeq ?? 0))) {
+              return false;
+            }
+            if (target.kind === 'group-join-requests') {
+              // A stale manager notification still opens its chat, but the
+              // normal entry gate may decline the privileged child surface.
+              this.nav.openGroupJoinRequests(thread, 'applications');
+            }
+          }
+          // These revisions are our own Home → destination transaction, not
+          // newer manual navigation. Mounting the aside needs no second pass.
+          this.offeredNavigationRevision = this.nav.navigationRevision();
+          return true;
         });
       });
     });
@@ -49,12 +92,33 @@ export class ThreadNavigationIntentService {
       this.offer(this.nav.bootstrapNotificationIntent);
   }
 
+  private loadFriendPopup(): void {
+    if (this.loadingFriendPopup) return;
+    this.loadingFriendPopup = true;
+    void import('./route.service')
+      .then(({ RouteService }) => {
+        this.friendPopup.set(() =>
+          this.injector.get(RouteService).openFriendRequests('pending'),
+        );
+      })
+      .catch((error) => {
+        this.loadingFriendPopup = false;
+        console.warn('[notification] dialog loading failed', error);
+      });
+  }
+
   /** Async adapters capture the work scope BEFORE reading their pending slot. */
-  offer(intent: ThreadNavigationIntent, scope = this.lifecycle.capture()): void {
+  offer(
+    intent: ThreadNavigationIntent,
+    scope = this.lifecycle.capture(),
+  ): void {
     if (!this.lifecycle.isCurrent(scope)) return;
     const navigationRevision = this.nav.navigationRevision();
     const origin = apiOrigin();
-    if (navigationRevision !== this.offeredNavigationRevision || origin !== this.offeredOrigin)
+    if (
+      navigationRevision !== this.offeredNavigationRevision ||
+      origin !== this.offeredOrigin
+    )
       this.coordinator.invalidate();
     this.offeredNavigationRevision = navigationRevision;
     this.offeredOrigin = origin;

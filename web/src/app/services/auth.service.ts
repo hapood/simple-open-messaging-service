@@ -8,9 +8,11 @@ import {
   from,
   mergeMap,
   tap,
+  takeUntil,
 } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { RouteService, RoutePage } from './route.service';
+import { ServerConfigDialogService } from './server-config-dialog.service';
 import { apiPrefix } from './constants';
 import {
   apiOrigin,
@@ -33,6 +35,8 @@ import { CALL_SESSION_ENDING_EVENT } from './web-call.adapter';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 
 import { SessionStateService } from './session-state.service';
+import type { LogoutOutcome } from './session/logout-outcome';
+import { LogoutDecisionService } from './logout-decision.service';
 import { BROWSER_SESSION } from './browser-session.service';
 import { sessionRequest } from './session/session-request';
 import {
@@ -117,8 +121,10 @@ export class AuthService {
    *  from the cookie on browser so a page refresh while signed in starts `true`; native starts `false` and
    *  {@link restoreSession} flips it after re-establishing the session from secure storage. */
   private readonly sessionState = inject(SessionStateService);
+  private readonly logoutDecision = inject(LogoutDecisionService);
   private readonly browserSession = inject(BROWSER_SESSION);
   private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly serverConfigDialog = inject(ServerConfigDialogService);
   readonly loggedIn = this.sessionState.loggedIn;
 
   constructor(
@@ -130,7 +136,11 @@ export class AuthService {
     private transloco: TranslocoService,
     private toast: ToastService,
     private sendOutbox: ThreadSendOutbox,
-  ) {}
+  ) {
+    this.serverConfigDialog.opened$.subscribe(() => {
+      if (isTauri() && !this.isLoggedIn()) this.lifecycle.invalidateSession();
+    });
+  }
 
   /** Resolve a transloco key to the active-locale string (falls back to the key). Mirrors WebPushService.t. */
   private t(key: string): string {
@@ -159,16 +169,17 @@ export class AuthService {
     request: (context: Authentication) => Observable<T>,
   ): Observable<T> {
     if (isTauri()) {
-      return defer(() =>
-        from(this.prepareNativeLogin()).pipe(
+      return defer(() => {
+        if (this.serverConfigDialog.visible()) return EMPTY;
+        return from(this.prepareNativeLogin()).pipe(
           mergeMap(async (context) => {
             await pickLoginOrigin();
             this.lifecycle.assertCurrent(context.work);
             return context;
           }),
           mergeMap(request),
-        ),
-      );
+        );
+      }).pipe(takeUntil(this.serverConfigDialog.opened$));
     }
     const browser = this.requireBrowserSession();
     return defer(() =>
@@ -283,7 +294,10 @@ export class AuthService {
   /** QR-login: a client mints a sign-in token to render as a QR. `client` is the real platform
    *  ('app'/'web'/'desktop' — see {@link sessionClient}); `trusted` opts a desktop into a permanent session
    *  (its token kept in OS keyring), is implicit-true for 'app', and ignored for 'web' (never trusted). */
-  qrCreate(client: 'app' | 'web' | 'desktop') {
+  qrCreate(client: 'app' | 'web' | 'desktop'): Observable<{
+    code: number;
+    data?: { qrToken: string; expiresAt: number };
+  }> {
     return this.pickThen(() =>
       this.http.post<{
         code: number;
@@ -302,7 +316,14 @@ export class AuthService {
 
   /** QR-login: poll the sign-in token's status. On 'confirmed' the response carries the session token,
    *  which activates a permanent session (if `trusted` was chosen at create) or a 14-day sliding one. */
-  qrPoll(qrToken: string, device?: string) {
+  qrPoll(qrToken: string, device?: string): Observable<{
+    code: number;
+    data?: {
+      status: string;
+      session_token?: string;
+      mustChangePassword?: boolean;
+    };
+  }> {
     return this.pickThen((context) =>
       this.http
         .post<{
@@ -384,7 +405,7 @@ export class AuthService {
   redoLoginAuth(_reason?: string) {
     this.announceSessionEnding();
     if (!isTauri()) {
-      void this.endBrowserSession(false).catch((error) =>
+      void this.endBrowserSession().catch((error) =>
         console.warn('[session] local termination failed', error),
       );
       this.routeService.redirect(RoutePage.AUTH_LOGIN);
@@ -472,8 +493,9 @@ export class AuthService {
         const restored = await browser.restore(hint);
         this.sessionState.setAuthenticated(restored);
         if (!restored) this.clearPresenceCookie();
-      } catch {
+      } catch (error) {
         // Preserve the credential for a retry, but admit no business work while local recovery failed.
+        console.warn('[session] browser restoration failed', error);
         this.toast.warn(this.t('auth.notice.localCacheUnavailable'));
       }
       return;
@@ -570,39 +592,30 @@ export class AuthService {
     this.sessionState.setAuthenticated(false);
   }
 
-  /** Clear the native token (Rust `ProxyState.token` via `clear_session_token` + the OS secure store).
-   *  Returns whether the PERSISTENT (keyring / EncryptedSharedPreferences) clear succeeded (false → the
-   *  logout-failed toast). The Rust in-memory clear is best-effort. */
+  /** End the captured login owner before clearing its OS credential. A delayed storage command
+   * cannot clear a successor login. False reports either admission or persistent-storage failure. */
   private async clearNativeToken(sessionUuid: string): Promise<boolean> {
     let nativeOk = true;
+    // End the captured owner before issuing any OS credential deletion.
+    try {
+      await tauriInvoke('clear_session_token', { sessionUuid });
+    } catch {
+      return false;
+    }
     if (isAndroidNative()) {
-      // Android: clear Kotlin's EncryptedSharedPreferences (SomsFcm) AND Rust's ProxyState.token. The Rust
-      // clear is needed because login now pushes the token to BOTH stores (setSessionToken) — leaving
-      // ProxyState.token set would keep `api_request` sending the revoked Bearer after logout.
+      // Rust already ended the owner. The Android adapter only clears encrypted storage.
       try {
         window.SomsFcm!.setSessionToken(null, sessionUuid);
       } catch {
         nativeOk = false;
       }
-      try {
-        await tauriInvoke('clear_session_token', { sessionUuid });
-      } catch {
-        /* ProxyState.token in-memory copy */
-      }
     } else if (isTauri()) {
-      // Desktop: clear the persistent keyring + the Rust in-memory token independently — a locked keyring
-      // must not skip the proxy clear. nativeOk tracks the persistent keyring (the failure that leaves a
-      // stale token). (secure_clear_token is a desktop-only command — not reachable on Android.)
+      // Desktop storage failure cannot revive the already-ended Rust owner.
       try {
-        await tauriInvoke('secure_clear_token', { sessionUuid });
+        await tauriInvoke('secure_clear_token');
       } catch {
         nativeOk = false;
       } // idempotent: NoEntry → Ok
-      try {
-        await tauriInvoke('clear_session_token', { sessionUuid });
-      } catch {
-        /* ProxyState.token in-memory copy */
-      }
     } else {
       this.clearPresenceCookie();
     }
@@ -616,54 +629,134 @@ export class AuthService {
    *  where NO authenticated request follows, so the native token can be cleared at once. */
   async clearToken(): Promise<boolean> {
     if (!isTauri()) {
-      await this.endBrowserSession(false);
+      await this.endBrowserSession();
       return true;
     }
     return this.endNativeSession(false);
   }
 
-  /** One browser teardown path for explicit logout, forced logout and local token clear. */
-  private async endBrowserSession(remote: boolean): Promise<void> {
+  /** Forced invalidation and explicit local token clear do not attempt remote revocation. */
+  private async endBrowserSession(): Promise<void> {
+    if (this.browserLogout) return this.browserLogout;
     const browser = this.requireBrowserSession();
     this.clearLocalSessionState();
     this.clearPresenceCookie();
     this.sendOutbox.clear();
-    const ending = remote
-      ? browser.logout((signal) =>
-          sessionRequest(
-            this.http.post<LogoutRes>(
-              `${apiPrefix()}/auth/logout`,
-              {},
-              {
-                context: new HttpContext()
-                  .set(REQUEST_SCOPE, RequestScope.Authentication)
-                  .set(SUPPRESS_HTTP_ERROR_TOAST, true),
-              },
-            ),
-            signal,
-          ).then(() => undefined),
-        )
-      : browser.end();
+    const ending = browser.end();
     await Promise.all([
       ending,
+      this.webPush.unsubscribe().catch((error) => {
+        console.warn('[push] logout unsubscribe failed', error);
+        this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), {
+          duration: IMPORTANT_NOTICE_MS,
+        });
+      }),
       clearSessionNotifications().catch((error) =>
         console.warn('[notification] logout cleanup failed', error),
       ),
     ]);
   }
 
+  private browserLogout: Promise<void> | null = null;
+
+  private requestBrowserLogout(): Promise<void> {
+    if (this.browserLogout) return this.browserLogout;
+    const pending = this.performBrowserLogout();
+    this.browserLogout = pending;
+    // Clear the single-flight slot on either outcome without creating an unhandled rejection.
+    void pending.then(
+      () => { if (this.browserLogout === pending) this.browserLogout = null; },
+      () => { if (this.browserLogout === pending) this.browserLogout = null; },
+    );
+    return pending;
+  }
+
+  private async performBrowserLogout(): Promise<void> {
+    this.sendOutbox.clear();
+    const completion = await this.requireBrowserSession().logoutWithDecision(
+      (signal) => sessionRequest(
+        this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, {}, {
+          context: new HttpContext()
+            .set(REQUEST_SCOPE, RequestScope.Authentication)
+            .set(SUPPRESS_HTTP_ERROR_TOAST, true),
+        }), signal,
+      ).then(() => undefined),
+      (outcome) => this.logoutDecision.decide(outcome),
+      async () => {
+        await this.webPush.unsubscribe().catch((error) => {
+          console.warn('[push] logout unsubscribe failed', error);
+          this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), { duration: IMPORTANT_NOTICE_MS });
+        });
+        this.clearLocalSessionState();
+        this.clearPresenceCookie();
+        await clearSessionNotifications().catch((error) =>
+          console.warn('[notification] logout cleanup failed', error),
+        );
+      },
+    );
+    if (completion === 'superseded') throw new SessionSupersededError();
+  }
+
+  private desktopLogout: Promise<void> | null = null;
+
+  private requestDesktopLogout(): Promise<void> {
+    if (this.desktopLogout) return this.desktopLogout;
+    const pending = this.performDesktopLogout();
+    this.desktopLogout = pending;
+    void pending.then(
+      () => { this.desktopLogout = null; },
+      () => { this.desktopLogout = null; },
+    );
+    return pending;
+  }
+
+  private async performDesktopLogout(): Promise<void> {
+    // Rust retains the credential and auth transition, including between IPC commands.
+    await tauriInvoke('begin_logout');
+    this.sendOutbox.clear();
+    await this.userService.releaseSession();
+    const status = await tauriInvoke<string>('logout_status');
+    let localOnly = false;
+    if (status !== 'awaitingCleanup') {
+      while (true) {
+        const outcome = await tauriInvoke<LogoutOutcome>('try_logout');
+        if (outcome.status === 'revoked') break;
+        if (outcome.status === 'superseded') throw new Error('Logout interrupted');
+        const decision = await this.logoutDecision.decide(outcome);
+        if (decision === 'localOnly') {
+          localOnly = true;
+          break;
+        }
+      }
+    }
+    await tauriInvoke('finish_logout', { localOnly });
+    this.nativeLoginUuid = null;
+    this.clearLocalSessionState();
+    await clearSessionNotifications().catch((error) =>
+      console.warn('[notification] logout cleanup failed', error),
+    );
+  }
+
   logout() {
     if (!isTauri()) {
-      this.announceSessionEnding();
-      return from(this.endBrowserSession(true)).pipe(
+      if (!this.browserLogout) this.announceSessionEnding();
+      return from(this.requestBrowserLogout()).pipe(
         tap({
           error: () =>
             this.toast.warn(
               this.t('auth.notice.logoutCacheClearFailed'),
-              IMPORTANT_NOTICE_MS,
+              { duration: IMPORTANT_NOTICE_MS },
             ),
         }),
       );
+    }
+    if (!isAndroidNative()) {
+      if (!this.desktopLogout) this.announceSessionEnding();
+      return from(this.requestDesktopLogout()).pipe(tap({
+        error: () => this.toast.warn(this.t('auth.notice.logoutClearFailed'), {
+          duration: IMPORTANT_NOTICE_MS,
+        }),
+      }));
     }
     if (!this.isLoggedIn()) return EMPTY;
     // Renderer-owned WebRTC must end while this session credential is still usable. Android ignores this
@@ -674,7 +767,7 @@ export class AuthService {
         if (!nativeOk)
           this.toast.warn(
             this.t('auth.notice.logoutClearFailed'),
-            IMPORTANT_NOTICE_MS,
+            { duration: IMPORTANT_NOTICE_MS },
           );
       }),
     ).pipe(
@@ -682,13 +775,17 @@ export class AuthService {
         error: () =>
           this.toast.warn(
             this.t('auth.notice.logoutClearFailed'),
-            IMPORTANT_NOTICE_MS,
+            { duration: IMPORTANT_NOTICE_MS },
           ),
       }),
     );
   }
 
   private async endNativeSession(remote: boolean): Promise<boolean> {
+    if (this.desktopLogout) {
+      await this.desktopLogout;
+      return true;
+    }
     const origin = apiOrigin();
     const endedLogin = this.nativeLoginUuid;
     this.nativeLoginUuid = null;
@@ -723,7 +820,7 @@ export class AuthService {
           platformCleared = true;
         }
       }
-      // The acknowledgement proves Rust captured the ended token before Android clears both copies.
+      // The acknowledgement proves Rust captured and ended the owner before Android clears storage.
       if (isAndroidNative() && !platformCleared && endedLogin) {
         try {
           window.SomsFcm!.setSessionToken(null, endedLogin);

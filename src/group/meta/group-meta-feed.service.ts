@@ -138,6 +138,7 @@ export class GroupMetaFeedService {
               AND EXCLUDED.operation = 'MEMBER_UPSERT' THEN NULL
             ELSE "GroupMetaMemberFeed"."profileSourceSeq" END,
           operation = EXCLUDED.operation, body = EXCLUDED.body,
+          "createdAt" = EXCLUDED."createdAt", "originCreatedAt" = NULL,
           "updatedAt" = CURRENT_TIMESTAMP
         RETURNING "feedId"
       )
@@ -160,25 +161,29 @@ export class GroupMetaFeedService {
     const feed = await this.lockFeedInTx(tx, groupId);
     const [current] = await tx
       .select({
-        feedId: groupMeta.announcementFeedId,
-        text: groupMeta.announcementText,
+        feedId: groupMetaMemberFeed.feedId,
+        body: groupMetaMemberFeed.body,
       })
-      .from(groupMeta)
-      .where(eq(groupMeta.threadId, groupId))
+      .from(groupMetaMemberFeed)
+      .where(
+        and(
+          eq(groupMetaMemberFeed.threadId, groupId),
+          eq(groupMetaMemberFeed.operation, 'GROUP_ANNOUNCEMENT'),
+        ),
+      )
       .limit(1);
-    if (!current) throw new Error('group meta feed is missing');
-    if (current.feedId !== null && current.text === text)
+    if (current && current.body.text === text)
       return { feedId: current.feedId, changed: false };
     const feedId = feed.metaEndId + 1;
-    await tx
-      .update(groupMeta)
-      .set({
-        metaEndId: feedId,
-        announcementFeedId: feedId,
-        announcementText: text,
-        updatedAt: new Date(),
-      })
-      .where(eq(groupMeta.threadId, groupId));
+    await upsertCurrentGroupMetaFactsInTx(tx, [
+      {
+        threadId: groupId,
+        feedId,
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text },
+      },
+    ]);
+    await this.advanceFeedInTx(tx, groupId, feedId, feed.profileRev);
     return { feedId, changed: true };
   }
 

@@ -23,6 +23,8 @@ import type { S2SAddress } from '../federation/federation-address.js';
 import { FederationCallBridgeService } from '../federation/federation-call-bridge.service.js';
 import type { OutboundCallFrameParams } from '../federation/federation-call-delivery.js';
 import { QuotaService } from '../quota/quota.service.js';
+import { UserQuotaService } from '../quota/user-quota.service.js';
+import { CALL_INVITATION_QUOTA_COST } from '../quota/daily-quota-ledger.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import {
@@ -185,6 +187,7 @@ export class CallsService implements OnModuleDestroy {
     private readonly participants: AccountThreadStateService,
     private readonly callBridge: FederationCallBridgeService,
     private readonly quota: QuotaService,
+    private readonly userQuota: UserQuotaService,
     private readonly callState: CallStateRegistry,
     private readonly history: CallHistoryService,
   ) {}
@@ -300,6 +303,11 @@ export class CallsService implements OnModuleDestroy {
     this.activeByUser.set(callerId, call.callSid);
     if (calleeId !== null) this.activeByUser.set(calleeId, call.callSid);
     try {
+      await this.userQuota.tickStandalone(
+        callerId,
+        'signals',
+        CALL_INVITATION_QUOTA_COST,
+      );
       call.admission = this.observeHistory(call);
       await call.admission;
     } catch (error) {
@@ -315,6 +323,7 @@ export class CallsService implements OnModuleDestroy {
       // peer's inbound handler.
       let deliveryAttempted = false;
       try {
+        await this.callBridge.checkOutboundReady(call.peerDomain!);
         await this.reserveAdmission(call);
         if (call.terminal || this.activeCalls.get(call.callSid) !== call)
           return { callSid: call.callSid, threadId: call.threadId };
@@ -717,7 +726,16 @@ export class CallsService implements OnModuleDestroy {
       );
     }
     this.validateCorrelation(call, dto.kind, dto.inReplyTo, false);
+    // Claim the replay key before awaiting quota so concurrent duplicates cannot double-charge.
     call.localSignalIds.add(localSignalKey);
+    try {
+      await this.userQuota.tickStandalone(fromUserId, 'signals');
+    } catch (error) {
+      call.localSignalIds.delete(localSignalKey);
+      throw error;
+    }
+    if (call.terminal) return;
+    this.validateCorrelation(call, dto.kind, dto.inReplyTo, false);
     this.stage(call, fromUserId, dto.id, dto.kind, dto.payload, dto.inReplyTo); // store-and-forward: a peer offline now can GET it later
     if (call.peerDomain) {
       // Federated: relay over S2S to the peer server (the foreign participant isn't on this server).
@@ -959,6 +977,12 @@ export class CallsService implements OnModuleDestroy {
     this.activeCalls.set(calleeCall.callSid, calleeCall);
     this.activeByUser.set(localUserId, calleeCall.callSid);
     try {
+      await this.quota.tick(
+        namespaceId,
+        'signals',
+        undefined,
+        CALL_INVITATION_QUOTA_COST,
+      );
       await this.reserveAdmission(calleeCall);
       await this.observeHistory(calleeCall);
     } catch (error) {
@@ -967,16 +991,7 @@ export class CallsService implements OnModuleDestroy {
     }
     this.armRingTimer(calleeCall);
     this.syncCallState(calleeCall);
-    // Best-effort quota tick: handleCallFrame already peek-gated the hard limit BEFORE the emitAsync.
-    // A race-loss here (the budget consumed between peek and tick) must NOT unwind the ring — the caller
-    // is already being processed and the callee is ringing. Logged, never thrown.
-    await this.quota
-      .tick(namespaceId, 'requests')
-      .catch((e) =>
-        this.logger.warn(
-          `quota tick lost for inbound call (callSid=${frame.callSid}): ${(e as Error).message}`,
-        ),
-      );
+
     await this.ring(calleeCall);
   }
 
@@ -1109,9 +1124,15 @@ export class CallsService implements OnModuleDestroy {
         ? frame.payload.inReplyTo
         : undefined;
     this.validateCorrelation(call, signalType, inReplyTo, true);
-    await this.quota.tick(call.peerNamespaceId!, 'signals');
-    this.validateCorrelation(call, signalType, inReplyTo, true);
     call.seenSignalIds.add(frame.payload.signalId);
+    try {
+      await this.quota.tick(call.peerNamespaceId!, 'signals');
+    } catch (error) {
+      call.seenSignalIds.delete(frame.payload.signalId);
+      throw error;
+    }
+    if (call.terminal || this.activeCalls.get(call.callSid) !== call) return;
+    this.validateCorrelation(call, signalType, inReplyTo, true);
     const localUserId = this.localUserId(call);
     const peerLocalId =
       call.localRole === 'caller' ? call.calleeId : call.callerId;

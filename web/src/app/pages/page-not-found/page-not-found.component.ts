@@ -7,18 +7,20 @@ import {
 import { Location } from '@angular/common';
 import { Router } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
+import { MatButtonModule } from '@angular/material/button';
+import {
+  IconComponent,
+  AppIconType,
+} from '../../components/icon/icon.component';
 
 /**
- * Wildcard-route fallback (`path: '**'`). A theme-aware, on-brand "page not found"
- * that stays legible without auth (the wildcard has no guard, so it renders for
- * logged-out visitors too) and routes the user back into the app:
- *   - primary CTA → `/` (authGuard re-protects it, redirecting to login if logged out);
- *   - secondary "Go back" → replays browser history, but only when there is one to
- *     replay (hidden on a direct 404 landing so we never show a dead button).
+ * Wildcard-route fallback (`path: '**'`). A clean, Material Design 3 "Page Not Found"
+ * screen conforming to SOMS graphite & action-blue palette, featuring M3 typography,
+ * elevation surface tokens, integer-pixel metrics, and accessible navigation.
  */
 @Component({
   selector: 'app-page-not-found',
-  imports: [TranslocoPipe],
+  imports: [TranslocoPipe, MatButtonModule, IconComponent],
   templateUrl: './page-not-found.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './page-not-found.component.scss',
@@ -27,11 +29,15 @@ export class PageNotFoundComponent {
   private readonly router = inject(Router);
   private readonly location = inject(Location);
 
-  /** Best-effort: there is a real prior entry to go back to. Imperfect by nature of the
-   *  History API, but keeps us from rendering a "Go back" button that silently no-ops. */
+  readonly AppIcon = AppIconType;
+
+  /** Best-effort check to prevent rendering a dead "Go back" button. */
   readonly canGoBack = signal(
     typeof history !== 'undefined' && history.length > 1,
   );
+
+  /** Current attempted route url */
+  readonly currentPath = signal<string>(this.router.url);
 
   goHome(): void {
     this.router.navigate(['/']);

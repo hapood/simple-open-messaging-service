@@ -1,0 +1,85 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  line-height: 20px;
+}
+.search-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--app-bg-muted);
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: 14px;
+  line-height: 20px;
+  box-sizing: border-box;
+  &::placeholder {
+    color: var(--app-text-faint);
+  }
+  &:focus {
+    outline: none;
+    border-color: var(--app-brand);
+  }
+}
+.result-area {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.results {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.results[hidden] {
+  display: none;
+}
+.state-hint {
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 88px;
+  box-sizing: border-box;
+  gap: 6px;
+  color: var(--app-text-muted);
+  text-align: center;
+}
+.state-title {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+.state-sub {
+  font-size: 13px;
+  line-height: 20px;
+}
+.state-error {
+  color: var(--app-danger);
+}
+.connecting-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  button {
+    align-self: flex-start;
+  }
+}

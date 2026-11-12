@@ -55,8 +55,8 @@ export function buildPino(store: LogStreamStore): pino.Logger {
   const isDev = process.env.NODE_ENV !== 'production';
 
   const baseOpts: pino.LoggerOptions = {
-    // Process-local only: every new logger starts at error. Children inherit this threshold.
-    level: 'error',
+    // Process-local only: every new logger starts at warn. Children inherit this threshold.
+    level: 'warn',
     // ISO-8601 timestamps — human-readable, sortable, and timezone-aware for grep.
     timestamp: pino.stdTimeFunctions.isoTime,
     // pino's `base` REPLACES the default {pid, hostname}: pass pid + a service tag so records carry

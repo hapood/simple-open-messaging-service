@@ -6,12 +6,12 @@
     }}
   </header>
   <div class="identity-summary">
-    <app-snapshot-avatar
+    <app-demand-avatar
       [type]="avatarType()"
       [name]="identity().name"
       [account]="identity().account"
-      [domainSource]="{ type: 'namespace', namespaceId: identity().namespaceId }"
-      [src]="identity().avatar"
+      [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: identity().profile.publisherNamespaceId, profileNamespaceId: identity().profile.profileNamespaceId }"
+      [profile]="identity().profile"
     />
     <div class="identity-copy">
       <strong>{{ identity().name || identity().account }}</strong>

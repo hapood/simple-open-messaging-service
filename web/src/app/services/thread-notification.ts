@@ -9,10 +9,9 @@ export async function threadNotificationIcon(
   storage: Pick<WebdbStorage, 'getProfile' | 'getProfileAvatarBlob'>,
   item: ConversationItem,
 ): Promise<string> {
-  const subject = item.type === 'GROUP' ? item.group : item.peerUser;
   if (item.profileRev < 1) return '/icons/icon-192.png';
   const profile = await storage.getProfile(
-    homeProfileDemand(subject.account, subject.namespaceId, item.profileRev),
+    homeProfileDemand(item.account, item.publisherNamespaceId, item.profileRev),
   );
   const blob = profile?.avatarDigest
     ? await storage.getProfileAvatarBlob(profile.avatarDigest)
@@ -49,12 +48,8 @@ export function threadNotificationDescriptor(
   const fallback = preview?.sender.account ?? 'Unknown';
   const title =
     state.alias ||
-    (item.type === 'GROUP'
-      ? item.group.name || fallback
-      : item.peerUser.name ||
-        (displayDomain
-          ? `${item.peerUser.account}@${displayDomain}`
-          : item.peerUser.account));
+    item.profile.name ||
+    (displayDomain ? `${item.account}@${displayDomain}` : item.account);
   const textFor = (
     preview: NonNullable<ThreadFeedSnapshot['previews']>[number],
   ) =>
@@ -72,17 +67,19 @@ export function threadNotificationDescriptor(
       ? textFor(preview)
       : copy.privateBody;
   return {
-    tag: `soms-thread-${item.threadId}`,
     kind: 'thread-message',
     title,
     body: previewMode === 'private' ? copy.privateBody : text,
     count: item.blocked ? 0 : item.unreadCount,
     lang: copy.lang,
     icon: '/icons/icon-192.png',
-    renotify: true,
     silent: item.muted,
     ...(item.mentionUnread.length ? { attention: 'mention' as const } : {}),
     previewMode,
-    data: { threadId: item.threadId, seq: preview?.seq },
+    data: {
+      target: { kind: 'thread', threadId: item.threadId },
+      latestSeq: item.messageEndSeq,
+      seq: preview?.seq,
+    },
   };
 }

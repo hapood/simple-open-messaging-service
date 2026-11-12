@@ -1,74 +1,58 @@
 import type { CbDemand } from './cb-source';
-import { CbDemandCancelled, type CbDemandResult } from './cb-source';
-import type { Subscription } from 'rxjs';
+import type { CbDemandResult } from './cb-source';
+import {
+  observeOn,
+  queueScheduler,
+  Subscriber,
+  take,
+  type Subscription,
+} from 'rxjs';
 
-export interface ActiveCbDemand<T> {
-  readonly promise: Promise<CbDemandResult<T>>;
-  readonly subscription: Subscription;
-  cancel(): void;
-}
-
-/** Atomic lifecycle state for one cancellable, single-flight source edge. */
+/** One source edge owns its subscription and delivers mutations synchronously. */
 export class EdgeDemandState<T> {
-  active: ActiveCbDemand<T> | null = null;
+  active: Subscription | null = null;
   error: unknown | null = null;
   retrying = false;
 
-  begin(demand: CbDemand<T>): ActiveCbDemand<T> {
-    let settled = false;
-    let rejectPromise!: (reason: unknown) => void;
-    let subscription!: Subscription;
-    const promise = new Promise<CbDemandResult<T>>((resolve, reject) => {
-      rejectPromise = reject;
-      subscription = demand.subscribe({
-        next: (result) => {
-          if (settled) return;
-          settled = true;
-          resolve(result);
-          subscription?.unsubscribe();
-        },
-        error: (error) => {
-          if (settled) return;
-          settled = true;
-          reject(error);
-        },
-        complete: () => {
-          if (settled) return;
-          settled = true;
-          reject(new Error('chat-box demand completed without a result'));
-        },
-      });
-      if (settled) subscription.unsubscribe();
-    });
-    const handle: ActiveCbDemand<T> = {
-      promise,
-      get subscription() {
-        return subscription;
-      },
-      cancel: () => {
-        if (settled) return;
-        settled = true;
-        handle.subscription.unsubscribe();
-        rejectPromise(new CbDemandCancelled());
-      },
+  subscribe(
+    demand: CbDemand<T>,
+    deliver: (result: CbDemandResult<T>) => void,
+  ): void {
+    if (this.active) return;
+    let delivered = false;
+    const release = () => {
+      subscriber.unsubscribe();
+      this.active = null;
+      this.retrying = false;
     };
-    this.active = handle;
-    return handle;
+    const subscriber = new Subscriber<CbDemandResult<T>>({
+      next: (result) => {
+        delivered = true;
+        release();
+        deliver(result);
+      },
+      error: (error: unknown) => {
+        release();
+        deliver({ kind: 'error', error });
+      },
+      complete: () => {
+        release();
+        if (!delivered)
+          deliver({
+            kind: 'error',
+            error: new Error('chat-box demand completed without a result'),
+          });
+      },
+    });
+    this.active = subscriber;
+    // A cached page can synchronously request its successor. Trampoline
+    // delivery within this turn rather than recursively growing the stack.
+    // The scheduled notification remains owned by this subscriber.
+    demand.pipe(take(1), observeOn(queueScheduler)).subscribe(subscriber);
   }
 
   cancel(): void {
-    const handle = this.active;
-    this.active = null;
-    this.retrying = false;
-    handle?.cancel();
-  }
-
-  isCurrent(handle: ActiveCbDemand<T>): boolean {
-    return this.active === handle;
-  }
-
-  finish(handle: ActiveCbDemand<T>): void {
-    if (!this.isCurrent(handle)) return;
+    this.active?.unsubscribe();
     this.active = null;
     this.retrying = false;
   }

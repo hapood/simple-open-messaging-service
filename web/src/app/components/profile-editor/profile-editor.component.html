@@ -34,21 +34,28 @@
     </app-page-header>
 
     <div class="body">
-      @if (saveError()) {
-        <div class="save-error" role="alert">{{ saveError() }}</div>
-      }
       <div class="avatar-wrap">
         <div class="avatar">
-          @if (sessionProfile(); as self) {
+          @if (avatarPreviewUrl(); as previewUrl) {
             <app-snapshot-avatar
+              [type]="UserAvatarType.SELF"
+              [domainSource]="{ type: 'namespace', namespaceId: 0 }"
+              [name]="name() || (sessionProfile()?.account ?? '')"
+              [account]="sessionProfile()?.account"
+              [src]="previewUrl"
+            />
+          } @else if (sessionProfile(); as self) {
+            <app-demand-avatar
               [type]="UserAvatarType.SELF"
               [domainSource]="{ type: 'namespace', namespaceId: 0 }"
               [name]="name() || self.account"
               [account]="self.account"
-              [src]="avatarPreviewUrl() || self.avatar"
             />
           } @else {
-            <app-snapshot-avatar [type]="UserAvatarType.SELF" [loading]="true" />
+            <app-snapshot-avatar
+              [type]="UserAvatarType.SELF"
+              [loading]="true"
+            />
           }
           <button
             class="avatar-edit"

@@ -1,11 +1,7 @@
-#[cfg(desktop)]
-use log::warn;
-
-#[cfg(desktop)]
-use crate::secure_storage;
+#[cfg(not(desktop))]
+use crate::validate_origin;
 use crate::{
-    activate_origin, persist_origin, persist_origin_secondary, pick_origin_race, validate_origin,
-    OriginMode, ServerSessionState, DEFAULT_API_ORIGIN,
+    pick_origin_race, OriginMode, ServerSessionState, DEFAULT_API_ORIGIN,
 };
 
 // --- frontend-facing commands (origin + token) --------------------------------------------
@@ -25,7 +21,7 @@ pub(crate) fn get_api_origin(state: tauri::State<'_, ServerSessionState>) -> Str
 }
 
 /// The exact endpoint every Rust-owned HTTP transport uses right now. Unlike `get_api_origin` this is
-/// runtime state: `init_pick_origin`, desktop failover, or Android's `set_active_origin` may change it
+/// runtime state: Rust's login selection and runtime failover may change it
 /// without changing either configured address.
 #[tauri::command]
 pub(crate) fn get_active_api_origin(state: tauri::State<'_, ServerSessionState>) -> String {
@@ -44,16 +40,6 @@ pub(crate) fn is_origin_configured(state: tauri::State<'_, ServerSessionState>) 
     !origin.is_empty() && *origin != DEFAULT_API_ORIGIN
 }
 
-/// Persist a new backend origin. Legacy entry point (the bundled bootstrap also reaches this via
-/// `persist_origin` in this command). Returns the canonical origin Rust stored.
-#[tauri::command]
-pub(crate) fn set_api_origin(
-    url: String,
-    state: tauri::State<'_, ServerSessionState>,
-) -> Result<String, String> {
-    persist_origin(&state, &url)
-}
-
 /// The configured LAN (secondary) origin, or null when no fallback is configured (dev, or servers without
 /// SOMS_LAN_DOMAIN). The shell uses this to populate the second server-config field + persist it.
 #[tauri::command]
@@ -65,16 +51,6 @@ pub(crate) fn get_api_origin_secondary(
         .lock()
         .expect("secondary lock")
         .clone()
-}
-
-/// Persist the LAN (secondary) origin (field-2). Empty/null clears it (disables fallback). Returns the
-/// canonical value Rust stored (Some url, or None when cleared).
-#[tauri::command]
-pub(crate) fn set_api_origin_secondary(
-    url: Option<String>,
-    state: tauri::State<'_, ServerSessionState>,
-) -> Result<Option<String>, String> {
-    persist_origin_secondary(&state, url.as_deref())
 }
 
 /// Which origin is currently ACTIVE — for the "正在使用内网服务器" indicator. `primary` = normal;
@@ -99,30 +75,6 @@ pub(crate) async fn init_pick_origin(
     Ok(state.api_origin.lock().expect("origin lock").clone())
 }
 
-/// Android passive-accept: Kotlin (the SSE authority on Android) signals which origin is active; Rust sets
-/// it WITHOUT probing/switching (it's not the authority there). Desktop doesn't call this (Rust decides).
-/// Sets the ACTIVE origin only (the primary/secondary config is owned by set_api_origin[_secondary]).
-#[tauri::command]
-pub(crate) fn set_active_origin(
-    url: String,
-    state: tauri::State<'_, ServerSessionState>,
-) -> Result<String, String> {
-    let normalized =
-        validate_origin(&url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
-    let secondary = state
-        .api_origin_secondary
-        .lock()
-        .expect("secondary lock")
-        .clone();
-    let mode = if Some(&normalized) == secondary.as_ref() {
-        OriginMode::Secondary
-    } else {
-        OriginMode::Primary
-    };
-    activate_origin(&state, &normalized, mode);
-    Ok(normalized)
-}
-
 /// Activate the native login identity captured by the original authentication operation. The expected
 /// UUID never comes from mutable current state: a late completion of a superseded login is rejected.
 #[tauri::command]
@@ -131,8 +83,14 @@ pub(crate) async fn set_session_token(
     session_uuid: Option<String>,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<(), String> {
-    {
+    let guard = state
+        .auth_lifecycle
+        .enter(crate::auth_lifecycle::Phase::Login)?;
+    let proxy = state.inner().clone();
+    // Once admitted, activation belongs to the worker rather than the IPC waiter.
+    tauri::async_runtime::spawn_blocking(move || {
         let uuid = session_uuid.ok_or("native login UUID is required")?;
+        guard.validate_login(&uuid)?;
         let id = crate::login_session_store::LoginSessionId::try_from(uuid)?;
         let owner = crate::native_db::login_connection(&id)?;
         let activation = if owner.credential().ok().as_deref() == Some(token.as_str()) {
@@ -141,72 +99,59 @@ pub(crate) async fn set_session_token(
             Some(owner.begin_activation().map_err(|e| e.to_string())?)
         };
         let token_for_activation = token.clone();
-        let id_for_state = id.clone();
         let preferences = crate::native_db::preferences_connection()?;
-        tauri::async_runtime::spawn_blocking(move || {
-            preferences.with_database(|conn| {
-                crate::login_session_store::SessionStore::activate(conn, &id, &token_for_activation)
-            })
-        })
-        .await
-        .map_err(|e| format!("join native login activation: {e}"))??;
+        preferences.with_database(|conn| {
+            crate::login_session_store::SessionStore::activate(conn, &id, &token_for_activation)
+        })?;
         if let Some(activation) = activation {
             activation
                 .commit(token.clone())
                 .map_err(|e| e.to_string())?;
         }
         owner.assert_active().map_err(|e| e.to_string())?;
-        *state.login_session.lock().expect("login session lock") = Some(id_for_state);
-    }
-    state.replace_session_token(Some(token));
-    Ok(())
+        drop(guard);
+        proxy.login_activated();
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join native login activation: {e}"))?
 }
 
 /// Validate a persisted credential against the durable login record before any restoration work.
 /// A credential whose login was ended locally never revives it.
 #[tauri::command]
-pub(crate) async fn login_session_for_token(token: String) -> Result<Option<String>, String> {
+pub(crate) async fn login_session_for_token(
+    token: String,
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<Option<String>, String> {
+    let guard = state
+        .auth_lifecycle
+        .enter(crate::auth_lifecycle::Phase::Login)?;
     let preferences = crate::native_db::preferences_connection()?;
     tauri::async_runtime::spawn_blocking(move || {
-        preferences.with_database(|conn| {
+        let id = preferences.with_database(|conn| {
             Ok(crate::login_session_store::SessionStore::restore(conn, &token)?.map(String::from))
-        })
+        })?;
+        if let Some(id) = &id {
+            guard.register_login(id)?;
+        }
+        Ok(id)
     })
     .await
     .map_err(|e| format!("join native login restoration check: {e}"))?
 }
 
 #[tauri::command]
-pub(crate) async fn clear_session_token(
-    session_uuid: String,
-    state: tauri::State<'_, ServerSessionState>,
-) -> Result<(), String> {
+pub(crate) async fn clear_session_token(session_uuid: String) -> Result<(), String> {
     let expected = crate::login_session_store::LoginSessionId::try_from(session_uuid)?;
-    let ended = {
-        let mut active = state.login_session.lock().expect("login session lock");
-        if *active != Some(expected.clone()) {
-            return Ok(());
-        }
-        active.take()
-    };
-    if let Some(id) = ended.as_ref() {
-        let owner = crate::native_db::end_login_connection(id)?;
-        let preferences = crate::native_db::preferences_connection()?;
-        tauri::async_runtime::spawn_blocking(move || {
-            let durable = preferences.with_database(|conn| {
-                crate::login_session_store::SessionStore::end(conn, ended.as_ref())?;
-                crate::login_session_store::SessionStore::finish_ending(conn, ended.as_ref())
-            });
-            let released = crate::native_db::release_login_connection(&owner);
-            durable.and(released)
-        })
-        .await
-        .map_err(|e| format!("join native local end: {e}"))??;
-    }
-    state.replace_session_token(None);
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::native_db::end_current_login_if_matching(&expected)
+    })
+    .await
+    .map_err(|e| format!("join native local end: {e}"))?
 }
 
+#[cfg(not(desktop))]
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LogoutAdmission {
@@ -214,29 +159,37 @@ pub(crate) struct LogoutAdmission {
     local_clear_failed: bool,
 }
 
-/// Capture and detach before the platform adapter clears its secure credential. In particular,
-/// Android's secure-store adapter also clears Rust's token, so it must wait for this acknowledgement.
-/// The bounded remote attempt starts here even if the renderer disappears before waiting for it.
+/// Stop desktop business work while the Rust coordinator retains revocation credentials.
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) async fn begin_logout(
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<(), String> {
+    state.logout.begin_login_logout(&state).await
+}
+
+/// Legacy mobile adapter admission captures revocation credentials before OS storage cleanup.
+#[cfg(not(desktop))]
 #[tauri::command]
 pub(crate) async fn begin_logout(
     origin: String,
     session_uuid: Option<String>,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<LogoutAdmission, String> {
+    let transition = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Logout)?;
     // The renderer captures the active UUID at the logout click; a delayed dispatch of a superseded
     // logout must never end a successor login.
     let expected = session_uuid
         .as_deref()
         .map(|uuid| crate::login_session_store::LoginSessionId::try_from(uuid.to_string()))
         .transpose()?;
-    {
-        let mut active = state.login_session.lock().expect("login session lock");
-        if *active != expected {
-            return Err("native login superseded".into());
-        }
-        *active = None;
+    let owner = crate::native_db::current_login()?;
+    if owner.as_ref().map(|owner| owner.id()) != expected.as_ref() {
+        return Err("native login superseded".into());
     }
-    // The guard is dropped before awaiting: never hold the login lock across blocking I/O.
+    // Capture the ended owner's credential before cancellation. Cleanup can never read or
+    // clear a successor credential, even when SQL or OS storage finishes after a new login.
+    let token = owner.as_ref().and_then(|owner| owner.credential().ok());
     if let Some(id) = expected.as_ref() {
         let owner = crate::native_db::end_login_connection(id)?;
         let preferences = crate::native_db::preferences_connection()?;
@@ -252,30 +205,14 @@ pub(crate) async fn begin_logout(
         .await
         .map_err(|e| format!("join native logout end: {e}"))??;
     }
-    let token = state.replace_session_token(None);
-    let ticket = token.and_then(|token| {
-        // Never re-read the mutable origin after capturing the ended credential.
-        let origin = validate_origin(&origin)?;
-        Some(
-            state
-                .logout_tasks
-                .start(state.api_client(&origin), origin, token),
-        )
-    });
-
-    #[cfg(desktop)]
-    let local_clear_failed = match expected.as_ref() {
-        Some(id) => match secure_storage::secure_clear_token_internal(&id.to_string(), &state) {
-            Ok(()) => false,
-            Err(error) => {
-                warn!("logout credential clear failed: {error}");
-                true
-            }
-        },
-        None => false,
-    };
-    #[cfg(not(desktop))]
     let local_clear_failed = false;
+
+    let ticket = token.and_then(|token| {
+        let origin = validate_origin(&origin)?;
+        Some(state.logout_tasks.start_in_transition(
+            state.api_client(&origin), origin, token, transition,
+        ))
+    });
 
     Ok(LogoutAdmission {
         ticket,
@@ -283,12 +220,41 @@ pub(crate) async fn begin_logout(
     })
 }
 
+/// Complete desktop logout after confirmed revocation or an explicit local-only decision.
+/// Rust owns the descriptor and OS cleanup; the renderer never supplies deletion identity.
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) async fn finish_logout(
+    app: tauri::AppHandle,
+    local_only: bool,
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<(), String> {
+    state.logout.finish_desktop(app, local_only).await
+}
+
+/// Read the Rust-owned operation projection. No credential is exposed to the renderer.
+#[tauri::command]
+pub(crate) async fn logout_status(
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<crate::native_logout::LogoutStatus, String> {
+    Ok(state.logout.status().await)
+}
+
+/// One explicit attempt against the credential captured by the logout coordinator.
+/// No automatic retry and no credential/cache deletion occurs in this command.
+#[tauri::command]
+pub(crate) async fn try_logout(
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<crate::native_logout::LogoutOutcome, String> {
+    state.logout.revoke().await
+}
+
 /// Waiting has no credential/cache side effects and cannot mutate a successor session.
+#[cfg(not(desktop))]
 #[tauri::command]
 pub(crate) async fn wait_for_logout(
     ticket: String,
     state: tauri::State<'_, ServerSessionState>,
-) -> Result<(), String> {
-    state.logout_tasks.wait(&ticket).await;
-    Ok(())
+) -> Result<crate::native_logout::LogoutOutcome, String> {
+    Ok(state.logout_tasks.wait(&ticket).await)
 }

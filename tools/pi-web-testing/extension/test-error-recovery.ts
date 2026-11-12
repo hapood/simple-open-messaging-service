@@ -48,7 +48,7 @@ export function recoverTestError(
     scope: input.scope as 'arguments' | 'temporary-step',
     ...(input.path ? { path: input.path } : {}),
   };
-  // Distinguish agent recovery from an explicit operator retry in the audit trail.
+  // Distinguish agent recovery from an explicit operator decision in the audit trail.
   issue.decision = 'agent-retry';
   state.phase = 'running';
   state.next =

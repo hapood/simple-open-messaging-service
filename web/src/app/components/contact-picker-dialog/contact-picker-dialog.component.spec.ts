@@ -6,74 +6,60 @@ import { RouteService } from '../../services/route.service';
 import {
   createGroupConversation,
   createP2PConversation,
+  displayThreadName,
 } from '../../services/model';
 
+const threads = [
+  createP2PConversation({
+    threadId: 7,
+    account: 'bob',
+    publisherNamespaceId: 4,
+    profileRev: 5,
+  }),
+  createGroupConversation({
+    threadId: 8,
+    account: '!group12',
+    publisherNamespaceId: 4,
+    profileRev: 6,
+    profile: { name: 'Group', bio: '', avatarDigest: null },
+  }),
+];
+
 describe('ContactPickerDialogComponent', () => {
-  it('selects a federated person by profile reference instead of a local numeric id', () => {
-    const peer = createP2PConversation(7, {
-      account: 'bob',
-      namespaceId: 4,
-      profileRev: 5,
-    });
-    const closeDlg = vi.fn();
+  const closeDlg = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
     TestBed.configureTestingModule({
       providers: [
         {
           provide: ConversationListService,
-          useValue: { items: signal([peer]) },
+          useValue: { items: signal(threads) },
         },
         { provide: RouteService, useValue: { closeDlg } },
       ],
     }).overrideComponent(ContactPickerDialogComponent, {
       set: { template: '' },
     });
-    TestBed.createComponent(
-      ContactPickerDialogComponent,
-    ).componentInstance.choose(peer);
-    expect(closeDlg).toHaveBeenCalledWith(
-      expect.objectContaining({
-        target: {
-          account: 'bob',
-          namespaceId: 4,
-          profileRev: 5,
-        },
-      }),
-    );
-    expect(closeDlg.mock.calls[0][0]).not.toHaveProperty('targetUserId');
   });
 
-  it('uses the same reference shape for a group', () => {
-    const group = createGroupConversation(8, {
-      id: 8,
-      account: '!group12',
-      name: 'Group',
-      namespaceId: 4,
-      profileRev: 6,
-    });
-    const closeDlg = vi.fn();
-    TestBed.configureTestingModule({
-      providers: [
-        {
-          provide: ConversationListService,
-          useValue: { items: signal([group]) },
-        },
-        { provide: RouteService, useValue: { closeDlg } },
-      ],
-    }).overrideComponent(ContactPickerDialogComponent, {
-      set: { template: '' },
-    });
-    TestBed.createComponent(
-      ContactPickerDialogComponent,
-    ).componentInstance.choose(group);
-    expect(closeDlg).toHaveBeenCalledWith(
-      expect.objectContaining({
+  it.each(threads)(
+    'selects $type synchronously from materialized thread fields',
+    (thread) => {
+      const component = TestBed.createComponent(
+        ContactPickerDialogComponent,
+      ).componentInstance;
+      component.choose(thread);
+      expect(closeDlg).toHaveBeenCalledExactlyOnceWith({
         target: {
-          account: '!group12',
-          namespaceId: 4,
-          profileRev: 6,
+          account: thread.account,
+          namespaceId: thread.publisherNamespaceId,
+          profileRev: thread.profileRev,
         },
-      }),
-    );
-    expect(closeDlg.mock.calls[0][0]).not.toHaveProperty('targetGroupId');
-  });
+        account: thread.account,
+        name: displayThreadName(thread),
+        bio: thread.profile.bio ?? '',
+      });
+    },
+  );
 });

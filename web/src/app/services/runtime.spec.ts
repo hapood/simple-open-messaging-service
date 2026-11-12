@@ -1,9 +1,7 @@
 import {
   assetUrl,
-  cachedChatThumbnailUrl,
   canonicalOrigin,
   chatThumbnailUrl,
-  nativeVideoThumbnailUrl,
   videoCasDigest,
 } from './runtime';
 
@@ -115,22 +113,15 @@ describe('assetUrl', () => {
 
   it('maps a native chat image onto the thumbnail protocol path', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
-    expect(chatThumbnailUrl('/uploads/cas/aa/bb/photo.jpg')).toBe(
-      'http://media.localhost/chat-thumbnails/uploads/cas/aa/bb/photo.jpg',
-    );
-  });
-
-  it('maps a native image onto a cache-only thumbnail path', () => {
-    setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
-    expect(cachedChatThumbnailUrl('/uploads/cas/aa/bb/photo.jpg')).toBe(
-      'http://media.localhost/cached-chat-thumbnails/uploads/cas/aa/bb/photo.jpg',
+    expect(chatThumbnailUrl('/uploads/msg-assets/aa/bb/photo.jpg')).toBe(
+      'http://media.localhost/uploads/thumbnails/aa/bb/photo.jpg',
     );
   });
 
   it('keeps browser and optimistic image URLs unchanged', () => {
     setRuntime(false, 'Mozilla/5.0 (Linux; Android 15)');
-    expect(chatThumbnailUrl('/uploads/cas/aa/bb/photo.jpg')).toBe(
-      '/uploads/cas/aa/bb/photo.jpg',
+    expect(chatThumbnailUrl('/uploads/msg-assets/aa/bb/photo.jpg')).toBe(
+      '/uploads/thumbnails/aa/bb/photo.jpg',
     );
     expect(chatThumbnailUrl('blob:test')).toBe('blob:test');
   });
@@ -138,16 +129,23 @@ describe('assetUrl', () => {
   it('extracts only a canonical CAS digest and builds the Android local-thumbnail URL', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     const digest = 'ab'.repeat(32);
-    const path = `/uploads/shards/ab/cd/${digest}.mp4`;
+    const path = `/uploads/msg-assets/ab/ab/${digest}?threadId=1&seq=6`;
     expect(videoCasDigest(path)).toBe(digest);
-    expect(nativeVideoThumbnailUrl(path, 2)).toBe(
-      `http://media.localhost/video-thumbnails${path}?v=2`,
+    expect(chatThumbnailUrl(path)).toBe(
+      `http://media.localhost${path.replace('/msg-assets/', '/thumbnails/')}`,
     );
   });
 
   it('does not invent an identity for a non-CAS video URL', () => {
     setRuntime(true, 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     expect(videoCasDigest('https://cdn.example/video.mp4')).toBeNull();
-    expect(nativeVideoThumbnailUrl('https://cdn.example/video.mp4')).toBe('');
+    expect(
+      videoCasDigest(`/uploads/msg-assets/aa/bb/${'ab'.repeat(32)}`),
+    ).toBeNull();
+    expect(
+      videoCasDigest(
+        `/uploads/msg-assets/ab/ab/${'ab'.repeat(32)}?threadId=0&seq=6`,
+      ),
+    ).toBeNull();
   });
 });

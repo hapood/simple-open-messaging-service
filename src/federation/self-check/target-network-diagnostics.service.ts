@@ -205,12 +205,13 @@ export class TargetNetworkDiagnosticsService {
         { observe },
       );
       const response = await requestFederation(
-        `${resolved.baseUrl}/.well-known/somfp`,
+        `${resolved.baseUrl}/somfp/discovery`,
         dispatcher,
         {
-          signal: AbortSignal.timeout(config.callTimeoutSec * 1000),
           headers: { accept: 'application/json' },
         },
+        undefined,
+        config.requestIdleTimeoutSec * 1000,
       );
       phase = 'federation';
       const doc = await readFederationDiscovery(domain, response);
@@ -251,7 +252,7 @@ export class TargetNetworkDiagnosticsService {
       policy: {
         freshConnection: true,
         connectTimeoutMs: config.connectTimeoutSec * 1000,
-        callTimeoutMs: config.callTimeoutSec * 1000,
+        callTimeoutMs: config.requestIdleTimeoutSec * 1000,
       },
       checks,
     };

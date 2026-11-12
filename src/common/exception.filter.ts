@@ -114,7 +114,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
   }
 
   private isFederationRequest(request: FastifyRequest): boolean {
-    return (request.url ?? '').startsWith('/s2s/');
+    return (request.url ?? '').startsWith('/somfp/');
   }
 
   private map(

@@ -7,10 +7,12 @@ import {
 import { selectFederationProtocolVersion } from './federation-protocol.js';
 import { parseKeyId } from './key-id.js';
 
-/** The public `/.well-known/somfp` v1 discovery document. Owned here so the
+/** The public `/somfp/discovery` v1 discovery document. Owned here so the
  *  document contract has one definition shared by discovery and diagnostics. */
 export interface WellKnownDoc {
   software?: string;
+  /** Diagnostic creation time of the publisher's active signing key, in epoch milliseconds. */
+  signingKeyCreatedAt: number;
   protocolVersions: number[];
   roots: RootKeyEntry[];
   keys: SigningKeyCertificate[];
@@ -51,6 +53,9 @@ export function validateWellKnownDocument(
     !doc ||
     selectFederationProtocolVersion(doc.protocolVersions) !== 1 ||
     !softwareValid ||
+    !Number.isSafeInteger(doc.signingKeyCreatedAt) ||
+    typeof doc.signingKeyCreatedAt !== 'number' ||
+    doc.signingKeyCreatedAt <= 0 ||
     !Array.isArray(doc.roots) ||
     doc.roots.length === 0 ||
     !Array.isArray(doc.keys) ||

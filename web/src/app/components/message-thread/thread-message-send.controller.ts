@@ -102,10 +102,8 @@ export class ThreadMessageSendController {
       cid,
       JSON.stringify({
         account: contact.account,
-        domain: contact.domain,
         displayName: contact.name,
         bio: contact.bio,
-        ...(contact.avatar ? { avatar: contact.avatar } : {}),
       }),
       'CONTACT_CARD',
     );

@@ -1,6 +1,8 @@
 import { HttpClient } from '@angular/common/http';
 import { avatarBlobDataUrl } from '../../services/profile-avatar-bytes';
 import { assetUrl } from '../../services/runtime';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { parseRequestSnapshot } from '../../../../../shared/request-snapshot';
 import type { RequestRecord } from '../../../../../shared/relationship-request';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
@@ -8,21 +10,32 @@ import { RequestProjectionStatus } from '../../../../../shared/request-projectio
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   inject,
+  Input,
+  OnInit,
   OnDestroy,
   signal,
 } from '@angular/core';
 import { AsyncPipe } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { firstValueFrom, Subscription } from 'rxjs';
+import {
+  defer,
+  finalize,
+  firstValueFrom,
+  from,
+  fromEvent,
+  map,
+  Observable,
+  of,
+  switchMap,
+  take,
+  takeUntil,
+} from 'rxjs';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
-import {
-  GroupService,
-  type GroupInviteCandidate,
-} from '../../services/group.service';
+import { GroupService } from '../../services/group.service';
+import type { User } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
@@ -32,16 +45,14 @@ import { UserAvatarType } from '../user-avatar/model';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
-import {
-  FederatedResolveError,
-  type FederatedResolveStage,
-  UserService,
-} from '../../services/user.service';
+import { IdentitySearch } from '../../services/identity-search';
+import { IdentitySearchComponent } from '../identity-search/identity-search.component';
 import {
   applyGroupJoinRequestAction,
   hasUnreadGroupJoinRequests,
   mergeGroupJoinRequestPage,
 } from '../../services/group-join-request-state';
+import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 
 type RequestListKind = 'INVITATION' | 'APPLICATION';
@@ -49,10 +60,9 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
 @Component({
   selector: 'app-group-join-requests',
   imports: [
+    IdentitySearchComponent,
     AsyncPipe,
-    FormsModule,
     MatButtonModule,
-    MatProgressBarModule,
     MatTabsModule,
     PageHeaderComponent,
     TranslocoPipe,
@@ -60,55 +70,77 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
     SnapshotAvatarComponent,
     UserIdentityLabelComponent,
     NamespaceDomainPipe,
+    VirtualInfiniteListComponent,
   ],
   templateUrl: './group-join-requests.component.html',
   styleUrl: './group-join-requests.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class GroupJoinRequestsComponent implements OnDestroy {
+export class GroupJoinRequestsComponent implements OnInit, OnDestroy {
+  @Input() threadId?: number;
+  @Input() initialTab?: 'invitations' | 'applications';
+  /** Frozen on mount: compact chat animations may retain the previous openThreadId. */
+  private groupThreadId?: number;
   readonly UserAvatarType = UserAvatarType;
   private readonly groups = inject(GroupService);
   private readonly http = inject(HttpClient);
+  private readonly sessionLifecycle = inject(SessionLifecycleService);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly conversations = inject(ConversationListService);
-  private readonly users = inject(UserService);
   private readonly nav = inject(NavStateMachineService);
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
 
   readonly activeTab = signal(0);
+  readonly requestItemKey = (_index: number, request: RequestRecord) =>
+    request.id;
+  readonly candidateItemKey = (_index: number, candidate: User) =>
+    this.candidateKey(candidate);
+  readonly invitationsError = signal(false);
+  readonly applicationsError = signal(false);
   readonly invitations = signal<RequestRecord[]>([]);
   readonly applications = signal<RequestRecord[]>([]);
-  readonly candidates = signal<GroupInviteCandidate[]>([]);
+  readonly lookup = new IdentitySearch();
+  private readonly sentInvitations = signal<ReadonlySet<string>>(new Set());
   readonly loadingInvitations = signal(false);
   readonly loadingApplications = signal(false);
-  readonly loadingCandidates = signal(false);
   readonly invitationsHasMore = signal(false);
   readonly applicationsHasMore = signal(false);
-  readonly candidatesHasMore = signal(false);
   readonly acting = signal<ReadonlySet<string>>(new Set());
   readonly inviting = signal<ReadonlySet<string>>(new Set());
   readonly searchText = signal('');
-  readonly appliedSearch = signal('');
-  readonly federatedAddress = signal<{
-    account: string;
-    domain: string;
-  } | null>(null);
-  readonly invalidGroupAddress = signal(false);
-  readonly resolvingFederated = signal(false);
-  readonly federationStage = signal<FederatedResolveStage>('DISCOVERING');
+
+  private readonly mountSession = this.sessionLifecycle.capture();
+  private readonly loadedTabs = new Set<RequestListKind>();
+
+  private isCurrent(): boolean {
+    return (
+      !this.destroyRef.destroyed &&
+      this.sessionLifecycle.isCurrent(this.mountSession)
+    );
+  }
+
+  private scoped<T>(source: Observable<T>): Observable<T> {
+    return source.pipe(
+      takeUntil(fromEvent(this.mountSession.signal, 'abort')),
+      takeUntilDestroyed(this.destroyRef),
+    );
+  }
 
   private invitationBefore?: string;
   private applicationBefore?: string;
-  private candidateAfterThreadId?: number;
-  private resolveSub?: Subscription;
 
-  constructor() {
-    const threadId = this.conversations.openThreadId();
+  ngOnInit(): void {
+    const threadId = this.threadId ?? this.conversations.openThreadId();
+    this.groupThreadId = threadId;
     const thread = this.conversations
       .items()
       .find((item) => item.threadId === threadId);
     const hasUnreadApplications = hasUnreadGroupJoinRequests(thread);
-    if (hasUnreadApplications) {
+    if (
+      this.initialTab === 'applications' ||
+      (this.initialTab === undefined && hasUnreadApplications)
+    ) {
       this.activeTab.set(1);
       void this.loadRequests('APPLICATION', false);
     } else {
@@ -145,48 +177,55 @@ export class GroupJoinRequestsComponent implements OnDestroy {
 
   setTab(index: number): void {
     this.activeTab.set(index);
-    if (index === 1 && this.applications().length === 0) {
-      void this.loadRequests('APPLICATION', false);
-    }
-    if (index === 2 && this.candidates().length === 0)
-      void this.loadCandidates(false);
+    const kind = index === 1 ? 'APPLICATION' : 'INVITATION';
+    if (!this.loadedTabs.has(kind)) void this.loadRequests(kind, false);
   }
 
   search(): void {
-    const query = this.searchText().trim();
-    this.appliedSearch.set(query);
-    this.invalidGroupAddress.set(/^!\S+@\S+$/.test(query));
-    this.federatedAddress.set(null);
-    void this.loadCandidates(false);
+    this.lookup.search(this.searchText(), {
+      reject: (user) => (user.isGroup ? 'group.cannotInviteGroup' : null),
+    });
+  }
+
+  cancelSearch(): void {
+    this.lookup.cancel();
+    this.searchText.set('');
   }
 
   loadMoreRequests(kind: RequestListKind): void {
     void this.loadRequests(kind, true);
   }
-  loadMoreCandidates(): void {
-    void this.loadCandidates(true);
+
+  retryRequests(kind: RequestListKind): void {
+    const rows =
+      kind === 'INVITATION' ? this.invitations() : this.applications();
+    void this.loadRequests(kind, rows.length > 0);
   }
 
   async handleApplication(
     application: RequestRecord,
     accept: boolean,
   ): Promise<void> {
-    const groupId = this.conversations.openThreadId();
+    const groupId = this.groupThreadId;
     const key = this.requestKey(application);
-    if (groupId === undefined || this.acting().has(key)) return;
+    if (!this.isCurrent() || groupId === undefined || this.acting().has(key))
+      return;
     this.addActing(key);
     try {
       const res = await firstValueFrom(
-        accept
-          ? this.groups.acceptJoinRequest({
-              groupId,
-              requestId: application.id,
-            })
-          : this.groups.rejectJoinRequest({
-              groupId,
-              requestId: application.id,
-            }),
+        this.scoped(
+          accept
+            ? this.groups.acceptJoinRequest({
+                groupId,
+                requestId: application.id,
+              })
+            : this.groups.rejectJoinRequest({
+                groupId,
+                requestId: application.id,
+              }),
+        ),
       );
+      if (!this.isCurrent()) return;
       if (res.code !== 0) return this.showBusinessError(res);
       if (res.data?.status !== 'OK') {
         this.toast.warn(
@@ -207,24 +246,28 @@ export class GroupJoinRequestsComponent implements OnDestroy {
         ),
       );
     } catch {
-      this.showNetworkError();
+      if (this.isCurrent()) this.showNetworkError();
     } finally {
-      this.removeActing(key);
+      if (this.isCurrent()) this.removeActing(key);
     }
   }
 
   async revokeInvitation(invitation: RequestRecord): Promise<void> {
-    const groupId = this.conversations.openThreadId();
+    const groupId = this.groupThreadId;
     const key = this.requestKey(invitation);
-    if (groupId === undefined || this.acting().has(key)) return;
+    if (!this.isCurrent() || groupId === undefined || this.acting().has(key))
+      return;
     this.addActing(key);
     try {
       const res = await firstValueFrom(
-        this.groups.revokeInvitation({
-          groupId,
-          requestId: invitation.id,
-        }),
+        this.scoped(
+          this.groups.revokeInvitation({
+            groupId,
+            requestId: invitation.id,
+          }),
+        ),
       );
+      if (!this.isCurrent()) return;
       if (res.code !== 0) return this.showBusinessError(res);
       if (res.data?.status !== 'OK') {
         this.toast.warn(
@@ -244,120 +287,114 @@ export class GroupJoinRequestsComponent implements OnDestroy {
             : row,
         ),
       );
-      this.candidates.update((rows) =>
-        rows.map((row) =>
-          this.candidateKey(row) === this.candidateKey(invitation.receiver)
-            ? { ...row, state: 'AVAILABLE' }
-            : row,
-        ),
-      );
+      this.sentInvitations.update((keys) => {
+        const next = new Set(keys);
+        next.delete(this.candidateKey(invitation.receiver));
+        return next;
+      });
     } catch {
-      this.showNetworkError();
+      if (this.isCurrent()) this.showNetworkError();
     } finally {
-      this.removeActing(key);
+      if (this.isCurrent()) this.removeActing(key);
     }
   }
 
-  candidateKey(candidate: {
-    account: string;
-    namespaceId: number;
-  }): string {
+  invitationState(user: User): 'AVAILABLE' | 'INVITED' {
+    const key = this.candidateKey(user);
+    const pending = this.invitations().some(
+      (request) =>
+        request.status === 'REQUESTED' &&
+        new Date(request.expiresAt ?? 0).getTime() > Date.now() &&
+        this.candidateKey(request.receiver) === key,
+    );
+    return pending || this.sentInvitations().has(key) ? 'INVITED' : 'AVAILABLE';
+  }
+
+  candidateKey(candidate: { account: string; namespaceId: number }): string {
     return JSON.stringify([candidate.namespaceId, candidate.account]);
   }
 
-  async invite(candidate: GroupInviteCandidate): Promise<void> {
-    const groupId = this.conversations.openThreadId();
+  invite(candidate: User): void {
+    const groupId = this.groupThreadId;
     const key = this.candidateKey(candidate);
-    if (
-      groupId === undefined ||
-      candidate.state !== 'AVAILABLE' ||
-      this.inviting().has(key)
-    )
+    if (!this.isCurrent() || groupId === undefined || this.inviting().has(key))
       return;
+    const session = this.sessionLifecycle.capture();
     this.inviting.update((ids) => new Set(ids).add(key));
-    try {
-      const avatar = candidate.avatar
-        ? candidate.avatar.startsWith('data:')
-          ? candidate.avatar
-          : await avatarBlobDataUrl(await firstValueFrom(
-              this.http.get(assetUrl(candidate.avatar), { responseType: 'blob' }),
-            ))
-        : null;
-      const snapshot = parseRequestSnapshot({ displayName: candidate.name, avatar });
-      const res = await firstValueFrom(
-        this.groups.inviteUsers({
-          groupId,
-          users: [
-            { account: candidate.account, namespaceId: candidate.namespaceId, snapshot },
-          ],
-        }),
-      );
-      if (res.code !== 0) return this.showBusinessError(res);
-      if (!res.data?.invited.length || res.data.skipped.length) {
-        this.toast.warn(this.transloco.translate('group.inviteUnavailable'));
-        return;
-      }
-      this.candidates.update((rows) =>
-        rows.map((row) =>
-          this.candidateKey(row) === key ? { ...row, state: 'INVITED' } : row,
+    // Lookup endpoints supply display data directly; the send boundary is the
+    // only place it freezes into bytes. An unpublished candidate carries the
+    // account-name fallback from the server.
+    defer(() => {
+      const avatar: Observable<string | null> = !candidate.avatar
+        ? of(null)
+        : candidate.avatar.startsWith('data:')
+          ? of(candidate.avatar)
+          : this.http
+              .get(assetUrl(candidate.avatar), { responseType: 'blob' })
+              .pipe(switchMap((blob) => from(avatarBlobDataUrl(blob))));
+      return avatar.pipe(
+        map((value) =>
+          parseRequestSnapshot({ displayName: candidate.name, avatar: value }),
         ),
       );
-      void this.loadRequests('INVITATION', false);
-    } catch {
-      this.showNetworkError();
-    } finally {
-      this.inviting.update((ids) => {
-        const next = new Set(ids);
-        next.delete(key);
-        return next;
-      });
-    }
-  }
-
-  resolveFederated(): void {
-    const address = this.federatedAddress();
-    if (!address || this.resolvingFederated()) return;
-    this.resolvingFederated.set(true);
-    this.federationStage.set('DISCOVERING');
-    this.resolveSub = this.users
-      .resolveFederatedUser(address, (stage) => this.federationStage.set(stage))
-      .subscribe({
-        next: async ({ user }) => {
-          try {
-            if (user.isGroup) {
-              this.invalidGroupAddress.set(true);
-              return;
-            }
-            if ((await this.users.localRelationship(user)) !== 'FRIEND') {
-              this.toast.warn(this.transloco.translate('group.friendRequired'));
-              return;
-            }
-            this.candidates.set([
+    })
+      .pipe(
+        take(1),
+        switchMap((snapshot) =>
+          this.groups.inviteUsers({
+            groupId,
+            users: [
               {
-                namespaceId: user.namespaceId,
-                profileRev: user.profileRev,
-                account: user.account,
-                name: user.name,
-                avatar: user.avatar,
-                bio: user.bio ?? '',
-                state: 'AVAILABLE',
+                account: candidate.account,
+                namespaceId: candidate.namespaceId,
+                snapshot,
               },
-            ]);
-            this.federatedAddress.set(null);
-          } catch {
-            this.toast.warn(this.transloco.translate('errors.networkError'));
-          } finally {
-            this.resolvingFederated.set(false);
+            ],
+          }),
+        ),
+        takeUntil(fromEvent(session.signal, 'abort')),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() =>
+          this.inviting.update((ids) => {
+            const next = new Set(ids);
+            next.delete(key);
+            return next;
+          }),
+        ),
+      )
+      .subscribe({
+        next: (res) => {
+          if (!this.isCurrent()) return;
+          if (res.code !== 0) return this.showBusinessError(res);
+          const rejection = res.data?.skipped[0];
+          if (rejection) {
+            if (
+              rejection.reason === 'ALREADY_MEMBER' ||
+              rejection.reason === 'ALREADY_INVITED'
+            ) {
+              this.toast.warn(
+                this.transloco.translate(
+                  rejection.reason === 'ALREADY_MEMBER'
+                    ? 'group.alreadyMember'
+                    : 'group.invitedStatus',
+                ),
+              );
+            } else {
+              this.showBusinessError(rejection);
+            }
+            return;
           }
+          if (!res.data?.invited.length) {
+            this.toast.warn(
+              this.transloco.translate('group.inviteUnavailable'),
+            );
+            return;
+          }
+          this.sentInvitations.update((keys) => new Set(keys).add(key));
+          void this.loadRequests('INVITATION', false);
         },
-        error: (error: unknown) => {
-          this.resolvingFederated.set(false);
-          const key =
-            error instanceof FederatedResolveError &&
-            error.reason === 'NOT_FOUND'
-              ? 'group.noMatchingFriends'
-              : 'errors.networkError';
-          this.toast.warn(this.transloco.translate(key));
+        error: () => {
+          if (this.isCurrent()) this.showNetworkError();
         },
       });
   }
@@ -381,47 +418,61 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     return this.applicationStatusKey(status);
   }
 
-  candidateActionKey(candidate: GroupInviteCandidate): string {
+  candidateActionKey(candidate: User): string {
     if (this.inviting().has(this.candidateKey(candidate)))
       return 'group.inviting';
-    if (candidate.state === 'MEMBER') return 'group.alreadyMember';
-    if (candidate.state === 'INVITED') return 'group.invitedStatus';
+    const state = this.invitationState(candidate);
+    if (state === 'INVITED') return 'group.invitedStatus';
     return 'group.inviteAction';
   }
 
   ngOnDestroy(): void {
-    this.resolveSub?.unsubscribe();
+    this.lookup.cancel();
   }
 
   private async loadRequests(
     kind: RequestListKind,
     append: boolean,
   ): Promise<void> {
-    const groupId = this.conversations.openThreadId();
-    if (groupId === undefined) return;
+    const groupId = this.groupThreadId;
+    if (!this.isCurrent() || groupId === undefined) return;
     const loading =
       kind === 'INVITATION'
         ? this.loadingInvitations
         : this.loadingApplications;
-    if (loading()) return;
+    const hasMore =
+      kind === 'INVITATION'
+        ? this.invitationsHasMore
+        : this.applicationsHasMore;
+    const error =
+      kind === 'INVITATION' ? this.invitationsError : this.applicationsError;
+    if (loading() || (append && !hasMore())) return;
     loading.set(true);
+    error.set(false);
     try {
       const before =
         kind === 'INVITATION' ? this.invitationBefore : this.applicationBefore;
       const res = await firstValueFrom(
-        kind === 'INVITATION'
-          ? this.groups.queryInvitations({
-              groupId,
-              before: append ? before : undefined,
-              take: 20,
-            })
-          : this.groups.queryJoinRequests({
-              groupId,
-              before: append ? before : undefined,
-              take: 20,
-            }),
+        this.scoped(
+          kind === 'INVITATION'
+            ? this.groups.queryInvitations({
+                groupId,
+                before: append ? before : undefined,
+                take: 20,
+              })
+            : this.groups.queryJoinRequests({
+                groupId,
+                before: append ? before : undefined,
+                take: 20,
+              }),
+        ),
       );
-      if (res.code !== 0 || !res.data) return this.showBusinessError(res);
+      if (!this.isCurrent()) return;
+      if (res.code !== 0 || !res.data) {
+        error.set(true);
+        return this.showBusinessError(res);
+      }
+      this.loadedTabs.add(kind);
       const target =
         kind === 'INVITATION' ? this.invitations : this.applications;
       target.update((rows) =>
@@ -437,75 +488,48 @@ export class GroupJoinRequestsComponent implements OnDestroy {
           this.markApplicationsRead(res.data.joinRequestEndFeedId);
       }
     } catch {
-      this.showNetworkError();
+      if (this.isCurrent()) {
+        error.set(true);
+        this.showNetworkError();
+      }
     } finally {
-      loading.set(false);
+      if (this.isCurrent()) loading.set(false);
     }
-  }
-
-  private async loadCandidates(append: boolean): Promise<void> {
-    const groupId = this.conversations.openThreadId();
-    if (groupId === undefined || this.loadingCandidates()) return;
-    this.loadingCandidates.set(true);
-    try {
-      const res = await firstValueFrom(
-        this.groups.queryInviteCandidates({
-          groupId,
-          afterThreadId: append ? this.candidateAfterThreadId : undefined,
-          search: this.appliedSearch() || undefined,
-          take: 20,
-        }),
-      );
-      if (res.code !== 0 || !res.data) return this.showBusinessError(res);
-      this.candidates.update((rows) =>
-        append ? [...rows, ...res.data!.data] : res.data!.data,
-      );
-      this.candidateAfterThreadId = res.data.afterThreadId ?? undefined;
-      this.candidatesHasMore.set(res.data.hasMore);
-      if (!append && res.data.data.length === 0) this.prepareExactFallback();
-    } catch {
-      this.showNetworkError();
-    } finally {
-      this.loadingCandidates.set(false);
-    }
-  }
-
-  private prepareExactFallback(): void {
-    if (this.invalidGroupAddress()) return;
-    const match = /^([^@\s]+)@([^@\s]+)$/.exec(this.appliedSearch());
-    if (match)
-      this.federatedAddress.set({ account: match[1], domain: match[2] });
   }
 
   private markApplicationsRead(joinRequestReadFeedId: number): void {
-    const threadId = this.conversations.openThreadId();
+    const threadId = this.groupThreadId;
     const thread = this.conversations
       .items()
       .find((item) => item.threadId === threadId);
     if (
+      !this.isCurrent() ||
       threadId === undefined ||
       !thread ||
       !hasUnreadGroupJoinRequests(thread)
     )
       return;
-    this.groups
-      .markJoinRequestsRead({
+    this.scoped(
+      this.groups.markJoinRequestsRead({
         groupId: threadId,
         joinRequestReadFeedId,
-      })
-      .subscribe({
-        next: (result) => {
-          if (result.code === 0) {
-            this.conversations.markJoinRequestsReadLocally(
-              threadId,
-              joinRequestReadFeedId,
-            );
-          } else {
-            this.showBusinessError(result);
-          }
-        },
-        error: () => this.showNetworkError(),
-      });
+      }),
+    ).subscribe({
+      next: (result) => {
+        if (!this.isCurrent()) return;
+        if (result.code === 0) {
+          this.conversations.markJoinRequestsReadLocally(
+            threadId,
+            joinRequestReadFeedId,
+          );
+        } else {
+          this.showBusinessError(result);
+        }
+      },
+      error: () => {
+        if (this.isCurrent()) this.showNetworkError();
+      },
+    });
   }
 
   private addActing(id: string): void {

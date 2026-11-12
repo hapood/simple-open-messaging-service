@@ -358,7 +358,7 @@ describe('UserController.resolveFederatedUserStream', () => {
     progress('DISCOVERING');
     resolveRecognition();
     await Promise.resolve();
-    expect(events).toEqual([]);
+    expect(events).toEqual(['heartbeat']);
     expect(federationRecognition.captureContext).not.toHaveBeenCalled();
   });
 

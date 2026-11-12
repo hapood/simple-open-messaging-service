@@ -56,6 +56,161 @@ describe('PushService — identity-only payloads', () => {
     svc['hasUnreadForMessagePush'] = vi.fn().mockResolvedValue(true);
   });
 
+  const requestSession = (sessionId = 10) => ({
+    userId: 1,
+    sessionId,
+    token: `https://push/${sessionId}`,
+    platform: 'WEB',
+    webP256dh: 'key',
+    webAuth: 'auth',
+    expiresAt: new Date(Date.now() + 60_000),
+    revokedAt: null,
+  });
+
+  it('sends request identity only, preserving independent optional coordinates', async () => {
+    registrations.mockResolvedValue([requestSession()]);
+    vi.spyOn(svc['requestAttention'], 'hasUnread').mockResolvedValue(true);
+    sse.confirmedThreadHead.mockReturnValue(900);
+    await svc.dispatchForRequestAttention([
+      { userId: 1, stateFeedEndId: 3, threadFeedEndId: 7 },
+      { userId: 1, stateFeedEndId: 2, threadFeedEndId: 8 },
+    ]);
+    expect(JSON.parse(sendNotification.mock.calls[0][1])).toEqual({
+      type: 'REQUEST_ATTENTION',
+      stateFeedEndId: '3',
+      threadFeedEndId: '8',
+    });
+    expect(svc['requestAttention'].hasUnread).toHaveBeenCalledExactlyOnceWith(
+      1,
+      {
+        personal: true,
+        managedGroups: true,
+      },
+    );
+  });
+
+  it('sends FCM request wakes as data-only with no OS notification payload', async () => {
+    registrations.mockResolvedValue([
+      {
+        ...requestSession(),
+        token: 'android-token',
+        platform: 'ANDROID',
+        webP256dh: null,
+        webAuth: null,
+      },
+    ]);
+    const sendEach = vi.fn().mockResolvedValue({
+      responses: [{ success: true }],
+      successCount: 1,
+      failureCount: 0,
+    });
+    (svc as unknown as { messaging: unknown }).messaging = { sendEach };
+    await svc.dispatchForRequestAttention([
+      { userId: 1, stateFeedEndId: 3, threadFeedEndId: 80, convergence: true },
+    ]);
+    expect(sendEach).toHaveBeenCalledExactlyOnceWith([
+      {
+        token: 'android-token',
+        data: {
+          type: 'REQUEST_ATTENTION',
+          stateFeedEndId: '3',
+          threadFeedEndId: '80',
+        },
+        android: { priority: 'high', ttl: 2_419_200 },
+      },
+    ]);
+  });
+
+  it('gates request arrivals on domain unread, but sends read convergence without unread', async () => {
+    registrations.mockResolvedValue([requestSession()]);
+    const unread = vi
+      .spyOn(svc['requestAttention'], 'hasUnread')
+      .mockResolvedValue(false);
+    await svc.dispatchForRequestAttention([{ userId: 1, stateFeedEndId: 3 }]);
+    expect(sendNotification).not.toHaveBeenCalled();
+    await svc.dispatchForRequestAttention([
+      { userId: 1, stateFeedEndId: 4, convergence: true },
+    ]);
+    expect(unread).toHaveBeenCalledOnce();
+    expect(JSON.parse(sendNotification.mock.calls[0][1])).toEqual({
+      type: 'REQUEST_ATTENTION',
+      stateFeedEndId: '4',
+    });
+  });
+
+  it('uses exact-session thread receipts only for thread-only request wakes', async () => {
+    registrations.mockResolvedValue([requestSession(10), requestSession(20)]);
+    vi.spyOn(svc['requestAttention'], 'hasUnread').mockResolvedValue(true);
+    sse.confirmedThreadHead.mockImplementation((_user, session) =>
+      session === 10 ? 9 : -1,
+    );
+    await svc.dispatchForRequestAttention([{ userId: 1, threadFeedEndId: 9 }]);
+    expect(sendNotification).toHaveBeenCalledOnce();
+    expect(sendNotification.mock.calls[0][0].endpoint).toBe('https://push/20');
+    expect(JSON.parse(sendNotification.mock.calls[0][1])).toEqual({
+      type: 'REQUEST_ATTENTION',
+      threadFeedEndId: '9',
+    });
+  });
+
+  it('coalesces request coordinates independently and retains read convergence', async () => {
+    vi.useFakeTimers();
+    try {
+      registrations.mockResolvedValue([requestSession()]);
+      const dispatch = vi
+        .spyOn(svc, 'dispatchForRequestAttention')
+        .mockResolvedValue();
+      await svc.enqueueForRequestAttention([{ userId: 1, stateFeedEndId: 90 }]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await svc.enqueueForRequestAttention([
+        { userId: 1, threadFeedEndId: 4, convergence: true },
+      ]);
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+        [
+          expect.objectContaining({
+            userId: 1,
+            stateFeedEndId: 90,
+            threadFeedEndId: 4,
+            convergence: true,
+          }),
+        ],
+        10,
+      );
+    } finally {
+      svc.onModuleDestroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('revalidates request session authorization and invalidates exact dead registrations', async () => {
+    const valid = requestSession();
+    registrations.mockResolvedValue([
+      valid,
+      { ...requestSession(20), revokedAt: new Date() },
+      { ...requestSession(30), expiresAt: new Date(Date.now() - 1) },
+    ]);
+    sendNotification.mockRejectedValue({ statusCode: 410 });
+    const invalidate = vi
+      .spyOn(svc, 'invalidateSubscription')
+      .mockResolvedValue();
+    await svc.dispatchForRequestAttention([
+      { userId: 1, stateFeedEndId: 3, convergence: true },
+    ]);
+    expect(sendNotification).toHaveBeenCalledOnce();
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith(valid);
+  });
+
+  it('reports the expected FCM credential path even when no file exists', () => {
+    expect(svc.getFcmCredentialStatus()).toEqual({
+      filePath: '/definitely-not-present/soms-firebase-service-account.json',
+      configured: false,
+      valid: false,
+      reason: 'file not found',
+    });
+    expect(svc.fcmConfigured).toBe(false);
+  });
+
   it('holds independent device wakes for five seconds and coalesces the newest head', async () => {
     vi.useFakeTimers();
     try {

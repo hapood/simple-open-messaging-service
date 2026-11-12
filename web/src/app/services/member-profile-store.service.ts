@@ -14,7 +14,6 @@ export interface ResolvedMemberProfile {
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   isOwner: boolean;
   name: string;
-  avatar: string;
   bio: string;
   profileRev: number;
   profileResolved: boolean;
@@ -40,7 +39,6 @@ export function resolvedMemberProfile(
     name: profileResolved
       ? (member.profileName ?? member.user.name)
       : member.account,
-    avatar: '',
     bio: profileResolved ? member.profileBio : '',
     profileRev: member.profileRev,
     profileResolved,
@@ -73,7 +71,12 @@ export class MemberProfileRepository {
 
   async queryPage(
     threadId: number,
-    params: { afterIdentity?: string; take: number; search?: string },
+    params: {
+      afterIdentity?: string;
+      take: number;
+      search?: string;
+      exclude?: { account: string; namespaceId: number };
+    },
   ): Promise<ResolvedMemberProfile[]> {
     this.queriedThreads.add(threadId);
     const members = await this.webdb.queryGroupMembers({ threadId, ...params });

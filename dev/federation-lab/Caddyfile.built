@@ -9,7 +9,7 @@
 		file_server
 	}
 
-	@backend path /api/* /uploads/* /s2s/* /.well-known/*
+	@backend path /api/* /uploads/* /somfp/*
 	handle @backend {
 		reverse_proxy 127.0.0.1:{args.0}
 	}

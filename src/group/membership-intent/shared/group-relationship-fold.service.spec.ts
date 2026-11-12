@@ -10,7 +10,7 @@ describe('GroupRelationshipFoldService', () => {
     const request = {
       status: 'ACCEPTED' as const,
       note: '',
-      requestedAt: new Date(),
+      statusChangedAt: new Date(),
       expiresAt: null,
     };
     const relationshipIntents = {
@@ -140,7 +140,7 @@ describe('GroupRelationshipFoldService', () => {
         request: {
           status: 'REVOKED',
           note: '',
-          requestedAt: null,
+          statusChangedAt: new Date(1000),
           expiresAt: null,
         },
         shouldBeActive: true,

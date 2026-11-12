@@ -1,3 +1,7 @@
+import {
+  threadNotificationChanged,
+  type ThreadFeedSnapshot,
+} from '../../../../shared/thread-attention';
 import { createP2PConversation, createGroupConversation } from './model';
 import {
   threadNotificationDescriptor,
@@ -5,6 +9,26 @@ import {
 } from './thread-notification';
 
 describe('thread notification presentation', () => {
+  it('refreshes on blocking but not on unblocking alone', () => {
+    const previous = {
+      ...update().state,
+      blocked: false,
+    } as ThreadFeedSnapshot;
+    const blocked = {
+      ...previous,
+      blocked: true,
+      threadFeedId: previous.threadFeedId + 1,
+    };
+    expect(threadNotificationChanged(previous, blocked)).toBe(true);
+    expect(
+      threadNotificationChanged(blocked, {
+        ...blocked,
+        blocked: false,
+        threadFeedId: blocked.threadFeedId + 1,
+      }),
+    ).toBe(false);
+  });
+
   const copy = {
     lang: 'en',
     privateBody: 'New message',
@@ -13,27 +37,16 @@ describe('thread notification presentation', () => {
   };
   function update(): ThreadNotificationUpdate {
     return {
-      item: createP2PConversation(
-        7,
-        {
-          account: 'peer',
-          namespaceId: 0,
-          profileRev: 1,
-        },
-        {
-          unreadCount: 101,
-          lastReadSeq: 3,
-          peerUser: {
-            account: 'peer',
-            namespaceId: 0,
-            name: 'Peer',
-            avatar: '',
-            bio: '',
-            isGroup: false,
-            isDeleted: false,
-          },
-        },
-      ),
+      item: createP2PConversation({
+        threadId: 7,
+        account: 'peer',
+        publisherNamespaceId: 0,
+        profileRev: 1,
+        unreadCount: 101,
+        messageEndSeq: 10,
+        lastReadSeq: 3,
+        profile: { name: 'Peer', bio: '', avatarDigest: null },
+      }),
       state: {
         threadId: 7,
         threadFeedId: 9,
@@ -76,16 +89,14 @@ describe('thread notification presentation', () => {
     expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
       'Peer',
     );
-    value.item = createGroupConversation(
-      7,
-      {
-        id: 7,
-        account: '!group',
-        name: 'Group profile',
-        namespaceId: 0,
-      },
-      { alias: 'Stale group label' },
-    );
+    value.item = createGroupConversation({
+      threadId: 7,
+      account: '!group',
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      profile: { name: 'Group profile', bio: '', avatarDigest: null },
+      alias: 'Stale group label',
+    });
     value.state.alias = 'My group';
     expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
       'My group',
@@ -99,10 +110,13 @@ describe('thread notification presentation', () => {
   it('uses the resolved domain in the address fallback without storing it on the peer', () => {
     const value = update();
     if (value.item.type !== 'P2P') throw new Error('expected P2P fixture');
-    value.item.peerUser.name = '';
-    expect(threadNotificationDescriptor(value, 'message', copy, 'alpha.test').title)
-      .toBe('peer@alpha.test');
-    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe('peer');
+    value.item.profile.name = '';
+    expect(
+      threadNotificationDescriptor(value, 'message', copy, 'alpha.test').title,
+    ).toBe('peer@alpha.test');
+    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
+      'peer',
+    );
   });
 
   it('uses projected count, latest sequence and the moderation reason', () => {
@@ -111,7 +125,7 @@ describe('thread notification presentation', () => {
     ).toMatchObject({
       count: 101,
       body: '[Retracted]\n[Removed]',
-      data: { seq: 8 },
+      data: { target: { kind: 'thread', threadId: 7 }, seq: 8, latestSeq: 10 },
     });
   });
   it('distinguishes retraction and hides message content in private mode', () => {
@@ -145,7 +159,7 @@ describe('thread notification presentation', () => {
     expect(threadNotificationDescriptor(value, 'message', copy)).toMatchObject({
       count: 0,
       body: 'New message',
-      data: { seq: undefined },
+      data: { seq: undefined, latestSeq: 10 },
     });
   });
 });

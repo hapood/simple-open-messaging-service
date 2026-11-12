@@ -54,6 +54,7 @@ describe('FederationPendingMediaPromoter', () => {
     const [namespace] = await database.db
       .insert(identityNamespace)
       .values({
+        signingKeyCreatedAt: 1700000000000,
         domain: 'peer.test',
         rootPublicKey: Buffer.alloc(32, 4).toString('base64'),
         identityPinnedAt: now,

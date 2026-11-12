@@ -39,6 +39,7 @@ describe('State Feed content heads respect relationship initialization', () => {
             peerAccount: 'bob',
             eventType: 'THREAD_CONTENT_HEAD',
             feedId: '1',
+            generatedAt: 0,
             body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
           },
         ],

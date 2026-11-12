@@ -19,21 +19,32 @@ const database = openDB<NotificationCheckpointDb>(DB_NAME, 2, {
   },
 });
 
-export async function readNotificationSince(): Promise<number> {
-  return (await (await database).get(STORE_NAME, CURSOR_KEY)) ?? 0;
+export async function readNotificationSince(
+  stream: 'thread' | 'state' = 'thread',
+): Promise<number> {
+  return (
+    (await (
+      await database
+    ).get(STORE_NAME, stream === 'state' ? 'state-feed-since' : CURSOR_KEY)) ??
+    0
+  );
 }
 
 /** Monotonic checkpoint shared by the browser page and its Push service worker. */
-export async function advanceNotificationSince(feedId: number): Promise<void> {
+export async function advanceNotificationSince(
+  feedId: number,
+  stream: 'thread' | 'state' = 'thread',
+): Promise<void> {
+  const key = stream === 'state' ? 'state-feed-since' : CURSOR_KEY;
   if (!Number.isSafeInteger(feedId) || feedId < 0) return;
   const db = await database;
   const tx = db.transaction(STORE_NAME, 'readwrite');
-  const current = (await tx.store.get(CURSOR_KEY)) ?? 0;
-  if (feedId > current) await tx.store.put(feedId, CURSOR_KEY);
+  const current = (await tx.store.get(key)) ?? 0;
+  if (feedId > current) await tx.store.put(feedId, key);
   await tx.done;
 }
 
 /** Reset account-scoped notification state when the browser session logs out or switches account. */
 export async function resetNotificationSince(): Promise<void> {
-  await (await database).put(STORE_NAME, 0, CURSOR_KEY);
+  await (await database).clear(STORE_NAME);
 }

@@ -42,8 +42,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  height: calc(100vh - var(--auth-keyboard-inset, 0px));
-  height: calc(100dvh - var(--auth-keyboard-inset, 0px));
+  height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: auto;
   padding: 24px;
@@ -51,13 +51,7 @@
   background:
     radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--app-brand) 10%, transparent), transparent 42%),
     var(--app-bg);
-  transition: height 160ms ease-out;
 
-  // Android shell only: position the unchanged card from native IME geometry. `safe center` keeps an
-  // oversized form scrollable without switching to a smaller keyboard-specific visual design.
-  &.auth-native-keyboard-open {
-    align-items: safe center;
-  }
 }
 
 // Reconfiguration is a real modal, mounted inside AppComponent's global backdrop. It reuses the same
@@ -115,6 +109,9 @@
 .cfg-shell {
   width: 100%;
   max-width: 380px;
+  // This is a flex item on the full-page surface; allow it to shrink below
+  // the intrinsic width of its Material fields while preserving outer padding.
+  min-width: 0;
   box-sizing: border-box;
   padding: 32px;
   text-align: center;
@@ -126,7 +123,7 @@
 
 .cfg-logo {
   display: block;
-  margin: 0 auto 20px;
+  margin: 0 auto 16px;
 }
 
 .cfg-title {
@@ -153,6 +150,7 @@
 
 .cfg-field {
   width: 100%;
+  min-width: 0;
 
   // Reserve the validation-error slot so showing an error does not move the controls below it.
   ::ng-deep .mat-mdc-form-field-subscript-wrapper {
@@ -211,7 +209,7 @@
   }
 
   .cfg-logo {
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
 
   .cfg-viewport--dialog {
@@ -219,11 +217,16 @@
   }
 }
 
-.cfg-viewport.auth-native-keyboard-open .cfg-shell {
+.cfg-viewport.auth-native-viewport .cfg-shell {
   transform: translateY(calc(-1 * var(--auth-focused-lift, 0px)));
   transition: transform 160ms ease-out;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .cfg-viewport.auth-native-viewport .cfg-shell {
+    transition: none;
+  }
+}
 
 // The "can't validate both servers at once" guidance under the LAN field — small + faded, reads as a hint
 // not an error. Integer-px vertical metrics per the project CSS rule.

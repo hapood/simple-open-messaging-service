@@ -37,12 +37,12 @@ class ClientProbeController {
     return { surface: 'admin' };
   }
 
-  @Get('.well-known/somfp')
+  @Get('somfp/discovery')
   discovery() {
     return { surface: 'discovery' };
   }
 
-  @Get('s2s/v10/probe')
+  @Get('somfp/v10/probe')
   otherVersion() {
     return { surface: 'client' };
   }
@@ -70,16 +70,32 @@ describe('API namespace prefix boundaries', () => {
   });
 
   it.each([
-    ['POST', '/s2s/v1/verify', '/api/v1/s2s/v1/verify'],
+    ['GET', '/.well-known/somfp'],
+    ['POST', '/s2s/v1/verify'],
+    ['GET', '/api/v1/.well-known/somfp'],
+    ['POST', '/api/v1/s2s/v1/verify'],
+  ] as const)(
+    'does not expose the retired %s %s route',
+    async (method, url) => {
+      const response = await app
+        .getHttpAdapter()
+        .getInstance()
+        .inject({ method, url });
+      expect(response.statusCode).toBe(404);
+    },
+  );
+
+  it.each([
+    ['POST', '/somfp/v1/verify', '/api/v1/somfp/v1/verify'],
     [
       'GET',
-      '/s2s/v1/future-resource/42/nested',
-      '/api/v1/s2s/v1/future-resource/42/nested',
+      '/somfp/v1/future-resource/42/nested',
+      '/api/v1/somfp/v1/future-resource/42/nested',
     ],
-    ['GET', '/.well-known/somfp', '/api/v1/.well-known/somfp'],
+    ['GET', '/somfp/discovery', '/api/v1/somfp/discovery'],
     ['GET', '/api/v1/user/probe', '/user/probe'],
     ['POST', '/api/v1/admin/federation/probe', '/admin/federation/probe'],
-    ['GET', '/api/v1/s2s/v10/probe', '/s2s/v10/probe'],
+    ['GET', '/api/v1/somfp/v10/probe', '/somfp/v10/probe'],
   ] as const)(
     'registers %s %s without an alternate prefix',
     async (method, url, absent) => {

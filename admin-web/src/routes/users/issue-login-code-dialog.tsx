@@ -41,7 +41,7 @@ export function IssueLoginCodeDialog({
 
   const open = user !== null;
   const validityMinutes = issued
-    ? Math.max(1, Math.ceil((issued.expiresAt - issued.issuedAt) / 60_000))
+    ? Math.max(1, Math.ceil((issued.expiresAt - issued.createdAt) / 60_000))
     : null;
   const onIssue = async () => {
     if (!user || submittingRef.current) return;

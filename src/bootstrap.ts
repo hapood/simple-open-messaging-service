@@ -11,7 +11,9 @@ import fastifyCompress from '@fastify/compress';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
-import { mkdirSync } from 'fs';
+import { mkdirSync, createReadStream } from 'fs';
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
@@ -19,6 +21,7 @@ import {
   MEDIA_TOKEN_COOKIE,
   refreshSessionCookies,
 } from './auth/media-token.js';
+import { BusinessException } from './common/business.exception.js';
 import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
 import { LinkPreviewService } from './link-preview/link-preview.service.js';
@@ -26,7 +29,7 @@ import { BusinessCode } from './common/business-code.js';
 import {
   CLIENT_API_PREFIX,
   FEDERATION_API_PREFIX,
-  FEDERATION_WELL_KNOWN_PATH,
+  FEDERATION_DISCOVERY_PATH,
 } from './federation/federation-protocol.js';
 import { dataDirectory } from './common/data-directory.js';
 import { MEDIA_UPLOAD_CHUNK_BYTES } from '../shared/media-upload-limits.js';
@@ -46,7 +49,7 @@ const FILE_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
 /** Federation owns its entire protocol namespace outside the client prefix.
  * New S2S controllers inherit this boundary without duplicating their routes here. */
 export const GLOBAL_PREFIX_EXCLUSIONS = [
-  { path: FEDERATION_WELL_KNOWN_PATH, method: RequestMethod.GET },
+  { path: FEDERATION_DISCOVERY_PATH, method: RequestMethod.GET },
   {
     path: `${FEDERATION_API_PREFIX}/{*path}`,
     method: RequestMethod.ALL,
@@ -58,7 +61,7 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
  *  shard path → yes; avatars → no, auth-n-only). No `g` flag: .exec is stateless
  *  across requests, which the shared hook requires. */
 const SHARD_DIGEST_GATE_RE =
-  /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?:\?|$)/;
+  /^\/uploads\/(?:msg-assets|thumbnails)\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})(?:\?|$)/;
 
 /** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. Used as
  *  the cross-origin fallback for /uploads/* (native <img> can't set headers → they use the
@@ -140,7 +143,7 @@ export async function configureApp(
   await app.register(fastifyCookie);
 
   // S2S raw-body capture: RFC 9421 content-digest verification needs the EXACT body bytes the sender
-  // signed — re-serialized JSON would not match. Scoped to /s2s/v1/* so only S2S requests pay
+  // signed — re-serialized JSON would not match. Scoped to /somfp/v1/* so only S2S requests pay
   // the double-buffer cost; every other route passes through untouched. S2sSignatureGuard reads
   // req.rawBody.
   adapter.getInstance().addHook('preParsing', async (req, _reply, payload) => {
@@ -171,8 +174,7 @@ export async function configureApp(
       async (request: FastifyRequest, reply: FastifyReply) => {
         if (
           !request.url.startsWith('/api/') &&
-          !request.url.startsWith('/s2s/') &&
-          !request.url.startsWith('/.well-known/')
+          !request.url.startsWith('/somfp/')
         )
           return;
         reply.header('X-Request-Id', String(request.id));
@@ -217,10 +219,10 @@ export async function configureApp(
   app.useGlobalInterceptors(new SerializeInterceptor(app.get(Reflector)));
 
   // Client HTTP endpoints (incl. SSE /events) live under /api/v1. Federation is an independently
-  // versioned machine-to-machine surface under /s2s/v1 and is excluded from that client prefix.
+  // versioned machine-to-machine surface under /somfp/v1 and is excluded from that client prefix.
   // The prefix must be set
   // before Swagger createDocument so doc paths include it). The interactive docs mount at
-  // /api/v1/docs in non-production only — see the gate below. .well-known/somfp is excluded — it must
+  // /api/v1/docs in non-production only — see the gate below. somfp/discovery is excluded — it must
   // be served at the bare path per RFC 8615 (peers fetch it without knowing our /api/v1 prefix).
   app.setGlobalPrefix(CLIENT_API_PREFIX, {
     exclude: [...GLOBAL_PREFIX_EXCLUSIONS],
@@ -295,9 +297,23 @@ async function registerStaticServing(
         // media surfaces enforce identical auth (and revocation) rules.
         const fromCookie = request.cookies?.[MEDIA_TOKEN_COOKIE];
         const raw = fromCookie ?? extractBearer(request.headers.authorization);
-        const principal = raw
-          ? await bearerAuth.resolve(raw, { ip: request.ip })
-          : null;
+        // Static Fastify hooks do not pass through Nest's exception filter.
+        let principal: Awaited<ReturnType<BearerAuthService['resolve']>>;
+        try {
+          principal = await bearerAuth.resolve(raw, { ip: request.ip });
+        } catch (error) {
+          if (
+            error instanceof BusinessException &&
+            error.bizCode === BusinessCode.RATE_LIMITED
+          ) {
+            return reply.code(error.getStatus()).type('application/json').send({
+              code: error.bizCode,
+              message: error.message,
+              data: error.data,
+            });
+          }
+          throw error;
+        }
         if (!principal) {
           return reply.code(401).type('application/json').send({
             statusCode: 401,
@@ -342,6 +358,7 @@ async function registerStaticServing(
               shard[1],
             ));
           const generationAllowed =
+            !parsed.pathname.startsWith('/uploads/thumbnails/') &&
             generationValues.length === 1 &&
             threadValues.length === 0 &&
             seqValues.length === 0 &&
@@ -362,6 +379,45 @@ async function registerStaticServing(
         }
       },
     );
+
+  // The URL identifies the authorized original; only its verified metadata selects derivative bytes.
+  adapter
+    .getInstance()
+    .get('/uploads/thumbnails/:a/:b/:digest', async (request, reply) => {
+      const { a, b, digest } = request.params as {
+        a: string;
+        b: string;
+        digest: string;
+      };
+      if (
+        !/^[a-f0-9]{64}$/.test(digest) ||
+        a !== digest.slice(0, 2) ||
+        b !== digest.slice(2, 4)
+      )
+        return reply.code(404).send();
+      const thumbnail = await mediaAccess.thumbnail(digest);
+      if (!thumbnail) return reply.code(404).send();
+      const path = join(
+        dataDirectory('thumbnails'),
+        thumbnail.digest.slice(0, 2),
+        thumbnail.digest.slice(2, 4),
+        thumbnail.digest,
+      );
+      const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (!info?.isFile() || info.size !== thumbnail.size)
+        return reply.code(404).send();
+      return reply
+        .type('image/webp')
+        .header('Content-Length', thumbnail.size)
+        .header('X-Thumbnail-Digest', thumbnail.digest)
+        .header('Cache-Control', 'private, no-cache')
+        .header('Vary', 'Cookie, Authorization')
+        .header('X-Content-Type-Options', 'nosniff')
+        .send(createReadStream(path));
+    });
 
   // CAS blobs are immutable, extensionless and presentation-neutral. Message metadata tells clients
   // how to display/save them; this endpoint only transfers authenticated bytes.
@@ -413,7 +469,7 @@ async function registerStaticServing(
   });
 
   // Frontend static serving (web + admin SPA) moved to Caddy — it serves the built dist via
-  // file_server + try_files SPA fallback in the generated Caddyfile (see docker/init.sh). Fastify is
+  // file_server + try_files SPA fallback in the generated Caddyfile (see src/edge/caddyfile-renderer.ts). Fastify is
   // API-only here (/api/* routes) plus the auth-gated /uploads registered above. (Previously @fastify/static
   // also mounted the frontend here, registering a not-found handler Fastify rejected as "already set".)
 }

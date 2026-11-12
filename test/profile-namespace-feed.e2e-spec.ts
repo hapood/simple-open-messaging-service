@@ -31,9 +31,6 @@ describe('profile namespace feed convergence', () => {
     database = new DatabaseService();
     feed = new ProfileNamespaceFeedService(
       database,
-      {
-        getRootPublicKeyB64: () => Buffer.alloc(32, 1).toString('base64'),
-      } as never,
       new ProfileNamespaceChangeStore(database),
     );
     consumer = new ProfileNamespaceFeedConsumerService(feed);
@@ -41,6 +38,7 @@ describe('profile namespace feed convergence', () => {
     const [publisher] = await database.db
       .insert(identityNamespace)
       .values({
+        signingKeyCreatedAt: 1700000000000,
         domain: PUBLISHER_DOMAIN,
         rootPublicKey: Buffer.alloc(32, 9).toString('base64'),
         identityPinnedAt: new Date(),
@@ -161,6 +159,7 @@ describe('profile namespace feed convergence', () => {
       expect(page.items[0]).toEqual({
         namespaceId: publisherId,
         feedId: '1',
+        generatedAt: expect.any(Number),
       });
       expect(page.scannedThrough).toBe('1');
       expect(page.hasMore).toBe(false);
@@ -177,6 +176,7 @@ describe('profile namespace feed convergence', () => {
       expect(page.items[0]).toEqual({
         namespaceId: publisherId,
         feedId: '2',
+        generatedAt: expect.any(Number),
       });
     });
   });

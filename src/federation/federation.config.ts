@@ -179,12 +179,11 @@ export function loadFederationConfig(): FederationConfig {
  * transport config focused. See src/quota/quota.service.ts.
  */
 export interface QuotaConfig {
-  /** Inbound friend ops/day per node (anti-spam). */
+  /** Inbound relationship-intent entries/day per immutable namespace. */
   dailyRequestLimit: number;
   /** Messages/day per node. */
   dailyMsgLimit: number;
-  /** Federated WebRTC signal frames/day per node (offer/answer/ICE relay). A dedicated budget so an ICE
-   *  burst can't starve, or be starved by, the friend-op `requests` bucket. No per-node override (global). */
+  /** Daily call budget per namespace: admitted invitation = 400, signaling frame = 1. */
   dailySignalLimit: number;
   /** File items/day per node for the file-cnt breaker dimension. All file types (image/video/audio/file) count
    *  +1; a forward bundle counts +1 regardless of inner asset count. */

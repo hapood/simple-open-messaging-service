@@ -137,6 +137,7 @@ describe('group business scope and content lock ordering', () => {
                     account: parent.account,
                     eventType: 'THREAD_CONTENT_HEAD',
                     feedId: '1',
+                    generatedAt: 0,
                     body: { messageEndSeq: 1, tombstoneEndSeq: 0 },
                   },
                 ],

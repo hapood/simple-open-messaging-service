@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 
@@ -188,7 +189,7 @@ async function snapshot(cdp) {
     textLength: document.body?.innerText?.length ?? 0,
     hasServerLink: !!document.querySelector('.server-link'),
     hasServerForm: !!document.querySelector('app-server-config-page input[type="url"], .cfg-form input[type="url"]'),
-    hasOtpForm: !!document.querySelector('app-otp-login-page input[name="account"], input[name="code"]'),
+    hasOtpForm: !!document.querySelector('input[name="code"]'),
     hasHomeShell: !!document.querySelector('app-home, app-desktop-shell, app-mobile-shell'),
   }))()`);
 }
@@ -206,7 +207,7 @@ async function openServerConfig(cdp) {
   await waitFor(cdp, `!!document.querySelector('app-server-config-page input[type="url"], .cfg-form input[type="url"]')`, 5000);
 }
 
-async function configureServer(cdp, origin) {
+export async function configureServer(cdp, origin) {
   await openServerConfig(cdp);
   await cdp.eval(`((origin) => {
     const input = document.querySelector('app-server-config-page input[type="url"], .cfg-form input[type="url"]');
@@ -220,38 +221,36 @@ async function configureServer(cdp, origin) {
   })(${JSON.stringify(origin)})`);
   await waitFor(cdp, `!!document.querySelector('.cfg-form button[type="submit"], button.cfg-action') && !document.querySelector('.cfg-form button[type="submit"], button.cfg-action').disabled`, 5000);
   await cdp.eval(`document.querySelector('.cfg-form button[type="submit"], button.cfg-action').click()`);
-  await waitFor(cdp, `!!document.querySelector('.cfg-modal') || location.pathname.startsWith('/auth')`, 30000);
-  const autoFill = await cdp.eval(`!!document.querySelector('.cfg-modal')`);
-  if (autoFill) {
-    await cdp.eval(`(() => {
-      const buttons = [...document.querySelectorAll('.cfg-modal button')];
-      const ignore = buttons.at(0);
-      if (!ignore) throw new Error('secondary-origin ignore button not found');
-      ignore.click();
-    })()`);
+  const httpDialog = '[aria-labelledby="server-http-confirm-title"]';
+  const pairDialog = '[aria-labelledby="server-pair-confirm-title"]';
+  const finished = `location.pathname.startsWith('/auth') && !document.querySelector('.cfg-form')`;
+  await waitFor(cdp, `!!document.querySelector('${httpDialog}, ${pairDialog}') || (${finished})`, 30000);
+  if (await cdp.eval(`!!document.querySelector('${httpDialog}')`)) {
+    // The caller explicitly supplied HTTP; consent only to that endpoint, not an advertised alternative.
+    if (!/^http:\/\//i.test(origin.trim())) throw new Error('unexpected HTTP confirmation');
+    await cdp.eval(`document.querySelector('${httpDialog} button[mat-flat-button]').click()`);
+    await waitFor(cdp, `!!document.querySelector('${pairDialog}') || (${finished})`, 30000);
+  }
+  if (await cdp.eval(`!!document.querySelector('${pairDialog}')`)) {
+    await cdp.eval(`document.querySelector('${pairDialog} button.app-secondary-action').click()`);
   }
   await waitFor(cdp, `location.href.includes('/auth/') && !document.querySelector('.cfg-modal') && !document.querySelector('.cfg-form')`, 30000);
-  await waitFor(cdp, `!!document.querySelector('app-auth-method-menu') || !!document.querySelector('app-otp-login-page')`, 15000);
+  await waitFor(cdp, `!!document.querySelector('app-login') || !!document.querySelector('input[name="code"]')`, 15000);
   return snapshot(cdp);
 }
 
-async function switchToOtp(cdp) {
-  if (await cdp.eval(`!!document.querySelector('app-otp-login-page input[name="account"]')`)) return;
+export async function switchToOtp(cdp) {
+  if (await cdp.eval(`!!document.querySelector('.mat-mdc-tab-body-active input[name="code"]')`)) return;
   await cdp.eval(`(() => {
-    const trigger = document.querySelector('app-auth-method-menu button');
-    if (!trigger) throw new Error('authentication method menu is not available');
-    trigger.click();
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const otpTab = tabs.find(t => t.textContent?.includes('OTP'));
+    if (!otpTab) throw new Error('OTP tab not found');
+    otpTab.click();
   })()`);
-  await waitFor(cdp, `!!document.querySelector('.cdk-overlay-pane button')`, 5000);
-  await cdp.eval(`(() => {
-    const items = [...document.querySelectorAll('.cdk-overlay-pane button')];
-    if (items.length === 0) throw new Error('authentication method menu item not found');
-    items.at(-1).click();
-  })()`);
-  await waitFor(cdp, `!!document.querySelector('app-otp-login-page input[name="account"]')`, 10000);
+  await waitFor(cdp, `!!document.querySelector('.mat-mdc-tab-body-active input[name="code"]')`, 10000);
 }
 
-async function otpLogin(cdp, account, code) {
+export async function otpLogin(cdp, account, code) {
   if (!account || !/^\d{6}$/.test(code ?? '')) throw new Error('otp-login requires --account and a six-digit code');
   if (options.diagnose) await cdp.eval(`(() => {
     window.__somsOtpDiag = [];
@@ -277,8 +276,8 @@ async function otpLogin(cdp, account, code) {
   })()`);
   await switchToOtp(cdp);
   await cdp.eval(`((account, code) => {
-    const accountInput = document.querySelector('input[name="account"]');
-    const codeInput = document.querySelector('input[name="code"]');
+    const accountInput = document.querySelector('.mat-mdc-tab-body-active input[name="otpAccount"]');
+    const codeInput = document.querySelector('.mat-mdc-tab-body-active input[name="code"]');
     if (!accountInput || !codeInput) throw new Error('OTP login fields not found');
     accountInput.focus();
     accountInput.value = account;
@@ -286,18 +285,18 @@ async function otpLogin(cdp, account, code) {
     codeInput.focus();
     codeInput.value = code;
     codeInput.dispatchEvent(new Event('input', { bubbles: true }));
-    const submit = document.querySelector('app-otp-login-page button[type="submit"], form button[type="submit"]');
+    const submit = document.querySelector('.mat-mdc-tab-body-active button[type="submit"]');
     if (!submit) throw new Error('OTP submit button not found');
   })(${JSON.stringify(account)}, ${JSON.stringify(code)})`);
   // Zoneless form validation updates the disabled state after the input events. Wait before clicking;
   // Android's software keyboard can also move the form between coordinate capture and pointer delivery.
-  await waitFor(cdp, `!!document.querySelector('app-otp-login-page button[type="submit"]') && !document.querySelector('app-otp-login-page button[type="submit"]').disabled`, 5000);
-  await cdp.eval(`document.querySelector('app-otp-login-page button[type="submit"]').click()`);
+  await waitFor(cdp, `!!document.querySelector('.mat-mdc-tab-body-active button[type="submit"]') && !document.querySelector('.mat-mdc-tab-body-active button[type="submit"]').disabled`, 5000);
+  await cdp.eval(`document.querySelector('.mat-mdc-tab-body-active button[type="submit"]').click()`);
   try {
-    await waitFor(cdp, `!location.href.includes('/auth/otp')`, 30000);
+    await waitFor(cdp, `!location.href.includes('/auth/login') && !location.href.includes('/auth/otp')`, 30000);
   } catch (error) {
     if (options.diagnose) {
-      const diagnostic = await cdp.eval(`({ events: window.__somsOtpDiag ?? [], corePresent: !!window.__TAURI__?.core, alertPresent: !!document.querySelector('app-otp-login-page [role="alert"]:not(:empty)') })`);
+      const diagnostic = await cdp.eval(`({ events: window.__somsOtpDiag ?? [], corePresent: !!window.__TAURI__?.core, alertPresent: !!document.querySelector('.login-error, [role="alert"]:not(:empty)') })`);
       console.error(JSON.stringify({ diagnostic }));
     }
     throw error;
@@ -382,7 +381,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(command === 'otp-form' ? error.message : 'Android WebView flow failed; inspect the device without exposing authentication input.');
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(command === 'otp-form' ? error.message : 'Android WebView flow failed; inspect the device without exposing authentication input.');
+    process.exitCode = 1;
+  });
+}

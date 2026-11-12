@@ -20,6 +20,7 @@ function setup(batchIds: string[]) {
       initialize: vi.fn().mockResolvedValue(undefined),
       waitUntilInitialized: vi.fn().mockResolvedValue(undefined),
     } as never,
+    { isExhausted: vi.fn().mockResolvedValue(false) } as never,
   );
   return { service, recoverInboundBatch };
 }

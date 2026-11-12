@@ -14,7 +14,7 @@ import { BusinessCode } from './business-code.js';
 import { BusinessException } from './business.exception.js';
 import { AllExceptionsFilter } from './exception.filter.js';
 
-@Controller('s2s/v1/error-probe')
+@Controller('somfp/v1/error-probe')
 class FederationErrorProbeController {
   @Get('internal')
   internal(): never {
@@ -54,7 +54,7 @@ describe('AllExceptionsFilter federation HTTP boundary', () => {
   it('returns HTTP 200 for an ordinary business refusal', async () => {
     const response = await app.getHttpAdapter().getInstance().inject({
       method: 'GET',
-      url: '/s2s/v1/error-probe/forbidden',
+      url: '/somfp/v1/error-probe/forbidden',
     });
 
     expect(response.statusCode).toBe(200);
@@ -68,7 +68,7 @@ describe('AllExceptionsFilter federation HTTP boundary', () => {
   it('returns HTTP 503 for an unexpected handler failure', async () => {
     const response = await app.getHttpAdapter().getInstance().inject({
       method: 'GET',
-      url: '/s2s/v1/error-probe/internal',
+      url: '/somfp/v1/error-probe/internal',
     });
 
     expect(response.statusCode).toBe(503);
@@ -85,7 +85,7 @@ describe('AllExceptionsFilter federation HTTP boundary', () => {
       .getInstance()
       .inject({
         method: 'POST',
-        url: '/s2s/v1/error-probe/body',
+        url: '/somfp/v1/error-probe/body',
         headers: { 'content-type': 'application/json' },
         payload: JSON.stringify({ value: 'x'.repeat(64) }),
       });
@@ -104,7 +104,7 @@ describe('AllExceptionsFilter federation HTTP boundary', () => {
       .getInstance()
       .inject({
         method: 'POST',
-        url: '/s2s/v1/error-probe/body',
+        url: '/somfp/v1/error-probe/body',
         headers: { 'content-type': 'application/json' },
         payload: '{"broken"',
       });

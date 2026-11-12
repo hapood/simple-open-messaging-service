@@ -11,12 +11,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request, { type Response } from 'supertest';
 import { Secret, TOTP } from 'otpauth';
 import { DatabaseService } from '../src/database/database.service';
-import {
-  account,
-  admin,
-  adminSession,
-  sessionToken,
-} from '../src/database/schema';
+import { admin, adminSession, sessionToken } from '../src/database/schema';
 import { and, eq, isNull } from 'drizzle-orm';
 import { SessionTokenService } from '../src/auth/session-token.service';
 import { AdminRole } from '../src/database/enums';

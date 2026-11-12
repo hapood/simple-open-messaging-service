@@ -99,6 +99,36 @@ describe('BackgroundSyncService', () => {
   });
 
   describe('fcmStatus (FCM availability)', () => {
+    it('refreshes asynchronous token results without assuming Play services are missing', () => {
+      const fake = installFakeFcm({
+        fcmStatus: JSON.stringify({
+          hasToken: false,
+          playServicesAvailable: true,
+        }),
+      });
+      const s = new BackgroundSyncService();
+      fake.setFcm(
+        JSON.stringify({
+          hasToken: false,
+          playServicesAvailable: true,
+          playServicesStatus: 'SUCCESS',
+          tokenError: 'IOException',
+        }),
+      );
+      s.refreshFcmStatus();
+      expect(s.fcmStatus()).toMatchObject({
+        hasToken: false,
+        playServicesAvailable: true,
+        tokenError: 'IOException',
+      });
+      fake.setFcm(
+        JSON.stringify({ hasToken: true, playServicesAvailable: true }),
+      );
+      s.refreshFcmStatus();
+      expect(s.fcmStatus().hasToken).toBe(true);
+      expect(s.fcmStatus().tokenError).toBeNull();
+    });
+
     it('seeds from valid JSON', () => {
       installFakeFcm({
         fcmStatus:

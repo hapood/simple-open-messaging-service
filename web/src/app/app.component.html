@@ -1,4 +1,9 @@
-<router-outlet />
+<app-indicator-slot>
+  <app-connection-banner />
+</app-indicator-slot>
+@if (!startup.restoring()) {
+  <router-outlet />
+}
 <app-update-banner />
 <app-debug-log-fab />
 @if (serverConfigDialog.visible()) {

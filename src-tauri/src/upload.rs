@@ -2,14 +2,12 @@
 use crate::proxy::send_with_headers_deadline;
 use crate::*;
 
-/// Shell-wide streaming upload: POST a file straight from its on-disk `path` to `${origin}${endpoint}`
-/// as a multipart form without buffering the whole file into the webview or IPC.
+/// Stream a message attachment from disk using the sequential upload protocol.
 #[tauri::command]
 pub(crate) async fn upload_stream_file(
     app: tauri::AppHandle,
     proxy: tauri::State<'_, ServerSessionState>,
     path: String,
-    endpoint: String,
     filename: String,
     mime: String,
     size: u64,
@@ -20,7 +18,6 @@ pub(crate) async fn upload_stream_file(
         app,
         proxy.inner().clone(),
         path,
-        endpoint,
         filename,
         mime,
         size,
@@ -34,7 +31,6 @@ async fn upload_stream_path_core(
     app: tauri::AppHandle,
     proxy: ServerSessionState,
     path: String,
-    endpoint: String,
     filename: String,
     mime: String,
     size: u64,
@@ -59,7 +55,6 @@ async fn upload_stream_path_core(
         app,
         proxy,
         file,
-        endpoint,
         filename,
         mime,
         size,
@@ -79,118 +74,17 @@ async fn upload_stream_open_file_core(
     app: tauri::AppHandle,
     proxy: ServerSessionState,
     mut file: tokio::fs::File,
-    endpoint: String,
     filename: String,
     mime: String,
     size: u64,
     fields: std::collections::HashMap<String, String>,
     client_message_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    if !matches!(
-        endpoint.as_str(),
-        "/upload" | "/upload/file" | "/upload/video" | "/upload/audio" | "/upload/avatar"
-    ) {
-        return Err("unsupported upload endpoint".to_string());
-    }
-    if let Some(cid) = client_message_id.as_ref() {
-        let part = ResumablePart::from_fields(&fields)?;
-        return upload_resumable_open_file(app, proxy, &mut file, filename, mime, size, cid, part)
-            .await;
-    }
-    let origin = proxy.api_origin.lock().expect("origin lock").clone();
-    let url = format!("{}/api/v1{}", origin, endpoint);
-    let client = proxy.api_client(&origin);
-    let progress_id = client_message_id.clone();
-    let mut loaded = 0_u64;
-    let mut last_reported = 0_u64;
-    let mut last_report_at = Instant::now();
-    // Report at most roughly every 256 KiB / 100 ms. ReaderStream may yield very small chunks; emitting
-    // every chunk would flood the WebView IPC on a fast multi-GB upload.
-    let stream = tokio_util::io::ReaderStream::new(file).map(move |result| {
-        if let Ok(bytes) = &result {
-            loaded = loaded.saturating_add(bytes.len() as u64);
-            let due_bytes = loaded.saturating_sub(last_reported) >= 256 * 1024;
-            let due_time = last_report_at.elapsed() >= Duration::from_millis(100);
-            if due_bytes || due_time || (size > 0 && loaded >= size) {
-                if let Some(cid) = progress_id.as_ref() {
-                    let _ = app.emit(
-                        "upload-progress",
-                        serde_json::json!({
-                            "clientMessageId": cid,
-                            "loaded": loaded,
-                            "total": size,
-                        }),
-                    );
-                }
-                last_reported = loaded;
-                last_report_at = Instant::now();
-            }
-        }
-        result
-    });
-    let body = reqwest::Body::wrap_stream(stream);
-    let part = if size > 0 {
-        reqwest::multipart::Part::stream_with_length(body, size)
-    } else {
-        reqwest::multipart::Part::stream(body)
-    }
-    .file_name(filename)
-    .mime_str(&mime)
-    .map_err(|e| format!("mime: {e}"))?;
-    let mut form = reqwest::multipart::Form::new();
-    for (k, v) in fields {
-        form = form.text(k, v);
-    }
-    form = form.part("file", part);
-    let mut req = client.post(&url).multipart(form);
-    if let Some(cid) = client_message_id.as_ref() {
-        req = req.header("x-client-message-id", cid);
-    }
-    if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
-        req = req.header("authorization", format!("Bearer {}", t));
-    }
-    // No send timeout: a large upload legitimately takes minutes, and a total-duration timeout would
-    // wrongly abort it. `BACKEND_CONNECT_TIMEOUT` (on the cached client) already catches an unreachable
-    // backend; a mid-upload stall is an accepted rare failure (the user can retry).
-    let upload_cancel = CancellationToken::new();
-    if let Some(cid) = client_message_id.as_ref() {
-        proxy
-            .upload_cancels
-            .lock()
-            .expect("upload_cancels lock")
-            .insert(cid.clone(), upload_cancel.clone());
-    }
-    let send_result = tokio::select! {
-        result = req.send() => Some(result),
-        _ = upload_cancel.cancelled() => None,
-    };
-    if let Some(cid) = client_message_id.as_ref() {
-        proxy
-            .upload_cancels
-            .lock()
-            .expect("upload_cancels lock")
-            .remove(cid);
-    }
-    let resp = match send_result {
-        None => return Err("upload cancelled".to_string()),
-        Some(Ok(r)) => r,
-        Some(Err(e)) => {
-            // Unreachable backend mid-upload: re-race select_origin so the user's RETRY hits the new active
-            // origin. We do NOT re-issue the streaming upload here (re-opening the file + re-streaming is
-            // the caller's job); non-network errors don't switch.
-            if is_network_failure(&e) {
-                runtime_switch(&proxy).await;
-            }
-            return Err(format!("upload send: {e}"));
-        }
-    };
-    let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("upload read: {e}"))?;
-    if !status.is_success() {
-        return Err(format!("upload HTTP {}: {}", status.as_u16(), text));
-    }
-    // Return the raw envelope ({code,message,data}); the frontend reads it as StandardResponse<T>.
-    serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("upload parse: {e}"))
+    let cid = client_message_id
+        .as_deref()
+        .ok_or_else(|| "missing client message identity".to_string())?;
+    let part = ResumablePart::from_fields(&fields)?;
+    upload_resumable_open_file(app, proxy, &mut file, filename, mime, size, cid, part).await
 }
 
 struct ResumablePart {
@@ -232,7 +126,7 @@ async fn upload_resumable_open_file(
     const FALLBACK_CHUNK: usize = 4 * 1024 * 1024;
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
     let client = proxy.api_client(&origin);
-    let token = proxy.token.lock().ok().and_then(|g| g.clone());
+    let token = proxy.session_token();
     let auth = |request: reqwest::RequestBuilder| {
         if let Some(value) = token.as_ref() {
             request.header("authorization", format!("Bearer {value}"))
@@ -417,7 +311,6 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
     fd: jni::sys::jint,
     upload_id: jni::objects::JString,
     attempt_id: jni::objects::JString,
-    endpoint: jni::objects::JString,
     filename: jni::objects::JString,
     mime: jni::objects::JString,
     size: jni::sys::jlong,
@@ -438,7 +331,6 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
     };
     let upload_id = read(&mut env, upload_id);
     let attempt_id = read(&mut env, attempt_id);
-    let endpoint = read(&mut env, endpoint);
     let filename = read(&mut env, filename);
     let mime = read(&mut env, mime);
     let fields_json = read(&mut env, fields_json);
@@ -454,7 +346,6 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
             app.clone(),
             proxy,
             tokio::fs::File::from_std(file),
-            endpoint,
             filename,
             mime,
             size.max(0) as u64,
@@ -525,6 +416,7 @@ fn native_voice_upload_fields(part_id: &str) -> std::collections::HashMap<String
 #[cfg(not(desktop))]
 #[derive(Clone)]
 pub(crate) struct NativeVoicePending {
+    owner: Arc<crate::login_connection::LoginConnection>,
     path: String,
     part_id: String,
     context_id: i64,
@@ -532,13 +424,6 @@ pub(crate) struct NativeVoicePending {
     duration_ms: i64,
     size: i64,
     active: bool,
-}
-
-#[cfg(not(desktop))]
-impl NativeVoicePending {
-    pub(crate) fn path(&self) -> &str {
-        &self.path
-    }
 }
 
 /// Only a previously recorded app-private file may be retried. JS supplies the opaque send ID,
@@ -558,6 +443,7 @@ pub(crate) fn retry_native_voice(
         let entry = entries
             .get_mut(&client_message_id)
             .ok_or("voice recording unavailable")?;
+        entry.owner.assert_active().map_err(|e| e.to_string())?;
         if entry.active {
             return Err("voice upload already active".into());
         }
@@ -615,7 +501,36 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         return;
     };
     let proxy = app.state::<ServerSessionState>().inner().clone();
+    let owner = match crate::native_db::current_login() {
+        // A non-ACTIVE owner still owns this recording: the entry is created, the spawn emits
+        // a visible failure from its credential gate, and a later retry re-asserts admission —
+        // exactly the old unauthenticated-stage behavior with epoch discipline.
+        Ok(Some(owner)) => owner,
+        Ok(None) | Err(_) => {
+            // No login connection exists at all: nothing can own or retry this recording, so
+            // close the UI loop visibly and drop the file instead of leaking it silently.
+            let emit = |phase: &str, error: Option<&str>| {
+                let _ = app.emit(
+                    "native-voice-upload",
+                    serde_json::json!({
+                        "contextId": context_id,
+                        "threadId": thread_id,
+                        "clientMessageId": client_message_id,
+                        "durationMs": duration_ms,
+                        "size": size,
+                        "phase": phase,
+                        "error": error,
+                    }),
+                );
+            };
+            emit("started", None);
+            emit("failed", Some("no native login to upload with"));
+            let _ = fs::remove_file(path);
+            return;
+        }
+    };
     let pending = NativeVoicePending {
+        owner: owner.clone(),
         path,
         part_id: uuid::Uuid::new_v4().to_string(),
         context_id,
@@ -629,6 +544,38 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         .lock()
         .expect("native voice lock")
         .insert(client_message_id.clone(), pending.clone());
+    // The captured epoch owns disposal. Late cancellation only removes its own recording,
+    // never a successor's entry, and never holds a lifecycle lock during filesystem work.
+    let cleanup_proxy = proxy.clone();
+    let cleanup_id = client_message_id.clone();
+    tauri::async_runtime::spawn(async move {
+        owner.cancellation().cancelled().await;
+        let removed = {
+            let mut entries = cleanup_proxy
+                .native_voice_pending
+                .lock()
+                .expect("native voice lock");
+            if entries
+                .get(&cleanup_id)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.owner, &owner))
+            {
+                entries.remove(&cleanup_id)
+            } else {
+                None
+            }
+        };
+        if let Some(entry) = removed {
+            if let Some(cancel) = cleanup_proxy
+                .upload_cancels
+                .lock()
+                .expect("upload cancels lock")
+                .remove(&cleanup_id)
+            {
+                cancel.cancel();
+            }
+            let _ = fs::remove_file(entry.path);
+        }
+    });
     spawn_native_voice_upload(app, proxy, pending, client_message_id, false);
 }
 
@@ -641,6 +588,7 @@ fn spawn_native_voice_upload(
     retry: bool,
 ) {
     tauri::async_runtime::spawn(async move {
+        let owner = pending.owner.clone();
         let NativeVoicePending {
             path,
             part_id,
@@ -666,17 +614,27 @@ fn spawn_native_voice_upload(
         };
         emit_phase("started", None);
         let origin = proxy.api_origin.lock().expect("origin lock").clone();
-        let token = proxy.token.lock().ok().and_then(|value| value.clone());
+        let token = match owner.credential() {
+            Ok(token) => token,
+            Err(_) => {
+                // The epoch ended between "started" and the credential read: still emit the
+                // terminal phase so the UI never waits on a stuck "started".
+                emit_phase("failed", Some("native login is not admitted"));
+                return;
+            }
+        };
         let stage_body = native_voice_stage_body(thread_id, &client_message_id, retry).to_string();
         let mut stage = proxy
             .api_client(&origin)
             .post(format!("{origin}/api/v1/send-media"))
             .header("content-type", "application/json")
             .body(stage_body);
-        if let Some(token) = token {
-            stage = stage.header("authorization", format!("Bearer {token}"));
-        }
-        let stage_result = async {
+        stage = stage.header("authorization", format!("Bearer {token}"));
+        let cancellation = owner.cancellation();
+        let stage_result = tokio::select! {
+          biased;
+          _ = cancellation.cancelled() => return,
+          result = async {
             let response = send_with_headers_deadline(stage, API_HEADERS_TIMEOUT)
                 .await
                 .map_err(|e| format!("stage send: {e:?}"))?;
@@ -694,25 +652,30 @@ fn spawn_native_voice_upload(
                 return Err(format!("stage rejected: {text}"));
             }
             Ok(())
-        }
-        .await;
+          } => result,
+        };
         let result = match stage_result {
             Ok(()) => {
-                upload_stream_path_core(
-                    app.clone(),
-                    proxy.clone(),
-                    path.clone(),
-                    "/upload/audio".to_string(),
-                    "voice.m4a".to_string(),
-                    "audio/mp4".to_string(),
-                    size.max(0) as u64,
-                    native_voice_upload_fields(&part_id),
-                    Some(client_message_id.clone()),
-                )
-                .await
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return,
+                    result = upload_stream_path_core(
+                        app.clone(),
+                        proxy.clone(),
+                        path.clone(),
+                        "voice.m4a".to_string(),
+                        "audio/mp4".to_string(),
+                        size.max(0) as u64,
+                        native_voice_upload_fields(&part_id),
+                        Some(client_message_id.clone()),
+                    ) => result,
+                }
             }
             Err(error) => Err(error),
         };
+        if owner.assert_active().is_err() {
+            return;
+        }
         let success = matches!(&result, Ok(response) if response.get("code").and_then(|v| v.as_i64()) == Some(0));
         // Discard may have removed this entry while an IPC request was in flight. Never resurrect it.
         let retained = {

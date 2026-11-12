@@ -50,7 +50,7 @@ export class FederationGroupMetaClient {
         `group-meta ${request.account}`,
         () =>
           this.trustedPeers.get<GroupMetaFeedPage>(
-            `/s2s/v1/group-meta?${query.toString()}`,
+            `/somfp/v1/group-meta?${query.toString()}`,
             peerDomain,
             MAX_RESPONSE_BYTES,
           ),

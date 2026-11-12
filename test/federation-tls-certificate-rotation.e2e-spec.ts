@@ -12,7 +12,12 @@ import { join } from 'node:path';
 import https from 'node:https';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { adminSession, identityNamespace } from '../src/database/schema.js';
+import {
+  account,
+  admin,
+  adminSession,
+  identityNamespace,
+} from '../src/database/schema.js';
 import {
   bootFederationPair,
   FED_DOMAIN_A,
@@ -200,10 +205,37 @@ async function resolveCardTls(
 }
 
 async function seedAdminCookie(app: FedApp): Promise<string> {
+  // Seed the fixture directly (the rbac-spec pattern): the ambient
+  // ADMIN_BOOTSTRAP_PASSWORD bootstrap admin cannot be relied on (CI has no .env, and the
+  // harness truncates accounts after boot), while a leftover local bootstrap admin must be
+  // reused rather than duplicated.
+  const existing = await app.database
+    .select({ id: admin.id })
+    .from(admin)
+    .innerJoin(account, eq(admin.userId, account.id))
+    .where(eq(account.account, 'admin'))
+    .limit(1);
+  if (existing.length === 0) {
+    const [createdUser] = await app.database
+      .insert(account)
+      .values({ account: 'admin', namespaceId: 0, updatedAt: new Date() })
+      .onConflictDoNothing()
+      .returning({ id: account.id });
+    const userId = createdUser
+      ? createdUser.id
+      : (await app.database.query.account.findFirst({
+          where: eq(account.account, 'admin'),
+          columns: { id: true },
+        }))!.id;
+    await app.database
+      .insert(admin)
+      .values({ userId, role: 'SUPER_ADMIN', enabled: true })
+      .onConflictDoNothing();
+  }
   const adminRow = await app.database.query.admin.findFirst({
     columns: { id: true },
   });
-  if (!adminRow) throw new Error('bootstrap admin is unavailable');
+  if (!adminRow) throw new Error('admin fixture seeding failed');
   const token = randomBytes(32).toString('base64url');
   await app.database.insert(adminSession).values({
     adminId: adminRow.id,
@@ -319,9 +351,11 @@ describe('federation survives a TLS certificate replacement', () => {
     );
     expect(probe.status).toBe(200);
     const relayed = JSON.parse(probe.text) as {
-      data: { status: string };
+      data: { feedProgress: { latestHealthCheck: { status: string } } };
     };
-    expect(relayed.data.status).toBe('available');
+    expect(relayed.data.feedProgress.latestHealthCheck.status).toBe(
+      'available',
+    );
 
     // The S2S identity is untouched by the transport change.
     expect(await peerRowOnA()).toMatchObject({
@@ -389,7 +423,11 @@ describe('federation survives a TLS certificate replacement', () => {
     );
     expect(probe.status, probe.text).toBe(200);
     expect(
-      (JSON.parse(probe.text) as { data: { status: string } }).data.status,
+      (
+        JSON.parse(probe.text) as {
+          data: { feedProgress: { latestHealthCheck: { status: string } } };
+        }
+      ).data.feedProgress.latestHealthCheck.status,
     ).toBe('degraded');
   }, 120_000);
 });

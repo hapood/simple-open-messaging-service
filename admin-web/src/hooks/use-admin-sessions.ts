@@ -1,10 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { listAdminSessions, revokeAdminSession } from '@/api/admin-sessions'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { listAdminSessions, revokeAdminSession } from '@/api/admin-sessions';
 
 export interface AdminSessionsQuery {
-  skip: number
-  take: number
-  ip?: string
+  skip: number;
+  take: number;
+  ip?: string;
 }
 
 export function useAdminSessions(q: AdminSessionsQuery) {
@@ -12,13 +12,14 @@ export function useAdminSessions(q: AdminSessionsQuery) {
     queryKey: ['admin', 'admin-sessions', q],
     queryFn: () => listAdminSessions(q),
     placeholderData: (prev) => prev,
-  })
+  });
 }
 
 export function useRevokeAdminSession() {
-  const qc = useQueryClient()
+  const qc = useQueryClient();
   return useMutation({
-    mutationFn: (jti: string) => revokeAdminSession(jti),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'admin-sessions'] }),
-  })
+    mutationFn: (id: string) => revokeAdminSession(id),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ['admin', 'admin-sessions'] }),
+  });
 }

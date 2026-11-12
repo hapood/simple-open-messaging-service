@@ -11,7 +11,10 @@ import { eq } from 'drizzle-orm';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { identityNamespace } from '../src/database/schema.js';
+import {
+  identityNamespace,
+  federationFeedState,
+} from '../src/database/schema.js';
 import type { WellKnownDoc } from '../src/federation/discovery.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { ProfileNamespaceChangeStore } from '../src/federation/profile-namespace-change-store.service.js';
@@ -29,6 +32,7 @@ describe('FederationRecognitionService atomic commit', () => {
   const rootPublicKey = Buffer.alloc(32, 7).toString('base64');
   const document: WellKnownDoc = {
     protocolVersions: [1],
+    signingKeyCreatedAt: 1700000000000,
     roots: [
       {
         ed25519: rootPublicKey,
@@ -74,6 +78,14 @@ describe('FederationRecognitionService atomic commit', () => {
       [domain],
     );
     await database.pool.query(
+      'DELETE FROM "FederationFeedHeadReceipt" WHERE "namespaceId" IN (SELECT id FROM "IdentityNamespace" WHERE domain = $1)',
+      [domain],
+    );
+    await database.pool.query(
+      'DELETE FROM "FederationFeedState" WHERE "namespaceId" IN (SELECT id FROM "IdentityNamespace" WHERE domain = $1)',
+      [domain],
+    );
+    await database.pool.query(
       'DELETE FROM "IdentityNamespace" WHERE domain = $1',
       [domain],
     );
@@ -103,6 +115,7 @@ describe('FederationRecognitionService atomic commit', () => {
       .values({
         domain,
         rootPublicKey,
+        signingKeyCreatedAt: 1700000000000,
         identityPinnedAt: new Date(),
         active: true,
         trustLevel: 'available',
@@ -119,7 +132,7 @@ describe('FederationRecognitionService atomic commit', () => {
     const changes = new ProfileNamespaceChangeStore(database);
     return new FederationNamespaceService(
       database,
-      new ProfileNamespaceFeedService(database, {} as never, changes),
+      new ProfileNamespaceFeedService(database, changes),
       new ProfileNamespaceService(database, {} as never),
     );
   }
@@ -138,18 +151,21 @@ describe('FederationRecognitionService atomic commit', () => {
   }
 
   it('commits inbound recognition, namespace, and State Feed cursors together', async () => {
-    await service().acceptInbound(domain, rootPublicKey);
+    await service().acceptInbound(domain, rootPublicKey, 1700000000000);
 
     expect(await activeNamespace()).toMatchObject({
       trustLevel: 'available',
       peerAcceptanceConfirmed: true,
       remoteServiceReachable: true,
-      stateFeedEndId: 0n,
     });
-    // The drain progress lives on the epoch row itself; NULL is the
-    // never-bootstrapped marker the first state-feed pull resolves.
-    expect(await activeNamespace()).toMatchObject({
-      stateFeedPulledThrough: null,
+    const peer = (await activeNamespace())!;
+    expect(
+      await database.db.query.federationFeedState.findFirst({
+        where: eq(federationFeedState.namespaceId, peer.id),
+      }),
+    ).toMatchObject({
+      outboundStateFeedEndId: 0n,
+      inboundStateFeedPulledThrough: null,
     });
   });
 
@@ -174,6 +190,9 @@ describe('FederationRecognitionService atomic commit', () => {
       });
     } finally {
       await database.db
+        .delete(federationFeedState)
+        .where(eq(federationFeedState.namespaceId, otherPeer.id));
+      await database.db
         .delete(identityNamespace)
         .where(eq(identityNamespace.id, otherPeer.id));
     }
@@ -185,7 +204,7 @@ describe('FederationRecognitionService atomic commit', () => {
     });
 
     await expect(
-      service().acceptInbound(domain, rootPublicKey, 901),
+      service().acceptInbound(domain, rootPublicKey, 1700000000000, 901),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
     });
@@ -198,7 +217,7 @@ describe('FederationRecognitionService atomic commit', () => {
   it('adopts a first-time sender-assigned local namespace disclosure', async () => {
     await seedActiveNamespace();
 
-    await service().acceptInbound(domain, rootPublicKey, 901);
+    await service().acceptInbound(domain, rootPublicKey, 1700000000000, 901);
 
     expect(await activeNamespace()).toMatchObject({
       trustLevel: 'available',
@@ -218,7 +237,11 @@ describe('FederationRecognitionService atomic commit', () => {
     );
 
     await expect(
-      service(failingNamespaces).acceptInbound(domain, rootPublicKey),
+      service(failingNamespaces).acceptInbound(
+        domain,
+        rootPublicKey,
+        1700000000000,
+      ),
     ).rejects.toThrow('namespace initialization failed');
 
     expect(
@@ -299,8 +322,11 @@ describe('FederationRecognitionService atomic commit', () => {
     async (predecessorFirst) => {
       const peer = await seedActiveNamespace({
         peerAssignedLocalNamespaceId: 901,
-        stateFeedPulledThrough: 42n,
       });
+      await database.db
+        .update(federationFeedState)
+        .set({ inboundStateFeedPulledThrough: 42n })
+        .where(eq(federationFeedState.namespaceId, peer.id));
       const successorRoot = Buffer.alloc(32, 10).toString('base64');
       const successor = { ...document.roots[0]!, ed25519: successorRoot };
       const roots = predecessorFirst
@@ -343,10 +369,14 @@ describe('FederationRecognitionService atomic commit', () => {
         id: peer.id,
         rootPublicKey,
         peerAssignedLocalNamespaceId: 901,
-        stateFeedPulledThrough: 42n,
         trustLevel: 'available',
         haltedAt: null,
       });
+      expect(
+        await database.db.query.federationFeedState.findFirst({
+          where: eq(federationFeedState.namespaceId, peer.id),
+        }),
+      ).toMatchObject({ inboundStateFeedPulledThrough: 42n });
     },
   );
 

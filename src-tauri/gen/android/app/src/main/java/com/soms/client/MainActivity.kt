@@ -14,15 +14,10 @@ import android.media.MediaRecorder
 import android.provider.Settings
 import android.provider.MediaStore
 import android.graphics.Color
-import android.graphics.Typeface
-import android.view.Gravity
+import android.graphics.drawable.ColorDrawable
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.ImageView
-import android.widget.TextView
-import android.util.TypedValue
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import android.app.PictureInPictureParams
@@ -59,7 +54,7 @@ import java.util.concurrent.TimeUnit
  *
  *  - Foreground flag: onResume/onStop flip [SomsMessagingService.appInForeground] so the FCM service
  *    suppresses system notifications while the user is already looking at the chat (SSE has it).
- *  - Deep links: a notification tap carries EXTRA_THREAD_ID. Cold start captures it before the webview
+ *  - Deep links: a notification tap carries EXTRA_TARGET (a validated target JSON document). Cold start captures it before the webview
  *    exists (SomsBridge.DeepLink); onWebViewCreate consumes it. Warm start (app already running) routes
  *    it straight to the live webview via window.__SOMS_DEEP_LINK__.
  *  - Token bridge: kicks off the Firebase token task in onCreate and exposes the result to JS via the
@@ -80,10 +75,20 @@ import java.util.concurrent.TimeUnit
  * than fishing it out of the view tree, so this stays stable across Tauri versions.
  */
 class MainActivity : TauriActivity() {
-    private var launchOverlay: View? = null
-    private var launchStatus: TextView? = null
+    private var launchOverlay: LaunchOverlayView? = null
+    private var launchThemeDark: Boolean? = null
+    private var launchHandoffReady = false
+    private var launchDismissPending = false
+    private var launchSystemExitReceived = false
+    private val launchHandoffFallback = Runnable {
+        if (!launchSystemExitReceived) launchOverlay?.let { completeLaunchHandoff(it) }
+    }
+    private var restoringActivity = false
+    private var launchVisualRequest = 0L
     private var pendingSystemBarDark: Boolean? = null
-    private val launchTimeout = Runnable { dismissLaunchOverlay() }
+    private val launchTimeout = Runnable {
+        launchOverlay?.showSlowRecovery { recreate() }
+    }
     private var currentPipParams: PictureInPictureParams? = null
     private var nativePhotoRequestId: String? = null
     private var nativeFileRequestId: String? = null
@@ -182,8 +187,66 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // API 30+ reports IME geometry through WindowInsets; application surfaces own
+        // avoidance, so the window must not also pan or resize for the focused field.
+        // Older releases still require visible-frame changes for IME measurement.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setSoftInputMode(
+                (window.attributes.softInputMode and
+                    WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST.inv()) or
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING,
+            )
+        }
         if (savedInstanceState == null) captureSharedText(intent)
+        restoringActivity = savedInstanceState != null
         installLaunchOverlay()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            splashScreen.setOnExitAnimationListener { systemSplash ->
+                launchSystemExitReceived = true
+                launchOverlay?.removeCallbacks(launchHandoffFallback)
+                if (isDestroyed || restoringActivity) {
+                    systemSplash.remove()
+                    return@setOnExitAnimationListener
+                }
+                val overlay = launchOverlay
+                // A late system callback is still authoritative. Its surface covers the continuation,
+                // so reset any fallback animation underneath it before matching the captured bounds.
+                launchHandoffReady = false
+                overlay?.prepareSystemHandoff()
+                val icon = systemSplash.iconView
+                if (overlay != null && icon != null) {
+                    val iconLocation = IntArray(2)
+                    val overlayLocation = IntArray(2)
+                    icon.getLocationOnScreen(iconLocation)
+                    overlay.getLocationOnScreen(overlayLocation)
+                    overlay.alignSystemIcon(android.graphics.Rect(
+                        iconLocation[0] - overlayLocation[0],
+                        iconLocation[1] - overlayLocation[1],
+                        iconLocation[0] - overlayLocation[0] + icon.width,
+                        iconLocation[1] - overlayLocation[1] + icon.height,
+                    ))
+                }
+                if (overlay == null) {
+                    systemSplash.remove()
+                } else {
+                    // Lay out the continuation at the captured bounds BEFORE removing the system
+                    // surface. Keep the same icon bounds for the first exposed frame, then move.
+                    androidx.core.view.OneShotPreDrawListener.add(overlay) {
+                        systemSplash.remove()
+                        completeLaunchHandoff(overlay)
+                    }
+                    overlay.invalidate()
+                }
+            }
+        } else {
+            // Android 9–11 provide no system icon geometry. Keep the shared centered canvas and
+            // use a best-effort transition after its first draw instead of guessing OEM offsets.
+            launchOverlay?.let { overlay ->
+                androidx.core.view.OneShotPreDrawListener.add(overlay) {
+                    completeLaunchHandoff(overlay)
+                }
+            }
+        }
         // Seed SomsLog's file sink path before any subsystem logs. Release keeps writes disabled until the
         // persisted/hidden runtime debug gate is enabled by the web layer.
         SomsLog.init(this)
@@ -292,67 +355,62 @@ class MainActivity : TauriActivity() {
         )
     }
 
-    /**
-     * Native continuation of Android's system splash. It uses the same solid brand background and logo,
-     * but can remain above the WebView while Angular restores the session, resolves its first route, and
-     * paints stable content. The small lower-left label is deliberately secondary to the centered mark.
-     */
+    /** Native presentation above the WebView until its first stable route is painted. */
     private fun installLaunchOverlay() {
         val decor = window.decorView as? ViewGroup ?: return
-        val density = resources.displayMetrics.density
-        fun dp(value: Int) = Math.round(value * density)
-
-        val overlay = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(233, 225, 213))
-            isClickable = true
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            elevation = dp(16).toFloat()
-        }
-        val logo = ImageView(this).apply {
-            // VectorDrawable: unlike the 108dp adaptive-launcher PNG, this remains sharp on the
-            // platform-standard 288dp transparent splash canvas at every display density.
-            setImageResource(R.drawable.splash_logo)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = null
-        }
-        overlay.addView(
-            logo,
-            // Match Android 12+'s transparent splash-icon canvas. The mark deliberately occupies
-            // about half of this canvas, yielding a ~144dp visible bubble inside the 192dp safe zone.
-            FrameLayout.LayoutParams(dp(288), dp(288), Gravity.CENTER),
-        )
-
-        val status = TextView(this).apply {
-            setText(R.string.splash_preparing)
-            setTextColor(Color.argb(170, 25, 33, 42))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setTypeface(typeface, Typeface.NORMAL)
-            letterSpacing = 0.04f
-            maxLines = 1
-            includeFontPadding = false
-        }
-        overlay.addView(
-            status,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.START or Gravity.BOTTOM,
-            ).apply {
-                marginStart = dp(24)
-                bottomMargin = dp(28)
-            },
-        )
-
-        decor.addView(
-            overlay,
-            ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ),
-        )
+        val dark = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+            Configuration.UI_MODE_NIGHT_YES
+        val overlay = LaunchOverlayView(this, dark)
+        decor.addView(overlay, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
         launchOverlay = overlay
-        launchStatus = status
+        if (restoringActivity) {
+            overlay.showRecovery()
+            launchHandoffReady = true
+        }
+        launchThemeDark = dark
+        val controller = WindowInsetsControllerCompat(window, decor)
+        controller.isAppearanceLightStatusBars = !dark
+        controller.isAppearanceLightNavigationBars = !dark
+        // The starting window has captured its drawable; no second mark may remain behind WebView.
+        window.setBackgroundDrawable(ColorDrawable(ContextCompat.getColor(this, R.color.splash_background)))
         overlay.postDelayed(launchTimeout, LAUNCH_TIMEOUT_MS)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        SomsMessagingService.windowFocused = hasFocus
+        SomsMessagingService.presentationChanged()
+        if (!hasFocus || launchHandoffReady || launchSystemExitReceived) return
+        val overlay = launchOverlay ?: return
+        // Focus arrives BEFORE the system transfers its splash view; it is not a handoff signal.
+        // Allow that asynchronous transfer to finish. Non-launcher starts may have no transferable
+        // splash at all, so bound the wait without discarding any later authoritative callback.
+        overlay.removeCallbacks(launchHandoffFallback)
+        overlay.postDelayed(launchHandoffFallback, LAUNCH_HANDOFF_WAIT_MS)
+    }
+
+    private fun completeLaunchHandoff(overlay: LaunchOverlayView) {
+        if (launchOverlay !== overlay || launchHandoffReady) return
+        launchHandoffReady = true
+        overlay.postOnAnimation {
+            if (launchOverlay !== overlay) return@postOnAnimation
+            if (launchDismissPending) dismissLaunchOverlay() else overlay.revealBrand()
+        }
+    }
+
+    private fun applyLaunchTheme(dark: Boolean) {
+        val overlay = launchOverlay ?: return
+        if (launchThemeDark == dark) return
+        // Recolor in place: replacing the view would reset captured geometry and replay the animation.
+        overlay.applyPalette(dark)
+        launchThemeDark = dark
+        window.setBackgroundDrawable(overlay.background.constantState?.newDrawable())
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.isAppearanceLightStatusBars = !dark
+        controller.isAppearanceLightNavigationBars = !dark
     }
 
     private fun updateLaunchStage(stage: String) {
@@ -362,7 +420,9 @@ class MainActivity : TauriActivity() {
             "interface" -> R.string.splash_preparing_interface
             else -> return
         }
-        launchStatus?.setText(label)
+        launchOverlay?.let { overlay ->
+            if (overlay.retry.visibility != View.VISIBLE) overlay.status.setText(label)
+        }
     }
 
     private fun applySystemBarTheme(dark: Boolean) {
@@ -375,10 +435,32 @@ class MainActivity : TauriActivity() {
         controller.isAppearanceLightNavigationBars = !dark
     }
 
+    /** Confirm that the current WebView can draw the DOM acknowledged by the web application. */
+    private fun finishLaunchWhenDrawable() {
+        if (isDestroyed || launchOverlay == null) return
+        val webView = SomsBridge.webView ?: return
+        val overlay = launchOverlay
+        val request = ++launchVisualRequest
+        webView.postVisualStateCallback(request, object : WebView.VisualStateCallback() {
+            override fun onComplete(requestId: Long) {
+                if (isDestroyed || requestId != launchVisualRequest ||
+                    SomsBridge.webView !== webView || launchOverlay !== overlay) return
+                dismissLaunchOverlay()
+            }
+        })
+    }
+
     private fun dismissLaunchOverlay() {
         val overlay = launchOverlay ?: return
+        // Readiness may precede the system splash transfer. The focus fallback completes the
+        // handoff; a slow-start timeout must never expose an unready WebView.
+        if (!launchHandoffReady) {
+            launchDismissPending = true
+            return
+        }
+        overlay.removeCallbacks(launchHandoffFallback)
+        overlay.cancelAnimations()
         launchOverlay = null
-        launchStatus = null
         overlay.removeCallbacks(launchTimeout)
         overlay.animate()
             .alpha(0f)
@@ -405,8 +487,24 @@ class MainActivity : TauriActivity() {
     /** Install a WindowInsets listener on the content view that measures the status-bar / gesture-bar
      *  insets (device px), converts to integer CSS px (÷ density), stores them for
      *  SomsShell.getSafeInsets(), and pushes live updates to the webview. Per-device — never hardcoded. */
+    private var disposeLegacyImeObserver: (() -> Unit)? = null
+
     private fun installInsetsListener() {
         val content = findViewById<View>(android.R.id.content) ?: return
+        var legacyObserverDisposed = false
+        // Both legacy callbacks share the same observation path. Publish changed measured heights
+        // immediately; legacy devices cannot predict a reliable animation destination.
+        fun acceptLegacyImeObservation() {
+            if (legacyObserverDisposed) return
+            val derived = computeImeFromVisibleFrame(content, navBottomDevicePx)
+            val css = Math.max(0, Math.round(derived / resources.displayMetrics.density))
+            val visible = derived > 0
+            nativeComposer.updateImeAnimationProgress(derived, navBottomDevicePx)
+            if (css == imeHeightCss && visible == imeVisible) return
+            imeHeightCss = css
+            imeVisible = visible
+            pushImeEvent(phase = "change", targetCss = css, isFinal = true)
+        }
         ViewCompat.setOnApplyWindowInsetsListener(content) { _, insets ->
             val status = insets.getInsets(WindowInsetsCompat.Type.statusBars())
             val nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
@@ -433,10 +531,8 @@ class MainActivity : TauriActivity() {
             val d = resources.displayMetrics.density
             safeInsetTopCss = Math.round(status.top / d)
             safeInsetBottomCss = Math.round(navBottomDevicePx / d)
-            // IME is version-gated here — see imeHeightCss. API 30+ trusts Type.ime() (the WindowInsetsAnimation
-            // callback below tracks it per-frame during the open/close animation). Pre-API 30 ignores Type.ime()
-            // (its Compat backport is unreliable on OEM ROMs) and defers the IME to the OnGlobalLayoutListener
-            // installed below, so it does NOT push here on pre-R.
+            // API 30+ uses native animation geometry. Both pre-R callbacks use the same visible-frame
+            // observer, which atomically updates and publishes changed measurements.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
                 imeHeightCss = Math.max(0, Math.round(ime.bottom / d))
@@ -450,21 +546,26 @@ class MainActivity : TauriActivity() {
                 }
                 nativeComposer.updateInsets(ime.bottom, navBottomDevicePx)
             } else {
-                val derivedIme = computeImeFromVisibleFrame(content, navBottomDevicePx)
-                imeHeightCss = Math.max(0, Math.round(derivedIme / d))
-                imeVisible = derivedIme > 0
-                // Pre-R cannot predict a trustworthy endpoint. Follow the observed frame visually, but
-                // commit geometry only after the global-layout source has remained stable.
-                nativeComposer.updateImeAnimationProgress(derivedIme, navBottomDevicePx)
+                acceptLegacyImeObservation()
             }
             applySafeInsetsToWebView()
-            insets
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // The shell has captured IME geometry above and owns avoidance. Do not
+                // also expose IME occlusion to descendant WebViews, whose focused-field
+                // reveal would otherwise pan their visual viewport independently.
+                WindowInsetsCompat.Builder(insets)
+                    .setInsets(WindowInsetsCompat.Type.ime(), androidx.core.graphics.Insets.NONE)
+                    .setVisible(WindowInsetsCompat.Type.ime(), false)
+                    .build()
+            } else {
+                insets
+            }
         }
         // On API 30+ the IME animates open/close (~250ms). Follow it frame-by-frame so the chat input bar
         // slides up in sync with the keyboard (DISPATCH_MODE_STOP: we own the lift — the WebView must NOT
         // auto-resize/scroll for the IME during the animation; after the animation onApplyWindowInsets above
         // fires once with the settled inset). Below API 30 this callback is inert; the visible-frame listener
-        // below publishes every observed geometry frame and a debounced final.
+        // below publishes each changed measurement immediately.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             ViewCompat.setWindowInsetsAnimationCallback(content,
                 object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
@@ -554,36 +655,20 @@ class MainActivity : TauriActivity() {
                     }
                 })
         }
-        // Pre-API-30 IME source: a global-layout listener that recomputes the keyboard height from the content
-        // view's visible display frame. Every observed geometry change is still published as progress so the
-        // native protocol loses no information; today's web layout deliberately ignores those old-platform
-        // progress frames and commits only the debounced final. (onApplyWindowInsets also delivers Type.ime()
-        // pre-30, but its Compat backport is unreliable on OEM ROMs — see imeHeightCss.) Gated to pre-R:
-        // on API 30+ Type.ime() plus WindowInsetsAnimation are authoritative.
+        // Pre-API-30 uses visible-frame measurements and publishes each changed height immediately.
+        // The AndroidX IME backport is unreliable on OEM ROMs. API 30+ instead uses Type.ime()
+        // and WindowInsetsAnimation as its authoritative sources.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            var finalRunnable: Runnable? = null
-            content.viewTreeObserver.addOnGlobalLayoutListener {
-                val d = resources.displayMetrics.density
-                val derived = computeImeFromVisibleFrame(content, navBottomDevicePx)
-                val derivedCss = Math.max(0, Math.round(derived / d))
-                if (derivedCss != imeHeightCss) {
-                    imeHeightCss = derivedCss
-                    imeVisible = derivedCss > 0
-                    nativeComposer.updateImeAnimationProgress(derived, navBottomDevicePx)
-                    pushImeEvent(
-                        phase = "progress",
-                        targetCss = derivedCss,
-                        isFinal = false,
-                    )
-                    finalRunnable?.let(content::removeCallbacks)
-                    finalRunnable = Runnable {
-                        pushImeEvent(
-                            phase = "change",
-                            targetCss = imeHeightCss,
-                            isFinal = true,
-                        )
-                    }.also { content.postDelayed(it, 80L) }
+            val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                acceptLegacyImeObservation()
+            }
+            content.viewTreeObserver.addOnGlobalLayoutListener(listener)
+            disposeLegacyImeObserver = {
+                legacyObserverDisposed = true
+                if (content.viewTreeObserver.isAlive) {
+                    content.viewTreeObserver.removeOnGlobalLayoutListener(listener)
                 }
+                ViewCompat.setOnApplyWindowInsetsListener(content, null)
             }
         }
         ViewCompat.requestApplyInsets(content)
@@ -735,10 +820,8 @@ class MainActivity : TauriActivity() {
         // main.ts, before bootstrap) to set --soms-safe-top for a FOUC-free first paint. Android WebView's
         // env(safe-area-inset-top) is 0, so this @JavascriptInterface is the only source.
         webView.addJavascriptInterface(SomsShellInterface(this), "SomsShell")
-        // window.SomsSecureStore.getApiOrigin()/setApiOrigin() — the WebView-independent persistence the
-        // web seeds apiOrigin from at boot and the native SSE (RealtimeService)
-        // reads. Added here, before the page boots, so runtime.ts's synchronous seed read resolves the
-        // native store (not a stale injected global).
+        // The platform store mirrors Rust's committed origin pair for synchronous presentation reads.
+        // Install the bridge before bootstrap so runtime.ts seeds from this mirror, not injected globals.
         webView.addJavascriptInterface(SomsSecureStoreInterface(this), "SomsSecureStore")
         // window.SomsCall.* — the command direction of the native call bridge (initiate / accept / … /
         // getSnapshot); the Angular CallAdapter facade calls these. The EVENT direction rides the existing
@@ -849,17 +932,13 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun open(
             streamUrl: String,
-            thumbnailUploadUrl: String,
             digest: String,
-            hasThumbnail: Boolean,
         ) {
             val activity = activityRef.get() ?: return
             activity.runOnUiThread {
                 activity.startActivity(
                     Intent(activity, VideoPlayerActivity::class.java)
                         .putExtra(VideoPlayerActivity.EXTRA_STREAM_URL, streamUrl)
-                        .putExtra(VideoPlayerActivity.EXTRA_THUMBNAIL_UPLOAD_URL, thumbnailUploadUrl)
-                        .putExtra(VideoPlayerActivity.EXTRA_HAS_THUMBNAIL, hasThumbnail)
                         .putExtra(VideoPlayerActivity.EXTRA_DIGEST, digest),
                 )
             }
@@ -1130,6 +1209,8 @@ class MainActivity : TauriActivity() {
         // a no-op because onWebViewCreate has already set SomsBridge.webView.
         captureWebView()
         SomsMessagingService.appInForeground = true
+        SomsMessagingService.windowFocused = hasWindowFocus()
+        SomsMessagingService.presentationChanged()
         SomsLog.i("Ui") { "onResume → appInForeground=true" }
         // App visible: start the realtime service and, if background realtime is enabled, promote it
         // BEFORE leaving the activity. The persistent FGS notification stays visible across fg/bg;
@@ -1157,6 +1238,7 @@ class MainActivity : TauriActivity() {
     override fun onStop() {
         super.onStop()
         SomsMessagingService.appInForeground = false
+        SomsMessagingService.windowFocused = false
         SomsLog.i("Ui") {
             "onStop → appInForeground=false fgsEnabled=${SomsSecureStore.getForegroundServiceEnabled(this)} tokenPresent=${SomsSecureStore.getSessionToken(this) != null}"
         }
@@ -1169,9 +1251,12 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        disposeLegacyImeObserver?.invoke()
+        disposeLegacyImeObserver = null
         launchOverlay?.removeCallbacks(launchTimeout)
+        launchOverlay?.removeCallbacks(launchHandoffFallback)
+        launchOverlay?.cancelAnimations()
         launchOverlay = null
-        launchStatus = null
         finishNativeVoiceRecording(cancel = true)
         nativeComposer.destroy()
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
@@ -1348,13 +1433,19 @@ class MainActivity : TauriActivity() {
 
     /** Navigate the web app to a thread. Calls window.__SOMS_DEEP_LINK__ if registered; the web app
      *  installs that handler at boot (PushService.init), so warm-start routing lands immediately. */
-    private fun offerNotificationTap(intent: Intent): Boolean = SomsBridge.DeepLink.offer(
-        intent.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID),
-        intent.getIntExtra(SomsMessagingService.EXTRA_SESSION_ID, -1),
-        intent.getStringExtra(SomsMessagingService.EXTRA_API_ORIGIN),
-        SomsSecureStore.getSessionId(this),
-        SomsSecureStore.getApiOrigin(this),
-    )
+    private fun offerNotificationTap(intent: Intent): Boolean {
+        val thread = intent.getStringExtra(SomsMessagingService.EXTRA_TARGET)
+        val instance = intent.getStringExtra("notificationId")
+        if (instance != null) {
+            thread?.let { RustRuntimeBridge.notificationDismissed(it, instance) }
+        }
+        if (thread == null) return false
+        val target = runCatching { org.json.JSONObject(thread) }.getOrNull() ?: return false
+        val opening = org.json.JSONObject().put("target", target)
+        // Preserve absence and type: Rust validates the opening, never invent a zero ceiling.
+        intent.extras?.get(SomsMessagingService.EXTRA_LATEST_SEQ)?.let { opening.put("latestSeq", it) }
+        return SomsBridge.DeepLink.offer(opening.toString())
+    }
 
     /** Fetch the current FCM registration token asynchronously and stash it for the JS bridge. Delegates to
      *  [SomsFirebase] — under the dynamic-config model FirebaseApp is initialized from the server-fetched
@@ -1430,25 +1521,6 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    /** Start the active-call foreground service (CallService — the process anchor + the call's audio
-     *  routing). Idempotent: starting an already-running service re-delivers onStartCommand (harmless —
-     *  acquireAudio is replace-by-token). Guarded against the Android 12+ background-service-start
-     *  restriction: a call begins from a user gesture while foregrounded (Phase 2), so this path is allowed;
-     *  the catch is belt-and-suspenders for the rare fg/bg race during the init→main window handoff, mirroring
-     *  onResume's RealtimeService start guard. Called by SomsCallInterface.initiate / accept. */
-    internal fun startCallService() {
-        try {
-            val binding = NotificationSessionBinding.capture(this) ?: return
-            val serviceIntent = Intent(this, CallService::class.java)
-            val sid = CallController.callSid ?: return
-            serviceIntent.putExtra(CallService.EXTRA_SID, sid)
-            binding.attach(serviceIntent, "outgoing-service", sid)
-            startForegroundService(serviceIntent)
-        } catch (e: RuntimeException) {
-            Log.w("SomsActivity", "call service start skipped: ${e.javaClass.simpleName}: ${e.message}")
-        }
-    }
-
     /** The deferred call-start action awaiting a RECORD_AUDIO (+ CAMERA for VIDEO) grant. One-shot: cleared
      *  in [onRequestPermissionsResult] whether granted or not. Null when no call is pending a permission. */
     private var pendingCallStart: (() -> Unit)? = null
@@ -1484,7 +1556,7 @@ class MainActivity : TauriActivity() {
     }
 
     /** Ensure RECORD_AUDIO (+ CAMERA for VIDEO) is granted before a call captures media; run [andThen]
-     *  (startCallService + CallController.initiate/accept) once granted. The native RTCPeerConnection is NOT
+     *  (CallController.initiate/accept) once granted. The native RTCPeerConnection is NOT
      *  the WebView, so RustWebChromeClient.onPermissionRequest (which grants AUDIO_CAPTURE to the WebView
      *  only) does NOT cover it — without this the mic captures SILENCE (WebRtcAudioRecord releases its
      *  resources with no permission) and the call connects with no audio. The grant persists, so this prompts
@@ -1609,8 +1681,7 @@ class MainActivity : TauriActivity() {
             val a = activityRef.get() ?: return
             val selected = threadId.takeIf { it > 0 } ?: -1
             SomsMessagingService.activeThreadId = selected
-            if (selected > 0 && SomsMessagingService.appInForeground)
-                a.runOnUiThread { SomsMessagingService.clearThreadNotification(a, selected) }
+            a.runOnUiThread { SomsMessagingService.presentationChanged() }
         }
 
         /** Push the session token (POST /auth/login, app client) into encrypted storage so the Kotlin-owned
@@ -1938,7 +2009,16 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun finishSplash() {
             val a = activityRef.get() ?: return
-            a.runOnUiThread { a.dismissLaunchOverlay() }
+            a.runOnUiThread { a.finishLaunchWhenDrawable() }
+        }
+
+        /** Render the shared resolved theme without independently reading or caching preferences. */
+        @JavascriptInterface
+        fun setSplashTheme(dark: Boolean) {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread {
+                if (!a.isDestroyed) a.applyLaunchTheme(dark)
+            }
         }
 
         /** Keep transparent edge-to-edge system-bar icons legible when the web theme overrides the OS. */
@@ -2033,35 +2113,26 @@ class MainActivity : TauriActivity() {
             return SomsSecureStore.getApiOrigin(a)
         }
 
-        /** Persist the backend origin (null/empty clears). Called from JS `setApiOrigin` on a
-         *  server-config save — the single writer; the web never mirrors a boot value back here (that
-         *  was the stale-global corruption path). */
         @JavascriptInterface
-        fun setApiOrigin(origin: String?) {
+        fun recordServerOrigins(primary: String, secondary: String?, mode: String) {
             val a = activityRef.get() ?: return
-            SomsSecureStore.setApiOrigin(a, origin)
+            SomsSecureStore.recordServerOrigins(a, primary, secondary, mode)
         }
 
-        /** The optional LAN (secondary) origin (null = no fallback). Pushed by JS `setApiOriginSecondary`
-         *  on a server-config save; RealtimeService reads it to pick the reachable /events origin. */
+        /** Read the optional backup from the committed configuration's platform mirror. */
         @JavascriptInterface
         fun getApiOriginSecondary(): String? {
             val a = activityRef.get() ?: return null
             return SomsSecureStore.getApiOriginSecondary(a)
         }
 
-        @JavascriptInterface
-        fun setApiOriginSecondary(origin: String?) {
-            val a = activityRef.get() ?: return
-            SomsSecureStore.setApiOriginSecondary(a, origin)
-        }
     }
 
     /** JS-callable surface exposed as window.SomsCall — the COMMAND direction of the native call bridge.
      *  The web's CallAdapter facade (the mirror of NotificationAdapter) calls these; they delegate to the
-     *  process-global [CallController] (the RTCPeerConnection + lifecycle FSM owner). The EVENT direction
-     *  flows the other way: RealtimeService → CallController, and CallController.pushSnapshot evals
-     *  window.__SOMS_CALL_EVENT__ back to JS. The begin-a-call methods (initiate/accept) also start the
+     *  process-global [CallController] media adapter for Rust-owned calls. The EVENT direction
+     *  flows the other way: RealtimeService → CallController, and CallController publishes
+     *  window.__SOMS_CALL_EVENT__ back to JS. Rust commands start the
      *  [CallService] FGS (the process anchor + audio routing). @JavascriptInterface runs on a background JS
      *  thread; CallController hops to its own serial executor, and getSnapshot reads only @Volatile fields,
      *  so no UI-thread hop is needed. */
@@ -2073,32 +2144,16 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun initiate(threadId: Int, callSid: String, callType: String, peerAccount: String, peerNamespaceId: Int) {
             val a = activityRef.get() ?: return
+            val loginUuid = SomsSecureStore.getLoginSessionId(a) ?: return
             val revision = CallController.captureSessionResourceRevision() ?: return
             val binding = NotificationSessionBinding.capture(a) ?: return
             a.runOnUiThread {
                 if (!binding.isCurrent(a)) return@runOnUiThread
                 a.ensureCallPermissions(callType) {
                     if (!binding.isCurrent(a)) return@ensureCallPermissions
-                    // Native SQLite is the presentation authority. Resolve it off the UI thread and only
-                    // publish the starting snapshot after the name/avatar are ready.
                     Thread {
-                        val peer = ClientStateDb.getCallPeer(a.applicationContext, peerAccount, peerNamespaceId, threadId)
-                        a.runOnUiThread seed@{
-                            if (!binding.isCurrent(a)) return@seed
-                            if (CallController.initiate(
-                                    threadId,
-                                    callSid,
-                                    callType,
-                                    peerAccount,
-                                    peerNamespaceId,
-                                    peer?.name ?: "",
-                                    peer?.avatarDataUrl() ?: "",
-                                    revision,
-                                )) {
-                                a.startCallService()
-                            }
-                            // A false return means this device already owns a different call. Do not emit
-                            // a rejection for that attempt: the existing call must keep its UI and media.
+                        if (binding.isCurrent(a)) {
+                            CallController.initiate(threadId, callSid, callType, peerAccount, peerNamespaceId, revision, loginUuid)
                         }
                     }.start()
                 }
@@ -2116,7 +2171,6 @@ class MainActivity : TauriActivity() {
             a.runOnUiThread {
                 a.ensureCallPermissions(CallController.callType) {
                     if (!binding.isCurrent(a) || CallController.callSid != callSid) return@ensureCallPermissions
-                    a.startCallService()
                     CallController.accept(callSid)
                 }
             }
@@ -2226,6 +2280,7 @@ class MainActivity : TauriActivity() {
         private const val PIP_REQ_MUTE = 7101
         private const val PIP_REQ_END = 7102
         private const val PIP_ENTER_CONFIRM_MS = 750L
+        private const val LAUNCH_HANDOFF_WAIT_MS = 1_000L
         private const val LAUNCH_FADE_MS = 180L
         private const val LAUNCH_TIMEOUT_MS = 8_000L
         private const val NOTIF_SYNC_WORK = "soms-notif-sync"

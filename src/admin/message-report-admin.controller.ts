@@ -39,7 +39,10 @@ export class MessageReportAdminController {
   }
 
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('message_report.dismiss', { targetType: 'message_report' })
+  @Audit('message_report.dismiss', {
+    targetType: 'message_report',
+    targetBody: ['threadId', 'seq'],
+  })
   @HttpCode(HttpStatus.OK)
   @Post('message-reports/delete')
   @ApiOperation({
@@ -50,7 +53,10 @@ export class MessageReportAdminController {
   }
 
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('message.delete', { targetType: 'message' })
+  @Audit('message.delete', {
+    targetType: 'message',
+    targetBody: ['threadId', 'seq'],
+  })
   @HttpCode(HttpStatus.OK)
   @Post('messages/delete')
   @ApiOperation({ summary: 'Delete one message and enqueue content fanout' })

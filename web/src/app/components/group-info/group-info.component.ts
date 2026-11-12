@@ -51,6 +51,7 @@ import {
   MemberProfileRepository,
   type ResolvedMemberProfile,
 } from '../../services/member-profile-store.service';
+import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import {
   limitUnicodeCodePoints,
@@ -58,7 +59,11 @@ import {
 } from '../../lib/unicode-text';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
-import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
+import {
+  conversationAvatarProfile,
+  groupMemberAvatarProfile,
+  type AvatarProfileRef,
+} from '../../services/avatar-profile-ref';
 import {
   currentGroupAnnouncement,
   isGroupMetaCurrent,
@@ -92,6 +97,7 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
     TranslocoPipe,
     ThreadAliasEditorComponent,
     PageHeaderComponent,
+    VirtualInfiniteListComponent,
   ],
   templateUrl: './group-info.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -117,31 +123,19 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly threadId = this.convList.openThreadId;
 
   groupProfileRef(): AvatarProfileRef | undefined {
-    const group = this.group();
-    const threadId = this.threadId();
-    const rev = this.userMsgTrd()?.profileRev;
-    return group && threadId !== undefined && rev && rev > 0
-      ? {
-          account: group.account,
-          publisherNamespaceId: group.namespaceId,
-          profileNamespaceId: 0,
-          rev,
-          linked: true,
-        }
+    const thread = this.userMsgTrd();
+    return thread?.type === 'GROUP'
+      ? conversationAvatarProfile(thread)
       : undefined;
   }
 
-  memberProfileRef(member: ResolvedMemberProfile): AvatarProfileRef | undefined {
+  memberProfileRef(
+    member: ResolvedMemberProfile,
+  ): AvatarProfileRef | undefined {
     const thread = this.userMsgTrd();
-    if (thread?.type !== 'GROUP') return undefined;
-    return {
-      account: member.account,
-      publisherNamespaceId: thread.publisherNamespaceId,
-      profileNamespaceId: member.namespaceId,
-      rev: member.profileRev,
-      linked: true,
-      groupAccount: thread.group.account,
-    };
+    return thread?.type === 'GROUP'
+      ? groupMemberAvatarProfile(thread, member)
+      : undefined;
   }
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
@@ -158,6 +152,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly loading = signal(true);
   readonly loadingMore = signal(false);
   readonly rosterHasMore = signal(false);
+  readonly rosterError = signal(false);
+  readonly rosterReset = signal(0);
+  readonly memberItemKey = (_index: number, member: ResolvedMemberProfile) =>
+    member.identityKey;
   readonly busy = signal(false); // a mutation is in flight (disables action buttons)
   readonly blockedSaving = signal(false);
   readonly blockedControl = signal(false);
@@ -175,8 +173,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly DESC_MAX = 240;
   /** Staged description while editing (admin+); seeded from the current value on beginEdit. */
   readonly descEdit = signal('');
-  /** staged new avatar URL (uploaded already); undefined = unchanged. */
+  /** Staged avatar write value: the uploaded server-side storage coordinate submitted on save. */
   readonly pendingAvatar = signal<string | undefined>(undefined);
+  /** Local cropped-file preview of the staged upload; display only, never persisted. */
+  readonly avatarPreviewUrl = signal<string | undefined>(undefined);
+  private avatarUpload?: Subscription;
+  private destroyed = false;
 
   nameEditLength(): number {
     return unicodeCodePointLength(this.nameEdit());
@@ -214,10 +216,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly remainingMemberCount = computed(() =>
     Math.max(
       0,
-      (this.group()?.memberCount ?? 0) - this.overviewMembers().length,
+      (this.groupMeta()?.memberCount ?? 0) - this.overviewMembers().length,
     ),
   );
-  readonly filteredRoster = this.roster.asReadonly();
   readonly canLeave = computed(() => !this.isOwner());
   readonly confirmDissolve = signal(false);
   readonly announcementEditing = signal(false);
@@ -232,7 +233,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     () =>
       this.isAdmin() &&
       isGroupMetaCurrent(this.userMsgTrd()) &&
-      this.group()?.namespaceId === 0,
+      this.userMsgTrd()?.publisherNamespaceId === 0,
   );
 
   openAnnouncement(): void {
@@ -245,6 +246,8 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         threadId: thread.threadId,
         feedId: announcement.feedId,
         text: announcement.text,
+        createdAt: announcement.createdAt,
+        originCreatedAt: announcement.originCreatedAt,
       },
       undefined,
       { scopeThreadId: thread.threadId },
@@ -253,7 +256,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
 
   beginAnnouncementEdit(): void {
     if (!this.canEditAnnouncement()) return;
-    this.announcementDraft.set(this.group()?.announcement?.text ?? '');
+    this.announcementDraft.set(
+      currentGroupAnnouncement(this.userMsgTrd())?.text ?? '',
+    );
     this.announcementEditing.set(true);
   }
 
@@ -300,16 +305,19 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     }
   }
 
-  readonly group = computed(() => this.userMsgTrd()?.group);
+  readonly groupMeta = computed(() => {
+    const thread = this.userMsgTrd();
+    return thread?.type === 'GROUP' ? thread.meta : undefined;
+  });
   private readonly namespaces = inject(ProfileNamespaceRepository);
   readonly displayDomain = toSignal(
-    toObservable(this.group).pipe(
-      switchMap((group) =>
-        group
+    toObservable(this.userMsgTrd).pipe(
+      switchMap((thread) =>
+        thread
           ? this.namespaces
               .resolve({
                 publisherNamespaceId: 0,
-                profileNamespaceId: group.namespaceId,
+                profileNamespaceId: thread.publisherNamespaceId,
               })
               .pipe(
                 map((binding) => namespaceDisplayDomain(binding) ?? ''),
@@ -321,21 +329,17 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     ),
     { initialValue: '' },
   );
-  readonly dissolved = computed(() => this.group()?.dissolvedAt != null);
   readonly readOnly = computed(
-    () =>
-      this.dissolved() || this.userMsgTrd()?.conversationState === 'READ_ONLY',
+    () => this.userMsgTrd()?.conversationState === 'READ_ONLY',
   );
-  readonly groupId = computed(() => this.group()?.id);
-  /** The avatar currently shown: the staged edit, else the persisted one. */
-  readonly avatarUrl = computed(
-    () => this.pendingAvatar() ?? this.group()?.avatar ?? '',
+  readonly groupId = computed(() =>
+    this.userMsgTrd()?.type === 'GROUP' ? this.threadId() : undefined,
   );
 
   constructor() {
     effect(() => {
       const threadId = this.threadId();
-      const groupMetaFeedId = this.group()?.groupMetaFeedId;
+      const groupMetaFeedId = this.groupMeta()?.groupMetaFeedId;
       const search = this.memberQuery();
       if (
         threadId !== undefined &&
@@ -362,7 +366,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
+    this.rosterRequest++;
     this.rosterSub?.unsubscribe();
+    this.clearStagedAvatar();
   }
 
   private rosterRequest = 0;
@@ -371,15 +378,28 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     const request = ++this.rosterRequest;
     const threadId = this.threadId();
     if (threadId === undefined || this.readOnly()) return;
+    this.roster.set([]);
+    this.rosterHasMore.set(false);
+    this.rosterError.set(false);
+    this.rosterReset.update((value) => value + 1);
+    this.loadingMore.set(false);
     this.loading.set(true);
-    const resolved = await this.memberProfiles.queryPage(threadId, {
-      take: 50,
-      search: this.memberQuery(),
-    });
-    if (request !== this.rosterRequest) return;
-    this.roster.set(resolved);
-    this.rosterHasMore.set(resolved.length === 50);
-    this.loading.set(false);
+    try {
+      const resolved = await this.memberProfiles.queryPage(threadId, {
+        take: 50,
+        search: this.memberQuery(),
+      });
+      if (request !== this.rosterRequest) return;
+      this.roster.set(resolved);
+      this.rosterHasMore.set(resolved.length === 50);
+    } catch {
+      if (request === this.rosterRequest) {
+        this.rosterError.set(true);
+        this.showNetworkError();
+      }
+    } finally {
+      if (request === this.rosterRequest) this.loading.set(false);
+    }
   }
 
   async loadMoreMembers(): Promise<void> {
@@ -387,6 +407,8 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     const current = this.roster();
     if (
       threadId === undefined ||
+      this.readOnly() ||
+      this.loading() ||
       !this.rosterHasMore() ||
       this.loadingMore() ||
       current.length === 0
@@ -394,6 +416,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       return;
     const request = this.rosterRequest;
     this.loadingMore.set(true);
+    this.rosterError.set(false);
     try {
       const page = await this.memberProfiles.queryPage(threadId, {
         afterIdentity: current.at(-1)!.identityKey,
@@ -403,15 +426,19 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       if (request !== this.rosterRequest) return;
       this.roster.update((members) => [...members, ...page]);
       this.rosterHasMore.set(page.length === 50);
+    } catch {
+      if (request === this.rosterRequest) {
+        this.rosterError.set(true);
+        this.showNetworkError();
+      }
     } finally {
-      this.loadingMore.set(false);
+      if (request === this.rosterRequest) this.loadingMore.set(false);
     }
   }
 
-  onRosterScroll(event: Event): void {
-    const element = event.currentTarget as HTMLElement;
-    if (element.scrollHeight - element.scrollTop - element.clientHeight < 160)
-      void this.loadMoreMembers();
+  retryMembers(): void {
+    if (this.roster().length) void this.loadMoreMembers();
+    else void this.loadMembers();
   }
 
   /** Whether the caller has any action available on this member row. */
@@ -640,9 +667,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         this.groupService.dissolveGroup({ groupId: id }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
-      this.convList.applyGroupUpdate(id, { dissolvedAt: Date.now() });
-      this.convList.applyThreadMeta(id, { conversationState: 'READ_ONLY' });
       this.nav.closeAside();
+      void this.convList
+        .refreshAfterMutation()
+        .catch((error) =>
+          console.warn('[group] post-dissolution state refresh failed', error),
+        );
     } catch {
       this.showNetworkError();
     } finally {
@@ -741,52 +771,74 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   // ── identity editing (admin+) ──
 
   beginEdit() {
-    if (!this.isAdmin() || this.readOnly() || this.group() === undefined)
+    if (!this.isAdmin() || this.readOnly() || this.groupMeta() === undefined)
       return;
-    this.nameEdit.set(this.group()!.name);
-    this.descEdit.set(this.group()!.description ?? '');
-    this.pendingAvatar.set(undefined);
+    this.nameEdit.set(this.userMsgTrd()!.profile.name);
+    this.descEdit.set(this.userMsgTrd()!.profile.bio ?? '');
+    this.clearStagedAvatar();
     this.editing.set(true);
   }
   cancelEdit() {
     this.editing.set(false);
-    this.pendingAvatar.set(undefined);
+    this.clearStagedAvatar();
   }
 
-  /** Pick a new avatar via the cropper, upload it, stage the returned URL (not yet saved on the group). */
+  /** Pick a new avatar via the cropper; preview locally and stage the uploaded write value. */
   pickAvatar(fileInput: HTMLInputElement) {
     const file = fileInput.files?.[0];
     fileInput.value = '';
     if (!file) return;
     this.routeService.popupDlg(PopupType.AVATAR_EDITOR, { file }, (res) => {
-      if (res?.file) this.uploadAvatar(res.file);
+      if (res?.file && !this.destroyed && this.editing())
+        this.uploadAvatar(res.file);
     });
   }
 
   private uploadAvatar(file: File) {
+    // Local preview from the cropped file; the uploaded URL is only the write value for saving.
+    this.clearStagedAvatar();
     this.busy.set(true);
+    this.avatarPreviewUrl.set(URL.createObjectURL(file));
     // /upload/avatar runs the server-side sharp cover-crop, so it needs only the file (no w/h —
     // avatars are square). Returns { avatar } (a /uploads/avatars/ url) which we stage on the group.
     const fd = new FormData();
     fd.append('file', file);
-    this.http
+    this.avatarUpload = this.http
       .post<{
         code: number;
         data?: { avatar: string };
       }>(`${apiPrefix()}/upload/avatar`, fd)
+      .pipe(finalize(() => this.busy.set(false)))
       .subscribe({
         next: (res) => {
           this.busy.set(false);
           if (res?.code === 0 && res.data?.avatar)
             this.pendingAvatar.set(res.data.avatar);
+          else this.clearStagedAvatar();
         },
-        error: () => this.busy.set(false),
+        error: () => {
+          this.clearStagedAvatar();
+          this.busy.set(false);
+        },
       });
+  }
+
+  /** A staged write value is only valid together with its preview and a successful upload. */
+  private clearStagedAvatar(): void {
+    this.avatarUpload?.unsubscribe();
+    this.avatarUpload = undefined;
+    const url = this.avatarPreviewUrl();
+    if (url) URL.revokeObjectURL(url);
+    this.avatarPreviewUrl.set(undefined);
+    this.pendingAvatar.set(undefined);
   }
 
   saveEdit() {
     const id = this.groupId();
-    if (id === undefined) return;
+    // Entry-visibility already gates the editor to admins; the server remains
+    // the authority, so a mid-edit demotion surfaces through its business
+    // error instead of a silent client-side refusal.
+    if (id === undefined || this.busy() || !this.editing()) return;
     const name = this.nameEdit().trim();
     if (!name) return;
     const avatar = this.pendingAvatar();
@@ -798,6 +850,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
         next: (res) => {
           if (res.code !== 0) return this.showBusinessError(res);
           this.editing.set(false);
+          this.clearStagedAvatar();
           // The persisted group name/avatar changed; refresh the shared conversation list so the chat
           // list + the open chat header re-render with the new identity.
           this.convList.load();
@@ -810,8 +863,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   openInvitesAndRequests(): void {
-    if (!this.isAdmin() || this.readOnly()) return;
-    this.nav.pushAside('group-join-requests');
+    this.nav.openGroupJoinRequests(this.userMsgTrd());
   }
 
   openMemberManager(): void {

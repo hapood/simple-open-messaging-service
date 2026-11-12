@@ -22,7 +22,6 @@ describe('system account attribution', () => {
     });
     expect(system).toMatchObject({
       account: '$system',
-      kind: 'SYSTEM',
       hashPwd: null,
       defaultProfileRev: 0,
     });
@@ -31,7 +30,6 @@ describe('system account attribution', () => {
       { disabledAt: null },
       { hashPwd: 'a-password-hash' },
       { defaultProfileRev: 1 },
-      { kind: 'USER' },
     ]) {
       await expect(
         database.db
@@ -41,10 +39,6 @@ describe('system account attribution', () => {
       ).rejects.toThrow();
     }
     const users = new UserService(database);
-    expect(await users.searchUsers('system', { take: 10 })).toEqual({
-      list: [],
-      total: 0,
-    });
     expect(() => users.addUser({ account: '$system' })).toThrow();
   });
 

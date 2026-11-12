@@ -58,7 +58,7 @@ describe('FederationGroupMetaClient', () => {
 
     expect(runWithRetry).toHaveBeenCalledOnce();
     expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/group-meta?account=%21group&mode=delta&after=3&take=100&through=8',
+      '/somfp/v1/group-meta?account=%21group&mode=delta&after=3&take=100&through=8',
       'peer.test',
       16 * 1024 * 1024,
     );

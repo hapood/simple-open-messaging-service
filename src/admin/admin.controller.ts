@@ -1,4 +1,5 @@
 import { Public } from '../common/public.decorator.js';
+import { LoginRestrictionService } from './login-restriction.service.js';
 import {
   Controller,
   Post,
@@ -29,6 +30,7 @@ import {
   AdminListUsersDto,
   AdminUnbanDto,
   AdminListSessionsDto,
+  AdminListUserSessionsDto,
   AdminListPushTokensDto,
   AdminPushTestDto,
   AdminUserBatchDto,
@@ -38,10 +40,7 @@ import {
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import {
-  PUBLIC_CONFIG,
-  isPasswordLoginEnabled,
-} from '../config/public-config.js';
+import { isLoginMethodEnabled } from '../config/public-config.js';
 import { AuthService } from '../auth/auth.service.js';
 import { OtpLoginService } from '../auth/otp-login.service.js';
 import { BruteForceService } from '../auth/brute-force.service.js';
@@ -77,6 +76,7 @@ export class AdminController {
     private readonly authService: AuthService,
     private readonly userManageService: UserManageService,
     private readonly bruteForce: BruteForceService,
+    private readonly loginRestrictions: LoginRestrictionService,
     private readonly sseService: SseService,
     private readonly pushService: PushService,
     private readonly otpLoginService: OtpLoginService,
@@ -249,9 +249,9 @@ export class AdminController {
   @Post('admin/users/create')
   @ApiOperation({ summary: 'Create a user account (admin-provisioned)' })
   async createUser(@Body() dto: AdminCreateUserDto) {
-    // loginMode policy: a password is required iff password login is the active method (ALL / PASSWORD_ONLY).
-    // In APP_OTP_AND_QR the account has no password — it bootstraps via the one-time code issued next.
-    if (isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode) && !dto.password) {
+    // loginMethods policy: a password is required iff `password` is an enabled login method.
+    // Without it the account has no password — it bootstraps via the one-time code issued next.
+    if (isLoginMethodEnabled('password') && !dto.password) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'password is required',
@@ -341,7 +341,7 @@ export class AdminController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('push.test', { targetType: 'user_session', targetParam: 'id' })
+  @Audit('push.test', { targetType: 'user_session', targetBody: 'id' })
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/test')
   @ApiOperation({
@@ -447,8 +447,10 @@ export class AdminController {
     @Body() dto: AdminSetQuotaDto,
   ): Promise<void> {
     await this.userQuotaService.setPolicy(Number(id), {
+      maxFileBytes: dto.maxFileBytes == null ? null : BigInt(dto.maxFileBytes),
       dailyMsgLimit: dto.dailyMsgLimit,
       dailyRequestLimit: dto.dailyRequestLimit,
+      dailySignalLimit: dto.dailySignalLimit,
       dailyFileLimit: dto.dailyFileLimit,
       dailyFileBytesLimit:
         dto.dailyFileBytesLimit != null
@@ -472,7 +474,7 @@ export class AdminController {
   async generateInitialPassword(@Param('id') id: string) {
     // The admin can never choose or change a user's password — only (re-)initialize it (server-generated).
     // Refuse outright when password login isn't enabled: no point minting a password that can't be used.
-    if (!isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode)) {
+    if (!isLoginMethodEnabled('password')) {
       throw new BusinessException(
         BusinessCode.LOGIN_METHOD_DISABLED,
         'password login is disabled',
@@ -503,10 +505,11 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/bans')
   @ApiOperation({
-    summary: 'List active login bans (IP / account — password + OTP)',
+    summary:
+      'List login restrictions with local user IDs (IP, user password, login code, console password and second factor)',
   })
   async listBans() {
-    return this.bruteForce.listBans();
+    return this.loginRestrictions.list();
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -516,7 +519,7 @@ export class AdminController {
   @Post('admin/bans/unban')
   @ApiOperation({
     summary:
-      'Unban (IP and/or account — clears every account-keyed dimension: password + OTP)',
+      'Release IP restrictions and/or all account restrictions, including console password and second factor; account bans are unchanged',
   })
   async unban(@Body() dto: AdminUnbanDto): Promise<void> {
     this.bruteForce.unban({ ip: dto.ip, account: dto.account });
@@ -529,9 +532,9 @@ export class AdminController {
   @Post('admin/sessions')
   @ApiOperation({
     summary:
-      'System-wide active session overview (cross-user; filter by userId/ip)',
+      'System-wide active session overview (filter by userId, IP, and client)',
   })
-  async listAllSessions(@Body() dto: AdminListSessionsDto) {
+  async listAllSessions(@Body() dto: AdminListUserSessionsDto) {
     return this.authService.listAllSessions(dto);
   }
 
@@ -606,16 +609,13 @@ export class AdminController {
   })
   async listAdminSessions(
     @Body() dto: AdminListSessionsDto,
-    @Req() req: FastifyRequest,
+    @Req()
+    req: FastifyRequest & { user: import('./admin-session.js').AdminPrincipal },
   ) {
-    return this.adminAuthService.listAdminSessions(
-      dto,
-      req.user.sessionId ?? undefined,
-    );
+    return this.adminAuthService.listAdminSessions(dto, req.user);
   }
 
-  @UseGuards(AdminAuthGuard, AdminRolesGuard)
-  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @UseGuards(AdminAuthGuard)
   @Audit('admin_session.revoke', {
     targetType: 'admin_session',
     targetParam: 'id',
@@ -623,7 +623,11 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/admin-sessions/:id/revoke')
   @ApiOperation({ summary: 'Revoke an opaque admin session immediately' })
-  async revokeAdminSession(@Param('id') id: string): Promise<void> {
-    await this.adminAuthService.revokeAdminSession(id);
+  async revokeAdminSession(
+    @Param('id') id: string,
+    @Req()
+    req: FastifyRequest & { user: import('./admin-session.js').AdminPrincipal },
+  ): Promise<void> {
+    await this.adminAuthService.revokeAdminSession(id, req.user);
   }
 }

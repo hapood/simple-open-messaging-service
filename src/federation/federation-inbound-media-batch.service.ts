@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { ConflictException, HttpStatus, Injectable } from '@nestjs/common';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -9,6 +9,9 @@ import { requireInboundPendingMedia } from '../message/pending-media-row.js';
 import { FederationInboundFileSync } from './federation-inbound-file-sync.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import { FederationPendingMediaPromoter } from './federation-pending-media-promoter.js';
+import type { Message } from '../message/message.service.js';
+import { resolveMessageMediaRoute } from './media/media-download-context.js';
+import { restageInboundMedia } from './media/restage-inbound-media.js';
 
 function parseInboundDownloadAuth(
   value: unknown,
@@ -48,7 +51,12 @@ export class FederationInboundMediaBatchService {
 
   async runFileSyncBatch(
     batchId: string,
-    fetchChunksFor: (digest: string, offset: number) => AsyncIterable<Buffer>,
+    fetchChunksFor: (
+      digest: string,
+      offset: number,
+      declaredBytes: number,
+      signal?: AbortSignal,
+    ) => AsyncIterable<Buffer>,
   ): Promise<void> {
     await this.fileSync.runBatch(
       batchId,
@@ -63,10 +71,111 @@ export class FederationInboundMediaBatchService {
     );
   }
 
+  async stopInboundBatch(batchId: string): Promise<void> {
+    const stopped = await this.database.db.transaction(async (tx) => {
+      const root = await tx.query.pendingMedia.findFirst({
+        where: and(
+          eq(tables.pendingMedia.batchId, batchId),
+          eq(tables.pendingMedia.direction, 'INBOUND'),
+        ),
+        columns: { messageId: true },
+      });
+      if (!root?.messageId) return;
+      // Match retry/materialization lock order: message before its task and file rows.
+      await tx.execute(
+        sql`SELECT id FROM "Message" WHERE id = ${root.messageId} FOR NO KEY UPDATE`,
+      );
+      const [batch] = await tx
+        .update(tables.pendingMedia)
+        .set({
+          status: 'failed',
+          failReason: 'stopped by administrator',
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tables.pendingMedia.batchId, batchId),
+            eq(tables.pendingMedia.direction, 'INBOUND'),
+            inArray(tables.pendingMedia.status, ['pending', 'downloading']),
+          ),
+        )
+        .returning({ messageId: tables.pendingMedia.messageId });
+      if (!batch) return;
+      await tx
+        .update(tables.fileSyncProgress)
+        .set({
+          status: 'FAILED',
+          errorKind: 'stopped by administrator',
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tables.fileSyncProgress.batchId, batchId),
+            inArray(tables.fileSyncProgress.status, ['PENDING', 'DOWNLOADING']),
+          ),
+        );
+      await tx
+        .update(tables.message)
+        .set({ localState: 'FAILED', updatedAt: new Date() })
+        .where(
+          and(
+            eq(tables.message.id, batch.messageId!),
+            eq(tables.message.localState, 'STUB'),
+          ),
+        );
+      return true;
+    });
+    await this.fileSync.stopBatch(batchId);
+    if (!stopped) return;
+    const completion = await this.readBatchProgressSummary(batchId);
+    if (completion) this.completeProgressTargets(completion, 'failed');
+  }
+
   async retryInboundBatch(
     batchId: string,
   ): Promise<{ batchId: string; resetFiles: number }> {
+    const batch = await this.database.db.query.pendingMedia.findFirst({
+      where: and(
+        eq(tables.pendingMedia.batchId, batchId),
+        eq(tables.pendingMedia.direction, 'INBOUND'),
+      ),
+    });
+    if (batch?.status === 'failed' && batch.messageId !== null) {
+      const msg = await this.database.db.query.message.findFirst({
+        where: eq(tables.message.id, batch.messageId),
+      });
+      if (!msg) throw new ConflictException('download message is missing');
+      return (
+        (await this.retryInboundMessage(msg)) ?? { batchId, resetFiles: 0 }
+      );
+    }
     return this.resumeInboundBatch(batchId, ['DOWNLOADING', 'FAILED']);
+  }
+
+  /** Shared by administrator retry and the authenticated client's failed-attachment retry. */
+  async retryInboundMessage(
+    msg: Message,
+  ): Promise<{ batchId: string; resetFiles: number } | null> {
+    if (msg.localState !== 'FAILED' || msg.isDeleted) return null;
+    const route = await resolveMessageMediaRoute(this.database, msg);
+    const staged = await restageInboundMedia(this.database, msg, route);
+    if (!staged) return null;
+    void this.runFileSyncBatch(
+      staged.batchId,
+      (digest, offset, declaredBytes, signal) =>
+        this.mediaRanges.fetch(
+          route.peerDomain,
+          digest,
+          route.fromAccount,
+          route.fromDomain,
+          route.toAccount,
+          route.sourceSeq,
+          offset,
+          declaredBytes,
+          signal,
+        ),
+    ).catch(() => undefined);
+    return staged;
   }
 
   async recoverInboundBatch(
@@ -118,9 +227,6 @@ export class FederationInboundMediaBatchService {
           ),
         );
       await tx
-        .delete(tables.fileSyncProgress)
-        .where(eq(tables.fileSyncProgress.batchId, batchId));
-      await tx
         .update(tables.pendingMedia)
         .set({
           status: 'failed',
@@ -150,7 +256,15 @@ export class FederationInboundMediaBatchService {
           ),
         )
         .returning({ messageId: tables.pendingMedia.messageId });
-      if (claimed?.messageId == null) return null;
+      if (claimed?.messageId == null) {
+        const batch = await tx.query.pendingMedia.findFirst({
+          where: eq(tables.pendingMedia.batchId, batchId),
+          columns: { status: true },
+        });
+        if (!batch || !['pending', 'downloading'].includes(batch.status))
+          throw new ConflictException('download is not active');
+        return null;
+      }
       return (
         (await tx.query.message.findFirst({
           where: eq(tables.message.id, claimed.messageId),
@@ -248,7 +362,10 @@ export class FederationInboundMediaBatchService {
       );
     }
     const batch = requireInboundPendingMedia(batchRow);
-    if (batch.status === 'ready') {
+    if (
+      batch.status === 'ready' ||
+      (batch.status === 'failed' && !resetStatuses.includes('FAILED'))
+    ) {
       return { batchId, resetFiles: 0 };
     }
     const stagedMessage = await this.database.db.query.message.findFirst({
@@ -259,22 +376,6 @@ export class FederationInboundMediaBatchService {
       await this.promotePendingMessage(batchId);
       return { batchId, resetFiles: 0 };
     }
-
-    const reset = await this.database.db
-      .update(tables.fileSyncProgress)
-      .set({ status: 'PENDING', errorKind: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(tables.fileSyncProgress.batchId, batchId),
-          inArray(tables.fileSyncProgress.status, resetStatuses),
-        ),
-      )
-      .returning({ id: tables.fileSyncProgress.id });
-
-    await this.database.db
-      .update(tables.pendingMedia)
-      .set({ status: 'pending', failReason: null, updatedAt: new Date() })
-      .where(eq(tables.pendingMedia.id, batch.id));
 
     const progress = await this.database.db.query.fileSyncProgress.findFirst({
       where: eq(tables.fileSyncProgress.batchId, batchId),
@@ -297,17 +398,57 @@ export class FederationInboundMediaBatchService {
       );
     }
 
+    const reset = await this.database.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT id FROM "Message" WHERE id = ${batch.messageId} FOR NO KEY UPDATE`,
+      );
+      const claimed = await tx
+        .update(tables.pendingMedia)
+        .set({ status: 'pending', failReason: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(tables.pendingMedia.id, batch.id),
+            eq(tables.pendingMedia.status, batch.status),
+          ),
+        )
+        .returning({ id: tables.pendingMedia.id });
+      if (!claimed.length) return [];
+      const reset = await tx
+        .update(tables.fileSyncProgress)
+        .set({ status: 'PENDING', errorKind: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(tables.fileSyncProgress.batchId, batchId),
+            inArray(tables.fileSyncProgress.status, resetStatuses),
+          ),
+        )
+        .returning({ id: tables.fileSyncProgress.id });
+      await tx
+        .update(tables.message)
+        .set({ localState: 'STUB', updatedAt: new Date() })
+        .where(
+          and(
+            eq(tables.message.id, batch.messageId),
+            eq(tables.message.localState, 'FAILED'),
+          ),
+        );
+      return reset;
+    });
     const originSeq = stagedMessage.originSeq;
-    void this.runFileSyncBatch(batchId, (digest, offset) =>
-      this.mediaRanges.fetch(
-        batch.originDomain,
-        digest,
-        fromAccount,
-        fromDomain,
-        toAccount,
-        originSeq,
-        offset,
-      ),
+    void this.runFileSyncBatch(
+      batchId,
+      (digest, offset, declaredBytes, signal) =>
+        this.mediaRanges.fetch(
+          batch.originDomain,
+          digest,
+          fromAccount,
+          fromDomain,
+          toAccount,
+          originSeq,
+          offset,
+          declaredBytes,
+          signal,
+        ),
     ).catch(() => undefined);
 
     return { batchId, resetFiles: reset.length };

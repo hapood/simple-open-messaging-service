@@ -1,13 +1,13 @@
 {
   "protocol": "Simple Open Messaging Federation Protocol",
   "majorVersion": 1,
-  "s2sPrefix": "/s2s/v1",
-  "discoveryPath": "/.well-known/somfp",
+  "s2sPrefix": "/somfp/v1",
+  "discoveryPath": "/somfp/discovery",
   "operations": [
     {
       "id": "wellKnown",
       "method": "GET",
-      "path": "/.well-known/somfp",
+      "path": "/somfp/discovery",
       "authentication": "public-tls",
       "successStatus": [200],
       "responseMediaType": "application/json",
@@ -16,7 +16,7 @@
     {
       "id": "recognize",
       "method": "POST",
-      "path": "/s2s/v1/recognize",
+      "path": "/somfp/v1/recognize",
       "authentication": "bootstrap-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
@@ -27,7 +27,7 @@
     {
       "id": "health",
       "method": "GET",
-      "path": "/s2s/v1/health",
+      "path": "/somfp/v1/health",
       "authentication": "status-http-message-signature",
       "successStatus": [200],
       "responseSchema": "urn:somfp:v1:identity#/$defs/healthResult",
@@ -36,7 +36,7 @@
     {
       "id": "verify",
       "method": "POST",
-      "path": "/s2s/v1/verify",
+      "path": "/somfp/v1/verify",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
@@ -53,7 +53,7 @@
     {
       "id": "feedHeads",
       "method": "POST",
-      "path": "/s2s/v1/feed-heads",
+      "path": "/somfp/v1/feed-heads",
       "authentication": "lightweight-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
@@ -62,7 +62,7 @@
     {
       "id": "stateFeed",
       "method": "GET",
-      "path": "/s2s/v1/state-feed",
+      "path": "/somfp/v1/state-feed",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/feedQuery",
@@ -72,7 +72,7 @@
     {
       "id": "profileNamespaceFeed",
       "method": "GET",
-      "path": "/s2s/v1/profile-namespace-feed",
+      "path": "/somfp/v1/profile-namespace-feed",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/feedQuery",
@@ -82,7 +82,7 @@
     {
       "id": "profileNamespace",
       "method": "GET",
-      "path": "/s2s/v1/profile-namespaces/:nsid",
+      "path": "/somfp/v1/profile-namespaces/:nsid",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/profileNamespaceParameters",
@@ -92,7 +92,7 @@
     {
       "id": "groupMeta",
       "method": "GET",
-      "path": "/s2s/v1/group-meta",
+      "path": "/somfp/v1/group-meta",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMetaQuery",
@@ -102,7 +102,7 @@
     {
       "id": "accountEvidenceProfile",
       "method": "GET",
-      "path": "/s2s/v1/account-profiles/:namespaceId/:account/:profileRev",
+      "path": "/somfp/v1/account-profiles/:namespaceId/:account/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/accountEvidenceProfileParameters",
@@ -112,7 +112,7 @@
     {
       "id": "groupMemberProfile",
       "method": "GET",
-      "path": "/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev",
+      "path": "/somfp/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",
@@ -122,7 +122,7 @@
     {
       "id": "messageQuery",
       "method": "GET",
-      "path": "/s2s/v1/messages",
+      "path": "/somfp/v1/messages",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
@@ -133,7 +133,7 @@
     {
       "id": "messageTombstoneQuery",
       "method": "GET",
-      "path": "/s2s/v1/message-tombstones",
+      "path": "/somfp/v1/message-tombstones",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/messageTombstoneQuery",
@@ -143,7 +143,7 @@
     {
       "id": "messageProvenance",
       "method": "POST",
-      "path": "/s2s/v1/message-provenance",
+      "path": "/somfp/v1/message-provenance",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
@@ -154,7 +154,7 @@
     {
       "id": "call",
       "method": "POST",
-      "path": "/s2s/v1/call",
+      "path": "/somfp/v1/call",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "requestMediaType": "application/json",
@@ -171,7 +171,7 @@
     {
       "id": "userProfile",
       "method": "GET",
-      "path": "/s2s/v1/accounts/:account",
+      "path": "/somfp/v1/accounts/:account",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/accountProfileParameters",
@@ -187,7 +187,7 @@
     {
       "id": "media",
       "method": "GET",
-      "path": "/s2s/v1/media/:digest",
+      "path": "/somfp/v1/media/:digest",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200, 206],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/mediaParameters",
@@ -209,7 +209,7 @@
     {
       "id": "forwardBundle",
       "method": "GET",
-      "path": "/s2s/v1/forward-bundles/:bundleId",
+      "path": "/somfp/v1/forward-bundles/:bundleId",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/forwardBundleParameters",

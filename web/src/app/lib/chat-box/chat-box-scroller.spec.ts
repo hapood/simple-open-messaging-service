@@ -12,7 +12,57 @@ import type { Mock } from 'vitest';
  * re-invoked with the new prev), and phase-0 noOlder absorb timing. The msgId cursor verifies that the kernel index is
  * decoupled from the source id.
  */
-import { ChatBoxScroller, CbElement, CbItem } from './chat-box-scroller';
+import {
+  ChatBoxScroller,
+  CbElement,
+  CbItem,
+  type CbOptions,
+} from './chat-box-scroller';
+/** Spec composition helper mirroring the production entrypoint: construct, then bind. */
+import { defer, Subscription } from 'rxjs';
+
+function createKernel<T>(
+  opts: Omit<CbOptions<T>, 'source' | 'initOpts'> & {
+    source: CbSource<T>;
+    initOpts?: { chatId?: number };
+  },
+): ChatBoxScroller<T> {
+  const { source, initOpts, ...rest } = opts;
+  let completion: Subscription | undefined;
+  let finish: ((found: boolean) => void) | undefined;
+  const kernel = new ChatBoxScroller<T>({
+    ...rest,
+    onWindowJump:
+      rest.onWindowJump ??
+      ((options) => {
+        completion?.unsubscribe();
+        finish?.(false);
+        kernel.unbind();
+        // Test fixtures keep their controllable backing data across windows;
+        // each binding receives a distinct source facade over that data.
+        kernel.bind({ ...source }, initOpts);
+        return new Promise<boolean>((resolve) => {
+          finish = resolve;
+          completion = defer(() => kernel.init(options)).subscribe({
+            next: () => {
+              finish = undefined;
+              resolve(
+                options.startMsgId != null &&
+                  kernel.getMountedGeometry(options.startMsgId) !== null,
+              );
+            },
+            error: () => {
+              finish = undefined;
+              resolve(false);
+            },
+          });
+        });
+      }),
+  });
+  kernel.bind(source, initOpts);
+  return kernel;
+}
+
 import type { CbDemand, CbDemandResult, CbSource } from './cb-source';
 import { Observable, of, type Subscriber } from 'rxjs';
 
@@ -579,8 +629,8 @@ function mutableVh(
   };
 }
 
-/** Test seam: invoke the private viewport-resize handler directly (ResizeObserver cannot be driven from a getter-based
- *  clientHeight in the jsdom/Karma layout, so drive the handler the RO callback would call). */
+/** Test seam: invoke the viewport-resize handler directly. Changing a mocked clientHeight getter does
+ *  not resize the real element, so it cannot trigger the browser's ResizeObserver. */
 function reflow(s: ChatBoxScroller<number>): void {
   (
     s as unknown as {
@@ -637,6 +687,19 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       configurable: true,
       get: () => sumChildrenHeight(content),
     });
+    // Geometry tests simulate the browser finishing each scroll immediately;
+    // animation interruption is tested separately with a non-settling scroll spy.
+    vi.spyOn(viewport, 'scrollTo').mockImplementation(
+      (options?: number | ScrollToOptions, y?: number) => {
+        if (typeof options === 'number') {
+          viewport.scrollLeft = options;
+          viewport.scrollTop = y ?? viewport.scrollTop;
+        } else {
+          viewport.scrollLeft = options?.left ?? viewport.scrollLeft;
+          viewport.scrollTop = options?.top ?? viewport.scrollTop;
+        }
+      },
+    );
     rafSpy = vi
       .spyOn(window, 'requestAnimationFrame')
       .mockImplementation((cb: FrameRequestCallback) => {
@@ -652,9 +715,338 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     rafSpy;
   });
 
+  it('geometry scroll mock supports coordinates and options without resetting omitted axes', () => {
+    viewport.scrollTo(0, 150);
+    expect(viewport.scrollTop).toBe(150);
+    viewport.scrollTo({ top: 240, behavior: 'smooth' });
+    expect(viewport.scrollTop).toBe(240);
+    viewport.scrollTo({ left: 0 });
+    expect(viewport.scrollTop).toBe(240);
+    viewport.scrollTo();
+    expect(viewport.scrollTop).toBe(240);
+  });
+
+  it('prepares without a source and reuses infrastructure across bindings', async () => {
+    const { hooks } = controllableHooks();
+    const onScroll = vi.fn();
+    scroller = new ChatBoxScroller({ viewport, content, hooks, onScroll });
+    expect(scroller.lifecycleState).toBe('ready');
+    await scroller.init();
+    viewport.dispatchEvent(new Event('scroll'));
+    expect(content.childElementCount).toBe(0);
+    expect(onScroll).not.toHaveBeenCalled();
+
+    const first = fakeSource(3);
+    const dispose = vi.spyOn(first, 'destroy');
+    scroller.bind(first);
+    await scroller.init();
+    expect(scroller.getInfo().mounted).toBe(3);
+    scroller.unbind();
+    scroller.unbind();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(scroller.lifecycleState).toBe('ready');
+    expect(content.childElementCount).toBe(0);
+    expect(scroller.getFullyVisibleIds()).toEqual([]);
+    expect(scroller.getInfo().noNewer).toBe(false);
+    onScroll.mockClear();
+    scroller.refresh();
+    viewport.dispatchEvent(new Event('scroll'));
+    expect(onScroll).not.toHaveBeenCalled();
+
+    scroller.bind(fakeSource(2));
+    await scroller.init();
+    expect(scroller.getInfo().mounted).toBe(2);
+    scroller.destroy();
+    expect(scroller.lifecycleState).toBe('destroyed');
+    expect(() => scroller!.bind(fakeSource(1))).toThrow('disposed');
+  });
+
+  it.each([false, true])(
+    'ignores a late initial load after rebind (around=%s)',
+    async (around) => {
+      const { hooks } = controllableHooks();
+      let complete!: (items: CbItem<number>[]) => void;
+      const oldSource = fakeSource(3);
+      oldSource.init = () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        });
+      scroller = new ChatBoxScroller({ viewport, content, hooks });
+      scroller.bind(oldSource);
+      const oldInit = scroller.init(around ? { startMsgId: 1 } : undefined);
+      scroller.unbind();
+      expect(scroller.lifecycleState).toBe('ready');
+      scroller.bind(fakeSource(2));
+      await scroller.init();
+      const before = content.innerHTML;
+      complete([{ id: 100, data: 100, boundary: 'newest' }]);
+      await oldInit;
+      expect(scroller.lifecycleState).toBe('steady');
+      expect(content.innerHTML).toBe(before);
+      expect(scroller.getInfo().newestId).toBe(1);
+    },
+  );
+
+  it('a late re-anchor finally cannot revive an unbound kernel', async () => {
+    const { hooks } = controllableHooks();
+    let complete!: (items: CbItem<number>[]) => void;
+    const source = fakeSource(3);
+    source.init = () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      });
+    scroller = createKernel({ viewport, content, hooks, source });
+    const pending = scroller.init({ startMsgId: 1 });
+    scroller.unbind();
+    complete([]);
+    await pending;
+    expect(scroller.lifecycleState).toBe('ready');
+    expect(content.childElementCount).toBe(0);
+  });
+
+  it('unbind aborts initial-load ownership and settles without waiting for the source', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(3);
+    let signal: AbortSignal | undefined;
+    source.init = (_anchor, _older, _newer, opts) => {
+      signal = opts?.signal;
+      return new Promise(() => {});
+    };
+    scroller = createKernel({ viewport, content, hooks, source });
+    const pending = scroller.init();
+    scroller.unbind();
+    await pending;
+    expect(signal?.aborted).toBe(true);
+    expect(scroller.lifecycleState).toBe('ready');
+  });
+
+  it('unbind releases edge delivery before notifying source abort handlers', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(3);
+    const events: string[] = [];
+    source.init = async (_id, _older, _newer, options) => {
+      options?.signal?.addEventListener('abort', () => events.push('abort'), {
+        once: true,
+      });
+      return [{ id: 1, data: 1, boundary: 'both' }];
+    };
+    source.requestNewer = () =>
+      new Observable(() => () => {
+        events.push('unsubscribe');
+      });
+    scroller = createKernel({ viewport, content, hooks, source });
+    await scroller.init();
+    scroller.unbind();
+    expect(events).toEqual(['unsubscribe', 'abort']);
+  });
+
+  it.each(['resolve', 'reject'] as const)(
+    'unbind ends backfill before late %s into a successor window',
+    async (outcome) => {
+      const { hooks } = controllableHooks();
+      const source = fakeSource(3);
+      source.init = async () => [{ id: 10, data: 10, boundary: 'newest' }];
+      const subscribers: Subscriber<CbDemandResult<number>>[] = [];
+      const released = vi.fn();
+      source.requestOlder = () =>
+        new Observable((subscriber) => {
+          subscribers.push(subscriber);
+          return released;
+        });
+      scroller = createKernel({
+        viewport,
+        content,
+        hooks,
+        source,
+        config: { deferInitFill: true },
+      });
+      await scroller.init();
+      const backfill = scroller.backfillOlder();
+      expect(subscribers).toHaveLength(2); // Edge demand and explicit backfill.
+      scroller.unbind();
+      await backfill;
+      expect(released).toHaveBeenCalledTimes(2);
+      scroller.bind(fakeSource(2));
+      await scroller.init();
+      const before = content.innerHTML;
+      for (const subscriber of subscribers) {
+        if (outcome === 'resolve')
+          subscriber.next({ kind: 'items', items: [{ id: 9, data: 9 }] });
+        else subscriber.error(new Error('old backfill failure'));
+      }
+      await flush();
+      expect(content.innerHTML).toBe(before);
+      expect(scroller.lifecycleState).toBe('steady');
+      expect(scroller.getInfo().newestId).toBe(1);
+    },
+  );
+
+  it('failed initialization stays unavailable until a fresh source is bound', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(3);
+    source.init = async () => {
+      throw new Error('initialization failed');
+    };
+    const older = vi.spyOn(source, 'requestOlder');
+    const newer = vi.spyOn(source, 'requestNewer');
+    scroller = createKernel({ viewport, content, hooks, source });
+    await expect(scroller.init()).rejects.toThrow('initialization failed');
+    expect(scroller.lifecycleState).toBe('unavailable');
+    viewport.dispatchEvent(new Event('scroll'));
+    await scroller.backfillOlder();
+    await flush();
+    expect(older).not.toHaveBeenCalled();
+    expect(newer).not.toHaveBeenCalled();
+    scroller.unbind();
+    scroller.bind(fakeSource(2));
+    await scroller.init();
+    expect(scroller.lifecycleState).toBe('steady');
+    expect(scroller.getInfo().mounted).toBe(2);
+  });
+
+  it.each([false, true])(
+    'initialization drains many synchronous cache pages (anchored=%s)',
+    async (anchored) => {
+      const { hooks } = controllableHooks(1);
+      const source = fakeSource(3);
+      source.init = async () => [{ id: 1000, data: 1000, boundary: 'newest' }];
+      let pages = 0;
+      source.requestOlder = (cursor) => {
+        pages++;
+        const id = cursor - 1;
+        return of({
+          kind: 'items',
+          items: [
+            {
+              id,
+              data: id,
+              ...(id === 0 ? { boundary: 'oldest' as const } : {}),
+            },
+          ],
+        });
+      };
+      scroller = createKernel({
+        viewport,
+        content,
+        hooks,
+        source,
+        config: { thresholdFloor: 2000, vhExtra: 0 },
+      });
+      await scroller.init(anchored ? { startMsgId: 1000 } : undefined);
+      expect(pages).toBe(1000);
+      expect(scroller.getInfo().oldestId).toBe(0);
+      expect(scroller.getInfo().mounted).toBe(1001);
+      expect(scroller.lifecycleState).toBe('steady');
+    },
+  );
+
+  it.each([
+    {
+      name: 'height threshold',
+      oldest: 0,
+      expectedPages: 5,
+      expectedOldest: 95,
+    },
+    {
+      name: 'history boundary',
+      oldest: 98,
+      expectedPages: 2,
+      expectedOldest: 98,
+    },
+  ])(
+    'synchronous fill stops immediately at $name',
+    async ({ oldest, expectedPages, expectedOldest }) => {
+      const { hooks } = controllableHooks(100);
+      const source = fakeSource(3);
+      source.init = async () => [{ id: 100, data: 100, boundary: 'newest' }];
+      const cursors: number[] = [];
+      source.requestOlder = (cursor) => {
+        cursors.push(cursor);
+        const id = cursor - 1;
+        return of({
+          kind: 'items',
+          items: [
+            {
+              id,
+              data: id,
+              ...(id === oldest ? { boundary: 'oldest' as const } : {}),
+            },
+          ],
+        });
+      };
+      scroller = createKernel({
+        viewport,
+        content,
+        hooks,
+        source,
+        config: { thresholdFloor: 600, vhExtra: 0, edge: 0 },
+      });
+      await scroller.init();
+      expect(cursors).toEqual(
+        Array.from({ length: expectedPages }, (_, index) => 100 - index),
+      );
+      expect(scroller.getInfo().oldestId).toBe(expectedOldest);
+      expect(scroller.getInfo().mounted).toBe(expectedPages + 1);
+      await flush();
+      expect(cursors).toHaveLength(expectedPages);
+    },
+  );
+
+  it('unbind during synchronous fill cancels the queued page and stops requesting successors', async () => {
+    const { hooks } = controllableHooks(1);
+    const source = fakeSource(3);
+    source.init = async () => [{ id: 1000, data: 1000, boundary: 'newest' }];
+    let pages = 0;
+    source.requestOlder = (cursor) => {
+      pages++;
+      if (pages === 20) scroller!.unbind();
+      return of({
+        kind: 'items',
+        items: [{ id: cursor - 1, data: cursor - 1 }],
+      });
+    };
+    scroller = createKernel({
+      viewport,
+      content,
+      hooks,
+      source,
+      config: { thresholdFloor: 2000, vhExtra: 0 },
+    });
+    await scroller.init();
+    expect(pages).toBe(20);
+    expect(content.childElementCount).toBe(0);
+    expect(scroller.lifecycleState).toBe('ready');
+    scroller.bind(fakeSource(2));
+    await scroller.init();
+    expect(scroller.getInfo().mounted).toBe(2);
+  });
+
+  it('unbind unsubscribes an initial-fill demand and settles its pending init', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(3);
+    source.init = async () => [{ id: 3, data: 3, boundary: 'newest' }];
+    const unsubscribe = vi.fn();
+    const subscribed = vi.fn();
+    source.requestOlder = () =>
+      new Observable(() => {
+        subscribed();
+        return unsubscribe;
+      });
+    scroller = createKernel({ viewport, content, hooks, source });
+    const pending = scroller.init();
+    await vi.waitFor(() => expect(subscribed).toHaveBeenCalledOnce());
+    scroller.unbind();
+    await pending;
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(content.childElementCount).toBe(0);
+    scroller.bind(fakeSource(2));
+    await scroller.init();
+    expect(scroller.getInfo().mounted).toBe(2);
+  });
+
   it('init loads the newest batch, pins to bottom, window boundary msgIds correct', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -670,30 +1062,40 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(info.noOlder).toBe(false); // not yet at the oldest
   });
 
-  it('non-empty init emits fully-visible entries without requiring a user scroll', async () => {
-    const { hooks } = controllableHooks();
-    const entered: number[] = [];
-    scroller = new ChatBoxScroller<number>({
-      viewport,
-      content,
-      hooks,
-      source: fakeSource(3),
-      onFullyVisibleEnter: (entries) =>
-        entered.push(...entries.map((entry) => entry.item.id)),
-    });
+  it.each([
+    { name: 'newest', options: undefined },
+    { name: 'anchor', options: { startMsgId: 1 } },
+    {
+      name: 'missing anchor fallback',
+      options: { startMsgId: 99, fallbackToLatest: true },
+    },
+  ])(
+    '$name init emits fully-visible entries without requiring a user scroll',
+    async ({ options }) => {
+      const { hooks } = controllableHooks();
+      const entered: number[] = [];
+      scroller = createKernel<number>({
+        viewport,
+        content,
+        hooks,
+        source: fakeSource(3),
+        onFullyVisibleEnter: (entries) =>
+          entered.push(...entries.map((entry) => entry.item.id)),
+      });
 
-    await scroller.init();
+      await scroller.init(options);
 
-    expect(entered).toEqual([0, 1, 2]);
-    // A tracker reset during a native foreground transition can recover the
-    // existing viewport without requiring another visible-enter event.
-    expect(scroller.getFullyVisibleIds()).toEqual([0, 1, 2]);
-    expect(entered).toEqual([0, 1, 2]);
-  });
+      expect(entered).toEqual([0, 1, 2]);
+      // A tracker reset during a native foreground transition can recover the
+      // existing viewport without requiring another visible-enter event.
+      expect(scroller.getFullyVisibleIds()).toEqual([0, 1, 2]);
+      expect(entered).toEqual([0, 1, 2]);
+    },
+  );
 
   it('exposes mounted viewport geometry from cached heights including short-list bottom alignment', async () => {
     const controlled = controllableHooks(100);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: controlled.hooks,
@@ -730,7 +1132,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     // scrollHeight past totalH and corrupting scroll anchoring. The fix mirrors openAround's guard; this pins it.
     const src = controllableInitSource(20);
     const { hooks } = controllableHooks(100);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -748,7 +1150,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     // Pins the invariant guard: if any path ever leaves an orphan, the kernel must FAIL LOUD (throw) rather than
     // silently sweep — sweeping would leak the orphan host's Angular ref/ResizeObserver AND mask the root cause.
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -800,7 +1202,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       destroy: () => {},
     };
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -829,6 +1231,121 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(newerCalls).toBeGreaterThanOrEqual(1);
     expect(scroller!.getInfo().newestId).toBe(100);
   });
+
+  it.each([false, true])(
+    'followBottom=%s controls arrivals without changing initial positioning',
+    async (followBottom) => {
+      const { hooks } = controllableHooks();
+      const source = pushedSource(fakeSource(100));
+      scroller = createKernel({
+        viewport,
+        content,
+        hooks,
+        source,
+        config: { followBottom, thresholdFloor: 20000 },
+      });
+      await scroller.init();
+      await flush();
+      const before = viewport.scrollTop;
+      source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
+      await flush();
+      expect(scroller.getInfo().newestId).toBe(100);
+      if (followBottom) expect(viewport.scrollTop).toBeGreaterThan(before);
+      else expect(viewport.scrollTop).toBe(before);
+    },
+  );
+
+  it('checks followBottom when an in-flight arrival is delivered', async () => {
+    const { hooks } = controllableHooks();
+    const source = pushedSource(fakeSource(100));
+    scroller = createKernel({
+      viewport,
+      content,
+      hooks,
+      source,
+      config: { thresholdFloor: 20000 },
+    });
+    await scroller.init();
+    await flush();
+    const before = viewport.scrollTop;
+    scroller.setFollowBottom(false);
+    source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
+    await flush();
+    expect(viewport.scrollTop).toBe(before);
+  });
+
+  it('does not follow the first arriving batch after an empty initialization', async () => {
+    const { hooks } = controllableHooks();
+    const source = pushedSource(fakeSource(0));
+    scroller = createKernel({
+      viewport,
+      content,
+      hooks,
+      source,
+      config: { followBottom: false, thresholdFloor: 20000 },
+    });
+    await scroller.init();
+    await flush();
+    source.pushLive(
+      Array.from({ length: 20 }, (_, id) => ({
+        id,
+        data: id,
+        ...(id === 19 ? { boundary: 'newest' as const } : {}),
+      })),
+    );
+    await flush();
+    expect(scroller.getInfo().newestId).toBe(19);
+    expect(viewport.scrollTop).toBe(0);
+  });
+
+  it.each([false, true])(
+    'anchored init establishes live demand after settling (fallback=%s)',
+    async (fallback) => {
+      const { hooks } = controllableHooks();
+      const source = fakeSource(3);
+      const subscribed = vi.fn();
+      const released = vi.fn();
+      source.requestNewer = () =>
+        new Observable(() => {
+          subscribed();
+          return released;
+        });
+      scroller = createKernel({ viewport, content, hooks, source });
+      await scroller.init({
+        startMsgId: fallback ? 99 : 1,
+        fallbackToLatest: fallback,
+      });
+      expect(subscribed).toHaveBeenCalledOnce();
+      scroller.unbind();
+      expect(released).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['older', 'newer'] as const)(
+    'a synchronous %s source failure becomes retryable edge state',
+    async (direction) => {
+      const { hooks } = controllableHooks();
+      const source = fakeSource(3);
+      source.init = async () => [{ id: 1, data: 1 }];
+      const fail = vi.fn(() => {
+        throw new Error('synchronous source failure');
+      });
+      if (direction === 'older') source.requestOlder = fail;
+      else source.requestNewer = fail;
+      scroller = createKernel({
+        viewport,
+        content,
+        hooks,
+        source,
+        config: { deferInitFill: true },
+      });
+      await scroller.init();
+      expect(fail).toHaveBeenCalledOnce();
+      if (direction === 'older') scroller.retryOlder();
+      else scroller.retryNewer();
+      expect(fail).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('a newest init snapshot still establishes one persistent newer demand', async () => {
     let resolveInitFn: ((items: CbItem<number>[]) => void) | null = null;
@@ -863,7 +1380,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       destroy: () => {},
     };
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -888,7 +1405,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('scrolling to the top edge → loadOlder triggers getOlder, mounts older, oldestId moves older', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -906,7 +1423,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('manually compensates scrollTop after an older prepend without jumping', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -923,7 +1440,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('after reaching the oldest boundary, further up-scroll → no more getOlder (noOlder breaker)', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(120); // only 120 items: init 100 + one fill batch reaches the oldest
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -947,7 +1464,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('a source live update mounts at the bottom and follows', async () => {
     const { hooks } = controllableHooks();
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -962,7 +1479,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   });
 
   // The reported "retry a pending send while a new message arrives → the new message renders UNDER the viewport".
-  // Root cause: a live/newer item's real height settles AFTER pinToBottom already ran — the create-item height path
+  // Root cause: a live/newer item's real height settles AFTER positionAtBottom already ran — the create-item height path
   // is a ResizeObserver that fires post-render (image/data/font settle), so the kernel measured a placeholder height
   // at mount, pinned to that (shorter) bottom, then the late growth extended the content below the fold with no
   // re-pin. Retry worsens the timing (its cb-move/cb-enter holds animating>0, deferring the no-op balance), but the
@@ -970,7 +1487,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('onElHeight re-pins to bottom when a tail item grows after pin (async height settle — retry+new-message pin failure)', async () => {
     const source = liveSource(10);
     const { hooks, setHeight } = controllableHooks(100); // 100px real items
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -985,7 +1502,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await flush(); // the source demand mounts live-1 and pins to the updated bottom
     expect(scroller.getInfo().atBottom).toBe(true); // pinned at the placeholder bottom right after mount
 
-    // The live item's real height settles asynchronously (RO fire) — AFTER pinToBottom ran.
+    // The live item's real height settles asynchronously (RO fire) — AFTER positionAtBottom ran.
     setHeight(701, 200); // grew by 180
 
     // Without the re-pin, the grown tail sinks below the fold (scrollTop stayed 420 while scrollHeight became 1200).
@@ -1002,7 +1519,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   // load/trim so the compensate delta is observable in isolation.
   it('onElHeight: an above-fold item growing compensates scrollTop (+delta) so the visible content stays put', async () => {
     const { hooks, setHeight } = controllableHooks(100);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1017,7 +1534,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('trim: repeated loadOlder keeps the window stable, no unbounded growth (viewport buffer preserved)', async () => {
     const { hooks } = controllableHooks(); // 100px/item
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1041,7 +1558,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('measurePending removes cb-pending from mounted elements', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1056,7 +1573,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('phase 0: a batch containing the oldest boundary is not mounted on reverse fling → noOlder not locked, getOlder still works back at top', async () => {
     const { hooks } = controllableHooks();
     const src = controllableSource(120); // init 100 → first getOlder returns m-0..m-19 (contains oldest m-0)
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1090,7 +1607,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('phase 1: after init the top mounted[0] shows cb-ghost (not yet at oldest), exactly one', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1108,7 +1625,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('phase 1: scrolling to the global oldest (noOlder) → cb-ghost disappears', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1127,7 +1644,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('phase 1: loadOlder mounts an older neighbor → the old ghost rebuilds (createItem re-invoked with the new prev)', async () => {
     const { hooks, calls } = recordingHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1152,7 +1669,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     // fills. Each prepend must rebuild the previous top skeleton (spinner) into a real item, exactly as loadOlder does;
     // otherwise the spinner DOM stays mounted mid-list at the batch boundary (the "spinner between two batches" glitch).
     const { hooks } = skeletonHooks(40);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1182,7 +1699,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       destroy: () => {},
     };
     const { hooks } = skeletonHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1205,7 +1722,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('init fill: pins to bottom BEFORE/DURING the multi-batch fill (no flash to the window top)', async () => {
     const { hooks } = controllableHooks(); // 100px items
     const src = controllableSource(500); // getOlder resolved manually
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1230,7 +1747,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('deferred init reveals the first page without getOlder, then backfills one anchored page', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1253,9 +1770,94 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.getInfo().atBottom).toBe(true);
   });
 
+  it.each([0, 350])(
+    'backfill preserves delivery-time composer geometry and user scroll (history offset=%s)',
+    async (historyOffset) => {
+      const { hooks } = controllableHooks();
+      const source = controllableSource(500);
+      scroller = createKernel<number>({
+        viewport,
+        content,
+        hooks,
+        source,
+        config: { initBatch: 20, deferInitFill: true, followBottom: false },
+      });
+      await scroller.init();
+      const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+      let capH = 62;
+      Object.defineProperty(cap, 'offsetHeight', {
+        configurable: true,
+        get: () => capH,
+      });
+      const resize = () =>
+        (
+          scroller as unknown as { onTailCapResize: () => void }
+        ).onTailCapResize();
+      resize();
+      const before = viewport.scrollTop;
+      const backfill = scroller.backfillOlder();
+      expect(source.isPending()).toBe(true);
+
+      capH = 298;
+      resize();
+      expect(viewport.scrollTop).toBe(before + 236);
+      viewport.scrollTop -= historyOffset;
+      const deliveryTop = viewport.scrollTop;
+      const deliveryHeight = content.scrollHeight;
+      const visibleIds = scroller.getFullyVisibleIds();
+
+      source.resolveOlder();
+      await backfill;
+
+      expect(scroller.getInfo().mounted).toBe(70);
+      expect(viewport.scrollTop).toBe(
+        deliveryTop + content.scrollHeight - deliveryHeight,
+      );
+      expect(scroller.getFullyVisibleIds()).toEqual(visibleIds);
+      expect(scroller.getInfo().atBottom).toBe(historyOffset === 0);
+    },
+  );
+
+  it('backfill does not consume a composer resize before the tail-cap observer runs', async () => {
+    const { hooks } = controllableHooks();
+    const source = controllableSource(500);
+    scroller = createKernel<number>({
+      viewport,
+      content,
+      hooks,
+      source,
+      config: { initBatch: 20, deferInitFill: true, followBottom: false },
+    });
+    await scroller.init();
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    let capH = 62;
+    Object.defineProperty(cap, 'offsetHeight', {
+      configurable: true,
+      get: () => capH,
+    });
+    const resize = () =>
+      (
+        scroller as unknown as { onTailCapResize: () => void }
+      ).onTailCapResize();
+    resize();
+    const before = viewport.scrollTop;
+    const backfill = scroller.backfillOlder();
+    expect(source.isPending()).toBe(true);
+
+    // Layout has changed, but delivery runs before ResizeObserver reports the new cap height.
+    capH = 298;
+    source.resolveOlder();
+    await backfill;
+    resize();
+
+    expect(scroller.getInfo().mounted).toBe(70);
+    expect(viewport.scrollTop).toBe(before + 50 * 100 + 236);
+    expect(scroller.getInfo().atBottom).toBe(true);
+  });
+
   it('loadOlder trims the newest end → noNewer resets to false (loadNewer can load it back; fixes downward-scroll / pin-to-bottom stall)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1272,7 +1874,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('destroy clears all mounted elements', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1286,9 +1888,32 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   // ── Jump to a specific id (scrollToIndex / init({startMsgId})): mounted positioning + unmounted re-seed + centered fill / boundary compensation ──
 
+  it('out-of-window navigation delegates replacement instead of reinitializing the old source', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(500);
+    const init = vi.spyOn(source, 'init');
+    const replace = vi.fn().mockResolvedValue(true);
+    scroller = createKernel({
+      viewport,
+      content,
+      hooks,
+      source,
+      onWindowJump: replace,
+    });
+    await scroller.init();
+    const calls = init.mock.calls.length;
+    expect(await scroller.scrollToIndex(10, 'center', true)).toBe(true);
+    expect(replace).toHaveBeenCalledExactlyOnceWith({
+      startMsgId: 10,
+      anchor: 'center',
+      highlight: true,
+    });
+    expect(init).toHaveBeenCalledTimes(calls);
+  });
+
   it('scrollToIndex mounted → positions by anchor (top/center/bottom)', async () => {
     const { hooks } = controllableHooks(); // 100px/item
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1303,9 +1928,30 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(viewport.scrollTop).toBe(4500);
   });
 
+  it('mounted jumps keep the source and request smooth positioning without reinitialization', async () => {
+    const { hooks } = controllableHooks();
+    const source = fakeSource(500);
+    const init = vi.spyOn(source, 'init');
+    const destroy = vi.spyOn(source, 'destroy');
+    scroller = createKernel({ viewport, content, hooks, source });
+    await scroller.init();
+    const starts = init.mock.calls.length;
+    await scroller.scrollToIndex(450, 'center');
+    expect(viewport.scrollTo).toHaveBeenLastCalledWith({
+      top: 4750,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? 'instant'
+        : 'smooth',
+    });
+    expect(init).toHaveBeenCalledTimes(starts);
+    expect(destroy).not.toHaveBeenCalled();
+    scroller.unbind();
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
   it('init({startMsgId}) mid-history → bidirectional window around the target, centered, both sides ≥ threshold/2 (no fill)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1322,7 +1968,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('scrollToIndex not mounted → re-seeds the window around the id, target mounted and centered', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1361,7 +2007,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       }
       return out;
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: {
@@ -1421,7 +2067,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         ? [{ ...items[0], ids: [100, 101], boundary: 'newest' }]
         : items;
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: { ...hooks, mergeItems },
@@ -1436,7 +2082,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('jump near oldest → noOlder, above < threshold/2 → downward compensation to threshold', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1453,7 +2099,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('jump near newest → noNewer, below < threshold/2 → upward compensation to threshold', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1470,7 +2116,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('tiny conversation jump → both sides at boundary, totalH < threshold, no compensation possible, render directly', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1488,7 +2134,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('short-item jump → fill loop fills both sides to threshold/2 (no unbounded growth)', async () => {
     const { hooks } = controllableHooks(10); // 10px/item → seed 100 items only 1000px < 3000, needs fill
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1503,7 +2149,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('scrollToIndex highlight → target row gets cb-jump-highlight', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1517,7 +2163,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('scrollToBottom highlight → newest row gets cb-jump-highlight', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1534,7 +2180,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('scrollToTop → scrollTop=0', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1548,7 +2194,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('refresh → re-measures vh + balance, no throw, window still usable', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1564,7 +2210,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('scrolling to the bottom edge → loadNewer triggers getNewer, mounts newer, newestId advances toward newest', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1588,7 +2234,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('remaining in the bottom load-more region continues demands until newest', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1628,7 +2274,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         return live.requestNewer(cursorId, count);
       },
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1662,9 +2308,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         Array.from({ length: 50 }, (_, i) => ({
           id: start + i,
           data: start + i,
-          ...(reachesNewest && i === 49
-            ? { boundary: 'newest' as const }
-            : {}),
+          ...(reachesNewest && i === 49 ? { boundary: 'newest' as const } : {}),
         })),
       );
       await flush();
@@ -1697,7 +2341,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('scrollToBottom (go-to-bottom) chains through a trimmed newer end to the global newest (followToNewest)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1725,7 +2369,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('a live update with a trimmed newer end caches only, no mount, no jump to bottom', async () => {
     const { hooks } = controllableHooks();
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1746,7 +2390,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(viewport.scrollTop).toBe(scrollTopBefore); // no jump to bottom
   });
 
-  it('openAround: a source batch missing the target preserves the current window and reports false', async () => {
+  it('a missing target leaves the replacement window empty without starting live demand', async () => {
     const { hooks } = controllableHooks();
     const src: CbSource<number> = {
       init: async () => [
@@ -1759,7 +2403,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       getPending: () => [],
       destroy: () => {},
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1767,14 +2411,18 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.init();
     viewport.scrollTop = 37;
-    const before = scroller.getInfo();
+    const newer = vi.spyOn(src, 'requestNewer');
+    newer.mockClear();
     await expect(scroller.scrollToIndex(9999, 'center')).resolves.toEqual(
       false,
     );
-    expect(scroller.getInfo().oldestId).toBe(before.oldestId);
-    expect(scroller.getInfo().newestId).toBe(before.newestId);
-    expect(scroller.getInfo().mounted).toBe(before.mounted);
-    expect(viewport.scrollTop).toBe(37);
+    expect(scroller.getInfo().oldestId).toBeNull();
+    expect(scroller.getInfo().newestId).toBeNull();
+    expect(scroller.getInfo().mounted).toBe(0);
+    expect(scroller.lifecycleState).toBe('unavailable');
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(newer).not.toHaveBeenCalled();
   });
 
   it('init missing unread anchor with fallbackToLatest → mounts newest and reports the fallback', async () => {
@@ -1782,7 +2430,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const fallback = vi.fn().mockName('fallback');
     const src = fakeSource(20);
     await src.init(9999, 1, 1); // document the missing target in this source
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1804,7 +2452,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('two jumps in a row → gen guard: the in-flight first jump is dropped, the final window surrounds the second', async () => {
     const { hooks } = controllableHooks();
     const src = controllableInitSource(5000);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1826,7 +2474,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('insertAfter on a non-mounted id → no-op (returns false, no mount, no load)', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1844,7 +2492,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('insertAfter mid-window → mounts at idx+1 in the right DOM position (between target and successor)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1866,7 +2514,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('insertAfter rebuilds the successor with the new prev; the new item is created once with the target as prev', async () => {
     const { hooks, calls } = recordingHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1885,7 +2533,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('manually compensates an insert above the viewport without triggering balance', async () => {
     const { hooks } = controllableHooks(); // 100px/item
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1902,7 +2550,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('leaves scrollTop unchanged for an insert below the viewport', async () => {
     const { hooks } = controllableHooks(); // 100px/item
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1921,7 +2569,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('cursor guard: a transient at the tail does not poison loadNewer', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1974,7 +2622,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('Phase A: init/loadOlder mounts do NOT get cb-enter (only inserts + live arrivals animate)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -1990,7 +2638,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('Phase A: insertAfter plays cb-enter on the new row; animationend removes it', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2007,7 +2655,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('Phase A: a source live update plays cb-enter on the live row', async () => {
     const { hooks } = controllableHooks();
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2026,7 +2674,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('Phase A: source demand remains active while cb-enter balance work is deferred', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2048,7 +2696,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   // the top (transients are not in the source → trimming would permanently lose them).
   it('Phase A: trimNewer skips a transient at the tail (in-flight optimistic survives loadOlder)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2069,7 +2717,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('Phase B: a stale live item does not duplicate a mounted optimistic', async () => {
     const { hooks } = controllableHooks();
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2096,7 +2744,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     // noNewer is re-absorbed true.
     const base = fakeSource(500);
     const src = pushedSource(base);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2131,13 +2779,13 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   });
 
   // Regression (first-send scrollTop bug): after a newer demand reconciles the optimistic into its real, the confirmed
-  // real MUST be pinned to the bottom (scrollTop = scrollHeight − vh). The bug: pinToBottom-after-reconcile left the real
+  // real MUST be pinned to the bottom (scrollTop = scrollHeight − vh). The bug: positionAtBottom-after-reconcile left the real
   // below the fold on the FIRST send, subsequent sends correct. This pins both the first and a subsequent send.
   it('a newer source demand pins the confirmed real to the bottom for first and subsequent sends', async () => {
     const { hooks } = controllableHooks();
     const base = fakeSource(500);
     const src = pushedSource(base);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2190,7 +2838,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('overlapping source notifications coalesce and drain both items without leaking animation state', async () => {
     const { hooks } = controllableHooks(40);
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2260,7 +2908,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       ...fakeSource(500),
       getPending: () => pending.slice(),
     });
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2311,7 +2959,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       pushLive: () => {},
       getPending: () => pending.slice(),
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2337,7 +2985,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const { hooks } = controllableHooks();
     const base = fakeSource(500);
     const src = pushedSource(base);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2381,7 +3029,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       data: 999,
     }; // fresh status:'sent' snapshot (new data ref)
     const src: CbSource<number> = { ...base, getPending: () => [sent] };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: t.hooks,
@@ -2417,7 +3065,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const t = trackingHooks();
     const base = fakeSource(500);
     const src: CbSource<number> = { ...base, getPending: () => [] };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: t.hooks,
@@ -2440,7 +3088,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       data: 111,
     };
     const src: CbSource<number> = { ...base, getPending: () => [sent] };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: t.hooks,
@@ -2492,7 +3140,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       },
       getPending: () => [],
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: t.hooks,
@@ -2548,7 +3196,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       },
       getPending: () => [],
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: t.hooks,
@@ -2578,7 +3226,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('a plain incoming real from a newer demand moves the optimistic tail and enters from above', async () => {
     const { hooks } = controllableHooks(100);
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2634,7 +3282,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       [{ id: 701, data: 1002, boundary: 'newest' as const }],
     ];
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2668,7 +3316,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       { id: 703, data: 1003, boundary: 'newest' as const }, // after the text → must NOT absorb back into img1
     ];
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2732,7 +3380,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       ],
     ];
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2800,7 +3448,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       ],
     ];
     const src = pushedSource(fakeSource(500));
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2831,7 +3479,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('a source notification at a trimmed newer end caches only without loading or mounting', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2851,7 +3499,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('Phase C: removeItem(mountedId) plays cb-leave then unmounts on animationend; returns 1', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2872,7 +3520,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('Phase C: removeItem(not-mounted) returns 0 with no mutation', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2905,7 +3553,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       }
       return out;
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: { ...hooks, mergeItems },
@@ -2922,6 +3570,37 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelector('[data-cb-id="450"]')).toBeNull(); // whole album gone
   });
 
+  it('notifies body mounts only after registration and drops replaced/unbound callbacks', async () => {
+    const { hooks } = controllableHooks();
+    const onItemMounted = vi.fn(
+      (item: CbItem<number>, element: CbElement<number>) => {
+        expect(scroller?.getMountedGeometry(item.id)?.el).toBe(element.el);
+        expect(element.el.parentNode).toBe(content);
+      },
+    );
+    scroller = createKernel<number>({
+      viewport,
+      content,
+      hooks,
+      source: fakeSource(2),
+      onItemMounted,
+    });
+    await scroller.init();
+    await Promise.resolve();
+    onItemMounted.mockClear();
+    scroller.mutateItem(1, () => ({ id: 1, data: 100 }));
+    scroller.mutateItem(1, () => ({ id: 1, data: 200 }));
+    expect(onItemMounted).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(onItemMounted).toHaveBeenCalledTimes(1);
+    expect(onItemMounted.mock.calls[0][0].data).toBe(200);
+    onItemMounted.mockClear();
+    scroller.mutateItem(1, () => ({ id: 1, data: 300 }));
+    scroller.unbind();
+    await Promise.resolve();
+    expect(onItemMounted).not.toHaveBeenCalled();
+  });
+
   it('Phase C: mutateItem rebuilds an album without removing its surviving members', async () => {
     const { hooks } = controllableHooks();
     const mergeItems = (items: CbItem<number>[]): CbItem<number>[] => {
@@ -2934,7 +3613,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       }
       return out;
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: { ...hooks, mergeItems },
@@ -2953,10 +3632,70 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.removeItem(452)).toBe(1); // surviving member still resolves to the rebuilt album
   });
 
+  it('Phase C: mutateItem atomically splits a deleted album and preserves the reading anchor', async () => {
+    const { hooks } = controllableHooks();
+    const destroyed: number[] = [];
+    const createItem = vi.fn(
+      (item: CbItem<number>, prev: CbItem<number> | null) => {
+        const element = hooks.createItem(item, prev);
+        if (item.data === -1)
+          Object.defineProperty(element.el, 'offsetHeight', { get: () => 24 });
+        return {
+          ...element,
+          destroy: () => {
+            destroyed.push(item.id);
+          },
+        };
+      },
+    );
+    const source = fakeSource(500);
+    scroller = createKernel<number>({
+      viewport,
+      content,
+      source,
+      hooks: {
+        createItem,
+        mergeItems: (items) =>
+          items.flatMap((item) =>
+            item.id === 450
+              ? [{ ...item, ids: [450, 451, 452] }]
+              : item.id === 451 || item.id === 452
+                ? []
+                : [item],
+          ),
+      },
+    });
+    await scroller.init();
+    scroller.setFollowBottom(false);
+    viewport.scrollTop = 6000;
+    const scrollBefore = viewport.scrollTop;
+    const readsBefore = source.gets();
+    const mountedBefore = scroller.getInfo().mounted;
+    createItem.mockClear();
+    expect(
+      scroller.mutateItem(451, () => [
+        { id: 450, data: 450 },
+        { id: 451, data: -1 },
+        { id: 452, data: 452 },
+      ]),
+    ).toBe(true);
+    expect(scroller.getInfo().mounted).toBe(mountedBefore + 2);
+    expect(viewport.scrollTop).toBe(scrollBefore + 124);
+    expect(source.gets()).toBe(readsBefore);
+    expect(destroyed).toContain(450);
+    expect(
+      createItem.mock.calls.some(
+        ([item, prev]) => item.id === 453 && prev?.id === 452,
+      ),
+    ).toBe(true);
+    expect(scroller.getMountedGeometry(451)?.item.data).toBe(-1);
+    expect(scroller.getMountedGeometry(452)?.item.data).toBe(452);
+  });
+
   it('Phase C: while a cb-leave is in flight, balance is deferred; it resumes on animationend', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2976,7 +3715,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('Phase C: removeItem above the viewport compensates scrollTop (-= height) on animationend', async () => {
     const { hooks } = controllableHooks(); // 100px/item
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -2994,7 +3733,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('tail cap: always the last child of content, exactly one, after init', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3021,7 +3760,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
             items: [{ id: 1, data: 1, boundary: 'newest' }],
           });
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3056,7 +3795,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
           cancelled++;
         };
       });
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3081,7 +3820,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       requests++;
       return testDemand(() => new Promise(() => {}));
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3106,7 +3845,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         // Deliberately retain this sender after teardown; RxJS still prevents delivery to the closed observer.
         resolvers.push((result) => subscriber.next(result));
       });
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3140,7 +3879,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         ? of({ kind: 'error', error: new Error('offline') })
         : testDemand(() => new Promise(() => {}));
     };
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3161,7 +3900,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('newest highlight intent is cancelled on lower-region exit, re-seed, and destroy', async () => {
     const { hooks } = controllableHooks();
     const source = fakeSource(5000);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3190,7 +3929,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const { hooks } = controllableHooks();
     const source = fakeSource(5000);
     let resolveNewer!: (result: CbDemandResult<number>) => void;
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3211,7 +3950,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('tail cap: gap mode at the global newest (noNewer) — cb-tail-cap--gap, height measured + folded into totalH', async () => {
     const { hooks } = controllableHooks(); // 100px/item
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3226,13 +3965,53 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(sumChildrenHeight(content)).toBe(100 * 100); // zero-height gap is still folded into the content total
   });
 
-  it('tail cap: async aggregate growth follows bottom through the shared anchor logic', async () => {
-    const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+  it.each([true, false])(
+    'tail cap: keyboard open/close preserves bottom with followBottom=%s',
+    async (followBottom) => {
+      const { hooks } = controllableHooks();
+      scroller = createKernel<number>({
+        viewport,
+        content,
+        hooks,
+        source: fakeSource(500),
+        config: { followBottom },
+      });
+      await scroller.init();
+      const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+      let capH = cap.offsetHeight;
+      Object.defineProperty(cap, 'offsetHeight', {
+        configurable: true,
+        get: () => capH,
+      });
+      const before = viewport.scrollTop;
+
+      capH += 120;
+      (
+        scroller as unknown as {
+          onTailCapResize: () => void;
+        }
+      ).onTailCapResize();
+
+      expect(viewport.scrollTop).toBe(before + 120);
+      expect(scroller.getInfo().atBottom).toBe(true);
+
+      capH -= 120;
+      (
+        scroller as unknown as { onTailCapResize: () => void }
+      ).onTailCapResize();
+      expect(viewport.scrollTop).toBe(before);
+      expect(scroller.getInfo().atBottom).toBe(true);
+    },
+  );
+
+  it('tail cap: geometry preserves history position and composer attachment independently of content following', async () => {
+    const { hooks, setHeight } = controllableHooks();
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
       source: fakeSource(500),
+      config: { followBottom: false },
     });
     await scroller.init();
     const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
@@ -3241,22 +4020,36 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       configurable: true,
       get: () => capH,
     });
+    viewport.scrollTop -= 400;
     const before = viewport.scrollTop;
+    for (const height of [298, 0]) {
+      capH = height;
+      (
+        scroller as unknown as { onTailCapResize: () => void }
+      ).onTailCapResize();
+      expect(viewport.scrollTop).toBe(before);
+      expect(scroller.getInfo().atBottom).toBe(false);
+    }
 
-    capH += 120;
-    (
-      scroller as unknown as {
-        onTailCapResize: () => void;
-      }
-    ).onTailCapResize();
-
-    expect(viewport.scrollTop).toBe(before + 120);
+    scroller.scrollToBottom();
+    const bottomBefore = viewport.scrollTop;
+    capH = 298;
+    (scroller as unknown as { onTailCapResize: () => void }).onTailCapResize();
+    expect(viewport.scrollTop).toBe(bottomBefore + 298);
+    setHeight(499, 200);
+    expect(viewport.scrollTop).toBe(bottomBefore + 398);
     expect(scroller.getInfo().atBottom).toBe(true);
+
+    // Inserting content is not geometry stabilization: disabled following must still keep the reading position.
+    const beforeInsert = viewport.scrollTop;
+    expect(scroller.insertAfter(499, { id: 500, data: 500 })).toBe(true);
+    expect(viewport.scrollTop).toBe(beforeInsert);
+    expect(scroller.getInfo().atBottom).toBe(false);
   });
 
   it('tail cap: an idle newer waiter after a mid-history jump stays a quiet gap', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3272,7 +4065,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('tail cap: an idle waiter remains a gap while scrollToBottom reaches newest', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3300,7 +4093,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('tail cap: never in mounted[] — newestId is the last real item, the cap carries no data-cb-id', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3314,7 +4107,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('tail cap: persists across a re-seed (unmountAll keeps it; still exactly one after a jump)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3332,7 +4125,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('tail cap: optimistic insert at the tail while noNewer stays gap (no phantom spinner under a sent message)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3350,7 +4143,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('tail cap: destroy removes it (content fully empty)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3365,31 +4158,39 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   // ── Viewport resize reflow: pin-on-shrink (soft keyboard), no balance/load jank ──
 
-  it('resize: shrink while pinned to bottom → re-pins to the new bottom (before the fix the bottom dropped below the fold)', async () => {
-    const { hooks } = controllableHooks(); // 100px/item
-    const vh = mutableVh(viewport, 600);
-    scroller = new ChatBoxScroller<number>({
-      viewport,
-      content,
-      hooks,
-      source: fakeSource(500),
-    });
-    await scroller.init(); // pinned to bottom with vh=600
-    expect(scroller.getInfo().atBottom).toBe(true);
-    const total = content.scrollHeight; // unchanged by a vh-only resize
-    vh.set(300); // keyboard shrinks the layout viewport
-    reflow(scroller);
-    // re-pinned to the new bottom. Before the fix the old viewportObs ran balance (a no-op at bottom) but never
-    // re-pinned → scrollTop stayed at scrollHeight-600 while vh became 300 → atBottom false (bottom 300px cut off).
-    expect(viewport.scrollTop).toBe(total - 300);
-    expect(scroller.getInfo().atBottom).toBe(true);
-  });
+  it.each([true, false])(
+    'resize: keyboard open/close preserves bottom with followBottom=%s',
+    async (followBottom) => {
+      const { hooks } = controllableHooks(); // 100px/item
+      const vh = mutableVh(viewport, 600);
+      scroller = createKernel<number>({
+        viewport,
+        content,
+        hooks,
+        source: fakeSource(500),
+        config: { followBottom },
+      });
+      await scroller.init(); // pinned to bottom with vh=600
+      expect(scroller.getInfo().atBottom).toBe(true);
+      const total = content.scrollHeight; // unchanged by a vh-only resize
+      vh.set(300); // keyboard shrinks the layout viewport
+      reflow(scroller);
+      // re-pinned to the new bottom. Before the fix the old viewportObs ran balance (a no-op at bottom) but never
+      // re-pinned → scrollTop stayed at scrollHeight-600 while vh became 300 → atBottom false (bottom 300px cut off).
+      expect(viewport.scrollTop).toBe(total - 300);
+      expect(scroller.getInfo().atBottom).toBe(true);
+      vh.set(600);
+      reflow(scroller);
+      expect(viewport.scrollTop).toBe(total - 600);
+      expect(scroller.getInfo().atBottom).toBe(true);
+    },
+  );
 
   it('resize: shrink mid-history → scrollTop anchor preserved (same line stays in view), no load/trim', async () => {
     const { hooks } = controllableHooks();
     const vh = mutableVh(viewport, 600);
     const src = fakeSource(5000);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3415,7 +4216,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const { hooks } = controllableHooks();
     const vh = mutableVh(viewport, 600);
     const src = fakeSource(500);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3442,7 +4243,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('resize: grow while pinned to bottom → re-pins to the new bottom (scrollHeight unchanged, vh up)', async () => {
     const { hooks } = controllableHooks();
     const vh = mutableVh(viewport, 600);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3461,7 +4262,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const { hooks } = controllableHooks();
     const vh = mutableVh(viewport, 600);
     const src = fakeSource(5000);
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3484,7 +4285,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('reconcilePending morphs a failed send IN PLACE (same node, update not recreate, no cb-leave/cb-enter)', async () => {
     const t = trackingHooks();
     const pending: CbItem<number>[] = [];
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: t.hooks,
@@ -3517,7 +4318,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('reconcilePending FLIP-reorders a failed send to the tail; the shoved sibling animates too (no hard cut)', async () => {
     const { hooks } = controllableHooks();
     const pending: CbItem<number>[] = [];
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3567,7 +4368,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('reconcilePending FLIP reorder does not move scrollTop (transform-only; the visible content stays put)', async () => {
     const { hooks } = controllableHooks();
     const pending: CbItem<number>[] = [];
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3599,7 +4400,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('reconcilePending morphs a retried send back in place at its position (no remount, no move)', async () => {
     const t = trackingHooks();
     const pending: CbItem<number>[] = [];
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: t.hooks,
@@ -3629,7 +4430,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('destroy during a FLIP move drains cleanly (moveTimer cleared, animating not leaked)', async () => {
     const { hooks } = controllableHooks();
     const pending: CbItem<number>[] = [];
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3662,7 +4463,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('init on an empty source → noOlder & noNewer true (pinned to bottom), nothing mounted', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3679,7 +4480,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('insertAfter into an empty window → mounts the sole entry (first message in an empty thread)', async () => {
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3699,7 +4500,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   it('empty thread: optimistic send → confirm signal → real replaces the optimistic bubble at the bottom', async () => {
     const src = pushedSource(fakeSource(0));
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3742,7 +4543,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     // by then mounted.length > 0.
     const src = pushedSource(fakeSource(0));
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3786,7 +4587,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     };
     const src = pushedSource(base);
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3836,7 +4637,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       destroy: () => {},
     };
     const { hooks } = controllableHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks,
@@ -3897,7 +4698,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       getPending: () => [],
       destroy: () => {},
     };
-    const s = new ChatBoxScroller<D>({ viewport, content, hooks, source: src });
+    const s = createKernel<D>({ viewport, content, hooks, source: src });
     try {
       await s.init();
       const before = creates;
@@ -3912,7 +4713,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   it('updateItemData returns false (no-op) when the id is not mounted', async () => {
     const t = trackingHooks();
-    scroller = new ChatBoxScroller<number>({
+    scroller = createKernel<number>({
       viewport,
       content,
       hooks: t.hooks,
@@ -3962,7 +4763,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       getPending: () => [],
       destroy: () => {},
     };
-    const s = new ChatBoxScroller<D>({ viewport, content, hooks, source: src });
+    const s = createKernel<D>({ viewport, content, hooks, source: src });
     try {
       await s.init();
       expect(s.updateItemData(11, { v: 77 })).toBe(true); // member 11 → album item (id 10)

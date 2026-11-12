@@ -135,8 +135,8 @@ async function seedSessionToken(
 }
 
 /** Seed a local user + an `app` session directly (registration is closed + password login is disabled
- *  under APP_OTP_AND_QR, so the old register→login pair no longer works) — the standard setup for a
- *  federation user. Returns { id, account, token }. */
+ *  — loginMethods = ['otp', 'qr'], so the old register→login pair no longer works) — the standard setup
+ *  for a federation user. Returns { id, account, token }. */
 export async function registerAndLogin(
   app: Pick<AppLike, 'database'>,
   account: string,
@@ -156,6 +156,7 @@ export async function registerAndLogin(
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
+      generatedAt: Date.now(),
       displayName: name,
       avatar: '',
       bio: '',
@@ -407,6 +408,7 @@ export async function getAdminCookie(
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
+        generatedAt: Date.now(),
         displayName: account,
         avatar: '',
         bio: '',

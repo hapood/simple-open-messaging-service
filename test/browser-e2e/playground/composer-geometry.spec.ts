@@ -43,6 +43,60 @@ test('reply composer reserves local space through a global height reset', async 
   await expect(pane.locator('.msg-compose-quote')).toHaveCount(0);
 });
 
+for (const width of [1440, 1000]) {
+  test(`initial bottom positioning at ${width}px reserves the full composer height`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.getByRole('button', { name: /^Alice, chat/ }).click();
+    const pane = page.locator('.pane-layer.pane-fg');
+    await expect(pane.locator('app-chat-input')).toBeVisible();
+    // The responsive breakpoint belongs to the composer, not the whole window.
+    // At 1000px the conversation list leaves a compact chat pane; 1440px is wide.
+    await expect
+      .poll(() =>
+        pane.locator('app-chat-input').evaluate((el) => ({
+          wide: el.clientWidth >= 720,
+          height: (el as HTMLElement).offsetHeight,
+        })),
+      )
+      .toEqual({ wide: width === 1440, height: width === 1440 ? 82 : 64 });
+    await expect
+      .poll(() =>
+        pane.locator('.msg-content').evaluate((el) => el.scrollHeight),
+      )
+      .toBeGreaterThan(6000);
+
+    await expect
+      .poll(() =>
+        pane.evaluate((element) => {
+          const composer =
+            element.querySelector<HTMLElement>('app-chat-input')!;
+          const tail = element.querySelector<HTMLElement>('.cb-tail-cap--gap')!;
+          const message = tail.previousElementSibling!;
+          const viewport = element.querySelector<HTMLElement>('.msg-viewport')!;
+          return {
+            reservesComposer: tail.offsetHeight >= composer.offsetHeight,
+            messageVisible:
+              message.getBoundingClientRect().bottom <=
+              composer.getBoundingClientRect().top + 1,
+            atBottom:
+              Math.abs(
+                viewport.scrollHeight -
+                  viewport.clientHeight -
+                  viewport.scrollTop,
+              ) <= 1,
+          };
+        }),
+      )
+      .toEqual({
+        reservesComposer: true,
+        messageVisible: true,
+        atBottom: true,
+      });
+  });
+}
+
 type ComposerFrame = {
   thread: string;
   messageBottom: number;
@@ -62,6 +116,22 @@ for (const width of [1440, 1000]) {
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
+    // Liam is blocked in the seed. Geometry needs two active message kernels; unblock
+    // through the UI rather than changing the blocked-conversation fixture contract.
+    await page.getByRole('button', { name: /^Liam, chat/ }).click();
+    const activePane = page.locator('.pane-layer.pane-fg');
+    await expect(activePane.locator('.msg-blocked-banner')).toBeVisible();
+    await activePane
+      .getByRole('button', { name: 'More options', exact: true })
+      .click();
+    const profile = page.locator('app-peer-profile');
+    const block = profile.locator('.block-card').getByRole('switch');
+    await expect(block).toBeChecked();
+    await block.click();
+    await expect(block).not.toBeChecked();
+    await expect(activePane.locator('.cb-tail-cap--gap')).toBeAttached();
+    await profile.locator('.page-header__back').click();
+    await expect(profile).toHaveCount(0);
     await page.evaluate(() => {
       const probe: ComposerProbe = { frames: 0, overlaps: [], raf: 0 };
       (window as ProbeWindow).composerProbe = probe;

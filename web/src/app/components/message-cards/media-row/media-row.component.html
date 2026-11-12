@@ -229,7 +229,7 @@
                     }
                   </div>
                 }
-                @if (c.kind === 'image' && !c.placeholder) {
+                @if (c.kind === 'image') {
                   <img
                     class="msg-media-image"
                     [src]="c.src"
@@ -240,31 +240,11 @@
                     (error)="onImageError($index)"
                   />
                 }
-                @if (c.showGate) {
-                  <span class="msg-media-tap">
-                    @if (c.transferStatus === 'downloading') {
-                      <span
-                        class="msg-media-download-progress"
-                        [class.msg-media-download-progress--indeterminate]="
-                          c.transferProgress === null
-                        "
-                        role="status"
-                        [attr.aria-label]="'gallery.loadingImage' | transloco"
-                      >
-                        @if (c.transferProgress !== null) {
-                          <strong>{{ c.transferProgress.toFixed(0) }}%</strong>
-                        }
-                      </span>
-                    } @else {
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <rect x="3" y="4" width="18" height="16" rx="3"></rect>
-                        <circle cx="9" cy="10" r="2"></circle>
-                        <path d="M4 17l5-4 3 2 3-3 5 5"></path>
-                      </svg>
-                    }
-                  </span>
-                }
-                @if (c.kind === 'video' && c.thumbnail) {
+                @if (
+                  c.kind === 'video' &&
+                  c.status === MEDIA_STATUS.READY &&
+                  c.thumbnail
+                ) {
                   <img
                     class="msg-media-video msg-media-video--thumbnail"
                     [src]="c.thumbnail"
@@ -272,17 +252,6 @@
                     (load)="onThumbnailLoad($event)"
                     (error)="onThumbnailError($event)"
                   />
-                }
-                @if (c.kind === 'video' && !isAndroidApp && !c.unplayable) {
-                  <video
-                    class="msg-media-video"
-                    [style.opacity]="loadedVideoFrames().has($index) ? 1 : 0"
-                    [src]="c.src"
-                    preload="metadata"
-                    aria-hidden="true"
-                    (loadeddata)="onVideoLoaded($index)"
-                    (error)="onVideoError($index)"
-                  ></video>
                 }
                 @if (c.kind === 'video') {
                   <span class="msg-media-play" aria-hidden="true"></span>

@@ -139,17 +139,8 @@ object NativeUploadManager {
     ) {
         val selected = selections[uploadId]
             ?: return fail(uploadId, attemptId, "selection", "selection expired", false)
-        val endpoint = when (kind.lowercase()) {
-            "image" -> "/upload"
-            "video" -> "/upload/video"
-            "file" -> "/upload/file"
-            else -> return fail(
-                uploadId,
-                attemptId,
-                "unsupported",
-                "unsupported upload kind",
-                false,
-            )
+        if (kind.lowercase() !in setOf("image", "video", "file")) {
+            return fail(uploadId, attemptId, "unsupported", "unsupported upload kind", false)
         }
         val cid = clientMessageId.orEmpty()
         if (cid.isBlank()) {
@@ -181,7 +172,6 @@ object NativeUploadManager {
                 fd,
                 uploadId,
                 attemptId,
-                endpoint,
                 selected.name,
                 selected.mime,
                 selected.size,

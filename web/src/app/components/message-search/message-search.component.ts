@@ -35,6 +35,7 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
           #input
           type="text"
           class="msg-search-input"
+          autocapitalize="off"
           [placeholder]="'chat.searchInChatPlaceholder' | transloco"
           [(ngModel)]="keyword"
           (ngModelChange)="onInput()"

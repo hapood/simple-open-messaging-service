@@ -4,50 +4,50 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProfileNamespacePair {
-    publisher_namespace_id: i64,
-    profile_namespace_id: i64,
+    pub(crate) publisher_namespace_id: i64,
+    pub(crate) profile_namespace_id: i64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProfileNamespaceEntry {
-    publisher_namespace_id: i64,
-    profile_namespace_id: i64,
-    domain: Option<String>,
-    root_public_key: Option<String>,
-    update_feed_id: i64,
-    expired: bool,
-    status: String,
+    pub(crate) publisher_namespace_id: i64,
+    pub(crate) profile_namespace_id: i64,
+    pub(crate) domain: Option<String>,
+    pub(crate) root_public_key: Option<String>,
+    pub(crate) update_feed_id: i64,
+    pub(crate) expired: bool,
+    pub(crate) status: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProfileNamespaceBinding {
-    publisher_namespace_id: i64,
-    profile_namespace_id: i64,
-    domain: Option<String>,
-    root_public_key: Option<String>,
-    update_feed_id: i64,
-    change_seq: i64,
-    expired: bool,
-    status: String,
-    refreshed_at: i64,
+    pub(crate) publisher_namespace_id: i64,
+    pub(crate) profile_namespace_id: i64,
+    pub(crate) domain: Option<String>,
+    pub(crate) root_public_key: Option<String>,
+    pub(crate) update_feed_id: i64,
+    pub(crate) change_seq: i64,
+    pub(crate) expired: bool,
+    pub(crate) status: String,
+    pub(crate) refreshed_at: i64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProfileNamespaceChange {
-    publisher_namespace_id: i64,
-    profile_namespace_id: i64,
-    change_id: i64,
+    pub(crate) publisher_namespace_id: i64,
+    pub(crate) profile_namespace_id: i64,
+    pub(crate) change_id: i64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProfileTombKey {
-    publisher_namespace_id: i64,
-    profile_namespace_id: i64,
-    account: String,
+    pub(crate) publisher_namespace_id: i64,
+    pub(crate) profile_namespace_id: i64,
+    pub(crate) account: String,
 }
 
 fn validate_pair(pair: &ProfileNamespacePair) -> Result<(), String> {
@@ -77,7 +77,7 @@ fn validate_entry(entry: &ProfileNamespaceEntry) -> Result<(), String> {
     Ok(())
 }
 
-fn read_bindings(
+pub(super) fn read_bindings(
     conn: &Connection,
     user_id: i64,
     pairs: &[ProfileNamespacePair],
@@ -118,7 +118,7 @@ fn read_bindings(
     Ok(rows)
 }
 
-fn commit_bindings(
+pub(super) fn commit_bindings(
     conn: &mut Connection,
     user_id: i64,
     entries: &[ProfileNamespaceEntry],
@@ -169,10 +169,15 @@ fn commit_bindings(
         .map_err(|error| format!("finish profile namespace binding commit: {error}"))
 }
 
-fn apply_changes(
+/// Apply one change-feed page and advance the durable change-feed cursor in
+/// the same transaction, so the facts (expiry + cursor) commit atomically,
+/// mirroring the browser executor's single IndexedDB transaction. The cursor
+/// only ever moves forward; a replayed page changes no rows and no cursor.
+pub(super) fn apply_changes_with_checkpoint(
     conn: &mut Connection,
     user_id: i64,
     items: &[ProfileNamespaceChange],
+    checkpoint: Option<i64>,
 ) -> Result<Vec<ProfileNamespacePair>, String> {
     for item in items {
         validate_pair(&ProfileNamespacePair {
@@ -214,12 +219,27 @@ fn apply_changes(
             });
         }
     }
+    if let Some(checkpoint) = checkpoint {
+        if checkpoint < 0 {
+            return Err("profile namespace checkpoint must be non-negative".into());
+        }
+        tx.execute(
+            "INSERT INTO account_state(user_id, profile_namespace_change_end_id) VALUES(?1,?2)
+             ON CONFLICT(user_id) DO UPDATE SET
+               profile_namespace_change_end_id=
+                 MAX(COALESCE(account_state.profile_namespace_change_end_id,0),excluded.profile_namespace_change_end_id)
+             WHERE account_state.profile_namespace_change_end_id IS NULL
+                OR account_state.profile_namespace_change_end_id < excluded.profile_namespace_change_end_id",
+            params![user_id, checkpoint],
+        )
+        .map_err(|error| format!("advance profile namespace cursor: {error}"))?;
+    }
     tx.commit()
         .map_err(|error| format!("finish profile namespace change commit: {error}"))?;
     Ok(touched)
 }
 
-fn write_namespace_tomb(
+pub(super) fn write_namespace_tomb(
     conn: &Connection,
     user_id: i64,
     pair: &ProfileNamespacePair,
@@ -326,10 +346,13 @@ pub(crate) async fn native_db_commit_profile_namespace_bindings(
 pub(crate) async fn native_db_apply_profile_namespace_changes(
     user_id: i64,
     items: Vec<ProfileNamespaceChange>,
+    checkpoint: Option<i64>,
 ) -> Result<Vec<ProfileNamespacePair>, String> {
-    super::spawn_login_database(move |conn| apply_changes(conn, user_id, &items))
-        .await
-        .map_err(|error| error.to_string())?
+    super::spawn_login_database(move |conn| {
+        apply_changes_with_checkpoint(conn, user_id, &items, checkpoint)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -390,6 +413,10 @@ mod tests {
                account TEXT NOT NULL,
                created_at INTEGER NOT NULL,
                PRIMARY KEY(user_id,publisher_namespace_id,profile_namespace_id,account)
+             );
+             CREATE TABLE account_state (
+               user_id INTEGER PRIMARY KEY,
+               profile_namespace_change_end_id INTEGER CHECK(profile_namespace_change_end_id >= 0)
              );
              CREATE TABLE profiles (
                user_id INTEGER NOT NULL,
@@ -514,7 +541,7 @@ mod tests {
     fn native_profile_namespace_changes_expire_only_current_or_newer_rows() {
         let mut conn = database();
         commit_bindings(&mut conn, 1, &[entry(7, 2, "current.test", 8)], 10, 100).unwrap();
-        let stale = apply_changes(
+        let stale = apply_changes_with_checkpoint(
             &mut conn,
             1,
             &[ProfileNamespaceChange {
@@ -522,10 +549,11 @@ mod tests {
                 profile_namespace_id: 2,
                 change_id: 9,
             }],
+            None,
         )
         .unwrap();
         assert!(stale.is_empty());
-        let touched = apply_changes(
+        let touched = apply_changes_with_checkpoint(
             &mut conn,
             1,
             &[ProfileNamespaceChange {
@@ -533,6 +561,7 @@ mod tests {
                 profile_namespace_id: 2,
                 change_id: 11,
             }],
+            None,
         )
         .unwrap();
         assert_eq!(touched.len(), 1);
@@ -549,7 +578,7 @@ mod tests {
         assert!(row.expired);
         assert_eq!(row.change_seq, 11);
         assert_eq!(row.domain.as_deref(), Some("current.test"));
-        let replay = apply_changes(
+        let replay = apply_changes_with_checkpoint(
             &mut conn,
             1,
             &[ProfileNamespaceChange {
@@ -557,6 +586,7 @@ mod tests {
                 profile_namespace_id: 2,
                 change_id: 11,
             }],
+            None,
         )
         .unwrap();
         assert!(replay.is_empty());
@@ -609,5 +639,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(counts, (1, 1, 200));
+    }
+
+    #[test]
+    fn native_profile_namespace_checkpoint_advances_monotonically_with_facts() {
+        let mut conn = database();
+        conn.execute("INSERT INTO account_state(user_id) VALUES(1)", [])
+            .unwrap();
+        let change = |id: i64| ProfileNamespaceChange {
+            publisher_namespace_id: 7,
+            profile_namespace_id: 2,
+            change_id: id,
+        };
+        apply_changes_with_checkpoint(&mut conn, 1, &[change(5)], Some(5)).unwrap();
+        // A replayed page with an older checkpoint moves no cursor and no row.
+        let replayed = apply_changes_with_checkpoint(&mut conn, 1, &[change(5)], Some(4)).unwrap();
+        assert!(replayed.is_empty());
+        let cursor: i64 = conn
+            .query_row(
+                "SELECT profile_namespace_change_end_id FROM account_state WHERE user_id=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursor, 5);
+        // The cursor materializes the account row when it does not exist yet.
+        apply_changes_with_checkpoint(&mut conn, 2, &[change(6)], Some(6)).unwrap();
+        let other: i64 = conn
+            .query_row(
+                "SELECT profile_namespace_change_end_id FROM account_state WHERE user_id=2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(other, 6);
     }
 }

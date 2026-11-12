@@ -4,6 +4,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UploadService } from './upload.service.js';
+import { detectMedia } from './media-sig.js';
+import type { StoredMediaMetadata } from './stored-media-metadata.js';
 import { ContentType } from '../database/enums.js';
 
 /** PNG magic bytes + enough trailing length for detectMedia's checks. */
@@ -26,46 +28,44 @@ const metadataProbe = async (_target: unknown, family: string) =>
         ? { w: 640, h: 360, duration: 4 }
         : {};
 
+const thumbnail = {
+  digest: 'a'.repeat(64),
+  size: 10,
+  mimeType: 'image/webp' as const,
+  width: 10,
+  height: 20,
+};
+const metadataAsset = { metadata: vi.fn().mockResolvedValue(null) };
 const mediaMetadata = {
+  detectFile: vi.fn(async (path: string) => detectMedia(await readFile(path))),
+  processFile: vi.fn(async (path: string) => {
+    const detected = await mediaMetadata.detectFile(path);
+    const kind = detected?.family.toUpperCase() ?? 'FILE';
+    const media =
+      kind === 'IMAGE'
+        ? { kind, width: 10, height: 20, thumbnail }
+        : kind === 'VIDEO'
+          ? { kind, width: 640, height: 360, duration: 4, thumbnail }
+          : kind === 'AUDIO'
+            ? { kind, duration: 3 }
+            : { kind: 'FILE' };
+    return {
+      meta: {
+        mimeType: 'application/octet-stream',
+        ...media,
+      } as StoredMediaMetadata,
+    };
+  }),
   fromBuffer: vi.fn(metadataProbe),
   fromFile: vi.fn(metadataProbe),
 };
 
-/**
- * A minimal multipart FastifyRequest stand-in for consumeParts: yields the given file parts (each with
- * a `toBuffer()`) interleaved with non-file form fields. Mirrors the shape @fastify/multipart exposes.
- */
-function fakeReq(
-  files: Array<{
-    buf: Buffer;
-    filename?: string;
-    mimetype?: string;
-  }>,
-  fields: Record<string, string> = {},
-): any {
-  const parts: any[] = [];
-  for (const [k, v] of Object.entries(fields)) {
-    parts.push({ type: 'field', fieldname: k, value: v });
-  }
-  for (const f of files) {
-    parts.push({
-      type: 'file',
-      mimetype: f.mimetype ?? 'application/octet-stream',
-      ...(f.filename ? { filename: f.filename } : {}),
-      file: { resume: () => {} },
-      toBuffer: async () => f.buf,
-    });
-  }
-  return {
-    parts: async function* () {
-      for (const p of parts) yield p;
-    },
-  };
-}
-
 describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
   function target() {
-    const svc = new UploadService({} as never, mediaMetadata as never);
+    const svc = new UploadService(
+      metadataAsset as never,
+      mediaMetadata as never,
+    );
     vi.spyOn(svc, 'saveAvatar').mockResolvedValue(
       '/uploads/avatars/avatar.png',
     );
@@ -139,7 +139,7 @@ describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
 
 describe('UploadService.saveAvatar — byte-preserving storage', () => {
   let root: string | undefined;
-  const svc = new UploadService({} as never, mediaMetadata as never);
+  const svc = new UploadService(metadataAsset as never, mediaMetadata as never);
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-avatar-'));
@@ -199,7 +199,7 @@ describe('UploadService.saveAvatar — byte-preserving storage', () => {
 
 describe('UploadService.resolveStagedPart — family gating by staged intent', () => {
   let root: string | undefined;
-  const svc = new UploadService({} as never, mediaMetadata as never);
+  const svc = new UploadService(metadataAsset as never, mediaMetadata as never);
   let seq = 0;
 
   beforeEach(async () => {
@@ -235,6 +235,39 @@ describe('UploadService.resolveStagedPart — family gating by staged intent', (
     expect(overrideContentType).toBeUndefined();
   });
 
+  it.each([
+    { bytes: PNG, family: ContentType.IMAGE },
+    { bytes: EBML, family: ContentType.VIDEO },
+    { bytes: OGG, family: ContentType.AUDIO },
+  ])(
+    'promotes FILE intent to detected $family regardless of declared MIME',
+    async ({ bytes, family }) => {
+      const { payload, overrideContentType } = await svc.resolveStagedPart(
+        await stage(bytes),
+        ContentType.FILE,
+        'attachment.bin',
+        'application/octet-stream',
+      );
+      expect(payload.family).toBe(family);
+      expect(overrideContentType).toBe(family);
+      if (family === ContentType.IMAGE) {
+        expect(payload.w).toBe(10);
+        expect(payload.h).toBe(20);
+      }
+    },
+  );
+
+  it('keeps unrecognized FILE bytes downloadable despite an image name and MIME', async () => {
+    const { payload, overrideContentType } = await svc.resolveStagedPart(
+      await stage(Buffer.from('not an image')),
+      ContentType.FILE,
+      'photo.png',
+      'image/png',
+    );
+    expect(payload.family).toBe('FILE');
+    expect(overrideContentType).toBeUndefined();
+  });
+
   it('falls an unsupported IMAGE intent back to a downloadable FILE', async () => {
     const heic = Buffer.from('unsupported-image-bytes');
     const { payload, overrideContentType } = await svc.resolveStagedPart(
@@ -252,6 +285,10 @@ describe('UploadService.resolveStagedPart — family gating by staged intent', (
   });
 
   it('accepts EBML/webm under an AUDIO intent as audio/webm (recorder-emitted container)', async () => {
+    mediaMetadata.detectFile.mockResolvedValueOnce({
+      family: 'audio',
+      ext: 'webm',
+    });
     const { payload } = await svc.resolveStagedPart(
       await stage(EBML),
       ContentType.AUDIO,
@@ -288,7 +325,10 @@ describe('UploadService.resolveStagedPart — family gating by staged intent', (
 
 describe('UploadService.landStagedPart — idempotent CAS landing', () => {
   let root: string | undefined;
-  const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+  const mediaAsset = {
+    ...metadataAsset,
+    publishReady: vi.fn().mockResolvedValue(undefined),
+  };
   const svc = new UploadService(mediaAsset as never, mediaMetadata as never);
 
   beforeEach(async () => {
@@ -327,44 +367,18 @@ describe('UploadService.landStagedPart — idempotent CAS landing', () => {
   });
 });
 
-describe('UploadService.consumeParts — multi-file drain', () => {
-  const svc = new UploadService({} as never, mediaMetadata as never);
-
-  it('collects file parts and companion form fields', async () => {
-    const r = await svc.consumeParts(
-      fakeReq([{ buf: PNG, filename: 'a.png', mimetype: 'image/png' }], {
-        w: '10',
-        h: '20',
-      }),
-      { maxBytes: 1024 },
-    );
-    expect(r.kind).toBe('ok');
-    if (r.kind === 'ok') {
-      expect(r.files).toHaveLength(1);
-      expect(r.files[0].filename).toBe('a.png');
-      expect(r.fields).toEqual({ w: '10', h: '20' });
-    }
-  });
-
-  it('drops empty parts and rejects with no-file when none remain', async () => {
-    const r = await svc.consumeParts(
-      fakeReq([{ buf: Buffer.alloc(0), filename: 'empty.bin' }]),
-      { maxBytes: 1024 },
-    );
-    expect(r).toEqual({ kind: 'rejected', reason: 'no-file' });
-  });
-
-  it('rejects a part exceeding the per-part cap as too-large', async () => {
-    const r = await svc.consumeParts(
-      fakeReq([{ buf: Buffer.alloc(10), filename: 'big.bin' }]),
-      { maxBytes: 4 },
-    );
-    expect(r).toEqual({ kind: 'rejected', reason: 'too-large' });
-  });
-});
-
 describe('UploadService.saveCasFromStream — persistent resume', () => {
   let root: string | undefined;
+  const publication = () =>
+    vi.fn(
+      async (
+        _digest: string,
+        _bytes: bigint,
+        publish?: () => Promise<void>,
+      ) => {
+        await publish?.();
+      },
+    );
   afterEach(async () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = undefined;
@@ -377,11 +391,79 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     Object.defineProperty(service, 'casTmpDir', { value: join(root!, 'tmp') });
   };
 
+  it.each([
+    {
+      declaredBytes: 4,
+      maxFileBytes: 3,
+      body: 'data',
+      error: 'maximum attachment size',
+    },
+    { declaredBytes: 3, maxFileBytes: 4, body: 'data', error: 'declared size' },
+    { declaredBytes: 5, maxFileBytes: 5, body: 'data', error: 'size mismatch' },
+  ])(
+    'rejects object/declared-size violations before publishing: $declaredBytes/$maxFileBytes',
+    async ({ declaredBytes, maxFileBytes, body, error }) => {
+      root = await mkdtemp(join(tmpdir(), 'soms-cas-size-'));
+      const mediaAsset = { ...metadataAsset, publishReady: vi.fn() };
+      const service = new UploadService(
+        mediaAsset as never,
+        mediaMetadata as never,
+      );
+      stubService(service);
+      const digest = createHash('sha256').update(body).digest('hex');
+      const fetch = vi.fn(() =>
+        (async function* () {
+          yield Buffer.from(body);
+        })(),
+      );
+      await expect(
+        service.saveCasFromStream(fetch, digest, {
+          declaredBytes,
+          maxFileBytes,
+        }),
+      ).rejects.toThrow(error);
+      expect(mediaAsset.publishReady).not.toHaveBeenCalled();
+      if (declaredBytes > maxFileBytes) expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rechecks the declared size and object limit on an existing CAS file', async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-cas-cached-'));
+    const mediaAsset = { ...metadataAsset, publishReady: publication() };
+    const service = new UploadService(
+      mediaAsset as never,
+      mediaMetadata as never,
+    );
+    stubService(service);
+    const body = Buffer.from('data');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const fetch = vi.fn(() =>
+      (async function* () {
+        yield body;
+      })(),
+    );
+    await service.saveCasFromStream(fetch, digest, {
+      declaredBytes: 4,
+      maxFileBytes: 4,
+    });
+    await expect(
+      service.saveCasFromStream(fetch, digest, {
+        declaredBytes: 3,
+        maxFileBytes: 4,
+      }),
+    ).rejects.toThrow('size mismatch');
+    await expect(
+      service.saveCasFromStream(fetch, digest, {
+        declaredBytes: 4,
+        maxFileBytes: 3,
+      }),
+    ).rejects.toThrow('maximum attachment size');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('retains a completed prefix after transport failure and resumes at its offset', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = {
-      publishReady: vi.fn().mockResolvedValue(undefined),
-    };
+    const mediaAsset = { ...metadataAsset, publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -392,22 +474,30 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     const firstOffsets: number[] = [];
 
     await expect(
-      service.saveCasFromStream((offset) => {
-        firstOffsets.push(offset);
-        return (async function* () {
-          yield body.subarray(0, 10);
-          throw new Error('network dropped');
-        })();
-      }, digest),
+      service.saveCasFromStream(
+        (offset) => {
+          firstOffsets.push(offset);
+          return (async function* () {
+            yield body.subarray(0, 10);
+            throw new Error('network dropped');
+          })();
+        },
+        digest,
+        { declaredBytes: body.length, maxFileBytes: body.length },
+      ),
     ).rejects.toThrow('network dropped');
 
     const resumedOffsets: number[] = [];
-    const saved = await service.saveCasFromStream((offset) => {
-      resumedOffsets.push(offset);
-      return (async function* () {
-        yield body.subarray(offset);
-      })();
-    }, digest);
+    const saved = await service.saveCasFromStream(
+      (offset) => {
+        resumedOffsets.push(offset);
+        return (async function* () {
+          yield body.subarray(offset);
+        })();
+      },
+      digest,
+      { declaredBytes: body.length, maxFileBytes: body.length },
+    );
     expect(firstOffsets).toEqual([0]);
     expect(resumedOffsets).toEqual([10]);
     expect(
@@ -419,12 +509,14 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     expect(mediaAsset.publishReady).toHaveBeenCalledWith(
       digest,
       BigInt(body.length),
+      expect.any(Function),
+      expect.objectContaining({ kind: 'FILE' }),
     );
   });
 
   it('keeps only the continuous verified blocks before the first corrupt resume block', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+    const mediaAsset = { ...metadataAsset, publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -442,6 +534,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
             throw new Error('network dropped');
           })(),
         digest,
+        { declaredBytes: body.length, maxFileBytes: body.length },
       ),
     ).rejects.toThrow('network dropped');
 
@@ -451,12 +544,16 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     await writeFile(partPath, corrupt);
 
     const offsets: number[] = [];
-    await service.saveCasFromStream((offset) => {
-      offsets.push(offset);
-      return (async function* () {
-        yield body.subarray(offset);
-      })();
-    }, digest);
+    await service.saveCasFromStream(
+      (offset) => {
+        offsets.push(offset);
+        return (async function* () {
+          yield body.subarray(offset);
+        })();
+      },
+      digest,
+      { declaredBytes: body.length, maxFileBytes: body.length },
+    );
 
     expect(offsets).toEqual([6]);
     expect(
@@ -468,7 +565,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
 
   it('automatically restarts from zero when a live partial disappears', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
-    const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+    const mediaAsset = { ...metadataAsset, publishReady: publication() };
     const service = new UploadService(
       mediaAsset as never,
       mediaMetadata as never,
@@ -480,17 +577,21 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
     const offsets: number[] = [];
     let removed = false;
 
-    await service.saveCasFromStream((offset) => {
-      offsets.push(offset);
-      return (async function* () {
-        if (!removed) {
-          yield body.subarray(offset, 8);
-          await rm(partPath);
-          removed = true;
-        }
-        yield body.subarray(removed && offset !== 0 ? offset : 0);
-      })();
-    }, digest);
+    await service.saveCasFromStream(
+      (offset) => {
+        offsets.push(offset);
+        return (async function* () {
+          if (!removed) {
+            yield body.subarray(offset, 8);
+            await rm(partPath);
+            removed = true;
+          }
+          yield body.subarray(removed && offset !== 0 ? offset : 0);
+        })();
+      },
+      digest,
+      { declaredBytes: body.length, maxFileBytes: body.length },
+    );
 
     expect(offsets).toEqual([0, 0]);
     expect(
@@ -503,6 +604,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
   it('deletes untrusted partial state when the final digest mismatches', async () => {
     root = await mkdtemp(join(tmpdir(), 'soms-cas-resume-'));
     const mediaAsset = {
+      ...metadataAsset,
       publishReady: vi.fn().mockResolvedValue(undefined),
     };
     const service = new UploadService(
@@ -518,6 +620,7 @@ describe('UploadService.saveCasFromStream — persistent resume', () => {
             yield Buffer.from('corrupt');
           })(),
         expected,
+        { declaredBytes: 7, maxFileBytes: 7 },
       ),
     ).rejects.toThrow('CAS digest mismatch');
     // Tmp transients live under <root>/tmp/<digest>.*; a digest mismatch removes the part + sidecar.

@@ -48,7 +48,7 @@ This document describes the system architecture, module responsibilities, authen
 - **HTTP handles writes and queries**: client business commands generally use `POST` with JSON bodies, while feeds, discovery, resources, and selected settings use their documented `GET`/`PUT` methods. Uploads use multipart or resumable binary requests. Federation has its own versioned HTTP surface.
 - **SSE handles "push"**: the server pushes **identity-only signals** one-way via SSE (`GET /api/v1/events`). Message and state bodies remain in durable HTTP-queryable feeds. SSE is a downstream-only channel — all client→server upstream business traffic goes through HTTP.
 
-The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves only `/uploads/*` (auth-gated media). The app runs on Fastify (HTTP/1.1 plain, or HTTP/2-over-TLS when `TLS_CERT`/`TLS_KEY` are set), client global prefix `/api/v1` (excluding `/.well-known/somfp` and `/s2s/v1/*`).
+The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves only `/uploads/*` (auth-gated media). The app runs on Fastify (HTTP/1.1 plain, or HTTP/2-over-TLS when `TLS_CERT`/`TLS_KEY` are set), client global prefix `/api/v1` (excluding `/somfp/discovery` and `/somfp/v1/*`).
 
 ## Backend Module Responsibilities
 
@@ -115,8 +115,8 @@ trust pre-flight request.
 - `APP_INTERCEPTOR → AdminAuditInterceptor` — logs `@Audit`-tagged admin actions.
 - `useGlobalPipes(ValidationPipe)` / `useGlobalFilters(AllExceptionsFilter)` / `useGlobalInterceptors(SerializeInterceptor)` — registered in [src/bootstrap.ts](../../src/bootstrap.ts).
 
-Client HTTP routes use the `/api/v1` global prefix. The SOMFP well-known
-endpoint and `/s2s/v1/*` surface are excluded. The maintained route summaries are the [client/admin API](../api/api.md)
+Client HTTP routes use the `/api/v1` global prefix. The SOMFP discovery
+endpoint and `/somfp/v1/*` surface are excluded. The maintained route summaries are the [client/admin API](../api/api.md)
 and the [SOMFP v1 HTTP surface](../../spec/v1/protocol.md#3-federation-v1-http-surface).
 
 ## Frontend Structure
@@ -141,6 +141,8 @@ The web client is an Angular (zoneless + Signal-driven) SPA. It runs in three sh
 **Realtime transport** — `WebsocketService` (filename retained) is now a **facade** over three pluggable `RealtimeTransport` implementations ([realtime-transport.ts](../../web/src/app/services/realtime-transport.ts)): `WorkerSseTransport` (browser — SSE parsed inside `sse.worker.ts`, a Web Worker, off the main thread), `RustChannelSseTransport` (Tauri desktop — Rust-side supervisor), `NativeEventTransport` (Android — Kotlin `/events` bridge).
 
 **Virtual scroll kernel** — the message list is driven by `ChatBoxScroller` ([web/src/app/lib/chat-box/chat-box-scroller.ts](../../web/src/app/lib/chat-box/chat-box-scroller.ts)), a framework-agnostic, array-index + source-driven kernel with manual scrollTop compensation. It pulls data asynchronously through `HttpItemSource`.
+
+**Chat surface lifecycle** — reusable chatbox/composer infrastructure is separate from conversation binding and message-window subscriptions. Unbind synchronously unsubscribes result delivery, aborts binding-owned work, and unmounts message items. Window replacement retains the conversation binding, composer, and kernel while replacing its source. See [Chat surface binding lifecycle](../design/chat-surface-binding-lifecycle.md) for ownership boundaries and regression requirements.
 
 **Component layer** — ~90+ standalone components across chat surface, responsive desktop shell, mobile shell, auth, settings/profile, calls, threads/groups, media viewers, and shared primitives. The UI consumes **Angular Material** (`@angular/material` ^20) with a layer of custom Material-styled components on top.
 
@@ -207,7 +209,7 @@ On connect, `SseService` pushes a `HELLO` frame carrying `stateFeedEndId`, `thre
 
 ### Stream lifecycle and receipts
 
-The stream sends no idle heartbeat and makes no fixed 25-second liveness guarantee. Disconnect tears down the subscription; clients reconnect and recover durable feeds. Notification-relevant `THREAD_FEED_UPDATED` hints may carry `sseUuid`; after a committed feed drain the client sends `/events/receipt` for that stream/head. Receipt eligibility and expiry are session-scoped, not a durable message acknowledgement.
+SSE endpoints share an immediate transport-only `heartbeat` frame and a 10-second heartbeat interval. Long-lived browser and native consumers enforce a 30-second receive-idle deadline, reset by non-empty bytes, with a separate 15-second opening deadline. Heartbeats never query domain state, advance cursors, or satisfy the HELLO handshake. Browser and admin consumers share a framework-independent reader; native hosts share the Rust runtime. Timers belong to individual attempts and are disposed before reconnect. Disconnect tears down the subscription; clients reconnect and recover durable feeds. Notification-relevant `THREAD_FEED_UPDATED` hints may carry `sseUuid`; after a committed feed drain the client sends `/events/receipt` for that stream/head. Receipt eligibility and expiry are session-scoped, not a durable message acknowledgement.
 
 ### Push Events
 
@@ -326,7 +328,7 @@ state-feed synchronization. Client parsing/rendering failures use a generic loca
 
 ### 1:1 Calls
 
-`CallsController` (`/calls/*`) drives a state machine (initiate → ringing → connected → end; decline/cancel/signal). The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On termination `CallsService` commits a local `SYSTEM / CALL_ENDED` notice on each participating server. Federated calls relay over signed S2S `/s2s/v1/call`. See the [Android calls client contract](../platform/android/calls.md).
+`CallsController` (`/calls/*`) drives a state machine (initiate → ringing → connected → end; decline/cancel/signal). The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On termination `CallsService` commits a local `SYSTEM / CALL_ENDED` notice on each participating server. Federated calls relay over signed S2S `/somfp/v1/call`. See the [Android calls client contract](../platform/android/calls.md).
 
 ### Federation
 

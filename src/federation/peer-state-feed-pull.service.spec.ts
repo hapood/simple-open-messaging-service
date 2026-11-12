@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
@@ -24,9 +26,14 @@ function harness(pulledThrough: bigint | null = 0n) {
   });
   const whereUpdate = vi.fn(async () => undefined);
   const setUpdate = vi.fn(
-    (values: { stateFeedPulledThrough: bigint | null }) => ({
+    (values: { inboundStateFeedPulledThrough: bigint | SQL }) => ({
       where: async () => {
-        Object.assign(epoch, values);
+        const value = values.inboundStateFeedPulledThrough;
+        epoch.stateFeedPulledThrough =
+          typeof value === 'bigint'
+            ? value
+            : (epoch.stateFeedPulledThrough ??
+              (new PgDialect().sqlToQuery(value).params[0] as bigint));
         order.push('cursor');
         return whereUpdate();
       },
@@ -55,6 +62,46 @@ function harness(pulledThrough: bigint | null = 0n) {
 }
 
 describe('PeerStateFeedPullService atomic item application', () => {
+  it('finishes the admitted page before the next-page quota gate pauses, then resumes at its cursor', async () => {
+    const { service, epoch } = harness();
+    let exhausted = false;
+    const applied: string[] = [];
+    const item = (id: string) => ({
+      account: '!group',
+      eventType: 'THREAD_CONTENT_HEAD' as const,
+      feedId: id,
+      generatedAt: 0,
+      body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
+    });
+    const callbacks = {
+      fetch: async (after?: bigint) => {
+        if (exhausted) throw new Error('quota paused');
+        return after === 0n
+          ? {
+              ...page('2', true),
+              stateFeedEndId: '3',
+              items: [item('1'), item('2')],
+            }
+          : { ...page('3'), items: [item('3')] };
+      },
+      apply: async (_tx: unknown, p: PeerStateFeedPage) => {
+        applied.push(p.items[0].feedId);
+      },
+      afterCommit: async () => {
+        exhausted = true;
+      },
+    };
+    await expect(service.run('peer.test', 12, callbacks)).rejects.toThrow(
+      'quota paused',
+    );
+    expect(applied).toEqual(['1', '2']);
+    expect(epoch.stateFeedPulledThrough).toBe(2n);
+    exhausted = false;
+    await service.run('peer.test', 12, callbacks);
+    expect(applied).toEqual(['1', '2', '3']);
+    expect(epoch.stateFeedPulledThrough).toBe(3n);
+  });
+
   it('publishes each item only after its state and cursor commit', async () => {
     const { service, order } = harness();
     await service.run('peer.test', 12, {
@@ -65,6 +112,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
             account: '!group',
             eventType: 'THREAD_CONTENT_HEAD',
             feedId: '1',
+            generatedAt: 0,
             body: {
               messageEndSeq: 0,
               tombstoneEndSeq: 0,
@@ -90,6 +138,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
               account: '!group',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
+              generatedAt: 0,
               body: {},
             },
           ],
@@ -117,6 +166,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
             account: '!group',
             eventType: 'THREAD_CONTENT_HEAD',
             feedId: '1',
+            generatedAt: 0,
             body: {
               messageEndSeq: 0,
               tombstoneEndSeq: 0,
@@ -151,12 +201,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
               account: '!group-a',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
+              generatedAt: 0,
               body: {},
             },
             {
               account: '!group-b',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
+              generatedAt: 0,
               body: {},
             },
           ],
@@ -190,12 +242,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
               account: '!group-a',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '1',
+              generatedAt: 0,
               body: {},
             },
             {
               account: '!group-b',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
+              generatedAt: 0,
               body: {},
             },
           ],
@@ -217,12 +271,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
           account: '!group-b',
           eventType: 'THREAD_CONTENT_HEAD' as const,
           feedId: '2',
+          generatedAt: 0,
           body: {},
         },
         {
           account: '!group-c',
           eventType: 'THREAD_CONTENT_HEAD' as const,
           feedId: '3',
+          generatedAt: 0,
           body: {},
         },
       ],
@@ -265,6 +321,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
               account: 'a',
               eventType: 'THREAD_CONTENT_HEAD',
               feedId: '2',
+              generatedAt: 0,
               body: {},
             },
           ],

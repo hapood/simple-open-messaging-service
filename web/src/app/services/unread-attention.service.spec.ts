@@ -21,8 +21,6 @@ import type {
   NotificationDescriptor,
 } from './notification-descriptor.model';
 
-import 'fake-indexeddb/auto';
-
 describe('UnreadAttentionService browser worker bridge', () => {
   const offer = vi.fn();
   const openChat = vi.fn();
@@ -124,11 +122,21 @@ describe('UnreadAttentionService browser worker bridge', () => {
   it('submits a notification tap to the shared coordinator rather than opening raw navigation', () => {
     navigator.serviceWorker.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: SOMS_NOTIF_MSG.OPEN, threadId: 42, sessionId: 11 },
+        data: {
+          type: SOMS_NOTIF_MSG.OPEN,
+          target: { kind: 'thread', threadId: 42 },
+          latestSeq: 8,
+          sessionId: 11,
+        },
       }),
     );
     expect(offer).toHaveBeenCalledWith(
-      expect.objectContaining({ source: 'web', threadId: 42, sessionId: 11 }),
+      expect.objectContaining({
+        source: 'web',
+        target: { kind: 'thread', threadId: 42 },
+        latestSeq: 8,
+        sessionId: 11,
+      }),
     );
     expect(setTopSection).not.toHaveBeenCalled();
     expect(openChat).not.toHaveBeenCalled();
@@ -137,7 +145,8 @@ describe('UnreadAttentionService browser worker bridge', () => {
   it('offers exact desktop session scope and rejects unscoped receipts', async () => {
     let pending: unknown = {
       id: 'tap-1',
-      threadId: 7,
+      target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
       sessionId: 11,
       origin: 'https://primary',
     };
@@ -157,7 +166,9 @@ describe('UnreadAttentionService browser worker bridge', () => {
       },
     };
     const lifecycle = TestBed.inject(SessionLifecycleService);
-    lifecycle.bindSession(parseLoginSessionId('11111111-2222-4333-8444-555555555555'));
+    lifecycle.bindSession(
+      parseLoginSessionId('11111111-2222-4333-8444-555555555555'),
+    );
     const scope = lifecycle.capture();
     TestBed.runInInjectionContext(() => new UnreadAttentionService());
     await vi.waitFor(() =>
@@ -165,8 +176,8 @@ describe('UnreadAttentionService browser worker bridge', () => {
         expect.objectContaining({
           source: 'desktop',
           id: 'tap-1',
-          threadId: 7,
-          sessionId: 11,
+          target: { kind: 'thread', threadId: 7 },
+          latestSeq: 8,
         }),
         scope,
       ),
@@ -185,21 +196,22 @@ describe('UnreadAttentionService browser worker bridge', () => {
     await intent.acknowledge();
     expect(invoke).toHaveBeenCalledWith('desktop_notification_acknowledge', {
       id: 'tap-1',
-      threadId: 7,
-      sessionId: 11,
-      origin: 'https://primary',
+      target: { kind: 'thread', threadId: 7 },
+      latestSeq: 8,
     });
     offer.mockClear();
     for (const value of [
       '7',
-      { id: 'legacy', threadId: 7 },
-      { id: 'bad', threadId: 7, sessionId: 0 },
-      {
-        id: 'wrong-origin',
-        threadId: 7,
+      { id: '', target: { kind: 'thread', threadId: 7 } },
+      { id: 'bad', target: { kind: 'thread', threadId: 0 } },
+      { id: 'bad-thread', target: { kind: 'thread', threadId: '7' } },
+      ...[undefined, null, -1, '8', 0.5, 2147483648].map((latestSeq) => ({
+        id: 'bad-ceiling',
+        target: { kind: 'thread', threadId: 7 },
+        latestSeq,
         sessionId: 11,
-        origin: 'https://other',
-      },
+        origin: 'https://primary',
+      })),
     ]) {
       pending = value;
       wake();
@@ -225,11 +237,15 @@ describe('UnreadAttentionService browser worker bridge', () => {
   });
 
   it('relays worker-projected notifications without building them on the main thread', async () => {
-    const descriptor = {
-      tag: 'soms-thread-7',
-      data: { threadId: 7 },
+    const descriptor: NotificationDescriptor = {
+      kind: 'thread-message',
+      title: 'Peer',
+      body: 'Message',
+      lang: 'en',
+      icon: null,
+      data: { target: { kind: 'thread', threadId: 7 }, latestSeq: 8 },
       count: 2,
-    } as NotificationDescriptor;
+    };
     browserNotifications.next({
       userId: 11,
       entries: [{ feedId: 9, descriptor }],
@@ -243,6 +259,18 @@ describe('UnreadAttentionService browser worker bridge', () => {
     );
     updates.next([]);
     expect(postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('relays successful empty synchronization so startup reconstruction can finish', async () => {
+    browserNotifications.next({ userId: 11, entries: [], syncComplete: true });
+    await vi.waitFor(() =>
+      expect(postMessage).toHaveBeenCalledWith({
+        type: SOMS_NOTIF_MSG.PRESENT,
+        userId: 11,
+        entries: [],
+        syncComplete: true,
+      }),
+    );
   });
 
   it('does not relay a completed worker registration after session invalidation', async () => {

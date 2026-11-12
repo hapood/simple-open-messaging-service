@@ -1,5 +1,4 @@
 import '@angular/compiler';
-import 'fake-indexeddb/auto';
 import {
   afterEach,
   beforeEach,
@@ -26,6 +25,7 @@ import { UserService } from './user.service';
 import { ToastService } from './toast.service';
 import { BROWSER_SESSION } from './browser-session.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { ServerConfigDialogService } from './server-config-dialog.service';
 import { SessionSupersededError } from './session/session-identity';
 
 /**
@@ -99,6 +99,8 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           return Promise.resolve(
             keyringToken ? '22222222-3333-4444-8555-666666666666' : null,
           );
+        if (cmd === 'try_logout') return Promise.resolve({ status: 'revoked' });
+        if (cmd === 'logout_status') return Promise.resolve('awaitingRevocation');
         if (cmd === 'begin_logout')
           return Promise.resolve({
             ticket: 'logout-operation',
@@ -122,11 +124,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           [
             'set_session_token',
             'clear_session_token',
-            'set_active_origin',
             'native_db_validate_cache',
             'native_db_recreate_cache',
             'desktop_notifications_clear',
             'wait_for_logout',
+            'finish_logout',
           ].includes(cmd)
         )
           return Promise.resolve(undefined);
@@ -245,6 +247,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         {
           provide: WebPushService,
           useValue: {
+            unsubscribe: vi.fn().mockResolvedValue(undefined),
             onLogin: vi.fn().mockName('onLogin'),
           },
         },
@@ -320,6 +323,35 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       },
     );
   }
+
+  it('does not start native authentication while server setup is visible', async () => {
+    desktopGlobals();
+    TestBed.inject(ServerConfigDialogService).open();
+    const result = await firstValueFrom(
+      svc.login({ account: 'old', password: 'pw' }),
+      { defaultValue: null },
+    );
+    expect(result).toBeNull();
+    expect(invokeSpy).not.toHaveBeenCalledWith('native_db_begin_login');
+    httpMock.expectNone((request) => /auth\/login$/.test(request.url));
+  });
+
+  it('opening server setup cancels the pending login and invalidates its existing work lease', async () => {
+    desktopGlobals();
+    const result = firstValueFrom(
+      svc.login({ account: 'old', password: 'pw' }),
+      { defaultValue: null },
+    );
+    const request = await loginRequest();
+    const work = TestBed.inject(SessionLifecycleService).capture();
+    TestBed.inject(ServerConfigDialogService).open();
+    expect(await result).toBeNull();
+    expect(request.cancelled).toBe(true);
+    expect(work.signal.aborted).toBe(true);
+    expect(
+      invokeSpy.mock.calls.some(([command]) => command === 'set_session_token'),
+    ).toBe(false);
+  });
 
   describe('immutable native authentication ownership', () => {
     const firstId = '11111111-2222-4d9e-af01-234567890abc';
@@ -580,9 +612,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       await passwordLogin('st-x');
       await svc.clearToken();
       // secure_clear_token idempotently drops the keyring entry; clear_session_token drops ProxyState.token.
-      expect(invokeSpy).toHaveBeenCalledWith('secure_clear_token', {
-        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
-      });
+      expect(invokeSpy).toHaveBeenCalledWith('secure_clear_token', undefined);
       expect(invokeSpy).toHaveBeenCalledWith('clear_session_token', {
         sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
@@ -597,7 +627,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.loggedIn()).toBe(false);
     });
 
-    it('logout detaches the native token with begin_logout and does not issue a JS HTTP revoke', async () => {
+    it('logout retains native credentials until Rust confirms revocation and finishes cleanup', async () => {
       desktopGlobals();
       await passwordLogin('st-logout');
       invokeSpy.mockClear();
@@ -613,13 +643,9 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(commands.indexOf('begin_logout')).toBeLessThan(
         commands.indexOf('desktop_notifications_clear'),
       );
-      expect(invokeSpy).toHaveBeenCalledWith('wait_for_logout', {
-        ticket: 'logout-operation',
-      });
-      expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
-        origin: '',
-        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
-      });
+      expect(invokeSpy).toHaveBeenCalledWith('try_logout', undefined);
+      expect(invokeSpy).toHaveBeenCalledWith('finish_logout', { localOnly: false });
+      expect(invokeSpy).toHaveBeenCalledWith('begin_logout', undefined);
       httpMock.expectNone((r) => /\/auth\/logout$/.test(r.url));
     });
 
@@ -706,6 +732,22 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       });
     });
 
+    it('retains secure credentials when native revocation awaits an explicit decision', async () => {
+      const { set, discard } = androidGlobals('st-revoking');
+      invokeSpy.mockImplementation((cmd: string) =>
+        cmd === 'login_session_for_token'
+          ? Promise.reject(new Error('native session revocation requires an explicit decision'))
+          : Promise.resolve(undefined),
+      );
+      await svc.restoreSession();
+      expect(discard).not.toHaveBeenCalled();
+      expect(set).not.toHaveBeenCalled();
+      expect(svc.loggedIn()).toBe(false);
+      expect(invokeSpy.mock.calls.some(([command]) =>
+        ['set_session_token', 'clear_session_token', 'secure_clear_token', 'secure_clear_residual_token'].includes(command),
+      )).toBe(false);
+    });
+
     it('a residual credential whose login was ended locally is discarded, never restored', async () => {
       const { set, discard } = androidGlobals('st-dead');
       invokeSpy.mockImplementation((cmd: string) =>
@@ -737,11 +779,8 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     it('restoreSession with no stored token leaves the user logged out', async () => {
       const { pick } = androidGlobals(null);
       await svc.restoreSession();
-      expect(pick).toHaveBeenCalledTimes(1);
-      expect(invokeSpy).toHaveBeenCalledWith('set_active_origin', {
-        url: 'http://lan.test',
-      });
-      expect(invokeSpy).not.toHaveBeenCalledWith('init_pick_origin', undefined);
+      expect(pick).not.toHaveBeenCalled();
+      expect(invokeSpy).toHaveBeenCalledWith('init_pick_origin', undefined);
       expect(svc.loggedIn()).toBe(false);
       expect(svc.isLoggedIn()).toBe(false);
     });

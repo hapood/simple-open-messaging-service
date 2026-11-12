@@ -5,6 +5,7 @@ import {
   output,
   ChangeDetectionStrategy,
 } from '@angular/core';
+import { assetUrl } from '../../../services/runtime';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
@@ -86,6 +87,7 @@ export class FileRowComponent {
     categorize(this.file()?.mimeType ?? ''),
   );
   /** Extension badge (uppercased), derived from the trusted filename the server sanitized. */
+  readonly thumbnail = computed(() => assetUrl(this.file()?.thumbnail));
   readonly ext = computed(() => fileExt(this.file()?.name ?? ''));
   readonly sizeText = computed(() => formatBytes(this.file()?.size ?? 0));
 }

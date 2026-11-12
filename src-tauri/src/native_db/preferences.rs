@@ -3,7 +3,6 @@ use serde_json::Value;
 
 use super::{chrono_millis, json_text, parse_json, preferences_connection};
 
-#[cfg(target_os = "android")]
 fn notification_key(key: &str) -> Result<&str, String> {
     match key {
         "notificationPreviewMode" | "notificationAlertPolicy" => Ok(key),
@@ -11,8 +10,7 @@ fn notification_key(key: &str) -> Result<&str, String> {
     }
 }
 
-/// Android background services share the process's already-initialized device connection.
-#[cfg(target_os = "android")]
+/// All native notification runtimes read the same initialized device connection.
 pub(crate) fn read_notification_preference(key: &str) -> Result<Option<String>, String> {
     let key = notification_key(key)?;
     let preferences = preferences_connection()?;
@@ -51,6 +49,82 @@ pub(crate) fn write_notification_preference(key: &str, value: &str) -> Result<()
         .map_err(|e| format!("write notification preference: {e}"))?;
         Ok(())
     })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct NotificationPreferences {
+    pub(crate) enabled: bool,
+    pub(crate) sound: bool,
+    pub(crate) private_preview: bool,
+}
+
+impl NotificationPreferences {
+    fn decode(values: &std::collections::HashMap<String, Value>) -> Result<Self, String> {
+        let boolean = |key: &str| match values.get(key) {
+            None => Ok(true),
+            Some(Value::Bool(value)) => Ok(*value),
+            _ => Err(format!("invalid notification preference: {key}")),
+        };
+        let private_preview = match values.get("notificationPreviewMode") {
+            None => false,
+            Some(Value::String(value)) if value == "message" => false,
+            Some(Value::String(value)) if value == "private" => true,
+            _ => return Err("invalid notification preview mode".into()),
+        };
+        Ok(Self { enabled: boolean("notificationEnabled")?, sound: boolean("notificationSound")?, private_preview })
+    }
+}
+
+/// Device language is presentation data, not part of login identity.
+pub(crate) fn notification_language() -> Result<String, String> {
+    preferences_connection()?.with_database(|conn| {
+        let raw: Option<String> = conn.query_row(
+            "SELECT value_json FROM client_preferences WHERE scope='device' AND key='language'",
+            [], |row| row.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        match raw {
+            None => Ok("en".into()),
+            Some(raw) => parse_json(raw)?.as_str().map(str::to_owned)
+                .ok_or_else(|| "invalid device language".into()),
+        }
+    })
+}
+
+/// One SQLite statement reads a consistent set of presentation preferences.
+pub(crate) fn notification_preferences() -> Result<NotificationPreferences, String> {
+    preferences_connection()?.with_database(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT key,value_json FROM client_preferences WHERE scope='device' AND key IN ('notificationEnabled','notificationSound','notificationPreviewMode')",
+        ).map_err(|e| e.to_string())?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        let mut values = std::collections::HashMap::new();
+        for row in rows {
+            let (key, raw) = row.map_err(|e| e.to_string())?;
+            values.insert(key, parse_json(raw)?);
+        }
+        NotificationPreferences::decode(&values)
+    })
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    #[test]
+    fn defaults_and_explicit_privacy_match_existing_device_settings() {
+        let mut values = std::collections::HashMap::new();
+        assert_eq!(NotificationPreferences::decode(&values).unwrap(), NotificationPreferences {
+            enabled: true, sound: true, private_preview: false,
+        });
+        values.insert("notificationEnabled".into(), Value::Bool(false));
+        values.insert("notificationSound".into(), Value::Bool(false));
+        values.insert("notificationPreviewMode".into(), Value::String("private".into()));
+        assert_eq!(NotificationPreferences::decode(&values).unwrap(), NotificationPreferences {
+            enabled: false, sound: false, private_preview: true,
+        });
+        values.insert("notificationPreviewMode".into(), Value::String("invalid".into()));
+        assert!(NotificationPreferences::decode(&values).is_err());
+    }
 }
 
 #[tauri::command]

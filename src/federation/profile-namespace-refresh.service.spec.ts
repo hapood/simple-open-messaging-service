@@ -20,16 +20,14 @@ function harness(options?: {
 }) {
   const upserts: InsertValues[] = [];
   const updates: Array<Record<string, unknown>> = [];
-  const select = vi.fn(() => ({
-    from: () => ({
-      where: () => ({
-        // fetchBindings' publisher-domain lookup: every select answers the
-        // directRow shape, whose `domain` drives the peer token capture.
-        limit: async () =>
-          options?.directRow === undefined ? [] : [options.directRow],
-      }),
+  const selected = {
+    where: () => ({
+      limit: async () =>
+        options?.directRow === undefined ? [] : [options.directRow],
     }),
-  }));
+    innerJoin: () => selected,
+  };
+  const select = vi.fn(() => ({ from: () => selected }));
   const insert = vi.fn(() => ({
     values: (value: InsertValues) => ({
       onConflictDoUpdate: ({ set }: { set: Record<string, unknown> }) => {
@@ -54,7 +52,20 @@ function harness(options?: {
         options.parkFirstGet = undefined;
         await gate;
       }
-      return options?.bindings?.shift();
+      const binding = options?.bindings?.shift();
+      if (!binding) return binding;
+      return {
+        generatedAt: 1234,
+        ...binding,
+        ...(typeof binding.rootPublicKey === 'string'
+          ? {
+              rootPublicKey: Buffer.alloc(
+                32,
+                binding.rootPublicKey.charCodeAt(0),
+              ).toString('base64'),
+            }
+          : {}),
+      };
     }),
   };
   const trustedPeers = { run: (_d: string, op: () => unknown) => op() };
@@ -356,8 +367,8 @@ describe('ProfileNamespaceRefreshService lifecycle status', () => {
     expect(updates[0]).not.toHaveProperty('status');
   });
 
-  it('does not copy an unrecognized response field into local lifecycle state', async () => {
-    const { service, upserts, updates } = harness({
+  it('rejects an unrecognized response field without changing local lifecycle state', async () => {
+    const { service, upserts, updates, peerHttp } = harness({
       directRow: {
         domain: 'peer.test',
         rootPublicKey: 'r'.repeat(44),
@@ -378,9 +389,9 @@ describe('ProfileNamespaceRefreshService lifecycle status', () => {
       { publisherNamespaceId: 12, profileNamespaceId: 9 },
       5n,
     );
-    await vi.waitFor(() => expect(upserts).toHaveLength(1));
-    expect(upserts[0]).not.toHaveProperty('status');
-    expect(updates[0]).not.toHaveProperty('status');
+    await vi.waitFor(() => expect(peerHttp.get).toHaveBeenCalledOnce());
+    expect(upserts).toEqual([]);
+    expect(updates).toEqual([]);
   });
 
   it('converges a reset-retired publisher self-row to ARCHIVED with its retained bindings', async () => {

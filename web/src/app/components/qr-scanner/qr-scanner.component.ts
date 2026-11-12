@@ -14,7 +14,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { AppBackDispatcherService } from '../../services/app-back-dispatcher.service';
 
 /** How long the green-check "captured" badge holds over the cutout before the overlay dismisses — long enough
- *  to register that the decode succeeded, short enough not to feel laggy. Mirrors the qr-login-page scanned
+ *  to register that the decode succeeded, short enough not to feel laggy. Mirrors the qr-stage scanned
  *  badge so both sides of QR sign-in share one confirmation cue. */
 const CAPTURED_BADGE_MS = 320;
 

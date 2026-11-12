@@ -1,0 +1,80 @@
+<div class="qr-stage">
+  <div class="qr-frame">
+    <div class="qr-image" [class.is-scanned]="view() === 'scanned'">
+      @switch (view()) {
+        @case ('pending') {
+          <div class="qr-canvas">
+            <app-qr-code
+              [value]="qrToken() ?? ''"
+              [ariaLabel]="'auth.qrTitle' | transloco"
+            />
+          </div>
+        }
+        @case ('scanned') {
+          <div class="qr-canvas is-dimmed">
+            <app-qr-code
+              [value]="qrToken() ?? ''"
+              [ariaLabel]="'auth.qrTitle' | transloco"
+            />
+          </div>
+          <div class="qr-scanned-overlay">
+            <span class="qr-scan-badge" aria-hidden="true">
+              <app-icon
+                [type]="AppIcon.CHECK"
+                [style]="{ width: '32px', height: '32px' }"
+              />
+            </span>
+            <p class="scanned-text">{{ 'auth.qrScanned' | transloco }}</p>
+          </div>
+        }
+        @case ('loading') {
+          <div class="qr-placeholder">
+            <mat-progress-spinner mode="indeterminate" [diameter]="32" />
+            <p class="loading-text">{{ 'auth.qrLoading' | transloco }}</p>
+          </div>
+        }
+        @case ('error') {
+          <div class="qr-error" role="alert">
+            <app-icon
+              class="qr-error__icon"
+              [type]="AppIcon.REPORT"
+              [style]="{ width: '22px', height: '22px' }"
+            />
+            <p class="qr-error__text">
+              {{ 'auth.qrCreateError' | transloco }}
+            </p>
+            <button
+              mat-flat-button
+              color="primary"
+              type="button"
+              class="qr-retry-btn"
+              (click)="retry()"
+            >
+              <app-icon
+                matButtonIcon
+                [type]="AppIcon.REFRESH"
+                [style]="{ width: '16px', height: '16px' }"
+              />
+              {{ 'auth.qrRetry' | transloco }}
+            </button>
+          </div>
+        }
+      }
+    </div>
+
+    <div class="progress-slot">
+      @if (view() === 'pending' || view() === 'scanned') {
+        <mat-progress-bar
+          mode="determinate"
+          [value]="qrRemainingPct()"
+          [class.is-warning]="qrRemainingSec() <= QR_WARN_SEC"
+        ></mat-progress-bar>
+      }
+    </div>
+    <p class="progress-time">
+      @if (view() === 'pending' || view() === 'scanned') {
+        {{ 'auth.qrExpiresIn' | transloco: { time: qrRemainingText() } }}
+      }
+    </p>
+  </div>
+</div>

@@ -14,7 +14,6 @@ describe('CallEventService web call routing', () => {
     handleSignal: vi.fn().mockName('handleSignal'),
     onIncoming: vi.fn().mockName('onIncoming'),
     applyLifecycle: vi.fn().mockName('applyLifecycle'),
-    rejected$: new Subject<'busy'>(),
   };
 
   beforeEach(() => {
@@ -199,7 +198,6 @@ describe('CallEventService web call routing', () => {
     const service = TestBed.inject(CallEventService);
     const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
     listener({ ...IDLE_CALL, phase: 'connected', callSid: 'call-local' });
-    service.markLocalTermination('call-local');
 
     listener({
       ...IDLE_CALL,
@@ -239,20 +237,37 @@ describe('CallEventService web call routing', () => {
     }
   });
 
-  it('shows native busy rejection as a terminal call state', () => {
-    vi.useFakeTimers();
-    const service = TestBed.inject(CallEventService);
-    const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
-    listener({ ...IDLE_CALL, phase: 'ringing', callSid: 'call-5' });
-    listener({ ...IDLE_CALL });
-    adapter.rejected$.next('busy');
-
-    expect(service.callState().phase).toBe('ended');
-    expect(service.callState().terminalReason).toBe('busy');
-    vi.advanceTimersByTime(1799);
-    expect(service.callState().phase).toBe('ended');
-    vi.advanceTimersByTime(1);
-    expect(service.callState()).toEqual({ ...IDLE_CALL });
-    vi.useRealTimers();
-  });
+  it.each(['unreachable', 'failed', 'busy'] as const)(
+    'preserves the Rust-owned %s reason through native cleanup',
+    (terminalReason) => {
+      vi.useFakeTimers();
+      try {
+        const service = TestBed.inject(CallEventService);
+        window.__SOMS_CALL_EVENT__!({
+          ...IDLE_CALL,
+          phase: 'starting',
+          callSid: 'native-call',
+        });
+        window.__SOMS_CALL_EVENT__!({
+          ...IDLE_CALL,
+          phase: 'ended',
+          callSid: 'native-call',
+          terminalReason,
+        });
+        window.__SOMS_CALL_EVENT__!({ ...IDLE_CALL });
+        expect(service.callState()).toMatchObject({
+          phase: 'ended',
+          callSid: 'native-call',
+          terminalReason,
+        });
+        const displayMs = terminalReason === 'busy' ? 1800 : 1400;
+        vi.advanceTimersByTime(displayMs - 1);
+        expect(service.callState().phase).toBe('ended');
+        vi.advanceTimersByTime(1);
+        expect(service.callState()).toEqual(IDLE_CALL);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });

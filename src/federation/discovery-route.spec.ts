@@ -64,7 +64,7 @@ function service() {
     {} as never,
     {} as never,
     {
-      get: () => ({ connectTimeoutSec: 2, callTimeoutSec: 2 }),
+      get: () => ({ connectTimeoutSec: 2, requestIdleTimeoutSec: 2 }),
     } as never,
   );
   services.push(target);
@@ -84,7 +84,7 @@ async function server(label: string) {
 }
 async function request(s: DiscoveryService) {
   const base = await s.resolveBase('peer.example');
-  const response = await s.request(`${base}/.well-known/somfp`);
+  const response = await s.request(`${base}/somfp/discovery`);
   return response.json() as Promise<{
     label: string;
     host: string;
@@ -144,7 +144,7 @@ describe('federation route lifecycle with real Undici Agents', () => {
       expect(await request(s)).toEqual({
         label: 'first',
         host: `peer.example:${port}`,
-        path: '/.well-known/somfp',
+        path: '/somfp/discovery',
       });
       await s.refreshRoute('peer.example');
     }

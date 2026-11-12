@@ -3,7 +3,6 @@ import { TranslocoService } from '@jsverse/transloco';
 import { AppIconType } from '../icon/model';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
-import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
 import { WebPushService } from '../../services/web-push.service';
 import { WebsocketService } from '../../services/websocket.service';
@@ -14,18 +13,16 @@ import { SettingsLanguageComponent } from './settings-language.component';
 import { SettingsMediaComponent } from './settings-media.component';
 import { SettingsPushComponent } from './settings-push.component';
 import { SettingsNotificationsComponent } from './settings-notifications.component';
+import { SettingsDesktopNotificationsComponent } from './settings-desktop-notifications.component';
 import { SettingsConnectionComponent } from './settings-connection.component';
 import { SettingsAboutComponent } from './settings-about.component';
 import { SettingsDevicesComponent } from './settings-devices.component';
 import { SettingsDataComponent } from './settings-data.component';
-import { SettingsChatComponent } from './settings-chat.component';
-import { ChatAppearanceService } from '../../services/chat-appearance.service';
 
 /** Identifiers for the Settings categories (drives the aside-stack `params.category` on mobile, and the
  *  local selection signal in the desktop/tablet dialog). */
 export type SettingsCategoryId =
   | 'appearance'
-  | 'chat'
   | 'language'
   | 'media'
   | 'devices'
@@ -58,9 +55,7 @@ export interface SettingsCategory {
 /** Services the category summaries/visibility read. Passed in by each host component. */
 export interface SettingsCategoryDeps {
   readonly theme: ThemeService;
-  readonly chatAppearance: ChatAppearanceService;
   readonly language: LanguageService;
-  readonly mediaSize: MediaSizeThresholdService;
   readonly bgSync: BackgroundSyncService;
   readonly webPush: WebPushService;
   readonly ws: WebsocketService;
@@ -88,15 +83,6 @@ export function buildSettingsCategories(
           : 'settings.themeDark';
     return d.transloco.translate(key);
   };
-  const thresholdLabel = (): string => {
-    void d.language.lang();
-    const policy = d.mediaSize.policy();
-    if (policy.mode === 'unlimited')
-      return d.transloco.translate('settings.noLimit');
-    const kb = policy.bytes / 1024;
-    if (kb >= 1024) return `${kb / 1024} MB`;
-    return `${kb} KB`;
-  };
   const pushSummary = (): string => {
     void d.language.lang();
     return d.transloco.translate(
@@ -107,6 +93,7 @@ export function buildSettingsCategories(
   };
   const notifSummary = (): string => {
     void d.language.lang();
+    if (isTauri()) return d.transloco.translate('settings.nativeNotifSummary');
     const p = d.webPush.permission();
     if (p === 'granted') return d.transloco.translate('settings.notifOn');
     if (p === 'unsupported')
@@ -137,22 +124,6 @@ export function buildSettingsCategories(
       order: 0,
     },
     {
-      id: 'chat',
-      icon: AppIconType.CHATS,
-      titleKey: 'settings.chat',
-      summary: () => {
-        void d.language.lang();
-        return d.transloco.translate(
-          d.chatAppearance.openPosition() === 'latest'
-            ? 'settings.chatOpenLatest'
-            : 'settings.chatOpenLastRead',
-        );
-      },
-      component: SettingsChatComponent,
-      visible: () => true,
-      order: 1,
-    },
-    {
       id: 'language',
       icon: AppIconType.GLOBE,
       titleKey: 'settings.language',
@@ -165,7 +136,7 @@ export function buildSettingsCategories(
       id: 'media',
       icon: AppIconType.IMAGE,
       titleKey: 'settings.media',
-      summary: thresholdLabel,
+      summary: () => d.transloco.translate('settings.uploadConcurrency'),
       component: SettingsMediaComponent,
       visible: () => true,
       order: 2,
@@ -194,14 +165,16 @@ export function buildSettingsCategories(
       order: 3,
     },
     {
-      // Browser build only (PC browser + iOS PWA). Android uses FCM (the `push` category above); the
-      // Tauri desktop shell posts via window.__TAURI__.notification with no browser permission needed.
+      // Desktop uses native permissions and preferences; browsers use Web Push.
+      // Android retains its FCM-specific category above.
       id: 'notifications',
       icon: AppIconType.NOTIFICATIONS,
       titleKey: 'settings.notifications',
       summary: notifSummary,
-      component: SettingsNotificationsComponent,
-      visible: () => !isTauri(),
+      component: isTauri()
+        ? SettingsDesktopNotificationsComponent
+        : SettingsNotificationsComponent,
+      visible: () => !(isTauri() && isAndroid()),
       order: 3,
     },
     {

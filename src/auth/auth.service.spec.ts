@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AuthService } from './auth.service.js';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 /**
  * AuthService session-overview reads — the admin/device-management surface.
@@ -21,11 +22,17 @@ describe('AuthService (session overview → SessionToken)', () => {
   const pageRows = vi.fn();
   const countRows = vi.fn();
   const purgeRows = vi.fn();
+  const pageWhere = vi.fn();
+  const countWhere = vi.fn(() => countRows());
   const terminal = (result: (...args: unknown[]) => unknown) => {
     const chain: Record<string, unknown> = {};
     for (const method of ['innerJoin', 'where', 'orderBy', 'offset']) {
       chain[method] = vi.fn(() => chain);
     }
+    chain.where = vi.fn((where) => {
+      pageWhere(where);
+      return chain;
+    });
     chain.limit = vi.fn(() => result());
     return chain;
   };
@@ -75,11 +82,13 @@ describe('AuthService (session overview → SessionToken)', () => {
     pageRows.mockReset().mockResolvedValue([]);
     countRows.mockReset().mockResolvedValue([{ value: 0 }]);
     purgeRows.mockReset().mockResolvedValue([]);
+    pageWhere.mockClear();
+    countWhere.mockClear();
     select.mockReset();
     select
       .mockImplementationOnce(() => ({ from: vi.fn(() => terminal(pageRows)) }))
       .mockImplementationOnce(() => ({
-        from: vi.fn(() => ({ where: vi.fn(() => countRows()) })),
+        from: vi.fn(() => ({ where: countWhere })),
       }));
   });
 
@@ -141,6 +150,18 @@ describe('AuthService (session overview → SessionToken)', () => {
   it('applies the userId filter into the AND clause', async () => {
     await svc.listAllSessions({ userId: 7 });
     expect(pageRows).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies the same combined user, IP, and client filters to rows and count', async () => {
+    await svc.listAllSessions({ userId: 7, ip: '192.0.2', client: 'desktop' });
+    const where = pageWhere.mock.calls[0][0];
+    expect(countWhere.mock.calls[0][0]).toBe(where);
+    const query = new PgDialect().sqlToQuery(where);
+    expect(query.sql).toContain('"client" =');
+    expect(query.sql).toContain('"userId" =');
+    expect(query.params).toEqual(
+      expect.arrayContaining([7, 'desktop', '%192.0.2%']),
+    );
   });
 
   // ── purgeAllSessions (force every user to re-login) ─────────────────────────────────────────

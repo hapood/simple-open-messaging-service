@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { formatApiError } from '@/lib/format-error';
 
 const fields = [
+  ['maxFileBytes', 'maxFileBytes'],
   ['dailyMsgLimit', 'messages'],
   ['dailyRequestLimit', 'requests'],
   ['dailyFileLimit', 'files'],
@@ -20,6 +21,7 @@ const fields = [
 ] as const;
 type Values = Record<(typeof fields)[number][0], string>;
 const empty: Values = {
+  maxFileBytes: '',
   dailyMsgLimit: '',
   dailyRequestLimit: '',
   dailyFileLimit: '',
@@ -47,18 +49,16 @@ export function QuotaDefaultsPage() {
     setUsers(strings(settings.data.userQuotaDefaults));
     setPeers(strings(settings.data.federationQuotaDefaults));
   }, [settings.data]);
-  const valid = (values: Values, peer: boolean) =>
-    fields
-      .filter(([key]) => peer || key !== 'dailySignalLimit')
-      .every(
-        ([key]) =>
-          /^\d+$/.test(values[key]) &&
-          Number.isSafeInteger(Number(values[key])),
-      );
+  const valid = (values: Values) =>
+    fields.every(
+      ([key]) =>
+        /^\d+$/.test(values[key]) && Number.isSafeInteger(Number(values[key])),
+    );
   const save = async (peer: boolean) => {
     const value = peer ? peers : users;
-    if (!valid(value, peer)) return;
+    if (!valid(value)) return;
     const counts = {
+      maxFileBytes: Number(value.maxFileBytes),
       dailyMsgLimit: Number(value.dailyMsgLimit),
       dailyRequestLimit: Number(value.dailyRequestLimit),
       dailyFileLimit: Number(value.dailyFileLimit),
@@ -73,7 +73,8 @@ export function QuotaDefaultsPage() {
       else
         await userMutation.mutateAsync({
           ...counts,
-          dailyFileBytesLimit: value.dailyFileBytesLimit,
+          dailyFileBytesLimit: Number(value.dailyFileBytesLimit),
+          dailySignalLimit: Number(value.dailySignalLimit),
         });
       toast.success(
         t(
@@ -109,32 +110,30 @@ export function QuotaDefaultsPage() {
             )}
           </p>
           <div className="flex flex-wrap gap-3">
-            {fields
-              .filter(([key]) => peer || key !== 'dailySignalLimit')
-              .map(([key, label]) => (
-                <label className="space-y-1" key={key}>
-                  <span>{t(`settings.quotas.${label}`)}</span>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={1}
-                    className="w-40"
-                    value={(peer ? peers : users)[key]}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      (peer ? setPeers : setUsers)((previous) => ({
-                        ...previous,
-                        [key]: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              ))}
+            {fields.map(([key, label]) => (
+              <label className="space-y-1" key={key}>
+                <span>{t(`settings.quotas.${label}`)}</span>
+                <Input
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="w-40"
+                  value={(peer ? peers : users)[key]}
+                  disabled={!canEdit}
+                  onChange={(event) =>
+                    (peer ? setPeers : setUsers)((previous) => ({
+                      ...previous,
+                      [key]: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+            ))}
           </div>
           <Button
             disabled={
               !canEdit ||
-              !valid(peer ? peers : users, peer) ||
+              !valid(peer ? peers : users) ||
               userMutation.isPending ||
               peerMutation.isPending
             }

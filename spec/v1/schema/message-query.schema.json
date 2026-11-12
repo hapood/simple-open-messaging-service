@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:somfp:v1:message-query",
-  "title": "GET /s2s/v1/messages response data",
+  "title": "GET /somfp/v1/messages response data",
   "$defs": {
     "quoteTarget": {
       "type": "object",

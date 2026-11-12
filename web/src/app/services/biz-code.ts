@@ -27,6 +27,7 @@ export const BusinessCode = {
   QR_EXPIRED: 10016,
   PASSWORD_NOT_SET: 10017,
   MUST_CHANGE_PASSWORD: 10018,
+  FILE_TOO_LARGE: 10027,
   INTERNAL: 10999,
   FRIEND_SELF: 20001,
   FRIEND_NOT_FOUND: 20002,
@@ -53,6 +54,7 @@ export const BusinessCode = {
   FEDERATION_NAMESPACE_UNRECOVERABLE: 50032,
   FEDERATION_PROFILE_UNRECOVERABLE: 50033,
   CALL_BUSY: 70004,
+  CALL_PEER_UNREACHABLE: 70006,
 } as const;
 
 /**
@@ -81,6 +83,7 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
   [BusinessCode.QR_EXPIRED]: 'errors.biz.qrExpired',
   [BusinessCode.PASSWORD_NOT_SET]: 'errors.biz.passwordNotSet',
   [BusinessCode.MUST_CHANGE_PASSWORD]: 'errors.biz.mustChangePassword',
+  [BusinessCode.FILE_TOO_LARGE]: 'errors.biz.fileTooLarge',
   [BusinessCode.INTERNAL]: 'errors.biz.internal',
   [BusinessCode.FRIEND_SELF]: 'friend.error.canNotAddSelf',
   [BusinessCode.FRIEND_NOT_FOUND]: 'errors.biz.notFriends',
@@ -89,7 +92,8 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
   [BusinessCode.INVITE_NOT_YOURS]: 'errors.biz.inviteNotYours',
   [BusinessCode.INVITE_ALREADY_HANDLED]: 'errors.biz.inviteAlreadyHandled',
   [BusinessCode.MESSAGE_EMPTY]: 'errors.biz.messageEmpty',
-  [BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED]: 'errors.biz.forwardMaxDepthExceeded',
+  [BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED]:
+    'errors.biz.forwardMaxDepthExceeded',
   [BusinessCode.FORWARD_INVALID_BUNDLE]: 'errors.biz.forwardInvalidBundle',
   [BusinessCode.THREAD_NOT_APPROVED]: 'errors.biz.threadNotApproved',
   [BusinessCode.THREAD_NOT_FOUND]: 'errors.biz.threadNotFound',

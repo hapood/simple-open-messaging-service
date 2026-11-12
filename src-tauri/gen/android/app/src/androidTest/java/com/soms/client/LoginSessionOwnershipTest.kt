@@ -25,8 +25,8 @@ class LoginSessionOwnershipTest {
 
     @Test
     fun blankSessionUuidIsRejectedBeforeAnyStorageOrRustCall() {
-        expectIllegalArgument { RustRuntimeBridge.setSessionToken(null, "") }
-        expectIllegalArgument { RustRuntimeBridge.setSessionToken("token", "   ") }
+        expectIllegalArgument { RustRuntimeBridge.storeSessionToken(null, "", Runnable {}) }
+        expectIllegalArgument { RustRuntimeBridge.storeSessionToken("token", "   ", Runnable {}) }
         expectIllegalArgument { SomsSecureStore.setSessionToken(context, null, "") }
         expectIllegalArgument { SomsSecureStore.setSessionToken(context, "token", "\t") }
     }
@@ -45,6 +45,8 @@ class LoginSessionOwnershipTest {
         val originalUuid = SomsSecureStore.getLoginSessionId(context)
         val activeUuid = UUID.randomUUID().toString()
         val predecessorUuid = UUID.randomUUID().toString()
+        // A logged-in device restores an admitted Rust owner; its credentials must survive this test.
+        val admitted = originalUuid != null && RustRuntimeBridge.isLoginSessionCurrent(originalUuid)
         try {
             prefs.edit()
                 .putString("session_token", "active-token")
@@ -54,16 +56,22 @@ class LoginSessionOwnershipTest {
             assertEquals("active-token", SomsSecureStore.getSessionToken(context))
             assertEquals(activeUuid, SomsSecureStore.getLoginSessionId(context))
 
-            // Attempt to clear using the predecessor UUID — must be a no-op that preserves the active token.
-            SomsSecureStore.setSessionToken(context, null, predecessorUuid)
+            // Clearing with the predecessor UUID never removes the stored credential. When a
+            // login is admitted, Rust refuses the mismatched UUID before any storage callback
+            // runs; when none is admitted, the storage callback's own UUID guard makes it a
+            // no-op that preserves the active entry.
+            if (admitted) {
+                try {
+                    SomsSecureStore.setSessionToken(context, null, predecessorUuid)
+                    fail("clearing a predecessor UUID must be refused while a login is admitted")
+                } catch (expected: IllegalStateException) {
+                }
+            } else {
+                SomsSecureStore.setSessionToken(context, null, predecessorUuid)
+            }
 
             assertEquals("active-token", SomsSecureStore.getSessionToken(context))
             assertEquals(activeUuid, SomsSecureStore.getLoginSessionId(context))
-
-            // Clearing with the exact active UUID succeeds in removing credentials without touching Rust
-            // because SomsSecureStore checks and clears its own state.
-            // Note: Rust would reject an unadmitted token, but setSessionToken(ctx, null, activeUuid)
-            // clears secure store when currentUuid matches.
         } finally {
             val cleanup = prefs.edit()
             if (originalToken != null) cleanup.putString("session_token", originalToken) else cleanup.remove("session_token")
@@ -76,16 +84,21 @@ class LoginSessionOwnershipTest {
     fun residualTokenClearFailsClosedExactlyWhileALoginIsAdmitted() {
         val stored = SomsSecureStore.getLoginSessionId(context)
         val admitted = stored != null && RustRuntimeBridge.isLoginSessionCurrent(stored)
+        // Counting storage only: this test must never destructively clear real device credentials.
+        val storageRuns = java.util.concurrent.atomic.AtomicInteger()
+        val storage = Runnable { storageRuns.incrementAndGet() }
         if (admitted) {
             try {
-                RustRuntimeBridge.discardResidualToken()
+                RustRuntimeBridge.discardResidualToken(storage)
                 fail("residual clear must fail while a login is admitted")
             } catch (expected: IllegalStateException) {
                 // Rust refused: the admitted credential is not residual.
             }
+            assertEquals("refusal must run no storage callback", 0, storageRuns.get())
         } else {
             // No admitted login: the residual credential is unowned and must clear without error.
-            RustRuntimeBridge.discardResidualToken()
+            RustRuntimeBridge.discardResidualToken(storage)
+            assertEquals("an unowned residual credential clears exactly once", 1, storageRuns.get())
         }
     }
 

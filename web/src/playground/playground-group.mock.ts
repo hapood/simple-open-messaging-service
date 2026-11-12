@@ -5,10 +5,8 @@ import type {
   RequestDecisionResult,
   RequestRecord,
 } from '../../../shared/relationship-request';
-import {
-  GroupService,
-  type GroupInviteCandidate,
-} from '../app/services/group.service';
+import { GroupService } from '../app/services/group.service';
+import { BusinessCode } from '../app/services/biz-code';
 import {
   createGroupConversation,
   type StandardResponse,
@@ -54,25 +52,27 @@ export class PlaygroundGroupService
         isDeleted: false,
       });
       this.state.conversations.setRelatedConversations([
-        createGroupConversation(
-          id,
-          {
-            ...params,
-            id,
-            account,
-            namespaceId: 0,
+        createGroupConversation({
+          threadId: id,
+          account,
+          publisherNamespaceId: 0,
+          profileRev: 1,
+          profile: {
+            name: params.name,
+            bio: params.description ?? '',
+            avatarDigest: null,
+          },
+          meta: {
             memberCount: 1,
-            profileRev: 1,
             groupMetaFeedId: '1',
-            announcement: { feedId: '1', text: null },
+            announcementFeedId: '1',
+            announcementText: null,
           },
-          {
-            role: 'OWNER',
-            groupMetaTargetFeedId: '1',
-            joinRequestEndFeedId: 0,
-            joinRequestReadFeedId: 0,
-          },
-        ),
+          role: 'OWNER',
+          groupMetaFeedEndId: '1',
+          joinRequestEndFeedId: 0,
+          joinRequestReadFeedId: 0,
+        }),
       ]);
       this.state.rosters.set(id, [this.state.member(this.state.self, 'OWNER')]);
       return of(ok({ threadId: id, groupId: id }));
@@ -82,23 +82,19 @@ export class PlaygroundGroupService
   updateGroup(...[params]: Args<'updateGroup'>): Result<'updateGroup'> {
     return defer(() => {
       this.requireManager(params.groupId);
-      const { groupId, ...fields } = params;
-      const patch = Object.fromEntries(
-        Object.entries(fields).filter(([, value]) => value !== undefined),
-      );
-      this.state.conversations.applyGroupUpdate(groupId, patch);
+      const { groupId } = params;
+      const profile = { ...this.group(groupId).profile };
+      if (params.name !== undefined) profile.name = params.name;
+      if (params.description !== undefined) profile.bio = params.description;
+      this.state.conversations.applyGroupUpdate(groupId, { profile });
       const thread = this.group(groupId);
-      const user = this.state.user(
-        thread.group.account,
-        thread.group.namespaceId,
-      );
+      const user = this.state.user(thread.account, thread.publisherNamespaceId);
       if (user) {
-        Object.assign(user, {
-          name: thread.group.name,
-          bio: thread.group.description,
-          avatar: thread.group.avatar,
+        this.state.publishProfile(user, {
+          name: thread.profile.name,
+          bio: thread.profile.bio ?? '',
+          avatar: params.avatar ?? user.avatar,
         });
-        user.profileRev++;
         this.state.conversations.applyThreadMeta(groupId, {
           profileRev: user.profileRev,
         });
@@ -107,79 +103,32 @@ export class PlaygroundGroupService
     });
   }
 
-  queryInviteCandidates(
-    ...[params]: Args<'queryInviteCandidates'>
-  ): Result<'queryInviteCandidates'> {
-    return defer(() => {
-      this.requireManager(params.groupId);
-      const search = params.search?.trim().toLowerCase() ?? '';
-      const rows: GroupInviteCandidate[] = this.state.conversations
-        .items()
-        .flatMap((thread) => {
-          if (
-            thread.type !== 'P2P' ||
-            thread.friendshipActive === false ||
-            thread.blocked ||
-            thread.threadId <= (params.afterThreadId ?? 0)
-          )
-            return [];
-          const user = this.state.user(
-            thread.peerUser.account,
-            thread.peerUser.namespaceId,
-          )!;
-          if (
-            search &&
-            !`${user.account} ${user.name}`.toLowerCase().includes(search)
-          )
-            return [];
-          return [
-            {
-              threadId: thread.threadId,
-              namespaceId: user.namespaceId,
-              profileRev: user.profileRev,
-              account: user.account,
-              name: user.name,
-              avatar: user.avatar,
-              bio: user.bio,
-              state: this.candidateState(params.groupId, user),
-            },
-          ];
-        })
-        .sort((a, b) => a.threadId! - b.threadId!);
-      const data = rows.slice(0, Math.max(1, Math.min(50, params.take ?? 20)));
-      const hasMore = rows.length > data.length;
-      return of(
-        ok({
-          data,
-          hasMore,
-          afterThreadId: hasMore ? data.at(-1)!.threadId! : null,
-        }),
-      );
-    });
-  }
-
   inviteUsers(...[params]: Args<'inviteUsers'>): Result<'inviteUsers'> {
     return defer(() => {
       this.requireManager(params.groupId);
-      const group = this.group(params.groupId).group;
+      const conversation = this.group(params.groupId);
       const invited: Array<{ account: string; namespaceId: number }> = [];
       const skipped: Array<{
         account: string;
         namespaceId: number;
         reason: string;
-        code: string;
+        code: number;
         message: string;
       }> = [];
       for (const target of params.users) {
-        const friend = this.state.conversations
-          .items()
-          .find(
-            (thread) =>
-              thread.type === 'P2P' &&
-              thread.friendshipActive !== false &&
-              !thread.blocked &&
-              sameIdentity(thread.peerUser, target),
-          );
+        const friend = this.state.conversations.items().find(
+          (thread) =>
+            thread.type === 'P2P' &&
+            thread.conversationState === 'ACTIVE' &&
+            !thread.blocked &&
+            sameIdentity(
+              {
+                account: thread.account,
+                namespaceId: thread.publisherNamespaceId,
+              },
+              target,
+            ),
+        );
         const reason = !friend
           ? 'FRIEND_REQUIRED'
           : this.candidateState(params.groupId, target);
@@ -187,15 +136,26 @@ export class PlaygroundGroupService
           skipped.push({
             account: target.account,
             namespaceId: target.namespaceId,
-            reason,
-            code: reason,
+            reason:
+              reason === 'MEMBER'
+                ? 'ALREADY_MEMBER'
+                : reason === 'INVITED'
+                  ? 'ALREADY_INVITED'
+                  : reason,
+            code:
+              reason === 'FRIEND_REQUIRED'
+                ? BusinessCode.GROUP_FORBIDDEN
+                : BusinessCode.ALREADY_EXISTS,
             message: reason,
           });
           continue;
         }
         this.state.addRequest(
           'GROUP_INVITATION',
-          group,
+          {
+            account: conversation.account,
+            namespaceId: conversation.publisherNamespaceId,
+          },
           target,
           'OUTGOING',
           params.groupId,
@@ -342,9 +302,6 @@ export class PlaygroundGroupService
   dissolveGroup(...[params]: Args<'dissolveGroup'>): Result<'dissolveGroup'> {
     return defer(() => {
       this.requireOwner(params.groupId);
-      this.state.conversations.applyGroupUpdate(params.groupId, {
-        dissolvedAt: Date.now(),
-      });
       this.state.conversations.applyThreadMeta(params.groupId, {
         conversationState: 'READ_ONLY',
         joinRequestReadFeedId: -1,
@@ -363,13 +320,18 @@ export class PlaygroundGroupService
   ): Result<'setAnnouncement'> {
     return defer(() => {
       this.requireManager(groupId);
-      const feedId = Number(this.group(groupId).group.groupMetaFeedId) + 1;
+      const feedId = Number(this.group(groupId).meta.groupMetaFeedId) + 1;
       this.state.conversations.applyGroupUpdate(groupId, {
-        groupMetaFeedId: String(feedId),
-        announcement: { feedId: String(feedId), text },
+        meta: {
+          groupMetaFeedId: String(feedId),
+          announcementFeedId: String(feedId),
+          announcementText: text,
+          announcementCreatedAt: Date.now(),
+          announcementOriginCreatedAt: null,
+        },
       });
       this.state.conversations.applyThreadMeta(groupId, {
-        groupMetaTargetFeedId: String(feedId),
+        groupMetaFeedEndId: String(feedId),
       });
       return of(ok({ feedId }));
     });
@@ -400,7 +362,6 @@ export class PlaygroundGroupService
     const thread = this.group(groupId);
     if (
       thread.conversationState === 'READ_ONLY' ||
-      thread.group.dissolvedAt ||
       !['OWNER', 'ADMIN'].includes(thread.role ?? '')
     )
       throw new Error('Active group manager required');
@@ -413,7 +374,7 @@ export class PlaygroundGroupService
   private candidateState(
     groupId: number,
     target: { account: string; namespaceId: number },
-  ): GroupInviteCandidate['state'] {
+  ): 'AVAILABLE' | 'INVITED' | 'MEMBER' {
     if (
       this.state.rosters
         .get(groupId)

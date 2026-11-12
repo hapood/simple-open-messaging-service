@@ -11,7 +11,6 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import type { HistoryAnchor } from '../../../services/history-anchor';
 import { ImageDownloadService } from '../../../services/image-download.service';
-import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { SnapshotAvatarComponent } from '../../user-avatar/snapshot-avatar.component';
 import { UserAvatarType } from '../../user-avatar/model';
 
@@ -30,7 +29,6 @@ export class QuoteBlockComponent {
   readonly isSelf = input(false);
   readonly quoteJump = output<HistoryAnchor>();
   private readonly downloads = inject(ImageDownloadService);
-  private readonly threshold = inject(MediaSizeThresholdService);
   readonly displayQuote = computed(() => {
     const quote = this.quote();
     return quote?.status ? { seq: quote.seq, status: quote.status } : quote;
@@ -50,11 +48,6 @@ export class QuoteBlockComponent {
       msgId: this.displayQuote()?.seq,
       src: this.displayQuote()?.image ?? '',
     }),
-  );
-  readonly gated = computed(
-    () =>
-      this.displayQuote()?.contentType === 'IMAGE' &&
-      this.threshold.shouldDefer(this.displayQuote()?.imageSize ?? 0),
   );
   readonly avatarType = computed(() =>
     this.displayQuote()?.imageIdentity?.startsWith('!')

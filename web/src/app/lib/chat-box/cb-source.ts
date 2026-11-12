@@ -54,6 +54,8 @@ import type { Observable } from 'rxjs';
 /** init business params (the production HTTP side needs chatId etc.; the mock ignores them. Extend with threadId etc. as needed). */
 export interface CbSourceInitOpts {
   chatId?: number;
+  /** Cancels the binding's consumer; sources must propagate it to owned I/O. */
+  signal?: AbortSignal;
 }
 
 /** A viewport-owned edge request. Unsubscribing synchronously detaches this consumer from the source. */
@@ -64,14 +66,6 @@ export type CbDemandResult<T> =
   | { readonly kind: 'items'; readonly items: CbItem<T>[] }
   | { readonly kind: 'boundary' }
   | { readonly kind: 'error'; readonly error: unknown };
-
-/** Internal kernel control-flow error used to unwind an awaited subscription after unsubscribe. */
-export class CbDemandCancelled extends Error {
-  constructor() {
-    super('chat-box demand cancelled');
-    this.name = 'CbDemandCancelled';
-  }
-}
 
 /**
  * The data source interface the kernel depends on (generic).

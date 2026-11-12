@@ -102,7 +102,7 @@ describe('database-backed signing-key rotation', () => {
 
   async function wellKnown(): Promise<WellKnownDocument> {
     const response = await fetch(
-      `http://127.0.0.1:${appA.port}/.well-known/somfp`,
+      `http://127.0.0.1:${appA.port}/somfp/discovery`,
       { headers: { Accept: 'application/json' } },
     );
     expect(response.status).toBe(200);

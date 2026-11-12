@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  probeFederationHealth,
   listFederationPeers,
   getFederationPeer,
   federationPeerNamespaces,
@@ -15,6 +16,14 @@ import {
 function useInvalidateFederation() {
   const qc = useQueryClient();
   return () => qc.invalidateQueries({ queryKey: ['admin', 'federation'] });
+}
+
+export function useProbeFederationHealth() {
+  const invalidate = useInvalidateFederation();
+  return useMutation({
+    mutationFn: probeFederationHealth,
+    onSettled: invalidate,
+  });
 }
 
 export function useFederationPeers(q: FederationPeersQuery) {

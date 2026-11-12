@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { Client } from 'pg';
+import { RESTORE_SYSTEM_ACCOUNT_SQL } from './support/database-baseline.js';
 
 export function databaseUrl(baseUrl: string, database: string): string {
   const url = new URL(baseUrl);
@@ -73,17 +74,16 @@ export async function resetE2EWorkerDatabase(
         );
       }
       await client.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
-      // The retained sentinel row carries the Profile Namespace Feed allocator;
-      // a previous spec may have advanced it. Reset it so specs can assert
-      // absolute feed positions from 1.
+      // Recreate the independent publisher allocator after truncation.
       await client.query(
-        'INSERT INTO "IdentityNamespace" (id, domain, "profileNamespaceFeedEndId") VALUES (0, $1, 0) ' +
-          'ON CONFLICT (id) DO UPDATE SET "profileNamespaceFeedEndId" = 0',
+        'INSERT INTO "IdentityNamespace" (id, domain, "signingKeyCreatedAt") VALUES (0, $1, 0) ' +
+          'ON CONFLICT (id) DO NOTHING',
         [process.env.SOMS_DOMAIN ?? 'e2e-local.test'],
       );
       await client.query(
-        'INSERT INTO "Account" (account, kind, "disabledAt") VALUES (\'$system\', \'SYSTEM\', CURRENT_TIMESTAMP)',
+        'INSERT INTO "ProfileNamespaceFeedHead" (id, "endId") VALUES (0, 0)',
       );
+      await client.query(RESTORE_SYSTEM_ACCOUNT_SQL);
       await client.query(
         'INSERT INTO "ProfileNamespaceChangeFeedHead" ("id", "endId") VALUES (0, 0) ON CONFLICT ("id") DO NOTHING',
       );

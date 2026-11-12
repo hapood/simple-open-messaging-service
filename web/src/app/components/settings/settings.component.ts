@@ -13,11 +13,9 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
-import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
 import { WebPushService } from '../../services/web-push.service';
 import { WebsocketService } from '../../services/websocket.service';
-import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import {
   buildSettingsCategories,
   type SettingsCategory,
@@ -81,18 +79,14 @@ export class SettingsComponent {
   private readonly transloco = inject(TranslocoService);
   private readonly theme = inject(ThemeService);
   private readonly language = inject(LanguageService);
-  private readonly mediaSize = inject(MediaSizeThresholdService);
   private readonly bgSync = inject(BackgroundSyncService);
   private readonly webPush = inject(WebPushService);
   private readonly ws = inject(WebsocketService);
-  private readonly chatAppearance = inject(ChatAppearanceService);
 
   /** The shared category registry (built once; the same array drives the desktop/tablet dialog too). */
   readonly categories = buildSettingsCategories({
     theme: this.theme,
-    chatAppearance: this.chatAppearance,
     language: this.language,
-    mediaSize: this.mediaSize,
     bgSync: this.bgSync,
     webPush: this.webPush,
     ws: this.ws,

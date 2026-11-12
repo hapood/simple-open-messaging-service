@@ -12,6 +12,7 @@ import {
   vi,
 } from 'vitest';
 import request from 'supertest';
+import { uploadMessagePart } from './support/upload';
 import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
@@ -21,7 +22,6 @@ import {
   message,
   messageAsset,
   pendingMedia,
-  quotaDailyUsage,
   relationshipPair,
   identityNamespace,
 } from '../src/database/schema.js';
@@ -185,14 +185,14 @@ describe('federation durable missed transport (two nodes)', () => {
         clientMessageId,
       });
     expect(staged.body.code).toBe(BusinessCode.OK);
-    const uploaded = await request(appA.baseUrl)
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', bytes, 'restart-recovery.png')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE');
+    const uploaded = await uploadMessagePart(
+      appA.baseUrl,
+      tokenA,
+      clientMessageId,
+      bytes,
+      'restart-recovery.png',
+      'IMAGE',
+    );
     expect(uploaded.body.code).toBe(BusinessCode.OK);
     const url = (uploaded.body.data as { url: string }).url;
     const digest = url.split('/').pop()!;
@@ -228,11 +228,11 @@ describe('federation durable missed transport (two nodes)', () => {
           .filter(
             (entry) =>
               entry.method === 'GET' &&
-              entry.path.startsWith('/s2s/v1/') &&
-              !entry.path.startsWith('/s2s/v1/health'),
+              entry.path.startsWith('/somfp/v1/') &&
+              !entry.path.startsWith('/somfp/v1/health'),
           );
         expect(signedGets[0]).toMatchObject({
-          path: expect.stringMatching(/^\/s2s\/v1\/state-feed\?/),
+          path: expect.stringMatching(/^\/somfp\/v1\/state-feed\?/),
           status: 200,
         });
         const dataGets = signedGets;
@@ -243,7 +243,7 @@ describe('federation durable missed transport (two nodes)', () => {
         expect(
           dataGets.some(
             (entry) =>
-              entry.path.startsWith('/s2s/v1/messages?') &&
+              entry.path.startsWith('/somfp/v1/messages?') &&
               entry.status === 200,
           ),
         ).toBe(true);
@@ -355,10 +355,6 @@ describe('federation durable missed transport (two nodes)', () => {
     );
     expect(aliceRelationship.pair).toMatchObject({ active: true });
 
-    const today = new Date();
-    const quotaDate = new Date(
-      Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
-    );
     const peer = await appB.database.query.identityNamespace.findFirst({
       where: and(
         eq(identityNamespace.domain, FED_DOMAIN_A),
@@ -366,17 +362,15 @@ describe('federation durable missed transport (two nodes)', () => {
       ),
     });
     expect(peer?.id).toBeTruthy();
-    const usedFiles =
-      (
-        await appB.database.query.quotaDailyUsage.findFirst({
-          where: and(
-            eq(quotaDailyUsage.namespaceId, peer!.id),
-            eq(quotaDailyUsage.date, quotaDate),
-            eq(quotaDailyUsage.category, 'files'),
-          ),
-        })
-      )?.count ?? 0;
     const adminCookie = await getAdminCookie(appB, 'quota-resume-admin');
+    const quotaResponse = await request(appB.baseUrl)
+      .post('/api/v1/admin/quota/nodes')
+      .set('Cookie', adminCookie)
+      .send({});
+    expect(quotaResponse.body.code).toBe(BusinessCode.OK);
+    const usedFiles = quotaResponse.body.data.find(
+      (node: { namespaceId: number }) => node.namespaceId === peer!.id,
+    ).usage.files.count;
     const limited = await request(appB.baseUrl)
       .post(`/api/v1/admin/quota/nodes/${FED_DOMAIN_A}`)
       .set('Cookie', adminCookie)
@@ -394,14 +388,14 @@ describe('federation durable missed transport (two nodes)', () => {
         clientMessageId,
       });
     expect(staged.body.code).toBe(BusinessCode.OK);
-    const uploaded = await request(appA.baseUrl)
-      .post('/api/v1/upload')
-      .set('Authorization', `Bearer ${tokenA}`)
-      .set('x-client-message-id', clientMessageId)
-      .attach('file', bytes, 'quota-resume.png')
-      .field('partId', randomUUID())
-      .field('position', '0')
-      .field('intent', 'IMAGE');
+    const uploaded = await uploadMessagePart(
+      appA.baseUrl,
+      tokenA,
+      clientMessageId,
+      bytes,
+      'quota-resume.png',
+      'IMAGE',
+    );
     expect(uploaded.body.code).toBe(BusinessCode.OK);
     const digest = (uploaded.body.data as { url: string }).url
       .split('/')

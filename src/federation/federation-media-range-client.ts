@@ -1,9 +1,14 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { DiscoveryService } from './discovery.service.js';
-import { S2sResponseError } from './federation-errors.js';
+import {
+  FederationTransportError,
+  S2sResponseError,
+} from './federation-errors.js';
+import { isRetryableFederationNetworkError } from './federation-http-scheduler.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
+import { CasOversizeError } from '../upload/upload.service.js';
 import { contentDigest, SignatureService } from './signature.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 
@@ -33,7 +38,9 @@ export class FederationMediaRangeClient {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
-    startOffset = 0,
+    startOffset: number,
+    declaredBytes: number,
+    signal?: AbortSignal,
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.transportConfig.get().mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
@@ -43,32 +50,46 @@ export class FederationMediaRangeClient {
       toAccount,
       seq: String(sourceSeq),
     });
-    const url = new URL(`${base}/s2s/v1/media/${digest}?${params.toString()}`);
+    const url = new URL(
+      `${base}/somfp/v1/media/${digest}?${params.toString()}`,
+    );
     let offset = startOffset;
     let total: number | null = null;
     let markedAlive = false;
 
     while (total === null || offset < total) {
+      signal?.throwIfAborted();
       const requestedEnd =
         total === null
-          ? chunkBytes - 1
+          ? offset + chunkBytes - 1
           : Math.min(offset + chunkBytes - 1, total - 1);
-      let unit = await this.requestUnit(url, peerDomain, offset, requestedEnd);
-      if (!markedAlive) {
-        await this.lifecycle.markContactSuccess(peerDomain);
-        markedAlive = true;
-      }
-      total = unit.total;
-      let unitLength = unit.end - unit.start + 1;
-      let buffer = Buffer.alloc(0);
       let retries = 0;
-
-      while (buffer.length !== unitLength) {
+      for (;;) {
+        let unit: FederationMediaRangeUnit | undefined;
+        let buffer: Buffer;
         try {
+          unit = await this.requestUnit(
+            url,
+            peerDomain,
+            offset,
+            requestedEnd,
+            signal,
+          );
+          if (unit.total !== declaredBytes) {
+            throw new Error('media declared size does not match Content-Range');
+          }
+          if (total !== null && unit.total !== total)
+            throw new Error('media total changed during transfer');
+          const unitLength = unit.end - unit.start + 1;
           const pieces: Buffer[] = [];
-          for await (const piece of this.webBody(unit.res)) pieces.push(piece);
-          buffer =
-            pieces.length === 0 ? Buffer.alloc(0) : Buffer.concat(pieces);
+          let received = 0;
+          for await (const piece of this.webBody(unit.res)) {
+            received += piece.length;
+            if (received > unitLength)
+              throw new CasOversizeError(BigInt(received - unitLength));
+            pieces.push(piece);
+          }
+          buffer = Buffer.concat(pieces);
           if (buffer.length !== unitLength) {
             throw new Error(
               `unit byte mismatch (got ${buffer.length}, expected ${unitLength})`,
@@ -81,23 +102,32 @@ export class FederationMediaRangeClient {
             throw new Error(`unit digest mismatch at offset ${offset}`);
           }
         } catch (error) {
+          signal?.throwIfAborted();
+          // Retry transport failures before headers as well as body/verification
+          // failures, but do not repeat permanent peer rejections.
+          if (error instanceof CasOversizeError) throw error;
+          if (!unit && !isRetryableFederationNetworkError(error)) throw error;
           if (++retries > this.transportConfig.get().mediaMaxChunkRetries) {
             throw new Error(
               `media fetch retries exhausted at offset ${offset}: ${(error as Error).message}`,
+              { cause: error },
             );
           }
-          unit = await this.requestUnit(
-            url,
-            peerDomain,
-            offset,
-            Math.min(offset + chunkBytes - 1, total - 1),
-          );
-          unitLength = unit.end - unit.start + 1;
-          buffer = Buffer.alloc(0);
+          continue;
+        } finally {
+          if (unit && !unit.res.body?.locked) {
+            await unit.res.body?.cancel().catch(() => undefined);
+          }
         }
+        total = unit.total;
+        if (!markedAlive) {
+          await this.lifecycle.markContactSuccess(peerDomain);
+          markedAlive = true;
+        }
+        yield buffer;
+        offset += buffer.length;
+        break;
       }
-      yield buffer;
-      offset += unitLength;
     }
   }
 
@@ -106,6 +136,7 @@ export class FederationMediaRangeClient {
     peerDomain: string,
     start: number,
     end: number,
+    signal?: AbortSignal,
   ): Promise<FederationMediaRangeUnit> {
     const operationStartedAt = new Date();
     const headers = await this.signature.signOutbound({
@@ -118,18 +149,18 @@ export class FederationMediaRangeClient {
       response = await this.discovery.request(url, {
         method: 'GET',
         headers: { ...headers, range: `bytes=${start}-${end}` },
-        signal: AbortSignal.timeout(
-          this.transportConfig.get().mediaChunkTimeoutSec * 1000,
-        ),
+        signal,
       });
     } catch (error) {
+      signal?.throwIfAborted();
       await this.recognition.markTransportDegraded(
         peerDomain,
         `GET media network/timeout: ${(error as Error).message}`,
         operationStartedAt,
       );
-      throw new Error(
+      throw new FederationTransportError(
         `S2S media from ${peerDomain} failed (network/timeout): ${(error as Error).message}`,
+        { cause: error },
       );
     }
 
@@ -151,13 +182,18 @@ export class FederationMediaRangeClient {
       );
     }
     if (response.status === HttpStatus.PARTIAL_CONTENT) {
-      return this.parsePartialContent(
-        response,
-        start,
-        end,
-        peerDomain,
-        operationStartedAt,
-      );
+      try {
+        return await this.parsePartialContent(
+          response,
+          start,
+          end,
+          peerDomain,
+          operationStartedAt,
+        );
+      } catch (error) {
+        await response.body?.cancel().catch(() => undefined);
+        throw error;
+      }
     }
 
     const error = await this.readErrorEnvelope(response);
@@ -222,6 +258,9 @@ export class FederationMediaRangeClient {
     const returnedTotal = Number(match[3]);
     const digest = response.headers.get('content-digest');
     if (
+      !Number.isSafeInteger(returnedStart) ||
+      !Number.isSafeInteger(returnedEnd) ||
+      !Number.isSafeInteger(returnedTotal) ||
       returnedStart !== start ||
       returnedEnd < returnedStart ||
       returnedEnd > end ||
@@ -250,7 +289,10 @@ export class FederationMediaRangeClient {
       .split(';', 1)[0]
       .trim()
       .toLowerCase();
-    if (contentType !== 'application/json') return undefined;
+    if (contentType !== 'application/json') {
+      await response.body?.cancel().catch(() => undefined);
+      return undefined;
+    }
     const text = await response.text();
     if (Buffer.byteLength(text) > 64 * 1024) return undefined;
     try {

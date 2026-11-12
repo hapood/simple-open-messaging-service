@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'crypto';
 import { and, count, eq, inArray, or } from 'drizzle-orm';
@@ -14,9 +13,9 @@ import {
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums';
 import { MessageService } from '../src/message/message.service';
+import { ResumableUploadService } from '../src/upload/resumable-upload.service';
 import { UserQuotaService } from '../src/quota/user-quota.service';
 import { UserIntentService } from '../src/user/p2p-intent/authored/user-intent.service';
-import { userQuotaDailyUsage } from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
 import type { OutboundFilePayload } from '../src/upload/file-content';
 import { seedAcceptedRelationship } from './seed';
@@ -110,6 +109,46 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     mimeType: 'application/octet-stream',
   });
 
+  it('admits against the user object policy and charges once before bytes, retaining usage after cancellation', async () => {
+    const upload = app.get(ResumableUploadService);
+    const cid = randomUUID();
+    await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
+    await userQuota.setPolicy(userId, { maxFileBytes: 4n });
+    const before = await userQuota.breakerStatus(userId);
+    const dto = {
+      clientMessageId: cid,
+      partId: randomUUID(),
+      position: 0,
+      intent: 'FILE' as const,
+      originalName: 'test.bin',
+      mimeType: 'application/octet-stream',
+      totalBytes: 5,
+    };
+    await expect(upload.init(userId, dto)).rejects.toMatchObject({
+      bizCode: BusinessCode.FILE_TOO_LARGE,
+    });
+    expect((await userQuota.breakerStatus(userId)).fileBytes.bytes).toBe(
+      before.fileBytes.bytes,
+    );
+    dto.totalBytes = 4;
+    const session = await upload.init(userId, dto);
+    await upload.init(userId, dto);
+    expect((await userQuota.breakerStatus(userId)).file.count).toBe(
+      before.file.count + 1,
+    );
+    expect(
+      BigInt((await userQuota.breakerStatus(userId)).fileBytes.bytes),
+    ).toBe(BigInt(before.fileBytes.bytes) + 4n);
+    await expect(
+      upload.append(userId, session.uploadId, 'bytes 0-4/4', Buffer.alloc(5)),
+    ).rejects.toThrow();
+    await upload.cancel(userId, session.uploadId);
+    expect(
+      BigInt((await userQuota.breakerStatus(userId)).fileBytes.bytes),
+    ).toBe(BigInt(before.fileBytes.bytes) + 4n);
+    await userQuota.setPolicy(userId, {});
+  });
+
   it('stageMedia creates a PendingMedia(pending) and is idempotent by clientMessageId', async () => {
     const cid = randomUUID();
     await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
@@ -170,13 +209,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       requestWithAdmission(targetAccounts[1], ''),
     ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
 
-    const usage = await database.db.query.userQuotaDailyUsage.findFirst({
-      where: and(
-        eq(userQuotaDailyUsage.userId, userId),
-        eq(userQuotaDailyUsage.category, 'requests'),
-      ),
-    });
-    expect(usage?.count).toBe(2);
+    expect((await userQuota.getState(userId)).usage.requests.count).toBe(2);
     const rolledBackPair = await database.db.query.relationshipPair.findFirst({
       where: or(
         and(
@@ -223,7 +256,6 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
 
   it('commitOutboundBatch commits a Message + messageAsset and deletes the stage; re-commit is idempotent', async () => {
     const cid = randomUUID();
-    const partId = randomUUID();
     const digest = 'a'.repeat(64);
     await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
 

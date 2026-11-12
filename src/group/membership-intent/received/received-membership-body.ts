@@ -14,14 +14,14 @@ export interface ReceivedIntentBodyShape {
   profileNamespaceId: number;
   profileRev: number;
   note: string;
-  requestedAt: number | null;
+  statusChangedAt: number;
   expiresAt: number | null;
   messageEndSeq?: number;
   tombstoneEndSeq?: number;
 }
 
 export interface ValidatedReceivedIntentBody {
-  requestedAt: Date | null;
+  statusChangedAt: Date;
   expiresAt: Date | null;
 }
 
@@ -33,15 +33,24 @@ export interface ValidatedReceivedIntentBody {
 export function validateReceivedIntentBody(
   body: ReceivedIntentBodyShape,
 ): ValidatedReceivedIntentBody | undefined {
-  const requestedAt =
-    body.requestedAt === null ? null : new Date(body.requestedAt);
+  if (!Number.isSafeInteger(body.statusChangedAt) || body.statusChangedAt < 0)
+    throw new InvalidReceivedIntentError('invalid intent transition time');
+  if (
+    body.expiresAt !== null &&
+    (!Number.isSafeInteger(body.expiresAt) || body.expiresAt < 0)
+  )
+    throw new InvalidReceivedIntentError('invalid intent expiry time');
+  const statusChangedAt = new Date(body.statusChangedAt);
+  if (!Number.isFinite(statusChangedAt.getTime()))
+    throw new InvalidReceivedIntentError('invalid intent transition time');
   const expiresAt = body.expiresAt === null ? null : new Date(body.expiresAt);
+  if (expiresAt !== null && !Number.isFinite(expiresAt.getTime()))
+    throw new InvalidReceivedIntentError('invalid intent expiry time');
   if (body.status === 'REQUESTED') {
     if (
-      requestedAt === null ||
       expiresAt === null ||
-      expiresAt <= requestedAt ||
-      expiresAt.getTime() - requestedAt.getTime() >
+      expiresAt <= statusChangedAt ||
+      expiresAt.getTime() - statusChangedAt.getTime() >
         RELATIONSHIP_INTENT_REQUEST_TTL_MS
     )
       throw new InvalidReceivedIntentError(
@@ -55,8 +64,7 @@ export function validateReceivedIntentBody(
       );
     if (
       body.status === 'ACCEPTED' &&
-      (requestedAt === null ||
-        !Number.isSafeInteger(body.messageEndSeq) ||
+      (!Number.isSafeInteger(body.messageEndSeq) ||
         body.messageEndSeq! < 0 ||
         !Number.isSafeInteger(body.tombstoneEndSeq) ||
         body.tombstoneEndSeq! < 0)
@@ -65,5 +73,5 @@ export function validateReceivedIntentBody(
         'an accepted intent requires timestamps and thread heads',
       );
   }
-  return { requestedAt, expiresAt };
+  return { statusChangedAt, expiresAt };
 }

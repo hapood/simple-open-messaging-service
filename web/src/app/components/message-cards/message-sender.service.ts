@@ -48,8 +48,8 @@ export class MessageSenderService {
         );
         const alias =
           conversation?.type === 'P2P' &&
-          conversation.peerUser.account === source.profile.account &&
-          conversation.peerUser.namespaceId ===
+          conversation.account === source.profile.account &&
+          conversation.publisherNamespaceId ===
             source.profile.profileNamespaceId
             ? conversation.alias?.trim()
             : undefined;

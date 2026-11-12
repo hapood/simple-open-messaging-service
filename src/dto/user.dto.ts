@@ -7,7 +7,6 @@ import {
   IsString,
   MaxLength,
   Min,
-  MinLength,
 } from 'class-validator';
 import { IsDisplayName } from '../common/validators.js';
 
@@ -78,42 +77,6 @@ export class UserResolveDto {
   @IsString()
   @MaxLength(44)
   publicKey?: string;
-}
-
-/** Local user discovery (fuzzy). Matches account OR display name case-insensitively; min 2 chars so a
- *  single keystroke can't enumerate the user base. take is clamped server-side (see POST /user/search).
- *  Federated users are NOT discoverable here — resolve those by exact account + domain via UserResolveDto. */
-export class UserSearchDto {
-  @ApiProperty({
-    example: 'ali',
-    description: 'Search query (≥2 chars; matches account OR display name)',
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(2, { message: 'q must be at least 2 chars' })
-  q!: string;
-
-  @ApiProperty({
-    required: false,
-    example: 0,
-    description: 'Records to skip (optional)',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  skip?: number;
-
-  @ApiProperty({
-    required: false,
-    example: 20,
-    description: 'Records to take (1-20; clamped server-side)',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  take?: number;
 }
 
 /**

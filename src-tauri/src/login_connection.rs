@@ -1,7 +1,7 @@
 use crate::login_session_store::LoginSessionId;
 use rusqlite::Connection;
 use std::sync::{
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
     Arc, Mutex,
 };
 use tokio_util::sync::CancellationToken;
@@ -51,21 +51,43 @@ pub(crate) struct LoginConnection {
     cancellation: CancellationToken,
     cache_work: Mutex<CancellationToken>,
     database: Mutex<Option<Connection>>,
+    cache_available: AtomicBool,
     credential: Mutex<Option<String>>,
+    /// Serializes notification batches while the first post-fetch reconstruction is pending.
+    /// None means ordinary delivery; Some retains the original candidates across retries.
+    pub(crate) notification_reconstruction: tokio::sync::Mutex<Option<Vec<(crate::native_db::notifications::NotificationTarget, String)>>>,
+    pub(crate) notification_delivery_lane: tokio::sync::Mutex<()>,
+    pub(crate) notification_requests: Mutex<Option<crate::native_db::notifications::requests::RequestBaseline>>,
+    pub(crate) notification_delivery: Mutex<crate::native_db::notifications::delivery::DeliveryState>,
+
 }
 
 impl LoginConnection {
     /// Consumes the single physical connection initialized for this UUID. No opener is retained,
     /// so neither an operation nor an old Arc can reopen a closed database.
+    #[cfg(test)]
     pub(crate) fn preparing(id: LoginSessionId, database: Connection) -> Arc<Self> {
+        Self::restoring(id, Some(database))
+    }
+
+    /// A restored login exists independently of its disposable cache. Only explicit repair may
+    /// attach a missing connection; ordinary work can never open or recreate it.
+    pub(crate) fn restoring(id: LoginSessionId, database: Option<Connection>) -> Arc<Self> {
+        let cache_available = AtomicBool::new(database.is_some());
         let cancellation = CancellationToken::new();
         Arc::new(Self {
             id,
             phase: AtomicU8::new(PREPARING),
             cache_work: Mutex::new(cancellation.child_token()),
             cancellation,
-            database: Mutex::new(Some(database)),
+            database: Mutex::new(database),
+            cache_available,
             credential: Mutex::new(None),
+            notification_reconstruction: tokio::sync::Mutex::new(None),
+            notification_delivery_lane: tokio::sync::Mutex::new(()),
+            notification_requests: Mutex::new(Default::default()),
+            notification_delivery: Mutex::new(Default::default()),
+
         })
     }
 
@@ -81,6 +103,9 @@ impl LoginConnection {
     /// credential or physical connection, and is not advanced by token installation.
     pub(crate) fn capture_database_work(self: &Arc<Self>) -> Result<DatabaseWork, ConnectionError> {
         self.assert_active()?;
+        if !self.cache_available.load(Ordering::Acquire) {
+            return Err(ConnectionError::Closed);
+        }
         let cancellation = self
             .cache_work
             .lock()
@@ -152,6 +177,30 @@ impl LoginConnection {
         let result = operation(database.as_mut().ok_or(ConnectionError::Closed)?);
         check()?;
         result.map_err(ConnectionError::Operation)
+    }
+
+    /// Attach a missing cache once, only at explicit repair. Existing connections are retained.
+    /// The callback runs under the cache-resource lock, never a login lifecycle lock.
+    pub(crate) fn initialize_missing_cache(
+        &self,
+        open: impl FnOnce() -> Result<Connection, String>,
+    ) -> Result<(), ConnectionError> {
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| ConnectionError::Poisoned)?;
+        if self.phase.load(Ordering::Acquire) == ENDED {
+            return Err(ConnectionError::Superseded);
+        }
+        if database.is_none() {
+            let connection = open().map_err(ConnectionError::Operation)?;
+            if self.phase.load(Ordering::Acquire) == ENDED {
+                return Err(ConnectionError::Superseded);
+            }
+            *database = Some(connection);
+            self.cache_available.store(true, Ordering::Release);
+        }
+        Ok(())
     }
 
     /// Execute against the already-owned physical connection. The callback cannot retain a borrowed

@@ -150,25 +150,21 @@ export class RelationshipController {
           decision: 'REQUESTED',
           snapshot: dto.snapshot,
           note: dto.note ?? '',
-          admissionInTx: (tx) => this.userQuota.tick(me, 'requests', tx),
         }),
       );
     }
     // A known-nsid target: the request follows the row's current domain binding
     // across a review-approved re-bind; only a reset retirement is a mismatch.
-    const outcome = await this.userIntents.execute(
-      {
-        userId: me,
-        decision: 'REQUESTED',
-        snapshot: dto.snapshot,
-        target: {
-          account,
-          namespaceId,
-        },
-        note: dto.note ?? '',
+    const outcome = await this.userIntents.execute({
+      userId: me,
+      decision: 'REQUESTED',
+      snapshot: dto.snapshot,
+      target: {
+        account,
+        namespaceId,
       },
-      { admissionInTx: (tx) => this.userQuota.tick(me, 'requests', tx) },
-    );
+      note: dto.note ?? '',
+    });
     return this.intentResult(outcome);
   }
 

@@ -13,7 +13,7 @@ export interface GroupAuthoredMembershipRequestInput {
   targetNamespaceId: number;
   localTargetId: number | null;
   note: string;
-  requestedAt: Date;
+  statusChangedAt: Date;
   expiresAt: Date;
   snapshot: RequestSnapshot;
 }
@@ -36,15 +36,15 @@ export function groupAuthoredMembershipRequestSql(
         threadId: input.threadId,
         status: 'REQUESTED',
         note: input.note,
-        requestedAt: input.requestedAt,
+        statusChangedAt: input.statusChangedAt,
         expiresAt: input.expiresAt,
         snapshot: input.snapshot,
       })}
     ), request_state AS MATERIALIZED (
-      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
+      SELECT status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt",
         "messageEndSeq", "tombstoneEndSeq" FROM authored
       UNION ALL
-      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
+      SELECT status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt",
         "messageEndSeq", "tombstoneEndSeq"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
@@ -82,7 +82,7 @@ function peerRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
       SELECT jsonb_build_object('status', v.status,
           'namespaceId', v."profileNamespaceId",
           'profileRev', v."profileRev", 'note', v.note,
-          'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
+          'statusChangedAt', floor(extract(epoch FROM v."statusChangedAt") * 1000)::bigint,
           'expiresAt', floor(extract(epoch FROM v."expiresAt") * 1000)::bigint,
           'messageEndSeq', v."messageEndSeq", 'tombstoneEndSeq', v."tombstoneEndSeq") AS body
       FROM request_state v

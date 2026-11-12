@@ -18,6 +18,10 @@
   display: block;
   margin: 0 auto 10px;
   border-radius: var(--bl-mark-radius, 0);
+
+  &:last-child {
+    margin-bottom: 0;
+  }
 }
 
 .bl-word {

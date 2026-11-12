@@ -8,4 +8,11 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
     <color name="splash_background">#FFE9E1D5</color>
+    <color name="splash_bubble">#FFF8F4EC</color>
+    <color name="splash_outline">#FFBBAF9F</color>
+    <color name="splash_mark">#FF19212A</color>
+    <color name="splash_accent">#FFF04B3A</color>
+    <color name="splash_text">#FF19212A</color>
+    <color name="splash_text_secondary">#FF5B5349</color>
+    <color name="splash_text_status">#AA19212A</color>
 </resources>

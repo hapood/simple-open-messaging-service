@@ -7,6 +7,7 @@ import { TestBed } from '@angular/core/testing';
 import { NavStateMachineService } from './nav-state.service';
 import { UserService } from './user.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import type { ConversationItem } from './model';
 
 /** The nav state machine is the trickiest, most regression-prone logic in the shell — its `back()` layering
  *  and the section/reset methods have no compile-time guard, so these tests lock the invariants in. */
@@ -62,7 +63,7 @@ describe('NavStateMachineService', () => {
 
   it('captures a scoped notification URL without opening it before session validation', () => {
     TestBed.resetTestingModule();
-    history.replaceState(null, '', '/chat/5?notificationSessionId=31');
+    history.replaceState(null, '', '/chat/5?notificationSessionId=31&latestSeq=13');
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -73,17 +74,110 @@ describe('NavStateMachineService', () => {
     expect(nav.chatThreadId()).toBeUndefined();
     expect(nav.bootstrapNotificationIntent).toEqual({
       source: 'web',
-      id: 'bootstrap:31:5',
-      threadId: 5,
+      id: 'bootstrap:31:thread:5',
+      target: { kind: 'thread', threadId: 5 },
+      latestSeq: 13,
       sessionId: 31,
     });
     TestBed.inject(ApplicationRef).tick();
     expect(location.pathname).toBe('/');
-    expect(nav.bootstrapNotificationIntent?.sessionId).toBe(31);
+    expect(nav.bootstrapNotificationIntent).toMatchObject({ sessionId: 31 });
+  });
+
+  it.each([
+    ['friend-requests', undefined],
+    ['thread', 5],
+    ['group-join-requests', 5],
+  ])('captures query notification target %s', (kind, threadId) => {
+    TestBed.resetTestingModule();
+    history.replaceState(
+      null,
+      '',
+      `/?notificationSessionId=31&notificationTarget=${kind}${threadId ? `&threadId=${threadId}` : ''}${kind === 'thread' ? '&latestSeq=13' : ''}`,
+    );
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: { sessionUserId } },
+      ],
+    });
+    const nav = TestBed.inject(NavStateMachineService);
+    expect(nav.chatThreadId()).toBeUndefined();
+    expect(nav.bootstrapNotificationIntent?.target).toEqual(
+      threadId ? { kind, threadId } : { kind },
+    );
+  });
+
+  it.each(['OWNER', 'ADMIN', 'MEMBER'])(
+    'shares the normal group role gate for %s',
+    (role) => {
+      const thread = { threadId: 7, type: 'GROUP', role } as ConversationItem;
+      svc.openChat(7);
+      svc.openAside('group-info');
+      const allowed = role !== 'MEMBER';
+      expect(svc.openGroupJoinRequests(thread)).toBe(allowed);
+      expect(svc.aside().length).toBe(allowed ? 2 : 1);
+      svc.openExternalChat(7);
+      expect(svc.openGroupJoinRequests(thread, 'applications')).toBe(allowed);
+      expect(svc.aside().length).toBe(allowed ? 1 : 0);
+      if (allowed)
+        expect(svc.asideTop()?.payload).toEqual({
+          threadId: 7,
+          initialTab: 'applications',
+        });
+    },
+  );
+
+  it('rejects read-only, non-group and mismatched-thread request entry', () => {
+    svc.openChat(7);
+    for (const thread of [
+      {
+        threadId: 7,
+        type: 'GROUP',
+        role: 'OWNER',
+        conversationState: 'READ_ONLY',
+      },
+      { threadId: 7, type: 'P2P', role: 'OWNER' },
+      { threadId: 8, type: 'GROUP', role: 'ADMIN' },
+    ])
+      expect(
+        svc.openGroupJoinRequests(thread as ConversationItem, 'applications'),
+      ).toBe(false);
+    expect(svc.aside()).toEqual([]);
+  });
+
+  it('dismisses descendants while retaining the same-thread surface and refresh target', () => {
+    svc.openChat(7);
+    svc.openAside('group-info');
+    svc.pushAside('group-join-requests');
+    svc.openSearch();
+    svc.setTopSection('settings');
+    svc.openSettingsCategory('account');
+    const cancel = vi.fn(() => expect(svc.chatThreadId()).toBe(7));
+    svc.pushPane({ kind: 'dialog', onResult: cancel });
+    const home = vi.spyOn(svc, 'returnToThreadList');
+    expect(svc.openExternalChat(7, 13)).toBe(true);
+    expect(home).not.toHaveBeenCalled();
+    expect(svc.chatOpening()).toEqual({ threadId: 7, latestSeq: 13 });
+    const previousOpening = svc.chatOpening();
+    expect(svc.openExternalChat(7, 13)).toBe(true);
+    expect(svc.chatOpening()).not.toBe(previousOpening);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(svc.aside()).toEqual([]);
+    expect(svc.paneStack()).toEqual([]);
+    expect(svc.settingsCategoryStack()).toEqual([]);
+    expect(svc.topSection()).toBe('chats');
+    expect(svc.searchOpen()).toBe(false);
+    expect(svc.back()).toBe(true);
+    expect(svc.chatThreadId()).toBeUndefined();
+    expect(svc.back()).toBe(false);
   });
 
   it.each([
     '/chat/0',
+    '/chat/5?notificationTarget=friend-requests',
+    '/?notificationSessionId=31&notificationTarget=group-join-requests',
+    '/?notificationSessionId=31&notificationTarget=thread&threadId=bad',
     '/chat/5/extra',
     '/chat/9007199254740992',
     '/chat/5?notificationSessionId=',
@@ -237,13 +331,13 @@ describe('NavStateMachineService', () => {
   });
 
   it('consumes a group-joined transition once and does not replay it', () => {
-    svc.openChat(22, 'group-joined');
+    svc.openChat(22, { transition: 'group-joined' });
     expect(svc.consumeChatTransition(22)).toBe('group-joined');
     expect(svc.consumeChatTransition(22)).toBe('standard');
   });
 
   it('does not leak a group-joined transition into a later ordinary open', () => {
-    svc.openChat(22, 'group-joined');
+    svc.openChat(22, { transition: 'group-joined' });
     svc.openChat(23);
     expect(svc.consumeChatTransition(22)).toBe('standard');
     expect(svc.consumeChatTransition(23)).toBe('standard');
@@ -336,7 +430,7 @@ describe('NavStateMachineService', () => {
     expect(svc.navigationRevision()).toBeGreaterThan(revision);
     revision = svc.navigationRevision();
     svc.setTopSection('chats');
-    expect(svc.navigationRevision()).toBe(revision);
+    expect(svc.navigationRevision()).toBeGreaterThan(revision);
   });
 
   it('does not reset on login or when the same id is re-emitted (reconnect HELLO)', () => {

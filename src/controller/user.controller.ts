@@ -35,11 +35,7 @@ import {
   UserResponseDto,
 } from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
-import {
-  UserResolveDto,
-  UserSearchDto,
-  UpdateProfileDto,
-} from '../dto/user.dto.js';
+import { UserResolveDto, UpdateProfileDto } from '../dto/user.dto.js';
 import { S2sResponseError } from '../federation/federation-errors.js';
 import type { S2SProfile } from '../federation/federation-profile.js';
 import type { PossessionKey } from '../federation/federation-profile.service.js';
@@ -49,6 +45,7 @@ import { KeypairService } from '../federation/keypair.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
 import { Raw } from '../common/raw.decorator.js';
+import { withSseHeartbeat } from '../common/sse-heartbeat.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
@@ -582,7 +579,7 @@ export class UserController {
         clearTimeout(deadline);
         unsubscribeProgress();
       };
-    });
+    }).pipe(withSseHeartbeat());
   }
 
   /** Transient resolve card. Identity is the pure `(namespaceId, account)`
@@ -605,25 +602,6 @@ export class UserController {
       isDeleted: false,
       profileRev: 0,
     };
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('user/search')
-  @ApiOperation({
-    summary:
-      'Fuzzy local identity discovery by account OR display name (local users and groups)',
-  })
-  async searchUsers(@Body() dto: UserSearchDto) {
-    // Discovery endpoint — the two abuse guardrails are the DTO's @MinLength(2) on q and the hard
-    // take cap here (a client must never page through the whole user table). Federated users are not
-    // discoverable: resolve those by exact account + domain via /user/resolve. Only local,
-    // non-deleted user and group accounts are returned.
-    const take = Math.min(dto.take ?? 20, 20);
-    return this.userService.searchUsers(dto.q.trim(), {
-      skip: dto.skip ?? 0,
-      take,
-    });
   }
 
   @Public()

@@ -311,7 +311,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       });
   }
 
-  /** Certificates published in /.well-known/somfp keys[]: every key still inside
+  /** Certificates published in /somfp/discovery keys[]: every key still inside
    *  its advertised validity whose authorizing root is the claimable epoch. The
    *  planned successor is published before first use; the predecessor stays
    *  published until its notAfter. After a root rotation only
@@ -453,13 +453,8 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         .where(eq(localFederationSigningState.id, 0));
       const next = await this.reloadSnapshot(tx);
       if (!next) throw new Error('local identity rows disappeared');
-      // The replacement is a binding change of namespace 0 — this server
-      // itself: publish it on the shared s2s feed (peers re-pull
-      // /profile-namespaces/0 for the new root public key) and record the
-      // client-visible (0, 0) change so every device wakes and re-resolves
-      // the pair. Both entries share the replacement transaction, so a
-      // crash can never leave the new root claimable but unannounced.
-      await this.changes.recordNamespaceChangeInTx(tx, 0);
+      // Notify local clients of the new self binding. Remote identity adoption
+      // follows the verified root-rotation exchange, not the namespace feed.
       const clientChangeId = await this.changes.recordClientChangeInTx(tx, {
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
@@ -595,6 +590,7 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
           domain,
           rootPublicKey: null,
           identityPinnedAt: null,
+          signingKeyCreatedAt: 0,
         });
       } else {
         await this.rebindLocalDomainInTx(tx, domain);
@@ -643,7 +639,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       .update(account)
       .set({ updatedAt: new Date() })
       .where(eq(account.namespaceId, 0));
-    await this.changes.recordNamespaceChangeInTx(tx, 0);
     await this.changes.recordClientChangeInTx(tx, {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,

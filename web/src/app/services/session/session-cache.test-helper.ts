@@ -1,5 +1,5 @@
 import { PreferenceStorage } from '../preference-storage';
-import { SessionJournal, SESSION_JOURNAL_KEY } from './session-journal';
+import { SessionStore, SESSION_STORE_KEY } from './session-store';
 import {
   createSessionCacheDescriptor,
   type SessionCacheDescriptor,
@@ -9,11 +9,11 @@ import {
 export async function prepareTestSessionCache(): Promise<SessionCacheDescriptor> {
   const preferences = new PreferenceStorage();
   try {
-    await preferences.remove('device', SESSION_JOURNAL_KEY);
+    await preferences.remove('device', SESSION_STORE_KEY);
     const cache = createSessionCacheDescriptor();
-    const journal = new SessionJournal(preferences);
-    await journal.prepare(cache);
-    await journal.activate(cache.id);
+    const sessionStore = new SessionStore(preferences);
+    await sessionStore.prepare(cache);
+    await sessionStore.activate(cache.id);
     return cache;
   } finally {
     await preferences.close();

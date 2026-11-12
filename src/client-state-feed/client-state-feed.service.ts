@@ -1,4 +1,10 @@
-import { HttpStatus, Injectable, OnModuleDestroy } from '@nestjs/common';
+import {
+  HttpStatus,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+} from '@nestjs/common';
+import { PushService } from '../push/push.service.js';
 import { and, desc, eq, gt, lte, sql } from 'drizzle-orm';
 import { account, clientStateFeed } from '../database/schema.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
@@ -8,15 +14,53 @@ import { BusinessException } from '../common/business.exception.js';
 import { SseService } from '../gateway/sse.service.js';
 import type { IncomingRequestHead } from '../../shared/relationship-request.js';
 
-export interface PendingClientStateFeedUpdate {
+/** Independent post-commit client-feed events. Request attention is a
+ * domain-specific event kind, not optional fields on a shared update: events
+ * from different domains stay separate, each publishing its own wake, and
+ * PushService coalesces per session by coordinate. */
+export type PendingClientStateFeedUpdate =
+  | {
+      /** Conversation projections advanced the thread head. */
+      kind: 'thread-feed';
+      userId: number;
+      feedId: number;
+      threadFeedEndId: number;
+    }
+  | {
+      /** A friend request or group invitation round reached this account. */
+      kind: 'personal-request-arrival';
+      userId: number;
+      feedId: number;
+    }
+  | {
+      /** Incoming personal requests were read. */
+      kind: 'personal-request-read';
+      userId: number;
+      feedId: number;
+    }
+  | GroupRequestArrivalEvent
+  | GroupRequestReadEvent;
+
+/** A group join application reached this manager. */
+export interface GroupRequestArrivalEvent {
+  kind: 'group-request-arrival';
   userId: number;
   feedId: number;
-  threadFeedEndId?: number;
+  threadFeedEndId: number;
+}
+
+/** Manager join-request attention was consumed or revoked. */
+export interface GroupRequestReadEvent {
+  kind: 'group-request-read';
+  userId: number;
+  feedId: number;
+  threadFeedEndId: number;
 }
 
 /** Transports the account's complete incoming request head; owns no request lifecycle. */
 @Injectable()
 export class ClientStateFeedService implements OnModuleDestroy {
+  private readonly logger = new Logger(ClientStateFeedService.name);
   private static readonly PUSH_COALESCE_MS = 1_000;
   private readonly pushHighWatermarks = new Map<number, number>();
   private readonly pendingPushTimers = new Map<
@@ -27,46 +71,65 @@ export class ClientStateFeedService implements OnModuleDestroy {
   constructor(
     private readonly database: DatabaseService,
     private readonly sse: SseService,
+    private readonly push: PushService,
   ) {}
 
-  notifyFeedUpdated(pending: PendingClientStateFeedUpdate): void {
-    if (pending.threadFeedEndId !== undefined)
-      this.sse.onThreadFeedUpdated(pending.userId, {
-        threadFeedEndId: pending.threadFeedEndId,
-      });
-    const current = this.pushHighWatermarks.get(pending.userId) ?? 0;
-    if (pending.feedId <= current) return;
-    this.pushHighWatermarks.set(pending.userId, pending.feedId);
-    if (this.pendingPushTimers.has(pending.userId)) return;
+  notifyFeedUpdated(update: PendingClientStateFeedUpdate): void {
+    switch (update.kind) {
+      case 'personal-request-arrival':
+      case 'personal-request-read':
+        this.enqueueRequestWake({
+          userId: update.userId,
+          stateFeedEndId: update.feedId,
+          convergence: update.kind === 'personal-request-read',
+        });
+        break;
+      case 'group-request-arrival':
+      case 'group-request-read':
+        this.enqueueRequestWake({
+          userId: update.userId,
+          threadFeedEndId: update.threadFeedEndId,
+          convergence: update.kind === 'group-request-read',
+        });
+        this.sse.onThreadFeedUpdated(update.userId, {
+          threadFeedEndId: update.threadFeedEndId,
+        });
+        break;
+      case 'thread-feed':
+        this.sse.onThreadFeedUpdated(update.userId, {
+          threadFeedEndId: update.threadFeedEndId,
+        });
+        break;
+    }
+    const current = this.pushHighWatermarks.get(update.userId) ?? 0;
+    if (update.feedId <= current) return;
+    this.pushHighWatermarks.set(update.userId, update.feedId);
+    if (this.pendingPushTimers.has(update.userId)) return;
     const timer = setTimeout(() => {
-      this.pendingPushTimers.delete(pending.userId);
-      const feedId = this.pushHighWatermarks.get(pending.userId);
+      this.pendingPushTimers.delete(update.userId);
+      const feedId = this.pushHighWatermarks.get(update.userId);
       if (feedId !== undefined)
-        this.sse.onStateFeedUpdated(pending.userId, { feedId });
+        this.sse.onStateFeedUpdated(update.userId, { feedId });
     }, ClientStateFeedService.PUSH_COALESCE_MS);
     timer.unref?.();
-    this.pendingPushTimers.set(pending.userId, timer);
+    this.pendingPushTimers.set(update.userId, timer);
   }
 
-  notifyFeedUpdates(pending: Iterable<PendingClientStateFeedUpdate>): void {
-    const heads = new Map<number, PendingClientStateFeedUpdate>();
-    for (const update of pending) {
-      const current = heads.get(update.userId);
-      heads.set(update.userId, {
-        userId: update.userId,
-        feedId: Math.max(current?.feedId ?? 0, update.feedId),
-        ...(current?.threadFeedEndId !== undefined ||
-        update.threadFeedEndId !== undefined
-          ? {
-              threadFeedEndId: Math.max(
-                current?.threadFeedEndId ?? 0,
-                update.threadFeedEndId ?? 0,
-              ),
-            }
-          : {}),
+  private enqueueRequestWake(target: {
+    userId: number;
+    stateFeedEndId?: number;
+    threadFeedEndId?: number;
+    convergence: boolean;
+  }): void {
+    void this.push
+      .enqueueForRequestAttention([target])
+      .catch((error: unknown) => {
+        this.logger.warn(`Request push wake failed: ${String(error)}`);
       });
-    }
-    for (const head of heads.values()) this.notifyFeedUpdated(head);
+  }
+
+  notifyFeedUpdates(updates: Iterable<PendingClientStateFeedUpdate>): void {
+    for (const update of updates) this.notifyFeedUpdated(update);
   }
 
   onModuleDestroy(): void {

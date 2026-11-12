@@ -9,6 +9,19 @@ All deployment settings live in the YAML file. An operator `.env` file, external
 separate configuration file is not required. Configuration is generated locally in the browser;
 inputs, preview, copy, and download all show the actual plaintext values.
 
+## Identity and application routes
+
+Federation discovery is `/somfp/discovery`; versioned federation endpoints are
+`/somfp/v1/*`. The retired discovery and `/s2s/v1/*` paths are not compatibility
+aliases, so communicating nodes must be upgraded together.
+
+When `SOMS_WEB_DOMAIN` differs from `SOMS_DOMAIN`, the identity host serves only
+`/somfp/*` and returns 404 for application APIs, media, administration, and static
+assets. The Web host and optional LAN host serve application routes and reject
+`/somfp/*`. If the Web domain is omitted or equals the identity domain, that host
+serves both surfaces. SRV delegation changes the connection destination, not the
+logical identity host, TLS SNI, or HTTP authority.
+
 ## Requirements
 
 - Docker Engine with Docker Compose v2
@@ -47,6 +60,23 @@ The admin restriction is independently configurable in either mode. With private
 selected, Caddy restricts `/admin/` and `/api/v1/admin` by the source IP it sees. A proxy or router
 that rewrites public requests to a private source address can defeat that distinction.
 
+### Certificate challenge
+
+Public mode can obtain certificates two ways, selected in the generator (or via `CADDY_CERT_MODE`
+for manual deployments):
+
+| Challenge        | Requirements                                            | Supports                    |
+| ---------------- | ------------------------------------------------------- | --------------------------- |
+| TLS-ALPN-01      | Public port 443 reachable from the Internet, no API key | Exact hostnames only        |
+| DNS-01 (default) | Provider API credentials (`CADDY_DNS_DIRECTIVE`)        | Wildcards and LAN hostnames |
+
+NAS mode always uses DNS-01: a custom port cannot answer the ACME TLS-ALPN-01 challenge, and LAN
+hostnames resolve to private addresses the CA cannot reach. TLS-ALPN-01 therefore requires public
+mode, rejects LAN hostnames and wildcards, and needs no DNS credentials at all; an optional ACME
+contact email (`ACME_EMAIL`) receives expiry notifications. An optional ZeroSSL fallback issuer
+can be enabled by setting `CADDY_ZEROSSL_API_KEY`; the key is passed to Caddy as a native
+`{env.NAME}` reference and never written into the generated Caddyfile.
+
 ## 2. Fill In the Configuration
 
 Open the generator and enter the following values:
@@ -59,8 +89,10 @@ Open the generator and enter the following values:
 | LAN hostname                 | Optional direct LAN entry, such as `soms-lan.example.com`                                     |
 | Database password            | PostgreSQL connection credential (at least 16 characters); generated automatically            |
 | Initial admin password       | Creates the initial `admin` account when absent                                               |
-| DNS provider and credentials | Allow Caddy to obtain trusted certificates using DNS-01                                       |
-| Image version                | Versioned application image used by the app service                                            |
+| Certificate challenge        | TLS-ALPN-01 (direct port 443) or DNS-01 via provider API; see the mode section above          |
+| ACME contact email           | Optional expiry-notification email for the ACME account (TLS-ALPN-01)                         |
+| DNS provider and credentials | Allow Caddy to obtain certificates using DNS-01                                               |
+| Image version                | Versioned application image used by the app service                                           |
 
 Use lowercase hostnames without a scheme, port, or path. All configured domains must share a
 registrable DNS zone. The identity domain does not need its own A/AAAA record when discovery points
@@ -91,9 +123,8 @@ ghcr.io/hapood/simple-open-messaging-service:latest
 
 This image supports `linux/amd64` and `linux/arm64`; Docker selects the host architecture
 automatically.
-The public deployment template uses `ghcr.io/hapood/simple-open-messaging-service:latest` for both
-services. Every published version, including alpha releases, updates `latest`; its first release
-points to `v0.1.0-alpha.0`. Use an explicit version tag when upgrades must be selected individually.
+Every published version, including alpha releases, updates `latest`. Use an explicit version tag
+such as `v0.1.0-alpha.2` when upgrades must be selected individually.
 The versioned image and `latest` become available when the release tag is
 published from `main`; merging the pull request alone does not publish it.
 
@@ -143,8 +174,9 @@ for the selected port. Native-client origin discovery still derives the canonica
 with port 7667; a custom host port does not change that advertised default. Use the default port
 when relying on automatic native-client origin selection.
 
-Caddy obtains trusted DNS-01 certificates using the selected provider. Keep the provider credentials
-in the generated application environment; no manual Caddyfile is required.
+Caddy obtains trusted certificates using the selected challenge (DNS-01 by default; public mode may
+choose TLS-ALPN-01 instead — see "Certificate challenge" above). Keep the provider credentials in
+the generated application environment; no manual Caddyfile is required.
 
 ## 4. Start SOMS
 

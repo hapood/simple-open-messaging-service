@@ -82,7 +82,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
               src={`${import.meta.env.BASE_URL}favicon.svg`}
               alt=""
               aria-hidden="true"
-              className="size-7 rounded-lg ring-1 ring-border/20 shadow-2xs shrink-0"
+              className="size-7 shrink-0"
             />
             <button
               type="button"
@@ -107,7 +107,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
             src={`${import.meta.env.BASE_URL}favicon.svg`}
             alt=""
             aria-hidden="true"
-            className="size-7 rounded-lg ring-1 ring-border/20 shadow-2xs shrink-0"
+            className="size-7 shrink-0"
           />
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold tracking-tight text-sidebar-foreground">
@@ -148,15 +148,23 @@ export function AdminLayout({ children }: { children: ReactNode }) {
         <nav className="mt-2 flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto overflow-x-hidden sidebar-scroll">
           {NAV_GROUPS.filter((g) => !g.footer).map((group) => {
             const isGroupCollapsed =
-              !collapsed && !!collapsedGroups[group.labelKey];
+              !collapsed &&
+              !!group.labelKey &&
+              !!collapsedGroups[group.labelKey];
             return (
-              <div key={group.labelKey} className="flex flex-col gap-1">
-                {collapsed ? (
+              <div
+                key={group.labelKey ?? group.items[0].to}
+                className="flex flex-col gap-1"
+              >
+                {!group.labelKey ? null : collapsed ? (
                   <div className="my-1 border-t border-sidebar-border/40 mx-1.5" />
                 ) : (
                   <button
                     type="button"
-                    onClick={() => toggleGroup(group.labelKey)}
+                    onClick={() =>
+                      group.labelKey && toggleGroup(group.labelKey)
+                    }
+                    aria-expanded={!isGroupCollapsed}
                     className="group/group-btn flex items-center justify-between px-2.5 py-1 text-xs font-semibold tracking-wider text-muted-foreground/80 uppercase hover:text-sidebar-foreground transition-colors cursor-pointer rounded-md hover:bg-sidebar-accent/40 select-none"
                   >
                     <span>{t(group.labelKey)}</span>
@@ -229,25 +237,6 @@ export function AdminLayout({ children }: { children: ReactNode }) {
 function NavEntry({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
   const { t } = useTranslation();
   const label = t(`nav.${item.key}`);
-  if (item.disabled) {
-    return (
-      <span
-        aria-disabled
-        title={t('common.comingSoon')}
-        className={cn(
-          'flex cursor-not-allowed items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground/40 select-none',
-          collapsed
-            ? 'lg:size-9 lg:p-0 lg:justify-center lg:mx-auto'
-            : 'h-9 w-full justify-start',
-        )}
-      >
-        <item.icon className="size-4 shrink-0 opacity-60" />
-        <span className={cn('truncate leading-5', collapsed && 'lg:hidden')}>
-          {label}
-        </span>
-      </span>
-    );
-  }
   return (
     <NavLink
       to={item.to}

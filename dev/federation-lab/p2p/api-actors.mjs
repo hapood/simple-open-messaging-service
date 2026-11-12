@@ -299,22 +299,41 @@ export class LabUserActor {
       `stage ${contentType} message ${clientMessageId}`,
     );
     for (const [position, part] of parts.entries()) {
-      const body = new FormData();
-      body.set('partId', part.partId);
-      body.set('position', String(position));
-      body.set('intent', 'FILE');
-      body.set(
-        'file',
-        new Blob([part.bytes], {
-          type: part.mimeType ?? 'application/octet-stream',
-        }),
-        part.filename,
+      const initialized = await this.post(
+        '/uploads/resumable/init',
+        {
+          clientMessageId,
+          partId: part.partId,
+          position,
+          intent: 'FILE',
+          originalName: part.filename,
+          mimeType: part.mimeType ?? 'application/octet-stream',
+          totalBytes: part.bytes.length,
+        },
+        `initialize attachment ${part.partId}`,
       );
-      await postMultipart(this.node, '/upload', {
-        body,
-        userToken: this.token,
-        headers: { 'x-client-message-id': clientMessageId },
-      });
+      const { uploadId, chunkSize, offset } = initialized;
+      for (let start = offset; start < part.bytes.length; start += chunkSize) {
+        const end = Math.min(start + chunkSize, part.bytes.length);
+        const response = await fetch(
+          `${this.node.backendBaseUrl}${API_PREFIX}/uploads/resumable/${uploadId}`,
+          {
+            method: 'PUT',
+            headers: {
+              authorization: `Bearer ${this.token}`,
+              'content-type': 'application/octet-stream',
+              'content-range': `bytes ${start}-${end - 1}/${part.bytes.length}`,
+            },
+            body: part.bytes.subarray(start, end),
+          },
+        );
+        await readEnvelope(response, `upload attachment chunk ${part.partId}`);
+      }
+      await this.post(
+        `/uploads/resumable/${uploadId}/complete`,
+        {},
+        `complete attachment ${part.partId}`,
+      );
     }
     return this.findMessageByClientMessageId(threadId, clientMessageId);
   }

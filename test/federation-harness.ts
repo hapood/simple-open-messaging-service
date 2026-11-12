@@ -1,3 +1,4 @@
+import { RESTORE_SYSTEM_ACCOUNT_SQL } from './support/database-baseline.js';
 import { execSync } from 'node:child_process';
 import { fork, type ChildProcess } from 'node:child_process';
 import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
@@ -647,12 +648,15 @@ const FEDERATION_NAMESPACE_RESET_SQL = `
       EXECUTE format('DELETE FROM %s', dependent);
     END LOOP;
   END $$;
+  DELETE FROM "FederationFeedHeadReceipt";
+  DELETE FROM "FederationFeedState";
   DELETE FROM "IdentityNamespace" WHERE id <> 0;`;
 
 function resetLocalNamespaceSentinelSql(domain: string) {
   return sql`
     INSERT INTO "IdentityNamespace" (
       id,
+      "signingKeyCreatedAt",
       domain,
       "rootPublicKey",
       "identityPinnedAt",
@@ -671,12 +675,9 @@ function resetLocalNamespaceSentinelSql(domain: string) {
       "localServiceAvailable",
       "remoteServiceReachable",
       "resetAt",
-      "stateFeedEndId",
-      "stateFeedPulledThrough",
-      "profileNamespaceFeedEndId",
-      "profileNamespaceFeedPulledThrough",
       "retiredAt"
     ) VALUES (
+      0,
       0,
       ${domain},
       NULL,
@@ -696,10 +697,6 @@ function resetLocalNamespaceSentinelSql(domain: string) {
       false,
       false,
       NULL,
-      0,
-      NULL,
-      0,
-      0,
       NULL
     )
     ON CONFLICT (id) DO UPDATE SET
@@ -721,10 +718,6 @@ function resetLocalNamespaceSentinelSql(domain: string) {
       "localServiceAvailable" = false,
       "remoteServiceReachable" = false,
       "resetAt" = NULL,
-      "stateFeedEndId" = 0,
-      "stateFeedPulledThrough" = NULL,
-      "profileNamespaceFeedEndId" = 0,
-      "profileNamespaceFeedPulledThrough" = 0,
       "retiredAt" = NULL
   `;
 }
@@ -747,10 +740,13 @@ async function resetFederationApps(
     nodes.map(({ app, domain }) =>
       app.database.transaction(async (tx) => {
         await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
+        await tx.execute(sql.raw(RESTORE_SYSTEM_ACCOUNT_SQL));
         await tx.execute(sql`DELETE FROM "SystemSetting"
       WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
         await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
         await tx.execute(resetLocalNamespaceSentinelSql(domain));
+        await tx.execute(sql`INSERT INTO "ProfileNamespaceFeedHead" (id, "endId") VALUES (0, 0)
+          ON CONFLICT (id) DO UPDATE SET "endId" = 0, "updatedAt" = CURRENT_TIMESTAMP`);
       }),
     ),
   );

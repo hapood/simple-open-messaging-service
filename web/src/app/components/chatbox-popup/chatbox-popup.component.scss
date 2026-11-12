@@ -14,13 +14,17 @@
   padding: 0;
   pointer-events: auto;
   animation: chatbox-popup-backdrop-in 240ms ease-out both;
+
+  &--disabled {
+    cursor: default;
+  }
 }
 
 .chatbox-popup__surface {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: min(320px, calc(100% - 24px));
+  width: min(360px, calc(100% - 24px));
   height: auto;
   max-height: calc(100% - 32px);
   box-sizing: border-box;

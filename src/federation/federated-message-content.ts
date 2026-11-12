@@ -1,3 +1,4 @@
+import { parseFederationFileMeta } from './federation-file-meta.js';
 import { ContentType } from '../database/enums.js';
 import { canonicalJson, payloadDigest } from './canonical-json.js';
 import { isAbsoluteLinkTarget } from '../message/link-target.js';
@@ -64,12 +65,6 @@ function assertSafeInteger(
   }
 }
 
-function assertPositiveFinite(value: unknown): asserts value is number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    throw new Error('invalid positive number');
-  }
-}
-
 function assertNonEmptyString(value: unknown): asserts value is string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error('invalid non-empty string');
@@ -103,16 +98,6 @@ function validateContactCard(value: JsonObject): void {
     hasUnpairedSurrogate(value['bio'])
   )
     throw new Error('invalid contact card');
-}
-
-function validateSingleFields(value: JsonObject, extra: string[]): void {
-  if (extra.includes('name')) assertNonEmptyString(value['name']);
-  if (extra.includes('mimeType')) assertNonEmptyString(value['mimeType']);
-  if (extra.includes('w')) assertSafeInteger(value['w'], true);
-  if (extra.includes('h')) assertSafeInteger(value['h'], true);
-  if (extra.includes('width')) assertSafeInteger(value['width'], true);
-  if (extra.includes('height')) assertSafeInteger(value['height'], true);
-  if (extra.includes('duration')) assertPositiveFinite(value['duration']);
 }
 
 function validateImageName(value: JsonObject): void {
@@ -201,33 +186,57 @@ function localCasUrl(digest: string): string {
   return `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`;
 }
 
-function projectSingleToWire(
-  value: JsonObject,
-  extra: string[],
-  optional: string[] = [],
-): JsonObject {
-  assertKeys(value, ['url', 'size', ...extra], [...optional, 'quote']);
+function projectSingleToWire(value: JsonObject, kind: string): JsonObject {
+  assertKeys(
+    value,
+    ['url', 'size', 'name'],
+    ['kind', 'mimeType', 'w', 'h', 'duration', 'meta', 'quote'],
+  );
   parseQuote(value);
-  assertSafeInteger(value['size']);
-  validateSingleFields(value, [
-    ...extra,
-    ...optional.filter((key) => value[key] !== undefined),
-  ]);
-  return {
-    ...value,
-    digest: digestFromUrl(value['url']),
-    url: undefined,
-    size: undefined,
-    quote: undefined,
-    ...(extra.includes('w') ? { width: value['w'], w: undefined } : {}),
-    ...(extra.includes('h') ? { height: value['h'], h: undefined } : {}),
-  };
+  validateImageName(value);
+  assertSafeInteger(value.size);
+  const meta = parseFederationFileMeta(
+    value.meta ?? {
+      kind,
+      ...(kind === 'IMAGE' || kind === 'VIDEO'
+        ? { width: value.w, height: value.h }
+        : {}),
+      ...(kind === 'VIDEO' || kind === 'AUDIO'
+        ? { duration: value.duration }
+        : {}),
+    },
+  );
+  if (kind !== 'FILE' && meta.kind !== kind)
+    throw new Error('media kind mismatch');
+  return { digest: digestFromUrl(value.url), name: value.name, meta };
 }
 
-function withoutUndefined(value: JsonObject): JsonObject {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  );
+function projectWireFileToLocal(
+  value: JsonObject,
+  kind: string | undefined,
+  assetBytes: ReadonlyMap<string, number>,
+): JsonObject {
+  assertKeys(value, ['digest', 'name', 'meta']);
+  assertDigest(value.digest);
+  validateImageName(value);
+  const meta = parseFederationFileMeta(value.meta);
+  if (kind && kind !== 'FILE' && meta.kind !== kind)
+    throw new Error('media kind mismatch');
+  const size = assetBytes.get(value.digest);
+  assertSafeInteger(size);
+  return {
+    url: localCasUrl(value.digest),
+    name: value.name,
+    size,
+    ...(meta.kind !== 'IMAGE' || kind === 'FILE'
+      ? { mimeType: 'application/octet-stream' }
+      : {}),
+    ...('width' in meta ? { w: meta.width, h: meta.height } : {}),
+    ...('duration' in meta ? { duration: meta.duration } : {}),
+    ...(kind === undefined ? { kind: meta.kind } : {}),
+    // FILE presentation cannot reconstruct its actual media category from contentType.
+    ...(kind === 'FILE' && meta.kind !== 'FILE' ? { meta } : {}),
+  };
 }
 
 /** Project the existing client/local Message.content shape onto the URL-free Federation v1 shape. */
@@ -242,32 +251,10 @@ export function toFederatedMessageContent(
     case ContentType.PURE_TEXT:
       return canonicalJson(projectTextContent(value, false));
     case ContentType.IMAGE:
-      validateImageName(value);
-      return canonicalJson(
-        withoutUndefined(projectSingleToWire(value, ['w', 'h', 'name'])),
-      );
     case ContentType.FILE:
-      return canonicalJson(
-        withoutUndefined(projectSingleToWire(value, ['name', 'mimeType'])),
-      );
     case ContentType.VIDEO:
-      return canonicalJson(
-        withoutUndefined(
-          projectSingleToWire(value, [
-            'name',
-            'mimeType',
-            'w',
-            'h',
-            'duration',
-          ]),
-        ),
-      );
     case ContentType.AUDIO:
-      return canonicalJson(
-        withoutUndefined(
-          projectSingleToWire(value, ['name', 'mimeType', 'duration']),
-        ),
-      );
+      return canonicalJson(projectSingleToWire(value, contentType));
     case ContentType.GALLERY: {
       assertKeys(value, ['items'], ['quote']);
       parseQuote(value);
@@ -280,21 +267,9 @@ export function toFederatedMessageContent(
         }
         const record = item as JsonObject;
         const kind = record['kind'];
-        const fields =
-          kind === 'IMAGE'
-            ? ['name', 'w', 'h']
-            : kind === 'VIDEO'
-              ? ['name', 'mimeType', 'w', 'h', 'duration']
-              : kind === 'AUDIO'
-                ? ['name', 'mimeType', 'duration']
-                : kind === 'FILE'
-                  ? ['name', 'mimeType']
-                  : null;
-        if (!fields) throw new Error('invalid gallery kind');
-        return withoutUndefined({
-          kind,
-          ...projectSingleToWire(record, ['kind', ...fields]),
-        });
+        if (!['IMAGE', 'VIDEO', 'AUDIO', 'FILE'].includes(String(kind)))
+          throw new Error('invalid gallery kind');
+        return projectSingleToWire(record, String(kind));
       });
       return canonicalJson({ items });
     }
@@ -390,42 +365,16 @@ export function fromFederatedMessageContent(
   if (!Object.values(ContentType).includes(contentType))
     throw new Error('unknown federated content type');
   const value = parseObject(content);
-  const single = (extra: string[], optional: string[] = []): string => {
-    assertKeys(value, ['digest', ...extra], optional);
-    assertDigest(value['digest']);
-    validateSingleFields(value, [
-      ...extra,
-      ...optional.filter((key) => value[key] !== undefined),
-    ]);
-    const size = assetBytes.get(value['digest']);
-    assertSafeInteger(size);
-    return canonicalJson(
-      withoutUndefined({
-        ...value,
-        url: localCasUrl(value['digest']),
-        digest: undefined,
-        size,
-        ...(extra.includes('width')
-          ? { w: value['width'], width: undefined }
-          : {}),
-        ...(extra.includes('height')
-          ? { h: value['height'], height: undefined }
-          : {}),
-      }),
-    );
-  };
   switch (contentType) {
     case ContentType.PURE_TEXT:
       return canonicalJson(projectTextContent(value, true));
     case ContentType.IMAGE:
-      validateImageName(value);
-      return single(['width', 'height', 'name']);
     case ContentType.FILE:
-      return single(['name', 'mimeType']);
     case ContentType.VIDEO:
-      return single(['name', 'mimeType', 'width', 'height', 'duration']);
     case ContentType.AUDIO:
-      return single(['name', 'mimeType', 'duration']);
+      return canonicalJson(
+        projectWireFileToLocal(value, contentType, assetBytes),
+      );
     case ContentType.GALLERY: {
       assertKeys(value, ['items']);
       if (!Array.isArray(value['items']) || value['items'].length === 0) {
@@ -435,36 +384,11 @@ export function fromFederatedMessageContent(
         if (!item || typeof item !== 'object' || Array.isArray(item)) {
           throw new Error('invalid gallery item');
         }
-        const record = item as JsonObject;
-        const kind = record['kind'];
-        const fields =
-          kind === 'IMAGE'
-            ? ['name', 'width', 'height']
-            : kind === 'VIDEO'
-              ? ['name', 'mimeType', 'width', 'height', 'duration']
-              : kind === 'AUDIO'
-                ? ['name', 'mimeType', 'duration']
-                : kind === 'FILE'
-                  ? ['name', 'mimeType']
-                  : null;
-        if (!fields) throw new Error('invalid gallery kind');
-        assertKeys(record, ['kind', 'digest', ...fields]);
-        assertDigest(record['digest']);
-        validateSingleFields(record, fields);
-        const size = assetBytes.get(record['digest']);
-        assertSafeInteger(size);
-        return withoutUndefined({
-          ...record,
-          url: localCasUrl(record['digest']),
-          digest: undefined,
-          size,
-          ...(fields.includes('width')
-            ? { w: record['width'], width: undefined }
-            : {}),
-          ...(fields.includes('height')
-            ? { h: record['height'], height: undefined }
-            : {}),
-        });
+        return projectWireFileToLocal(
+          item as JsonObject,
+          undefined,
+          assetBytes,
+        );
       });
       return canonicalJson({ items });
     }
@@ -567,7 +491,7 @@ export function federatedContentDigests(
  * Federation v1 wire `content` for the given `(contentType, content)`. This is the digest a peer
  * computes over the wire it receives, so a publisher stores it at creation time and compares it
  * against the digest carried by a later processing receipt to confirm the content was not altered
- * in transit. It is also the digest a provenance query (`POST /s2s/v1/message-provenance`) supplies.
+ * in transit. It is also the digest a provenance query (`POST /somfp/v1/message-provenance`) supplies.
  *
  * The input `content` is the local stored form; it is projected to the wire form via
  * `toFederatedMessageContent` before hashing, so the digest is independent of the local storage

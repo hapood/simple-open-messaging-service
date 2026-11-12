@@ -88,7 +88,7 @@ describe('federation directed-state boundaries', () => {
       author: 'local' | 'peer';
       status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
       note?: string;
-      requestedAt: Date | null;
+      statusChangedAt: Date;
       expiresAt: Date | null;
       updatedAt?: Date;
       messageEndSeq?: number;
@@ -121,7 +121,7 @@ describe('federation directed-state boundaries', () => {
         messageEndSeq: row.messageEndSeq ?? 0,
         tombstoneEndSeq: row.tombstoneEndSeq ?? 0,
         note: row.note ?? '',
-        requestedAt: row.requestedAt,
+        statusChangedAt: row.statusChangedAt,
         expiresAt: row.expiresAt,
         updatedAt: row.updatedAt ?? new Date(),
       })),
@@ -160,7 +160,7 @@ describe('federation directed-state boundaries', () => {
         {
           author: 'peer',
           status: 'REQUESTED',
-          requestedAt: new Date(),
+          statusChangedAt: new Date(),
           expiresAt: new Date(Date.now() + 60_000),
           messageEndSeq: end,
           tombstoneEndSeq: end === 0 ? 0 : 4,
@@ -274,7 +274,7 @@ describe('federation directed-state boundaries', () => {
       {
         author: 'peer',
         status: 'REQUESTED',
-        requestedAt: new Date(),
+        statusChangedAt: new Date(),
         expiresAt: new Date(Date.now() + 60_000),
       },
     ]);
@@ -321,19 +321,19 @@ describe('federation directed-state boundaries', () => {
     );
     // Dangling acceptance: the local side consented and the pair never activated.
     // Receiving the peer REVOKED concludes both authored directions in one transaction.
-    const requestedAt = new Date();
+    const statusChangedAt = new Date();
     await seedIntents(local.id, peer, [
       {
         author: 'local',
         status: 'ACCEPTED',
-        requestedAt,
+        statusChangedAt,
         expiresAt: null,
       },
       {
         author: 'peer',
         status: 'REQUESTED',
-        requestedAt,
-        expiresAt: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000),
+        statusChangedAt,
+        expiresAt: new Date(statusChangedAt.getTime() + 24 * 60 * 60 * 1000),
       },
     ]);
     await seedThreadShell(local.id, peer);
@@ -346,12 +346,13 @@ describe('federation directed-state boundaries', () => {
             account: peer.account,
             peerAccount: local.account,
             feedId: '1',
+            generatedAt: 0,
             body: {
               status: 'REVOKED',
               namespaceId: 0,
               profileRev: 1,
               note: '',
-              requestedAt: null,
+              statusChangedAt: Date.now(),
               expiresAt: null,
             },
           },
@@ -383,14 +384,14 @@ describe('federation directed-state boundaries', () => {
         author: 'local',
         status: 'REQUESTED',
         note: 'old local',
-        requestedAt: new Date(Date.now() - 120_000),
+        statusChangedAt: new Date(Date.now() - 120_000),
         expiresAt: expiredAt,
       },
       {
         author: 'peer',
         status: 'REQUESTED',
         note: 'old peer',
-        requestedAt: new Date(Date.now() - 120_000),
+        statusChangedAt: new Date(Date.now() - 120_000),
         expiresAt: expiredAt,
       },
     ]);
@@ -447,6 +448,7 @@ describe('federation directed-state boundaries', () => {
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
+      generatedAt: 1_700_000_000_000,
       displayName: 'Boundary Group',
       avatar: '',
     });
@@ -497,12 +499,14 @@ describe('federation directed-state boundaries', () => {
     await writeInvite();
     const first = await inviteRow();
     expect(first).toBeDefined();
-    const requestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    const statusChangedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     await database.db
       .update(relationshipIntent)
       .set({
-        requestedAt,
-        expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
+        statusChangedAt,
+        expiresAt: new Date(
+          statusChangedAt.getTime() + 7 * 24 * 60 * 60 * 1000,
+        ),
       })
       .where(
         and(

@@ -11,8 +11,6 @@ import {
   Min,
 } from 'class-validator';
 
-import { MAX_MEDIA_FILE_BYTES } from '../../shared/media-upload-limits.js';
-
 export type UploadPartIntent = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
 
 export class InitResumableUploadDto {
@@ -53,6 +51,6 @@ export class InitResumableUploadDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(MAX_MEDIA_FILE_BYTES)
+  @Max(Number.MAX_SAFE_INTEGER)
   totalBytes!: number;
 }

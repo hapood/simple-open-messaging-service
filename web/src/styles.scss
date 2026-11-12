@@ -4,6 +4,15 @@
 @use './app/assets/tokens';
 @use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
 
+// Hide native scrollbar chrome without changing overflow or wheel, touch and keyboard scrolling.
+* {
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+}
+
 // Shared sticky-avatar handoff: retain the natural head's 40px layout slot while the viewport-level copy paints.
 // The marker lives on that exact avatar so a later group from the same sender remains visible.
 .msg-avatar.cb-sticky-avatar-source {
@@ -275,6 +284,21 @@ $dark-theme: mat.define-theme(
   inherits: true;
   initial-value: #b45309;
 }
+@property --c-restore-1 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #e0e8f4;
+}
+@property --c-restore-2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #c2d2e9;
+}
+@property --c-restore {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #3568b8;
+}
 @property --c-amber-1 {
   syntax: '<color>';
   inherits: true;
@@ -388,21 +412,24 @@ $dark-theme: mat.define-theme(
 /* === Snackbar: lift the bottom-centered toast clear of the chat's bottom occupation. ===
  * Every MatSnackBar renders in the global CDK overlay (outside any component's view encapsulation), so the
  * lift can't live in component SCSS. Browser CDK overlays already follow the visible viewport bottom, so
- * their offset contains composer + safe area only; NativeComposerService overrides the shared offset with
- * composer + native keyboard surface + safe area. The +8px preserves Material's default visual gap. */
+ * their offset contains composer + safe area only. SnackbarGeometryService owns the Android offset:
+ * active composer + its keyboard surface, or the global IME on other pages, plus safe area. Already-resized
+ * viewport pixels are excluded to avoid double compensation. The +8px preserves Material's visual gap. */
 .soms-snack-bar.mat-mdc-snack-bar-container {
   margin-bottom: calc(
     var(--soms-snackbar-bottom-offset, var(--soms-safe-bottom, 0px)) + 8px
   );
 }
 
-/* Informational snackbars have no action, so neither their surface nor the CDK pane around it should
- * consume taps. Interactive snackbars (for example the OTA update prompt) deliberately omit this class.
- * The pane rule is necessary: disabling hit testing on the snackbar alone would leave its parent pane
- * intercepting the same rectangle. */
+/* Passive feedback lets taps pass through its text and surrounding pane. Its explicit close button
+ * remains interactive; update prompts keep their whole surface interactive for the business action. */
 .cdk-overlay-pane:has(.soms-snack-bar--passive),
 .soms-snack-bar--passive {
   pointer-events: none;
+}
+
+.soms-snack-bar--passive .toast-close {
+  pointer-events: auto;
 }
 
 /* Semantic variants used by ToastService while retaining Material's standard snackbar structure. */
@@ -542,6 +569,11 @@ body {
   padding: 32px;
   line-height: 24px;
   text-align: center;
+}
+
+// Database theme resolution completes before application content is allowed to paint.
+html[data-theme-pending] app-root {
+  visibility: hidden;
 }
 
 .app-splash {

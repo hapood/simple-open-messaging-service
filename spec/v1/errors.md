@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Error Code Registry
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 Normative scope: this document defines S2S HTTP failure classes, HTTP `200` application results, stable `code` values, structured `data`, and caller actions.
 
 ## Error envelope
@@ -63,8 +63,8 @@ HTTP `409` alone is insufficient to trigger `halted`. Only HTTP `409` combined w
 
 ### Thread-query authorization convergence
 
-An authenticated HTTP `200 FORBIDDEN` from `GET /s2s/v1/messages`, or from
-`GET /s2s/v1/message-tombstones` because the current relationship is invalid,
+An authenticated HTTP `200 FORBIDDEN` from `GET /somfp/v1/messages`, or from
+`GET /somfp/v1/message-tombstones` because the current relationship is invalid,
 is an authorization-convergence result. The consumer MUST apply the
 current-state revalidation and locally authored relationship rules in
 [Message Query, Section 4](./message-feed.md#4-authorization-and-state-reconciliation),
@@ -111,7 +111,7 @@ not evidence that the thread relationship has ended.
 | 50028 | `FEDERATION_DOMAIN_CHANGE_REJECTED`                |  200 | Operation-level: the recipient's local policy rejected the domain re-binding proposal. Retain the current binding, namespace, acceptance, and lifecycle; retry and refusal-retention policy are implementation choices.                                                                                                   |
 | 50029 | `FEDERATION_ROOT_CHANGE_REJECTED`                  |  200 | Operation-level: the recipient's local policy rejected the root rotation proposal. Retain the current pin, namespace, acceptance, and lifecycle; retry and refusal-retention policy are implementation choices. |
 | 50030 | `FEDERATION_PUBLIC_KEY_UNRECOGNIZED`               |  400 | The supplied public key is not part of this server's retained key history. The sealed challenge cannot be answered; the current operation fails without any identity or lifecycle effect.                                                                                                                                           |
-| 50031 | `FEDERATION_PROVENANCE_DECLINED`                   |  200 | The responder declines the entire `POST /s2s/v1/message-provenance` batch. No `data.results` is returned; the requester MUST NOT treat it as a transport or peer-lifecycle event. Per-query refusal inside an otherwise successful response uses the individual `known: "declined"` result instead.                                 |
+| 50031 | `FEDERATION_PROVENANCE_DECLINED`                   |  200 | The responder declines the entire `POST /somfp/v1/message-provenance` batch. No `data.results` is returned; the requester MUST NOT treat it as a transport or peer-lifecycle event. Per-query refusal inside an otherwise successful response uses the individual `known: "declined"` result instead.                                 |
 | 70001 | `CALL_NOT_ALLOWED`                                 |  200 | Unknown callId or privacy-collapsed account, relationship, block, tenant, or call-admission failure. Terminate this call and MUST NOT degrade the peer.                                                                                                                                                                             |
 | 70004 | `CALL_BUSY`                                        |  200 | The remote participant is busy. Terminate, or initiate later with a new `callId`; MUST NOT replay the same incoming frame.                                                                                                                                                                                                          |
 | 70007 | `CALL_CANCELLED`                                   |  200 | The caller cancelled the call. Converge locally to cancelled and stop media, timers, and dependent frames; MUST NOT degrade the peer.                                                                                                                                                                                               |
@@ -178,7 +178,7 @@ potentially serviceable positive coordinate is `N`, then
 protocol does not guarantee that items exist at `N` or `M`, because the relevant
 coordinate space may contain unallocated, filtered, or unauthorized holes.
 
-`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /s2s/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, State Feed, Group Meta Feed, Profiles, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
+`FEDERATION_MESSAGE_QUERY_RATE_LIMITED` and `FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE` MUST carry `FederationQueryRetryData` and may be used only by `GET /somfp/v1/messages`. Both are application deferrals after HTTP and identity authentication. They MUST NOT conceal signature, binding, authorization, or malformed errors, and MUST NOT be used by tombstone query, State Feed, Group Meta Feed, Profiles, or for federation-wide service unavailability. They do not use the HTTP `Retry-After` header.
 
 Complete wire example:
 
@@ -242,7 +242,7 @@ code's meaning, retryability, identity action, cursor effect, or structured data
 requires a new protocol major. A package revision may only correct an artifact
 to match an already-defined v1 semantic without allocating a new wire code.
 
-`GET /s2s/v1/health` MUST NOT emit an error envelope. Its uniform HTTP `200`
+`GET /somfp/v1/health` MUST NOT emit an error envelope. Its uniform HTTP `200`
 `unavailable` projection is a status result under
 [Peer Recognition, Section 9](./recognition.md#9-health-query-and-privacy), not
 an error in this registry. A non-`200` or malformed response is not a Health

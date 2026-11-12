@@ -1,37 +1,30 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   grantViewer,
   disableAdmin,
   enableAdmin,
-  listAdmins,
   resetAdminTwoFactor,
   setAdminRole,
-  type AdminsQuery,
 } from '@/api/admins';
 import type { AdminRole } from '@/types/api';
+import { invalidateSessionViews } from './use-sessions';
 
 function useInvalidateAdmins() {
   const qc = useQueryClient();
   return () =>
     Promise.all([
-      qc.invalidateQueries({ queryKey: ['admin', 'admins'] }),
+      qc.invalidateQueries({ queryKey: ['admin', 'admin-sessions'] }),
       qc.invalidateQueries({ queryKey: ['admin', 'users'] }),
     ]);
 }
 
-export function useAdmins(q: AdminsQuery) {
-  return useQuery({
-    queryKey: ['admin', 'admins', q],
-    queryFn: () => listAdmins(q),
-    placeholderData: (prev) => prev,
-  });
-}
-
 export function useGrantViewer() {
   const invalidate = useInvalidateAdmins();
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (userId: number) => grantViewer(userId),
-    onSuccess: invalidate,
+    onSuccess: () =>
+      Promise.all([invalidate(), invalidateSessionViews(queryClient)]),
   });
 }
 

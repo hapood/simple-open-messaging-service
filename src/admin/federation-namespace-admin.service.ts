@@ -15,7 +15,6 @@ import {
 import { SignatureService } from '../federation/signature.service.js';
 import { FederationTransportConfigService } from '../federation/federation-transport-config.service.js';
 import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
-import { ProfileNamespaceRefreshService } from '../federation/profile-namespace-refresh.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { sealBox } from '../federation/sealed-box.js';
 
@@ -79,7 +78,6 @@ export class FederationNamespaceAdminService {
   constructor(
     private readonly database: DatabaseService,
     private readonly profileNamespaceFeed: ProfileNamespaceFeedService,
-    private readonly profileNamespaceRefresh: ProfileNamespaceRefreshService,
     private readonly sse: SseService,
     @Optional() private readonly discovery?: DiscoveryService,
     @Optional() private readonly signature?: SignatureService,
@@ -171,7 +169,7 @@ export class FederationNamespaceAdminService {
         detail: `discovery failed: ${(error as Error).message}`,
       };
     }
-    const url = new URL(`${base}/s2s/v1/verify`);
+    const url = new URL(`${base}/somfp/v1/verify`);
     const release = await this.discovery.acquireRequestSlot(review.nextDomain);
     try {
       const headers = await this.signature.signOutbound({
@@ -183,9 +181,6 @@ export class FederationNamespaceAdminService {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
         body,
-        signal: AbortSignal.timeout(
-          this.transportConfig.get().callTimeoutSec * 1000,
-        ),
       });
       const payload = (await response.json().catch(() => undefined)) as
         | { code?: number; data?: { value?: unknown } }
@@ -411,7 +406,7 @@ export class FederationNamespaceAdminService {
       const newPeer = decision === 'approved' && resolution === 'new-peer';
       if (newPeer) {
         await tx.execute(sql`UPDATE "IdentityNamespace"
-          SET active = false, "retiredAt" = now() WHERE id = ${namespace.id}`);
+          SET active = false, "retiredAt" = now(), "updatedAt" = CURRENT_TIMESTAMP WHERE id = ${namespace.id}`);
         activeNamespaceId = null;
         await this.profileNamespaceFeed.recordNamespaceChangeInTx(
           tx,
@@ -449,6 +444,22 @@ export class FederationNamespaceAdminService {
         activeNamespaceId = namespace.id;
       }
 
+      if (decision === 'approved') {
+        // Keep the direct binding cache in the identity transaction. It must
+        // survive a crash before post-commit notifications or refresh work.
+        await tx.execute(sql`
+          INSERT INTO "ProfileNamespace"
+            ("publisherNamespaceId", "profileNamespaceId", domain, "rootPublicKey",
+             "sourceGeneratedAt", "updateFeedId", expired, status)
+          SELECT id, 0, domain, "rootPublicKey", 0, 0, false,
+            CASE WHEN active AND "retiredAt" IS NULL THEN 'ACTIVE' ELSE 'ARCHIVED' END
+          FROM "IdentityNamespace" WHERE id = ${namespace.id}
+          ON CONFLICT ("publisherNamespaceId", "profileNamespaceId") DO UPDATE
+          SET domain = EXCLUDED.domain, "rootPublicKey" = EXCLUDED."rootPublicKey",
+              "sourceGeneratedAt" = 0, "updateFeedId" = 0, expired = false,
+              status = EXCLUDED.status, "updatedAt" = CURRENT_TIMESTAMP
+        `);
+      }
       if (
         decision === 'approved' &&
         review.kind === 'identity-reset' &&
@@ -471,6 +482,7 @@ export class FederationNamespaceAdminService {
           );
         }
         await tx.execute(sql`UPDATE "IdentityNamespace" SET
+          "updatedAt" = CURRENT_TIMESTAMP,
           "haltCode" = NULL, "haltReason" = NULL, "haltedAt" = NULL,
           "peerAssignedLocalNamespaceId" = ${coordinate ?? null},
           "trustLevel" = CASE WHEN "localServiceAvailable" AND "peerAcceptanceConfirmed"
@@ -503,7 +515,7 @@ export class FederationNamespaceAdminService {
         // an independently halted peer or invent missing acceptance evidence.
         await tx.execute(sql`
           UPDATE "IdentityNamespace"
-          SET "trustLevel" = CASE
+          SET "updatedAt" = CURRENT_TIMESTAMP, "trustLevel" = CASE
                 WHEN "localServiceAvailable" AND "peerAcceptanceConfirmed"
                 THEN 'available' ELSE "trustLevel" END,
               "remoteServiceReachable" = true,
@@ -525,24 +537,14 @@ export class FederationNamespaceAdminService {
         activeNamespaceId,
       };
       if (decision === 'approved') {
-        // Our own pin for this peer is authoritative: wake every device via
-        // the change feed and converge the (our-id-for-peer, 0) cache row
-        // locally, without a remote call. Third-party rows wait for the
-        // peer's own feed.
+        // The direct binding and client change are already durable. Third-party
+        // caches converge through this publisher's positive namespace item.
         const wakeAt = clientChangeIds.at(-1);
         return {
           result,
           afterCommit: () => {
             if (wakeAt !== undefined)
               this.sse.notifyProfileNamespaceChange(wakeAt);
-            if (!newPeer)
-              this.profileNamespaceRefresh.scheduleRefresh(
-                {
-                  publisherNamespaceId: namespace.id,
-                  profileNamespaceId: 0,
-                },
-                0n,
-              );
           },
         };
       }
@@ -577,7 +579,7 @@ export class FederationNamespaceAdminService {
     // acceptance or lifecycle. New-domain certificates are resolved afresh.
     await tx.execute(sql`
       UPDATE "IdentityNamespace"
-      SET domain = ${review.nextDomain}
+      SET domain = ${review.nextDomain}, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${namespace.id}
     `);
     await tx.execute(sql`
@@ -623,8 +625,13 @@ export class FederationNamespaceAdminService {
     await tx.execute(sql`
       UPDATE "IdentityNamespace"
       SET "rootPublicKey" = ${review.claimedRoot},
-          "identityPinnedAt" = now()
+          "identityPinnedAt" = now(), "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${namespace.id}
+    `);
+    await tx.execute(sql`
+      UPDATE "FederationFeedState"
+      SET "lastHandshakeAt" = NULL, "latestHealthCheck" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "namespaceId" = ${namespace.id}
     `);
     await tx.execute(sql`
       DELETE FROM "S2SKeyCache" WHERE "namespaceId" = ${namespace.id}

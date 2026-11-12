@@ -122,7 +122,7 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
 }) {
   return sql`
     WITH reverse AS MATERIALIZED (
-      SELECT i.status, i.note, i."profileRev", i."requestedAt", i."expiresAt"
+      SELECT i.status, i.note, i."profileRev", i."statusChangedAt", i."expiresAt", i."requestId"
       FROM "RelationshipIntent" i
       JOIN "RelationshipPair" p ON p.id = ${input.pairId}
         AND i."authorAccount" = p."endpointBAccount"
@@ -183,7 +183,9 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
         AND side_a."expiresAt" > CURRENT_TIMESTAMP) AS "invitationOutstanding",
       (rev.status = 'REQUESTED' AND rev."expiresAt" > CURRENT_TIMESTAMP
         AND (side_a.status IS NULL OR side_a.status = 'REQUESTED'
-          OR (side_a.status = 'REVOKED' AND side_a."updatedAt" < rev."requestedAt"))
+          OR (side_a.status = 'REVOKED' AND EXISTS (
+            SELECT 1 FROM "RelationshipRequest" request
+            WHERE request.id = rev."requestId" AND request.status = 'REQUESTED')))
       ) AS "applicationPending",
       COALESCE((SELECT pair.active FROM "RelationshipPair" pair
         WHERE pair.id = ${input.pairId}), false) AS "pairActive",

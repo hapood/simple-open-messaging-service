@@ -2,6 +2,7 @@
   <button
     type="button"
     class="chatbox-popup__backdrop"
+    [class.chatbox-popup__backdrop--disabled]="topDialog()?.disableClose"
     (click)="cancelTop()"
     [attr.aria-label]="'common.cancel' | transloco"
   ></button>

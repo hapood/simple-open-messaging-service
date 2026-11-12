@@ -76,8 +76,7 @@
   transform: translate(-50%, -50%);
   width: max-content;
   max-width: calc(100% - 196px);
-  // The title text owns its own ellipsis. Keep this wrapper visible so the
-  // absolutely-positioned mute state beside the centered name is not clipped.
+  // The title text owns its own ellipsis.
   overflow: visible;
   display: flex;
   flex-direction: column;
@@ -126,17 +125,6 @@
   font-weight: 400;
   line-height: 20px;
   font-variant-numeric: tabular-nums;
-}
-
-.thread-indicators {
-  position: absolute;
-  left: calc(100% + 5px);
-  top: 2px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--app-text-faint);
 }
 
 .msg-actions {

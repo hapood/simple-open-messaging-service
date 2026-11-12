@@ -65,6 +65,7 @@ describe('ThreadAttachmentUploadController', () => {
           {} as ToastService,
           {
             threadId: () => 9,
+            maxFileBytes: async () => 1024 ** 3,
             failPending,
             markAccepted: vi.fn(),
             surfaceQuota: vi.fn(),
@@ -89,66 +90,80 @@ describe('ThreadAttachmentUploadController', () => {
   );
 
   it.each(['uploadImage', 'uploadVideo', 'uploadAudio', 'uploadFile'] as const)(
-    '%s rejects a file exactly at 1 GiB before staging network work', async (method) => {
-    const fail = vi.fn();
-    const failPending = vi.fn(async () => undefined);
-    const stageMedia = vi.fn();
-    const host = {
-      threadId: () => 9,
-      failPending,
-      markAccepted: vi.fn(),
-      surfaceQuota: vi.fn(),
-    } satisfies ThreadAttachmentUploadHost;
-    const controller = new ThreadAttachmentUploadController(
-      { stageMedia } as unknown as MessageThreadAdapter,
-      { fail } as unknown as MediaTransferService,
-      {
-        translate: (key: string) => key,
-      } as TranslocoService,
-      {} as NativeUploadService,
-      { enabled: () => false } as DebugToolsService,
-      {} as ToastService,
-      host,
-    );
-
-    await controller[method](
-      'cid',
-      'part',
-      { size: 1024 * 1024 * 1024 } as File,
-      { id: -1, data: { type: 'msg' } } as never,
-      false,
-    );
-
-    expect(stageMedia).not.toHaveBeenCalled();
-    expect(fail).toHaveBeenCalledWith(
-      'cid',
-      'transfer.attachmentTooLarge',
-      false,
-    );
-    expect(failPending).toHaveBeenCalledOnce();
-  });
-
-  it.each(['uploadImage', 'uploadVideo', 'uploadAudio', 'uploadFile'] as const)(
-    '%s admits a file just below 1 GiB to staging', async (method) => {
-      // Stop at staging so no large File or network payload needs to be allocated.
-      const stageMedia = vi.fn(() => of({ code: 10000, message: 'test stop', data: null }));
+    '%s rejects a file exceeding the effective custom limit before staging network work',
+    async (method) => {
+      const fail = vi.fn();
+      const failPending = vi.fn(async () => undefined);
+      const stageMedia = vi.fn();
+      const host = {
+        maxFileBytes: async () => 100,
+        threadId: () => 9,
+        failPending,
+        markAccepted: vi.fn(),
+        surfaceQuota: vi.fn(),
+      } satisfies ThreadAttachmentUploadHost;
       const controller = new ThreadAttachmentUploadController(
         { stageMedia } as unknown as MessageThreadAdapter,
-        { fail: vi.fn(), isUploading: () => true, cancelled: () => NEVER } as unknown as MediaTransferService,
+        { fail } as unknown as MediaTransferService,
+        {
+          translate: (key: string) => key,
+        } as TranslocoService,
+        {} as NativeUploadService,
+        { enabled: () => false } as DebugToolsService,
+        {} as ToastService,
+        host,
+      );
+
+      await controller[method](
+        'cid',
+        'part',
+        { size: 1024 * 1024 * 1024 } as File,
+        { id: -1, data: { type: 'msg' } } as never,
+        false,
+      );
+
+      expect(stageMedia).not.toHaveBeenCalled();
+      expect(fail).toHaveBeenCalledWith(
+        'cid',
+        'transfer.attachmentTooLarge',
+        false,
+      );
+      expect(failPending).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['uploadImage', 'uploadVideo', 'uploadAudio', 'uploadFile'] as const)(
+    '%s admits a file at a custom limit above 1 GiB to staging',
+    async (method) => {
+      // Stop at staging so no large File or network payload needs to be allocated.
+      const stageMedia = vi.fn(() =>
+        of({ code: 10000, message: 'test stop', data: null }),
+      );
+      const controller = new ThreadAttachmentUploadController(
+        { stageMedia } as unknown as MessageThreadAdapter,
+        {
+          fail: vi.fn(),
+          isUploading: () => true,
+          cancelled: () => NEVER,
+        } as unknown as MediaTransferService,
         { translate: (key: string) => key } as TranslocoService,
         {} as NativeUploadService,
         { enabled: () => false } as DebugToolsService,
         {} as ToastService,
         {
           threadId: () => 9,
+          maxFileBytes: async () => 2 * 1024 ** 3,
           failPending: vi.fn(async () => undefined),
           markAccepted: vi.fn(),
           surfaceQuota: vi.fn(),
         },
       );
       await controller[method](
-        'cid', 'part', { size: 1024 * 1024 * 1024 - 1 } as File,
-        { id: -1, data: { type: 'msg' } } as never, false,
+        'cid',
+        'part',
+        { size: 2 * 1024 ** 3 } as File,
+        { id: -1, data: { type: 'msg' } } as never,
+        false,
       );
       expect(stageMedia).toHaveBeenCalledOnce();
     },

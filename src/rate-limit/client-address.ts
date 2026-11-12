@@ -10,7 +10,7 @@ export type NormalizedClientAddress =
       family: 'ipv6';
       address: string;
       exactSubject: string;
-      prefix64Subject: string;
+      prefix56Subject: string;
     };
 
 /**
@@ -49,14 +49,14 @@ export function normalizeClientAddress(
   }
 
   const address = (parsed as ipaddr.IPv6).toRFC5952String();
-  const prefix64 = ipaddr.IPv6.networkAddressFromCIDR(
-    `${address}/64`,
+  const prefix56 = ipaddr.IPv6.networkAddressFromCIDR(
+    `${address}/56`,
   ).toRFC5952String();
   return {
     family: 'ipv6',
     address,
     exactSubject: `ip6:${address}`,
-    prefix64Subject: `ip6-prefix64:${prefix64}/64`,
+    prefix56Subject: `ip6-prefix56:${prefix56}/56`,
   };
 }
 

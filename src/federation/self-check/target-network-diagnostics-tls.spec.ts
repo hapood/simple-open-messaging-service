@@ -66,7 +66,7 @@ vi.mock('undici', async (original) => {
 });
 const service = () =>
   new TargetNetworkDiagnosticsService({
-    get: () => ({ connectTimeoutSec: 2, callTimeoutSec: 2 }),
+    get: () => ({ connectTimeoutSec: 2, requestIdleTimeoutSec: 2 }),
   } as never);
 
 let directory: string;
@@ -146,7 +146,7 @@ describe('diagnostic SRV routing with real TLS', () => {
     expect(state.requests).toContainEqual({
       host: `peer.example:${state.port}`,
       sni: 'peer.example',
-      path: '/.well-known/somfp',
+      path: '/somfp/discovery',
     });
     expect(state.queries).toContain('_somfp._tcp.peer.example');
     expect(state.queries).toContain('edge.example.net');
@@ -158,11 +158,13 @@ describe('diagnostic SRV routing with real TLS', () => {
       {} as never,
       {} as never,
       {} as never,
-      { get: () => ({ connectTimeoutSec: 2, callTimeoutSec: 2 }) } as never,
+      {
+        get: () => ({ connectTimeoutSec: 2, requestIdleTimeoutSec: 2 }),
+      } as never,
     );
     try {
       const base = await discovery.resolveBase('peer.example');
-      const response = await discovery.request(`${base}/.well-known/somfp`);
+      const response = await discovery.request(`${base}/somfp/discovery`);
       await response.text();
       expect(response.status).toBe(404);
       expect(state.requests.at(-1)).toEqual(state.requests.at(-2));

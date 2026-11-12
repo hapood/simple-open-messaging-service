@@ -1,3 +1,4 @@
+import { QuotaService } from '../quota/quota.service.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { eq } from 'drizzle-orm';
@@ -40,6 +41,7 @@ export class FederationStatePullService {
     private readonly profileResolutions: ProfileResolutionCoordinatorService,
     private readonly profileNamespacePull: FederationProfileNamespacePullService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly quota: QuotaService,
   ) {}
 
   async pullStateFeedPage(
@@ -63,7 +65,7 @@ export class FederationStatePullService {
     try {
       return await this.trustedPeers.run(domain, () =>
         this.peerHttp.get<PeerStateFeedPage>(
-          `/s2s/v1/state-feed${query.size === 0 ? '' : `?${query.toString()}`}`,
+          `/somfp/v1/state-feed${query.size === 0 ? '' : `?${query.toString()}`}`,
           domain,
           16 * 1024 * 1024,
         ),
@@ -89,6 +91,7 @@ export class FederationStatePullService {
     let observedProfileNamespaceEnd: bigint | undefined;
     await this.stateFeedPull.run(domain, context.namespaceId, {
       fetch: async (after, through) => {
+        await this.quota.assertCanConsumeState(context.namespaceId);
         const page = await this.pullStateFeedPage(
           domain,
           after,
@@ -118,6 +121,16 @@ export class FederationStatePullService {
         changed.set(page, result);
       },
       afterCommit: async (page) => {
+        const requests = page.items.filter(
+          (item) => item.eventType === 'RELATIONSHIP_INTENT',
+        ).length;
+        if (requests > 0)
+          await this.quota.tickLax(
+            context.namespaceId,
+            'requests',
+            undefined,
+            requests,
+          );
         const effect = changed.get(page) ?? {
           clientFeedUpdates: [],
           statePushNamespaces: [],
@@ -211,10 +224,10 @@ export class FederationStatePullService {
   ): Promise<bigint> {
     const [row] = await this.database.db
       .select({
-        pulledThrough: tables.identityNamespace.stateFeedPulledThrough,
+        pulledThrough: tables.federationFeedState.inboundStateFeedPulledThrough,
       })
-      .from(tables.identityNamespace)
-      .where(eq(tables.identityNamespace.id, namespaceId))
+      .from(tables.federationFeedState)
+      .where(eq(tables.federationFeedState.namespaceId, namespaceId))
       .limit(1);
     if (!row) throw new Error(`peer ${domain} has no namespace row`);
     // NULL is the never-bootstrapped marker: nothing has been drained yet.

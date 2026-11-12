@@ -13,7 +13,6 @@ import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { LinkCardService } from '../../../services/link-card.service';
 import { ExternalLinkService } from '../../../services/external-link.service';
-import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
 
@@ -55,10 +54,6 @@ describe('TextRowComponent — inline link', () => {
         {
           provide: ImageDownloadService,
           useValue: { thumbnailUrl: ({ src }: { src: string }) => src },
-        },
-        {
-          provide: MediaSizeThresholdService,
-          useValue: { shouldDefer: (size: number) => size > 1024 },
         },
       ],
     });

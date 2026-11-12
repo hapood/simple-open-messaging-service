@@ -1,11 +1,11 @@
 # Simple Open Messaging Federation Protocol v1 Peer Recognition
 
-Status: `DRAFT` — Final Review (`v1.0.0-draft.1`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.2`)
 
 Operations:
 
-- `POST /s2s/v1/recognize`
-- `GET /s2s/v1/health`
+- `POST /somfp/v1/recognize`
+- `GET /somfp/v1/health`
 
 This document defines the directional semantics and bidirectional establishment timing of peer recognition, identity pinning, success confirmation, failure handling, and the privacy-preserving behavior of health queries. [Simple Open Messaging Federation Protocol v1](./protocol.md) defines shared Federation types and response envelopes; [Transport and Security](./transport-security.md) defines HTTPS, discovery, key certificates, and HTTP Message Signatures; the [Stable Error Registry](./errors.md) defines error classification.
 
@@ -15,7 +15,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 The protocol meaning of `A → B Recognize` is:
 
-> A has validated and recognized B's current Federation identity through B's HTTPS well-known document and asks B to recognize A and prepare to receive A's traffic.
+> A has validated and recognized B's current Federation identity through B's HTTPS discovery document and asks B to recognize A and prepare to receive A's traffic.
 
 The sole protocol meaning of B returning `recognized` is:
 
@@ -39,7 +39,7 @@ implementation-selected adoption policy, and results.
 | Item                   | Recognize                                                | Health                                                                      |
 | ---------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------- |
 | Method                 | `POST`                                                   | `GET`                                                                       |
-| Path                   | `/s2s/v1/recognize`                                      | `/s2s/v1/health`                                                            |
+| Path                   | `/somfp/v1/recognize`                                      | `/somfp/v1/health`                                                            |
 | Query                  | None; signed `@query` is `?`                             | None; signed `@query` is `?`                                                |
 | Request                | Closed empty object or sender-assigned local namespace   | Zero-byte body                                                              |
 | Request auth           | bootstrap signed                                         | status signed                                                               |
@@ -119,7 +119,7 @@ internally:
 
 | Protocol fact        | Meaning                                                                                   | Valid evidence                                                                                                          |
 | -------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Local recognition    | This node has validated and pinned the peer's root identity and prepared its receive path | A committed local recognition decision; never merely reading well-known                                                 |
+| Local recognition    | This node has validated and pinned the peer's root identity and prepared its receive path | A committed local recognition decision; never merely reading discovery                                                 |
 | Peer acceptance      | The peer recognizes this node and is prepared to receive its Federation traffic           | The peer's valid Recognize `recognized` result, its valid Recognize request, or its valid Health `available`/`degraded` |
 | Current reachability | Authenticated communication with the pinned peer is currently possible                    | A valid authenticated request, positive Health, Recognize `recognized`, or another definitive protocol response         |
 
@@ -212,7 +212,7 @@ Operation gates are calculated separately from lifecycle:
 | Ordinary recognized data received from the peer     | The recipient's local recognition and prepared path, valid signer identity, compatible version and policy, and operation-specific authorization; the sender's earlier Recognize delivery is not a separate receive gate                                                    |
 | Termination convergence for an existing active call | Existing binding and tombstone rules in calls.md; health-cache degradation alone cannot block it                                                                                                                                                                           |
 
-Sending Recognize, reading well-known, or merely validating a request signature MUST NOT create peer-acceptance evidence. A connected network socket is not a recognition fact. A transient disconnect MUST NOT delete an identity pin or acceptance evidence, although it MAY change current availability from `available` to `degraded`.
+Sending Recognize, reading discovery, or merely validating a request signature MUST NOT create peer-acceptance evidence. A connected network socket is not a recognition fact. A transient disconnect MUST NOT delete an identity pin or acceptance evidence, although it MAY change current availability from `available` to `degraded`.
 
 After Recognize is sent, a timeout, DNS/TLS/connect failure, interrupted
 response, or retryable server failure retains local recognition and any
@@ -240,7 +240,7 @@ ordinary outbound traffic.
 Before sending Recognize to peer domain `B`, A MUST:
 
 1. Locate B using the SRV, TLS, and authority rules in [Transport and Security, Section 2](./transport-security.md#2-network-discovery-transport-and-signature-security).
-2. Fetch B's `/.well-known/somfp` over HTTPS with successful hostname verification.
+2. Fetch B's `/somfp/discovery` over HTTPS with successful hostname verification.
 3. Select the highest common major version and require the selected version to be `1`, matching the request path.
 4. Strictly decode every `roots[].ed25519` to exactly 32 bytes, require the group to contain at least one currently valid root, and identify B's root to be pinned or the already pinned root. Selection of B's root is distinct from A's outbound `S2S-Root-Key` header.
 5. Validate at least one currently valid signing-key certificate for B authorized by that root under [Transport and Security, Section 1.3](./transport-security.md#13-root-authorized-signing-key-certificate).
@@ -248,11 +248,11 @@ Before sending Recognize to peer domain `B`, A MUST:
 
 The A-to-B request MUST carry A's root in `S2S-Root-Key`: the root authorizing
 A's request-signing certificate. It MUST NOT carry B's root merely because B is
-the recipient. B validates this claim against A's certificate and well-known
+the recipient. B validates this claim against A's certificate and discovery
 document under Section 4.2. A's selection of B's pin neither selects nor changes
 A's own signing root.
 
-Successfully reading well-known alone does not constitute recognition. The caller MAY send Recognize only after completing these checks and making the local recognition decision. For an already pinned peer, the newly read group MUST still contain the pin byte for byte; a rotation of B's root is completed only through the flow of Section 4.5, never by A re-pinning on its own.
+Successfully reading discovery alone does not constitute recognition. The caller MAY send Recognize only after completing these checks and making the local recognition decision. For an already pinned peer, the newly read group MUST still contain the pin byte for byte; a rotation of B's root is completed only through the flow of Section 4.5, never by A re-pinning on its own.
 
 Step 6 is the mandatory commit boundary for the initiator. Local recognition,
 receive readiness, and the `establishing` state remain valid even if the subsequent
@@ -271,15 +271,15 @@ governs request validation:
 - Extract canonical signer domain A from the HTTP Message Signature `keyid`, and A's claimed root from the `S2S-Root-Key` header.
 - Require the body to be one of the two closed shapes of Section 5.1: the empty JSON object `{}` or the sender-assigned local namespace.
 - Accept the attempt into the recognition verifier, or reject before entry using the common error envelope when the request is malformed, locally rate-limited, or cannot be queued.
-- Before producing `recognized`, use A's hostname-verified HTTPS well-known document to validate A's root group, certificate, and request signature; the claimed root MUST byte-equal a currently valid `roots` entry and MUST authorize the request's certificate.
+- Before producing `recognized`, use A's hostname-verified HTTPS discovery document to validate A's root group, certificate, and request signature; the claimed root MUST byte-equal a currently valid `roots` entry and MUST authorize the request's certificate.
 - If a root pin or prior authenticated record exists for A, resolve the signer by root identity under Section 4.4 before allocating any new peer or namespace.
 - Apply local admission policy and verify that B currently permits establishing this peer.
 
 B MAY return `pending` immediately after accepting the attempt into the
-verifier; at that point B may not yet have validated A's well-known document,
+verifier; at that point B may not yet have validated A's discovery document,
 request signature, root continuity, the sender-assigned local namespace, or admission policy. A
 `pending` result therefore proves none of those facts and carries no namespace.
-Validating A's well-known document and the request's HTTP signature proves
+Validating A's discovery document and the request's HTTP signature proves
 that the request was signed with A's currently authorized Federation signing
 key under A's claimed root. B's subsequent atomic pinning,
 policy decision, and receive-path preparation establish B's local recognition
@@ -290,13 +290,13 @@ Recognize, or B's valid `available` or `degraded` Health result.
 
 Every root public key — in `roots`, in `keys[].root`, in `S2S-Root-Key`, and in a sealed challenge — MUST be strictly decoded as RFC 4648 padded base64. Non-canonical base64, invalid padding, and trailing data MUST be rejected, and the result MUST be exactly 32 bytes. When first recognizing the signer, the recipient MUST atomically store the claimed root with that recognition decision; the pin is one root public key, never the whole group.
 
-On every later well-known read of an established peer, the pinned root MUST remain present in the fetched `roots` group byte for byte, and the receiver MUST keep authenticating requests only against certificates authorized by the pinned root. A group that no longer contains the pin is an identity contradiction, not rotation: the node MUST retain the old pin, record the identity-contradiction reason, enter `halted`, revoke `available`, and reject the ordinary data plane. The sole exception is a root rotation accepted under Sections 4.5 and 4.6. Normal addition, overlap, expiration, and removal of root-authorized signing certificates MUST NOT clear recognition or acceptance evidence.
+On every later discovery read of an established peer, the pinned root MUST remain present in the fetched `roots` group byte for byte, and the receiver MUST keep authenticating requests only against certificates authorized by the pinned root. A group that no longer contains the pin is an identity contradiction, not rotation: the node MUST retain the old pin, record the identity-contradiction reason, enter `halted`, revoke `available`, and reject the ordinary data plane. The sole exception is a root rotation accepted under Sections 4.5 and 4.6. Normal addition, overlap, expiration, and removal of root-authorized signing certificates MUST NOT clear recognition or acceptance evidence.
 
 ### 4.4 Root-identity resolution, domain re-binding, and rotation arrivals
 
 A recipient MUST resolve a Recognize signer by root identity before creating
 any new peer record or namespace. The claimed root obtained from
-`S2S-Root-Key` and validated against the signer's fetched well-known group
+`S2S-Root-Key` and validated against the signer's fetched discovery group
 under Section 4.1 rules is compared byte-for-byte with every pinned,
 unretired root. A receiver MUST hold at most one unretired namespace per root
 key, so the match is unique whenever it exists. The resolution outcomes are:
@@ -329,7 +329,7 @@ adoption decision.
 
 For a domain re-binding arrival, the recipient MUST additionally:
 
-1. Rely on the hostname-verified well-known fetch already performed for
+1. Rely on the hostname-verified discovery fetch already performed for
    signature validation as the proof of control over the new domain.
 2. When the request carries the `namespaceId` member, require it to equal
    the `peerAssignedLocalNamespaceId` recorded on the matched namespace —
@@ -348,19 +348,19 @@ For a domain re-binding arrival, the recipient MUST additionally:
 A domain re-binding arrival proves three facts together: possession of the
 pinned root-authorized signing key, control of the new domain's discovery
 endpoint, and — when the `namespaceId` member is present — retention of the
-stable sender-assigned local namespace. Key possession without the well-known
+stable sender-assigned local namespace. Key possession without the discovery
 fetch does not establish domain control; domain control without the key
 cannot match a pin.
 
 ### 4.5 Root rotation arrival
 
 A root rotation arrival is a Recognize whose claimed root is not pinned,
-while the fetched well-known group still contains the currently valid pinned
+while the fetched discovery group still contains the currently valid pinned
 root of the same signer. Publication of the successor root alone establishes
 nothing (Transport and Security, Section 1.5), and the Recognize interface
 carries no rotation-specific member: continuity is judged from what the
 arrival already presents — a request authenticated under a
-successor-root-authorized certificate that the hostname-verified well-known
+successor-root-authorized certificate that the hostname-verified discovery
 fetch validates, and a fetched group that still contains the root the
 recipient has pinned.
 
@@ -445,7 +445,7 @@ A MUST include the `namespaceId` member whenever its local store holds such an
 allocation; B validates it under Section 4.4 when present and MUST NOT treat
 its absence alone as an identity failure. The signer domain is
 established by the validated `keyid`, the recipient domain by the signed
-`@authority`, the protocol version by `/s2s/v1`, and the claimed root by the
+`@authority`, the protocol version by `/somfp/v1`, and the claimed root by the
 `S2S-Root-Key` header; the body repeats none of them.
 
 The recipient adopts a first-time disclosure by storing it as the
@@ -466,7 +466,7 @@ After all validation and policy checks succeed, B MUST atomically complete the f
 3. Prepare B's receive path and commit `localServiceAvailable`.
 4. Accept A's explicit recognition of B in this request.
 5. Prepare B's lightweight receive path.
-6. Persist A's currently published certificate set authorized by the pinned root as A's local certificate state, in the same indivisible commit. This persisted set is the only key material a subsequent inbound Health from A may authenticate against, because inbound Health authentication MUST NOT initiate well-known discovery.
+6. Persist A's currently published certificate set authorized by the pinned root as A's local certificate state, in the same indivisible commit. This persisted set is the only key material a subsequent inbound Health from A may authenticate against, because inbound Health authentication MUST NOT initiate discovery requests.
 7. Treat the authenticated request as current reachability evidence and set B's peer lifecycle to `available`.
 
 These steps apply only to a `recognized` result. A `pending` result MUST NOT
@@ -544,17 +544,17 @@ sequenceDiagram
     participant A as Peer A
     participant B as Peer B
 
-    A->>B: GET /.well-known/somfp
+    A->>B: GET /somfp/discovery
     B-->>A: B versions, root group, signing certificates
     Note over A: Pin and recognize B; prepare receive path<br/>status = establishing
-    A->>B: POST /s2s/v1/recognize {}
+    A->>B: POST /somfp/v1/recognize {}
     Note over B: Authenticate A; pin and recognize A<br/>A's request asserts A recognizes B<br/>status = available
     B-->>A: 200 {code: 0, message: "successful", data: {status: "recognized", peerAssignedLocalNamespaceId: 7}}
     Note over A: recognized proves B accepts A<br/>status = available
     Note over A,B: Ordinary signed traffic may start<br/>subject to authorization
 ```
 
-B MAY reuse A's validated well-known document for an optional reverse request.
+B MAY reuse A's validated discovery document for an optional reverse request.
 B MUST NOT wait for reverse Recognize before returning the first `recognized`
 result, because two symmetric implementations could otherwise wait for each
 other.
@@ -818,11 +818,11 @@ halting for a fatal code returned to Health, follows the
 [Stable Error Registry](./errors.md#shared-validation-failure-mapping).
 A later Health retry requires a newly constructed request; a failed signed
 request MUST NOT be retried unchanged after its signature window has passed. Refreshing A's copy
-of B's well-known does not directly refresh B's copy of A's signing keys.
+of B's discovery does not directly refresh B's copy of A's signing keys.
 B's copy of A's signing keys is maintained by the certificate set persisted
 at recognition time (Section 5.2), by B's outbound Health overlap refresh,
-and by other ordinary discovery refreshes; B does not initiate well-known
-discovery while authenticating A's inbound Health request. `halted` requires
+and by other ordinary discovery refreshes; B does not initiate discovery
+requests while authenticating A's inbound Health request. `halted` requires
 either an authenticated, non-automatically-recoverable HTTP error from the
 target peer as defined in Section 8 or hard security evidence independently
 verified by A.
@@ -849,10 +849,11 @@ Health call. Recovery after a lost Recognize response follows Section 6.1.
 
 ## 10. Complete HTTP construction examples
 
-The following vectors use the public test signing private key `ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=`, which MUST NEVER be deployed as a production secret. Its Ed25519 public key is `Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`. The public test root private key `AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=` produces the root `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`; the rotation example additionally uses the public test root private key `QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=` producing `JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=`. The corresponding `a.example` well-known v1 view before a rotation is:
+The following vectors use the public test signing private key `ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=`, which MUST NEVER be deployed as a production secret. Its Ed25519 public key is `Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`. The public test root private key `AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=` produces the root `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`; the rotation example additionally uses the public test root private key `QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=` producing `JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=`. The corresponding `a.example` discovery v1 view before a rotation is:
 
 ```json
 {
+  "signingKeyCreatedAt": 1699990000000,
   "protocolVersions": [1],
   "roots": [
     {
@@ -879,14 +880,14 @@ The exact certificate statement covered by `authorizationSignature` is defined i
 ### 10.1 Recognize
 
 ```http
-POST /s2s/v1/recognize HTTP/1.1
+POST /somfp/v1/recognize HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:MOF5zofzJLLbgs7+YeV1dcKqDbyXOrOEgMMeTNU4Dob8dySVVT4uhIVxwvhMBOvsVEXZOgMrej4yjQw5QG3jCQ==:
+Signature: sig1=:gawVzVHnRdsQK+jyqAMPsFuxdcE6MIHfhj8SnjmlsnVBBOUU5KnGGX8bAcCGSGxNt/7H/dZFftinmPwJm69oDg==:
 
 {}
 ```
@@ -895,7 +896,7 @@ The signature base is:
 
 ```text
 "@method": POST
-"@path": /s2s/v1/recognize
+"@path": /somfp/v1/recognize
 "@query": ?
 "@authority": b.example
 "date": Tue, 14 Nov 2023 22:13:20 GMT
@@ -906,14 +907,14 @@ The signature base is:
 The sender-assigned local namespace form signs its exact application bytes with the same construction; only `Content-Digest` and `Signature` differ:
 
 ```http
-POST /s2s/v1/recognize HTTP/1.1
+POST /somfp/v1/recognize HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:D2Dirv2ieU6TqH1QtCKAsLuuBEgc1On+avtIs6HDfFA=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:MuXuFcG0O0ZIkUtnSaawevEt4zjzgyosKBY2Jzko6ZGf98oeVS2GEDMoeVUlK6pMmbsVWbQgNh6tXh2x2azDBQ==:
+Signature: sig1=:00Oj+vDIcLHOHEBbhsL/sTemL3P/lYjwqW4MnNJ4BneREtaVB5j0wUQUNrYRW9wkgVGIBHRtTBGSC6hMAzbXDA==:
 
 {"namespaceId":7}
 ```
@@ -942,6 +943,7 @@ A rotation arrival is an ordinary-shape Recognize under the successor root; its 
 
 ```json
 {
+  "signingKeyCreatedAt": 1700000000000,
   "protocolVersions": [1],
   "roots": [
     {
@@ -971,14 +973,14 @@ A rotation arrival is an ordinary-shape Recognize under the successor root; its 
 The additional public test signing private key for `key-2` is the 32 ASCII bytes `SOMFP-TEST-SIGNING-KEY-2-PRIVATE`, which MUST NEVER be deployed as a production secret. A complete rotation-arrival Recognize claims and signs under the successor root with the ordinary empty body:
 
 ```http
-POST /s2s/v1/recognize HTTP/1.1
+POST /somfp/v1/recognize HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 S2S-Root-Key: JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=
 Content-Digest: sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-2";alg="ed25519"
-Signature: sig1=:s4ZNPXgRlXNeLtD9O+FZfjCPaYsUJrS/4Xp4ezUCztsjlYLBH7S6HvPJ7dUA8dmqlP7QzjMUVFebZvw/EGdKBw==:
+Signature: sig1=:TxxmDfWjN1vdvyGdGT5fs2ke/VRHuLVYKgQF7Vfr7Gn07bEKJ49i8dzaZkmD1X4FTFrevYZyQZldHamX95CjCA==:
 
 {}
 ```
@@ -1012,13 +1014,13 @@ HTTP `200` error envelope:
 Health uses the empty-body digest and a method/path-specific signature:
 
 ```http
-GET /s2s/v1/health HTTP/1.1
+GET /somfp/v1/health HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:fuvhDBclzxrAtoUsntLajbLeWY/mNQdtUIczb5jMYtmbz4r5qQlepQAWuGFGoANj1rf7s7fzRvJrDK1HZRXbDg==:
+Signature: sig1=:tWomK89bk75YxtgpOiVXpg2t8HGEzDowk4AXo8Bfq2aqaNuWW+Zbykirsb5ZHzOFHIp6DkRgChfWNc6hYjmwCA==:
 
 ```
 
@@ -1034,12 +1036,12 @@ binding invariants; it does not require an administrative workflow.
 
 ## 12. Sealed-challenge verification service
 
-`POST /s2s/v1/verify` is a stateless challenge-answering service every
+`POST /somfp/v1/verify` is a stateless challenge-answering service every
 server offers to its recognized peers: it proves whether the responder
 still holds the private counterpart of a supplied public key by opening a
 sealed challenge. Namespace-id to bindings resolution is not part of this
 service; it lives on
-[`GET /s2s/v1/profile-namespaces/:nsid`](./profile-namespace-feed.md#6-namespace-bindings-query).
+[`GET /somfp/v1/profile-namespaces/:nsid`](./profile-namespace-feed.md#6-namespace-bindings-query).
 
 The request body is one closed object:
 
@@ -1081,7 +1083,7 @@ The sealed-challenge success `data` is the closed object
 To keep the answer possible for retired keys, a server MUST retain every
 root and signing key it has ever published — private key material included,
 since sealed challenges under retired keys must stay openable forever.
-Publication removal from well-known and internal retention are separate
+Publication removal from discovery and internal retention are separate
 acts (Transport and Security, Section 1.5). The service discloses nothing
 about peers: it answers only from its own retained key history.
 

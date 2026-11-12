@@ -192,7 +192,7 @@ export class DiscoveryService implements OnApplicationShutdown {
     const draining = (async () => {
       const timeoutMs = Math.max(
         1_000,
-        (this.transportConfig.get().callTimeoutSec ?? 30) * 1000,
+        (this.transportConfig.get().requestIdleTimeoutSec ?? 30) * 1000,
       );
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -268,10 +268,16 @@ export class DiscoveryService implements OnApplicationShutdown {
     const poolSignal = route.dispatcher
       ? this.poolCancellation.get(route.dispatcher)?.signal
       : undefined;
-    return requestFederation(parsed, route.dispatcher, init, poolSignal);
+    return requestFederation(
+      parsed,
+      route.dispatcher,
+      init,
+      poolSignal,
+      (this.transportConfig.get().requestIdleTimeoutSec ?? 30) * 1000,
+    );
   }
 
-  /** Acquire an ordinary S2S HTTP slot. Callers acquire before signing/creating a timeout and release
+  /** Acquire an ordinary S2S HTTP slot. Callers acquire before signing and release
    * after consuming the response. Media range downloads deliberately use their own scheduler. */
   acquireRequestSlot(peerDomain: string): Promise<() => void> {
     return this.httpScheduler.acquire(this.normalizeDomain(peerDomain));
@@ -282,10 +288,7 @@ export class DiscoveryService implements OnApplicationShutdown {
     const base = await this.resolveBase(domain);
     const release = await this.acquireRequestSlot(domain);
     try {
-      const response = await this.request(`${base}/.well-known/somfp`, {
-        signal: AbortSignal.timeout(
-          this.transportConfig.get().callTimeoutSec * 1000,
-        ),
+      const response = await this.request(`${base}/somfp/discovery`, {
         headers: { accept: 'application/json' },
       });
       return await readFederationDiscovery(domain, response);
@@ -441,6 +444,12 @@ export class DiscoveryService implements OnApplicationShutdown {
     namespaceId: number,
     doc: WellKnownDoc,
   ): Promise<void> {
+    if (
+      !Number.isSafeInteger(doc.signingKeyCreatedAt) ||
+      doc.signingKeyCreatedAt <= 0
+    ) {
+      throw new Error('well-known requires a positive signingKeyCreatedAt');
+    }
     const normalized = this.normalizeDomain(domain);
     const mismatch = await this.database.db.transaction(async (tx) => {
       const [namespace] = await tx
@@ -475,6 +484,11 @@ export class DiscoveryService implements OnApplicationShutdown {
         }
         return reason;
       }
+      // Replace diagnostic metadata with the same snapshot as the certificates.
+      await tx
+        .update(tables.identityNamespace)
+        .set({ signingKeyCreatedAt: doc.signingKeyCreatedAt })
+        .where(eq(tables.identityNamespace.id, namespaceId));
       await tx
         .delete(tables.s2SKeyCache)
         .where(eq(tables.s2SKeyCache.namespaceId, namespaceId));
@@ -488,7 +502,6 @@ export class DiscoveryService implements OnApplicationShutdown {
           notBefore: new Date(key.notBefore),
           notAfter: new Date(key.notAfter),
           authorizationSignature: key.authorizationSignature,
-          fetchedAt: new Date(),
         })),
       );
       return undefined;
