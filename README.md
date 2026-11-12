@@ -25,10 +25,8 @@
   <a href="https://hapood.github.io/simple-open-messaging-service/"><img src="https://img.shields.io/badge/▶_Live_Demo-Try_Playground-0284c7?style=for-the-badge&logoColor=white" alt="Live Demo"></a>
   &nbsp;
   <a href="https://hapood.github.io/simple-open-messaging-service/#/deploy"><img src="https://img.shields.io/badge/⚡_Docker_Generator-Quick_Setup-059669?style=for-the-badge&logoColor=white" alt="Docker Generator"></a>
-</p>
-
-<p align="center">
-  <a href="https://hapood.github.io/simple-open-messaging-service/"><strong>Try the live playground</strong></a> — responsive client demo for desktop & mobile (interactive, local simulation, no setup required).
+  <br>
+  <sub>Interactive in-browser simulation running fully local state. No setup required.</sub>
 </p>
 
 > [!IMPORTANT]
