@@ -1,3 +1,4 @@
+import { getDomain } from 'tldts';
 import { DEFAULT_EDGE_PORT } from '../../../../shared/deployment-ports';
 
 export interface DeploymentConfig {
@@ -143,6 +144,19 @@ export function deploymentIssues(c: DeploymentConfig): string[] {
   if (c.lanDomain.trim() && !hostname.test(c.lanDomain.trim())) {
     issues.push('lanDomain');
   }
+  const identityDomain = c.domain.trim();
+  if (hostname.test(identityDomain)) {
+    const apex = getDomain(identityDomain) ?? identityDomain;
+    for (const key of ['webDomain', 'lanDomain'] as const) {
+      const value = c[key].trim();
+      if (
+        hostname.test(value) &&
+        (getDomain(value) ?? value) !== apex &&
+        !issues.includes(key)
+      )
+        issues.push(key);
+    }
+  }
   if (!Number.isInteger(c.port) || c.port < 1 || c.port > 65535)
     issues.push('port');
   if (c.mode === 'public' && c.port !== DEFAULT_EDGE_PORT)
@@ -182,7 +196,8 @@ export function deploymentIssues(c: DeploymentConfig): string[] {
   } else {
     const provider = dnsProviders[c.dnsProvider];
     if (!provider) issues.push('dnsProvider');
-    else for (const key of provider.fields) if (!c[key].trim()) issues.push(key);
+    else
+      for (const key of provider.fields) if (!c[key].trim()) issues.push(key);
   }
 
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$/.test(c.image)) issues.push('image');

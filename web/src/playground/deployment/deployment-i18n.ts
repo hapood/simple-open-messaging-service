@@ -17,7 +17,8 @@ export const deploymentMessages = {
 
     // Section 1: Environment
     environment: 'Deployment Environment & Network',
-    environmentCaption: 'Choose how users reach your server and obtain TLS certificates.',
+    environmentCaption:
+      'Choose how users reach your server and obtain TLS certificates.',
     public: 'Standard Port (443)',
     nas: 'Custom Port',
     publicPorts: 'HTTPS 443 (HTTP 80 redirects to HTTPS)',
@@ -36,7 +37,7 @@ export const deploymentMessages = {
     acmeEmail: 'ACME Contact Email',
     acmeEmailPlaceholder: 'admin@example.com (optional)',
     acmeEmailHint:
-      'Optional contact email for Let\'s Encrypt / ZeroSSL expiry notifications.',
+      "Optional contact email for Let's Encrypt / ZeroSSL expiry notifications.",
     networkOptions: 'Network options',
     adminOnly: 'Restrict admin access to private network IPs',
     adminHint:
@@ -171,8 +172,7 @@ export const deploymentMessages = {
       '非标准端口外部无法直接进行 443 握手挑战，必须使用 DNS-01 验证。',
     acmeEmail: '证书通知邮箱',
     acmeEmailPlaceholder: 'admin@example.com（选填）',
-    acmeEmailHint:
-      '选填，用于接收 Let\'s Encrypt / ZeroSSL 证书到期告警通知。',
+    acmeEmailHint: "选填，用于接收 Let's Encrypt / ZeroSSL 证书到期告警通知。",
     networkOptions: '网络选项',
     adminOnly: '仅允许私网 IP 访问管理后台',
     adminHint: '开启后仅允许私网 IP 访问管理后台页面及 API（均仍需密码登录）。',
@@ -267,8 +267,14 @@ export const deploymentMessages = {
 
 export const issueMessages: Record<string, [string, string]> = {
   domain: ['请输入有效的身份域名。', 'Invalid identity domain.'],
-  webDomain: ['服务域名格式不正确。', 'Invalid server hostname.'],
-  lanDomain: ['内网域名格式不正确。', 'Invalid LAN hostname.'],
+  webDomain: [
+    '服务域名须格式正确，并与身份域名属于同一可注册域名。',
+    'Server hostname must be valid and share the identity hostname’s registrable domain.',
+  ],
+  lanDomain: [
+    '内网域名须格式正确，并与身份域名属于同一可注册域名。',
+    'LAN hostname must be valid and share the identity hostname’s registrable domain.',
+  ],
   lanDomainRequiresDns: [
     '内网域名仅支持 DNS-01 验证，请切换为 DNS-01 模式或清空内网域名。',
     'LAN hostname requires DNS-01 challenge. Switch to DNS-01 mode or clear LAN hostname.',
