@@ -36,6 +36,8 @@
 
 ### Server and deployment
 
+- Prevent duplicate mirrored-group leave notices by resolving member ownership
+  in the origin's namespace coordinates before applying local notification policy.
 - Prevent group creation from generating a spurious invitation or unread request
   for the founding owner.
 - Expand administrator user, session, media, and federation diagnostic tools.

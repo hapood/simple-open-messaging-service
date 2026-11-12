@@ -197,18 +197,26 @@ describe('departure system message paths', () => {
       namespaceId,
     };
     const sourceMembers = [
-      { account: `remote-owner-${++serial}`, domain: peerDomain, namespaceId },
+      {
+        account: `remote-owner-${++serial}`,
+        domain: peerDomain,
+        namespaceId: 0,
+      },
       {
         account: member.account,
         domain: localIdentityDomain(),
-        namespaceId: 0,
+        namespaceId: 1,
       },
       {
         account: observer.account,
         domain: localIdentityDomain(),
+        namespaceId: 1,
+      },
+      {
+        account: `remote-member-${++serial}`,
+        domain: peerDomain,
         namespaceId: 0,
       },
-      { account: `remote-member-${++serial}`, domain: peerDomain, namespaceId },
     ];
     await database.db.insert(groupMetaMemberFeed).values(
       sourceMembers.map((row, index) => ({
@@ -687,11 +695,10 @@ describe('departure system message paths', () => {
           },
           item: {
             feedId: 6,
-            createdAt: 1700000000000,
-            originCreatedAt: null,
+            originCreatedAt: 1700000000000,
             operation: 'MEMBER_DEPART',
             account: h.member.account,
-            namespaceId: 0,
+            namespaceId: 1,
             role: GroupRole.MEMBER,
             profileRev: 1,
           },

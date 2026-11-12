@@ -61,6 +61,10 @@ describe('mirror Group Meta rounds', () => {
       originDomain,
     );
     group.publisherNamespaceId = originNamespaceId;
+    await database.db
+      .update(identityNamespace)
+      .set({ peerAssignedLocalNamespaceId: 77 })
+      .where(eq(identityNamespace.id, originNamespaceId));
 
     const [member] = await database.db
       .insert(user)
@@ -949,6 +953,97 @@ describe('mirror Group Meta rounds', () => {
     ).toEqual(noticesBefore);
   });
 
+  it('announces publisher-home members even when their account matches a local member', async () => {
+    await database.db.transaction((tx) =>
+      mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 2 }),
+    );
+    await database.db
+      .update(groupMeta)
+      .set({ metaRecoveryThroughId: null })
+      .where(eq(groupMeta.threadId, threadId));
+    await database.db
+      .update(relationshipPair)
+      .set({ active: true })
+      .where(eq(relationshipPair.threadId, threadId));
+    for (const [feedId, operation] of [
+      [1, 'MEMBER_UPSERT'],
+      [2, 'MEMBER_DEPART'],
+    ] as const) {
+      await database.db.transaction((tx) =>
+        applyDeltaMirrorMetaItemInTx(tx, {
+          group,
+          item: {
+            feedId,
+            originCreatedAt: 1700000000000,
+            operation,
+            account: localMemberAccount,
+            namespaceId: 0,
+            role: 'MEMBER',
+            profileRev: 1,
+          },
+          through: 2,
+          reachedBoundary: false,
+          messages,
+        }),
+      );
+    }
+    const notices = await database.db
+      .select({ content: message.content })
+      .from(message)
+      .where(eq(message.threadId, threadId));
+    expect(
+      notices.map((row) => JSON.parse(row.content as string).type),
+    ).toEqual(['GROUP_JOINED', 'GROUP_LEFT']);
+  });
+
+  it('does not advance a delta when the recognized local namespace binding is missing', async () => {
+    await database.db.transaction((tx) =>
+      mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 1 }),
+    );
+    await database.db
+      .update(groupMeta)
+      .set({ metaRecoveryThroughId: null })
+      .where(eq(groupMeta.threadId, threadId));
+    await database.db
+      .update(identityNamespace)
+      .set({ peerAssignedLocalNamespaceId: null })
+      .where(eq(identityNamespace.id, originNamespaceId));
+    try {
+      await expect(
+        database.db.transaction((tx) =>
+          applyDeltaMirrorMetaItemInTx(tx, {
+            group,
+            item: memberUpsert(1, 'peer-one'),
+            through: 1,
+            reachedBoundary: false,
+            messages,
+          }),
+        ),
+      ).rejects.toThrow('recognized local namespace binding');
+      const meta = await database.db.query.groupMeta.findFirst({
+        where: eq(groupMeta.threadId, threadId),
+      });
+      expect(meta?.metaProcessedThroughId).toBe(0);
+      expect(
+        await database.db
+          .select()
+          .from(groupMetaMemberFeed)
+          .where(eq(groupMetaMemberFeed.threadId, threadId)),
+      ).toHaveLength(0);
+      expect(
+        await database.db
+          .select()
+          .from(message)
+          .where(eq(message.threadId, threadId)),
+      ).toHaveLength(0);
+    } finally {
+      await database.db
+        .update(identityNamespace)
+        .set({ peerAssignedLocalNamespaceId: 77 })
+        .where(eq(identityNamespace.id, originNamespaceId));
+    }
+  });
+
   it('announces local delta joins and departures only when the pair agrees', async () => {
     await database.db.transaction((tx) =>
       mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 5 }),
@@ -965,7 +1060,7 @@ describe('mirror Group Meta rounds', () => {
           originCreatedAt: 1700000000000,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
-          namespaceId: 0,
+          namespaceId: 77,
           role: 'MEMBER',
           profileRev: 1,
         },
@@ -983,7 +1078,7 @@ describe('mirror Group Meta rounds', () => {
       type: 'GROUP_JOINED',
       member: {
         account: localMemberAccount,
-        profileNamespaceId: 0,
+        profileNamespaceId: 77,
       },
     });
     for (const [feedId, operation] of [
@@ -998,7 +1093,7 @@ describe('mirror Group Meta rounds', () => {
             originCreatedAt: 1700000000000,
             operation,
             account: localMemberAccount,
-            namespaceId: 0,
+            namespaceId: 77,
             role: 'MEMBER' as const,
             profileRev: 1,
           },
@@ -1045,7 +1140,7 @@ describe('mirror Group Meta rounds', () => {
           originCreatedAt: 1700000000000,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
-          namespaceId: 0,
+          namespaceId: 77,
           role: 'MEMBER',
           profileRev: 2,
         },
@@ -1072,7 +1167,7 @@ describe('mirror Group Meta rounds', () => {
           originCreatedAt: 1700000000000,
           operation: 'MEMBER_DEPART',
           account: localMemberAccount,
-          namespaceId: 0,
+          namespaceId: 77,
           role: 'MEMBER',
           profileRev: 1,
         },

@@ -3366,6 +3366,18 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(boundaryMessage).toMatchObject({
           creatorAccount: '$system',
         });
+        // Wait for both independent delivery paths before checking uniqueness.
+        // The local intent notice can arrive before the origin's departure delta.
+        const originMeta = await appA.database.query.groupMeta.findFirst({
+          where: eq(groupMeta.threadId, firstGroupThreadA),
+        });
+        const mirrorMeta = await appB.database.query.groupMeta.findFirst({
+          where: eq(groupMeta.threadId, firstMirrorBId),
+        });
+        expect(originMeta).toBeDefined();
+        expect(mirrorMeta?.metaProcessedThroughId).toBeGreaterThanOrEqual(
+          originMeta!.metaEndId,
+        );
         const mirrorLeft = await appB.database.query.message.findMany({
           where: and(
             eq(message.threadId, firstMirrorBId),
@@ -3374,7 +3386,16 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             sql`(${message.content}::jsonb -> 'member' ->> 'account') = 'dave'`,
           ),
         });
-        expect(mirrorLeft).toHaveLength(1);
+        expect(
+          mirrorLeft,
+          JSON.stringify(
+            mirrorLeft.map((notice) => ({
+              seq: notice.seq,
+              publisherNamespaceId: notice.publisherNamespaceId,
+              content: notice.content,
+            })),
+          ),
+        ).toHaveLength(1);
         expect(mirrorLeft[0]).toMatchObject({
           creatorAccount: '$system',
         });
