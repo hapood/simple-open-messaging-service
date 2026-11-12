@@ -7,6 +7,9 @@
 - Add Windows x64 and ARM64 NSIS installer builds to CI and release publishing,
   with native Rust runtime tests on both architectures and SHA-256 checksums.
   Installers are currently unsigned.
+- Add a native Windows launch presentation without layered-window startup overhead.
+- Align Android native libraries for 16 KB page-size devices and improve notification
+  badges and launcher-specific guidance.
 - Add macOS and Linux alpha clients, desktop notifications, and a macOS Dock unread badge.
 - Unify native notification policy in Rust and align Web delivery, cooldowns, and
   click navigation. Silently restore surviving cards on restart where supported;
