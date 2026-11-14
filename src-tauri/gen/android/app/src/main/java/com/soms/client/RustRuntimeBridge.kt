@@ -18,6 +18,7 @@ object RustRuntimeBridge {
     @Synchronized
     fun initialize(ctx: Context) {
         check(databasePath == null) { "Rust runtime is already initialized" }
+        SomsSecureStore.prepareAtStartup(ctx)
         databasePath = initializeRuntime(
             ctx.applicationContext.dataDir.absolutePath,
             SomsSecureStore.getSessionToken(ctx),

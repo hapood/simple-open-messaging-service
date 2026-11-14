@@ -205,6 +205,38 @@ pub(crate) fn restore_login_credential(token: &str) -> Result<Option<String>, St
     Ok(Some(String::from(id)))
 }
 
+/// Reconcile the secure-store snapshot only during Android cold start, before business work.
+/// A rejected or absent credential retires the restored login, but storage/activation errors
+/// must remain retryable errors, never evidence of credential loss. A valid journal without an
+/// owner is also retained for explicit cache repair; it cannot restore notification cards yet.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn reconcile_cold_start_credential(
+    token: Option<&str>,
+) -> Result<Option<std::sync::Arc<crate::login_connection::LoginConnection>>, String> {
+    if let Some(token) = token.filter(|token| !token.is_empty()) {
+        if restore_login_credential(token)?.is_some() {
+            return current_login();
+        }
+    }
+
+    if let Some(owner) = current_login()? {
+        end_login_durable(owner.id())?;
+    } else {
+        // Cache initialization may not have installed an owner. Retire the journal itself
+        // without creating a cache, deleting files, or changing the device's server setup.
+        preferences_connection()?.with_database(|conn| {
+            if let Some(id) = crate::login_session_store::SessionStore::read(conn)?
+                .and_then(|journal| journal.active_session().cloned())
+            {
+                crate::login_session_store::SessionStore::end(conn, Some(&id))?;
+                crate::login_session_store::SessionStore::finish_ending(conn, Some(&id))?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(None)
+}
+
 pub(crate) fn login_connection(
     id: &crate::login_session_store::LoginSessionId,
 ) -> Result<std::sync::Arc<crate::login_connection::LoginConnection>, String> {
@@ -967,6 +999,10 @@ mod login_cache_tests {
             .unwrap();
         initialize_preferences().unwrap(); // Shell attachment must not reconnect after headless init.
         initialize_login_cache().unwrap();
+        assert!(reconcile_cold_start_credential(None).unwrap().is_none());
+        assert!(reconcile_cold_start_credential(Some("residual-token"))
+            .unwrap()
+            .is_none());
         assert!(login_connections::LOGIN_CONNECTIONS
             .current()
             .unwrap()
@@ -1143,8 +1179,10 @@ mod login_cache_tests {
         }
         initialize_login_cache().unwrap();
         assert!(!first_file.exists());
-        restore_login_credential("secret-one").unwrap().unwrap();
-        let first_owner = active_login().unwrap();
+        let first_owner = reconcile_cold_start_credential(Some("secret-one"))
+            .unwrap()
+            .unwrap();
+        assert!(first_owner.assert_active().is_ok());
         assert_eq!(first_owner.id(), &first);
         assert_eq!(first_owner.credential().unwrap(), "secret-one");
         assert!(capture_database_work().is_err());
@@ -1313,6 +1351,123 @@ mod login_cache_tests {
         let third_owner = login_connection(&third).unwrap();
         third_owner.end().unwrap();
         release_login_connection(&third_owner).unwrap();
+
+        verify_cold_start_reconciliation(temp.path());
+    }
+
+    fn verify_cold_start_reconciliation(directory: &std::path::Path) {
+        let preferences = preferences_connection().unwrap();
+        let config_path = directory.join(crate::CONFIG_FILENAME);
+        let config = br#"{"primary":"https://chat.example.com","secondary":"https://lan.example.com"}"#;
+        std::fs::write(&config_path, config).unwrap();
+
+        // The secure-store snapshot is authoritative only at cold start. Both an installed
+        // restoring owner and a journal without an owner must be retired on credential loss.
+        for install_owner in [true, false] {
+            for token in [None, Some(""), Some("residual-token")] {
+                let id = LoginSessionId::try_from(prepare_fresh_login(preferences).unwrap()).unwrap();
+                let owner = login_connection(&id).unwrap();
+                preferences
+                    .with_database(|conn| SessionStore::activate(conn, &id, "secret"))
+                    .unwrap();
+                owner.end().unwrap();
+                release_login_connection(&owner).unwrap();
+                if install_owner {
+                    initialize_login_cache().unwrap();
+                }
+                let restored = current_login().unwrap();
+                assert!(reconcile_cold_start_credential(token).unwrap().is_none());
+                assert!(current_login().unwrap().is_none());
+                if let Some(owner) = restored {
+                    assert!(owner.begin_activation().is_err());
+                }
+                preferences
+                    .with_database(|conn| {
+                        let journal = SessionStore::read(conn)?.unwrap();
+                        assert!(journal.active_session().is_none());
+                        assert_eq!(journal.pending_cleanup(), std::slice::from_ref(&id));
+                        assert!(SessionStore::restore(conn, "secret")?.is_none());
+                        Ok(())
+                    })
+                    .unwrap();
+                assert!(directory.join(id.sqlite_filename()).exists());
+                initialize_login_cache().unwrap();
+                assert!(current_login().unwrap().is_none());
+                // Repeated initialization cannot revive an ended login or lose its cleanup plan.
+                assert!(reconcile_cold_start_credential(token).unwrap().is_none());
+                assert_eq!(std::fs::read(&config_path).unwrap(), config);
+                let state = crate::ServerSessionState::new();
+                *state.config_path.lock().unwrap() = config_path.clone();
+                crate::server_setup::restore(&state).unwrap();
+                assert_eq!(
+                    *state.api_origin_primary.lock().unwrap(),
+                    "https://chat.example.com"
+                );
+                assert_eq!(
+                    state.api_origin_secondary.lock().unwrap().as_deref(),
+                    Some("https://lan.example.com")
+                );
+            }
+        }
+
+        let id = LoginSessionId::try_from(prepare_fresh_login(preferences).unwrap()).unwrap();
+        let owner = login_connection(&id).unwrap();
+        preferences
+            .with_database(|conn| SessionStore::activate(conn, &id, "secret"))
+            .unwrap();
+        owner.end().unwrap();
+        release_login_connection(&owner).unwrap();
+        // A valid journal without an owner is not credential loss or a bootstrap error.
+        assert!(reconcile_cold_start_credential(Some("secret"))
+            .unwrap()
+            .is_none());
+        preferences
+            .with_database(|conn| {
+                assert_eq!(SessionStore::restore(conn, "secret")?, Some(id.clone()));
+                Ok(())
+            })
+            .unwrap();
+        initialize_login_cache().unwrap();
+        let owner = current_login().unwrap().unwrap();
+
+        // Inject a database read failure without changing the durable journal. Retrying must
+        // activate the same owner, not discover a login ended by a failed validation attempt.
+        preferences.with_database(|conn| {
+            conn.execute_batch("CREATE TEMP VIEW client_preferences AS SELECT * FROM unavailable_preferences;")
+                .map_err(|e| e.to_string())
+        }).unwrap();
+        assert!(reconcile_cold_start_credential(Some("secret")).is_err());
+        preferences
+            .with_database(|conn| {
+                conn.execute_batch("DROP VIEW temp.client_preferences;")
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        // An in-progress activation is likewise retryable, not a rejected credential.
+        let activation = owner.begin_activation().unwrap();
+        assert!(reconcile_cold_start_credential(Some("secret")).is_err());
+        drop(activation);
+        let restored = reconcile_cold_start_credential(Some("secret"))
+            .unwrap()
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&owner, &restored));
+        assert!(restored.assert_active().is_ok());
+        assert_eq!(restored.credential().unwrap(), "secret");
+        // Ordinary restoration probes must still not invalidate an already active runtime.
+        assert!(restore_login_credential("residual-token").unwrap().is_none());
+        assert!(owner.assert_active().is_ok());
+        preferences
+            .with_database(|conn| SessionStore::begin_revocation(conn, &id))
+            .unwrap();
+        assert!(reconcile_cold_start_credential(Some("secret")).is_err());
+        preferences
+            .with_database(|conn| {
+                assert_eq!(SessionStore::revoking_session(conn, "secret")?, Some(id.clone()));
+                Ok(())
+            })
+            .unwrap();
+        end_login_durable(&id).unwrap();
+        std::fs::remove_file(config_path).unwrap();
     }
 
     #[test]

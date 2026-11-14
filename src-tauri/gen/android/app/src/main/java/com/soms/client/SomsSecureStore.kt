@@ -63,6 +63,18 @@ object SomsSecureStore {
     @Volatile
     private var cachedPrefs: SharedPreferences? = null
 
+    /** Validate every encrypted entry before any session or background consumer is admitted.
+     * Recovery is cold-start-only: runtime reads must not silently log out an active Rust owner. */
+    @Synchronized
+    internal fun prepareAtStartup(ctx: Context) {
+        check(cachedPrefs == null) { "Secure store has already been opened" }
+        cachedPrefs = SecureStoreRecovery.openPreferencesAtStartup(
+            ctx.applicationContext,
+            FILENAME,
+            MasterKey.DEFAULT_MASTER_KEY_ALIAS,
+        )
+    }
+
     @Synchronized
     internal fun prefs(ctx: Context): SharedPreferences {
         cachedPrefs?.let { return it }

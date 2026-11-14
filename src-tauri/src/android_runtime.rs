@@ -239,17 +239,13 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
         let state = crate::ServerSessionState::new();
         // Eagerly start the same async runtime Tauri uses later; this performs no network I/O.
         let _ = tauri::async_runtime::handle();
-        if token.is_some() {
-            if let Some(owner) = crate::native_db::current_login()? {
-                let cards = crate::android_notifications::restore_cards()?;
-                let mut state = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?;
-                state.import_cards(cards).map_err(str::to_owned)?;
-                let candidates = state.reconstruction_candidates();
-                *owner.notification_reconstruction.try_lock().map_err(|_| "notification restoration already running")? = Some(candidates);
-            }
-        }
-        if let Some(token) = token {
-            crate::native_db::restore_login_credential(&token)?;
+        // Only a credential-activated owner may inherit platform notification state.
+        if let Some(owner) = crate::native_db::reconcile_cold_start_credential(token.as_deref())? {
+            let cards = crate::android_notifications::restore_cards()?;
+            let mut state = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?;
+            state.import_cards(cards).map_err(str::to_owned)?;
+            let candidates = state.reconstruction_candidates();
+            *owner.notification_reconstruction.try_lock().map_err(|_| "notification restoration already running")? = Some(candidates);
         }
         *state
             .config_path
