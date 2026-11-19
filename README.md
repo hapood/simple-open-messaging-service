@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Simple Open Messaging Service</strong><br>
-  A self-hosted, federated chat platform for the web and native devices.
+  A lightweight, self-hosted federated chat platform — combining email-like cross-domain simplicity, full ownership of your chat data, and a clean foundation for future lightweight AI agents.
 </p>
 
 <p align="center">
@@ -24,139 +24,64 @@
 <p align="center">
   <a href="https://hapood.github.io/simple-open-messaging-service/"><img src="https://img.shields.io/badge/▶_Live_Demo-Try_Playground-0284c7?style=for-the-badge&logoColor=white" alt="Live Demo"></a>
   &nbsp;
+  <a href="https://soms.im/"><img src="https://img.shields.io/badge/🌐_Official_Site-soms.im-4f46e5?style=for-the-badge&logoColor=white" alt="Official Site"></a>
+  &nbsp;
   <a href="https://hapood.github.io/simple-open-messaging-service/#/deploy"><img src="https://img.shields.io/badge/⚡_Docker_Generator-Quick_Setup-059669?style=for-the-badge&logoColor=white" alt="Docker Generator"></a>
   <br>
-  <sub>Interactive in-browser simulation running fully local state. No setup required.</sub>
+  <sub>Interactive in-browser simulation running local state. Official portal at <a href="https://soms.im/">soms.im</a>.</sub>
 </p>
 
-> [!IMPORTANT]
-> SOMS `0.1.0-alpha.2` aligns with the latest SOMFP protocol draft, **`v1.0.0-draft.2`**. Both are **technical previews only**. Before beta, stable operation and upgrade compatibility are not guaranteed; APIs, the federation wire contract, and storage formats may change incompatibly. Use isolated test deployments with disposable data, not production or critical communications.
+<p align="center">
+  <b>English</b> | <a href="README_zh.md">简体中文</a>
+</p>
 
-Web / PWA, Android, macOS, and Linux clients are **available in alpha**.
-See [Platform Status](#platform-status) for packages and [the changelog](CHANGELOG.md)
-for release changes and compatibility notes.
+> [!NOTE]
+>
+> **Alpha Preview (`0.1.0-alpha.2` / `SOMFP v1.0.0-draft.2`):** Breaking changes to APIs, wire contracts, and storage schemas are expected before beta. Please use isolated test environments with disposable data—not production.
 
-## Features
+---
 
-SOMS connects independently operated chat servers. Users can become friends, exchange messages
-and rich media, form groups, and place calls across servers without a shared database or central
-authority. The server, web client, and administration console are self-hosted.
+## Vision & Core Philosophy
 
-### 🔄 Bulletproof Federation (Engineered for Self-Hosters)
+SOMS is the reference implementation of **SOMFP** (_Simple Open Messaging Federation Protocol_). Our goal is to make federated communication as universal as email, as light as a single container on a home NAS, and open enough for you to truly own your conversations.
 
-Unlike protocols that assume enterprise data centers with 100% uptime, SOMS is built for the
-reality of home servers, NAS devices, and dynamic IPs:
+### 🌐 Federation as Simple as Email
 
-- **Zero-Loss Recoverable Pull Sync** — When a server goes offline for maintenance or network
-  outages, it doesn't cause state divergence or CPU storms upon reconnect. Nodes catch up on
-  missed messages, membership changes, and room states smoothly via cursor-based pull feeds.
-- **First-Class Deletion & Recall (Tombstones)** — Message revocations and author deletions are
-  treated as sequenced tombstones. Deletion feeds propagate reliably across peers, ensuring
-  withdrawn messages are cleanly purged even if a peer server was offline at the moment of deletion.
-- **Signed Server-to-Server Traffic** — Ed25519 HTTP message signatures, replay protection,
-  and key continuity authenticate every cross-server interaction without central gatekeepers.
-- **Open Protocol (SOMFP)** — SOMFP specifies friendship, messaging, group rosters, media,
-  read positions, deletions, and call signaling. Complete contracts, schemas, and conformance
-  suites live in [`spec/`](spec/README.md).
+Just enter `alice@example.com` to connect with friends and join multi-server group chats across independent domains—no central directory or shared database required. Server-to-server traffic runs over standard **HTTPS** with **Ed25519 request signatures**, keeping federation transparent, debuggable, and interoperable.
 
-### 💬 Rich & Responsive Messaging
+### ⚡ Featherweight Footprint (~160MB–200MB RAM)
 
-Enjoy the fluid speed of modern cloud messengers on your own hardware:
+Engineered from the ground up for personal servers, entry-level NAS devices, and residential broadband. SOMS runs as a single clean stack (Fastify + Drizzle ORM + PostgreSQL) with **zero external message brokers** (no Redis, Kafka, or RabbitMQ). If your home server reboots or loses connectivity, **durable pull sync** automatically catches up on all missed messages upon reconnect.
 
-- **Rich Content Types** — Images, streaming video, voice audio, raw files with progress,
-  quoted replies, @mentions, rich link previews, and customizable avatars.
-- **NAS-Grade Media Delivery** — Stream large files and media directly from personal storage
-  with verified content digests (SHA-256) and declared sizes.
-- **In-Thread Substring Search** — Search conversation text, quoted replies, and media
-  filenames with lightweight coordinate jumping, avoiding client-side decryption bottlenecks
-  and mobile battery drain.
-- **Reliable Multi-Device Sync** — Instant unread/read state, pinned threads, mute, and draft
-  sync across every device you log into.
-- **One-to-One Voice & Video** — Low-latency WebRTC calls with simple cross-server signaling
-  and optional custom TURN credentials.
+### 🗄️ Own Your Conversations & Digital Assets
 
-### 🛡️ Administration & Community Moderation
+Your messages, files, and media are long-term personal assets—not unreadable encrypted blobs trapped in complex key-gossip states. By deliberately avoiding heavy federation-layer E2EE, SOMS keeps your history stored cleanly on your own hardware in standard PostgreSQL and local storage, enabling **instant server-side full-text search**, effortless multi-device sync, and reliable self-managed backups.
 
-Keep your server healthy and your community safe with full administrative visibility:
+---
 
-- **In-App Message Reporting** — Users can report inappropriate or abusive content within
-  conversations, creating an auditable review entry for server administrators.
-- **Content Moderation Actions** — Administrators can inspect reported messages, dismiss
-  spurious reports, or execute administrative deletions (tombstones) across the thread.
-- **Enterprise-Grade Admin Console** — Role-based access control (RBAC), quota management,
-  system audit logs, connection diagnostics, and federation peer controls.
-- **Zero-Password & Modern Auth** — OTP and QR code sign-in, per-device session management
-  with remote revocation, plus 2FA and WebAuthn hardware key support for administrators.
-- **Streamlined Stack & Low Overhead** — Built on Fastify, Drizzle ORM, and PostgreSQL with
-  zero external broker dependencies (no Redis or RabbitMQ required), running comfortably on
-  entry-level NAS hardware and modest servers.
+## Key Features
 
-## Deployment
+- **Lean Native Clients (~34MB):** Built with Angular and Rust/Tauri (no bloated browser wrappers). Real-time read/unread sync across devices, 1:1 WebRTC voice/video calls, and native background push notifications on Android.
+- **Rich, Expressive Messaging:** Images, streaming video, voice recordings, raw file transfers with progress tracking, quoted replies, `@mentions`, rich link cards, and custom avatars.
+- **Built-In Moderation & Admin Console:** Role-based access control (RBAC), quota management, in-app message reporting, cross-server message recall (tombstones), and OTP/QR or WebAuthn authentication.
 
-SOMS ships as a self-contained Docker stack with PostgreSQL, automatic migrations, the application,
-and a Caddy TLS edge.
+---
 
-Use the [**Compose configuration generator**][gen] in the live playground. Choose **Public Server**
-(`public`) or **LAN / NAS** (`nas`), fill in domains and credentials, then download
-`docker-compose.yml`. All editable settings are grouped at the top of this single file. The
-page also provides the DNS records and published ports for the selected mode.
+## Roadmap
 
-The generator and deployment templates use
-`ghcr.io/hapood/simple-open-messaging-service:latest`. The application container applies database
-migrations during startup. Published images support Linux amd64 and arm64; `:latest` follows
-published versions, including alpha releases. Select an explicit version tag to control upgrades.
-The current source version is `0.1.0-alpha.2`; its release image becomes available only after the
-corresponding release tag is published from `main`. See
-[GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases) for availability
-and release notes. The rolling `:dev` image is intended for development testing and never updates
-`latest`.
+- [x] Core `SOMFP` federation protocol, Ed25519 request signing, and durable pull sync
+- [x] Cross-platform Web/PWA, Desktop (Tauri), and Android alpha clients
+- [ ] **Polished UX & Effortless Deployment:** Ongoing refinements to client responsiveness and simplified one-click deployment templates for home NAS setups
+- [ ] **Lightweight AI Agents & Workflows _(Planned)_:** Because messages are cleanly structured and accessible on your own node, future releases will introduce native bot/webhook bridges—turning your self-hosted chat into an active workspace where humans and lightweight AI agents collaborate seamlessly
 
-After downloading:
+---
 
-```bash
-mkdir -p soms && cd soms   # place docker-compose.yml here
-# Create the configured data directory (default ./data) and ensure the container can write to it
-mkdir -p -- ./data
-docker compose up -d
-docker compose logs -f app
-```
+## Quick Start & Deployment
 
-- Public mode uses HTTPS on port 443; NAS mode uses one configurable port, defaulting to 7667.
-- Create whichever data directory path was configured in the generator (the generator checklist displays the exact command) and ensure Docker has write permissions to it (the application container runs as non-root UID/GID `1000:1000`).
-- Admin access defaults to public with mandatory login in public mode, and private source IPs only
-  in NAS mode. Either mode lets you change that restriction.
-- Configuration inputs, YAML preview, copy, and download show plaintext credentials. Keep the file
-  private and out of version control.
-- Changing credential values in the file does not rotate existing database or admin passwords.
+SOMS ships as a self-contained Docker stack (`linux/amd64` & `linux/arm64`) bundling PostgreSQL, automatic database migrations, the SOMS server, and a Caddy TLS edge.
 
-See the [deployment guide](docs/deployment/deployment.md) for domains, DNS, configuration, and updates.
+No manual YAML editing is required—use our interactive generator to create a ready-to-run `docker-compose.yml` tailored for either a **Public Server** or **LAN / NAS** setup:
 
-[gen]: https://hapood.github.io/simple-open-messaging-service/#/deploy
+👉 **[Launch the Docker Compose Generator](https://hapood.github.io/simple-open-messaging-service/#/deploy)**
 
-## Platform Status
-
-The Angular client runs in the browser and is shared with the Tauri native applications.
-
-| Platform        | Status                | Delivery                                                                       |
-| --------------- | --------------------- | ------------------------------------------------------------------------------ |
-| Web / PWA       | **Available (Alpha)** | Modern desktop and mobile browsers                                             |
-| Android         | **Available (Alpha)** | APKs with native calling, notifications, and FCM integration                   |
-| macOS           | **Available (Alpha)** | Universal DMG for Apple Silicon and Intel; native notifications and Dock badge |
-| Linux           | **Available (Alpha)** | AppImage and deb for x86_64; native DBus notifications; Ubuntu 22.04+/Debian 12+ |
-| Windows         | **Available (Alpha)** | NSIS installers for x64 and ARM64; unsigned builds |
-| iOS             | Deferred              | Paused due to App Store distribution constraints                               |
-
-Download native packages from
-[GitHub Releases](https://github.com/hapood/simple-open-messaging-service/releases).
-
-## Documentation
-
-- [Documentation index](docs/README.md) — setup, deployment, architecture, APIs, federation, and operations.
-- [Changelog](CHANGELOG.md) — changes in each release.
-
-## License
-
-SOMS is released under the [MIT License](LICENSE). Third-party software and asset notices are listed
-in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-Copyright © 2026 [hapood](https://github.com/hapood).
+For custom reverse proxies, DNS configuration, and upgrade steps, see the [Deployment Guide](docs/deployment/deployment.md).
