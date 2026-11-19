@@ -108,7 +108,7 @@ describe('database-backed root approval proof binding', () => {
       feed,
       { notifyProfileNamespaceChange: notify } as never,
       {
-        fetchWellKnown: async () => ({
+        fetchDiscoveryDocument: async () => ({
           protocolVersions: [1],
           signingKeyCreatedAt: 1700000000000,
           roots: [
@@ -363,7 +363,7 @@ describe('database-backed root approval proof binding', () => {
         { recordNamespaceChangeInTx } as never,
         {} as never,
         {
-          fetchWellKnown: async () => ({
+          fetchDiscoveryDocument: async () => ({
             protocolVersions: [1],
             signingKeyCreatedAt: 1700000000000,
             roots: [

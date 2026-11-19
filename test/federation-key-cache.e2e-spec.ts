@@ -7,7 +7,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import {
   DiscoveryService,
-  type WellKnownDoc,
+  type DiscoveryDocument,
 } from '../src/federation/discovery.service.js';
 
 describe('concurrent federation key-cache replacement', () => {
@@ -62,7 +62,7 @@ describe('concurrent federation key-cache replacement', () => {
       })
       .returning();
     expect(namespace.signingKeyCreatedAt).toBe(1700000000000);
-    const document: WellKnownDoc = {
+    const document: DiscoveryDocument = {
       protocolVersions: [1],
       signingKeyCreatedAt: 1700000000123,
       roots: [{ ed25519: root, notBefore: 0, notAfter: 253402300799999 }],
@@ -110,7 +110,7 @@ describe('concurrent federation key-cache replacement', () => {
       discovery.cacheDocument(
         domain,
         namespace.id,
-        missingTime as WellKnownDoc,
+        missingTime as DiscoveryDocument,
       ),
     ).rejects.toThrow();
     expect((await read())!.signingKeyCreatedAt).toBe(1000);
@@ -152,7 +152,7 @@ describe('concurrent federation key-cache replacement', () => {
           remoteServiceReachable: true,
         })
         .returning();
-      const document = (ids: string[]): WellKnownDoc => ({
+      const document = (ids: string[]): DiscoveryDocument => ({
         protocolVersions: [1],
         signingKeyCreatedAt: ids.includes('next')
           ? 1700000000123

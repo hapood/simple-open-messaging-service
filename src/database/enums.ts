@@ -54,10 +54,8 @@ export type FileSyncDirection =
 
 const FileSyncStatus = {
   PENDING: 'PENDING',
-  DOWNLOADING: 'DOWNLOADING',
-  SUCCEEDED: 'SUCCEEDED',
+  COMPLETED: 'COMPLETED',
   FAILED: 'FAILED',
-  TOMBSTONED: 'TOMBSTONED',
 } as const;
 export type FileSyncStatus =
   (typeof FileSyncStatus)[keyof typeof FileSyncStatus];

@@ -128,12 +128,11 @@ CREATE TYPE public."FileSyncKind" AS ENUM (
 -- Name: FileSyncStatus; Type: TYPE; Schema: public; Owner: -
 --
 
+-- Three durable task outcomes; execution phases belong to the in-memory runtime.
 CREATE TYPE public."FileSyncStatus" AS ENUM (
     'PENDING',
-    'DOWNLOADING',
-    'SUCCEEDED',
-    'FAILED',
-    'TOMBSTONED'
+    'COMPLETED',
+    'FAILED'
 );
 
 
@@ -247,11 +246,11 @@ CREATE TYPE public."RequestProjectionStatus" AS ENUM (
 -- Name: UploadSessionStatus; Type: TYPE; Schema: public; Owner: -
 --
 
+-- Three durable task outcomes; execution phases belong to the in-memory runtime.
 CREATE TYPE public."UploadSessionStatus" AS ENUM (
-    'UPLOADING',
-    'COMPLETING',
+    'PENDING',
     'COMPLETED',
-    'ABORTED'
+    'FAILED'
 );
 
 
@@ -362,7 +361,7 @@ CREATE TABLE public."Message" (
     "contentType" public."ContentType" NOT NULL,
     content jsonb NOT NULL,
     "threadId" integer NOT NULL,
-    "creatorAccount" character varying(31),
+    "creatorAccount" character varying(31) NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL,
@@ -1115,6 +1114,7 @@ CREATE TABLE public."FederationThreadSyncState" (
 CREATE TABLE public."FileSyncProgress" (
     id bigint NOT NULL,
     "batchId" uuid NOT NULL,
+    "messageId" bigint NOT NULL,
     digest character varying(64) NOT NULL,
     kind public."FileSyncKind" NOT NULL,
     status public."FileSyncStatus" DEFAULT 'PENDING'::public."FileSyncStatus" NOT NULL,
@@ -1612,13 +1612,10 @@ CREATE TABLE public."PendingMedia" (
     direction public."FileSyncDirection" DEFAULT 'OUTBOUND'::public."FileSyncDirection" NOT NULL,
     "batchId" uuid DEFAULT gen_random_uuid() NOT NULL,
     "fileCnt" integer DEFAULT 1 NOT NULL,
-    "anyFailed" boolean DEFAULT false NOT NULL,
     "originDomain" character varying(63),
     "publisherNamespaceId" integer DEFAULT 0 CONSTRAINT "PendingMedia_namespaceId_not_null" NOT NULL,
     "expectedAuthorizationEpoch" integer,
-    "dependsOnOriginSeq" integer,
-    CONSTRAINT "PendingMedia_depends_on_origin_seq_check" CHECK ((("dependsOnOriginSeq" IS NULL) OR ("dependsOnOriginSeq" > 0))),
-    CONSTRAINT "PendingMedia_direction_shape_check" CHECK ((((direction = 'OUTBOUND'::public."FileSyncDirection") AND ("messageId" IS NULL) AND ("threadId" IS NOT NULL) AND ("creatorAccount" IS NOT NULL) AND ("contentType" IS NOT NULL) AND (content IS NOT NULL) AND ("originDomain" IS NULL) AND ("expectedAuthorizationEpoch" IS NULL) AND ("dependsOnOriginSeq" IS NULL)) OR ((direction = 'INBOUND'::public."FileSyncDirection") AND ("messageId" IS NOT NULL) AND ("threadId" IS NULL) AND ("creatorAccount" IS NULL) AND ("contentType" IS NULL) AND (content IS NULL) AND ("clientMessageId" IS NULL) AND ("originDomain" IS NOT NULL) AND ("expectedAuthorizationEpoch" IS NOT NULL)))),
+    CONSTRAINT "PendingMedia_direction_shape_check" CHECK ((((direction = 'OUTBOUND'::public."FileSyncDirection") AND ("messageId" IS NULL) AND ("threadId" IS NOT NULL) AND ("creatorAccount" IS NOT NULL) AND ("contentType" IS NOT NULL) AND (content IS NOT NULL) AND ("originDomain" IS NULL) AND ("expectedAuthorizationEpoch" IS NULL)) OR ((direction = 'INBOUND'::public."FileSyncDirection") AND ("messageId" IS NOT NULL) AND ("threadId" IS NULL) AND ("creatorAccount" IS NULL) AND ("contentType" IS NULL) AND (content IS NULL) AND ("clientMessageId" IS NULL) AND ("originDomain" IS NOT NULL) AND ("expectedAuthorizationEpoch" IS NOT NULL)))),
     CONSTRAINT "PendingMedia_expectedAuthorizationEpoch_check" CHECK ((("expectedAuthorizationEpoch" IS NULL) OR ("expectedAuthorizationEpoch" >= 0)))
 );
 
@@ -2030,8 +2027,8 @@ ALTER SEQUENCE public."TwoFactorBackupCode_id_seq" OWNED BY public."TwoFactorBac
 
 CREATE TABLE public."UploadSession" (
     id bigint NOT NULL,
-    "uploadId" uuid DEFAULT gen_random_uuid() NOT NULL,
-    "clientMessageId" character varying(36) NOT NULL,
+    "pendingMediaId" bigint,
+    "messageId" bigint,
     "partId" uuid NOT NULL,
     "position" integer NOT NULL,
     "partIntent" public."ContentType" NOT NULL,
@@ -2040,7 +2037,7 @@ CREATE TABLE public."UploadSession" (
     "originalName" character varying(100) NOT NULL,
     "mimeType" character varying(255) NOT NULL,
     "totalBytes" bigint NOT NULL,
-    status public."UploadSessionStatus" DEFAULT 'UPLOADING'::public."UploadSessionStatus" NOT NULL,
+    status public."UploadSessionStatus" DEFAULT 'PENDING'::public."UploadSessionStatus" NOT NULL,
     "tmpKey" uuid DEFAULT gen_random_uuid() NOT NULL,
     digest character varying(64),
     result jsonb,
@@ -2948,6 +2945,13 @@ CREATE INDEX "FileSyncProgress_digest_idx" ON public."FileSyncProgress" USING bt
 
 
 --
+-- Name: FileSyncProgress_messageId_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "FileSyncProgress_messageId_idx" ON public."FileSyncProgress" USING btree ("messageId");
+
+
+--
 -- Name: FileSyncProgress_status_updatedAt_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3186,13 +3190,6 @@ CREATE UNIQUE INDEX "PendingMedia_messageId_key" ON public."PendingMedia" USING 
 
 
 --
--- Name: PendingMedia_quote_dependency_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "PendingMedia_quote_dependency_idx" ON public."PendingMedia" USING btree ("threadId", "originDomain", "dependsOnOriginSeq");
-
-
---
 -- Name: PendingMedia_status_createdAt_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3319,20 +3316,6 @@ CREATE INDEX "TwoFactorBackupCode_adminId_codeHash_idx" ON public."TwoFactorBack
 
 
 --
--- Name: UploadSession_clientMessageId_partId_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "UploadSession_clientMessageId_partId_key" ON public."UploadSession" USING btree ("clientMessageId", "partId");
-
-
---
--- Name: UploadSession_clientMessageId_position_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "UploadSession_clientMessageId_position_key" ON public."UploadSession" USING btree ("clientMessageId", "position");
-
-
---
 -- Name: UploadSession_creatorId_status_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3340,17 +3323,31 @@ CREATE INDEX "UploadSession_creatorId_status_idx" ON public."UploadSession" USIN
 
 
 --
+-- Name: UploadSession_messageId_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "UploadSession_messageId_idx" ON public."UploadSession" USING btree ("messageId");
+
+
+--
+-- Name: UploadSession_pendingMediaId_partId_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "UploadSession_pendingMediaId_partId_key" ON public."UploadSession" USING btree ("pendingMediaId", "partId");
+
+
+--
+-- Name: UploadSession_pendingMediaId_position_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "UploadSession_pendingMediaId_position_key" ON public."UploadSession" USING btree ("pendingMediaId", "position");
+
+
+--
 -- Name: UploadSession_status_updatedAt_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX "UploadSession_status_updatedAt_idx" ON public."UploadSession" USING btree (status, "updatedAt");
-
-
---
--- Name: UploadSession_uploadId_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "UploadSession_uploadId_key" ON public."UploadSession" USING btree ("uploadId");
 
 
 --
@@ -3580,6 +3577,14 @@ ALTER TABLE ONLY public."FederationThreadSyncState"
 
 ALTER TABLE ONLY public."FederationThreadSyncState"
     ADD CONSTRAINT "FederationThreadSyncState_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
+
+
+--
+-- Name: FileSyncProgress FileSyncProgress_messageId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FileSyncProgress"
+    ADD CONSTRAINT "FileSyncProgress_messageId_fkey" FOREIGN KEY ("messageId") REFERENCES public."Message"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3922,6 +3927,22 @@ ALTER TABLE ONLY public."TwoFactorBackupCode"
 
 ALTER TABLE ONLY public."UploadSession"
     ADD CONSTRAINT "UploadSession_creatorId_fkey" FOREIGN KEY ("creatorId") REFERENCES public."Account"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: UploadSession UploadSession_messageId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."UploadSession"
+    ADD CONSTRAINT "UploadSession_messageId_fkey" FOREIGN KEY ("messageId") REFERENCES public."Message"(id) ON DELETE SET NULL;
+
+
+--
+-- Name: UploadSession UploadSession_pendingMediaId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."UploadSession"
+    ADD CONSTRAINT "UploadSession_pendingMediaId_fkey" FOREIGN KEY ("pendingMediaId") REFERENCES public."PendingMedia"(id) ON DELETE SET NULL;
 
 
 --

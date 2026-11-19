@@ -24,7 +24,7 @@ function selectChain(rows: unknown[]) {
 describe('S2sRecognitionController Health privacy projection', () => {
   function target(options: { namespaceRows?: unknown[] } = {}) {
     const discovery = {
-      fetchWellKnown: vi.fn(),
+      fetchDiscoveryDocument: vi.fn(),
       getCachedPublicKey: vi.fn(),
       cacheDocument: vi.fn().mockResolvedValue(undefined),
     };
@@ -85,7 +85,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
     headers: {},
   } as never;
 
-  it('answers a cache miss with the uniform unavailable status and never fetches well-known', async () => {
+  it('answers a cache miss with the uniform unavailable status and never fetches discovery', async () => {
     const { controller, discovery, verify, recognition } = target();
     discovery.getCachedPublicKey.mockResolvedValue(null);
 
@@ -99,7 +99,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
       12,
       'peer.example/key-2',
     );
-    expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
+    expect(discovery.fetchDiscoveryDocument).not.toHaveBeenCalled();
     expect(verify.verifyWithPublicKey).not.toHaveBeenCalled();
     expect(recognition.queryHealth).not.toHaveBeenCalled();
   });
@@ -113,7 +113,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
       data: { status: 'unavailable' },
     });
     expect(discovery.getCachedPublicKey).not.toHaveBeenCalled();
-    expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
+    expect(discovery.fetchDiscoveryDocument).not.toHaveBeenCalled();
   });
 
   it('maps a malformed S2S-Root-Key to the uniform unavailable status', async () => {
@@ -218,7 +218,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
       bizCode: BusinessCode.FEDERATION_MALFORMED,
       status: 400,
     });
-    expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
+    expect(discovery.fetchDiscoveryDocument).not.toHaveBeenCalled();
   });
 
   it('rejects a missing S2S-Root-Key on Recognize', async () => {
@@ -248,7 +248,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
       message: 'successful',
       data: { status: 'pending', message: 'verification in progress' },
     });
-    expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
+    expect(discovery.fetchDiscoveryDocument).not.toHaveBeenCalled();
     expect(recognition.submitInboundRecognize).toHaveBeenCalledWith({
       requestIp: '192.0.2.42',
       domain: 'peer.example',
@@ -924,7 +924,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       ],
     };
     const discovery = {
-      fetchWellKnown: vi.fn().mockResolvedValue(doc),
+      fetchDiscoveryDocument: vi.fn().mockResolvedValue(doc),
       cacheDocument: vi.fn().mockResolvedValue(undefined),
     };
     const signature = { verifyWithKey: vi.fn().mockResolvedValue(true) };
@@ -1186,9 +1186,9 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     ).service;
     (
       service as unknown as {
-        discovery: { fetchWellKnown: ReturnType<typeof vi.fn> };
+        discovery: { fetchDiscoveryDocument: ReturnType<typeof vi.fn> };
       }
-    ).discovery.fetchWellKnown.mockResolvedValue(discoveryDoc);
+    ).discovery.fetchDiscoveryDocument.mockResolvedValue(discoveryDoc);
 
     await target.verify({
       domain: 'peer.example',
@@ -1492,7 +1492,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
 
   it('does not cache transient failures but keeps the IP verification cooldown', async () => {
     const { service, verify } = subject();
-    verify.mockRejectedValue(new Error('well-known fetch timed out'));
+    verify.mockRejectedValue(new Error('discovery fetch timed out'));
     const params = {
       requestIp: '192.0.2.1',
       domain: 'peer.example',

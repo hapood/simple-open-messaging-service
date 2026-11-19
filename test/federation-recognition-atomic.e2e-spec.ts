@@ -15,7 +15,7 @@ import {
   identityNamespace,
   federationFeedState,
 } from '../src/database/schema.js';
-import type { WellKnownDoc } from '../src/federation/discovery.service.js';
+import type { DiscoveryDocument } from '../src/federation/discovery.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { ProfileNamespaceChangeStore } from '../src/federation/profile-namespace-change-store.service.js';
 import { ProfileNamespaceFeedService } from '../src/federation/profile-namespace-feed.service.js';
@@ -30,7 +30,7 @@ describe('FederationRecognitionService atomic commit', () => {
   let database: DatabaseService;
   const domain = 'atomic-recognition.test';
   const rootPublicKey = Buffer.alloc(32, 7).toString('base64');
-  const document: WellKnownDoc = {
+  const document: DiscoveryDocument = {
     protocolVersions: [1],
     signingKeyCreatedAt: 1700000000000,
     roots: [
@@ -286,7 +286,7 @@ describe('FederationRecognitionService atomic commit', () => {
     });
     const discovery = {
       resolveBase: vi.fn().mockResolvedValue(`https://${domain}`),
-      fetchWellKnown: vi.fn().mockResolvedValue({
+      fetchDiscoveryDocument: vi.fn().mockResolvedValue({
         ...document,
         roots: [
           {
@@ -344,7 +344,7 @@ describe('FederationRecognitionService atomic commit', () => {
       );
       const discovery = {
         resolveBase: vi.fn().mockResolvedValue(`https://${domain}`),
-        fetchWellKnown: vi.fn().mockResolvedValue({
+        fetchDiscoveryDocument: vi.fn().mockResolvedValue({
           ...document,
           roots,
           keys: document.keys.map((key) => ({ ...key, root: successorRoot })),
@@ -403,7 +403,7 @@ describe('FederationRecognitionService atomic commit', () => {
     const request = vi.fn();
     const discovery = {
       resolveBase: vi.fn().mockResolvedValue('https://atomic-recognition.test'),
-      fetchWellKnown: vi.fn().mockResolvedValue(document),
+      fetchDiscoveryDocument: vi.fn().mockResolvedValue(document),
       cacheDocument: vi.fn().mockResolvedValue(undefined),
       acquireRequestSlot: vi.fn().mockResolvedValue(() => undefined),
       request,

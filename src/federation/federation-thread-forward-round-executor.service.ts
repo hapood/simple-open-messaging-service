@@ -147,7 +147,6 @@ export class FederationThreadForwardRoundExecutorService {
           };
         },
         complete: async ({ authorizationEpoch }) => {
-          let publish: (() => Promise<void>) | undefined;
           await this.database.db.transaction(async (tx) => {
             const threadLock =
               await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
@@ -160,16 +159,10 @@ export class FederationThreadForwardRoundExecutorService {
               source,
             );
             if (tombstoneBatch) {
-              const effect =
-                await this.inboundMessageCommits.applyTombstonesInTransaction(
-                  tx,
-                  { ...tombstoneBatch, threadLock },
-                );
-              publish = async () => {
-                await this.inboundMessageCommits.publishSatisfiedQuoteDependencies(
-                  effect.quoteDependencies,
-                );
-              };
+              await this.inboundMessageCommits.applyTombstonesInTransaction(
+                tx,
+                { ...tombstoneBatch, threadLock },
+              );
             }
             if (deletionAdvance)
               await FederationThreadSyncStateService.advanceDeletionProcessedThroughInTx(
@@ -180,7 +173,6 @@ export class FederationThreadForwardRoundExecutorService {
                 namespaceId,
               );
           });
-          await publish?.();
         },
       },
       take,

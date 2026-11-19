@@ -20,11 +20,11 @@ import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
 @Public()
 @Raw()
 @Controller('somfp')
-export class WellKnownController {
+export class DiscoveryController {
   constructor(private readonly keypair: KeypairService) {}
 
   @Get('discovery')
-  getWellKnown() {
+  getDiscoveryDocument() {
     return {
       software: `soms/${SERVER_VERSION}`,
       protocolVersions: [...FEDERATION_PROTOCOL_VERSIONS],

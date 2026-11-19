@@ -427,7 +427,7 @@ export class FederationPeerLifecycle {
     }
 
     this.discovery.invalidateBase(domain);
-    const doc = await this.discovery.fetchWellKnown(domain);
+    const doc = await this.discovery.fetchDiscoveryDocument(domain);
     const publishedKey = doc.keys[0];
     // The original pinned identity returned when the fetched group still
     // contains the pinned root (a rotation whose predecessor entry is still

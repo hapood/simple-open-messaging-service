@@ -36,7 +36,7 @@ export class MediaFilesDto extends MediaPageDto {
 
 export class MediaBatchesDto extends MediaPageDto {
   @IsOptional()
-  @IsIn(['pending', 'downloading', 'failed', 'ready'])
+  @IsIn(['pending', 'downloading', 'failed', 'stopped', 'ready'])
   status?: string;
 }
 

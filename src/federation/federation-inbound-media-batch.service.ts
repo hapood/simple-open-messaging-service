@@ -1,4 +1,9 @@
-import { ConflictException, HttpStatus, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  HttpStatus,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -37,10 +42,37 @@ function parseInboundDownloadAuth(
 
 /**
  * Owns the durable lifecycle of an admitted inbound media batch: drive downloads, recover or retry
- * stalled files, fail spent jobs, and promote completed Message STUBs and their quote dependents.
+ * stalled files, fail spent jobs, and materialize completed Message STUBs.
  */
 @Injectable()
 export class FederationInboundMediaBatchService {
+  private readonly logger = new Logger(FederationInboundMediaBatchService.name);
+  // Lifecycle commands never queue. Retain ownership through physical IO and settlement
+  // draining; callbacks must not acquire this slot while stop waits for them to finish.
+  private readonly lifecycle = new Map<
+    string,
+    'stopping' | 'retrying' | 'recovering'
+  >();
+
+  private async runLifecycle<T>(
+    key: string,
+    phase: 'stopping' | 'retrying' | 'recovering',
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (this.lifecycle.has(key))
+      throw new BusinessException(
+        BusinessCode.ALREADY_EXISTS,
+        'download lifecycle is busy',
+        409,
+      );
+    this.lifecycle.set(key, phase);
+    try {
+      return await operation();
+    } finally {
+      this.lifecycle.delete(key);
+    }
+  }
+
   constructor(
     private readonly database: DatabaseService,
     private readonly fileSync: FederationInboundFileSync,
@@ -55,7 +87,7 @@ export class FederationInboundMediaBatchService {
       digest: string,
       offset: number,
       declaredBytes: number,
-      signal?: AbortSignal,
+      signal: AbortSignal,
     ) => AsyncIterable<Buffer>,
   ): Promise<void> {
     await this.fileSync.runBatch(
@@ -64,7 +96,6 @@ export class FederationInboundMediaBatchService {
       (id) => this.promotePendingMessage(id),
       (id) => this.failPendingMessage(id),
       async (id) => {
-        await this.claimDownloading(id);
         const progress = await this.readBatchProgressSummary(id);
         if (progress) this.publishMessageProgress(progress, 'downloading');
       },
@@ -72,60 +103,66 @@ export class FederationInboundMediaBatchService {
   }
 
   async stopInboundBatch(batchId: string): Promise<void> {
-    const stopped = await this.database.db.transaction(async (tx) => {
-      const root = await tx.query.pendingMedia.findFirst({
-        where: and(
-          eq(tables.pendingMedia.batchId, batchId),
-          eq(tables.pendingMedia.direction, 'INBOUND'),
-        ),
-        columns: { messageId: true },
+    return this.runLifecycle(batchId, 'stopping', () =>
+      this.stopInboundBatchLocked(batchId),
+    );
+  }
+
+  private async stopInboundBatchLocked(batchId: string): Promise<void> {
+    let stopped: boolean | undefined;
+    await this.fileSync.stopBatch(batchId, async () => {
+      stopped = await this.database.db.transaction(async (tx) => {
+        const owner = await tx.query.fileSyncProgress.findFirst({
+          where: eq(tables.fileSyncProgress.batchId, batchId),
+          columns: { messageId: true },
+        });
+        if (owner) {
+          // Message-before-task ordering also serializes promotion and retry. A stage
+          // is temporary coordination, not the authority for stopping durable tasks.
+          await tx.execute(
+            sql`SELECT id FROM "Message" WHERE id = ${owner.messageId} FOR NO KEY UPDATE`,
+          );
+          const foreignOwner = await tx.query.fileSyncProgress.findFirst({
+            where: and(
+              eq(tables.fileSyncProgress.batchId, batchId),
+              sql`${tables.fileSyncProgress.messageId} <> ${owner.messageId}`,
+            ),
+            columns: { id: true },
+          });
+          if (foreignOwner)
+            throw new ConflictException(
+              'download batch contains mixed message owners',
+            );
+          const changed = await tx
+            .update(tables.fileSyncProgress)
+            .set({
+              status: 'FAILED',
+              errorKind: 'USER_STOPPED',
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(tables.fileSyncProgress.batchId, batchId),
+                eq(tables.fileSyncProgress.messageId, owner.messageId),
+                eq(tables.fileSyncProgress.status, 'PENDING'),
+              ),
+            )
+            .returning({ id: tables.fileSyncProgress.id });
+          if (changed.length === 0) return false;
+          await tx
+            .update(tables.message)
+            .set({ localState: 'FAILED', updatedAt: new Date() })
+            .where(
+              and(
+                eq(tables.message.id, owner.messageId),
+                eq(tables.message.localState, 'STUB'),
+              ),
+            );
+          return true;
+        }
+        return false;
       });
-      if (!root?.messageId) return;
-      // Match retry/materialization lock order: message before its task and file rows.
-      await tx.execute(
-        sql`SELECT id FROM "Message" WHERE id = ${root.messageId} FOR NO KEY UPDATE`,
-      );
-      const [batch] = await tx
-        .update(tables.pendingMedia)
-        .set({
-          status: 'failed',
-          failReason: 'stopped by administrator',
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(tables.pendingMedia.batchId, batchId),
-            eq(tables.pendingMedia.direction, 'INBOUND'),
-            inArray(tables.pendingMedia.status, ['pending', 'downloading']),
-          ),
-        )
-        .returning({ messageId: tables.pendingMedia.messageId });
-      if (!batch) return;
-      await tx
-        .update(tables.fileSyncProgress)
-        .set({
-          status: 'FAILED',
-          errorKind: 'stopped by administrator',
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(tables.fileSyncProgress.batchId, batchId),
-            inArray(tables.fileSyncProgress.status, ['PENDING', 'DOWNLOADING']),
-          ),
-        );
-      await tx
-        .update(tables.message)
-        .set({ localState: 'FAILED', updatedAt: new Date() })
-        .where(
-          and(
-            eq(tables.message.id, batch.messageId!),
-            eq(tables.message.localState, 'STUB'),
-          ),
-        );
-      return true;
     });
-    await this.fileSync.stopBatch(batchId);
     if (!stopped) return;
     const completion = await this.readBatchProgressSummary(batchId);
     if (completion) this.completeProgressTargets(completion, 'failed');
@@ -134,26 +171,76 @@ export class FederationInboundMediaBatchService {
   async retryInboundBatch(
     batchId: string,
   ): Promise<{ batchId: string; resetFiles: number }> {
+    return this.runLifecycle(batchId, 'retrying', async () => {
+      await this.fileSync.stopBatch(batchId);
+      return this.retryInboundBatchLocked(batchId);
+    });
+  }
+
+  private async retryInboundBatchLocked(
+    batchId: string,
+  ): Promise<{ batchId: string; resetFiles: number }> {
     const batch = await this.database.db.query.pendingMedia.findFirst({
       where: and(
         eq(tables.pendingMedia.batchId, batchId),
         eq(tables.pendingMedia.direction, 'INBOUND'),
       ),
     });
-    if (batch?.status === 'failed' && batch.messageId !== null) {
+    const owner =
+      batch?.messageId !== null && batch?.messageId !== undefined
+        ? batch
+        : await this.database.db.query.fileSyncProgress.findFirst({
+            where: eq(tables.fileSyncProgress.batchId, batchId),
+            columns: { messageId: true },
+          });
+    if (owner?.messageId !== null && owner?.messageId !== undefined) {
       const msg = await this.database.db.query.message.findFirst({
-        where: eq(tables.message.id, batch.messageId),
+        where: eq(tables.message.id, owner.messageId),
       });
       if (!msg) throw new ConflictException('download message is missing');
-      return (
-        (await this.retryInboundMessage(msg)) ?? { batchId, resetFiles: 0 }
-      );
+      if (msg.localState === 'FAILED') {
+        return (
+          (await this.retryInboundMessageLocked(msg)) ?? {
+            batchId,
+            resetFiles: 0,
+          }
+        );
+      }
     }
-    return this.resumeInboundBatch(batchId, ['DOWNLOADING', 'FAILED']);
+    return this.resumeInboundBatch(batchId, ['FAILED']);
   }
 
   /** Shared by administrator retry and the authenticated client's failed-attachment retry. */
   async retryInboundMessage(
+    msg: Message,
+  ): Promise<{ batchId: string; resetFiles: number } | null> {
+    const pending = await this.database.db.query.pendingMedia.findFirst({
+      where: and(
+        eq(tables.pendingMedia.messageId, msg.id),
+        eq(tables.pendingMedia.direction, 'INBOUND'),
+      ),
+      columns: { batchId: true },
+    });
+    return this.runLifecycle(
+      pending?.batchId ?? `message:${msg.id}`,
+      'retrying',
+      async () => {
+        if (pending) {
+          const current = await this.database.db.query.message.findFirst({
+            where: eq(tables.message.id, msg.id),
+            columns: { localState: true, isDeleted: true },
+          });
+          // A second request holding an old FAILED message must not cancel a retry already running.
+          if (!current || current.localState !== 'FAILED' || current.isDeleted)
+            return null;
+          await this.fileSync.stopBatch(pending.batchId);
+        }
+        return this.retryInboundMessageLocked(msg);
+      },
+    );
+  }
+
+  private async retryInboundMessageLocked(
     msg: Message,
   ): Promise<{ batchId: string; resetFiles: number } | null> {
     if (msg.localState !== 'FAILED' || msg.isDeleted) return null;
@@ -174,104 +261,81 @@ export class FederationInboundMediaBatchService {
           declaredBytes,
           signal,
         ),
-    ).catch(() => undefined);
+    ).catch((error: unknown) => {
+      this.logger.warn(`Inbound download execution ended: ${String(error)}`);
+    });
     return staged;
   }
 
   async recoverInboundBatch(
     batchId: string,
   ): Promise<{ batchId: string; resetFiles: number }> {
-    return this.resumeInboundBatch(batchId, ['DOWNLOADING']);
+    return this.runLifecycle(batchId, 'recovering', async () => {
+      await this.fileSync.stopBatch(batchId);
+      const failed = await this.database.db.query.fileSyncProgress.findFirst({
+        where: and(
+          eq(tables.fileSyncProgress.batchId, batchId),
+          eq(tables.fileSyncProgress.status, 'FAILED'),
+        ),
+        columns: { id: true },
+      });
+      if (failed) {
+        // Repair a crash between the file outcome commit and message settlement, never retry it.
+        await this.failPendingMessage(batchId);
+        return { batchId, resetFiles: 0 };
+      }
+      return this.resumeInboundBatch(batchId, ['PENDING']);
+    });
   }
 
-  /** Materialize a completed STUB and recursively wake durable quotes waiting on it. */
+  /** Materialize an existing message after its attachments complete. */
   async promotePendingMessage(batchId: string): Promise<void> {
     const completion = await this.readBatchProgressSummary(batchId);
     const promoted = await this.promoter.promote(batchId);
     if (!promoted) return;
     if (completion) this.completeProgressTargets(completion, 'ready');
-    for (const dependentBatchId of promoted.dependentBatchIds) {
-      await this.promotePendingMessage(dependentBatchId);
-    }
   }
 
   private async failPendingMessage(batchId: string): Promise<void> {
     const completion = await this.readBatchProgressSummary(batchId);
     const failed = await this.database.db.transaction(async (tx) => {
-      const row = await tx.query.pendingMedia.findFirst({
-        where: and(
-          eq(tables.pendingMedia.batchId, batchId),
-          eq(tables.pendingMedia.direction, 'INBOUND'),
-        ),
-      });
-      if (!row) return null;
-      const batch = requireInboundPendingMedia(row);
-      const progress = await tx.query.fileSyncProgress.findFirst({
+      const owner = await tx.query.fileSyncProgress.findFirst({
         where: and(
           eq(tables.fileSyncProgress.batchId, batchId),
           eq(tables.fileSyncProgress.status, 'FAILED'),
         ),
-        columns: { errorKind: true },
+        columns: { messageId: true },
       });
-      const message = await tx.query.message.findFirst({
-        where: eq(tables.message.id, batch.messageId),
-        columns: { threadId: true, seq: true },
+      if (!owner) return null;
+      await tx.execute(
+        sql`SELECT id FROM "Message" WHERE id = ${owner.messageId} FOR NO KEY UPDATE`,
+      );
+      const progress = await tx.query.fileSyncProgress.findFirst({
+        where: and(
+          eq(tables.fileSyncProgress.batchId, batchId),
+          eq(tables.fileSyncProgress.messageId, owner.messageId),
+          eq(tables.fileSyncProgress.status, 'FAILED'),
+        ),
+        columns: { id: true },
       });
-      await tx
+      // Recheck the task outcome under its message lock: retry may have reset it while
+      // we waited. Coordination is not needed to project a durable task failure.
+      if (!progress) return null;
+      const [transitioned] = await tx
         .update(tables.message)
         .set({ localState: 'FAILED', updatedAt: new Date() })
         .where(
           and(
-            eq(tables.message.id, batch.messageId),
+            eq(tables.message.id, owner.messageId),
             eq(tables.message.localState, 'STUB'),
           ),
-        );
-      await tx
-        .update(tables.pendingMedia)
-        .set({
-          status: 'failed',
-          failReason: (progress?.errorKind ?? 'download failed').slice(0, 255),
-          updatedAt: new Date(),
-        })
-        .where(eq(tables.pendingMedia.id, batch.id));
-      return message;
+        )
+        .returning({ id: tables.message.id });
+      return transitioned;
     });
     if (failed) {
       if (completion) this.completeProgressTargets(completion, 'failed');
     }
-  }
-
-  private async claimDownloading(
-    batchId: string,
-  ): Promise<{ threadId: number; seq: number } | null> {
-    return this.database.db.transaction(async (tx) => {
-      const [claimed] = await tx
-        .update(tables.pendingMedia)
-        .set({ status: 'downloading', updatedAt: new Date() })
-        .where(
-          and(
-            eq(tables.pendingMedia.batchId, batchId),
-            eq(tables.pendingMedia.direction, 'INBOUND'),
-            eq(tables.pendingMedia.status, 'pending'),
-          ),
-        )
-        .returning({ messageId: tables.pendingMedia.messageId });
-      if (claimed?.messageId == null) {
-        const batch = await tx.query.pendingMedia.findFirst({
-          where: eq(tables.pendingMedia.batchId, batchId),
-          columns: { status: true },
-        });
-        if (!batch || !['pending', 'downloading'].includes(batch.status))
-          throw new ConflictException('download is not active');
-        return null;
-      }
-      return (
-        (await tx.query.message.findFirst({
-          where: eq(tables.message.id, claimed.messageId),
-          columns: { threadId: true, seq: true },
-        })) ?? null
-      );
-    });
   }
 
   private async readBatchProgressSummary(batchId: string): Promise<{
@@ -279,16 +343,24 @@ export class FederationInboundMediaBatchService {
     completedFiles: number;
     totalFiles: number;
   } | null> {
-    const batch = await this.database.db.query.pendingMedia.findFirst({
-      where: and(
-        eq(tables.pendingMedia.batchId, batchId),
-        eq(tables.pendingMedia.direction, 'INBOUND'),
-      ),
+    const task = await this.database.db.query.fileSyncProgress.findFirst({
+      where: eq(tables.fileSyncProgress.batchId, batchId),
       columns: { messageId: true },
     });
-    if (!batch?.messageId) return null;
+    // File tasks retain ownership after materialization removes coordination.
+    // Coordination remains a fallback for diagnosing a batch with missing tasks.
+    const owner =
+      task ??
+      (await this.database.db.query.pendingMedia.findFirst({
+        where: and(
+          eq(tables.pendingMedia.batchId, batchId),
+          eq(tables.pendingMedia.direction, 'INBOUND'),
+        ),
+        columns: { messageId: true },
+      }));
+    if (!owner?.messageId) return null;
     const message = await this.database.db.query.message.findFirst({
-      where: eq(tables.message.id, batch.messageId),
+      where: eq(tables.message.id, owner.messageId),
       columns: { threadId: true, seq: true },
     });
     if (!message) return null;
@@ -299,7 +371,7 @@ export class FederationInboundMediaBatchService {
     const [counts] = await this.database.db
       .select({
         totalFiles: sql<number>`COUNT(*)::int`,
-        completedFiles: sql<number>`COUNT(*) FILTER (WHERE ${tables.fileSyncProgress.status} = 'SUCCEEDED')::int`,
+        completedFiles: sql<number>`COUNT(*) FILTER (WHERE ${tables.fileSyncProgress.status} = 'COMPLETED')::int`,
       })
       .from(tables.fileSyncProgress)
       .where(eq(tables.fileSyncProgress.batchId, batchId));
@@ -349,7 +421,7 @@ export class FederationInboundMediaBatchService {
 
   private async resumeInboundBatch(
     batchId: string,
-    resetStatuses: Array<'DOWNLOADING' | 'FAILED'>,
+    resetStatuses: Array<'PENDING' | 'FAILED'>,
   ): Promise<{ batchId: string; resetFiles: number }> {
     const batchRow = await this.database.db.query.pendingMedia.findFirst({
       where: eq(tables.pendingMedia.batchId, batchId),
@@ -362,17 +434,23 @@ export class FederationInboundMediaBatchService {
       );
     }
     const batch = requireInboundPendingMedia(batchRow);
-    if (
-      batch.status === 'ready' ||
-      (batch.status === 'failed' && !resetStatuses.includes('FAILED'))
-    ) {
-      return { batchId, resetFiles: 0 };
-    }
     const stagedMessage = await this.database.db.query.message.findFirst({
       where: eq(tables.message.id, batch.messageId),
-      columns: { originSeq: true },
+      columns: { originSeq: true, localState: true },
     });
-    if (batch.dependsOnOriginSeq !== null) {
+    if (stagedMessage?.localState === 'READY')
+      return { batchId, resetFiles: 0 };
+
+    const files = await this.database.db.query.fileSyncProgress.findMany({
+      where: eq(tables.fileSyncProgress.batchId, batchId),
+      columns: { status: true },
+    });
+    if (
+      files.length > 0 &&
+      files.every((file) => file.status === 'COMPLETED')
+    ) {
+      // Local materialization needs no remote download route. The promoter rechecks
+      // durable outcomes under the message lock before committing and removing coordination.
       await this.promotePendingMessage(batchId);
       return { batchId, resetFiles: 0 };
     }
@@ -402,17 +480,14 @@ export class FederationInboundMediaBatchService {
       await tx.execute(
         sql`SELECT id FROM "Message" WHERE id = ${batch.messageId} FOR NO KEY UPDATE`,
       );
-      const claimed = await tx
-        .update(tables.pendingMedia)
-        .set({ status: 'pending', failReason: null, updatedAt: new Date() })
-        .where(
-          and(
-            eq(tables.pendingMedia.id, batch.id),
-            eq(tables.pendingMedia.status, batch.status),
-          ),
-        )
-        .returning({ id: tables.pendingMedia.id });
-      if (!claimed.length) return [];
+      const current = await tx.query.pendingMedia.findFirst({
+        where: and(
+          eq(tables.pendingMedia.id, batch.id),
+          eq(tables.pendingMedia.messageId, batch.messageId),
+        ),
+        columns: { id: true },
+      });
+      if (!current) return [];
       const reset = await tx
         .update(tables.fileSyncProgress)
         .set({ status: 'PENDING', errorKind: null, updatedAt: new Date() })
@@ -449,7 +524,9 @@ export class FederationInboundMediaBatchService {
           declaredBytes,
           signal,
         ),
-    ).catch(() => undefined);
+    ).catch((error: unknown) => {
+      this.logger.warn(`Inbound download execution ended: ${String(error)}`);
+    });
 
     return { batchId, resetFiles: reset.length };
   }

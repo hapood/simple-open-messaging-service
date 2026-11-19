@@ -9,6 +9,7 @@ import {
   messageThread,
   relationshipPair,
   pendingMedia,
+  uploadSession,
   account as user,
 } from '../src/database/schema';
 import { ContentType } from '../src/database/enums';
@@ -24,7 +25,7 @@ import { createTestApp } from './support/app';
 /**
  * Local media send staging (Phase 7 batch-commit model): a media message is NOT committed as a
  * Message until every file in its batch has landed. Exercises MessageService.stageMedia (message-level
- * intent + fileCnt) + commitOutboundBatch (the session-fed batch commit + DELETE win-guard) directly
+ * intent + fileCnt) + commitOutboundBatch (ID-based task commit and transactional stage deletion) directly
  * against the real DB.
  *
  * Federated stage→localize→commit is covered by federation.e2e-spec.ts; the orphan/stale-pending GC
@@ -41,6 +42,34 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
   let userId: number;
   let userAccount: string;
   let inviteTargetIds: number[];
+
+  async function task(
+    cid: string,
+    digest: string,
+    position = 0,
+  ): Promise<{ sessionId: bigint; pendingMediaId: bigint }> {
+    const stage = await database.db.query.pendingMedia.findFirst({
+      where: eq(pendingMedia.clientMessageId, cid),
+    });
+    if (!stage) throw new Error('fixture stage is missing');
+    const [row] = await database.db
+      .insert(uploadSession)
+      .values({
+        pendingMediaId: stage.id,
+        creatorId: userId,
+        partId: randomUUID(),
+        position,
+        partIntent: 'FILE',
+        contentType: stage.contentType!,
+        originalName: 'fixture',
+        mimeType: 'application/octet-stream',
+        totalBytes: 9n,
+        digest,
+        status: 'PENDING',
+      })
+      .returning({ id: uploadSession.id });
+    return { sessionId: row.id, pendingMediaId: stage.id };
+  }
 
   beforeAll(async () => {
     ({ app, database } = await createTestApp());
@@ -140,9 +169,9 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       BigInt((await userQuota.breakerStatus(userId)).fileBytes.bytes),
     ).toBe(BigInt(before.fileBytes.bytes) + 4n);
     await expect(
-      upload.append(userId, session.uploadId, 'bytes 0-4/4', Buffer.alloc(5)),
+      upload.append(userId, session.id, 'bytes 0-4/4', Buffer.alloc(5)),
     ).rejects.toThrow();
-    await upload.cancel(userId, session.uploadId);
+    await upload.cancel(userId, session.id);
     expect(
       BigInt((await userQuota.breakerStatus(userId)).fileBytes.bytes),
     ).toBe(BigInt(before.fileBytes.bytes) + 4n);
@@ -233,16 +262,16 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     expect(rolledBackPair).toBeUndefined();
   });
 
-  it('does not let another user fail or promote a staged send by clientMessageId', async () => {
+  it('does not let another user promote a staged send', async () => {
     const cid = randomUUID();
     await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
-    await messages.failStaged(userId + 1, cid, 'not mine');
     const digest = 'e'.repeat(64);
-    expect(
-      await messages.commitOutboundBatch(cid, userId + 1, [
-        { digest, payload: filePayload(digest) },
+    const { sessionId, pendingMediaId } = await task(cid, digest);
+    await expect(
+      messages.commitOutboundBatch(pendingMediaId, userId + 1, [
+        { sessionId, digest, payload: filePayload(digest) },
       ]),
-    ).toBeNull();
+    ).rejects.toThrow('ownership');
     const [stage] = await database.db
       .select()
       .from(pendingMedia)
@@ -258,9 +287,10 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     const cid = randomUUID();
     const digest = 'a'.repeat(64);
     await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
+    const { sessionId, pendingMediaId } = await task(cid, digest);
 
-    const result = await messages.commitOutboundBatch(cid, userId, [
-      { digest, payload: filePayload(digest) },
+    const result = await messages.commitOutboundBatch(pendingMediaId, userId, [
+      { sessionId, digest, payload: filePayload(digest) },
     ]);
     expect(result?.newlyPromoted).toBe(true);
     expect(result?.message.contentType).toBe('FILE');
@@ -297,8 +327,8 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
 
     // Re-committing after the stage is consumed is idempotent: the committed message is returned
     // with newlyPromoted=false — no duplicate Message, no error.
-    const again = await messages.commitOutboundBatch(cid, userId, [
-      { digest, payload: filePayload(digest) },
+    const again = await messages.commitOutboundBatch(pendingMediaId, userId, [
+      { sessionId, digest, payload: filePayload(digest) },
     ]);
     expect(again?.newlyPromoted).toBe(false);
     expect(again?.message.seq).toBe(result!.message.seq);
@@ -327,9 +357,14 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       name: 'photo.heic',
       mimeType: 'image/heic',
     };
-    await messages.updateStagedContentType(cid, userId, ContentType.FILE);
-    const result = await messages.commitOutboundBatch(cid, userId, [
-      { digest, payload: heic },
+    const { sessionId, pendingMediaId } = await task(cid, digest);
+    await messages.updateStagedContentType(
+      pendingMediaId,
+      userId,
+      ContentType.FILE,
+    );
+    const result = await messages.commitOutboundBatch(pendingMediaId, userId, [
+      { sessionId, digest, payload: heic },
     ]);
     expect(result?.message.contentType).toBe('FILE');
   });
@@ -339,19 +374,21 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     await messages.stageMedia(userId, threadId, ContentType.GALLERY, cid, 2);
     const d1 = '1'.repeat(64);
     const d2 = '2'.repeat(64);
+    const { sessionId: first, pendingMediaId } = await task(cid, d1, 0);
+    const { sessionId: second } = await task(cid, d2, 1);
 
     // A partial batch is rejected — the barrier is the caller's (upload domain) responsibility and a
     // short batch must never commit.
     await expect(
-      messages.commitOutboundBatch(cid, userId, [
-        { digest: d1, payload: filePayload(d1) },
+      messages.commitOutboundBatch(pendingMediaId, userId, [
+        { sessionId: first, digest: d1, payload: filePayload(d1) },
       ]),
     ).rejects.toThrow('batch does not match the staged file count');
 
     // Full batch: barrier met → commit. Content is the digest-sorted GALLERY items.
-    const r2 = await messages.commitOutboundBatch(cid, userId, [
-      { digest: d1, payload: filePayload(d1) },
-      { digest: d2, payload: filePayload(d2) },
+    const r2 = await messages.commitOutboundBatch(pendingMediaId, userId, [
+      { sessionId: first, digest: d1, payload: filePayload(d1) },
+      { sessionId: second, digest: d2, payload: filePayload(d2) },
     ]);
     expect(r2?.newlyPromoted).toBe(true);
     expect(r2?.message.contentType).toBe('GALLERY');
@@ -388,15 +425,17 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     const cid = randomUUID();
     const digest = '3'.repeat(64);
     await messages.stageMedia(userId, threadId, ContentType.GALLERY, cid, 2);
+    const { sessionId, pendingMediaId } = await task(cid, digest, 0);
+    const { sessionId: second } = await task(cid, digest, 1);
 
     await expect(
-      messages.commitOutboundBatch(cid, userId, [
-        { digest, payload: filePayload(digest) },
+      messages.commitOutboundBatch(pendingMediaId, userId, [
+        { sessionId, digest, payload: filePayload(digest) },
       ]),
     ).rejects.toThrow('batch does not match the staged file count');
-    const result = await messages.commitOutboundBatch(cid, userId, [
-      { digest, payload: filePayload(digest) },
-      { digest, payload: filePayload(digest) },
+    const result = await messages.commitOutboundBatch(pendingMediaId, userId, [
+      { sessionId, digest, payload: filePayload(digest) },
+      { sessionId: second, digest, payload: filePayload(digest) },
     ]);
     const items = (JSON.parse(result!.message.content) as { items: unknown[] })
       .items;

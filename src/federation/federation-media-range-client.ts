@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { DiscoveryService } from './discovery.service.js';
 import {
@@ -20,9 +20,17 @@ export interface FederationMediaRangeUnit {
   contentDigest?: string;
 }
 
+class MediaResponseCleanupError extends AggregateError {
+  constructor(errors: unknown[]) {
+    super(errors, 'media response body cleanup failed');
+  }
+}
+
 /** Fetches peer-hosted media as verified, resumable HTTP Range units. */
 @Injectable()
 export class FederationMediaRangeClient {
+  private readonly logger = new Logger(FederationMediaRangeClient.name);
+
   constructor(
     private readonly signature: SignatureService,
     private readonly discovery: DiscoveryService,
@@ -40,8 +48,9 @@ export class FederationMediaRangeClient {
     sourceSeq: number,
     startOffset: number,
     declaredBytes: number,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): AsyncGenerator<Buffer> {
+    signal.throwIfAborted();
     const chunkBytes = this.transportConfig.get().mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
     const params = new URLSearchParams({
@@ -58,7 +67,7 @@ export class FederationMediaRangeClient {
     let markedAlive = false;
 
     while (total === null || offset < total) {
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       const requestedEnd =
         total === null
           ? offset + chunkBytes - 1
@@ -67,6 +76,8 @@ export class FederationMediaRangeClient {
       for (;;) {
         let unit: FederationMediaRangeUnit | undefined;
         let buffer: Buffer;
+        let bodyOwnedByReader = false;
+        const unitErrors: unknown[] = [];
         try {
           unit = await this.requestUnit(
             url,
@@ -83,12 +94,15 @@ export class FederationMediaRangeClient {
           const unitLength = unit.end - unit.start + 1;
           const pieces: Buffer[] = [];
           let received = 0;
-          for await (const piece of this.webBody(unit.res)) {
+          bodyOwnedByReader = true;
+          for await (const piece of this.webBody(unit.res, signal)) {
+            signal.throwIfAborted();
             received += piece.length;
             if (received > unitLength)
               throw new CasOversizeError(BigInt(received - unitLength));
             pieces.push(piece);
           }
+          signal.throwIfAborted();
           buffer = Buffer.concat(pieces);
           if (buffer.length !== unitLength) {
             throw new Error(
@@ -102,7 +116,9 @@ export class FederationMediaRangeClient {
             throw new Error(`unit digest mismatch at offset ${offset}`);
           }
         } catch (error) {
-          signal?.throwIfAborted();
+          unitErrors.push(error);
+          if (error instanceof MediaResponseCleanupError) throw error;
+          signal.throwIfAborted();
           // Retry transport failures before headers as well as body/verification
           // failures, but do not repeat permanent peer rejections.
           if (error instanceof CasOversizeError) throw error;
@@ -115,15 +131,17 @@ export class FederationMediaRangeClient {
           }
           continue;
         } finally {
-          if (unit && !unit.res.body?.locked) {
-            await unit.res.body?.cancel().catch(() => undefined);
+          if (unit && !bodyOwnedByReader) {
+            await this.cancelResponse(unit.res, signal, unitErrors);
           }
         }
+        signal.throwIfAborted();
         total = unit.total;
         if (!markedAlive) {
           await this.lifecycle.markContactSuccess(peerDomain);
           markedAlive = true;
         }
+        signal.throwIfAborted();
         yield buffer;
         offset += buffer.length;
         break;
@@ -136,14 +154,16 @@ export class FederationMediaRangeClient {
     peerDomain: string,
     start: number,
     end: number,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<FederationMediaRangeUnit> {
+    signal.throwIfAborted();
     const operationStartedAt = new Date();
     const headers = await this.signature.signOutbound({
       method: 'GET',
       url,
       body: '',
     });
+    signal.throwIfAborted();
     let response: Response;
     try {
       response = await this.discovery.request(url, {
@@ -152,7 +172,7 @@ export class FederationMediaRangeClient {
         signal,
       });
     } catch (error) {
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       await this.recognition.markTransportDegraded(
         peerDomain,
         `GET media network/timeout: ${(error as Error).message}`,
@@ -164,9 +184,15 @@ export class FederationMediaRangeClient {
       );
     }
 
+    if (signal.aborted) {
+      // A transport adapter may finish after cancellation. Release its response instead
+      // of interpreting late headers as peer health or yielding them to the writer.
+      await this.cancelResponse(response, signal, [signal.reason]);
+      signal.throwIfAborted();
+    }
     if (response.status === HttpStatus.OK) {
       await this.lifecycle.markContactSuccess(peerDomain);
-      const error = await this.readErrorEnvelope(response);
+      const error = await this.readErrorEnvelope(response, signal);
       if (error) {
         throw new S2sResponseError(
           `S2S media from ${peerDomain} returned business code ${error.code}`,
@@ -191,12 +217,13 @@ export class FederationMediaRangeClient {
           operationStartedAt,
         );
       } catch (error) {
-        await response.body?.cancel().catch(() => undefined);
+        await this.cancelResponse(response, signal, [error]);
         throw error;
       }
     }
 
-    const error = await this.readErrorEnvelope(response);
+    const error = await this.readErrorEnvelope(response, signal);
+    signal.throwIfAborted();
     const code = error?.code;
     if (
       response.status === HttpStatus.SERVICE_UNAVAILABLE ||
@@ -284,17 +311,26 @@ export class FederationMediaRangeClient {
 
   private async readErrorEnvelope(
     response: Response,
+    signal: AbortSignal,
   ): Promise<{ code: number; message?: string; data?: unknown } | undefined> {
     const contentType = (response.headers.get('content-type') ?? '')
       .split(';', 1)[0]
       .trim()
       .toLowerCase();
     if (contentType !== 'application/json') {
-      await response.body?.cancel().catch(() => undefined);
+      await this.cancelResponse(response, signal);
+      signal.throwIfAborted();
       return undefined;
     }
-    const text = await response.text();
-    if (Buffer.byteLength(text) > 64 * 1024) return undefined;
+    const pieces: Buffer[] = [];
+    let bytes = 0;
+    for await (const piece of this.webBody(response, signal)) {
+      bytes += piece.length;
+      if (bytes > 64 * 1024) return undefined;
+      pieces.push(piece);
+    }
+    signal.throwIfAborted();
+    const text = Buffer.concat(pieces, bytes).toString('utf8');
     try {
       const parsed = JSON.parse(text) as {
         code?: unknown;
@@ -317,10 +353,75 @@ export class FederationMediaRangeClient {
     }
   }
 
-  private async *webBody(response: Response): AsyncGenerator<Buffer> {
+  private async cancelResponse(
+    response: Response,
+    signal: AbortSignal,
+    precedingErrors: unknown[] = [],
+  ): Promise<void> {
+    try {
+      await response.body?.cancel(signal.reason);
+    } catch (cause) {
+      const error = new MediaResponseCleanupError([...precedingErrors, cause]);
+      this.logger.error('Could not cancel media response body', error);
+      throw error;
+    }
+  }
+
+  private async *webBody(
+    response: Response,
+    signal: AbortSignal,
+  ): AsyncGenerator<Buffer> {
+    if (signal.aborted) {
+      await this.cancelResponse(response, signal, [signal.reason]);
+      signal.throwIfAborted();
+    }
     if (!response.body) return;
-    for await (const piece of response.body as unknown as AsyncIterable<Uint8Array>) {
-      yield Buffer.from(piece);
+    const reader = response.body.getReader();
+    let finished = false;
+    let cancellation: Promise<void> | undefined;
+    const cleanupErrors: unknown[] = [];
+    const readErrors: unknown[] = [];
+    const cancel = () => {
+      // Observe rejection immediately even while read() is still pending. The finally
+      // block drains cancellation before releasing the reader or allowing another unit.
+      cancellation ??= reader.cancel(signal.reason).catch((error: unknown) => {
+        cleanupErrors.push(error);
+      });
+    };
+    signal.addEventListener('abort', cancel, { once: true });
+    try {
+      if (signal.aborted) cancel();
+      for (;;) {
+        signal.throwIfAborted();
+        const { done, value } = await reader.read();
+        signal.throwIfAborted();
+        if (done) {
+          finished = true;
+          return;
+        }
+        yield Buffer.from(value);
+      }
+    } catch (error) {
+      readErrors.push(error);
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', cancel);
+      if (!finished) cancel();
+      await cancellation;
+      reader.releaseLock();
+      // Cancelling an already errored Web Stream rejects with the same stored read
+      // error. That is not a second cleanup failure and retains normal transport retry.
+      const distinctCleanupErrors = cleanupErrors.filter(
+        (error) => !readErrors.includes(error),
+      );
+      if (distinctCleanupErrors.length) {
+        const error = new MediaResponseCleanupError([
+          ...readErrors,
+          ...distinctCleanupErrors,
+        ]);
+        this.logger.error('Could not cancel media response body', error);
+        throw error;
+      }
     }
   }
 }

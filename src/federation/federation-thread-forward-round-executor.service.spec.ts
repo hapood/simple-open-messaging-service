@@ -24,13 +24,9 @@ function response(data: object) {
 
 function harness(localGroupAuthority = false, kind: 'GROUP' | 'P2P' = 'GROUP') {
   const publishMessage = vi.fn().mockResolvedValue(undefined);
-  const publishTombstone = vi.fn().mockResolvedValue(undefined);
   const inboundMessageCommits = {
     applyForwardInTransaction: vi.fn().mockResolvedValue([]),
-    applyTombstonesInTransaction: vi
-      .fn()
-      .mockResolvedValue({ quoteDependencies: [] }),
-    publishSatisfiedQuoteDependencies: publishTombstone,
+    applyTombstonesInTransaction: vi.fn().mockResolvedValue({ deletions: [] }),
   };
   const messageEffects = { publish: publishMessage };
   const threadResources = { fetch: vi.fn() };
@@ -143,7 +139,6 @@ function harness(localGroupAuthority = false, kind: 'GROUP' | 'P2P' = 'GROUP') {
     threadResources,
     database,
     publishMessage,
-    publishTombstone,
     messageAdvance,
     deletionAdvance,
     epochLock,
@@ -181,7 +176,9 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       expect(h.messageAdvance).not.toHaveBeenCalled();
       expect(h.deletionAdvance).not.toHaveBeenCalled();
       expect(h.publishMessage).not.toHaveBeenCalled();
-      expect(h.publishTombstone).not.toHaveBeenCalled();
+      expect(
+        h.inboundMessageCommits.applyTombstonesInTransaction,
+      ).not.toHaveBeenCalled();
     },
   );
   it.each([
@@ -223,7 +220,9 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     expect(h.deletionAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith(h.tx, 31, 4);
     expect(h.publishMessage).toHaveBeenCalledOnce();
-    expect(h.publishTombstone).not.toHaveBeenCalled();
+    expect(
+      h.inboundMessageCommits.applyTombstonesInTransaction,
+    ).not.toHaveBeenCalled();
   });
 
   it('commits an independently bounded tombstone page with its frozen cutoff', async () => {
@@ -243,27 +242,10 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     expect(h.deletionAdvance).toHaveBeenCalledWith(h.tx, 31, 9, 9, 7);
     expect(h.messageAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith(h.tx, 31, 4);
-    expect(h.publishTombstone).toHaveBeenCalledOnce();
+    expect(
+      h.inboundMessageCommits.applyTombstonesInTransaction,
+    ).toHaveBeenCalledOnce();
     expect(h.publishMessage).not.toHaveBeenCalled();
-  });
-
-  it('publishes the tombstone apply quote dependencies once the page commits', async () => {
-    const h = harness();
-    h.inboundMessageCommits.applyTombstonesInTransaction.mockResolvedValueOnce({
-      quoteDependencies: [
-        { threadId: 9, publisherNamespaceId: 3, originSeq: 12 },
-      ],
-    });
-    h.threadResources.fetch.mockResolvedValueOnce(
-      response({ tombstones: [], scannedThrough: 9, hasMore: false }),
-    );
-
-    await h.executor.runTombstones(31, 'origin.test', 7, 50);
-
-    expect(h.publishTombstone).toHaveBeenCalledOnce();
-    expect(h.publishTombstone).toHaveBeenCalledWith([
-      { threadId: 9, publisherNamespaceId: 3, originSeq: 12 },
-    ]);
   });
 
   it('omits maxMessageSeq after the recovery drain is complete', async () => {

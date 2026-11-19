@@ -32,7 +32,10 @@ import {
   FEDERATION_DISCOVERY_PATH,
 } from './federation/federation-protocol.js';
 import { dataDirectory } from './common/data-directory.js';
-import { MEDIA_UPLOAD_CHUNK_BYTES } from '../shared/media-upload-limits.js';
+import { ResumableUploadService } from './upload/resumable-upload.service.js';
+import { UploadActivityService } from './upload/upload-activity.service.js';
+import { registerUploadActivityTransport } from './upload/upload-activity.transport.js';
+import { HttpAdmissionService } from './http/http-admission.service.js';
 
 // Keep the buffered multipart compatibility transport bounded independently of message file size.
 // Browser and native message attachments use resumable chunks; raising their complete-file limit
@@ -118,6 +121,7 @@ export async function configureApp(
   app: NestFastifyApplication,
   adapter: FastifyAdapter,
 ): Promise<void> {
+  app.get(HttpAdmissionService).register(adapter.getInstance());
   // Security headers first, before any route is registered, so no response slips out
   // unprotected. Defaults mirror the previous Express helmet() posture.
   await app.register(fastifyHelmet);
@@ -127,15 +131,43 @@ export async function configureApp(
   await app.register(fastifyMultipart, {
     limits: { fileSize: MULTIPART_LIMIT },
   });
-  // Resumable media chunks are raw binary rather than multipart. Parse exactly one bounded chunk
-  // into a Buffer. Give this parser its own limit; ordinary JSON retains the global limit.
-  adapter
-    .getInstance()
-    .addContentTypeParser(
-      'application/octet-stream',
-      { parseAs: 'buffer', bodyLimit: MEDIA_UPLOAD_CHUNK_BYTES },
-      (_request, body, done) => done(null, body),
-    );
+  // Body parsing precedes Nest's guard. Authenticate the session AND upload ownership before
+  // admitting a receive lease; otherwise a guessed taskId could keep another user's upload alive.
+  const uploadActivity = app.get(UploadActivityService);
+  const resumableUploads = app.get(ResumableUploadService);
+  const uploadAuth = app.get(BearerAuthService);
+  registerUploadActivityTransport(
+    adapter.getInstance(),
+    uploadActivity,
+    async (request, taskId) => {
+      const fromCookie = request.cookies?.[MEDIA_TOKEN_COOKIE];
+      const raw = fromCookie ?? extractBearer(request.headers.authorization);
+      const principal = await uploadAuth.resolve(raw, { ip: request.ip });
+      if (!principal) {
+        throw new BusinessException(
+          BusinessCode.UNAUTHENTICATED,
+          'unauthenticated',
+          401,
+        );
+      }
+      if (principal.mustChangePassword) {
+        throw new BusinessException(
+          BusinessCode.MUST_CHANGE_PASSWORD,
+          'password must be changed before continuing',
+        );
+      }
+      const handle = await resumableUploads.activityForReceive(
+        principal.userId,
+        taskId,
+      );
+      if (principal.slid && fromCookie) {
+        (
+          request as FastifyRequest & { sessionSlideToken?: string }
+        ).sessionSlideToken = fromCookie;
+      }
+      return handle;
+    },
+  );
   // Cookie parsing for the httpOnly media_token cookie that authenticates same-origin /uploads/*
   // requests (native <img>/<a download> can't send the Authorization header). @fastify/cookie is
   // fp-wrapped, so it decorates the root instance and request.cookies is reachable both here and in

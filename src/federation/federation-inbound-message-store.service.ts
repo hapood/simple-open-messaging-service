@@ -413,7 +413,6 @@ export class FederationInboundMessageStoreService {
         originDomain: fetchedFromDomain,
         publisherNamespaceId: namespaceId,
         expectedAuthorizationEpoch: thread.authorizationEpoch,
-        dependsOnOriginSeq: null,
         updatedAt: new Date(),
       });
       for (const { digest, size } of digests) {
@@ -421,6 +420,7 @@ export class FederationInboundMessageStoreService {
           .insert(tables.fileSyncProgress)
           .values({
             batchId,
+            messageId: stub.id,
             digest,
             kind: federationFileSyncKind(incoming.contentType as ContentType),
             status: 'PENDING',

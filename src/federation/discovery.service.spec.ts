@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { signingCertificateStatement } from './federation-certificate.js';
 import { DiscoveryService } from './discovery.service.js';
-import type { WellKnownDoc } from './discovery.service.js';
-import { validateWellKnownDocument } from './well-known-document.js';
+import type { DiscoveryDocument } from './discovery.service.js';
+import { validateDiscoveryDocument } from './discovery-document.js';
 
 process.env.SOMS_DOMAIN = 'local.example';
 
@@ -50,7 +50,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
   ).toString('base64');
 
   it('accepts an overlap set for online signing-key rotation', () => {
-    const document = validateWellKnownDocument('peer.example', {
+    const document = validateDiscoveryDocument('peer.example', {
       protocolVersions: [1],
       roots: [
         {
@@ -74,7 +74,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
   it.each([1, 1_699_000_000_000])(
     'accepts positive active signing-key creation time %s',
     (signingKeyCreatedAt) => {
-      const document = validateWellKnownDocument('peer.example', {
+      const document = validateDiscoveryDocument('peer.example', {
         protocolVersions: [1],
         signingKeyCreatedAt,
         roots: [
@@ -94,7 +94,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
     'rejects malformed active signing-key creation time %s',
     (signingKeyCreatedAt) => {
       expect(() =>
-        validateWellKnownDocument('peer.example', {
+        validateDiscoveryDocument('peer.example', {
           protocolVersions: [1],
           signingKeyCreatedAt,
           roots: [
@@ -113,7 +113,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
   it('rejects a certificate not authorized by the published root', () => {
     const otherRoot = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
     expect(() =>
-      validateWellKnownDocument('peer.example', {
+      validateDiscoveryDocument('peer.example', {
         protocolVersions: [1],
         roots: [
           {
@@ -131,7 +131,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
   it('rejects duplicate key IDs and cross-domain certificates', () => {
     const key = certificate(rootPrivateKey, 'peer.example/key-1', 32);
     expect(() =>
-      validateWellKnownDocument('peer.example', {
+      validateDiscoveryDocument('peer.example', {
         protocolVersions: [1],
         roots: [
           {
@@ -145,7 +145,7 @@ describe('DiscoveryService root-authorized signing certificates', () => {
       }),
     ).toThrow('invalid signing certificate');
     expect(() =>
-      validateWellKnownDocument('peer.example', {
+      validateDiscoveryDocument('peer.example', {
         protocolVersions: [1],
         roots: [
           {
@@ -167,7 +167,7 @@ describe('DiscoveryService peer-key refresh policy', () => {
     ed25519.getPublicKey(rootPrivateKey),
   ).toString('base64');
 
-  function doc(): WellKnownDoc {
+  function doc(): DiscoveryDocument {
     const unsigned = {
       keyId: 'peer.example/k-1',
       ed25519: Buffer.from(
@@ -203,12 +203,12 @@ describe('DiscoveryService peer-key refresh policy', () => {
 
   function refreshable() {
     const target = service();
-    let resolveFetch!: (value: WellKnownDoc) => void;
-    const fetchWellKnown = vi
-      .spyOn(target, 'fetchWellKnown')
+    let resolveFetch!: (value: DiscoveryDocument) => void;
+    const fetchDiscoveryDocument = vi
+      .spyOn(target, 'fetchDiscoveryDocument')
       .mockImplementation(
         () =>
-          new Promise<WellKnownDoc>((resolve) => {
+          new Promise<DiscoveryDocument>((resolve) => {
             resolveFetch = resolve;
           }),
       );
@@ -217,17 +217,18 @@ describe('DiscoveryService peer-key refresh policy', () => {
       .mockResolvedValue(undefined);
     return {
       target,
-      fetchWellKnown,
+      fetchDiscoveryDocument,
       cacheDocument,
       resolve: () => resolveFetch(doc()),
     };
   }
 
-  it('coalesces concurrent non-Health key misses into one well-known fetch', async () => {
-    const { target, fetchWellKnown, cacheDocument, resolve } = refreshable();
+  it('coalesces concurrent non-Health key misses into one discovery fetch', async () => {
+    const { target, fetchDiscoveryDocument, cacheDocument, resolve } =
+      refreshable();
     const first = target.refreshPeerKeys('peer.example', 12);
     const second = target.refreshPeerKeys('peer.example', 12);
-    expect(fetchWellKnown).toHaveBeenCalledTimes(1);
+    expect(fetchDiscoveryDocument).toHaveBeenCalledTimes(1);
 
     resolve();
     await Promise.all([first, second]);
@@ -235,19 +236,19 @@ describe('DiscoveryService peer-key refresh policy', () => {
   });
 
   it('rate-limits repeated refresh attempts for one peer', async () => {
-    const { target, fetchWellKnown } = refreshable();
-    fetchWellKnown.mockResolvedValue(doc());
+    const { target, fetchDiscoveryDocument } = refreshable();
+    fetchDiscoveryDocument.mockResolvedValue(doc());
     await target.refreshPeerKeys('peer.example', 12);
-    expect(fetchWellKnown).toHaveBeenCalledTimes(1);
+    expect(fetchDiscoveryDocument).toHaveBeenCalledTimes(1);
 
     // An immediate second miss inside the minimum spacing window is skipped.
     await target.refreshPeerKeys('peer.example', 12);
-    expect(fetchWellKnown).toHaveBeenCalledTimes(1);
+    expect(fetchDiscoveryDocument).toHaveBeenCalledTimes(1);
   });
 
   it('clears the in-flight entry after a failed refresh so a retry can run', async () => {
-    const { target, fetchWellKnown } = refreshable();
-    fetchWellKnown.mockRejectedValue(new Error('offline'));
+    const { target, fetchDiscoveryDocument } = refreshable();
+    fetchDiscoveryDocument.mockRejectedValue(new Error('offline'));
     await expect(target.refreshPeerKeys('peer.example', 12)).rejects.toThrow(
       'offline',
     );

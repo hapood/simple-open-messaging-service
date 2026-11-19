@@ -85,7 +85,7 @@ function subject(
     } as never,
     { notifyProfileNamespaceChange } as never,
     {
-      fetchWellKnown: vi.fn().mockResolvedValue({
+      fetchDiscoveryDocument: vi.fn().mockResolvedValue({
         protocolVersions: [1],
         signingKeyCreatedAt: 1700000000000,
         roots: [

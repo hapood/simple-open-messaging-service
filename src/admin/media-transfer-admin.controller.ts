@@ -62,8 +62,10 @@ export class MediaTransferAdminController {
   @Post('temporary')
   @HttpCode(200)
   async temporary(@Body() dto: MediaFilesDto) {
-    const result = await this.maintenance.temporary(dto);
-    return { ...result, list: await this.catalog.annotateRuntime(result.list) };
+    void dto;
+    throw new ConflictException(
+      'Use the explicit scan in Garbage file cleanup',
+    );
   }
 
   @Audit('media.temporary.clean', {
@@ -73,12 +75,10 @@ export class MediaTransferAdminController {
   @Post('temporary/clean')
   @HttpCode(200)
   async cleanTemporary(@Body() dto: MediaDigestDto) {
-    const result = await this.maintenance.cleanTemporary(dto.digest);
-    if (!result.cleaned)
-      throw new ConflictException(
-        'delete associated transfer tasks before cleaning their temporary files',
-      );
-    return result;
+    void dto;
+    throw new ConflictException(
+      'Use Garbage file cleanup: scan and confirm an individual cleanup candidate',
+    );
   }
 
   @Post('uploads')
@@ -87,14 +87,24 @@ export class MediaTransferAdminController {
     return this.uploads.listForAdmin(dto);
   }
 
-  @Audit('media.upload.abort', {
+  @Audit('media.upload.stop', {
     targetType: 'upload',
-    targetParam: 'uploadId',
+    targetParam: 'id',
   })
-  @Post('uploads/:uploadId/stop')
+  @Post('uploads/:id/stop')
   @HttpCode(200)
-  stopUpload(@Param('uploadId', new ParseUUIDPipe()) uploadId: string) {
-    return this.uploads.stopForAdmin(uploadId);
+  stopUpload(@Param('id') id: string) {
+    return this.uploads.stopForAdmin(id);
+  }
+
+  @Audit('media.upload.retry', {
+    targetType: 'upload',
+    targetParam: 'id',
+  })
+  @Post('uploads/:id/retry')
+  @HttpCode(200)
+  retryUpload(@Param('id') id: string) {
+    return this.uploads.retryForAdmin(id);
   }
 
   @Post('downloads')
@@ -122,19 +132,6 @@ export class MediaTransferAdminController {
   @HttpCode(200)
   retryDownload(@Param('batchId', new ParseUUIDPipe()) batchId: string) {
     return this.downloads.retry(batchId);
-  }
-
-  @Audit('media.download.clean', {
-    targetType: 'media-batch',
-    targetParam: 'batchId',
-  })
-  @Post('downloads/:batchId/clean')
-  @HttpCode(200)
-  async cleanDownload(@Param('batchId', new ParseUUIDPipe()) batchId: string) {
-    const result = await this.downloads.clean(batchId);
-    for (const digest of result.temporaryDigests)
-      await this.maintenance.cleanTemporary(digest);
-    return { clearedBatch: result.clearedBatch };
   }
 
   @Audit('media.file.reclaim', {

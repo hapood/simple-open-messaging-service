@@ -5,6 +5,26 @@ import { BusinessCode } from '../common/business-code.js';
 
 const req = { user: { userId: 7 } } as FastifyRequest;
 describe('UploadController avatar transport', () => {
+  it('delegates explicit retry using the authenticated owner and stable upload id', async () => {
+    const retry = vi
+      .fn()
+      .mockResolvedValue({
+        id: 'stable',
+        status: 'PENDING',
+        phase: 'UPLOADING',
+      });
+    const controller = new UploadController({} as never, { retry } as never);
+    expect(await controller.retryResumable(req, 'stable')).toEqual({
+      id: 'stable',
+      status: 'PENDING',
+      phase: 'UPLOADING',
+    });
+    expect(retry).toHaveBeenCalledWith(7, 'stable');
+    expect(
+      Reflect.getMetadata('path', UploadController.prototype.retryResumable),
+    ).toBe('uploads/resumable/:id/retry');
+  });
+
   it('preserves the independent avatar multipart pipeline', async () => {
     const buffer = Buffer.from('image');
     const upload = {

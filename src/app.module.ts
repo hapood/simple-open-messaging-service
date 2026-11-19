@@ -42,6 +42,7 @@ import { ThreadPreviewModule } from './message/thread-preview.module.js';
 import { RateLimitModule } from './rate-limit/rate-limit.module.js';
 import { DurableTaskModule } from './durable-task/durable-task.module.js';
 import { DurableTaskSchedulerService } from './durable-task/durable-task-scheduler.service.js';
+import { HttpAdmissionService } from './http/http-admission.service.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -82,6 +83,7 @@ import { DurableTaskSchedulerService } from './durable-task/durable-task-schedul
     ForwardBundleModule,
     DurableTaskModule,
   ],
+  providers: [HttpAdmissionService],
   controllers: [
     MessageController,
     AuthController,

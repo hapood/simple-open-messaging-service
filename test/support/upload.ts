@@ -32,11 +32,11 @@ export async function uploadMessagePart(
       totalBytes: bytes.length,
     });
   if (init.body.code !== 0) return init;
-  const { uploadId, chunkSize, offset } = init.body.data;
+  const { id, chunkSize, offset } = init.body.data;
   for (let start = offset; start < bytes.length; start += chunkSize) {
     const end = Math.min(start + chunkSize, bytes.length);
     const chunk = await request(server)
-      .put(`/api/v1/uploads/resumable/${uploadId}`)
+      .put(`/api/v1/uploads/resumable/${id}`)
       .set('Authorization', `Bearer ${token}`)
       .set('Content-Type', 'application/octet-stream')
       .set('Content-Range', `bytes ${start}-${end - 1}/${bytes.length}`)
@@ -44,7 +44,7 @@ export async function uploadMessagePart(
     if (chunk.body.code !== 0) return chunk;
   }
   const completed = await request(server)
-    .post(`/api/v1/uploads/resumable/${uploadId}/complete`)
+    .post(`/api/v1/uploads/resumable/${id}/complete`)
     .set('Authorization', `Bearer ${token}`)
     .send({});
   if (completed.body.code === 0)

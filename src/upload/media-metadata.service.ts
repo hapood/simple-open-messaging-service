@@ -40,13 +40,21 @@ export class MediaMetadataService {
   /** Serialize expensive decoders per instance, without holding database transactions. */
   processFile(
     path: string,
+    signal: AbortSignal,
   ): Promise<{ meta: StoredMediaMetadata; thumbnail?: Buffer }> {
-    const result = this.processing.then(() => this.processCompleteFile(path));
+    const result = this.processing.then(() => {
+      signal.throwIfAborted();
+      return this.processCompleteFile(path, signal);
+    });
     this.processing = result.catch(() => undefined);
     return result;
   }
 
-  async detectFile(path: string): Promise<DetectedMedia | null> {
+  async detectFile(
+    path: string,
+    signal: AbortSignal,
+  ): Promise<DetectedMedia | null> {
+    signal.throwIfAborted();
     const file = await open(path, 'r');
     let detected: DetectedMedia | null;
     try {
@@ -56,8 +64,9 @@ export class MediaMetadataService {
     } finally {
       await file.close();
     }
+    signal.throwIfAborted();
     if (!detected || detected.family === 'image') return detected;
-    const probe = await this.ffprobe(path);
+    const probe = await this.ffprobe(path, signal);
     const streams = probe.streams ?? [];
     if (
       streams.some(
@@ -72,8 +81,10 @@ export class MediaMetadataService {
 
   private async processCompleteFile(
     path: string,
+    signal: AbortSignal,
   ): Promise<{ meta: StoredMediaMetadata; thumbnail?: Buffer }> {
-    const detected = await this.detectFile(path);
+    const detected = await this.detectFile(path, signal);
+    signal.throwIfAborted();
     if (!detected)
       return {
         meta: {
@@ -82,7 +93,8 @@ export class MediaMetadataService {
         },
       };
     const kind = detected.family.toUpperCase() as 'IMAGE' | 'VIDEO' | 'AUDIO';
-    const dimensions = await this.fromFile(path, kind);
+    const dimensions = await this.fromFile(path, kind, signal);
+    signal.throwIfAborted();
     const special: Record<string, string> = {
       jpg: 'image/jpeg',
       mp3: 'audio/mpeg',
@@ -132,6 +144,7 @@ export class MediaMetadataService {
               'pipe:1',
             ],
             8 * 1024 * 1024,
+            signal,
           );
     const { data, info } = await sharp(input, {
       limitInputPixels: MediaMetadataService.MAX_IMAGE_PIXELS,
@@ -145,6 +158,7 @@ export class MediaMetadataService {
       })
       .webp({ quality: 80 })
       .toBuffer({ resolveWithObject: true });
+    signal.throwIfAborted();
     if (data.length > 1024 * 1024)
       throw new Error('thumbnail output too large');
     const thumbnail = {
@@ -170,16 +184,18 @@ export class MediaMetadataService {
   async fromBuffer(
     input: Buffer,
     intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+    signal: AbortSignal,
   ): Promise<ServerMediaMetadata> {
+    signal.throwIfAborted();
     if (intent === ContentType.FILE) return {};
-    if (intent === ContentType.IMAGE) return this.image(input);
+    if (intent === ContentType.IMAGE) return this.image(input, signal);
     // Some containers expose duration only through seekable input. Persist the already-bounded
     // multipart buffer to an isolated temporary file instead of trusting incomplete pipe metadata.
     const dir = await mkdtemp(join(tmpdir(), 'soms-media-probe-'));
     const path = join(dir, 'input');
     try {
       await writeFile(path, input, { flag: 'wx' });
-      return await this.av(intent, path);
+      return await this.av(intent, path, signal);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -188,22 +204,30 @@ export class MediaMetadataService {
   async fromFile(
     path: string,
     intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+    signal: AbortSignal,
   ): Promise<ServerMediaMetadata> {
+    signal.throwIfAborted();
     if (intent === ContentType.FILE) return {};
-    if (intent === ContentType.IMAGE) return this.image(path);
-    return this.av(intent, path);
+    if (intent === ContentType.IMAGE) return this.image(path, signal);
+    return this.av(intent, path, signal);
   }
 
-  private async image(input: Buffer | string): Promise<ServerMediaMetadata> {
+  private async image(
+    input: Buffer | string,
+    signal: AbortSignal,
+  ): Promise<ServerMediaMetadata> {
+    signal.throwIfAborted();
     let meta: Metadata;
     try {
       meta = await sharp(input, {
         limitInputPixels: MediaMetadataService.MAX_IMAGE_PIXELS,
       }).metadata();
     } catch (error) {
+      signal.throwIfAborted();
       if ((error as NodeJS.ErrnoException).code) throw error;
       throw new InvalidMediaDataError('invalid image metadata');
     }
+    signal.throwIfAborted();
     if (!meta.width || !meta.height)
       throw new InvalidMediaDataError('invalid image metadata');
     const swap = meta.orientation !== undefined && meta.orientation >= 5;
@@ -216,8 +240,9 @@ export class MediaMetadataService {
   private async av(
     intent: 'AUDIO' | 'VIDEO',
     path: string,
+    signal: AbortSignal,
   ): Promise<ServerMediaMetadata> {
-    const parsed = await this.ffprobe(path);
+    const parsed = await this.ffprobe(path, signal);
     const streams = parsed.streams ?? [];
     const audio = streams.some((stream) => stream.codec_type === 'audio');
     const video = streams.find(
@@ -258,7 +283,10 @@ export class MediaMetadataService {
     };
   }
 
-  private async ffprobe(path: string): Promise<ProbeOutput> {
+  private async ffprobe(
+    path: string,
+    signal: AbortSignal,
+  ): Promise<ProbeOutput> {
     const output = await runMediaTool(
       'ffprobe',
       [
@@ -273,6 +301,7 @@ export class MediaMetadataService {
         path,
       ],
       MediaMetadataService.MAX_PROBE_OUTPUT,
+      signal,
     );
     return JSON.parse(output.toString('utf8')) as ProbeOutput;
   }

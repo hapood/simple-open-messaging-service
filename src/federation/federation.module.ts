@@ -12,7 +12,7 @@ import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sVerifyController } from './s2s-verify.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
-import { WellKnownController } from './well-known.controller.js';
+import { DiscoveryController } from './discovery.controller.js';
 import { RelationshipModule } from '../relationship/relationship.module.js';
 import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
@@ -130,7 +130,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     DurableTaskModule,
   ],
   controllers: [
-    WellKnownController,
+    DiscoveryController,
     S2sController,
     S2sVerifyController,
     S2sRecognitionController,

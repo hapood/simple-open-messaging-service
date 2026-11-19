@@ -49,6 +49,8 @@ export const AUDIT_ACTIONS = {
   'quota.node.continue': continueFields,
   'quota.user.continue': continueFields,
   'media.upload.abort': [],
+  'media.upload.stop': [],
+  'media.upload.retry': [],
   'media.download.stop': [],
   'media.file.reclaim': [],
   'media.temporary.clean': [],

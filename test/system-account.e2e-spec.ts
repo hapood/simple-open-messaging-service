@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { localIdentityDomain } from './support/local-domain.js';
 import { withMessageDigest } from './support/message-fixture.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import { account, message, messageThread } from '../src/database/schema.js';
 import { systemAccountIdInTx } from '../src/user/system-account.js';
@@ -71,9 +71,19 @@ describe('system account attribution', () => {
       profileNamespaceId: 0,
       profileRev: 0,
     });
+    // Raw SQL deliberately violates the database contract without weakening typed inserts.
+    await expect(
+      database.db.execute(sql`
+      UPDATE "Message" SET "creatorAccount" = NULL WHERE id = ${stored.id}
+    `),
+    ).rejects.toThrow();
+    const required = await database.db.execute(sql`
+      SELECT attnotnull FROM pg_attribute
+      WHERE attrelid = '"Message"'::regclass AND attname = 'creatorAccount'
+    `);
+    expect(required.rows).toEqual([{ attnotnull: true }]);
     for (const invalid of [
       { creatorAccount: 'alice' },
-      { creatorAccount: null },
       { profileRev: 1 },
       { contentType: 'PURE_TEXT' as const },
     ]) {

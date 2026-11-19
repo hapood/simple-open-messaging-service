@@ -1,14 +1,18 @@
+import { lstat } from 'node:fs/promises';
 import { AVATAR_URL_RE } from './avatar-path.js';
-import { saveContentAddressedBuffer } from './cas-storage.js';
+import { removeStagingFiles } from './staging-cleanup.js';
+import { writeCheckpoint } from './write-checkpoint.js';
+import {
+  publishContentAddressedFile,
+  saveContentAddressedBuffer,
+} from './cas-storage.js';
 import { Injectable } from '@nestjs/common';
 import {
   existsSync,
   writeFile,
   readFile,
-  rename,
   mkdir,
   createReadStream,
-  unlink,
   stat,
   appendFile,
   truncate,
@@ -40,9 +44,7 @@ export class InvalidUploadMediaError extends Error {}
 
 const writeFileAsync = promisify(writeFile);
 const readFileAsync = promisify(readFile);
-const renameAsync = promisify(rename);
 const mkdirAsync = promisify(mkdir);
-const unlinkAsync = promisify(unlink);
 const statAsync = promisify(stat);
 const appendFileAsync = promisify(appendFile);
 const truncateAsync = promisify(truncate);
@@ -402,19 +404,22 @@ export class UploadService {
     intent: ContentType,
     originalName: string,
     declaredMime: string,
+    signal: AbortSignal,
   ): Promise<{
     digest: string;
     payload: OutboundFilePayload;
     overrideContentType?: ContentType;
   }> {
+    signal.throwIfAborted();
     const info = await statAsync(tmpPath);
     const hash = createHash('sha256');
-    for await (const chunk of createReadStream(tmpPath)) {
+    for await (const chunk of createReadStream(tmpPath, { signal })) {
       hash.update(chunk);
     }
     const digest = hash.digest('hex');
-    const localMeta = await this.prepareMetadata(tmpPath, digest);
-    const detected = detectMedia(await this.readHeader(tmpPath));
+    const localMeta = await this.prepareMetadata(tmpPath, digest, signal);
+    signal.throwIfAborted();
+    const detected = detectMedia(await this.readHeader(tmpPath, signal));
     const actualDetected =
       detected && localMeta.kind !== 'FILE'
         ? {
@@ -452,17 +457,29 @@ export class UploadService {
     };
   }
 
-  private async readHeader(path: string): Promise<Buffer> {
+  private async readHeader(path: string, signal: AbortSignal): Promise<Buffer> {
     const chunks: Buffer[] = [];
-    for await (const chunk of createReadStream(path, { start: 0, end: 4095 }))
+    for await (const chunk of createReadStream(path, {
+      start: 0,
+      end: 4095,
+      signal,
+    }))
       chunks.push(Buffer.from(chunk));
     return Buffer.concat(chunks);
   }
 
-  /** Recheck an already-landed original when recovering without a durable asset result. */
-  private async verifyOriginal(path: string, digest: string): Promise<void> {
+  /** Verify retained source bytes before reusing a durable processing result. */
+  private async verifyOriginal(
+    path: string,
+    digest: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    if (!(await lstat(path)).isFile())
+      throw new Error('CAS original is not a regular file');
     const hash = createHash('sha256');
-    for await (const chunk of createReadStream(path)) hash.update(chunk);
+    for await (const chunk of createReadStream(path, { signal }))
+      hash.update(chunk);
     if (hash.digest('hex') !== digest) throw new Error('CAS digest mismatch');
   }
 
@@ -470,10 +487,14 @@ export class UploadService {
   private async prepareMetadata(
     path: string,
     digest: string,
+    signal: AbortSignal,
   ): Promise<StoredMediaMetadata> {
+    signal.throwIfAborted();
     const existing = await this.mediaAsset.metadata(digest);
+    signal.throwIfAborted();
     if (existing) return existing;
-    const processed = await this.mediaMetadata.processFile(path);
+    const processed = await this.mediaMetadata.processFile(path, signal);
+    signal.throwIfAborted();
     if (!isStoredMediaMetadata(processed.meta))
       throw new Error('invalid processed metadata');
     if (processed.thumbnail) {
@@ -490,9 +511,14 @@ export class UploadService {
   async prepareStagedMetadata(
     tmpPath: string,
     digest: string,
-    prepared?: StoredMediaMetadata,
+    prepared: StoredMediaMetadata | undefined,
+    signal: AbortSignal,
   ): Promise<StoredMediaMetadata> {
     return this.withCasDigestLock(digest, async () => {
+      signal.throwIfAborted();
+      // Prepared metadata is not proof that the retained staging bytes still match.
+      // Verify the actual publication source even when metadata needs no recomputation.
+      await this.verifyOriginal(tmpPath, digest, signal);
       if (isStoredMediaMetadata(prepared)) {
         const media = prepared;
         if (
@@ -510,23 +536,35 @@ export class UploadService {
       }
       const finalExists = this.casShardExists(digest);
       if (finalExists)
-        await this.verifyOriginal(this.casShardPath(digest).abs, digest);
+        await this.verifyOriginal(
+          this.casShardPath(digest).abs,
+          digest,
+          signal,
+        );
       return this.prepareMetadata(
         finalExists ? this.casShardPath(digest).abs : tmpPath,
         digest,
+        signal,
       );
     });
   }
 
   /** Resume processing from a verified final original without requesting its bytes again. */
-  async ensureLocalMetadata(digest: string): Promise<StoredMediaMetadata> {
+  async ensureLocalMetadata(
+    digest: string,
+    signal: AbortSignal,
+  ): Promise<StoredMediaMetadata> {
+    signal.throwIfAborted();
     return this.withCasDigestLock(digest, async () => {
+      signal.throwIfAborted();
       const path = this.casShardPath(digest).abs;
       const size = (await statAsync(path)).size;
       const existing = await this.mediaAsset.metadata(digest);
+      signal.throwIfAborted();
       if (existing) return existing;
-      await this.verifyOriginal(path, digest);
-      const meta = await this.prepareMetadata(path, digest);
+      await this.verifyOriginal(path, digest, signal);
+      const meta = await this.prepareMetadata(path, digest, signal);
+      signal.throwIfAborted();
       await this.mediaAsset.publishReady(
         digest,
         BigInt(size),
@@ -547,32 +585,18 @@ export class UploadService {
     return existsSync(this.casShardPath(digest).abs);
   }
 
-  /**
-   * Land a staged temporary file into its CAS shard, idempotently. Same-filesystem rename keeps the
-   * landing atomic; a concurrent or repeat landing of the identical digest is a harmless no-op
-   * (content addressing makes last-writer-wins byte-identical). Returns 'dedup' when the shard
-   * already exists, 'landed' after a successful rename. Throws 'staged part lost' when neither the
-   * source nor the destination exists — the caller must fail that part (never commit a DB claim for
-   * bytes that are not on disk; the MediaAsset row is the durable liveness claim).
-   */
+  /** Publish a complete copy atomically; retain the source until the task commits. */
   async landStagedPart(
     tmpPath: string,
     digest: string,
   ): Promise<'landed' | 'dedup'> {
-    return this.withCasDigestLock(digest, async () => {
-      const { abs } = this.casShardPath(digest);
-      await mkdirAsync(dirname(abs), { recursive: true });
-      if (existsSync(abs)) return 'dedup';
-      try {
-        await renameAsync(tmpPath, abs);
-        return 'landed';
-      } catch (error) {
-        if (existsSync(abs)) return 'dedup';
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-          throw new Error('staged part lost');
-        throw error;
-      }
-    });
+    return this.withCasDigestLock(digest, () =>
+      publishContentAddressedFile(
+        tmpPath,
+        this.casShardPath(digest).abs,
+        this.casTmpDir,
+      ),
+    );
   }
 
   /** Store a server-generated WebP in the shared CAS and expose its digest to non-message owners. */
@@ -592,20 +616,30 @@ export class UploadService {
     return this.casIngestLocks.runExclusive(digest, operation);
   }
 
+  /** Completion cleanup requires a usable published original, not only a database asset row.
+   * The caller owns digest execution while checking durable consumers and removing companions. */
+  async removePublishedCasTemporary(
+    digest: string,
+    bytes: bigint,
+  ): Promise<void> {
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error('invalid CAS digest');
+    const target = await lstat(this.casShardPath(digest).abs);
+    if (!target.isFile() || BigInt(target.size) !== bytes)
+      throw new Error('published CAS original is not a complete regular file');
+    await this.removeCasTemporary(digest);
+  }
+
   async removeCasTemporary(digest: string): Promise<void> {
-    for (const suffix of [
-      '.part',
-      '.resume.json',
-      '.resume.json.tmp',
-      '.complete',
-      '.complete.tmp',
-    ]) {
-      await unlinkAsync(join(this.casTmpDir, `${digest}${suffix}`)).catch(
-        (error: NodeJS.ErrnoException) => {
-          if (error.code !== 'ENOENT') throw error;
-        },
-      );
-    }
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error('invalid CAS digest');
+    await removeStagingFiles(
+      [
+        '.part',
+        '.resume.json',
+        '.resume.json.tmp',
+        '.complete',
+        '.complete.tmp',
+      ].map((suffix) => join(this.casTmpDir, `${digest}${suffix}`)),
+    );
   }
 
   /** Resolve immutable CAS bytes for an authenticated semantic serving endpoint. */
@@ -615,24 +649,22 @@ export class UploadService {
   }
 
   /**
-   * Streaming CAS ingest (federation design doc §12.4): land a media asset fetched from a federated
-   * peer in resumable chunks WITHOUT buffering the whole file in memory. Consumes an ordered async
-   * iterable of byte chunks (the federation transport yields one fully-accumulated Range unit at a
-   * time, so the write is atomic per chunk — a dropped chunk is discarded upstream and re-fetched,
-   * never re-written here), appends them to a tmp `.part` while incrementally hashing, then on
+   * Streaming CAS ingest: land a media asset fetched from a federated peer without buffering the
+   * whole file in memory. Each fully accumulated transport Range is appended to a temporary part,
+   * followed by an atomic offset checkpoint. No prefix hashes are stored or checked; on
    * completion verifies the digest === the peer-advertised `expectedDigest` (the corruption/tamper/
    * truncation backstop) and publishes the blob. Same content as a local upload — byte-identical on
    * disk, served same-origin. Idempotent: a re-fetch of the same digest re-publishes the live row.
    *
-   * Crash-safety (DB-first + `.complete` marker). All transient artifacts live in the CAS tmp dir:
-   *   `<digest>.part`       — the accumulated bytes (resumable across restarts)
-   *   `<digest>.resume.json` — the verified-offset sidecar (atomically rewritten per chunk)
-   *   `<digest>.complete`    — written AFTER the digest verifies, BEFORE the DB publish + rename
-   * On verification success, write `.complete`, then serialize atomic shard landing and asset
-   * publication against reclamation. The marker is removed only after the asset transaction commits;
+   * Crash-safety: retain the source and checkpoint through publication and task completion.
+   *   `<digest>.part`        — accumulated bytes (resumable across restarts)
+   *   `<digest>.resume.json` — committed-offset sidecar (atomically rewritten per chunk)
+   * A full offset still requires whole-file verification on recovery; no separate completion marker.
+   * Publish a complete copy atomically before committing the asset row. Publication never consumes
+   * the source. Cleanup belongs after durable task completion, not merely asset registration;
    * interrupted publication can be retried from the verified part or already-landed shard.
    * A transport failure retains the `.part` +
-   * `.resume.json` for a later resume; a digest mismatch removes all three (no prefix can be trusted).
+   * `.resume.json` for a later resume; a digest mismatch removes the artifacts (no prefix can be trusted).
    * Per-digest FIFO locking prevents concurrent writers; only a whole-file SHA-256 match is published.
    */
   async saveCasFromStream(
@@ -645,24 +677,37 @@ export class UploadService {
        *  toward quota — the caller charges it before abandoning the file). */
       maxFileBytes: number;
       declaredBytes: number;
-      signal?: AbortSignal;
+      signal: AbortSignal;
     },
   ): Promise<{ url: string; digest: string; size: number }> {
     if (!/^[0-9a-f]{64}$/.test(expectedDigest))
       throw new Error('invalid CAS digest');
     FileSizeLimitError.assert(opts.declaredBytes, opts.maxFileBytes);
     return this.casIngestLocks.runExclusive(expectedDigest, async () => {
-      opts.signal?.throwIfAborted();
+      opts.signal.throwIfAborted();
       const { abs, url } = this.casShardPath(expectedDigest);
       await mkdirAsync(dirname(abs), { recursive: true });
       await mkdirAsync(this.casTmpDir, { recursive: true });
-      if (existsSync(abs)) {
-        const size = (await statAsync(abs)).size;
+      const existingTarget = await lstat(abs).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        },
+      );
+      if (existingTarget) {
+        if (!existingTarget.isFile())
+          throw new Error('CAS target is not a regular file');
+        const size = existingTarget.size;
         if (size !== opts.declaredBytes)
           throw new Error('CAS file size mismatch');
         FileSizeLimitError.assert(size, opts.maxFileBytes);
-        await this.verifyOriginal(abs, expectedDigest);
-        const meta = await this.prepareMetadata(abs, expectedDigest);
+        await this.verifyOriginal(abs, expectedDigest, opts.signal);
+        const meta = await this.prepareMetadata(
+          abs,
+          expectedDigest,
+          opts.signal,
+        );
+        opts.signal.throwIfAborted();
         await this.mediaAsset.publishReady(
           expectedDigest,
           BigInt(size),
@@ -672,223 +717,196 @@ export class UploadService {
           },
           meta,
         );
+        // Publication may have succeeded before a previous companion cleanup failed.
+        // Replaying the verified target must retry cleanup rather than hide those artifacts.
+        await removeStagingFiles([
+          join(this.casTmpDir, `${expectedDigest}.resume.json.tmp`),
+          join(this.casTmpDir, `${expectedDigest}.complete.tmp`),
+        ]);
         return { url, digest: expectedDigest, size };
       }
 
       const part = join(this.casTmpDir, `${expectedDigest}.part`);
       const resume = join(this.casTmpDir, `${expectedDigest}.resume.json`);
       const resumeTmp = `${resume}.tmp`;
+      // Obsolete marker paths remain in artifact inspection/cleanup only. Never read
+      // them as verification evidence or create new markers.
       const complete = join(this.casTmpDir, `${expectedDigest}.complete`);
       const completeTmp = `${complete}.tmp`;
       let offset = 0;
-      let verifiedChunks: Array<{
-        offset: number;
-        bytes: number;
-        sha256: string;
-      }> = [];
-      try {
-        const meta = JSON.parse(await readFileAsync(resume, 'utf8')) as {
-          version?: number;
-          digest?: string;
-          offset?: number;
-          chunks?: Array<{ offset?: number; bytes?: number; sha256?: string }>;
-        };
-        const partSize = (await statAsync(part)).size;
-        if (
-          meta.version !== 1 ||
-          meta.digest !== expectedDigest ||
-          !Number.isSafeInteger(meta.offset) ||
-          meta.offset! < 0 ||
-          partSize < meta.offset! ||
-          !Array.isArray(meta.chunks)
-        ) {
-          throw new Error('invalid resume state');
-        }
-
-        // Validate blocks strictly from byte zero. At the first missing/corrupt/non-contiguous block,
-        // discard that block and everything after it; sequential Range download resumes from the end of
-        // the last trustworthy prefix. A malformed manifest that cannot establish any boundary falls
-        // through to the full reset below.
-        let expectedOffset = 0;
-        for (const item of meta.chunks) {
+      const artifactEntries = await Promise.all(
+        [part, resume, resumeTmp, complete, completeTmp].map(async (path) => {
+          try {
+            return await lstat(path);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+              return undefined;
+            throw error;
+          }
+        }),
+      );
+      const existingArtifacts = artifactEntries.some(
+        (entry) => entry !== undefined,
+      );
+      if (existingArtifacts) {
+        try {
           if (
-            item.offset !== expectedOffset ||
-            !Number.isSafeInteger(item.bytes) ||
-            item.bytes! <= 0 ||
-            !/^[0-9a-f]{64}$/.test(item.sha256 ?? '') ||
-            expectedOffset + item.bytes! > partSize
+            artifactEntries.some(
+              (entry) => entry !== undefined && !entry.isFile(),
+            )
+          )
+            throw new Error('CAS checkpoint artifact is not a regular file');
+          const meta: unknown = JSON.parse(await readFileAsync(resume, 'utf8'));
+          const partStat = await lstat(part);
+          if (
+            !meta ||
+            typeof meta !== 'object' ||
+            Array.isArray(meta) ||
+            Object.keys(meta).some(
+              (key) => !['digest', 'declaredBytes', 'offset'].includes(key),
+            ) ||
+            (meta as Record<string, unknown>).digest !== expectedDigest ||
+            (meta as Record<string, unknown>).declaredBytes !==
+              opts.declaredBytes ||
+            !Number.isSafeInteger((meta as Record<string, unknown>).offset) ||
+            Number((meta as Record<string, unknown>).offset) < 0 ||
+            Number((meta as Record<string, unknown>).offset) >
+              opts.declaredBytes ||
+            !partStat.isFile() ||
+            partStat.size < Number((meta as Record<string, unknown>).offset)
           ) {
-            break;
+            throw new Error('invalid checkpoint metadata or partial length');
           }
-          const hash = createHash('sha256');
-          for await (const piece of createReadStream(part, {
-            start: expectedOffset,
-            end: expectedOffset + item.bytes! - 1,
-          })) {
-            hash.update(piece);
-          }
-          if (hash.digest('hex') !== item.sha256) break;
-          verifiedChunks.push({
-            offset: expectedOffset,
-            bytes: item.bytes!,
-            sha256: item.sha256!,
-          });
-          expectedOffset += item.bytes!;
+          offset = Number((meta as Record<string, unknown>).offset);
+          // Only the atomically committed offset is resumable. An interrupted append may leave a tail.
+          if (partStat.size !== offset) await truncateAsync(part, offset);
+        } catch (cause) {
+          // Existing partial state must never be silently replaced by a new download.
+          throw new Error('invalid CAS download checkpoint', { cause });
         }
-        offset = expectedOffset;
-        if (partSize !== offset) await truncateAsync(part, offset);
-      } catch {
-        await unlinkAsync(part).catch(() => {});
-        await unlinkAsync(resume).catch(() => {});
-        offset = 0;
-        verifiedChunks = [];
       }
 
       const persistOffset = async () => {
-        await writeFileAsync(
-          resumeTmp,
+        await writeCheckpoint(
+          resume,
           JSON.stringify({
-            version: 1,
             digest: expectedDigest,
+            declaredBytes: opts.declaredBytes,
             offset,
-            chunks: verifiedChunks,
           }),
+          part,
         );
-        await renameAsync(resumeTmp, resume);
       };
-      if (offset === 0) {
-        // Establish both halves of the checkpoint. A missing part is normal only before the first
-        // byte; creating it here lets the live-download checks distinguish that from later deletion.
-        await appendFileAsync(part, Buffer.alloc(0));
+      if (!existingArtifacts) {
+        await writeFileAsync(part, Buffer.alloc(0), { flag: 'wx' });
         await persistOffset();
       }
+      opts.onProgress?.(offset);
 
-      // Keep the verified marker until shard landing and the live row have both committed.
-      // Interrupted publication can be recovered without trusting unverified bytes.
-      const markComplete = async () => {
-        if (offset !== opts.declaredBytes) {
-          await unlinkAsync(part).catch(() => {});
-          await unlinkAsync(resume).catch(() => {});
-          await unlinkAsync(complete).catch(() => {});
-          throw new Error('CAS file size mismatch');
-        }
-        FileSizeLimitError.assert(offset, opts.maxFileBytes);
-        await writeFileAsync(
-          completeTmp,
-          JSON.stringify({
-            version: 1,
-            digest: expectedDigest,
-            bytes: offset,
-          }),
-        );
-        await renameAsync(completeTmp, complete);
-      };
       const finishPublish = async () => {
-        opts.signal?.throwIfAborted();
-        const meta = await this.prepareMetadata(part, expectedDigest);
-        opts.signal?.throwIfAborted();
+        opts.signal.throwIfAborted();
+        const meta = await this.prepareMetadata(
+          part,
+          expectedDigest,
+          opts.signal,
+        );
+        opts.signal.throwIfAborted();
         await this.mediaAsset.publishReady(
           expectedDigest,
           BigInt(offset),
           async () => {
-            await renameAsync(part, abs);
+            await publishContentAddressedFile(part, abs, this.casTmpDir);
           },
           meta,
         );
-        await unlinkAsync(complete).catch(() => {});
-        await unlinkAsync(resume).catch(() => {});
+        // The caller still has to commit its task/message result. Keep the source and
+        // checkpoint even after asset registration; publication success is not task completion.
       };
 
+      let executionFailure: { cause: unknown } | undefined;
+      let integrityCleanupAttempted = false;
       try {
-        // A crash can happen after the last offset checkpoint but before verification/publish. Avoid an
-        // unsatisfiable Range request at EOF: recognize and publish an already-complete valid part.
-        if (offset > 0) {
-          const resumedHash = createHash('sha256');
-          for await (const piece of createReadStream(part))
-            resumedHash.update(piece);
-          if (resumedHash.digest('hex') === expectedDigest) {
-            await markComplete();
-            await finishPublish();
-            return { url, digest: expectedDigest, size: offset };
-          }
-        }
-
-        // External filesystem maintenance can still remove or truncate a live partial. Never append
-        // at a now-invalid logical
-        // offset: abandon that response and open a fresh Range stream. TOMBSTONED cancellation is
-        // enforced by the caller's iterable and is not converted into this storage recovery path.
-        let storageRestarts = 0;
-        for (;;) {
-          let partialLost = false;
+        // At EOF verify directly, without an unsatisfiable Range request or prefix block hashes.
+        if (offset < opts.declaredBytes) {
           for await (const buf of chunksFromOffset(offset)) {
-            opts.signal?.throwIfAborted();
+            opts.signal.throwIfAborted();
             if (buf.length === 0) continue;
-            const actualSize = await statAsync(part)
-              .then((value) => value.size)
-              .catch(() => -1);
-            if (actualSize !== offset) {
-              partialLost = true;
-              break;
-            }
+            const actualSize = (await statAsync(part)).size;
+            if (actualSize !== offset)
+              throw new Error('CAS partial changed during download');
             if (offset + buf.length > opts.declaredBytes) {
-              await unlinkAsync(part).catch(() => {});
-              await unlinkAsync(resume).catch(() => {});
-              await unlinkAsync(complete).catch(() => {});
               throw new CasOversizeError(
                 BigInt(offset + buf.length - opts.declaredBytes),
               );
             }
             FileSizeLimitError.assert(offset + buf.length, opts.maxFileBytes);
-            const chunkOffset = offset;
             await appendFileAsync(part, buf);
             offset += buf.length;
-            verifiedChunks.push({
-              offset: chunkOffset,
-              bytes: buf.length,
-              sha256: createHash('sha256').update(buf).digest('hex'),
-            });
             await persistOffset();
-            opts?.onProgress?.(offset);
+            opts.signal.throwIfAborted();
+            opts.onProgress?.(offset);
           }
-          const finalPartSize = await statAsync(part)
-            .then((value) => value.size)
-            .catch(() => -1);
-          if (!partialLost && finalPartSize === offset) break;
-          storageRestarts += 1;
-          if (storageRestarts > 2) {
-            throw new Error(
-              'CAS partial repeatedly disappeared during download',
-            );
-          }
-          await unlinkAsync(part).catch(() => {});
-          await unlinkAsync(resume).catch(() => {});
-          offset = 0;
-          verifiedChunks = [];
-          await appendFileAsync(part, Buffer.alloc(0));
-          await persistOffset();
         }
+        opts.signal.throwIfAborted();
+        const finalPartSize = (await statAsync(part)).size;
+        if (finalPartSize !== offset)
+          throw new Error('CAS partial changed during download');
+        if (offset !== opts.declaredBytes)
+          throw new Error('CAS file size mismatch');
 
         const hash = createHash('sha256');
-        for await (const piece of createReadStream(part)) hash.update(piece);
+        for await (const piece of createReadStream(part, {
+          signal: opts.signal,
+        }))
+          hash.update(piece);
+        opts.signal.throwIfAborted();
         const digest = hash.digest('hex');
         if (digest !== expectedDigest) {
-          await unlinkAsync(part).catch(() => {});
-          await unlinkAsync(resume).catch(() => {});
-          await unlinkAsync(complete).catch(() => {});
-          throw new Error(
+          const integrityError = new Error(
             `CAS digest mismatch (expected ${expectedDigest}, got ${digest})`,
           );
+          integrityCleanupAttempted = true;
+          try {
+            await removeStagingFiles([
+              part,
+              resume,
+              complete,
+              resumeTmp,
+              completeTmp,
+            ]);
+          } catch (cleanupFailure) {
+            throw new AggregateError(
+              cleanupFailure instanceof AggregateError
+                ? cleanupFailure.errors
+                : [cleanupFailure],
+              `${integrityError.message}; invalid artifact cleanup failed`,
+              { cause: integrityError },
+            );
+          }
+          throw integrityError;
         }
-        await markComplete();
         await finishPublish();
         return { url, digest, size: offset };
-      } catch (error) {
-        // Transport failures deliberately retain the verified prefix + sidecar for a later retry.
-        // Integrity failures above remove all three tmp artifacts because no prefix can be trusted.
-        throw error;
+      } catch (cause) {
+        executionFailure = { cause };
+        throw cause;
       } finally {
-        await unlinkAsync(resumeTmp).catch(() => {});
-        await unlinkAsync(completeTmp).catch(() => {});
+        // Stop and transport/storage failures retain the part and committed checkpoint.
+        // Integrity cleanup already attempted every artifact and reported its failures.
+        if (!integrityCleanupAttempted) {
+          try {
+            await removeStagingFiles([resumeTmp, completeTmp]);
+          } catch (cleanupFailure) {
+            if (executionFailure) {
+              throw new AggregateError(
+                [executionFailure.cause, cleanupFailure],
+                'CAS transfer and temporary artifact cleanup failed',
+                { cause: executionFailure.cause },
+              );
+            }
+            throw cleanupFailure;
+          }
+        }
       }
     });
   }

@@ -984,9 +984,10 @@ describe('federated message deletion transaction ordering', () => {
       .returning({ batchId: pendingMedia.batchId });
     await database.db.insert(fileSyncProgress).values({
       batchId: pending.batchId,
+      messageId: stub.id,
       digest: 'a'.repeat(64),
       kind: 'IMAGE',
-      status: 'DOWNLOADING',
+      status: 'PENDING',
       bytesTotal: 100n,
       bytesReceived: 40n,
       originDomain: peerDomain,

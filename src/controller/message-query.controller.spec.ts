@@ -53,6 +53,8 @@ function setup(rows: Array<{ seq: number }> = []) {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
   );
   const req = {
     user: { userId: 1 },
@@ -233,6 +235,8 @@ describe('MessageController group mention resolution', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
     const req = {
       threadAccess: {
@@ -310,6 +314,8 @@ describe('MessageController.withdrawMessage quota', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
     const req = {
       user: { userId: 7 },
@@ -345,6 +351,8 @@ describe('MessageController.withdrawMessage quota', () => {
       {} as never,
       { assertCanSend: vi.fn(), tickLax: vi.fn() } as never,
       { withdraw } as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -420,6 +428,8 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         {} as never,
         {} as never,
         {} as never,
+        {} as never,
+        {} as never,
       );
       const req = {
         user: { userId: 7 },
@@ -445,7 +455,6 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         contentType,
         '00000000-0000-4000-8000-000000000001',
         1,
-        false,
         undefined,
       );
       expect(tick).not.toHaveBeenCalled();
@@ -467,6 +476,8 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       {} as never,
       {} as never,
       { assertCanSend: vi.fn(), tick: vi.fn() } as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -497,7 +508,6 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       ContentType.IMAGE,
       '00000000-0000-4000-8000-000000000003',
       1,
-      false,
       4,
     );
   });
@@ -517,6 +527,8 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       {} as never,
       {} as never,
       { assertCanSend: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -547,7 +559,6 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       ContentType.GALLERY,
       '00000000-0000-4000-8000-000000000002',
       4,
-      false,
       undefined,
     );
   });

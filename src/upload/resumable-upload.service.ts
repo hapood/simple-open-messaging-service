@@ -1,21 +1,22 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { removeStagingFiles } from './staging-cleanup.js';
+import { writeCheckpoint } from './write-checkpoint.js';
+import { parseUploadTaskId } from './upload-task-id.js';
+import { UploadExecutionState } from './upload-execution-state.js';
 import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   appendFile,
+  lstat,
   mkdir,
   readFile,
-  rename,
-  stat,
   truncate,
-  unlink,
   writeFile,
 } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
-import { pendingMedia, uploadSession } from '../database/schema.js';
+import { message, pendingMedia, uploadSession } from '../database/schema.js';
 import type { InitResumableUploadDto } from '../dto/resumable-upload.dto.js';
 import type { PublicMessage } from '../message/message.service.js';
 import { MessageService } from '../message/message.service.js';
@@ -28,20 +29,27 @@ import { InvalidMediaDataError } from './media-tool.js';
 import { InvalidUploadMediaError, UploadService } from './upload.service.js';
 
 import { MEDIA_UPLOAD_CHUNK_BYTES } from '../../shared/media-upload-limits.js';
+import {
+  UploadActivityService,
+  type UploadActivityHandle,
+  type UploadActivityTimeout,
+} from './upload-activity.service.js';
+import { uploadBodyActivity } from './upload-activity.transport.js';
 
 export const RESUMABLE_CHUNK_SIZE = MEDIA_UPLOAD_CHUNK_BYTES;
 
 export interface UploadSessionView {
-  uploadId: string;
-  clientMessageId: string;
+  id: string;
   partId: string;
   position: number;
   originalName: string;
   mimeType: string;
   totalBytes: number;
-  offset: number;
+  offset: number | null;
   chunkSize: number;
-  status: 'UPLOADING' | 'COMPLETING' | 'COMPLETED' | 'ABORTED';
+  status: 'PENDING' | 'COMPLETED' | 'FAILED';
+  phase?: 'UPLOADING' | 'COMPLETING';
+  errorReason?: string;
   result?: OutboundFilePayload;
 }
 
@@ -52,36 +60,132 @@ export interface UploadSessionView {
  * database row owns identity, quota, terminal state and the computed digest/result, never
  * in-flight progress. Per-file `complete` only records the digest + payload (record-first); the
  * CAS shard tree is touched exclusively by the idempotent batch commit that fires when the LAST
- * file of a staged message completes. Consequence: a cancelled batch leaves NOTHING in the CAS
- * store — cancellation is unlinking staging files plus flipping session rows.
+ * file of a staged message completes. Failure and explicit stop retain staging and identity.
  *
- * Session status meanings:
- *   UPLOADING  — chunks still arriving (sidecar authoritative for the offset)
- *   COMPLETING — complete bytes accepted; server processing or batch commit remains pending
- *   COMPLETED  — the batch committed (message exists, bytes in the shard tree, staging removed)
- *   ABORTED    — terminal failure (admin abort / staged part lost); re-init resets for retry
+ * Durable outcomes are PENDING, COMPLETED and FAILED. Pending execution resumes from
+ * the disk checkpoint and stored processing result, not a persisted processing phase.
+ * The transport view reports a separate derived phase only for pending tasks.
+ * Explicit stopping records FAILED + USER_STOPPED and retains its checkpoint for retry.
  *
- * Lock ordering: per-file operations hold the uploadId advisory lock and may then take the batch
- * (clientMessageId) lock inside `complete`; the batch path never acquires an uploadId lock, so no
- * cycle can form.
+ * In-memory execution state admits operations or rejects conflicts immediately.
+ * Cancellation invalidates the current execution before draining its resource operations.
+ * This coordination assumes one API process owns the staging directory.
  */
 @Injectable()
 export class ResumableUploadService {
+  private readonly logger = new Logger(ResumableUploadService.name);
   private readonly tmpDir = dataDirectory('resumable');
-  private readonly locks = new Map<string, Promise<void>>();
+  private readonly execution = new UploadExecutionState();
+  private readonly generations = new Map<string, number>();
+  private readonly activityHandles = new Map<string, UploadActivityHandle>();
+
+  private invalidateAttempt(taskId: string) {
+    this.generations.set(taskId, (this.generations.get(taskId) ?? 0) + 1);
+  }
 
   constructor(
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
     private readonly messages: MessageService,
     private readonly quota: UserQuotaService,
+    private readonly activity: UploadActivityService,
   ) {}
+
+  private watchWaiting(
+    session: typeof uploadSession.$inferSelect,
+  ): UploadActivityHandle {
+    const handle = this.activity.watch(
+      {
+        taskId: session.id.toString(),
+        userId: session.creatorId,
+      },
+      (timeout) => this.failIdleAttempt(timeout),
+    );
+    this.activityHandles.set(session.id.toString(), handle);
+    return handle;
+  }
+
+  private stopActivity(taskId: string) {
+    const handle = this.activityHandles.get(taskId);
+    if (handle) this.activity.stop(handle);
+    this.activityHandles.delete(taskId);
+    this.invalidateAttempt(taskId);
+  }
+
+  private async failIdleAttempt(timeout: UploadActivityTimeout): Promise<void> {
+    await this.runTaskExecution(timeout.task.taskId, async () => {
+      const session = await this.owned(
+        timeout.task.userId,
+        timeout.task.taskId,
+      );
+      if (!timeout.isCurrent() || session.status !== 'PENDING') return;
+      await this.failSession(session.id, 'upload receive timed out');
+    });
+  }
+
+  /** Startup scans validate execution ownership; observing a waiting attempt never renews its deadline. */
+  async recoverWaiting(userId: number, taskId: string): Promise<void> {
+    await this.runTaskExecution(taskId, async () => {
+      const session = await this.owned(userId, taskId);
+      if (session.status !== 'PENDING') return;
+      const offset = await this.readSidecarOffset(session);
+      const handle = this.watchWaiting(session);
+      if (offset === session.totalBytes) this.activity.suspend(handle);
+    });
+  }
+
+  async recoverPending(userId: number, taskId: string): Promise<void> {
+    await this.runTaskExecution(taskId, async () => {
+      const session = await this.owned(userId, taskId);
+      if (session.status !== 'PENDING') return;
+      const offset = await this.readSidecarOffset(session);
+      if (offset === session.totalBytes)
+        await this.completeLocked(userId, taskId);
+      else this.watchWaiting(session);
+    });
+  }
+
+  /** Transport admission must keep this exact handle, not reacquire an execution after await. */
+  async activityForReceive(
+    userId: number,
+    taskId: string,
+  ): Promise<UploadActivityHandle> {
+    return this.runTaskExecution(taskId, async () => {
+      const session = await this.owned(userId, taskId);
+      if (
+        session.status !== 'PENDING' ||
+        (await this.readSidecarOffset(session)) === session.totalBytes
+      )
+        return this.invalid('upload is not waiting for a chunk');
+      const handle = this.watchWaiting(session);
+      if (!this.activity.isCurrent(handle))
+        return this.invalid('upload attempt expired');
+      return handle;
+    });
+  }
 
   async init(
     userId: number,
     dto: InitResumableUploadDto,
   ): Promise<UploadSessionView> {
-    const stage = await this.requireStageForPart(userId, dto);
+    return this.runBatchExecution(dto.clientMessageId, (pendingMediaId) =>
+      this.initLocked(userId, dto, pendingMediaId),
+    );
+  }
+
+  private async initLocked(
+    userId: number,
+    dto: InitResumableUploadDto,
+    pendingMediaId: bigint | null,
+  ): Promise<UploadSessionView> {
+    // The client key identifies the send; the captured stage identifies this attempt.
+    if (pendingMediaId === null)
+      return this.invalid('media send is not pending');
+    const stage = await this.requireStageForPart(userId, {
+      pendingMediaId,
+      position: dto.position,
+      intent: dto.intent,
+    });
     await this.quota.assertFileSize(userId, dto.totalBytes);
     const originalName = basename(dto.originalName).slice(0, MAX_FILE_NAME_LEN);
     if (!originalName) {
@@ -92,7 +196,7 @@ export class ResumableUploadService {
     }
     const existing = await this.database.db.query.uploadSession.findFirst({
       where: and(
-        eq(uploadSession.clientMessageId, dto.clientMessageId),
+        eq(uploadSession.pendingMediaId, stage.id),
         eq(uploadSession.partId, dto.partId),
       ),
     });
@@ -111,10 +215,11 @@ export class ResumableUploadService {
           'upload metadata does not match the existing session',
         );
       }
-      // Retry with stable identity: a terminated session restarts from a fresh staging file.
-      if (existing.status === 'ABORTED') {
-        return this.viewOf(await this.resetForRetry(existing));
-      }
+      if (
+        existing.status === 'PENDING' &&
+        (await this.readSidecarOffset(existing)) < existing.totalBytes
+      )
+        this.watchWaiting(existing);
       return this.viewOf(existing);
     }
     // Session creation is the quota claim point. Only the transaction that inserts this logical part
@@ -125,7 +230,7 @@ export class ResumableUploadService {
       const [row] = await tx
         .insert(uploadSession)
         .values({
-          clientMessageId: dto.clientMessageId,
+          pendingMediaId: stage.id,
           partId: dto.partId,
           position: dto.position,
           partIntent: dto.intent,
@@ -144,7 +249,7 @@ export class ResumableUploadService {
     if (!created) {
       const winner = await this.database.db.query.uploadSession.findFirst({
         where: and(
-          eq(uploadSession.clientMessageId, dto.clientMessageId),
+          eq(uploadSession.pendingMediaId, stage.id),
           eq(uploadSession.position, dto.position),
         ),
       });
@@ -154,9 +259,21 @@ export class ResumableUploadService {
           'upload position is already assigned to another part',
         );
       }
-      return this.init(userId, dto);
+      return this.initLocked(userId, dto, pendingMediaId);
     }
-    await mkdir(this.tmpDir, { recursive: true });
+    // Only the transaction's newly inserted row may create a zero checkpoint. An existing
+    // row without its sidecar is ambiguous (including a crash here), never implicitly new.
+    try {
+      await mkdir(this.tmpDir, { recursive: true });
+      await writeFile(this.partPath(created.tmpKey), Buffer.alloc(0), {
+        flag: 'wx',
+      });
+      await this.writeSidecar(created.tmpKey, 0n);
+    } catch (error) {
+      await this.failSession(created.id, this.errorMessage(error));
+      throw error;
+    }
+    this.watchWaiting(created);
     return this.viewOf(created);
   }
 
@@ -167,13 +284,13 @@ export class ResumableUploadService {
   private async requireStageForPart(
     userId: number,
     part: {
-      clientMessageId: string;
+      pendingMediaId: bigint;
       position: number;
       intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
     },
   ) {
     const stageRow = await this.database.db.query.pendingMedia.findFirst({
-      where: eq(pendingMedia.clientMessageId, part.clientMessageId),
+      where: eq(pendingMedia.id, part.pendingMediaId),
     });
     const stage = stageRow ? requireOutboundPendingMedia(stageRow) : undefined;
     if (
@@ -207,20 +324,22 @@ export class ResumableUploadService {
     return stage;
   }
 
-  async status(userId: number, uploadId: string) {
-    return this.viewOf(await this.owned(userId, uploadId));
+  async status(userId: number, taskId: string) {
+    return this.viewOf(await this.owned(userId, taskId));
   }
 
   async append(
     userId: number,
-    uploadId: string,
+    taskId: string,
     contentRange: string | undefined,
     body: Buffer,
   ) {
-    return this.exclusive(uploadId, async () => {
-      const session = await this.owned(userId, uploadId);
-      if (session.status === 'ABORTED') return this.invalid('upload aborted');
-      if (session.status !== 'UPLOADING') return this.viewOf(session);
+    return this.runAttemptExecution(taskId, async () => {
+      const session = await this.owned(userId, taskId);
+      if (session.status === 'FAILED') {
+        return this.invalid('upload requires explicit retry');
+      }
+      if (session.status !== 'PENDING') return this.viewOf(session);
       const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(contentRange ?? '');
       if (!match) return this.invalid('invalid Content-Range');
       const start = BigInt(match[1]);
@@ -236,146 +355,234 @@ export class ResumableUploadService {
       ) {
         return this.invalid('invalid upload range');
       }
-      const offset = await this.alignPart(session);
-      if (start < offset && end < offset) {
-        return this.viewOf(session);
-      }
-      if (start !== offset) {
-        throw new BusinessException(
-          BusinessCode.ALREADY_EXISTS,
-          'upload offset mismatch',
-          409,
-          { offset: Number(offset) },
+      const bodyReceive = uploadBodyActivity(body);
+      // Direct callers already have their whole body. Give them the same explicit receive ->
+      // processing -> waiting lifecycle as the HTTP parser, rather than leaving IO on an idle timer.
+      const receive =
+        bodyReceive ??
+        this.activity.beginReceiving(
+          this.watchWaiting(session),
+          () => undefined,
         );
+      if (!receive) return this.invalid('upload is not waiting for a chunk');
+      if (!bodyReceive) {
+        this.activity.activity(receive, body.length);
+        this.activity.endReceiving(receive);
       }
-      // No database write per chunk: bytes land, then the sidecar is atomically rewritten. A crash
-      // between the two leaves the file longer than the committed offset — the next align truncates
-      // back and the client re-sends one chunk. The advisory lock serializes same-upload writers
-      // across instances, so the sidecar read-modify-write is race-free.
-      await appendFile(this.partPath(session.tmpKey), body, { flag: 'a' });
-      await this.writeSidecar(session.tmpKey, offset + BigInt(body.length));
-      return this.viewOf(session);
+      try {
+        const validateReceive = () => {
+          this.execution.assertCurrent();
+          if (
+            receive &&
+            (receive.upload.task.taskId !== taskId ||
+              receive.upload.task.userId !== userId ||
+              !this.activity.isCurrent(receive.upload))
+          ) {
+            return this.invalid('upload attempt changed');
+          }
+        };
+        validateReceive();
+        const offset = await this.alignPart(session);
+        if (start < offset && end < offset) {
+          return this.viewOf(session);
+        }
+        if (start !== offset) {
+          throw new BusinessException(
+            BusinessCode.ALREADY_EXISTS,
+            'upload offset mismatch',
+            409,
+            { offset: Number(offset) },
+          );
+        }
+        // Bytes land before the atomic checkpoint rewrite. A crash between them leaves surplus
+        // bytes that alignPart truncates. The database records activity time, never transport offset.
+        validateReceive();
+        await appendFile(this.partPath(session.tmpKey), body, { flag: 'a' });
+        validateReceive();
+        const nextOffset = offset + BigInt(body.length);
+        await this.writeSidecar(session.tmpKey, nextOffset);
+        validateReceive();
+        // Once every byte is durable, only server processing remains. Response cleanup
+        // must not re-arm a network-idle deadline for this task.
+        if (nextOffset === session.totalBytes)
+          this.activity.suspend(receive.upload);
+        await this.database.db
+          .update(uploadSession)
+          .set({ updatedAt: new Date() })
+          .where(
+            and(
+              eq(uploadSession.id, session.id),
+              eq(uploadSession.status, 'PENDING'),
+            ),
+          );
+        return this.viewOf(session);
+      } finally {
+        // HTTP response/disconnect owns release for transport-admitted bodies.
+        if (!bodyReceive) this.activity.releaseReceiving(receive);
+      }
     });
   }
 
-  async complete(userId: number, uploadId: string) {
-    return this.exclusive(uploadId, async () => {
-      let session = await this.owned(userId, uploadId);
-      if (session.status === 'COMPLETED') return this.viewOf(session);
-      if (session.status === 'ABORTED') return this.invalid('upload aborted');
-      if (session.status === 'COMPLETING' && session.digest && session.result) {
-        await this.tryCommitBatch(session.clientMessageId, userId);
-        return this.viewOf(await this.owned(userId, uploadId));
+  async complete(userId: number, taskId: string) {
+    return this.runAttemptExecution(taskId, () =>
+      this.completeLocked(userId, taskId),
+    );
+  }
+
+  private async completeLocked(
+    userId: number,
+    taskId: string,
+  ): Promise<UploadSessionView> {
+    // Reject premature requests before entering server-owned processing. A bad request
+    // must not turn an otherwise resumable receiving task into a durable failure.
+    const admitted = await this.owned(userId, taskId);
+    if (
+      admitted.status === 'PENDING' &&
+      !(admitted.digest && admitted.result) &&
+      (await this.readSidecarOffset(admitted)) < admitted.totalBytes
+    )
+      return this.invalid('upload is incomplete');
+    try {
+      return await this.processCompleteLocked(userId, taskId);
+    } catch (error) {
+      this.execution.assertCurrent();
+      const session = await this.owned(userId, taskId);
+      this.execution.assertCurrent();
+      if (session.status === 'PENDING') {
+        await this.failSession(session.id, this.errorMessage(error));
       }
-      const offset = await this.readSidecarOffset(session);
-      if (offset !== session.totalBytes) {
-        return this.invalid('upload is incomplete');
-      }
-      const path = this.partPath(session.tmpKey);
-      const actual = await stat(path)
-        .then((s) => s.size)
-        .catch(() => -1);
-      if (BigInt(actual) !== session.totalBytes) {
-        return this.invalid('temporary file size mismatch');
-      }
-      // Persist the server-owned continuation before decoding or generating derivatives.
-      if (session.status === 'UPLOADING') {
-        const [completing] = await this.database.db
-          .update(uploadSession)
-          .set({ status: 'COMPLETING', updatedAt: new Date() })
-          .where(
-            and(
-              eq(uploadSession.id, session.id),
-              eq(uploadSession.status, 'UPLOADING'),
-            ),
-          )
-          .returning();
-        if (!completing) return this.invalid('upload state changed');
-        session = completing;
-      }
-      let stored = session.result as {
-        payload?: OutboundFilePayload;
-        overrideContentType?: ContentType;
-      } | null;
-      if (!stored || !stored.payload) {
-        // Record-first: hash + resolve the staged bytes and durably record digest/result. The CAS
-        // shard tree is NOT touched here — landing happens at the batch barrier.
-        const resolved = await this.upload
-          .resolveStagedPart(
-            path,
-            session.partIntent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
-            session.originalName,
-            session.mimeType,
-          )
-          .catch(async (error: unknown) => {
-            if (
-              !(error instanceof InvalidUploadMediaError) &&
-              !(error instanceof InvalidMediaDataError)
-            )
-              throw error;
-            await this.abortSession(session.id, error.message);
-            await this.messages.failStaged(
-              userId,
-              session.clientMessageId,
-              error.message,
-            );
-            throw new BusinessException(
-              BusinessCode.VALIDATION_FAILED,
-              error.message,
-            );
-          });
-        if (resolved.overrideContentType !== undefined) {
-          await this.messages.updateStagedContentType(
-            session.clientMessageId,
-            userId,
-            resolved.overrideContentType,
-          );
-        }
-        stored = {
-          payload: resolved.payload,
-          ...(resolved.overrideContentType
-            ? { overrideContentType: resolved.overrideContentType }
-            : {}),
-        };
-        const [updated] = await this.database.db
-          .update(uploadSession)
-          .set({
-            status: 'COMPLETING',
-            digest: resolved.digest,
-            result: stored,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(uploadSession.id, session.id),
-              eq(uploadSession.status, 'COMPLETING'),
-            ),
-          )
-          .returning();
-        if (!updated) {
-          // Serialized on the same advisory lock as abort, so this is exotic: re-read and honor the
-          // concurrent terminal transition instead of trusting the stale row.
-          session = await this.owned(userId, uploadId);
+      throw error;
+    }
+  }
+
+  private async processCompleteLocked(userId: number, taskId: string) {
+    let session = await this.owned(userId, taskId);
+    if (session.status === 'COMPLETED') {
+      await this.cleanupCompletedStaging(session.tmpKey);
+      return this.viewOf(session);
+    }
+    if (session.status === 'FAILED') {
+      return this.invalid('upload requires explicit retry');
+    }
+    if (session.status === 'PENDING' && session.digest && session.result) {
+      const handle = this.activityHandles.get(taskId);
+      if (handle) this.activity.suspend(handle);
+      await this.tryCommitBatch(session, userId);
+      return this.viewOf(await this.owned(userId, taskId));
+    }
+    const offset = await this.alignPart(session);
+    this.execution.assertCurrent();
+    if (offset !== session.totalBytes) {
+      return this.invalid('upload is incomplete');
+    }
+    const checkpoint = await this.readSidecar(session);
+    const path = this.partPath(session.tmpKey);
+    const handle = this.activityHandles.get(taskId);
+    if (handle) {
+      if (!this.activity.isCurrent(handle))
+        return this.invalid('upload attempt expired');
+      this.activity.suspend(handle);
+    }
+    // The complete disk checkpoint owns continuation; processing is not a durable outcome.
+    let stored = session.result as {
+      payload?: OutboundFilePayload;
+      overrideContentType?: ContentType;
+    } | null;
+    if (!stored || !stored.payload) {
+      // Record-first: hash + resolve the staged bytes and durably record digest/result. The CAS
+      // shard tree is NOT touched here — landing happens at the batch barrier.
+      const resolved = await this.upload
+        .resolveStagedPart(
+          path,
+          session.partIntent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+          session.originalName,
+          session.mimeType,
+          this.execution.signal(),
+        )
+        .catch(async (error: unknown) => {
+          this.execution.assertCurrent();
           if (
-            session.status !== 'COMPLETING' &&
-            session.status !== 'COMPLETED'
-          ) {
-            return this.invalid('upload aborted');
-          }
-        } else {
-          session = updated;
-        }
+            !(error instanceof InvalidUploadMediaError) &&
+            !(error instanceof InvalidMediaDataError)
+          )
+            throw error;
+          await this.failSession(session.id, error.message, {
+            outcome: 'invalid-media',
+            reason: error.message.slice(0, 255),
+          });
+          // Only positively invalid final media may discard its staging bytes.
+          await this.discardStaging(session.tmpKey);
+          throw new BusinessException(
+            BusinessCode.VALIDATION_FAILED,
+            error.message,
+          );
+        });
+      this.execution.assertCurrent();
+      if (
+        checkpoint.digest !== undefined &&
+        checkpoint.digest !== resolved.digest
+      ) {
+        throw new Error(
+          'staged upload digest does not match its final checkpoint',
+        );
       }
-      // The last completed file carries the batch over the barrier: idempotent CAS landing +
-      // the single commit transaction (message, assets, MediaAsset claims, fan-out).
-      await this.tryCommitBatch(session.clientMessageId, userId);
-      return this.viewOf(await this.owned(userId, uploadId));
-    });
+      // Preserve the UUID -> digest association before database result persistence or CAS
+      // publication. A crash after this checkpoint leaves the full source identifiable.
+      await this.writeSidecar(
+        session.tmpKey,
+        session.totalBytes,
+        resolved.digest,
+      );
+      this.execution.assertCurrent();
+      if (resolved.overrideContentType !== undefined) {
+        if (session.pendingMediaId === null)
+          return this.invalid('upload task has no pending stage');
+        await this.messages.updateStagedContentType(
+          session.pendingMediaId,
+          userId,
+          resolved.overrideContentType,
+        );
+      }
+      stored = {
+        payload: resolved.payload,
+        ...(resolved.overrideContentType
+          ? { overrideContentType: resolved.overrideContentType }
+          : {}),
+      };
+      const [updated] = await this.database.db
+        .update(uploadSession)
+        .set({
+          status: 'PENDING',
+          digest: resolved.digest,
+          result: stored,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(uploadSession.id, session.id),
+            eq(uploadSession.status, 'PENDING'),
+          ),
+        )
+        .returning();
+      if (!updated) {
+        // Honor a terminal transition instead of trusting the stale row.
+        session = await this.owned(userId, taskId);
+        if (session.status !== 'PENDING' && session.status !== 'COMPLETED') {
+          return this.invalid('upload state changed');
+        }
+      } else {
+        session = updated;
+      }
+    }
+    // The last completed file carries the batch over the barrier: idempotent CAS landing +
+    // the single commit transaction (message, assets, MediaAsset claims, fan-out).
+    await this.tryCommitBatch(session, userId);
+    return this.viewOf(await this.owned(userId, taskId));
   }
 
   /**
-   * Batch barrier + idempotent commit, under the per-batch (clientMessageId) advisory lock.
-   * Phases: (1) barrier — every session of the staged message must be COMPLETING with a recorded
+   * Batch barrier + idempotent commit, guarded by the current execution identity.
+   * Phases: (1) barrier — every unfinished session must be PENDING with a recorded
    * digest+result; (2) move — land every staged part into the CAS shard tree, idempotently, and
    * REQUIRE the shard to exist on disk (a part whose bytes vanished fails that part instead of
    * committing a database claim for bytes that are not on disk); (3) the single database
@@ -383,276 +590,315 @@ export class ResumableUploadService {
    * Every phase is a no-op when already done, so a crash anywhere re-converges on re-entry.
    */
   private async tryCommitBatch(
-    clientMessageId: string,
+    trigger: typeof uploadSession.$inferSelect,
     userId: number,
-  ): Promise<{
-    message: PublicMessage;
-    newlyPromoted: boolean;
-  } | null> {
-    return this.batchExclusive(clientMessageId, async () => {
-      const stageRow = await this.database.db.query.pendingMedia.findFirst({
-        where: eq(pendingMedia.clientMessageId, clientMessageId),
-      });
-      const sessions = await this.database.db
-        .select()
-        .from(uploadSession)
-        .where(eq(uploadSession.clientMessageId, clientMessageId))
-        .orderBy(asc(uploadSession.position));
-      if (!stageRow) {
-        // Stage already consumed — a crash between the commit transaction and the session
-        // finalization leaves COMPLETING rows behind. Their bytes were already moved; self-heal.
-        if (sessions.some((s) => s.status === 'COMPLETING')) {
-          await this.finalizeCommittedSessions(clientMessageId);
-        }
-        return null;
-      }
-      const stage = requireOutboundPendingMedia(stageRow);
-      if (stage.status !== 'pending') return null; // failed stage — retry/discard is the client's call
-      if (
-        sessions.length === 0 ||
-        sessions.some(
-          (s) => s.status !== 'COMPLETING' && s.status !== 'COMPLETED',
-        ) ||
-        sessions.length !== stage.fileCnt
-      ) {
-        return null; // barrier not met (or an earlier finalize already raced ahead)
-      }
-      const items = sessions.map((session) => {
-        const stored = session.result as {
-          payload?: OutboundFilePayload;
-        } | null;
-        return {
-          session,
-          digest: session.digest as string,
-          payload: stored?.payload as OutboundFilePayload,
-        };
-      });
-      if (items.some((item) => !item.digest || !item.payload)) return null;
-      for (const item of items) {
-        // Processing errors retain COMPLETING for retry; only actual missing bytes abort the part.
+  ): Promise<
+    | { kind: 'not-ready' }
+    | { kind: 'committed'; message: PublicMessage; newlyPromoted: boolean }
+    | { kind: 'already-committed' }
+  > {
+    if (trigger.creatorId !== userId)
+      return this.invalid('upload task owner mismatch');
+    if (trigger.status === 'COMPLETED' && trigger.messageId !== null) {
+      await this.cleanupCommittedSessions([trigger.id]);
+      return { kind: 'already-committed' };
+    }
+    if (trigger.pendingMediaId === null) {
+      return this.invalid('upload task has no pending stage');
+    }
+    const stageRow = await this.database.db.query.pendingMedia.findFirst({
+      where: eq(pendingMedia.id, trigger.pendingMediaId),
+    });
+    if (!stageRow)
+      return this.invalid(
+        'upload stage disappeared without a committed message',
+      );
+    const sessions = await this.database.db
+      .select()
+      .from(uploadSession)
+      .where(eq(uploadSession.pendingMediaId, trigger.pendingMediaId))
+      .orderBy(asc(uploadSession.position));
+    if (sessions.some((session) => session.creatorId !== userId)) {
+      return this.invalid('upload stage contains tasks from another owner');
+    }
+    const stage = requireOutboundPendingMedia(stageRow);
+    if (stage.status !== 'pending') return { kind: 'not-ready' };
+    if (
+      sessions.length === 0 ||
+      sessions.some(
+        (s) => s.status !== 'PENDING' && s.status !== 'COMPLETED',
+      ) ||
+      sessions.length !== stage.fileCnt
+    ) {
+      return { kind: 'not-ready' };
+    }
+    const items = sessions.map((session) => {
+      const stored = session.result as {
+        payload?: OutboundFilePayload;
+      } | null;
+      return {
+        session,
+        digest: session.digest as string,
+        payload: stored?.payload as OutboundFilePayload,
+      };
+    });
+    if (items.some((item) => !item.digest || !item.payload))
+      return { kind: 'not-ready' };
+    for (const item of items) {
+      this.execution.assertCurrent();
+      try {
         item.payload.localMeta = await this.upload.prepareStagedMetadata(
           this.partPath(item.session.tmpKey),
           item.digest,
           item.payload.localMeta,
+          this.execution.signal(),
         );
-        if (this.upload.casShardExists(item.digest)) continue;
-        try {
-          await this.upload.landStagedPart(
-            this.partPath(item.session.tmpKey),
-            item.digest,
-          );
-        } catch {
-          // Never commit a liveness claim for missing bytes: fail this part and the staged send.
-          // The sender still holds the original file, so a retry re-drives everything idempotently.
-          await this.abortSession(item.session.id, 'staged part lost');
-
-          await this.messages.failStaged(
-            userId,
-            clientMessageId,
-            'staged part lost',
-          );
-          throw new BusinessException(
-            BusinessCode.VALIDATION_FAILED,
-            'staged part lost, retry the upload',
-          );
-        }
+        this.execution.assertCurrent();
+        await this.upload.landStagedPart(
+          this.partPath(item.session.tmpKey),
+          item.digest,
+        );
+      } catch (error) {
+        // IO failures are not evidence of invalid media. Preserve bytes and the pending
+        // stage so an explicit retry can re-drive this part and the batch barrier.
+        await this.failSession(item.session.id, this.errorMessage(error));
+        throw error;
       }
-      const committed = await this.messages.commitOutboundBatch(
-        clientMessageId,
-        userId,
-        items.map((item) => ({
-          digest: item.digest,
-          payload: item.payload,
-        })),
-      );
-      if (committed) await this.finalizeCommittedSessions(clientMessageId);
-      return committed;
+    }
+    this.execution.beginCommit();
+    const committed = await this.messages.commitOutboundBatch(
+      stage.id,
+      userId,
+      items.map((item) => ({
+        sessionId: item.session.id,
+        digest: item.digest,
+        payload: item.payload,
+      })),
+    );
+    await this.cleanupCommittedSessions(sessions.map((session) => session.id));
+    return { kind: 'committed', ...committed };
+  }
+
+  /** Filesystem cleanup only; task outcomes were committed with the message. */
+  private async cleanupCommittedSessions(sessionIds: bigint[]) {
+    if (sessionIds.length === 0) return;
+    const rows = await this.database.db.query.uploadSession.findMany({
+      where: and(
+        inArray(uploadSession.id, sessionIds),
+        eq(uploadSession.status, 'COMPLETED'),
+      ),
+      columns: { tmpKey: true, id: true },
     });
-  }
-
-  /** Flip a committed batch's sessions to COMPLETED and drop their staging artifacts. Idempotent. */
-  private async finalizeCommittedSessions(clientMessageId: string) {
-    const rows = await this.database.db
-      .update(uploadSession)
-      .set({
-        status: 'COMPLETED',
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(uploadSession.clientMessageId, clientMessageId),
-          inArray(uploadSession.status, ['COMPLETING']),
-        ),
-      )
-      .returning({ tmpKey: uploadSession.tmpKey });
-    for (const row of rows) await this.discardStaging(row.tmpKey);
-  }
-
-  /** Terminate one session (admin abort / staged part lost) and drop its staging artifacts. */
-  private async abortSession(id: bigint, reason: string) {
-    const [row] = await this.database.db
-      .update(uploadSession)
-      .set({
-        status: 'ABORTED',
-        errorReason: reason.slice(0, 255),
-        abortedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(uploadSession.id, id),
-          inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']),
-        ),
-      )
-      .returning({ tmpKey: uploadSession.tmpKey });
-    if (row) await this.discardStaging(row.tmpKey);
-  }
-
-  /** Restart an aborted session under its stable identity: fresh staging file, cleared outcome. */
-  private async resetForRetry(
-    session: typeof uploadSession.$inferSelect,
-  ): Promise<typeof uploadSession.$inferSelect> {
-    const [reset] = await this.database.db
-      .update(uploadSession)
-      .set({
-        status: 'UPLOADING',
-        tmpKey: randomUUID(),
-        digest: null,
-        result: null,
-        errorReason: null,
-        abortedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(uploadSession.id, session.id),
-          eq(uploadSession.status, 'ABORTED'),
-        ),
-      )
-      .returning();
-    await this.discardStaging(session.tmpKey);
-    return reset ?? session;
-  }
-
-  async cancel(userId: number, uploadId: string) {
-    return this.exclusive(uploadId, async () => {
-      const session = await this.owned(userId, uploadId);
-      if (session.status === 'COMPLETED') {
-        throw new BusinessException(
-          BusinessCode.ALREADY_EXISTS,
-          'completed upload cannot be cancelled',
-          409,
-        );
-      }
-      await this.abortSession(session.id, 'cancelled by user');
-      await this.batchExclusive(session.clientMessageId, () =>
-        this.messages.discardStaged(userId, session.clientMessageId),
-      );
-      return this.viewOf({
-        ...session,
-        status: 'ABORTED',
-        errorReason: 'cancelled by user',
-        abortedAt: new Date(),
-      });
-    });
-  }
-
-  /** Cancel every uncommitted part in a staged media batch. */
-  async cancelBatch(userId: number, clientMessageId: string) {
-    const cleanup: Array<{ uploadId: string; tmpKey: string }> = [];
-    try {
-      return await this.batchExclusive(clientMessageId, async () => {
-        const sessions = await this.database.db
-          .select()
-          .from(uploadSession)
-          .where(eq(uploadSession.clientMessageId, clientMessageId));
-        const owned = sessions.filter(
-          (session) => session.creatorId === userId,
-        );
-        if (owned.length === 0) {
-          const discardedStage = await this.messages.discardStaged(
-            userId,
-            clientMessageId,
-          );
-          if (!discardedStage) {
-            throw new BusinessException(
-              BusinessCode.NOT_FOUND,
-              'upload batch not found',
-              404,
-            );
-          }
-          return { clientMessageId, cancelled: 0 };
-        }
-        if (owned.some((session) => session.status === 'COMPLETED')) {
-          throw new BusinessException(
-            BusinessCode.ALREADY_EXISTS,
-            'completed upload batch cannot be cancelled',
-            409,
-          );
-        }
-        cleanup.push(
-          ...owned.map(({ uploadId, tmpKey }) => ({ uploadId, tmpKey })),
-        );
-        await this.database.db
-          .update(uploadSession)
-          .set({
-            status: 'ABORTED',
-            errorReason: 'cancelled by user',
-            abortedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              inArray(
-                uploadSession.id,
-                owned.map((session) => session.id),
-              ),
-              inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']),
-            ),
-          );
-        await this.messages.discardStaged(userId, clientMessageId);
-        return { clientMessageId, cancelled: owned.length };
-      });
-    } finally {
-      // Wait out any in-flight append before the final unlink. New append calls observe ABORTED.
-      for (const item of cleanup) {
-        await this.exclusive(item.uploadId, () =>
-          this.discardStaging(item.tmpKey),
-        );
-      }
+    for (const row of rows) {
+      this.stopActivity(row.id.toString());
+      await this.cleanupCompletedStaging(row.tmpKey);
     }
   }
 
-  /** Commit only the parts that have already reached COMPLETING, discarding unfinished parts. */
-  async sendCompleted(userId: number, clientMessageId: string) {
-    const cleanup: Array<{ uploadId: string; tmpKey: string }> = [];
+  /** Cleanup failure cannot undo an already committed task or message. */
+  private async cleanupCompletedStaging(tmpKey: string): Promise<void> {
     try {
-      return await this.batchExclusive(clientMessageId, async () => {
-        const sessions = await this.database.db
-          .select()
-          .from(uploadSession)
-          .where(eq(uploadSession.clientMessageId, clientMessageId))
-          .orderBy(asc(uploadSession.position));
-        const owned = sessions.filter(
-          (session) => session.creatorId === userId,
-        );
-        if (owned.length === 0) {
-          throw new BusinessException(
-            BusinessCode.NOT_FOUND,
-            'upload batch not found',
-            404,
-          );
-        }
-        if (
-          owned.some((session) => session.status === 'COMPLETED') &&
-          (await this.messages.findByClientMessageId(clientMessageId))
-        ) {
-          return { clientMessageId, sent: true, completed: owned.length };
-        }
-        const stageRow = await this.database.db.query.pendingMedia.findFirst({
-          where: eq(pendingMedia.clientMessageId, clientMessageId),
-        });
+      await this.discardStaging(tmpKey);
+    } catch (error) {
+      this.logger.error(
+        `Completed upload ${tmpKey} retains staging after cleanup failure`,
+        error,
+      );
+    }
+  }
+
+  /** Terminal errors never reset identity or remove potentially recoverable bytes. */
+  private async failSession(
+    id: bigint,
+    reason: string,
+    invalidMedia?: { outcome: 'invalid-media'; reason: string },
+  ) {
+    const rows = await this.database.db
+      .update(uploadSession)
+      .set({
+        status: 'FAILED',
+        errorReason: reason.slice(0, 255),
+        ...(invalidMedia ? { result: invalidMedia, digest: null } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(uploadSession.id, id), eq(uploadSession.status, 'PENDING')))
+      .returning({ id: uploadSession.id });
+    for (const row of rows) this.stopActivity(row.id.toString());
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : 'upload operation failed';
+  }
+
+  /** Explicit retry preserves identity and resumes only from a validated disk checkpoint. */
+  async retry(userId: number, taskId: string): Promise<UploadSessionView> {
+    return this.runTaskExecution(taskId, async () => {
+      const session = await this.owned(userId, taskId);
+      const cancelled = session.errorReason === 'USER_CANCELLED';
+      if (session.status !== 'FAILED') {
+        return this.viewOf(session);
+      }
+      const outcome = session.result as {
+        outcome?: string;
+        reason?: unknown;
+      } | null;
+      const invalidMediaReason =
+        outcome?.outcome === 'invalid-media' &&
+        typeof outcome.reason === 'string'
+          ? outcome.reason
+          : undefined;
+      if (session.pendingMediaId === null)
+        return this.invalid('upload task has no pending stage');
+      await this.requireStageForPart(userId, {
+        pendingMediaId: session.pendingMediaId,
+        position: session.position,
+        intent: session.partIntent as 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
+      });
+      await this.quota.assertCanSend(userId);
+      this.execution.assertCurrent();
+      let offset: bigint;
+      if (invalidMediaReason !== undefined || cancelled) {
+        // Explicit cancellation removed the checkpoint. Retry starts at zero, including after
+        // a partial cleanup failure. Ordinary missing checkpoints still remain errors.
+        if (cancelled) await this.cleanupCancelledSessions([session]);
+        else await this.discardStaging(session.tmpKey);
+        this.execution.assertCurrent();
+        await mkdir(this.tmpDir, { recursive: true });
+        await writeFile(this.partPath(session.tmpKey), Buffer.alloc(0));
+        await this.writeSidecar(session.tmpKey, 0n);
+        this.execution.assertCurrent();
+        offset = 0n;
+      } else {
+        offset = await this.alignPart(session);
+      }
+      this.execution.assertCurrent();
+      const [resumed] = await this.database.db
+        .update(uploadSession)
+        .set({
+          status: 'PENDING',
+          ...(invalidMediaReason !== undefined || cancelled
+            ? { digest: null, result: null }
+            : {}),
+          errorReason: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(uploadSession.id, session.id),
+            eq(uploadSession.status, session.status),
+          ),
+        )
+        .returning();
+      this.execution.assertCurrent();
+      if (!resumed) return this.invalid('upload state changed');
+      // Stable disk identity, fresh runtime identity. Old parsed bodies cannot enter this attempt.
+      this.stopActivity(taskId);
+      if (offset === session.totalBytes)
+        return this.completeLocked(userId, taskId);
+      this.watchWaiting(resumed);
+      return this.viewOf(resumed);
+    });
+  }
+
+  async retryForAdmin(taskId: string): Promise<UploadSessionView> {
+    const session = await this.database.db.query.uploadSession.findFirst({
+      where: eq(uploadSession.id, parseUploadTaskId(taskId)),
+    });
+    if (!session)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'upload not found',
+        404,
+      );
+    return this.retry(session.creatorId, taskId);
+  }
+
+  async stop(userId: number, taskId: string): Promise<UploadSessionView> {
+    return this.cancelExecution(userId, taskId, async () => {
+      const session = await this.owned(userId, taskId);
+      if (session.status === 'COMPLETED')
+        return this.invalid('completed upload cannot be stopped');
+      if (session.errorReason === 'USER_CANCELLED') return this.viewOf(session);
+      const [stopped] = await this.database.db
+        .update(uploadSession)
+        .set({
+          status: 'FAILED',
+          errorReason: 'USER_STOPPED',
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(uploadSession.id, session.id),
+            inArray(uploadSession.status, ['PENDING', 'FAILED']),
+          ),
+        )
+        .returning();
+      this.stopActivity(taskId);
+      return this.viewOf(stopped ?? session);
+    });
+  }
+
+  async cancel(userId: number, taskId: string) {
+    return this.cancelExecution(userId, taskId, async () => {
+      const session = await this.owned(userId, taskId);
+      if (session.status === 'COMPLETED' || session.messageId !== null)
+        return this.invalid('committed upload cannot be cancelled');
+      const [cancelled] = await this.database.db
+        .update(uploadSession)
+        .set({
+          status: 'FAILED',
+          errorReason: 'USER_CANCELLED',
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(uploadSession.id, session.id),
+            eq(uploadSession.status, session.status),
+          ),
+        )
+        .returning();
+      if (!cancelled) return this.invalid('upload state changed');
+      this.stopActivity(taskId);
+      await this.cleanupCancelledSessions([cancelled]);
+      return this.viewOf(cancelled);
+    });
+  }
+
+  /** A cancellation is durable even if cleanup fails; repeating it retries every artifact. */
+  private async cleanupCancelledSessions(
+    sessions: Array<{ tmpKey: string }>,
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      sessions.map((session) => this.discardStaging(session.tmpKey)),
+    );
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason as unknown] : [],
+    );
+    if (failures.length) {
+      const error = new AggregateError(
+        failures,
+        'cancelled upload cleanup failed',
+      );
+      this.logger.error(
+        'Cancelled uploads retain temporary artifacts after cleanup failure',
+        error,
+      );
+      throw error;
+    }
+  }
+
+  /** Cancel every uncommitted part and remove its temporary message stage. */
+  async cancelBatch(userId: number, clientMessageId: string) {
+    return this.cancelBatchExecution(
+      userId,
+      clientMessageId,
+      async (pendingMediaId) => {
+        const stageRow =
+          pendingMediaId === null
+            ? undefined
+            : await this.database.db.query.pendingMedia.findFirst({
+                where: eq(pendingMedia.id, pendingMediaId),
+              });
         const stage = stageRow
           ? requireOutboundPendingMedia(stageRow)
           : undefined;
@@ -672,113 +918,236 @@ export class ResumableUploadService {
             404,
           );
         }
-        const completed = owned.filter(
-          (session) =>
-            session.status === 'COMPLETING' && session.digest && session.result,
-        );
-        const discarded = owned.filter((item) => !completed.includes(item));
-        cleanup.push(
-          ...discarded.map(({ uploadId, tmpKey }) => ({ uploadId, tmpKey })),
-        );
-        if (discarded.length > 0) {
-          await this.database.db
-            .update(uploadSession)
-            .set({
-              status: 'ABORTED',
-              errorReason: 'discarded unfinished upload',
-              abortedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                inArray(
-                  uploadSession.id,
-                  discarded.map((item) => item.id),
-                ),
-                inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']),
-              ),
-            );
-          // Remove discarded rows before compacting positions. UploadSession has a unique
-          // (clientMessageId, position) key, so aborted siblings cannot collide with compaction.
-          await this.database.db.delete(uploadSession).where(
-            inArray(
-              uploadSession.id,
-              discarded.map((item) => item.id),
-            ),
+        // A deleted stage has no remaining cleanup work. Never select detached history
+        // by a client idempotency key, even when this command is repeated.
+        const sessions = await this.database.db
+          .select()
+          .from(uploadSession)
+          .where(eq(uploadSession.pendingMediaId, stage.id));
+        if (sessions.some((session) => session.creatorId !== userId))
+          return this.invalid('upload batch contains mixed owners');
+        const owned = sessions;
+        if (
+          owned.some(
+            (session) =>
+              session.status === 'COMPLETED' || session.messageId !== null,
+          )
+        ) {
+          throw new BusinessException(
+            BusinessCode.ALREADY_EXISTS,
+            'completed upload batch cannot be cancelled',
+            409,
           );
         }
-        if (completed.length === 0) {
-          await this.messages.discardStaged(userId, clientMessageId);
-          return { clientMessageId, sent: false, completed: 0 };
-        }
-        // Preserve original order while compacting retained positions to 0..N-1.
-        for (const [position, session] of completed.entries()) {
-          if (session.position !== position) {
-            await this.database.db
+        // Cancellation has invalidated and drained the prior execution. Persist the outcome
+        // before touching the filesystem so retry restarts at zero after cleanup.
+        await this.database.db.transaction(async (tx) => {
+          if (owned.length > 0) {
+            await tx
               .update(uploadSession)
-              .set({ position, updatedAt: new Date() })
-              .where(eq(uploadSession.id, session.id));
+              .set({
+                status: 'FAILED',
+                errorReason: 'USER_CANCELLED',
+                updatedAt: new Date(),
+              })
+              .where(
+                inArray(
+                  uploadSession.id,
+                  owned.map((session) => session.id),
+                ),
+              );
           }
+        });
+        for (const session of owned) this.stopActivity(session.id.toString());
+        await this.cleanupCancelledSessions(owned);
+        // Keep the coordinator and task associations until every artifact is gone.
+        // A cleanup failure or crash leaves enough identity for a repeated cancellation.
+        // The cancelling phase rejects retry until cleanup and deletion have finished.
+        if (stage) {
+          await this.database.db
+            .delete(pendingMedia)
+            .where(eq(pendingMedia.id, stage.id));
         }
-        await this.database.db
-          .update(pendingMedia)
-          .set({ fileCnt: completed.length, updatedAt: new Date() })
-          .where(eq(pendingMedia.id, stage.id));
-        const committed = await this.commitSelectedBatch(
-          clientMessageId,
+        return { clientMessageId, cancelled: owned.length };
+      },
+    );
+  }
+
+  /** Commit ready parts and retain stopped unfinished parts for inspection. */
+  async sendCompleted(userId: number, clientMessageId: string) {
+    return this.runBatchExecution(clientMessageId, async (pendingMediaId) => {
+      const stageRow =
+        pendingMediaId === null
+          ? undefined
+          : await this.database.db.query.pendingMedia.findFirst({
+              where: eq(pendingMedia.id, pendingMediaId),
+            });
+      if (!stageRow) return this.replayCompletedBatch(userId, clientMessageId);
+      const stage = stageRow
+        ? requireOutboundPendingMedia(stageRow)
+        : undefined;
+      if (
+        !stage ||
+        !(await this.messages.isAuthoredBy(
+          {
+            account: stage.creatorAccount,
+            namespaceId: stage.publisherNamespaceId,
+          },
           userId,
-          completed,
-        );
-        return {
-          clientMessageId,
-          sent: committed !== null,
-          completed: completed.length,
-        };
-      });
-    } finally {
-      for (const item of cleanup) {
-        await this.exclusive(item.uploadId, () =>
-          this.discardStaging(item.tmpKey),
+        ))
+      ) {
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          'upload batch not found',
+          404,
         );
       }
+      if (stage.status !== 'pending')
+        return this.invalid('media send is not pending');
+      const owned = await this.database.db
+        .select()
+        .from(uploadSession)
+        .where(eq(uploadSession.pendingMediaId, stage.id))
+        .orderBy(asc(uploadSession.position));
+      if (owned.some((session) => session.creatorId !== userId))
+        return this.invalid('upload batch contains mixed owners');
+      const completed = owned.filter(
+        (session) =>
+          session.status === 'PENDING' && session.digest && session.result,
+      );
+      const discarded = owned.filter(
+        (item) =>
+          !completed.includes(item) && item.errorReason !== 'USER_CANCELLED',
+      );
+      if (discarded.length > 0) {
+        await this.database.db
+          .update(uploadSession)
+          .set({
+            status: 'FAILED',
+            errorReason: 'USER_STOPPED',
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              inArray(
+                uploadSession.id,
+                discarded.map((item) => item.id),
+              ),
+              inArray(uploadSession.status, ['PENDING', 'FAILED']),
+            ),
+          );
+      }
+      for (const session of discarded) this.stopActivity(session.id.toString());
+      if (completed.length === 0) {
+        return { clientMessageId, sent: false, completed: 0 };
+      }
+      // Keep original positions/identities. The selected payload array already preserves order.
+      await this.database.db
+        .update(pendingMedia)
+        .set({ fileCnt: completed.length, updatedAt: new Date() })
+        .where(eq(pendingMedia.id, stage.id));
+      await this.commitSelectedBatch(stage.id, userId, completed).catch(
+        async (error: unknown) => {
+          // Keep the original batch retryable if selected publication did not commit.
+          await this.database.db
+            .update(pendingMedia)
+            .set({ fileCnt: stage.fileCnt, updatedAt: new Date() })
+            .where(eq(pendingMedia.id, stage.id));
+          for (const session of completed)
+            await this.failSession(session.id, this.errorMessage(error));
+          throw error;
+        },
+      );
+      return {
+        clientMessageId,
+        sent: true,
+        completed: completed.length,
+      };
+    });
+  }
+
+  private async replayCompletedBatch(userId: number, clientMessageId: string) {
+    // Resolve the send idempotency key once, then follow direct task ownership.
+    // Digest usage and detached task history cannot establish a batch result.
+    const committed = await this.database.db.query.message.findFirst({
+      where: eq(message.clientMessageId, clientMessageId),
+    });
+    if (
+      !committed ||
+      committed.creatorAccount === null ||
+      !(await this.messages.isAuthoredBy(
+        {
+          account: committed.creatorAccount,
+          namespaceId: committed.publisherNamespaceId,
+        },
+        userId,
+      ))
+    ) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'upload batch not found',
+        404,
+      );
     }
+    const tasks = await this.database.db
+      .select()
+      .from(uploadSession)
+      .where(eq(uploadSession.messageId, committed.id));
+    if (tasks.length === 0)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'upload batch not found',
+        404,
+      );
+    if (
+      tasks.some(
+        (task) => task.creatorId !== userId || task.status !== 'COMPLETED',
+      )
+    )
+      return this.invalid(
+        'committed upload task ownership or outcome is invalid',
+      );
+    return { clientMessageId, sent: true, completed: tasks.length };
   }
 
   private async commitSelectedBatch(
-    clientMessageId: string,
+    pendingMediaId: bigint,
     userId: number,
     sessions: Array<typeof uploadSession.$inferSelect>,
   ) {
     for (const session of sessions) {
+      this.execution.assertCurrent();
       const payload = (session.result as { payload: OutboundFilePayload })
         .payload;
       payload.localMeta = await this.upload.prepareStagedMetadata(
         this.partPath(session.tmpKey),
         session.digest!,
         payload.localMeta,
+        this.execution.signal(),
       );
-      if (!this.upload.casShardExists(session.digest!)) {
-        await this.upload.landStagedPart(
-          this.partPath(session.tmpKey),
-          session.digest!,
-        );
-      }
+      this.execution.assertCurrent();
+      await this.upload.landStagedPart(
+        this.partPath(session.tmpKey),
+        session.digest!,
+      );
     }
+    this.execution.beginCommit();
     const committed = await this.messages.commitOutboundBatch(
-      clientMessageId,
+      pendingMediaId,
       userId,
       sessions.map((session) => ({
+        sessionId: session.id,
         digest: session.digest!,
         payload: (session.result as { payload: OutboundFilePayload }).payload,
       })),
     );
-    if (committed) await this.finalizeCommittedSessions(clientMessageId);
+    await this.cleanupCommittedSessions(sessions.map((session) => session.id));
     return committed;
   }
 
   async listForAdmin(query: { skip?: number; take?: number; userId?: number }) {
     const where = and(
-      inArray(uploadSession.status, ['UPLOADING', 'COMPLETING', 'ABORTED']),
+      inArray(uploadSession.status, ['PENDING', 'FAILED']),
       query.userId === undefined
         ? undefined
         : eq(uploadSession.creatorId, query.userId),
@@ -786,7 +1155,7 @@ export class ResumableUploadService {
     const [rows, [aggregate]] = await Promise.all([
       this.database.db
         .select({
-          uploadId: uploadSession.uploadId,
+          id: uploadSession.id,
           creatorId: uploadSession.creatorId,
           digest: uploadSession.digest,
           bytes: uploadSession.totalBytes,
@@ -810,70 +1179,40 @@ export class ResumableUploadService {
       ...aggregate,
       list: await Promise.all(
         rows.map(async (row) => ({
-          uploadId: row.uploadId,
+          id: row.id.toString(),
           userId: row.creatorId,
           digest: row.digest,
           bytes: row.bytes.toString(),
           status: row.status,
-          bytesReceived: (
-            await this.readSidecarOffset({
-              tmpKey: row.tmpKey,
-              totalBytes: row.bytes,
-            } as typeof uploadSession.$inferSelect)
-          ).toString(),
+          bytesReceived: await this.readSidecarOffset({
+            tmpKey: row.tmpKey,
+            totalBytes: row.bytes,
+          })
+            .then((offset) => offset.toString())
+            .catch(() => null),
         })),
       ),
     };
   }
 
-  /** Stop a complete staged batch: partial cancellation cannot leave an uncommittable sibling set. */
-  async stopForAdmin(uploadId: string) {
+  /** Stop only the selected task; siblings remain available at the batch barrier. */
+  async stopForAdmin(taskId: string): Promise<UploadSessionView> {
     const session = await this.database.db.query.uploadSession.findFirst({
-      where: eq(uploadSession.uploadId, uploadId),
+      where: eq(uploadSession.id, parseUploadTaskId(taskId)),
     });
-    if (!session) return { removed: 0 };
-    await this.cancelBatch(session.creatorId, session.clientMessageId);
-    const rows = await this.database.db
-      .select({
-        uploadId: uploadSession.uploadId,
-        tmpKey: uploadSession.tmpKey,
-      })
-      .from(uploadSession)
-      .where(
-        and(
-          eq(uploadSession.clientMessageId, session.clientMessageId),
-          eq(uploadSession.status, 'ABORTED'),
-        ),
+    if (!session)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'upload not found',
+        404,
       );
-    for (const row of rows) {
-      await this.exclusive(row.uploadId, async () => {
-        // Only ENOENT is success. Keep the row on an IO failure so cleanup remains retryable.
-        for (const path of [
-          this.partPath(row.tmpKey),
-          this.sidecarPath(row.tmpKey),
-          `${this.sidecarPath(row.tmpKey)}.tmp`,
-        ]) {
-          await unlink(path).catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== 'ENOENT') throw error;
-          });
-        }
-        await this.database.db
-          .delete(uploadSession)
-          .where(
-            and(
-              eq(uploadSession.uploadId, row.uploadId),
-              eq(uploadSession.status, 'ABORTED'),
-            ),
-          );
-      });
-    }
-    return { removed: rows.length };
+    return this.stop(session.creatorId, taskId);
   }
 
-  private async owned(userId: number, uploadId: string) {
+  private async owned(userId: number, taskId: string) {
     const session = await this.database.db.query.uploadSession.findFirst({
       where: and(
-        eq(uploadSession.uploadId, uploadId),
+        eq(uploadSession.id, parseUploadTaskId(taskId)),
         eq(uploadSession.creatorId, userId),
       ),
     });
@@ -893,25 +1232,33 @@ export class ResumableUploadService {
     const stored = session.result as {
       payload?: OutboundFilePayload;
     } | null;
+    // Unknown progress is null, never a fabricated zero that invites a destructive restart.
     const offset =
-      session.status === 'COMPLETED' || session.status === 'COMPLETING'
+      session.status === 'COMPLETED'
         ? session.totalBytes
-        : session.status === 'ABORTED'
-          ? 0n
-          : await this.readSidecarOffset(session);
+        : await this.readSidecarOffset(session).catch(() => null);
     const result = stored?.payload ? { ...stored.payload } : undefined;
     if (result) delete result.localMeta;
     return {
-      uploadId: session.uploadId,
-      clientMessageId: session.clientMessageId,
+      id: session.id.toString(),
       partId: session.partId,
       position: session.position,
       originalName: session.originalName,
       mimeType: session.mimeType,
       totalBytes: Number(session.totalBytes),
-      offset: Number(offset),
+      offset: offset === null ? null : Number(offset),
       chunkSize: RESUMABLE_CHUNK_SIZE,
-      status: session.status,
+      ...(session.status === 'PENDING'
+        ? {
+            status: session.status,
+            phase:
+              offset === session.totalBytes ||
+              (session.digest && stored?.payload)
+                ? ('COMPLETING' as const)
+                : ('UPLOADING' as const),
+          }
+        : { status: session.status }),
+      ...(session.errorReason ? { errorReason: session.errorReason } : {}),
       ...(result ? { result } : {}),
     };
   }
@@ -930,37 +1277,53 @@ export class ResumableUploadService {
     return join(this.tmpDir, `${tmpKey}.resume.json`);
   }
 
-  /** Authoritative committed offset. A missing/corrupt sidecar means zero: the safe direction is
-   *  re-sending chunks (alignPart truncates any uncommitted surplus bytes). */
   private async readSidecarOffset(
-    session: typeof uploadSession.$inferSelect,
+    session: Pick<typeof uploadSession.$inferSelect, 'tmpKey' | 'totalBytes'>,
   ): Promise<bigint> {
-    try {
-      const meta = JSON.parse(
-        await readFile(this.sidecarPath(session.tmpKey), 'utf8'),
-      ) as { version?: number; offset?: number };
-      if (
-        meta.version !== 1 ||
-        !Number.isSafeInteger(meta.offset) ||
-        meta.offset! < 0
-      ) {
-        return 0n;
-      }
-      const offset = BigInt(meta.offset!);
-      return offset > session.totalBytes ? 0n : offset;
-    } catch {
-      return 0n;
-    }
+    return (await this.readSidecar(session)).offset;
   }
 
-  /** Atomically rewrite the sidecar AFTER the bytes landed (write tmp + rename). */
-  private async writeSidecar(tmpKey: string, offset: bigint) {
-    const tmp = `${this.sidecarPath(tmpKey)}.tmp`;
-    await writeFile(
-      tmp,
-      JSON.stringify({ version: 1, offset: Number(offset) }),
+  /** Missing, corrupt, or out-of-bounds checkpoints are errors, not permission to reset. */
+  private async readSidecar(
+    session: Pick<typeof uploadSession.$inferSelect, 'tmpKey' | 'totalBytes'>,
+  ): Promise<{ offset: bigint; digest?: string }> {
+    const checkpointPath = this.sidecarPath(session.tmpKey);
+    if (!(await lstat(checkpointPath)).isFile())
+      throw new Error('resumable checkpoint is not a regular file');
+    const meta: unknown = JSON.parse(await readFile(checkpointPath, 'utf8'));
+    if (
+      !meta ||
+      typeof meta !== 'object' ||
+      Array.isArray(meta) ||
+      Object.keys(meta).some((key) => key !== 'offset' && key !== 'digest') ||
+      !('offset' in meta) ||
+      typeof meta.offset !== 'number' ||
+      !Number.isSafeInteger(meta.offset) ||
+      meta.offset < 0 ||
+      BigInt(meta.offset) > session.totalBytes ||
+      ('digest' in meta &&
+        (typeof meta.digest !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(meta.digest) ||
+          BigInt(meta.offset) !== session.totalBytes))
+    ) {
+      throw new Error('invalid resumable upload checkpoint');
+    }
+    return {
+      offset: BigInt(meta.offset),
+      ...('digest' in meta ? { digest: meta.digest as string } : {}),
+    };
+  }
+
+  /** Atomically rewrite the checkpoint; digest is present only after full-file hashing. */
+  private async writeSidecar(tmpKey: string, offset: bigint, digest?: string) {
+    if (digest !== undefined && !/^[0-9a-f]{64}$/.test(digest)) {
+      throw new Error('invalid upload checkpoint digest');
+    }
+    await writeCheckpoint(
+      this.sidecarPath(tmpKey),
+      JSON.stringify({ offset: Number(offset), ...(digest ? { digest } : {}) }),
+      this.partPath(tmpKey),
     );
-    await rename(tmp, this.sidecarPath(tmpKey));
   }
 
   /** Align the staged file to the sidecar offset. Longer → truncate the uncommitted surplus
@@ -970,15 +1333,10 @@ export class ResumableUploadService {
   ): Promise<bigint> {
     const offset = await this.readSidecarOffset(session);
     const path = this.partPath(session.tmpKey);
-    const actual = await stat(path)
-      .then((s) => s.size)
-      .catch(() => -1);
-    if (actual < 0) {
-      if (offset === 0n) return 0n;
-      throw new Error(
-        'resumable temporary file is shorter than committed offset',
-      );
-    }
+    const entry = await lstat(path);
+    if (!entry.isFile())
+      throw new Error('resumable temporary file is not a regular file');
+    const actual = entry.size;
     if (BigInt(actual) > offset) {
       await truncate(path, Number(offset));
     } else if (BigInt(actual) < offset) {
@@ -989,48 +1347,162 @@ export class ResumableUploadService {
     return offset;
   }
 
-  /** Best-effort removal of both staging artifacts for a tmpKey. */
-  private async discardStaging(tmpKey: string) {
-    await Promise.all([
-      unlink(this.partPath(tmpKey)).catch(() => undefined),
-      unlink(this.sidecarPath(tmpKey)).catch(() => undefined),
+  /** Strict cleanup; the owning lifecycle decides whether a committed result may still succeed. */
+  private async discardStaging(tmpKey: string): Promise<void> {
+    await removeStagingFiles([
+      this.partPath(tmpKey),
+      this.sidecarPath(tmpKey),
+      `${this.sidecarPath(tmpKey)}.tmp`,
     ]);
   }
 
-  private async exclusive<T>(
+  /** Reject requests whose captured attempt was superseded during asynchronous admission. */
+  private async runAttemptExecution<T>(
+    taskId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const generation = this.generations.get(taskId) ?? 0;
+    return this.runTaskExecution(taskId, () => {
+      if ((this.generations.get(taskId) ?? 0) !== generation) {
+        return this.invalid('upload attempt changed');
+      }
+      return operation();
+    });
+  }
+
+  private async runTaskExecution<T>(
     key: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    return this.withAdvisoryLock(`upload:${key}`, operation);
+    const session = await this.database.db.query.uploadSession.findFirst({
+      where: eq(uploadSession.id, parseUploadTaskId(key)),
+    });
+    if (!session)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'upload not found',
+        404,
+      );
+    const executionKey = this.taskExecutionKey(session);
+    const outcome = await this.execution.run(
+      executionKey,
+      async () => {
+        const current = await this.database.db.query.uploadSession.findFirst({
+          where: eq(uploadSession.id, parseUploadTaskId(key)),
+        });
+        if (!current)
+          throw new BusinessException(
+            BusinessCode.NOT_FOUND,
+            'upload not found',
+            404,
+          );
+        // Revalidate the ownership snapshot after asynchronous lookup.
+        if (this.taskExecutionKey(current) !== executionKey)
+          return { changed: true } as const;
+        try {
+          this.execution.assertCurrent();
+          return { changed: false, value: await operation() } as const;
+        } catch (error) {
+          // A superseded execution cannot publish its failure over cancellation.
+          this.execution.assertCurrent();
+          // Request validation/conflicts are not terminal execution failures.
+          if (!(error instanceof BusinessException)) {
+            await this.failSession(current.id, this.errorMessage(error));
+          }
+          throw error;
+        }
+      },
+      key,
+    );
+    return outcome.changed
+      ? this.runTaskExecution(key, operation)
+      : outcome.value;
   }
 
-  private async batchExclusive<T>(
+  /** Administrative deletion uses the same cancellation transition as the upload owner. */
+  async cancelTemporaryUpload(tmpKey: string): Promise<boolean> {
+    const session = await this.database.db.query.uploadSession.findFirst({
+      where: eq(uploadSession.tmpKey, tmpKey),
+      columns: { creatorId: true, id: true },
+    });
+    if (!session) return false;
+    await this.cancel(session.creatorId, session.id.toString());
+    return true;
+  }
+
+  private taskExecutionKey(session: {
+    id: bigint;
+    pendingMediaId: bigint | null;
+  }): string {
+    return session.pendingMediaId === null
+      ? `upload:${session.id}`
+      : `stage:${session.pendingMediaId}`;
+  }
+
+  private async runBatchExecution<T>(
     clientMessageId: string,
-    operation: () => Promise<T>,
+    operation: (pendingMediaId: bigint | null) => Promise<T>,
   ): Promise<T> {
-    return this.withAdvisoryLock(`batch:${clientMessageId}`, operation);
+    const stage = await this.database.db.query.pendingMedia.findFirst({
+      where: eq(pendingMedia.clientMessageId, clientMessageId),
+      columns: { id: true },
+    });
+    // Capture once; never redirect this command to a replacement stage.
+    if (!stage) return operation(null);
+    return this.execution.run(`stage:${stage.id}`, () => operation(stage.id));
   }
 
-  private async withAdvisoryLock<T>(
-    key: string,
+  private async cancelExecution<T>(
+    userId: number,
+    taskId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    const previous = this.locks.get(key) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => (release = resolve));
-    const tail = previous.then(() => current);
-    this.locks.set(key, tail);
-    await previous;
-    try {
-      // The local queue avoids duplicate work in one process; the advisory transaction lock extends
-      // the same exclusion across horizontally-scaled API instances sharing the temp volume.
-      return await this.database.db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`);
-        return operation();
-      });
-    } finally {
-      release();
-      if (this.locks.get(key) === tail) this.locks.delete(key);
-    }
+    const session = await this.owned(userId, taskId);
+    return this.execution.cancel(
+      this.taskExecutionKey(session),
+      operation,
+      () => this.stopActivity(taskId),
+      taskId,
+    );
+  }
+
+  private async cancelBatchExecution<T>(
+    userId: number,
+    clientMessageId: string,
+    operation: (pendingMediaId: bigint | null) => Promise<T>,
+  ): Promise<T> {
+    const stage = await this.database.db.query.pendingMedia.findFirst({
+      where: eq(pendingMedia.clientMessageId, clientMessageId),
+    });
+    if (!stage) return operation(null);
+    if (
+      stage.direction !== 'OUTBOUND' ||
+      stage.creatorAccount === null ||
+      !(await this.messages.isAuthoredBy(
+        {
+          account: stage.creatorAccount,
+          namespaceId: stage.publisherNamespaceId,
+        },
+        userId,
+      ))
+    )
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'upload batch not found',
+        404,
+      );
+    const tasks = await this.database.db
+      .select()
+      .from(uploadSession)
+      .where(eq(uploadSession.pendingMediaId, stage.id));
+    if (tasks.some((task) => task.creatorId !== userId))
+      return this.invalid('upload batch contains mixed owners');
+    return this.execution.cancel(
+      `stage:${stage.id}`,
+      () => operation(stage.id),
+      () => {
+        for (const task of tasks) this.stopActivity(task.id.toString());
+      },
+    );
   }
 }

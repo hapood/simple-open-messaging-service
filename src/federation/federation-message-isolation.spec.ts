@@ -396,9 +396,13 @@ describe('federation message context isolation', () => {
   );
 
   it('does not publish realtime effects for a committed historical message', async () => {
-    const service = Object.create(
-      FederationInboundMessageEffectsService.prototype,
-    ) as FederationInboundMessageEffectsService & Record<string, unknown>;
+    const service = new FederationInboundMessageEffectsService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
     const rebuildUntrustedCards = vi.fn();
     const localizeForwardAssets = vi.fn();
     const runFileSyncBatch = vi.fn();
@@ -435,9 +439,13 @@ describe('federation message context isolation', () => {
   });
 
   it('executes profile fetch and evidence work carried by the committed message effect', async () => {
-    const service = Object.create(
-      FederationInboundMessageEffectsService.prototype,
-    ) as FederationInboundMessageEffectsService & Record<string, unknown>;
+    const service = new FederationInboundMessageEffectsService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
     const resolveDemand = vi.fn().mockResolvedValue(undefined);
     const resolveEvidence = vi.fn().mockResolvedValue(undefined);
     const demand = {
@@ -499,9 +507,13 @@ describe('federation message context isolation', () => {
   ] as const)(
     'applies the %s forwarded-resource policy after bundle import',
     async (policy, expectedCalls) => {
-      const service = Object.create(
-        FederationInboundMessageEffectsService.prototype,
-      ) as FederationInboundMessageEffectsService & Record<string, unknown>;
+      const service = new FederationInboundMessageEffectsService(
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
       const rebuildUntrustedCards = vi.fn().mockResolvedValue(undefined);
       Object.assign(service, {
         config: { forwardedResourcePolicy: policy },
@@ -535,9 +547,13 @@ describe('federation message context isolation', () => {
   );
 
   it('leaves live-message device notifications to durable fanout', async () => {
-    const service = Object.create(
-      FederationInboundMessageEffectsService.prototype,
-    ) as FederationInboundMessageEffectsService & Record<string, unknown>;
+    const service = new FederationInboundMessageEffectsService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
     const rebuildUntrustedCards = vi.fn();
     const localizeForwardAssets = vi.fn();
     const runFileSyncBatch = vi.fn();

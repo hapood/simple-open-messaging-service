@@ -14,6 +14,7 @@ import {
   deletedMessage,
   messageThread,
   pendingMedia,
+  uploadSession,
   fileSyncProgress,
   federationThreadHistoryGap,
   profileTable,
@@ -33,7 +34,6 @@ import {
   eq,
   gt,
   inArray,
-  isNotNull,
   gte,
   lt,
   lte,
@@ -739,7 +739,6 @@ export class MessageService {
     contentType: ContentType,
     clientMessageId: string,
     fileCnt = 1,
-    retry = false,
     quoteTargetSeq?: number,
   ): Promise<{ clientMessageId: string }> {
     const author = await this.localAuthor(userId);
@@ -822,130 +821,21 @@ export class MessageService {
         'invalid clientMessageId',
       );
     }
-    if (retry && existing.status === 'failed') {
-      await this.database.db
-        .update(pendingMedia)
-        .set({
-          status: 'pending',
-          failReason: null,
-          content: JSON.stringify(
-            quoteTargetSeq === undefined
-              ? {}
-              : { _quoteTargetSeq: quoteTargetSeq },
-          ),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(pendingMedia.id, existing.id),
-            eq(pendingMedia.status, 'failed'),
-          ),
-        );
-    }
     return { clientMessageId };
-  }
-
-  /** Persist the terminal outcome of a local upload attempt. Ownership is part of the update predicate:
-   *  a guessed clientMessageId can never alter another user's stage. */
-  async failStaged(
-    userId: number,
-    clientMessageId: string,
-    reason: string,
-  ): Promise<void> {
-    const author = await this.localAuthor(userId);
-    await this.database.db
-      .update(pendingMedia)
-      .set({
-        status: 'failed',
-        failReason: reason.slice(0, 255),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(pendingMedia.clientMessageId, clientMessageId),
-          eq(pendingMedia.creatorAccount, author.account),
-          eq(pendingMedia.publisherNamespaceId, author.namespaceId),
-          eq(pendingMedia.status, 'pending'),
-        ),
-      );
-  }
-
-  /** Recoverable server-side state for refresh/cross-device reconciliation. */
-  async queryMediaStages(userId: number, threadId: number) {
-    const author = await this.localAuthor(userId);
-    return this.database.db.query.pendingMedia.findMany({
-      where: and(
-        eq(pendingMedia.threadId, threadId),
-        eq(pendingMedia.creatorAccount, author.account),
-        eq(pendingMedia.publisherNamespaceId, author.namespaceId),
-        isNotNull(pendingMedia.clientMessageId),
-      ),
-      columns: {
-        clientMessageId: true,
-        contentType: true,
-        content: true,
-        status: true,
-        failReason: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-      orderBy: asc(pendingMedia.createdAt),
-    });
-  }
-
-  /** Delete an uncommitted outbound stage owned by the caller. Idempotent. */
-  async discardStaged(
-    userId: number,
-    clientMessageId: string,
-  ): Promise<boolean> {
-    const author = await this.localAuthor(userId);
-    const rows = await this.database.db
-      .delete(pendingMedia)
-      .where(
-        and(
-          eq(pendingMedia.clientMessageId, clientMessageId),
-          eq(pendingMedia.creatorAccount, author.account),
-          eq(pendingMedia.publisherNamespaceId, author.namespaceId),
-        ),
-      )
-      .returning({ id: pendingMedia.id });
-    return rows.length > 0;
-  }
-
-  /** The staged message-level contentType for a pending outbound batch (the upload `intent`), or null
-   *  when there is no pending stage for this clientMessageId/user. The type-agnostic upload route uses
-   *  this to gate family detection (IMAGE→FILE fallback, VIDEO/AUDIO container checks). */
-  async getStagedIntent(
-    clientMessageId: string,
-    userId: number,
-  ): Promise<ContentType | null> {
-    const author = await this.localAuthor(userId);
-    const stage = await this.database.db.query.pendingMedia.findFirst({
-      where: and(
-        eq(pendingMedia.clientMessageId, clientMessageId),
-        eq(pendingMedia.creatorAccount, author.account),
-        eq(pendingMedia.publisherNamespaceId, author.namespaceId),
-      ),
-      columns: { contentType: true, status: true },
-    });
-    if (!stage || stage.status !== 'pending') return null;
-    return stage.contentType;
   }
 
   /** Align the staged message type with the detected attachment family, including FILE→media
    * promotion and IMAGE→FILE fallback for formats that cannot inline-render.
    * Valid only for N=1, where no sibling part can race the contentType swap. */
   async updateStagedContentType(
-    clientMessageId: string,
+    pendingMediaId: bigint,
     userId: number,
     contentType: ContentType,
   ): Promise<void> {
     const author = await this.localAuthor(userId);
     const stage = await this.database.db.query.pendingMedia.findFirst({
       where: and(
-        eq(pendingMedia.clientMessageId, clientMessageId),
+        eq(pendingMedia.id, pendingMediaId),
         eq(pendingMedia.creatorAccount, author.account),
         eq(pendingMedia.publisherNamespaceId, author.namespaceId),
       ),
@@ -967,36 +857,121 @@ export class MessageService {
       );
   }
 
+  /** Resolve replay only from the exact owned task set, never from a client request identifier. */
+  private async committedUploadMessage(
+    items: ReadonlyArray<{ sessionId: bigint; digest: string }>,
+    userId: number | undefined,
+  ): Promise<PublicMessage | null> {
+    const tasks = await this.database.db.query.uploadSession.findMany({
+      where: inArray(
+        uploadSession.id,
+        items.map((item) => item.sessionId),
+      ),
+      columns: {
+        id: true,
+        creatorId: true,
+        digest: true,
+        messageId: true,
+        status: true,
+      },
+    });
+    if (
+      tasks.length !== items.length ||
+      items.some((item) => {
+        const task = tasks.find((task) => task.id === item.sessionId);
+        return (
+          !task ||
+          task.digest !== item.digest ||
+          (userId !== undefined && task.creatorId !== userId)
+        );
+      }) ||
+      new Set(tasks.map((task) => task.creatorId)).size !== 1
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid upload task ownership or digest',
+      );
+    }
+    if (
+      tasks.every(
+        (task) => task.messageId === null && task.status !== 'COMPLETED',
+      )
+    )
+      return null;
+    const messageId = tasks[0].messageId;
+    if (
+      messageId === null ||
+      tasks.some(
+        (task) => task.messageId !== messageId || task.status !== 'COMPLETED',
+      )
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'upload tasks do not share a committed message',
+      );
+    }
+    const committed = await this.database.db.query.message.findFirst({
+      where: eq(message.id, messageId),
+    });
+    if (!committed) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'committed upload message is missing',
+      );
+    }
+    return stripMessageId(committed);
+  }
+
   /**
    * Batch-commit model for the resumable path (replaces the per-file FSP barrier): the caller (the
    * upload domain) has verified every staged part, moved the bytes into the CAS shard tree, and
    * passes the per-file payloads ordered by position. This method owns the single database
-   * transaction that turns the staged message into a real Message: win-guarded stage deletion,
+   * transaction that turns the staged message into a real Message: exclusive stage claim,
    * membership check, seq allocation, Message + messageAsset rows, the MediaAsset liveness claims,
    * and the fan-out enqueue. Idempotent: a retry that finds the Message already committed returns
-   * it with newlyPromoted=false; a caller that lost the win-guard race gets null.
+   * it with newlyPromoted=false. Missing staging without a committed task result is an error.
    */
   async commitOutboundBatch(
-    clientMessageId: string,
+    pendingMediaId: bigint,
     userId: number | undefined,
-    items: Array<{ digest: string; payload: OutboundFilePayload }>,
-  ): Promise<{ message: PublicMessage; newlyPromoted: boolean } | null> {
-    const committed = await this.findByClientMessageId(clientMessageId);
+    items: Array<{
+      sessionId: bigint;
+      digest: string;
+      payload: OutboundFilePayload;
+    }>,
+  ): Promise<{ message: PublicMessage; newlyPromoted: boolean }> {
+    if (
+      items.length === 0 ||
+      new Set(items.map((item) => item.sessionId)).size !== items.length
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'commit requires distinct upload tasks',
+      );
+    }
+    const committed = await this.committedUploadMessage(items, userId);
     if (committed) return { message: committed, newlyPromoted: false };
-    // Ownership is part of the lookup predicate: a guessed clientMessageId can never commit another
-    // user's stage. Without a user context (internal recovery) the stage is taken as-is.
+    // Task and stage ownership are checked independently. Client request identifiers
+    // are message idempotency metadata, never the upload-to-stage association.
     const author = userId !== undefined ? await this.localAuthor(userId) : null;
     const stageRow = await this.database.db.query.pendingMedia.findFirst({
       where: author
         ? and(
-            eq(pendingMedia.clientMessageId, clientMessageId),
+            eq(pendingMedia.id, pendingMediaId),
             eq(pendingMedia.creatorAccount, author.account),
             eq(pendingMedia.publisherNamespaceId, author.namespaceId),
           )
-        : eq(pendingMedia.clientMessageId, clientMessageId),
+        : eq(pendingMedia.id, pendingMediaId),
     });
     const stage = stageRow ? requireOutboundPendingMedia(stageRow) : undefined;
-    if (!stage || stage.status !== 'pending') return null;
+    if (!stage || stage.status !== 'pending') {
+      const winner = await this.committedUploadMessage(items, userId);
+      if (winner) return { message: winner, newlyPromoted: false };
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'upload stage is missing or not ready for commit',
+      );
+    }
     if (items.length !== stage.fileCnt) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
@@ -1012,18 +987,14 @@ export class MessageService {
       created = await this.previews.commitMessage(
         stage.threadId,
         async (tx) => {
-          // Win-guard: only the caller that deletes the still-pending stage commits. A concurrent
-          // winner already deleted it → RETURNING is empty → this caller returns null.
-          const [winner] = await tx
-            .delete(pendingMedia)
-            .where(
-              and(
-                eq(pendingMedia.id, stage.id),
-                eq(pendingMedia.status, 'pending'),
-              ),
-            )
-            .returning({ id: pendingMedia.id });
-          if (!winner) return null;
+          // Physical deletion follows message publication. FOR UPDATE is required here to
+          // exclude FK admissions of new upload parts until ownership is transferred and the
+          // stage is deleted; a non-key lock would still allow those admissions.
+          const lockedStage = await tx.execute(sql`
+            SELECT id FROM "PendingMedia"
+            WHERE id = ${stage.id} AND status = 'pending' FOR UPDATE
+          `);
+          if (lockedStage.rows.length === 0) return null;
           const creator = await tx.query.account.findFirst({
             where: and(
               eq(user.account, stage.creatorAccount),
@@ -1189,7 +1160,7 @@ export class MessageService {
                 AND account."namespaceId" = ${stage.publisherNamespaceId}
               LIMIT 1
             )`,
-              clientMessageId,
+              clientMessageId: stage.clientMessageId,
               seq,
               originSeq:
                 participant.authorityNamespaceId > 0 ||
@@ -1226,18 +1197,56 @@ export class MessageService {
               })),
             );
           }
+          // Transfer ownership before removing temporary staging. Both operations roll back
+          // with the message and its assets if any later transaction work fails.
+          for (const item of items) {
+            const completed = await tx
+              .update(uploadSession)
+              .set({
+                messageId: msg.id,
+                pendingMediaId: null,
+                status: 'COMPLETED',
+                errorReason: null,
+                completedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(uploadSession.id, item.sessionId),
+                  eq(uploadSession.pendingMediaId, stage.id),
+                  eq(uploadSession.creatorId, creatorUserId),
+                  eq(uploadSession.digest, item.digest),
+                ),
+              )
+              .returning({ id: uploadSession.id });
+            if (completed.length !== 1) {
+              throw new BusinessException(
+                BusinessCode.VALIDATION_FAILED,
+                'upload task does not belong to the staged message',
+              );
+            }
+          }
+          await tx.delete(pendingMedia).where(eq(pendingMedia.id, stage.id));
           return stripMessageId(msg);
         },
       );
     } catch (e) {
       // Concurrent retry race (P2002 on clientMessageId) → return the winner rather than surfacing.
       if (isUniqueViolation(e)) {
-        const winner = await this.findByClientMessageId(clientMessageId);
+        const winner = await this.committedUploadMessage(items, userId);
         if (winner !== null) return { message: winner, newlyPromoted: false };
       }
       throw e;
     }
-    if (created === null) return null; // lost the commit race
+    if (created === null) {
+      // Re-read after the lock wait/transaction, when a concurrent winner is visible.
+      const winner = await this.committedUploadMessage(items, userId);
+      if (winner) return { message: winner, newlyPromoted: false };
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'upload stage disappeared without a committed message',
+      );
+    }
     await this.publishCommittedProfileWork(created);
     return { message: created, newlyPromoted: true };
   }
@@ -1840,7 +1849,7 @@ export class MessageService {
       for (const d of ds) allDigests.add(d);
     }
     const ids = msgs.map((m) => m.id);
-    const [authRows, assetRows, pendingRows] = await Promise.all([
+    const [authRows, assetRows, failedTasks] = await Promise.all([
       this.database.db.query.messageAsset.findMany({
         where: inArray(messageAsset.messageId, ids),
         columns: { messageId: true, digest: true },
@@ -1858,12 +1867,12 @@ export class MessageService {
             where: inArray(mediaAsset.digest, [...allDigests]),
             columns: { digest: true, isDeleted: true, meta: true, bytes: true },
           }),
-      this.database.db.query.pendingMedia.findMany({
+      this.database.db.query.fileSyncProgress.findMany({
         where: and(
-          eq(pendingMedia.direction, 'INBOUND'),
-          inArray(pendingMedia.messageId, ids),
+          inArray(fileSyncProgress.messageId, ids),
+          eq(fileSyncProgress.status, 'FAILED'),
         ),
-        columns: { messageId: true, status: true },
+        columns: { messageId: true },
       }),
     ]);
     // A digest is ready for message m iff an authz row (messageId, digest) exists AND the asset is a
@@ -1875,24 +1884,17 @@ export class MessageService {
     const metadata = new Map(
       assetRows.filter((a) => !a.isDeleted).map((a) => [a.digest, a]),
     );
-    const jobs = new Map(
-      pendingRows
-        .filter((row) => row.messageId !== null)
-        .map((row) => [row.messageId!, row.status]),
-    );
+    const failedMessages = new Set(failedTasks.map((task) => task.messageId));
     return msgs.map((m) => {
       if (m.localState !== 'READY') {
-        const jobStatus = jobs.get(m.id);
+        // STUB remains pending until message materialization commits. Task outcomes,
+        // not the existence or status of temporary coordination, establish failure.
         return {
           ...stripMessageId(m),
           mediaStatus:
-            m.localState === 'FAILED'
+            m.localState === 'FAILED' || failedMessages.has(m.id)
               ? MEDIA_STATUS.FAILED
-              : jobStatus === 'pending'
-                ? MEDIA_STATUS.PENDING
-                : jobStatus === 'downloading'
-                  ? MEDIA_STATUS.DOWNLOADING
-                  : MEDIA_STATUS.FAILED,
+              : MEDIA_STATUS.PENDING,
         };
       }
       const ds = byMsg.get(m.id) ?? [];
@@ -1934,25 +1936,20 @@ export class MessageService {
       .limit(1);
     if (materialized.length > 0) return true;
 
-    const pending = await this.database.db
-      .select({ id: pendingMedia.id })
-      .from(pendingMedia)
-      .innerJoin(message, eq(message.id, pendingMedia.messageId))
-      .innerJoin(
-        fileSyncProgress,
-        eq(fileSyncProgress.batchId, pendingMedia.batchId),
-      )
+    const task = await this.database.db
+      .select({ id: fileSyncProgress.id })
+      .from(fileSyncProgress)
+      .innerJoin(message, eq(message.id, fileSyncProgress.messageId))
       .where(
         and(
           eq(message.threadId, threadId),
           eq(message.seq, seq),
           eq(message.isDeleted, false),
-          eq(pendingMedia.direction, 'INBOUND'),
           eq(fileSyncProgress.digest, digest),
         ),
       )
       .limit(1);
-    return pending.length > 0;
+    return task.length > 0;
   }
 
   async queryMediaStatus(

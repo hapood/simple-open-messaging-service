@@ -74,7 +74,7 @@ export class S2sRecognitionController {
     // signature structure, missing or unresolvable S2S-Root-Key, invalid
     // signature, unavailable or unpublished certificate — and every signer
     // whose relationship is not recognized or prepared answers the same
-    // HTTP 200 `unavailable`. Inbound Health MUST NOT initiate well-known
+    // HTTP 200 `unavailable`. Inbound Health MUST NOT initiate discovery
     // discovery even for a known peer: key freshness is maintained by the
     // requester's outbound Health overlap refresh and other ordinary
     // discovery refreshes.

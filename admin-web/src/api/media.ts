@@ -25,16 +25,16 @@ export interface MediaFile {
   userCount: number;
 }
 export interface MediaUpload {
-  uploadId: string;
+  id: string;
   userId: number;
   digest: string | null;
   bytes: string;
-  bytesReceived: string;
-  status: 'UPLOADING' | 'COMPLETING' | 'ABORTED';
+  bytesReceived: string | null;
+  status: 'UPLOADING' | 'COMPLETING' | 'FAILED' | 'STOPPED';
 }
 export interface DownloadBatch {
   batchId: string;
-  status: 'pending' | 'downloading' | 'failed' | 'ready';
+  status: 'pending' | 'downloading' | 'failed' | 'stopped' | 'ready';
   users: MediaUser[];
   totalFiles: number;
   completedFiles: number | null;
@@ -74,12 +74,12 @@ export const listMediaDownloads = (query: MediaQuery & { status?: string }) =>
   request<Page<DownloadBatch>>('/admin/media/downloads', query);
 export const stopMediaUpload = (id: string) =>
   request(`/admin/media/uploads/${id}/stop`);
+export const retryMediaUpload = (id: string) =>
+  request(`/admin/media/uploads/${id}/retry`);
 export const stopMediaDownload = (id: string) =>
   request(`/admin/media/downloads/${id}/stop`);
 export const retryMediaDownload = (id: string) =>
   request(`/admin/media/downloads/${id}/retry`);
-export const cleanMediaDownload = (id: string) =>
-  request(`/admin/media/downloads/${id}/clean`);
 export const stopPhysicalDownload = (digest: string) =>
   request('/admin/media/downloader/stop', { digest });
 export const cleanMediaTemporary = (digest: string) =>

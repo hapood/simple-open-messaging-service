@@ -37,12 +37,12 @@ const PREPUBLICATION_MS = '8000';
 const RETENTION_MS = '8000';
 const SKEW_MS = '2000';
 
-type WellKnownKey = SigningKeyCertificate;
+type DiscoveryKey = SigningKeyCertificate;
 
-interface WellKnownDocument {
+interface DiscoveryDocument {
   protocolVersions: number[];
   roots: Array<{ ed25519: string; notBefore: number; notAfter: number }>;
-  keys: WellKnownKey[];
+  keys: DiscoveryKey[];
 }
 
 describe('database-backed signing-key rotation', () => {
@@ -100,27 +100,27 @@ describe('database-backed signing-key rotation', () => {
     };
   }
 
-  async function wellKnown(): Promise<WellKnownDocument> {
+  async function discoveryDocument(): Promise<DiscoveryDocument> {
     const response = await fetch(
       `http://127.0.0.1:${appA.port}/somfp/discovery`,
       { headers: { Accept: 'application/json' } },
     );
     expect(response.status).toBe(200);
-    return (await response.json()) as WellKnownDocument;
+    return (await response.json()) as DiscoveryDocument;
   }
 
-  /** Poll until the predicate holds on the observed well-known key set, with a bounded wait. */
-  async function pollWellKnown(
+  /** Poll until the predicate holds on the observed discovery key set, with a bounded wait. */
+  async function pollDiscovery(
     timeoutMs: number,
-    predicate: (keys: WellKnownKey[]) => boolean,
-  ): Promise<WellKnownKey[]> {
+    predicate: (keys: DiscoveryKey[]) => boolean,
+  ): Promise<DiscoveryKey[]> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const keys = (await wellKnown()).keys;
+      const keys = (await discoveryDocument()).keys;
       if (predicate(keys)) return keys;
       if (Date.now() > deadline)
         throw new Error(
-          `well-known key set did not reach the expected state within ${timeoutMs}ms: ${keys.map((key) => key.keyId).join(', ')}`,
+          `discovery key set did not reach the expected state within ${timeoutMs}ms: ${keys.map((key) => key.keyId).join(', ')}`,
         );
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
@@ -165,7 +165,7 @@ describe('database-backed signing-key rotation', () => {
   });
 
   it('bootstraps a database-backed identity with a grammar-valid certificate', async () => {
-    const keys = (await wellKnown()).keys;
+    const keys = (await discoveryDocument()).keys;
     expect(keys).toHaveLength(1);
     const certificate = keys[0]!;
     expect(certificate.keyId).toBe(firstKeyId);
@@ -177,11 +177,11 @@ describe('database-backed signing-key rotation', () => {
 
   it('prepublishes a root-authorized successor before switching', async () => {
     // Overlap: the successor appears while the predecessor still signs new requests.
-    const keys = await pollWellKnown(
+    const keys = await pollDiscovery(
       20_000,
       (observed) => observed.length === 2,
     );
-    const doc = await wellKnown();
+    const doc = await discoveryDocument();
     const claimableRoot = doc.roots.find(
       (root) => root.notBefore <= Date.now() && Date.now() < root.notAfter,
     )!;
@@ -213,7 +213,7 @@ describe('database-backed signing-key rotation', () => {
     expect(state.plannedSuccessorKeyId).toBeNull();
 
     // The predecessor remains published (and receiver-acceptable) until its notAfter.
-    const keys = await pollWellKnown(5_000, (observed) =>
+    const keys = await pollDiscovery(5_000, (observed) =>
       observed.some((key) => key.keyId === successorKeyId),
     );
     expect(keys.some((key) => key.keyId === firstKeyId)).toBe(true);
@@ -243,7 +243,7 @@ describe('database-backed signing-key rotation', () => {
     // is gone from the published set and that its row has expired, not that the
     // row was deleted.
     expect(Date.now()).toBeLessThan(firstKeyNotAfter + 30_000);
-    const keys = await pollWellKnown(
+    const keys = await pollDiscovery(
       30_000,
       (observed) => !observed.some((key) => key.keyId === firstKeyId),
     );

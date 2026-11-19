@@ -31,18 +31,23 @@ export class UploadRecoveryService implements OnApplicationBootstrap {
     try {
       const sessions = await this.database.db
         .select({
-          uploadId: uploadSession.uploadId,
+          id: uploadSession.id,
           creatorId: uploadSession.creatorId,
+          status: uploadSession.status,
         })
         .from(uploadSession)
-        .where(eq(uploadSession.status, 'COMPLETING'));
+        .where(eq(uploadSession.status, 'PENDING'));
       for (const session of sessions) {
         try {
-          // complete() takes the existing cross-process upload/batch locks and re-reads state.
-          await this.uploads.complete(session.creatorId, session.uploadId);
+          // The task domain derives waiting versus processing from its disk checkpoint.
+          // Observations never count as incoming data or renew an existing idle deadline.
+          await this.uploads.recoverPending(
+            session.creatorId,
+            session.id.toString(),
+          );
         } catch (error) {
           this.logger.warn(
-            `Upload continuation ${session.uploadId} failed: ${String(error)}`,
+            `Upload continuation ${session.id.toString()} failed: ${String(error)}`,
           );
         }
       }

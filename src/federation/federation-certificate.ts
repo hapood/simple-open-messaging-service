@@ -1,6 +1,6 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
 
-/** One entry of the well-known `roots` group: a root public key and the half-open
+/** One entry of the discovery `roots` group: a root public key and the half-open
  *  validity interval during which it may authorize signing certificates. */
 export interface RootKeyEntry {
   ed25519: string;

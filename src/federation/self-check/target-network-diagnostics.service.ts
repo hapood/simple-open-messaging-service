@@ -7,7 +7,7 @@ import {
 import { isIP } from 'node:net';
 import { addressScope } from './network-inspection.service.js';
 import { resolveDnsEvidence, type ResolvedDnsView } from './dns-evidence.js';
-import { normalizeFederationDomain } from '../well-known-document.js';
+import { normalizeFederationDomain } from '../discovery-document.js';
 import type { SomfpSrvRrset } from '../srv-rrset.js';
 import type {
   RootKeyEntry,

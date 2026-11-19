@@ -47,28 +47,25 @@ export class UploadController {
   }
 
   @ApiBearerAuth()
-  @Get('uploads/resumable/:uploadId')
+  @Get('uploads/resumable/:id')
   @ApiOperation({ summary: 'Get the authoritative resumable upload offset' })
-  resumableStatus(
-    @Request() req: FastifyRequest,
-    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
-  ) {
-    return this.resumable.status(req.user.userId, uploadId);
+  resumableStatus(@Request() req: FastifyRequest, @Param('id') id: string) {
+    return this.resumable.status(req.user.userId, id);
   }
 
   @ApiBearerAuth()
-  @Put('uploads/resumable/:uploadId')
+  @Put('uploads/resumable/:id')
   @ApiConsumes('application/octet-stream')
   @ApiOperation({ summary: 'Append one ordered upload chunk' })
   appendResumable(
     @Request() req: FastifyRequest,
-    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+    @Param('id') id: string,
     @Headers('content-range') contentRange: string | undefined,
     @Body() body: Buffer,
   ) {
     return this.resumable.append(
       req.user.userId,
-      uploadId,
+      id,
       contentRange,
       Buffer.isBuffer(body) ? body : Buffer.from(body ?? ''),
     );
@@ -76,30 +73,40 @@ export class UploadController {
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('uploads/resumable/:uploadId/complete')
+  @Post('uploads/resumable/:id/complete')
   @ApiOperation({ summary: 'Validate, publish and promote a completed upload' })
-  completeResumable(
-    @Request() req: FastifyRequest,
-    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
-  ) {
-    return this.resumable.complete(req.user.userId, uploadId);
+  completeResumable(@Request() req: FastifyRequest, @Param('id') id: string) {
+    return this.resumable.complete(req.user.userId, id);
   }
 
   @ApiBearerAuth()
-  @Post('uploads/resumable/:uploadId/cancel')
+  @Post('uploads/resumable/:id/retry')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Cancel an uncommitted resumable upload' })
-  cancelResumable(
-    @Request() req: FastifyRequest,
-    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
-  ) {
-    return this.resumable.cancel(req.user.userId, uploadId);
+  @ApiOperation({
+    summary:
+      'Reactivate a failed upload using its retained checkpoint when available',
+  })
+  retryResumable(@Request() req: FastifyRequest, @Param('id') id: string) {
+    return this.resumable.retry(req.user.userId, id);
+  }
+
+  @ApiBearerAuth()
+  @Post('uploads/resumable/:id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Cancel one uncommitted upload and delete its temporary files',
+  })
+  cancelResumable(@Request() req: FastifyRequest, @Param('id') id: string) {
+    return this.resumable.cancel(req.user.userId, id);
   }
 
   @ApiBearerAuth()
   @Post('uploads/resumable/batch/:clientMessageId/cancel')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Cancel all uncommitted files in a media batch' })
+  @ApiOperation({
+    summary:
+      'Cancel a media batch, deleting its temporary files and message stage',
+  })
   cancelResumableBatch(
     @Request() req: FastifyRequest,
     @Param('clientMessageId', new ParseUUIDPipe()) clientMessageId: string,

@@ -1,21 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq, inArray, sql } from 'drizzle-orm';
-import {
-  DatabaseService,
-  type DatabaseTransaction,
-} from '../database/database.service.js';
+import { and, eq, sql } from 'drizzle-orm';
+import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { requireInboundPendingMedia } from '../message/pending-media-row.js';
-import {
-  parseMessageContentQuote,
-  withMessageContentQuote,
-} from '../../shared/message-content-quote.js';
-import { extractDigests } from '../upload/file-content.js';
 
-export interface PendingMediaMaterializationEffect {
-  dependentBatchIds: string[];
-}
+import { extractDigests } from '../upload/file-content.js';
 
 /**
  * Completes the local dependencies of an inbound Message STUB.
@@ -28,20 +18,17 @@ export interface PendingMediaMaterializationEffect {
 export class FederationPendingMediaPromoter {
   constructor(private readonly database: DatabaseService) {}
 
-  async promote(
-    batchId: string,
-  ): Promise<PendingMediaMaterializationEffect | null> {
-    const effect = await this.database.db.transaction(async (tx) => {
+  async promote(batchId: string): Promise<boolean> {
+    const promoted = await this.database.db.transaction(async (tx) => {
       const row = await tx.query.pendingMedia.findFirst({
         where: eq(tables.pendingMedia.batchId, batchId),
       });
       if (!row) return null;
       const batch = requireInboundPendingMedia(row);
-      if (!['pending', 'downloading'].includes(batch.status)) return null;
 
       const outstanding = await tx.execute(sql`
         SELECT 1 FROM "FileSyncProgress"
-        WHERE "batchId" = ${batchId} AND status <> 'SUCCEEDED'
+        WHERE "batchId" = ${batchId} AND status <> 'COMPLETED'
         LIMIT 1
       `);
       if ((outstanding.rows ?? []).length > 0) return null;
@@ -70,21 +57,39 @@ export class FederationPendingMediaPromoter {
         batch.publisherNamespaceId,
         stagedIdentity.originSeq,
       );
-      const currentJob = await tx.query.pendingMedia.findFirst({
-        where: and(
-          eq(tables.pendingMedia.id, batch.id),
-          inArray(tables.pendingMedia.status, ['pending', 'downloading']),
-        ),
-        columns: { id: true },
-      });
-      if (!currentJob) return null;
-
       const [stagedMessage] = await tx
         .select()
         .from(tables.message)
         .where(eq(tables.message.id, batch.messageId))
         .for('no key update')
         .limit(1);
+      // Stop and retry acquire this message lock before changing coordination or
+      // task outcomes. Re-read both after waiting; the pre-lock check is only a fast exit.
+      const currentJob = await tx.query.pendingMedia.findFirst({
+        where: and(
+          eq(tables.pendingMedia.id, batch.id),
+          eq(tables.pendingMedia.messageId, batch.messageId),
+        ),
+        columns: { id: true },
+      });
+      if (!currentJob) return null;
+      const currentOutstanding = await tx.execute(sql`
+        SELECT 1 FROM "FileSyncProgress"
+        WHERE "batchId" = ${batchId} AND status <> 'COMPLETED'
+        LIMIT 1
+      `);
+      if ((currentOutstanding.rows ?? []).length > 0) return null;
+      const foreignTask = await tx.query.fileSyncProgress.findFirst({
+        where: and(
+          eq(tables.fileSyncProgress.batchId, batchId),
+          sql`${tables.fileSyncProgress.messageId} <> ${batch.messageId}`,
+        ),
+        columns: { id: true },
+      });
+      if (foreignTask)
+        throw new Error(
+          `inbound media batch ${batchId} contains a task owned by another message`,
+        );
       if (!stagedMessage) {
         throw new Error(`inbound PendingMedia ${batchId} has no Message STUB`);
       }
@@ -118,28 +123,30 @@ export class FederationPendingMediaPromoter {
         columns: { type: true },
       });
 
-      const localQuoteSeq = tombstone
-        ? undefined
-        : await this.resolveQuoteSeq(
-            tx,
-            stagedMessage.threadId,
-            batch.publisherNamespaceId,
-            batch.dependsOnOriginSeq,
+      if (!tombstone) {
+        const requiredDigests = extractDigests(stagedMessage.content);
+        if (requiredDigests.length > 0) {
+          const completedFiles = await tx.query.fileSyncProgress.findMany({
+            where: and(
+              eq(tables.fileSyncProgress.batchId, batchId),
+              eq(tables.fileSyncProgress.messageId, stagedMessage.id),
+              eq(tables.fileSyncProgress.status, 'COMPLETED'),
+            ),
+            columns: { digest: true },
+          });
+          const completedDigests = new Set(
+            completedFiles.map((file) => file.digest),
           );
-      let storedContent = stagedMessage.content;
-      if (batch.dependsOnOriginSeq !== null && !tombstone) {
-        const quote = parseMessageContentQuote(stagedMessage.content);
-        if (!quote) throw new Error('pending quote is missing quote content');
-        if (!quote.digest)
-          throw new Error('pending quote is missing quote digest');
-        storedContent = withMessageContentQuote(stagedMessage.content, {
-          seq: localQuoteSeq == null ? 0 : localQuoteSeq,
-          digest: quote.digest,
-          ...(localQuoteSeq == null
-            ? { sourceSeq: batch.dependsOnOriginSeq }
-            : {}),
-        });
+          // No outstanding rows is not evidence that every attachment has a task.
+          // Keep incomplete coordination intact for diagnosis instead of inventing outcomes.
+          if (requiredDigests.some((digest) => !completedDigests.has(digest)))
+            return null;
+        }
       }
+
+      // The message and its quote already have coordinates. Download completion
+      // changes local availability, never sequence allocation or quote resolution.
+      const storedContent = stagedMessage.content;
 
       await tx
         .update(tables.message)
@@ -167,75 +174,15 @@ export class FederationPendingMediaPromoter {
         }
       }
 
+      // Only temporary coordination ends here. Completed file tasks retain their
+      // message ownership and accounting independently of this row. Deletion commits
+      // atomically with message materialization and asset bindings.
       await tx
-        .delete(tables.fileSyncProgress)
-        .where(eq(tables.fileSyncProgress.batchId, batchId));
-      await tx
-        .update(tables.pendingMedia)
-        .set({ status: 'ready', failReason: null, updatedAt: new Date() })
+        .delete(tables.pendingMedia)
         .where(eq(tables.pendingMedia.id, batch.id));
 
-      return {
-        threadId: stagedMessage.threadId,
-        publisherNamespaceId: batch.publisherNamespaceId,
-        originSeq: stagedMessage.originSeq,
-      };
+      return true;
     });
-    if (!effect) return null;
-
-    const dependents = await this.database.db
-      .select({ batchId: tables.pendingMedia.batchId })
-      .from(tables.pendingMedia)
-      .innerJoin(
-        tables.message,
-        eq(tables.message.id, tables.pendingMedia.messageId),
-      )
-      .where(
-        and(
-          eq(tables.pendingMedia.direction, 'INBOUND'),
-          inArray(tables.pendingMedia.status, ['pending', 'downloading']),
-          eq(tables.message.threadId, effect.threadId),
-          eq(
-            tables.pendingMedia.publisherNamespaceId,
-            effect.publisherNamespaceId,
-          ),
-          eq(tables.pendingMedia.dependsOnOriginSeq, effect.originSeq),
-        ),
-      );
-    return {
-      dependentBatchIds: dependents.map(({ batchId: id }) => id),
-    };
-  }
-
-  private async resolveQuoteSeq(
-    tx: DatabaseTransaction,
-    threadId: number,
-    namespaceId: number,
-    sourceSeq: number | null,
-  ): Promise<number | null | undefined> {
-    if (sourceSeq === null) return undefined;
-    const [direct] = await tx
-      .select({
-        seq: tables.message.seq,
-        pendingId: tables.pendingMedia.id,
-      })
-      .from(tables.message)
-      .leftJoin(
-        tables.pendingMedia,
-        and(
-          eq(tables.pendingMedia.messageId, tables.message.id),
-          inArray(tables.pendingMedia.status, ['pending', 'downloading']),
-        ),
-      )
-      .where(
-        and(
-          eq(tables.message.threadId, threadId),
-          eq(tables.message.publisherNamespaceId, namespaceId),
-          eq(tables.message.originSeq, sourceSeq),
-        ),
-      )
-      .limit(1);
-    if (!direct) return null;
-    return direct.pendingId === null ? direct.seq : null;
+    return promoted === true;
   }
 }

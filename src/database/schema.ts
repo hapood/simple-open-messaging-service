@@ -77,10 +77,9 @@ export const federationPayloadVerification = pgEnum(
 );
 export const pushPlatform = pgEnum('PushPlatform', ['ANDROID', 'WEB', 'IOS']);
 export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
-  'UPLOADING',
-  'COMPLETING',
+  'PENDING',
   'COMPLETED',
-  'ABORTED',
+  'FAILED',
 ]);
 export const peerStateEventType = pgEnum('PeerStateEventType', [
   'RELATIONSHIP_INTENT',
@@ -130,10 +129,8 @@ export const fileSyncDirection = pgEnum('FileSyncDirection', [
 ]);
 export const fileSyncStatus = pgEnum('FileSyncStatus', [
   'PENDING',
-  'DOWNLOADING',
-  'SUCCEEDED',
+  'COMPLETED',
   'FAILED',
-  'TOMBSTONED',
 ]);
 export const fileSyncKind = pgEnum('FileSyncKind', [
   'FILE',
@@ -994,8 +991,8 @@ export const message = pgTable(
     contentType: contentType().notNull(),
     content: jsonbText().notNull(),
     threadId: integer().notNull(),
-    /** Author identity snapshot. Server notifications use the reserved $system identity. */
-    creatorAccount: varchar({ length: 31 }),
+    /** Required author identity snapshot. Server notifications use the reserved $system identity. */
+    creatorAccount: varchar({ length: 31 }).notNull(),
     /** Publisher-scoped author profile namespace from the message envelope. */
     profileNamespaceId: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1369,13 +1366,9 @@ export const pendingMedia = pgTable(
     direction: fileSyncDirection().default('OUTBOUND').notNull(),
     batchId: uuid().defaultRandom().notNull(),
     fileCnt: integer().default(1).notNull(),
-    anyFailed: boolean().default(false).notNull(),
     originDomain: varchar({ length: 63 }),
     publisherNamespaceId: integer().default(0).notNull(),
     expectedAuthorizationEpoch: integer(),
-    // A pulled text message may quote an earlier message whose media is still localizing. Keep the
-    // wire coordinate durable until that target is promoted and has a receiver-local Message.seq.
-    dependsOnOriginSeq: integer(),
   },
   (table) => [
     check(
@@ -1389,7 +1382,6 @@ export const pendingMedia = pgTable(
           AND ${table.content} IS NOT NULL
           AND ${table.originDomain} IS NULL
           AND ${table.expectedAuthorizationEpoch} IS NULL
-          AND ${table.dependsOnOriginSeq} IS NULL
         ) OR (
           ${table.direction} = 'INBOUND'
           AND ${table.messageId} IS NOT NULL
@@ -1401,10 +1393,6 @@ export const pendingMedia = pgTable(
           AND ${table.originDomain} IS NOT NULL
           AND ${table.expectedAuthorizationEpoch} IS NOT NULL
         )`,
-    ),
-    check(
-      'PendingMedia_depends_on_origin_seq_check',
-      sql`${table.dependsOnOriginSeq} IS NULL OR ${table.dependsOnOriginSeq} > 0`,
     ),
     check(
       'PendingMedia_expectedAuthorizationEpoch_check',
@@ -1426,11 +1414,6 @@ export const pendingMedia = pgTable(
     index('PendingMedia_threadId_idx').using(
       'btree',
       table.threadId.asc().nullsLast().op('int4_ops'),
-    ),
-    index('PendingMedia_quote_dependency_idx').on(
-      table.threadId,
-      table.originDomain,
-      table.dependsOnOriginSeq,
     ),
     foreignKey({
       columns: [table.publisherNamespaceId],
@@ -1456,8 +1439,10 @@ export const uploadSession = pgTable(
   'UploadSession',
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    uploadId: uuid().defaultRandom().notNull(),
-    clientMessageId: varchar({ length: 36 }).notNull(),
+    /** Database identity of the pre-message stage; cleared when the stage is removed. */
+    pendingMediaId: bigint({ mode: 'bigint' }),
+    /** Published message ownership; retained independently of temporary staging. */
+    messageId: bigint({ mode: 'bigint' }),
     // Stable logical identity inside one staged message. It is deliberately independent of digest:
     // selecting the same bytes twice creates two parts but only one physical CAS object.
     partId: uuid().notNull(),
@@ -1468,7 +1453,7 @@ export const uploadSession = pgTable(
     originalName: varchar({ length: 100 }).notNull(),
     mimeType: varchar({ length: 255 }).notNull(),
     totalBytes: bigint({ mode: 'bigint' }).notNull(),
-    status: uploadSessionStatus().default('UPLOADING').notNull(),
+    status: uploadSessionStatus().default('PENDING').notNull(),
     tmpKey: uuid().defaultRandom().notNull(),
     digest: varchar({ length: 64 }),
     result: jsonb(),
@@ -1484,13 +1469,23 @@ export const uploadSession = pgTable(
     abortedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
-    uniqueIndex('UploadSession_uploadId_key').on(table.uploadId),
-    uniqueIndex('UploadSession_clientMessageId_partId_key').on(
-      table.clientMessageId,
+    index('UploadSession_messageId_idx').on(table.messageId),
+    foreignKey({
+      columns: [table.pendingMediaId],
+      foreignColumns: [pendingMedia.id],
+      name: 'UploadSession_pendingMediaId_fkey',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.messageId],
+      foreignColumns: [message.id],
+      name: 'UploadSession_messageId_fkey',
+    }).onDelete('set null'),
+    uniqueIndex('UploadSession_pendingMediaId_partId_key').on(
+      table.pendingMediaId,
       table.partId,
     ),
-    uniqueIndex('UploadSession_clientMessageId_position_key').on(
-      table.clientMessageId,
+    uniqueIndex('UploadSession_pendingMediaId_position_key').on(
+      table.pendingMediaId,
       table.position,
     ),
     check(
@@ -1520,16 +1515,17 @@ export const uploadSession = pgTable(
 );
 
 /**
- * Per-file INBOUND localization task keyed by (batchId, digest). The outbound upload path no
- * longer uses this table — its batch barrier reads UploadSession directly (batch-commit model).
- * Holds the in-flight state (PENDING/DOWNLOADING/SUCCEEDED/FAILED) that previously lived on
- * MediaAsset; MediaAsset now stores only verified blobs. See federation design doc §12.
+ * Durable per-file inbound localization outcome owned by a published message.
+ * Runtime download phases are held in memory; MediaAsset stores verified blobs.
  */
 export const fileSyncProgress = pgTable(
   'FileSyncProgress',
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     batchId: uuid().notNull(),
+    /** Required message ownership survives removal of temporary inbound coordination.
+     * Physical message deletion must explicitly retire its download tasks first. */
+    messageId: bigint({ mode: 'bigint' }).notNull(),
     digest: varchar({ length: 64 }).notNull(),
     kind: fileSyncKind().notNull(),
     status: fileSyncStatus().default('PENDING').notNull(),
@@ -1542,8 +1538,6 @@ export const fileSyncProgress = pgTable(
     originDomain: varchar({ length: 63 }),
     publisherNamespaceId: integer().default(0).notNull(),
     errorKind: varchar({ length: 255 }),
-    // Tick-once guard: once this file's file-cnt/file-bytes quota has been charged, admin retry or crash-resume
-    // must not re-charge it. Set true after the first successful claim.
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -1551,8 +1545,7 @@ export const fileSyncProgress = pgTable(
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull()
       .$onUpdate(() => sql`CURRENT_TIMESTAMP`),
-    // Outbound: per-file display payload used by barrier promotion. Inbound: the authorized S2S fetch
-    // route persisted by global /missed so crash/quota recovery never depends on mutable relationships.
+    // Authorized S2S fetch route retained for crash and quota recovery.
     payload: jsonb(),
   },
   (table) => [
@@ -1560,6 +1553,12 @@ export const fileSyncProgress = pgTable(
       table.batchId,
       table.digest,
     ),
+    index('FileSyncProgress_messageId_idx').on(table.messageId),
+    foreignKey({
+      columns: [table.messageId],
+      foreignColumns: [message.id],
+      name: 'FileSyncProgress_messageId_fkey',
+    }).onDelete('restrict'),
     index('FileSyncProgress_digest_idx').on(table.digest),
     index('FileSyncProgress_status_updatedAt_idx').on(
       table.status,

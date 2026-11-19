@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  type OnModuleDestroy,
+  type BeforeApplicationShutdown,
+} from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
@@ -29,12 +34,41 @@ export interface FederationHttpLimits {
 
 interface Waiter {
   resolve: (release: () => void) => void;
+  reject: (error: unknown) => void;
 }
 
 /** Fair process-local concurrency pool for ordinary S2S HTTP. Media transfers use their dedicated
  * scheduler. Peers rotate round-robin, while requests within one peer retain FIFO order. */
 @Injectable()
-export class FederationHttpScheduler {
+export class FederationHttpScheduler
+  implements OnModuleDestroy, BeforeApplicationShutdown
+{
+  private readonly shutdown = new AbortController();
+  private readonly slots = new Set<Promise<void>>();
+
+  onModuleDestroy(): void {
+    this.shutdown.abort(new Error('federation HTTP scheduler shutting down'));
+    for (const queue of this.queues.values())
+      for (const waiter of queue) waiter.reject(this.shutdown.signal.reason);
+    this.queues.clear();
+    this.peerOrder.length = 0;
+  }
+
+  async beforeApplicationShutdown(): Promise<void> {
+    this.onModuleDestroy();
+    const pending: Promise<unknown>[] = [...this.slots];
+    if (this.refreshPromise) pending.push(this.refreshPromise);
+    const results = await Promise.allSettled(pending);
+    const errors = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason as unknown] : [],
+    );
+    if (errors.length)
+      throw new AggregateError(
+        errors,
+        'federation HTTP scheduler shutdown failed',
+      );
+  }
+
   private readonly logger = new Logger(FederationHttpScheduler.name);
   private active = 0;
   private readonly activeByPeer = new Map<string, number>();
@@ -50,12 +84,14 @@ export class FederationHttpScheduler {
   constructor(private readonly database: DatabaseService) {}
 
   async acquire(peerDomain: string): Promise<() => void> {
+    this.shutdown.signal.throwIfAborted();
     await this.refreshLimitsIfStale();
-    return new Promise<() => void>((resolve) => {
+    this.shutdown.signal.throwIfAborted();
+    return new Promise<() => void>((resolve, reject) => {
       const queue = this.queues.get(peerDomain);
-      if (queue) queue.push({ resolve });
+      if (queue) queue.push({ resolve, reject });
       else {
-        this.queues.set(peerDomain, [{ resolve }]);
+        this.queues.set(peerDomain, [{ resolve, reject }]);
         this.peerOrder.push(peerDomain);
       }
       this.pump();
@@ -71,26 +107,39 @@ export class FederationHttpScheduler {
   ): Promise<T> {
     let attempt = 0;
     for (;;) {
+      this.shutdown.signal.throwIfAborted();
       try {
-        return await operation();
+        const result = await operation();
+        this.shutdown.signal.throwIfAborted();
+        return result;
       } catch (error) {
-        if (!isRetryableFederationNetworkError(error)) throw error;
+        if (
+          this.shutdown.signal.aborted ||
+          !isRetryableFederationNetworkError(error)
+        )
+          throw error;
         attempt += 1;
         const delayMs = retryDelay(attempt, retryAfterMs(error));
         this.logger.warn(
           `${operationName} for ${peerDomain} failed temporarily; retrying in ${delayMs}ms`,
         );
-        await wait(delayMs);
+        await wait(delayMs, this.shutdown.signal);
       }
     }
   }
 
   invalidateLimits(): void {
+    if (this.shutdown.signal.aborted) return;
     this.limitsFetchedAt = 0;
-    void this.refreshLimitsIfStale().then(() => this.pump());
+    void this.refreshLimitsIfStale().then(
+      () => this.pump(),
+      (error: unknown) =>
+        this.logger.error('Could not refresh federation HTTP limits', error),
+    );
   }
 
   private pump(): void {
+    if (this.shutdown.signal.aborted) return;
     let blockedPeers = 0;
     while (this.active < this.limits.global && this.peerOrder.length > 0) {
       const peerDomain = this.peerOrder.shift()!;
@@ -114,10 +163,17 @@ export class FederationHttpScheduler {
         peerDomain,
         (this.activeByPeer.get(peerDomain) ?? 0) + 1,
       );
+      let drained!: () => void;
+      const slot = new Promise<void>((resolve) => {
+        drained = resolve;
+      });
+      this.slots.add(slot);
       let released = false;
       waiter.resolve(() => {
         if (released) return;
         released = true;
+        this.slots.delete(slot);
+        drained();
         this.active -= 1;
         const peerActive = (this.activeByPeer.get(peerDomain) ?? 1) - 1;
         if (peerActive === 0) this.activeByPeer.delete(peerDomain);
@@ -137,6 +193,7 @@ export class FederationHttpScheduler {
             inArray(setting.key, [GLOBAL_LIMIT_KEY, PEER_LIMIT_KEY]),
           columns: { key: true, value: true },
         });
+        if (this.shutdown.signal.aborted) return;
         const values = new Map(rows.map((row) => [row.key, row.value]));
         this.limits = {
           global: this.parseLimit(
@@ -148,8 +205,8 @@ export class FederationHttpScheduler {
             DEFAULT_PEER_LIMIT,
           ),
         };
-      } finally {
         this.limitsFetchedAt = Date.now();
+      } finally {
         this.refreshPromise = null;
       }
     })();
@@ -196,10 +253,19 @@ function retryDelay(attempt: number, minimumDelayMs: number): number {
   return Math.min(2_147_483_647, Math.max(exponential, minimumDelayMs));
 }
 
-function wait(delayMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, delayMs);
+function wait(delayMs: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    }, delayMs);
     timer.unref?.();
+    signal.addEventListener('abort', abort, { once: true });
   });
 }
 

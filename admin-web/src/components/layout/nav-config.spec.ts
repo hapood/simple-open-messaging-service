@@ -9,6 +9,11 @@ describe('matchNav', () => {
     expect(matchNav('/message-reports')?.item.key).toBe('messageReports');
   });
 
+  it('keeps garbage management separate from the media inventory', () => {
+    expect(matchNav('/garbage')?.item.key).toBe('garbage');
+    expect(matchNav('/media')?.item.key).toBe('media');
+  });
+
   it('matches the Users roster and user detail (prefix)', () => {
     expect(matchNav('/users')?.item.key).toBe('users');
     expect(matchNav('/users/42')?.item.key).toBe('users');
@@ -87,9 +92,9 @@ describe('NAV_GROUPS shape', () => {
     expect(NAV_GROUPS[0].items.map((item) => item.key)).toEqual(['dashboard']);
     expect(matchNav('/dashboard/unknown')).toBeNull();
   });
-  it('has exactly 18 primary items and only My Account in the footer', () => {
+  it('has exactly 19 primary items and only My Account in the footer', () => {
     const primary = NAV_GROUPS.filter((g) => !g.footer).flatMap((g) => g.items);
-    expect(primary).toHaveLength(18);
+    expect(primary).toHaveLength(19);
     const footer = NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items);
     expect(footer.map((i) => i.key)).toEqual(['security']);
   });

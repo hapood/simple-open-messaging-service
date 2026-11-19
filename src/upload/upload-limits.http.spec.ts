@@ -14,9 +14,11 @@ import {
 } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import { configureApp } from '../bootstrap.js';
+import { HttpAdmissionService } from '../http/http-admission.service.js';
 import { UploadController } from './upload.controller.js';
 import { UploadService } from './upload.service.js';
 import { ResumableUploadService } from './resumable-upload.service.js';
+import { UploadActivityService } from './upload-activity.service.js';
 import { MessageService } from '../message/message.service.js';
 import { BearerAuthService } from '../auth/bearer-auth.service.js';
 import { MediaAccessService } from './media-access.service.js';
@@ -29,6 +31,7 @@ import { MEDIA_UPLOAD_CHUNK_BYTES } from '../../shared/media-upload-limits.js';
 describe('upload HTTP limits', () => {
   let app: NestFastifyApplication;
   let adapter: FastifyAdapter;
+  const activity = new UploadActivityService();
   const append = vi.fn(async (_user, _id, _range, body: Buffer) => ({
     offset: body.length,
   }));
@@ -41,10 +44,23 @@ describe('upload HTTP limits', () => {
     const fixture = await Test.createTestingModule({
       controllers: [UploadController],
       providers: [
+        HttpAdmissionService,
         { provide: UploadService, useValue: {} },
         { provide: MessageService, useValue: {} },
-        { provide: ResumableUploadService, useValue: { append, init } },
-        { provide: BearerAuthService, useValue: {} },
+        { provide: UploadActivityService, useValue: activity },
+        {
+          provide: ResumableUploadService,
+          useValue: {
+            append,
+            init,
+            activityForReceive: async (userId: number, taskId: string) =>
+              activity.watch({ userId, taskId }, () => {}),
+          },
+        },
+        {
+          provide: BearerAuthService,
+          useValue: { resolve: async () => ({ userId: 1 }) },
+        },
         { provide: MediaAccessService, useValue: {} },
         { provide: LinkPreviewService, useValue: {} },
       ],
@@ -67,7 +83,7 @@ describe('upload HTTP limits', () => {
   it('accepts a complete 4 MiB binary chunk despite the 1 MiB global limit', async () => {
     const response = await adapter.getInstance().inject({
       method: 'PUT',
-      url: `/api/v1/uploads/resumable/${randomUUID()}`,
+      url: '/api/v1/uploads/resumable/1',
       headers: {
         'content-type': 'application/octet-stream',
         'content-range': `bytes 0-${MEDIA_UPLOAD_CHUNK_BYTES - 1}/${MEDIA_UPLOAD_CHUNK_BYTES}`,
@@ -82,7 +98,7 @@ describe('upload HTTP limits', () => {
   it('rejects a binary chunk above 4 MiB before calling the handler', async () => {
     const response = await adapter.getInstance().inject({
       method: 'PUT',
-      url: `/api/v1/uploads/resumable/${randomUUID()}`,
+      url: '/api/v1/uploads/resumable/1',
       headers: { 'content-type': 'application/octet-stream' },
       payload: Buffer.alloc(MEDIA_UPLOAD_CHUNK_BYTES + 1),
     });

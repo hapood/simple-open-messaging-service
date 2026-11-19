@@ -231,15 +231,16 @@ describe('federation durable missed transport (two nodes)', () => {
               entry.path.startsWith('/somfp/v1/') &&
               !entry.path.startsWith('/somfp/v1/health'),
           );
-        expect(signedGets[0]).toMatchObject({
-          path: expect.stringMatching(/^\/somfp\/v1\/state-feed\?/),
+        // Profile namespace pulls are independently woken by feed-head hints.
+        // The proxy records response headers, not dispatch order; assert only the
+        // state-before-message dependency relevant to inbound message recovery.
+        const dataGets = signedGets.filter((entry) =>
+          /^\/somfp\/v1\/(state-feed|messages)(?:\?|$)/.test(entry.path),
+        );
+        expect(dataGets[0]).toMatchObject({
+          path: expect.stringMatching(/^\/somfp\/v1\/state-feed(?:\?|$)/),
           status: 200,
         });
-        const dataGets = signedGets;
-        expect(
-          dataGets[0]?.status,
-          `first signed data GET: ${JSON.stringify(dataGets[0])}`,
-        ).toBe(200);
         expect(
           dataGets.some(
             (entry) =>
@@ -282,7 +283,7 @@ describe('federation durable missed transport (two nodes)', () => {
         const progress = await appB.database.query.fileSyncProgress.findFirst({
           where: eq(fileSyncProgress.batchId, batchId),
         });
-        expect(progress?.status).toBe('DOWNLOADING');
+        expect(progress?.status).toBe('PENDING');
         expect(proxy.blockedGetFileCount()).toBeGreaterThan(0);
       },
       { timeout: 5000 },
@@ -295,7 +296,7 @@ describe('federation durable missed transport (two nodes)', () => {
           where: eq(fileSyncProgress.batchId, batchId),
         })
       )?.status,
-    ).toBe('DOWNLOADING');
+    ).toBe('PENDING');
     await appB.start();
     await vi.waitFor(
       () => expect(proxy.blockedGetFileCount()).toBeGreaterThan(0),
@@ -333,11 +334,7 @@ describe('federation durable missed transport (two nodes)', () => {
             await appB.database.query.pendingMedia.findFirst({
               where: eq(pendingMedia.batchId, batchId),
             }),
-          ).toMatchObject({
-            status: 'ready',
-            anyFailed: false,
-            failReason: null,
-          });
+          ).toBeUndefined();
         },
         { timeout: 5000 },
       );
@@ -481,11 +478,7 @@ describe('federation durable missed transport (two nodes)', () => {
           await appB.database.query.pendingMedia.findFirst({
             where: eq(pendingMedia.batchId, batchId),
           }),
-        ).toMatchObject({
-          status: 'ready',
-          anyFailed: false,
-          failReason: null,
-        });
+        ).toBeUndefined();
       },
       { timeout: 5000 },
     );

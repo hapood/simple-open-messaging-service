@@ -139,7 +139,7 @@ export function MediaPage() {
   const { t } = useTranslation();
   const isSuper = useIsSuperAdmin();
   const [tab, setTab] = useState<
-    'files' | 'downloader' | 'downloads' | 'uploads' | 'temporary'
+    'files' | 'downloader' | 'downloads' | 'uploads'
   >('files');
   if (!isSuper) return <p className="leading-[20px]">{t('media.superOnly')}</p>;
   const tabs = [
@@ -147,7 +147,6 @@ export function MediaPage() {
     ['downloader', t('media.downloaderTitle')],
     ['downloads', t('media.downloadsTitle')],
     ['uploads', t('media.uploadsTitle')],
-    ['temporary', t('media.temporaryTitle')],
   ] as const;
   return (
     <div className="flex flex-col gap-4 leading-[20px]">
@@ -173,8 +172,7 @@ export function MediaPage() {
       </nav>
       {tab === 'files' ? (
         <MediaFilesPanel key="files" />
-      ) : tab === 'temporary' ? (
-        <MediaFilesPanel key="temporary" temporary />
+
       ) : tab === 'downloader' ? (
         <DownloaderPanel />
       ) : tab === 'downloads' ? (

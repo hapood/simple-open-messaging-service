@@ -137,6 +137,52 @@ afterAll(async () => {
 });
 
 describe('federation route lifecycle with real Undici Agents', () => {
+  it('aborts stalled headers during module destruction instead of waiting for pool timeout', async () => {
+    let received!: () => void;
+    const arrived = new Promise<void>((resolve) => {
+      received = resolve;
+    });
+    const stalled = createServer({ key, cert }, (_req, _res) => {
+      received();
+    });
+    servers.push(stalled);
+    await new Promise<void>((resolve) =>
+      stalled.listen(0, '127.0.0.1', resolve),
+    );
+    vi.mocked(resolveSrv).mockResolvedValue(
+      srv((stalled.address() as AddressInfo).port),
+    );
+    const s = service();
+    const base = await s.resolveBase('peer.example');
+    const pending = expect(s.request(`${base}/stalled`)).rejects.toThrow();
+    await arrived;
+    s.onModuleDestroy();
+    await pending;
+    await expect(s.request(`${base}/new`)).rejects.toThrow();
+    await s.onApplicationShutdown();
+  });
+
+  it('aborts stalled response bodies during module destruction', async () => {
+    const stalled = createServer({ key, cert }, (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{');
+    });
+    servers.push(stalled);
+    await new Promise<void>((resolve) =>
+      stalled.listen(0, '127.0.0.1', resolve),
+    );
+    vi.mocked(resolveSrv).mockResolvedValue(
+      srv((stalled.address() as AddressInfo).port),
+    );
+    const s = service();
+    const base = await s.resolveBase('peer.example');
+    const response = await s.request(`${base}/stalled`);
+    const body = expect(response.text()).rejects.toThrow();
+    s.onModuleDestroy();
+    await body;
+    await s.onApplicationShutdown();
+  });
+
   it('keeps the same pool usable across repeated refreshes without apex DNS', async () => {
     vi.mocked(resolveSrv).mockResolvedValue(srv());
     const s = service();

@@ -140,7 +140,7 @@ describe('Federation v1 protocol documentation', () => {
       's2s.controller.ts',
       's2s-recognition.controller.ts',
       's2s-verify.controller.ts',
-      'well-known.controller.ts',
+      'discovery.controller.ts',
     ]) {
       const source = readFileSync(
         join(process.cwd(), 'src/federation', file),
@@ -150,7 +150,7 @@ describe('Federation v1 protocol documentation', () => {
         /@(Get|Post)\(\s*'([^']+)'\s*,?\s*\)/g,
       )) {
         const path =
-          file === 'well-known.controller.ts'
+          file === 'discovery.controller.ts'
             ? `/somfp/${match[2]}`
             : `/${FEDERATION_API_PREFIX}/${match[2]}`;
         implemented.push(`${match[1].toUpperCase()} ${path}`);

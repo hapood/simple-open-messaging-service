@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  type BeforeApplicationShutdown,
+} from '@nestjs/common';
 import { and, eq, inArray } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -31,7 +35,55 @@ export interface FederationForwardAssetAuthorization {
 
 /** Localizes peer-hosted message and forward-bundle assets into the local CAS. */
 @Injectable()
-export class FederationMediaLocalizationService {
+export class FederationMediaLocalizationService
+  implements BeforeApplicationShutdown
+{
+  private readonly logger = new Logger(FederationMediaLocalizationService.name);
+  private readonly shutdown = new AbortController();
+  private readonly active = new Set<Promise<unknown>>();
+
+  async beforeApplicationShutdown(): Promise<void> {
+    this.shutdown.abort(new Error('media localization shutting down'));
+    const results = await Promise.allSettled([...this.active]);
+    const errors = [
+      ...new Set(
+        results.flatMap((result) =>
+          result.status === 'rejected' ? [result.reason as unknown] : [],
+        ),
+      ),
+    ];
+    if (errors.length)
+      throw new AggregateError(errors, 'media localization shutdown failed');
+  }
+
+  private async runLocalization<T>(
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    this.shutdown.signal.throwIfAborted();
+    signal.throwIfAborted();
+    // Admission is synchronous. Shutdown cannot miss an operation waiting on its first IO.
+    const work = Promise.resolve().then(() => {
+      signal.throwIfAborted();
+      return operation();
+    });
+    const drained = work.catch((error: unknown) => {
+      if (signal.aborted && error === signal.reason) return;
+      throw error;
+    });
+    this.active.add(drained);
+    // The owning caller still receives the original error; observe the drain promise
+    // immediately so normal execution failures cannot create unhandled rejections.
+    void drained.catch(() => undefined);
+    try {
+      const result = await work;
+      signal.throwIfAborted();
+      return result;
+    } finally {
+      this.active.delete(drained);
+    }
+  }
+
   constructor(
     private readonly database: DatabaseService,
     private readonly transfers: FederationMediaTransferService,
@@ -47,14 +99,35 @@ export class FederationMediaLocalizationService {
     closure: ForwardWireBundle,
     peerDomain: string,
     authorization: FederationForwardAssetAuthorization,
+    signal: AbortSignal,
   ): Promise<boolean> {
+    signal = AbortSignal.any([signal, this.shutdown.signal]);
+    return this.runLocalization(signal, () =>
+      this.localizeForwardAssetsWithSignal(
+        closure,
+        peerDomain,
+        authorization,
+        signal,
+      ),
+    );
+  }
+
+  private async localizeForwardAssetsWithSignal(
+    closure: ForwardWireBundle,
+    peerDomain: string,
+    authorization: FederationForwardAssetAuthorization,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    signal.throwIfAborted();
     let ready = true;
     // Only validated per-bundle manifests authorize downloads; the top-level assets array is a
     // convenience summary and is not an independent authority.
     for (const asset of this.forwardBundles.assetsFromClosure(closure)) {
       try {
         const namespaceId = await this.quota.activeNamespaceId(peerDomain);
+        signal.throwIfAborted();
         await this.transfers.receive({
+          signal,
           namespaceId,
           peerDomain,
           digest: asset.digest,
@@ -72,7 +145,15 @@ export class FederationMediaLocalizationService {
               signal,
             ),
         });
-      } catch {
+        signal.throwIfAborted();
+      } catch (error) {
+        // Preserve the original failure during cancellation. Only the exact signal
+        // reason is an expected abort; cleanup/persistence errors must reach the owner.
+        if (signal.aborted) throw error;
+        this.logger.error(
+          `Forward asset ${asset.digest} from ${peerDomain} could not be localized`,
+          error,
+        );
         ready = false;
         // Bundle JSON remains usable and a later manual localization can retry the asset.
       }
@@ -85,11 +166,24 @@ export class FederationMediaLocalizationService {
     threadId: number,
     seq: number,
   ): Promise<MediaStatus> {
+    const signal = this.shutdown.signal;
+    return this.runLocalization(signal, () =>
+      this.localizeVisibleMessage(userId, threadId, seq, signal),
+    );
+  }
+
+  private async localizeVisibleMessage(
+    userId: number,
+    threadId: number,
+    seq: number,
+    signal: AbortSignal,
+  ): Promise<MediaStatus> {
     const msg = await this.visibility.findVisibleByThreadSeq(
       userId,
       threadId,
       seq,
     );
+    signal.throwIfAborted();
     if (!msg) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -97,7 +191,7 @@ export class FederationMediaLocalizationService {
       );
     }
     if (msg.contentType === ContentType.FORWARD) {
-      return this.relocalizeForwardMessage(msg);
+      return this.relocalizeForwardMessage(msg, signal);
     }
     if (!isFederatedMediaContentType(msg.contentType)) return 'ready';
     if (msg.creatorAccount === null) {
@@ -116,7 +210,9 @@ export class FederationMediaLocalizationService {
       msg,
     );
 
+    signal.throwIfAborted();
     await this.threadAccess.assertThreadExists(msg.threadId, peerDomain);
+    signal.throwIfAborted();
     const admitted = await this.localizeMedia(
       msg,
       peerDomain,
@@ -124,6 +220,7 @@ export class FederationMediaLocalizationService {
       peerDomain,
       toAccount,
       msg.originSeq ?? msg.seq,
+      signal,
     );
     return admitted && (await this.isMessageMediaReady(msg.id, msg.content))
       ? 'ready'
@@ -156,13 +253,18 @@ export class FederationMediaLocalizationService {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
+    signal: AbortSignal,
   ): Promise<boolean> {
+    signal.throwIfAborted();
     let ready = true;
     const namespaceId = await this.quota.activeNamespaceId(peerDomain);
+    signal.throwIfAborted();
     for (const { digest, size } of extractDigestEntries(msg.content)) {
       try {
         if (size === undefined) throw new Error('missing media size');
+        signal.throwIfAborted();
         await this.transfers.receive({
+          signal,
           namespaceId,
           peerDomain,
           digest,
@@ -180,18 +282,27 @@ export class FederationMediaLocalizationService {
               signal,
             ),
         });
+        signal.throwIfAborted();
         await this.database.db.transaction(async (tx) => {
           await this.threadAccess.assertResponseWritable(
             tx,
             msg.threadId,
             peerDomain,
           );
+          signal.throwIfAborted();
           await tx
             .insert(tables.messageAsset)
             .values({ messageId: msg.id, threadId: msg.threadId, digest })
             .onConflictDoNothing();
         });
-      } catch {
+      } catch (error) {
+        // Preserve the original failure during cancellation. Only the exact signal
+        // reason is an expected abort; cleanup/persistence errors must reach the owner.
+        if (signal.aborted) throw error;
+        this.logger.error(
+          `Message asset ${digest} from ${peerDomain} could not be localized`,
+          error,
+        );
         ready = false;
         // Best effort per file: a later manual retry can localize an inert cross-origin URL.
       }
@@ -226,23 +337,28 @@ export class FederationMediaLocalizationService {
   private async readInboundMediaJobStatus(
     messageId: bigint,
   ): Promise<MediaStatus> {
-    const job = await this.database.db.query.pendingMedia.findFirst({
-      where: and(
-        eq(tables.pendingMedia.messageId, messageId),
-        eq(tables.pendingMedia.direction, 'INBOUND'),
-      ),
-      columns: { status: true },
+    const message = await this.database.db.query.message.findFirst({
+      where: eq(tables.message.id, messageId),
+      columns: { localState: true, isDeleted: true },
     });
-    return job?.status === 'pending' ||
-      job?.status === 'downloading' ||
-      job?.status === 'ready' ||
-      job?.status === 'failed'
-      ? job.status
-      : 'failed';
+    if (!message || message.isDeleted || message.localState === 'FAILED')
+      return 'failed';
+    if (message.localState === 'READY') return 'ready';
+    const failed = await this.database.db.query.fileSyncProgress.findFirst({
+      where: and(
+        eq(tables.fileSyncProgress.messageId, messageId),
+        eq(tables.fileSyncProgress.status, 'FAILED'),
+      ),
+      columns: { id: true },
+    });
+    // Completed bytes still await message materialization. Execution progress is
+    // delivered by the runtime; temporary coordination is not a status authority.
+    return failed ? 'failed' : 'pending';
   }
 
   private async relocalizeForwardMessage(
     msg: Message,
+    signal: AbortSignal,
   ): Promise<'ready' | 'failed'> {
     const binding = await this.database.db.query.forwardMessage.findFirst({
       where: eq(tables.forwardMessage.messageId, msg.id),
@@ -267,6 +383,7 @@ export class FederationMediaLocalizationService {
         closure,
         root.sourceDomain,
         await this.resolveForwardAssetAuth(msg),
+        signal,
       );
       if (!admitted) return 'failed';
     }

@@ -881,12 +881,10 @@ function makeStubs() {
     forwardBundles as never,
   );
   const inboundMessageCommits = new FederationInboundMessageCommitService(
-    database as never,
     threadAccess,
     inboundMessagePages,
     inboundMessageRoutes,
     deletedMessages as never,
-    inboundMediaBatches,
   );
   const threadQueryDenials = new FederationThreadQueryDenialService(
     database as never,
@@ -971,6 +969,7 @@ describe('FederationMediaRangeClient optional range digest', () => {
         'peer.test',
         0,
         2,
+        new AbortController().signal,
       ),
     ).resolves.toMatchObject({ contentDigest: undefined });
     fetchMock.mockRestore();
@@ -992,6 +991,7 @@ describe('FederationMediaRangeClient optional range digest', () => {
         'peer.test',
         0,
         2,
+        new AbortController().signal,
       ),
     ).rejects.toThrow('invalid Content-Digest');
     fetchMock.mockRestore();
@@ -1015,6 +1015,7 @@ describe('FederationMediaRangeClient optional range digest', () => {
         'peer.test',
         0,
         2,
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({ status: 200, code: BusinessCode.NOT_FOUND });
     expect(recognition.markReachable).toHaveBeenCalledOnce();
@@ -1045,6 +1046,7 @@ describe('FederationMediaRangeClient optional range digest', () => {
         'peer.test',
         3,
         5,
+        new AbortController().signal,
       ),
     ).rejects.toMatchObject({
       status: 416,

@@ -1,4 +1,9 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  type BeforeApplicationShutdown,
+} from '@nestjs/common';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import {
   ForwardBundleService,
@@ -21,7 +26,59 @@ import { type FederationMessagePageEffect as MissedPageEffect } from './federati
  * only effects that must not run inside it land here.
  */
 @Injectable()
-export class FederationInboundMessageEffectsService {
+export class FederationInboundMessageEffectsService
+  implements BeforeApplicationShutdown
+{
+  private readonly shutdown = new AbortController();
+
+  private readonly operations = new Set<Promise<unknown>>();
+
+  async beforeApplicationShutdown(): Promise<void> {
+    this.shutdown.abort(new Error('inbound message effects shutting down'));
+    const results = await Promise.allSettled([...this.operations]);
+    const errors = results.flatMap((result) =>
+      result.status === 'rejected' &&
+      result.reason !== this.shutdown.signal.reason
+        ? [result.reason as unknown]
+        : [],
+    );
+    if (errors.length)
+      throw new AggregateError(
+        errors,
+        'inbound message effects shutdown failed',
+      );
+  }
+
+  private async track<T>(operation: () => Promise<T>): Promise<T> {
+    this.shutdown.signal.throwIfAborted();
+    const work = Promise.resolve().then(() => {
+      this.shutdown.signal.throwIfAborted();
+      return operation();
+    });
+    this.operations.add(work);
+    try {
+      return await work;
+    } finally {
+      this.operations.delete(work);
+    }
+  }
+  private launch(
+    operation: () => Promise<unknown>,
+    report: (error: unknown) => void,
+  ): void {
+    // Background failures are reported here; the shutdown latch waits for reporting
+    // too, without reclassifying another owner's cancellation as a local failure.
+    void this.track(async () => {
+      try {
+        await operation();
+      } catch (error) {
+        report(error);
+      }
+    }).catch((error: unknown) => {
+      if (error !== this.shutdown.signal.reason) report(error);
+    });
+  }
+
   private readonly config = loadFederationRuntimeConfig();
   private readonly logger = new Logger(
     FederationInboundMessageEffectsService.name,
@@ -41,43 +98,64 @@ export class FederationInboundMessageEffectsService {
 
   /** Publish ancillary work only; message and tombstone fanout is admitted in the source transaction. */
   async publish(domain: string, effects: MissedPageEffect[]): Promise<void> {
+    return this.track(() => this.publishEffects(domain, effects));
+  }
+
+  private async publishEffects(
+    domain: string,
+    effects: MissedPageEffect[],
+  ): Promise<void> {
+    this.shutdown.signal.throwIfAborted();
     for (const effect of effects) {
+      this.shutdown.signal.throwIfAborted();
       if (effect.kind === 'pending') {
-        void this.runFileSyncBatch(
-          effect.batchId,
-          (digest, offset, declaredBytes, signal) =>
-            this.fetchMediaChunks(
-              domain,
-              digest,
-              effect.author.account,
-              domain,
-              effect.toAccount,
-              effect.originSeq,
-              offset,
-              declaredBytes,
-              signal,
+        this.launch(
+          () =>
+            this.runFileSyncBatch(
+              effect.batchId,
+              (digest, offset, declaredBytes, signal) =>
+                this.fetchMediaChunks(
+                  domain,
+                  digest,
+                  effect.author.account,
+                  domain,
+                  effect.toAccount,
+                  effect.originSeq,
+                  offset,
+                  declaredBytes,
+                  signal,
+                ),
             ),
-        ).catch(() => undefined);
+          (error: unknown) => {
+            this.logger.error(
+              `Inbound download batch ${effect.batchId} failed`,
+              error,
+            );
+          },
+        );
         if (this.profileResolutions && effect.profileDemand) {
-          void this.profileResolutions
-            .resolveDemand(effect.profileDemand)
-            .catch((error: unknown) =>
+          this.launch(
+            () => this.profileResolutions!.resolveDemand(effect.profileDemand!),
+            (error: unknown) =>
               this.logger.warn(
                 `message profile resolution failed for ${effect.threadId}:${effect.seq}: ${(error as Error).message}`,
               ),
-            );
+          );
         }
         if (
           this.profileEvidenceProjections &&
           effect.profileEvidenceProjection
         ) {
-          void this.profileEvidenceProjections
-            .resolve(effect.profileEvidenceProjection)
-            .catch((error: unknown) =>
+          this.launch(
+            () =>
+              this.profileEvidenceProjections!.resolve(
+                effect.profileEvidenceProjection!,
+              ),
+            (error: unknown) =>
               this.logger.warn(
                 `message profile evidence projection failed for ${effect.threadId}:${effect.seq}: ${(error as Error).message}`,
               ),
-            );
+          );
         }
         continue;
       }
@@ -90,37 +168,46 @@ export class FederationInboundMessageEffectsService {
           effect.localForwardBundleId,
           (url) => this.linkPreview.buildCardContent(url),
         );
+        this.shutdown.signal.throwIfAborted();
       }
       if (this.profileResolutions && effect.profileDemand) {
-        void this.profileResolutions
-          .resolveDemand(effect.profileDemand)
-          .catch((error: unknown) =>
+        this.launch(
+          () => this.profileResolutions!.resolveDemand(effect.profileDemand!),
+          (error: unknown) =>
             this.logger.warn(
               `message profile resolution failed for ${effect.threadId}:${effect.message.seq}: ${(error as Error).message}`,
             ),
-          );
+        );
       }
       if (this.profileEvidenceProjections && effect.profileEvidenceProjection) {
-        void this.profileEvidenceProjections
-          .resolve(effect.profileEvidenceProjection)
-          .catch((error: unknown) =>
+        this.launch(
+          () =>
+            this.profileEvidenceProjections!.resolve(
+              effect.profileEvidenceProjection!,
+            ),
+          (error: unknown) =>
             this.logger.warn(
               `message profile evidence projection failed for ${effect.threadId}:${effect.message.seq}: ${(error as Error).message}`,
             ),
-          );
+        );
       }
       if (
         effect.forwardClosure &&
         effect.remoteForwardBundleId &&
         !effect.message.isDeleted
       ) {
+        const authorization =
+          await this.mediaLocalization.resolveForwardAssetAuth(effect.message);
+        this.shutdown.signal.throwIfAborted();
         await this.mediaLocalization.localizeForwardAssets(
           // importClosure validated this closure before the message was stored; the
           // effect only carries it on that success path.
           effect.forwardClosure as ForwardWireBundle,
           domain,
-          await this.mediaLocalization.resolveForwardAssetAuth(effect.message),
+          authorization,
+          this.shutdown.signal,
         );
+        this.shutdown.signal.throwIfAborted();
       }
     }
   }
@@ -135,7 +222,7 @@ export class FederationInboundMessageEffectsService {
       digest: string,
       offset: number,
       declaredBytes: number,
-      signal?: AbortSignal,
+      signal: AbortSignal,
     ) => AsyncIterable<Buffer>,
   ): Promise<void> {
     await this.inboundMediaBatches.runFileSyncBatch(batchId, fetchChunksFor);
@@ -168,7 +255,7 @@ export class FederationInboundMessageEffectsService {
     sourceSeq: number,
     startOffset: number,
     declaredBytes: number,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): AsyncGenerator<Buffer> {
     yield* this.mediaRangeClient.fetch(
       peerDomain,

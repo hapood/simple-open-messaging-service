@@ -33,6 +33,7 @@ type NavKey =
   | 'logs'
   | 'audit'
   | 'media'
+  | 'garbage'
   | 'settings'
   | 'security'
   | 'durableTasks'
@@ -109,6 +110,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/push', key: 'push', icon: Bell },
       { to: '/media', key: 'media', icon: HardDrive },
+      { to: '/garbage', key: 'garbage', icon: HardDrive },
       { to: '/quota', key: 'quota', icon: Gauge },
       { to: '/local-information', key: 'localInformation', icon: Monitor },
       { to: '/settings', key: 'settings', icon: Settings },

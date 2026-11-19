@@ -7,7 +7,7 @@ import { extractDigestEntries } from '../../upload/file-content.js';
 import { federationFileSyncKind } from '../federation-inbound-file-sync.js';
 import type { MessageMediaRoute } from './media-download-context.js';
 
-/** Rebuild execution state from the retained message, preserving verified partials and completed files. */
+/** Rebuild execution state from the retained message, preserving checkpointed partials and completed files. */
 export async function restageInboundMedia(
   database: DatabaseService,
   msg: Message,
@@ -40,11 +40,19 @@ export async function restageInboundMedia(
         eq(tables.pendingMedia.direction, 'INBOUND'),
       ),
     });
-    if (pending && pending.status !== 'failed') return null;
-    const batchId = pending?.batchId ?? randomUUID();
+    const tasks = await tx.query.fileSyncProgress.findMany({
+      where: eq(tables.fileSyncProgress.messageId, msg.id),
+    });
+    const batchIds = new Set(tasks.map((task) => task.batchId));
+    if (
+      batchIds.size > 1 ||
+      (pending && tasks.some((task) => task.batchId !== pending.batchId))
+    )
+      throw new Error(
+        'inbound message has inconsistent download task ownership',
+      );
+    const batchId = pending?.batchId ?? tasks[0]?.batchId ?? randomUUID();
     const values = {
-      status: 'pending',
-      failReason: null,
       fileCnt: digests.length,
       originDomain: route.peerDomain,
       publisherNamespaceId: msg.publisherNamespaceId,
@@ -65,14 +73,10 @@ export async function restageInboundMedia(
       });
     }
     for (const { digest, size } of digests) {
-      const existing = await tx.query.fileSyncProgress.findFirst({
-        where: and(
-          eq(tables.fileSyncProgress.batchId, batchId),
-          eq(tables.fileSyncProgress.digest, digest),
-        ),
-      });
-      if (existing?.status === 'SUCCEEDED') continue;
+      const existing = tasks.find((task) => task.digest === digest);
+      if (existing?.status === 'COMPLETED') continue;
       const file = {
+        messageId: msg.id,
         status: 'PENDING' as const,
         bytesTotal: BigInt(size ?? 0),
         originDomain: route.peerDomain,

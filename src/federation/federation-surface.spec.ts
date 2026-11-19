@@ -4,7 +4,7 @@ import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { S2sController } from './s2s.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
-import { WellKnownController } from './well-known.controller.js';
+import { DiscoveryController } from './discovery.controller.js';
 import { GLOBAL_PREFIX_EXCLUSIONS } from '../bootstrap.js';
 import { S2sVerifyController } from './s2s-verify.controller.js';
 import { pathToRegexp } from 'path-to-regexp';
@@ -52,7 +52,7 @@ describe('Federation v1 surface', () => {
         S2sController,
         S2sRecognitionController,
         S2sVerifyController,
-        WellKnownController,
+        DiscoveryController,
       ]
         .flatMap(routes)
         .sort(),
@@ -85,7 +85,7 @@ describe('Federation v1 surface', () => {
       S2sController,
       S2sRecognitionController,
       S2sVerifyController,
-      WellKnownController,
+      DiscoveryController,
     ]
       .flatMap(routes)
       .sort();
@@ -103,15 +103,15 @@ describe('Federation v1 surface', () => {
     }
   });
 
-  it('keeps cross-version bootstrap on the fixed well-known surface', () => {
+  it('keeps cross-version bootstrap on the fixed discovery surface', () => {
     vi.stubEnv('SOMS_DOMAIN', 'node-a.example');
-    const controller = new WellKnownController({
+    const controller = new DiscoveryController({
       getRootGroup: () => [{ ed25519: 'root-key', notBefore: 1, notAfter: 2 }],
       getSigningKeyCertificates: () => [],
       getCreatedAt: () => 1234,
     } as never);
 
-    const document = controller.getWellKnown();
+    const document = controller.getDiscoveryDocument();
     expect(FEDERATION_API_PREFIX).toBe('somfp/v1');
     expect(FEDERATION_DISCOVERY_PATH).toBe('somfp/discovery');
     expect(document.protocolVersions).toEqual([FEDERATION_PROTOCOL_VERSION]);

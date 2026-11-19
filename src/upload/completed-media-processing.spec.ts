@@ -11,11 +11,24 @@ import { isStoredMediaMetadata } from './stored-media-metadata.js';
 describe('completed-file media processing', () => {
   let root: string;
   const service = new MediaMetadataService();
+  const signal = new AbortController().signal;
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'media-processing-'));
   });
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
+  });
+
+  it('rejects cancelled processing before opening input and remains usable for a new execution', async () => {
+    const controller = new AbortController();
+    const reason = new Error('user cancelled');
+    controller.abort(reason);
+    await expect(
+      service.processFile(join(root, 'missing'), controller.signal),
+    ).rejects.toBe(reason);
+    const path = join(root, 'next');
+    await writeFile(path, 'ordinary file');
+    expect((await service.processFile(path, signal)).meta.kind).toBe('FILE');
   });
 
   it('extracts oriented image dimensions and hashes the actual thumbnail bytes', async () => {
@@ -26,7 +39,7 @@ describe('completed-file media processing', () => {
       .jpeg()
       .withMetadata({ orientation: 6 })
       .toFile(path);
-    const result = await service.processFile(path);
+    const result = await service.processFile(path, signal);
     expect(isStoredMediaMetadata(result.meta)).toBe(true);
     expect(result.meta).toMatchObject({
       kind: 'IMAGE',
@@ -44,18 +57,23 @@ describe('completed-file media processing', () => {
     'identifies audio-only %s by streams, not container family',
     async (ext) => {
       const path = join(root, `input.${ext}`);
-      await runMediaTool('ffmpeg', [
-        '-v',
-        'error',
-        '-f',
-        'lavfi',
-        '-i',
-        'sine=frequency=440:duration=0.1',
-        '-c:a',
-        ext === 'mp4' ? 'aac' : 'libopus',
-        path,
-      ]);
-      const result = await service.processFile(path);
+      await runMediaTool(
+        'ffmpeg',
+        [
+          '-v',
+          'error',
+          '-f',
+          'lavfi',
+          '-i',
+          'sine=frequency=440:duration=0.1',
+          '-c:a',
+          ext === 'mp4' ? 'aac' : 'libopus',
+          path,
+        ],
+        undefined,
+        signal,
+      );
+      const result = await service.processFile(path, signal);
       expect(result.meta.kind).toBe('AUDIO');
       expect(result.thumbnail).toBeUndefined();
       expect(isStoredMediaMetadata(result.meta)).toBe(true);
@@ -64,18 +82,23 @@ describe('completed-file media processing', () => {
 
   it('generates a bounded video thumbnail', async () => {
     const path = join(root, 'input.mp4');
-    await runMediaTool('ffmpeg', [
-      '-v',
-      'error',
-      '-f',
-      'lavfi',
-      '-i',
-      'color=c=blue:s=64x32:d=0.1',
-      '-c:v',
-      'mpeg4',
-      path,
-    ]);
-    const result = await service.processFile(path);
+    await runMediaTool(
+      'ffmpeg',
+      [
+        '-v',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=blue:s=64x32:d=0.1',
+        '-c:v',
+        'mpeg4',
+        path,
+      ],
+      undefined,
+      signal,
+    );
+    const result = await service.processFile(path, signal);
     expect(result.meta).toMatchObject({
       kind: 'VIDEO',
       width: 64,
@@ -88,10 +111,10 @@ describe('completed-file media processing', () => {
   it('keeps unknown files generic and rejects corrupt recognized media', async () => {
     const path = join(root, 'input');
     await writeFile(path, 'ordinary bytes');
-    expect((await service.processFile(path)).meta).toMatchObject({
+    expect((await service.processFile(path, signal)).meta).toMatchObject({
       kind: 'FILE',
     });
     await writeFile(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]));
-    await expect(service.processFile(path)).rejects.toThrow();
+    await expect(service.processFile(path, signal)).rejects.toThrow();
   });
 });

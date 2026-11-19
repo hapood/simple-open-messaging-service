@@ -23,7 +23,7 @@ const baselineTables = new Map(
 );
 
 describe('common row timestamps', () => {
-  it('keeps the reset schema and media metadata in one baseline', () => {
+  it('keeps the rebuilt baseline', () => {
     expect(
       readdirSync(migrationsDirectory)
         .filter((name) => name.endsWith('.sql'))
@@ -32,6 +32,111 @@ describe('common row timestamps', () => {
     expect(schema.mediaAsset.meta.getSQLType()).toBe('jsonb');
     expect(baselineTables.get('MediaAsset')).toContain('meta jsonb');
     expect(baseline).toContain("'{thumbnail,digest}'");
+  });
+
+  it('requires a message author explicitly without assigning fallback identities', () => {
+    expect(schema.message.creatorAccount.notNull).toBe(true);
+    expect(schema.message.creatorAccount.hasDefault).toBe(false);
+    expect(baselineTables.get('Message')).toContain(
+      '"creatorAccount" character varying(31) NOT NULL',
+    );
+  });
+
+  it('stores only durable outcomes without converting legacy task rows', () => {
+    const outcomes = ['PENDING', 'COMPLETED', 'FAILED'];
+    expect(schema.uploadSessionStatus.enumValues).toEqual(outcomes);
+    expect(schema.fileSyncStatus.enumValues).toEqual(outcomes);
+    for (const type of ['UploadSessionStatus', 'FileSyncStatus']) {
+      expect(baseline).toContain(
+        `CREATE TYPE public."${type}" AS ENUM (\n    'PENDING',\n    'COMPLETED',\n    'FAILED'\n)`,
+      );
+    }
+  });
+
+  it('keeps upload task ownership independent of stage lifetime', () => {
+    const config = getTableConfig(schema.uploadSession);
+    for (const obsolete of ['clientMessageId', 'uploadId', 'attemptId']) {
+      expect(config.columns.map((column) => column.name)).not.toContain(
+        obsolete,
+      );
+      expect(baselineTables.get('UploadSession')).not.toContain(
+        `"${obsolete}"`,
+      );
+    }
+    expect(schema.uploadSession.id.getSQLType()).toBe('bigserial');
+    expect(
+      getTableConfig(schema.message).columns.map((column) => column.name),
+    ).toContain('clientMessageId');
+    expect(
+      getTableConfig(schema.pendingMedia).columns.map((column) => column.name),
+    ).toContain('clientMessageId');
+    for (const column of [
+      schema.uploadSession.pendingMediaId,
+      schema.uploadSession.messageId,
+    ]) {
+      expect(column.getSQLType()).toBe('bigint');
+      expect(column.notNull).toBe(false);
+      const foreignKey = config.foreignKeys.find((key) =>
+        key
+          .reference()
+          .columns.some((referenced) => referenced.name === column.name),
+      );
+      expect(foreignKey?.onDelete).toBe('set null');
+    }
+    expect(baseline).toContain(
+      'REFERENCES public."PendingMedia"(id) ON DELETE SET NULL',
+    );
+    expect(baseline).toContain(
+      'REFERENCES public."Message"(id) ON DELETE SET NULL',
+    );
+    expect(baselineTables.get('UploadSession')).not.toContain(
+      '"clientMessageId"',
+    );
+    const indexNames = config.indexes.map((index) => index.config.name);
+    for (const suffix of ['partId', 'position']) {
+      expect(indexNames).toContain(
+        `UploadSession_pendingMediaId_${suffix}_key`,
+      );
+      expect(indexNames).not.toContain(
+        `UploadSession_clientMessageId_${suffix}_key`,
+      );
+      expect(baseline).toContain(
+        `CREATE UNIQUE INDEX "UploadSession_pendingMediaId_${suffix}_key"`,
+      );
+    }
+    // The unique indexes already cover stage lookup and FK maintenance by their leading column.
+    expect(indexNames).not.toContain('UploadSession_pendingMediaId_idx');
+  });
+
+  it('requires inbound download ownership without changing nullable upload ownership', () => {
+    expect(schema.fileSyncProgress.messageId.notNull).toBe(true);
+    expect(schema.fileSyncProgress.messageId.hasDefault).toBe(false);
+    const key = getTableConfig(schema.fileSyncProgress).foreignKeys.find(
+      (key) =>
+        key.reference().columns.some((column) => column.name === 'messageId'),
+    );
+    expect(key?.onDelete).toBe('restrict');
+    expect(baselineTables.get('FileSyncProgress')).toContain(
+      '"messageId" bigint NOT NULL',
+    );
+    expect(baseline).toContain(
+      'FOREIGN KEY ("messageId") REFERENCES public."Message"(id) ON DELETE RESTRICT;',
+    );
+    expect(schema.uploadSession.messageId.notNull).toBe(false);
+    expect(schema.uploadSession.pendingMediaId.notNull).toBe(false);
+  });
+
+  it('does not mirror file-task failure in temporary media coordination', () => {
+    expect(
+      getTableConfig(schema.pendingMedia).columns.map((column) => column.name),
+    ).not.toContain('anyFailed');
+    expect(baselineTables.get('PendingMedia')).not.toContain('"anyFailed"');
+    expect(baselineTables.get('PendingMedia')).not.toContain(
+      '"dependsOnOriginSeq"',
+    );
+    expect(
+      getTableConfig(schema.pendingMedia).columns.map((column) => column.name),
+    ).not.toContain('dependsOnOriginSeq');
   });
 
   it('keeps high-frequency peer observations out of identity rows', () => {

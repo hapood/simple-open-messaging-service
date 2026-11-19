@@ -14,7 +14,17 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
-import type { Observable } from 'rxjs';
+import {
+  filter,
+  map,
+  merge,
+  of,
+  switchMap,
+  takeWhile,
+  type Observable,
+} from 'rxjs';
+import { MediaProgressService } from '../message/media-progress.service.js';
+import { FederationDownloadScheduler } from '../federation/federation-download-scheduler.js';
 import { MessageService } from '../message/message.service.js';
 import { ContactCardProfileService } from '../message/contact-card/contact-card-profile.service.js';
 import { assertContactCardTargetVisible } from '../message/contact-card/contact-card-target.js';
@@ -52,7 +62,6 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import {
   SendMessageDto,
   SendMediaDto,
-  QueryMediaStagesDto,
   QueryMessagesDto,
   MarkReadDto,
   ThreadFeedQueryDto,
@@ -118,6 +127,8 @@ export class MessageController {
     private readonly contactProfiles: ContactCardProfileService,
     private readonly readPositions: ThreadReadPositionService,
     private readonly sse: SseService,
+    private readonly downloadScheduler: FederationDownloadScheduler,
+    private readonly mediaProgress: MediaProgressService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -757,26 +768,9 @@ export class MessageController {
       dto.contentType,
       dto.clientMessageId,
       dto.fileCnt ?? 1,
-      dto.retry === true,
       dto.quoteTargetSeq,
     );
     return { clientMessageId: dto.clientMessageId };
-  }
-
-  @UseGuards(ThreadAccessGuard)
-  @ResourceId<QueryMediaStagesDto>('threadId')
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('query-media-stages')
-  @ApiOperation({
-    summary:
-      'Query the current user’s uncommitted media-send states in a conversation',
-  })
-  async queryMediaStages(
-    @Request() req: FastifyRequest,
-    @Body() dto: QueryMediaStagesDto,
-  ) {
-    return this.messageService.queryMediaStages(req.user.userId, dto.threadId);
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -1057,7 +1051,8 @@ export class MessageController {
       req.user.userId,
       dto,
     );
-    const digest = typeof dto.digest === 'string' ? dto.digest.trim() : '';
+    const digest =
+      typeof dto.digest === 'string' ? dto.digest.trim().toLowerCase() : '';
     if (!/^[0-9a-f]{64}$/i.test(digest)) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
@@ -1069,14 +1064,53 @@ export class MessageController {
     ) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'media not found');
     }
-    return this.sse
-      .registerMediaFileProgress(
-        req.user.userId,
-        threadId,
-        seq,
-        digest.toLowerCase(),
-      )
-      .pipe(withSseHeartbeat());
+    // Authorization is message-scoped; live byte progress is shared by digest.
+    // This observer owns no download consumer and cannot cancel physical IO.
+    const runtime = this.downloadScheduler.observeDigest(digest).pipe(
+      switchMap((progress) =>
+        progress === null
+          ? this.mediaProgress.snapshot(threadId, seq, digest)
+          : of({
+              threadId,
+              seq,
+              file: { digest, name: '' },
+              status: 'downloading',
+              loaded: progress.received,
+              total: progress.total,
+            }),
+      ),
+      map(
+        (data): MessageEvent => ({
+          type: 'MEDIA_FILE_DOWNLOAD_PROGRESS',
+          data,
+        }),
+      ),
+      // A new execution may start during the database/filesystem read. Never
+      // publish that old idle snapshot over a live digest execution.
+      filter(
+        (event) =>
+          (event.data as { status: string }).status === 'downloading' ||
+          !this.downloadScheduler.hasDigest(digest),
+      ),
+    );
+    const terminal = this.sse
+      .registerMediaFileProgress(req.user.userId, threadId, seq, digest)
+      .pipe(
+        filter(
+          (event) =>
+            (event.data as { status?: string }).status !== 'downloading',
+        ),
+      );
+    return merge(terminal, runtime).pipe(
+      takeWhile(
+        (event) =>
+          ['downloading', 'pending'].includes(
+            (event.data as { status: string }).status,
+          ),
+        true,
+      ),
+      withSseHeartbeat(),
+    );
   }
 
   private async authorizeMediaProgress(

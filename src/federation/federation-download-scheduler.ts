@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  type BeforeApplicationShutdown,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
   asyncScheduler,
@@ -9,6 +13,8 @@ import {
   throttleTime,
 } from 'rxjs';
 import { DatabaseService } from '../database/database.service.js';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 
 const GLOBAL_LIMIT_KEY = 'federation:download:globalLimit';
 const PEER_LIMIT_KEY = 'federation:download:peerLimit';
@@ -37,6 +43,7 @@ interface QueuedDownload {
   ) => Promise<unknown>;
   controller: AbortController;
   consumers: number;
+  progressListeners: Set<(progress: DownloadProgress) => void>;
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   status: 'queued' | 'active';
@@ -46,7 +53,34 @@ interface QueuedDownload {
 
 /** Process-local physical IO, not durable business-task state. Coalesced consumers share one entry. */
 @Injectable()
-export class FederationDownloadScheduler {
+export class FederationDownloadScheduler implements BeforeApplicationShutdown {
+  private readonly shutdown = new AbortController();
+
+  async beforeApplicationShutdown(): Promise<void> {
+    this.shutdown.abort(new Error('download scheduler shutting down'));
+    const entries = [...this.entries.values()];
+    // Capture every writer before abort callbacks can settle consumers. Physical IO
+    // may still perform database and filesystem cleanup after its last consumer exits.
+    const pending: Promise<unknown>[] = entries.map((entry) =>
+      this.waitForWriter(entry),
+    );
+    if (this.refreshPromise) pending.push(this.refreshPromise);
+    for (const entry of entries)
+      entry.controller.abort(this.shutdown.signal.reason);
+    for (const entry of this.queue.splice(0)) {
+      this.entries.delete(entry.key);
+      this.inflight.delete(entry.key);
+      entry.reject(entry.controller.signal.reason);
+    }
+    this.changes.next();
+    try {
+      await this.drainWriters(pending);
+    } finally {
+      this.changes.complete();
+    }
+  }
+
+  private readonly logger = new Logger(FederationDownloadScheduler.name);
   private readonly instanceId = randomUUID();
   private readonly changes = new Subject<void>();
   private active = 0;
@@ -54,6 +88,17 @@ export class FederationDownloadScheduler {
   private readonly queue: QueuedDownload[] = [];
   private readonly entries = new Map<string, QueuedDownload>();
   private readonly inflight = new Map<string, Promise<unknown>>();
+  private readonly stoppingDigests = new Set<string>();
+
+  private assertDigestAdmission(digest: string): void {
+    this.shutdown.signal.throwIfAborted();
+    if (this.stoppingDigests.has(digest))
+      throw new BusinessException(
+        BusinessCode.ALREADY_EXISTS,
+        'download is stopping',
+        409,
+      );
+  }
   private limits: FederationDownloadLimits = {
     global: DEFAULT_GLOBAL_LIMIT,
     perPeer: DEFAULT_PEER_LIMIT,
@@ -72,6 +117,18 @@ export class FederationDownloadScheduler {
       startWith(undefined),
       throttleTime(500, asyncScheduler, { leading: true, trailing: true }),
       map(() => this.snapshot(skip, take)),
+    );
+  }
+
+  /** Read-only digest progress. Unsubscribing never changes download ownership. */
+  observeDigest(digest: string): Observable<DownloadProgress | null> {
+    return this.changes.pipe(
+      startWith(undefined),
+      throttleTime(500, asyncScheduler, { leading: true, trailing: true }),
+      map(() => {
+        const entry = this.entries.get(digest);
+        return entry ? { received: entry.received, total: entry.total } : null;
+      }),
     );
   }
 
@@ -106,18 +163,28 @@ export class FederationDownloadScheduler {
       report: (progress: DownloadProgress) => void,
       signal: AbortSignal,
     ) => Promise<T>,
-    declaredBytes?: number,
-    signal?: AbortSignal,
+    declaredBytes: number | undefined,
+    signal: AbortSignal,
+    onProgress?: (progress: DownloadProgress) => void,
   ): Promise<T> {
-    const key = JSON.stringify([peerDomain, digest]);
+    this.assertDigestAdmission(digest);
+    // The source controls routing and per-peer admission, never physical file identity.
+    const key = digest;
     const current = this.inflight.get(key);
-    signal?.throwIfAborted();
-    if (current) return this.consume(key, current as Promise<T>, signal);
+    signal.throwIfAborted();
+    if (current)
+      return this.consume(key, current as Promise<T>, signal, onProgress);
     await this.refreshLimitsIfStale();
+    this.assertDigestAdmission(digest);
     const refreshedCurrent = this.inflight.get(key);
-    signal?.throwIfAborted();
+    signal.throwIfAborted();
     if (refreshedCurrent)
-      return this.consume(key, refreshedCurrent as Promise<T>, signal);
+      return this.consume(
+        key,
+        refreshedCurrent as Promise<T>,
+        signal,
+        onProgress,
+      );
 
     // Install ownership before starting IO: synchronous callbacks must see the live entry.
     let entry!: QueuedDownload;
@@ -134,12 +201,13 @@ export class FederationDownloadScheduler {
         total: declaredBytes ?? null,
         controller: new AbortController(),
         consumers: 0,
+        progressListeners: new Set(),
       };
     });
     this.inflight.set(key, promise);
     this.entries.set(key, entry);
     this.queue.push(entry);
-    const consumer = this.consume(key, promise, signal);
+    const consumer = this.consume(key, promise, signal, onProgress);
     this.changes.next();
     this.pump();
     return consumer;
@@ -148,16 +216,24 @@ export class FederationDownloadScheduler {
   private consume<T>(
     key: string,
     promise: Promise<T>,
-    signal?: AbortSignal,
+    signal: AbortSignal,
+    onProgress?: (progress: DownloadProgress) => void,
   ): Promise<T> {
     const entry = this.entries.get(key)!;
+    if (entry.controller.signal.aborted)
+      throw new BusinessException(
+        BusinessCode.ALREADY_EXISTS,
+        'download is stopping',
+        409,
+      );
     entry.consumers++;
     return new Promise<T>((resolve, reject) => {
       let settled = false;
       const finish = (ok: boolean, value: unknown) => {
         if (settled) return;
         settled = true;
-        signal?.removeEventListener('abort', abort);
+        signal.removeEventListener('abort', abort);
+        entry.progressListeners.delete(progress);
         entry.consumers--;
         if (entry.consumers === 0 && this.entries.get(key) === entry) {
           entry.controller.abort(new Error('download stopped'));
@@ -174,56 +250,100 @@ export class FederationDownloadScheduler {
         else reject(value);
       };
       const abort = () =>
-        finish(false, signal?.reason ?? new Error('download stopped'));
-      signal?.addEventListener('abort', abort, { once: true });
+        finish(false, signal.reason ?? new Error('download stopped'));
+      const progress = (value: DownloadProgress) => {
+        if (settled || signal.aborted) return;
+        try {
+          onProgress?.(value);
+        } catch (error) {
+          finish(false, error);
+        }
+      };
+      if (onProgress) entry.progressListeners.add(progress);
+      signal.addEventListener('abort', abort, { once: true });
       promise.then(
         (value) => finish(true, value),
         (error: unknown) => finish(false, error),
       );
-      if (signal?.aborted) abort();
+      if (signal.aborted) abort();
+      else progress({ received: entry.received, total: entry.total });
     });
   }
 
   /** Wait for physical writers after cancellation before temporary files can be removed. */
   async waitForDigest(digest: string): Promise<void> {
-    await Promise.all(
-      [...this.entries.values()]
-        .filter(
-          (entry) => entry.digest === digest && entry.controller.signal.aborted,
-        )
-        .map((entry) => this.inflight.get(entry.key)?.catch(() => undefined)),
-    );
+    const pending = [...this.entries.values()]
+      .filter(
+        (entry) => entry.digest === digest && entry.controller.signal.aborted,
+      )
+      .map((entry) => this.waitForWriter(entry));
+    await this.drainWriters(pending);
   }
 
   async stopDigest(digest: string): Promise<void> {
-    const pending: Promise<unknown>[] = [];
-    for (const entry of this.entries.values()) {
-      if (entry.digest !== digest) continue;
-      const promise = this.inflight.get(entry.key);
-      if (promise) pending.push(promise.catch(() => undefined));
-      entry.controller.abort(new Error('stopped by administrator'));
-      if (entry.status === 'queued') {
-        const index = this.queue.indexOf(entry);
-        if (index >= 0) this.queue.splice(index, 1);
-        this.entries.delete(entry.key);
-        this.inflight.delete(entry.key);
-        entry.reject(new Error('stopped by administrator'));
+    this.assertDigestAdmission(digest);
+    this.stoppingDigests.add(digest);
+    try {
+      const pending: Promise<unknown>[] = [];
+      for (const entry of this.entries.values()) {
+        if (entry.digest !== digest) continue;
+        entry.controller.abort(new Error('stopped by administrator'));
+        pending.push(this.waitForWriter(entry));
+        if (entry.status === 'queued') {
+          const index = this.queue.indexOf(entry);
+          if (index >= 0) this.queue.splice(index, 1);
+          this.entries.delete(entry.key);
+          this.inflight.delete(entry.key);
+          entry.reject(entry.controller.signal.reason);
+        }
       }
+      this.changes.next();
+      await this.drainWriters(pending);
+    } finally {
+      this.stoppingDigests.delete(digest);
     }
-    this.changes.next();
-    await Promise.all(pending);
+  }
+
+  private async waitForWriter(entry: QueuedDownload): Promise<void> {
+    try {
+      await this.inflight.get(entry.key);
+    } catch (error) {
+      if (
+        !entry.controller.signal.aborted ||
+        error !== entry.controller.signal.reason
+      )
+        throw error;
+    }
+  }
+
+  private async drainWriters(pending: Promise<unknown>[]): Promise<void> {
+    const results = await Promise.allSettled(pending);
+    const errors = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason as unknown] : [],
+    );
+    if (errors.length)
+      throw new AggregateError(errors, 'download writer cleanup failed');
   }
 
   hasDigest(digest: string): boolean {
-    return [...this.entries.values()].some((entry) => entry.digest === digest);
+    return this.entries.has(digest);
   }
 
   invalidateLimits(): void {
+    if (this.shutdown.signal.aborted) return;
     this.limitsFetchedAt = 0;
-    void this.refreshLimitsIfStale().then(() => this.pump());
+    void this.refreshLimitsIfStale().then(
+      () => this.pump(),
+      (error: unknown) =>
+        this.logger.error(
+          'Could not refresh download concurrency limits',
+          error,
+        ),
+    );
   }
 
   private pump(): void {
+    if (this.shutdown.signal.aborted) return;
     while (this.active < this.limits.global) {
       const index = this.queue.findIndex(
         (item) =>
@@ -238,9 +358,14 @@ export class FederationDownloadScheduler {
       );
       item.status = 'active';
       const report = (progress: DownloadProgress) => {
-        if (this.entries.get(item.key) !== item) return;
+        if (
+          this.entries.get(item.key) !== item ||
+          item.controller.signal.aborted
+        )
+          return;
         item.received = progress.received;
         item.total = progress.total;
+        for (const listener of item.progressListeners) listener(progress);
         this.changes.next();
       };
       void Promise.resolve()
@@ -251,7 +376,10 @@ export class FederationDownloadScheduler {
         .then(
           (value) => {
             this.finish(item);
-            item.resolve(value);
+            // A non-cooperative writer may resolve after abort. Draining it is not success.
+            if (item.controller.signal.aborted)
+              item.reject(item.controller.signal.reason);
+            else item.resolve(value);
           },
           (error: unknown) => {
             this.finish(item);
@@ -282,6 +410,7 @@ export class FederationDownloadScheduler {
             inArray(setting.key, [GLOBAL_LIMIT_KEY, PEER_LIMIT_KEY]),
           columns: { key: true, value: true },
         });
+        if (this.shutdown.signal.aborted) return;
         const values = new Map(rows.map((row) => [row.key, row.value]));
         this.limits = {
           global: this.parseLimit(
@@ -293,9 +422,9 @@ export class FederationDownloadScheduler {
             DEFAULT_PEER_LIMIT,
           ),
         };
+        this.limitsFetchedAt = Date.now();
         this.changes.next();
       } finally {
-        this.limitsFetchedAt = Date.now();
         this.refreshPromise = null;
       }
     })();

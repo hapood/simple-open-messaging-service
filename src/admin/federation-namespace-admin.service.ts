@@ -10,7 +10,7 @@ import {
 } from '../database/database.service.js';
 import {
   DiscoveryService,
-  type WellKnownDoc,
+  type DiscoveryDocument,
 } from '../federation/discovery.service.js';
 import { SignatureService } from '../federation/signature.service.js';
 import { FederationTransportConfigService } from '../federation/federation-transport-config.service.js';
@@ -250,7 +250,9 @@ export class FederationNamespaceAdminService {
     }
     // Fetch and validate the certificate set before acquiring decision locks.
     // Installing it with the binding avoids a hidden re-handshake prerequisite.
-    const document = await this.discovery.fetchWellKnown(review.nextDomain);
+    const document = await this.discovery.fetchDiscoveryDocument(
+      review.nextDomain,
+    );
     if (review.kind === 'root-rotation') {
       const proof = await this.challengePredecessor(review);
       if (!proof.ok) {
@@ -272,7 +274,7 @@ export class FederationNamespaceAdminService {
     reviewId: number,
     decision: 'approved' | 'rejected',
     checkedReview?: AdminIdentityReviewView,
-    document?: WellKnownDoc,
+    document?: DiscoveryDocument,
     resolution?: 'new-peer' | 'replace-identity',
   ): Promise<AdminReviewDecisionResult> {
     if (!Number.isSafeInteger(reviewId) || reviewId <= 0) {

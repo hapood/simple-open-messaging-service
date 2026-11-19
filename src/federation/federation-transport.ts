@@ -15,8 +15,8 @@ import {
 } from './srv-rrset.js';
 import {
   normalizeFederationDomain,
-  validateWellKnownDocument,
-} from './well-known-document.js';
+  validateDiscoveryDocument,
+} from './discovery-document.js';
 
 export class FederationDomainResolutionError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -217,14 +217,14 @@ export async function readFederationDiscovery(
 ) {
   try {
     if (response.status !== 200)
-      throw new Error(`well-known ${domain}: HTTP ${response.status}`);
+      throw new Error(`discovery ${domain}: HTTP ${response.status}`);
     if (
       !/^application\/json(?:\s*;|$)/i.test(
         response.headers.get('content-type') ?? '',
       )
     )
-      throw new Error(`well-known ${domain}: invalid Content-Type`);
-    if (!response.body) throw new Error(`well-known ${domain}: missing body`);
+      throw new Error(`discovery ${domain}: invalid Content-Type`);
+    if (!response.body) throw new Error(`discovery ${domain}: missing body`);
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -241,7 +241,7 @@ export async function readFederationDiscovery(
       await reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
-    return validateWellKnownDocument(
+    return validateDiscoveryDocument(
       domain,
       JSON.parse(Buffer.concat(chunks).toString('utf8')),
     );

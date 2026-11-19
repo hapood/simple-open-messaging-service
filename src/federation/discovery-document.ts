@@ -9,7 +9,7 @@ import { parseKeyId } from './key-id.js';
 
 /** The public `/somfp/discovery` v1 discovery document. Owned here so the
  *  document contract has one definition shared by discovery and diagnostics. */
-export interface WellKnownDoc {
+export interface DiscoveryDocument {
   software?: string;
   /** Diagnostic creation time of the publisher's active signing key, in epoch milliseconds. */
   signingKeyCreatedAt: number;
@@ -36,12 +36,12 @@ export function normalizeFederationDomain(domain: string): string {
  *  (keyId domain binding and uniqueness, root group membership, interval enclosure,
  *  authorization signature), plus at least one currently valid signing key. Pure: no
  *  cache writes, no network. Throws with a reason on the first violation. */
-export function validateWellKnownDocument(
+export function validateDiscoveryDocument(
   domain: string,
   value: unknown,
-): WellKnownDoc {
+): DiscoveryDocument {
   const normalized = normalizeFederationDomain(domain);
-  const doc = value as Partial<WellKnownDoc> | null;
+  const doc = value as Partial<DiscoveryDocument> | null;
   const softwareValid =
     doc?.software === undefined ||
     (typeof doc.software === 'string' &&
@@ -61,14 +61,14 @@ export function validateWellKnownDocument(
     !Array.isArray(doc.keys) ||
     doc.keys.length === 0
   ) {
-    throw new Error(`well-known ${normalized}: malformed v1 document`);
+    throw new Error(`discovery ${normalized}: malformed v1 document`);
   }
   // Root group: unique canonical keys, sane intervals, and at least one
   // currently valid root when the document is consumed.
   const rootEntries = new Map<string, RootKeyEntry>();
   for (const entry of doc.roots) {
     if (!isValidRootKeyEntry(entry) || rootEntries.has(entry.ed25519)) {
-      throw new Error(`well-known ${normalized}: invalid roots group`);
+      throw new Error(`discovery ${normalized}: invalid roots group`);
     }
     rootEntries.set(entry.ed25519, entry);
   }
@@ -77,7 +77,7 @@ export function validateWellKnownDocument(
       (entry) => entry.notBefore <= now && now < entry.notAfter,
     )
   ) {
-    throw new Error(`well-known ${normalized}: no currently valid root`);
+    throw new Error(`discovery ${normalized}: no currently valid root`);
   }
   const ids = new Set<string>();
   for (const certificate of doc.keys) {
@@ -93,7 +93,7 @@ export function validateWellKnownDocument(
       certificate.notAfter > authorizing.notAfter ||
       !verifySigningCertificate(certificate, certificate.root)
     ) {
-      throw new Error(`well-known ${normalized}: invalid signing certificate`);
+      throw new Error(`discovery ${normalized}: invalid signing certificate`);
     }
     ids.add(certificate.keyId);
   }
@@ -104,7 +104,7 @@ export function validateWellKnownDocument(
         Date.now() < certificate.notAfter,
     )
   ) {
-    throw new Error(`well-known ${normalized}: no currently valid signing key`);
+    throw new Error(`discovery ${normalized}: no currently valid signing key`);
   }
-  return doc as WellKnownDoc;
+  return doc as DiscoveryDocument;
 }

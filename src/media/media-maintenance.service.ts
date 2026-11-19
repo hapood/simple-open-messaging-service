@@ -29,7 +29,7 @@ export class MediaMaintenanceService {
         const refs = await tx.execute<{ busy: boolean }>(sql`
         SELECT EXISTS (SELECT 1 FROM "MessageAsset" WHERE digest = ${digest})
           OR EXISTS (SELECT 1 FROM "ForwardBundleAsset" WHERE digest = ${digest})
-          OR EXISTS (SELECT 1 FROM "UploadSession" WHERE digest = ${digest} AND status IN ('UPLOADING', 'COMPLETING'))
+          OR EXISTS (SELECT 1 FROM "UploadSession" WHERE digest = ${digest} AND status = 'PENDING')
           OR EXISTS (SELECT 1 FROM "FileSyncProgress" WHERE digest = ${digest}) AS busy
       `);
         if (refs.rows[0].busy)

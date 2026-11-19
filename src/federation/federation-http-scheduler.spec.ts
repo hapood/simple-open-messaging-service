@@ -29,6 +29,120 @@ afterEach(() => {
 });
 
 describe('FederationHttpScheduler', () => {
+  it('rejects queued and new requests, and drains active slots without pumping', async () => {
+    const subject = scheduler(1, 1);
+    const release = await subject.acquire('first');
+    const queued = expect(subject.acquire('second')).rejects.toThrow(
+      'federation HTTP scheduler shutting down',
+    );
+    await Promise.resolve();
+    subject.onModuleDestroy();
+    await queued;
+    await expect(subject.acquire('third')).rejects.toThrow(
+      'federation HTTP scheduler shutting down',
+    );
+    let closed = false;
+    const closing = subject.beforeApplicationShutdown().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    release();
+    release();
+    await closing;
+  });
+
+  it('cancels retry delay immediately and never starts another attempt', async () => {
+    vi.useFakeTimers();
+    const subject = scheduler(1, 1);
+    const operation = vi
+      .fn()
+      .mockRejectedValue(new FederationTransportError('offline'));
+    const work = expect(
+      subject.runWithRetry('peer', 'page', operation),
+    ).rejects.toThrow('federation HTTP scheduler shutting down');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(operation).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(1);
+    subject.onModuleDestroy();
+    await work;
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(operation).toHaveBeenCalledOnce();
+    await subject.beforeApplicationShutdown();
+  });
+
+  it.each([false, true])(
+    'drains a limits query without late admission (failure: %s)',
+    async (fails) => {
+      let resolve!: (rows: unknown[]) => void;
+      let reject!: (error: Error) => void;
+      const findMany = vi.fn(
+        () =>
+          new Promise((res, rej) => {
+            resolve = res;
+            reject = rej;
+          }),
+      );
+      const subject = new FederationHttpScheduler({
+        db: { query: { systemSetting: { findMany } } },
+      } as never);
+      const failure = new Error('limits query failed');
+      const work = expect(subject.acquire('peer')).rejects.toThrow(
+        fails ? failure.message : 'federation HTTP scheduler shutting down',
+      );
+      let closed = false;
+      const closing = subject.beforeApplicationShutdown().finally(() => {
+        closed = true;
+      });
+      const result = fails
+        ? expect(closing).rejects.toMatchObject({ errors: [failure] })
+        : expect(closing).resolves.toBeUndefined();
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      subject.invalidateLimits();
+      if (fails) reject(failure);
+      else resolve([]);
+      await work;
+      await result;
+      expect(findMany).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('retries a failed limits query instead of caching its failure', async () => {
+    const failure = new Error('limits unavailable');
+    const findMany = vi
+      .fn()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce([]);
+    const subject = new FederationHttpScheduler({
+      db: { query: { systemSetting: { findMany } } },
+    } as never);
+    await expect(subject.acquire('peer')).rejects.toBe(failure);
+    const release = await subject.acquire('peer');
+    release();
+    expect(findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves an in-flight retry failure on shutdown without scheduling another attempt', async () => {
+    const subject = scheduler(1, 1);
+    let reject!: (error: Error) => void;
+    const failure = new FederationTransportError('request cleanup failed');
+    const operation = vi.fn(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const work = expect(
+      subject.runWithRetry('peer', 'page', operation),
+    ).rejects.toBe(failure);
+    subject.onModuleDestroy();
+    reject(failure);
+    await work;
+    expect(operation).toHaveBeenCalledOnce();
+  });
+
   it('waits at the global and per-peer limits, then releases exactly one waiter', async () => {
     const subject = scheduler(3, 2);
     const releases = await Promise.all([

@@ -269,8 +269,8 @@ export class SendForwardDto {
  * Stage a media send BEFORE the upload: the server creates a PendingMedia(pending) row carrying
  * clientMessageId (+ optional display meta) so a crash between staging and upload leaves an
  * attributable record. No Message or seq is created yet — the upload route promotes the stage to a
- * real Message once the bytes land. Reusing the id is idempotent unless retry=true explicitly moves
- * a failed stage back to pending.
+ * real Message once the bytes land. Reusing the id resumes the same stage; a failed upload is
+ * retried through the upload task, not by restaging.
  */
 export class SendMediaDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
@@ -315,24 +315,6 @@ export class SendMediaDto {
   @Min(1)
   @Max(10)
   fileCnt?: number;
-
-  @ApiPropertyOptional({
-    default: false,
-    description:
-      'Explicit retry. When true, an existing failed stage owned by this user is moved back to pending.',
-  })
-  @IsOptional()
-  @IsBoolean()
-  retry?: boolean;
-}
-
-/** Query the caller's uncommitted local media sends in one conversation. */
-export class QueryMediaStagesDto {
-  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  threadId!: number;
 }
 
 export class QueryMessagesDto {

@@ -307,7 +307,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/send-media` — Send media (staged)
 
-- **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/uploads/resumable/*` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
+- **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/uploads/resumable/*` and are promoted to a `Message` once confirmed. Client upload retries use the owner-authenticated `/uploads/resumable/:id/retry` endpoint and retained checkpoints. The client does not query failed stages after restarting. `/media-status` reports attachment availability for existing messages; `/relocalize-media` retries server-side retrieval of unavailable federated media.
 
 ### POST `/link-preview/generations` · GET `/link-preview/generations/:generationId`
 
@@ -594,11 +594,23 @@ client bootstrap can register again. Provider-reported expiry uses revision-base
 
 ### Resumable upload
 
-- `POST /uploads/resumable/init` initializes or recovers a sequential upload session.
-- `GET /uploads/resumable/:uploadId` returns the authoritative offset.
-- `PUT /uploads/resumable/:uploadId` appends one ordered `application/octet-stream` chunk using
+- `POST /uploads/resumable/init` initializes or looks up a sequential upload task by the admitted
+  `clientMessageId` and `partId`. Responses expose the database task `id` as a canonical positive decimal
+  string; subsequent commands use that same ID. Clients never supply a filesystem `tmpKey`.
+- `GET /uploads/resumable/:id` returns the authoritative status and offset.
+- `PUT /uploads/resumable/:id` appends one ordered `application/octet-stream` chunk using
   `Content-Range`.
-- `POST /uploads/resumable/:uploadId/complete` validates, publishes, and promotes the completed upload.
+- `POST /uploads/resumable/:id/complete` validates, publishes, and promotes the completed upload.
+- `POST /uploads/resumable/:id/retry` explicitly reactivates a failed task. It preserves valid
+  checkpoints, returns the authoritative offset, and can directly reprocess a fully received file.
+  Only intentional cleanup after cancellation or invalid media permits restarting at zero; unexplained
+  missing or invalid checkpoints are errors. Retrying requires the message's pending coordination.
+- A task in `PENDING` with phase `UPLOADING` can continue with `PUT` without `retry`. A task in
+  `FAILED` requires `retry`; late chunks cannot reactivate a stopped task. `COMPLETING` requires no
+  further upload bytes, and terminal responses (`COMPLETED` or `FAILED`) omit the phase.
+- `POST /uploads/resumable/:id/cancel` deletes one uncommitted task's temporary files while retaining
+  its history and message coordination. Whole-message cancellation instead removes coordination
+  after successful file cleanup, preventing retry through the old tasks.
 - All endpoints require the authenticated user who owns the upload session. Initialization declares
   `clientMessageId`, `partId`, `position`, `intent`, `originalName`, `mimeType`, and `totalBytes`.
   Object-size admission and the full file count/byte charge occur before any attachment bytes arrive.

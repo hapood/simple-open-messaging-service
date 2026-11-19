@@ -1,8 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import {
+  Injectable,
+  Logger,
+  type BeforeApplicationShutdown,
+} from '@nestjs/common';
+import { and, eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { KeyedMutex } from '../common/keyed-mutex.js';
 import { DatabaseService } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
@@ -21,6 +24,12 @@ type FileSyncKind =
   | 'AUDIO'
   | 'LINK_CARD'
   | 'BUNDLE';
+
+type FileDownloadOutcome =
+  | { kind: 'completed' }
+  | { kind: 'cancelled'; error: unknown }
+  | { kind: 'quota-paused'; error: unknown }
+  | { kind: 'failed'; error: unknown };
 
 class FederationDownloadTerminatedError extends Error {
   constructor() {
@@ -61,26 +70,170 @@ export function federationFileSyncKind(type: ContentType): FileSyncKind {
 
 /** Drives durable inbound file rows and serializes promotion attempts per batch. */
 @Injectable()
-export class FederationInboundFileSync {
+export class FederationInboundFileSync implements BeforeApplicationShutdown {
   private readonly logger = new Logger(FederationInboundFileSync.name);
-  private readonly batchLocks = new KeyedMutex();
-  private readonly controllers = new Map<string, AbortController>();
+  private readonly shutdown = new AbortController();
+  private readonly stops = new Set<Promise<unknown>>();
 
-  async stopBatch(batchId: string): Promise<void> {
-    this.controllers.get(batchId)?.abort(new Error('stopped by administrator'));
-    await this.batchLocks.runExclusive(batchId, async () => undefined);
+  // Settlement and physical-writer draining still use the database. Complete both
+  // before infrastructure providers enter their application-shutdown hooks.
+  async beforeApplicationShutdown(): Promise<void> {
+    this.shutdown.abort(new Error('inbound file sync shutting down'));
+    const executions = [...this.executions.entries()];
+    for (const [, execution] of executions)
+      execution.controller.abort(this.shutdown.signal.reason);
+    // Abort all consumers before awaiting any one batch, including shared physical writers.
+    const results = await Promise.allSettled([
+      ...this.stops,
+      ...executions
+        .filter(([, execution]) => execution.phase === 'running')
+        .map(async ([batchId, execution]) => {
+          await execution.drained;
+          const errors = [...execution.errors];
+          try {
+            await this.drainStoppedBatch(batchId);
+          } catch (error) {
+            errors.push(error);
+          }
+          if (errors.length)
+            throw new AggregateError(
+              errors,
+              `download batch ${batchId} shutdown failed`,
+            );
+        }),
+    ]);
+    const errors = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason as unknown] : [],
+    );
+    if (errors.length)
+      throw new AggregateError(errors, 'inbound file sync shutdown failed');
+  }
+
+  private readonly executions = new Map<
+    string,
+    {
+      phase: 'running' | 'stopping';
+      controller: AbortController;
+      errors: unknown[];
+      drained: Promise<void>;
+      release: () => void;
+    }
+  >();
+
+  private admit(batchId: string, phase: 'running' | 'stopping') {
+    this.shutdown.signal.throwIfAborted();
+    if (this.executions.has(batchId))
+      throw new BusinessException(
+        BusinessCode.ALREADY_EXISTS,
+        'download execution is busy',
+        409,
+      );
+    let release!: () => void;
+    const drained = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const execution = {
+      phase,
+      controller: new AbortController(),
+      errors: [] as unknown[],
+      drained,
+      release,
+    };
+    this.executions.set(batchId, execution);
+    return execution;
+  }
+
+  async stopBatch(
+    batchId: string,
+    persistStop?: () => Promise<void>,
+  ): Promise<void> {
+    this.shutdown.signal.throwIfAborted();
+    const work = this.stopBatchExecution(batchId, persistStop);
+    this.stops.add(work);
+    try {
+      await work;
+    } finally {
+      this.stops.delete(work);
+    }
+  }
+
+  private async stopBatchExecution(
+    batchId: string,
+    persistStop?: () => Promise<void>,
+  ): Promise<void> {
+    const current = this.executions.get(batchId);
+    if (current?.phase === 'stopping')
+      throw new BusinessException(
+        BusinessCode.ALREADY_EXISTS,
+        'download execution is busy',
+        409,
+      );
+    const execution = current ?? this.admit(batchId, 'stopping');
+    execution.phase = 'stopping';
+    try {
+      execution.controller.abort(new Error('stopped by administrator'));
+      const errors: unknown[] = [];
+      // Invalidate execution before any durable write can block. Persistence failure
+      // must not release admission while the invalidated execution still owns resources.
+      try {
+        await persistStop?.();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        if (current) {
+          await current.drained;
+          errors.push(...current.errors);
+        }
+        await this.drainStoppedBatch(batchId);
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1)
+        throw new AggregateError(errors, 'download stop failed');
+    } finally {
+      execution.release();
+      if (this.executions.get(batchId) === execution)
+        this.executions.delete(batchId);
+    }
+  }
+
+  private async drainStoppedBatch(batchId: string): Promise<void> {
     const rows = await this.database.db.query.fileSyncProgress.findMany({
       where: eq(tables.fileSyncProgress.batchId, batchId),
-      columns: { id: true, digest: true, status: true },
+      columns: { id: true, digest: true, status: true, errorKind: true },
     });
-    await Promise.all(
+    const drains = await Promise.allSettled(
       rows.map((row) => this.transfers.waitForStoppedDigest(row.digest)),
     );
-    for (const row of rows) {
-      if (row.status !== 'FAILED') continue;
-      await this.publishFileTerminal(row.id, 'failed');
-      this.progressTargets.delete(row.id.toString());
-    }
+    const failures = drains.filter((result) => result.status === 'rejected');
+    if (failures.length)
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        'download writer drain failed',
+      );
+    const notifications = await Promise.allSettled(
+      rows
+        .filter(
+          (row) => row.status === 'FAILED' && row.errorKind === 'USER_STOPPED',
+        )
+        .map(async (row) => {
+          try {
+            await this.publishFileTerminal(row.id, 'failed');
+          } finally {
+            this.progressTargets.delete(row.id.toString());
+          }
+        }),
+    );
+    const notificationErrors = notifications.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason as unknown] : [],
+    );
+    if (notificationErrors.length)
+      throw new AggregateError(
+        notificationErrors,
+        'download stop notification failed',
+      );
   }
   private readonly progressTargets = new Map<
     string,
@@ -106,27 +259,33 @@ export class FederationInboundFileSync {
       digest: string,
       offset: number,
       declaredBytes: number,
-      signal?: AbortSignal,
+      signal: AbortSignal,
     ) => AsyncIterable<Buffer>,
     promote: (batchId: string) => Promise<void>,
     fail: (batchId: string) => Promise<void>,
     start?: (batchId: string) => Promise<void>,
   ): Promise<void> {
-    await this.batchLocks.runExclusive(batchId, async () => {
+    // Synchronous admission: duplicate executions reject instead of waiting for a turn.
+    const execution = this.admit(batchId, 'running');
+    const { controller } = execution;
+    try {
+      controller.signal.throwIfAborted();
       const rows = await this.database.db.query.fileSyncProgress.findMany({
         where: and(
           eq(tables.fileSyncProgress.batchId, batchId),
           eq(tables.fileSyncProgress.status, 'PENDING'),
         ),
       });
+      controller.signal.throwIfAborted();
       const publisherNamespaceId = rows[0]?.publisherNamespaceId;
-      if (
+      const quotaExhausted =
         publisherNamespaceId &&
         (await this.quota.isExhausted(publisherNamespaceId, [
           'files',
           'fileBytes',
-        ]))
-      ) {
+        ]));
+      controller.signal.throwIfAborted();
+      if (quotaExhausted) {
         await this.database.db
           .update(tables.fileSyncProgress)
           .set({ errorKind: 'QUOTA_PAUSED', updatedAt: new Date() })
@@ -138,58 +297,94 @@ export class FederationInboundFileSync {
           );
         return;
       }
+      controller.signal.throwIfAborted();
       if (rows.length > 0) await start?.(batchId);
-      const controller = new AbortController();
-      this.controllers.set(batchId, controller);
-      let results: PromiseSettledResult<void>[];
-      try {
-        results = await Promise.allSettled(
-          rows.map((row) =>
-            this.driveFile(
-              row.id,
-              row.digest,
-              (offset, signal) =>
-                fetchChunksFor(
-                  row.digest,
-                  offset,
-                  Number(row.bytesTotal),
-                  signal,
-                ),
-              controller.signal,
-            ),
+      controller.signal.throwIfAborted();
+      const results = await Promise.allSettled(
+        rows.map((row) =>
+          this.driveFile(
+            row.id,
+            row.digest,
+            (offset, signal) =>
+              fetchChunksFor(
+                row.digest,
+                offset,
+                Number(row.bytesTotal),
+                signal,
+              ),
+            controller.signal,
           ),
-        );
-      } finally {
-        this.controllers.delete(batchId);
-      }
-      const rejected = results.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === 'rejected',
+        ),
       );
-      if (rejected) {
-        const failed = await this.database.db.query.fileSyncProgress.findFirst({
-          where: and(
-            eq(tables.fileSyncProgress.batchId, batchId),
-            eq(tables.fileSyncProgress.status, 'FAILED'),
-          ),
-          columns: { id: true },
-        });
-        if (failed) await fail(batchId);
-        throw rejected.reason;
-      }
-      await promote(batchId);
-    });
+      await this.settleBatch(
+        batchId,
+        results,
+        controller.signal,
+        promote,
+        fail,
+      );
+    } catch (error) {
+      // The drain promise is a completion latch, not a rejected promise: capture errors
+      // for a concurrent stop without creating an unobserved rejection during normal runs.
+      if (!controller.signal.aborted || error !== controller.signal.reason)
+        execution.errors.push(error);
+      throw error;
+    } finally {
+      execution.release();
+      // Stop retains the slot through physical-writer and terminal-notification draining.
+      if (
+        execution.phase === 'running' &&
+        this.executions.get(batchId) === execution
+      )
+        this.executions.delete(batchId);
+    }
+  }
+
+  /** Held under the execution lock through domain settlement; retry cannot reset rows until it drains. */
+  private async settleBatch(
+    batchId: string,
+    results: PromiseSettledResult<FileDownloadOutcome>[],
+    signal: AbortSignal,
+    promote: (batchId: string) => Promise<void>,
+    fail: (batchId: string) => Promise<void>,
+  ): Promise<void> {
+    // Rejections are persistence/programming errors, not transport outcomes. Never hide them on stop.
+    const executionErrors = results.flatMap((result) =>
+      result.status === 'rejected' &&
+      !(signal.aborted && result.reason === signal.reason)
+        ? [result.reason as unknown]
+        : [],
+    );
+    if (executionErrors.length === 1) throw executionErrors[0];
+    if (executionErrors.length > 1)
+      throw new AggregateError(
+        executionErrors,
+        'inbound file execution failed',
+      );
+    const outcomes = results.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : [],
+    );
+    signal.throwIfAborted();
+    const cancelled = outcomes.find((outcome) => outcome.kind === 'cancelled');
+    if (cancelled?.kind === 'cancelled') throw cancelled.error;
+    const failure = outcomes.find((outcome) => outcome.kind === 'failed');
+    if (failure?.kind === 'failed') {
+      // The domain transaction independently authorizes this transition against active durable state.
+      // Cancellation can arrive while it awaits a database lock; the signal is not a commit guard.
+      await fail(batchId);
+      throw failure.error;
+    }
+    const paused = outcomes.find((outcome) => outcome.kind === 'quota-paused');
+    if (paused?.kind === 'quota-paused') throw paused.error;
+    await promote(batchId);
   }
 
   private async driveFile(
     progressId: bigint,
     digest: string,
-    fetchChunks: (
-      offset: number,
-      signal?: AbortSignal,
-    ) => AsyncIterable<Buffer>,
+    fetchChunks: (offset: number, signal: AbortSignal) => AsyncIterable<Buffer>,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<FileDownloadOutcome> {
     const row = await this.database.db.query.fileSyncProgress.findFirst({
       where: eq(tables.fileSyncProgress.id, progressId),
       columns: {
@@ -201,61 +396,124 @@ export class FederationInboundFileSync {
     const declaredBytes = row?.bytesTotal ?? 0n;
     let progressWrite = Promise.resolve();
     let writing = false;
+    let acceptingProgress = true;
+    const progressErrors: unknown[] = [];
     try {
+      signal.throwIfAborted();
       if (!row?.publisherNamespaceId)
         throw new Error('missing media publisher namespace');
       if (!row.originDomain) throw new Error('missing media source peer');
       await this.claim(progressId, declaredBytes);
-      await this.publishProgress(progressId, 0);
-      await this.publishMessageProgress(progressId, true);
+      signal.throwIfAborted();
+      await this.publishProgress(progressId, 0, signal);
+      await this.publishMessageProgress(progressId, true, signal);
+      signal.throwIfAborted();
       let lastWrite = 0;
-      await this.transfers.receive({
-        namespaceId: row.publisherNamespaceId,
-        peerDomain: row.originDomain,
-        digest,
-        declaredBytes: Number(declaredBytes),
-        chunks: (offset, physicalSignal) =>
-          this.checkedChunks(
+      let latestReceived: number | undefined;
+      const peerDomain = row.originDomain;
+      // Normalize synchronous adapter throws and asynchronous transfer failures into
+      // one result, so every admitted progress write reaches the same drain point.
+      const transferResult = await Promise.resolve()
+        .then(() =>
+          this.transfers.receive({
+            namespaceId: row.publisherNamespaceId,
+            peerDomain,
             digest,
-            fetchChunks(offset, physicalSignal),
-            physicalSignal,
-          ),
-        signal,
-        onProgress: (received) => {
-          if (received - lastWrite >= 256 * 1024 && !writing) {
-            lastWrite = received;
-            writing = true;
-            progressWrite = this.writeProgress(progressId, received)
-              .catch(() => {
-                this.logger.warn('could not persist inbound download progress');
-              })
-              .finally(() => {
-                writing = false;
-              });
-          }
-        },
-      });
+            declaredBytes: Number(declaredBytes),
+            // The shared writer is owned by the scheduler's consumer signals, not
+            // by this task's row or by the existence of another durable batch.
+            chunks: (offset, physicalSignal) =>
+              fetchChunks(offset, physicalSignal),
+            signal,
+            onProgress: (received) => {
+              // The physical writer may outlive this consumer; never let its closure update a retry.
+              if (!acceptingProgress || signal.aborted) return;
+              latestReceived = received;
+              if (received - lastWrite >= 256 * 1024 && !writing) {
+                lastWrite = received;
+                writing = true;
+                progressWrite = this.writeProgress(progressId, received, signal)
+                  .catch((error: unknown) => {
+                    progressErrors.push(error);
+                  })
+                  .finally(() => {
+                    writing = false;
+                  });
+              }
+            },
+          }),
+        )
+        .then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+      acceptingProgress = false;
       await progressWrite;
+      // Flush the final observed byte count even for short transfers. This is only
+      // display progress; disk checkpoints alone determine subsequent resume offsets.
+      if (
+        !signal.aborted &&
+        latestReceived !== undefined &&
+        latestReceived !== lastWrite
+      ) {
+        try {
+          await this.writeProgress(progressId, latestReceived, signal);
+        } catch (error) {
+          progressErrors.push(error);
+        }
+      }
+      if (progressErrors.length > 0) {
+        const errors = [...progressErrors];
+        if (
+          !transferResult.ok &&
+          !(signal.aborted && transferResult.error === signal.reason)
+        )
+          errors.unshift(transferResult.error);
+        throw new AggregateError(
+          errors,
+          'could not persist inbound download progress',
+        );
+      }
+      if (signal.aborted) {
+        if (!transferResult.ok && transferResult.error !== signal.reason)
+          throw transferResult.error;
+        return { kind: 'cancelled', error: signal.reason };
+      }
+      if (!transferResult.ok)
+        return this.handleFailure(progressId, transferResult.error);
       const completed = await this.database.db
         .update(tables.fileSyncProgress)
         .set({
-          status: 'SUCCEEDED',
+          status: 'COMPLETED',
+          errorKind: null,
           bytesReceived: declaredBytes,
           updatedAt: new Date(),
         })
         .where(
           and(
             eq(tables.fileSyncProgress.id, progressId),
-            eq(tables.fileSyncProgress.status, 'DOWNLOADING'),
+            eq(tables.fileSyncProgress.status, 'PENDING'),
           ),
         )
         .returning({ id: tables.fileSyncProgress.id });
       if (completed.length === 0) throw new FederationDownloadTerminatedError();
+      try {
+        await this.transfers.cleanupCompletedDownload(digest);
+      } catch (error) {
+        // The task outcome is committed. Cleanup failure must not prevent message promotion.
+        this.logger.error(
+          `Completed download ${digest} temporary cleanup failed`,
+          error,
+        );
+      }
       await this.publishFileTerminal(progressId, 'ready');
-      await this.publishMessageProgress(progressId, false);
+      await this.publishMessageProgress(progressId, false, signal);
+      return { kind: 'completed' };
     } catch (error) {
-      await progressWrite;
-      await this.handleFailure(progressId, error);
+      if (error instanceof FederationDownloadTerminatedError)
+        return { kind: 'cancelled', error };
+      // This boundary only catches orchestration/persistence failures. Transport and admission
+      // failures are classified above, so a concurrent stop cannot conceal a database error.
       throw error;
     } finally {
       this.progressTargets.delete(progressId.toString());
@@ -269,8 +527,9 @@ export class FederationInboundFileSync {
     const claimed = await this.database.db
       .update(tables.fileSyncProgress)
       .set({
-        status: 'DOWNLOADING',
+        // Execution ownership is the in-memory batch slot and controller, not another database state.
         bytesTotal: declaredBytes,
+        errorKind: null,
         updatedAt: new Date(),
       })
       .where(
@@ -283,49 +542,34 @@ export class FederationInboundFileSync {
     if (claimed.length === 0) throw new FederationDownloadTerminatedError();
   }
 
-  private async *checkedChunks(
-    digest: string,
-    chunks: AsyncIterable<Buffer>,
-    signal?: AbortSignal,
-  ): AsyncGenerator<Buffer> {
-    for await (const chunk of chunks) {
-      signal?.throwIfAborted();
-      // A shared physical writer can outlive its first consumer, but not all durable consumers.
-      const consumer = await this.database.db.query.fileSyncProgress.findFirst({
-        where: and(
-          eq(tables.fileSyncProgress.digest, digest),
-          eq(tables.fileSyncProgress.status, 'DOWNLOADING'),
-        ),
-        columns: { status: true },
-      });
-      if (!consumer) throw new FederationDownloadTerminatedError();
-      yield chunk;
-    }
-  }
-
   private async writeProgress(
     progressId: bigint,
     received: number,
+    signal: AbortSignal,
   ): Promise<void> {
+    if (signal.aborted) return;
     const updated = await this.database.db
       .update(tables.fileSyncProgress)
       .set({ bytesReceived: BigInt(received), updatedAt: new Date() })
       .where(
         and(
           eq(tables.fileSyncProgress.id, progressId),
-          eq(tables.fileSyncProgress.status, 'DOWNLOADING'),
+          eq(tables.fileSyncProgress.status, 'PENDING'),
         ),
       )
       .returning({ id: tables.fileSyncProgress.id });
-    if (updated.length > 0) await this.publishProgress(progressId, received);
+    if (updated.length > 0)
+      await this.publishProgress(progressId, received, signal);
   }
 
   private async publishProgress(
     progressId: bigint,
     received: number,
+    signal: AbortSignal,
   ): Promise<void> {
+    if (signal.aborted) return;
     const target = await this.progressTarget(progressId);
-    if (!target) return;
+    if (!target || signal.aborted) return;
     if (
       !this.sse.hasMediaFileProgressSubscriber(
         target.threadId,
@@ -347,9 +591,11 @@ export class FederationInboundFileSync {
   private async publishMessageProgress(
     progressId: bigint,
     includeActiveFile: boolean,
+    signal: AbortSignal,
   ): Promise<void> {
+    if (signal.aborted) return;
     const target = await this.progressTarget(progressId);
-    if (!target) return;
+    if (!target || signal.aborted) return;
     if (
       !this.sse.hasMediaMessageProgressSubscriber(target.threadId, target.seq)
     )
@@ -357,10 +603,11 @@ export class FederationInboundFileSync {
     const [counts] = await this.database.db
       .select({
         totalFiles: sql<number>`COUNT(*)::int`,
-        completedFiles: sql<number>`COUNT(*) FILTER (WHERE ${tables.fileSyncProgress.status} = 'SUCCEEDED')::int`,
+        completedFiles: sql<number>`COUNT(*) FILTER (WHERE ${tables.fileSyncProgress.status} = 'COMPLETED')::int`,
       })
       .from(tables.fileSyncProgress)
       .where(eq(tables.fileSyncProgress.batchId, target.batchId));
+    if (signal.aborted) return;
     this.sse.onMediaMessageDownloadProgress({
       threadId: target.threadId,
       seq: target.seq,
@@ -415,19 +662,18 @@ export class FederationInboundFileSync {
     if (cached) return cached;
     const row = await this.database.db.query.fileSyncProgress.findFirst({
       where: eq(tables.fileSyncProgress.id, progressId),
-      columns: { batchId: true, digest: true, bytesTotal: true },
+      columns: {
+        batchId: true,
+        messageId: true,
+        digest: true,
+        bytesTotal: true,
+      },
     });
     if (!row?.batchId) return null;
-    const pending = await this.database.db.query.pendingMedia.findFirst({
-      where: and(
-        eq(tables.pendingMedia.batchId, row.batchId),
-        eq(tables.pendingMedia.direction, 'INBOUND'),
-      ),
-      columns: { messageId: true },
-    });
-    if (!pending?.messageId) return null;
+    // Task ownership survives removal of temporary inbound coordination. Never infer
+    // an owner from another message using the same digest or from a staging row.
     const message = await this.database.db.query.message.findFirst({
-      where: eq(tables.message.id, pending.messageId),
+      where: eq(tables.message.id, row.messageId),
       columns: { threadId: true, seq: true, content: true },
     });
     if (!message) return null;
@@ -449,12 +695,13 @@ export class FederationInboundFileSync {
   private async handleFailure(
     progressId: bigint,
     error: unknown,
-  ): Promise<void> {
+  ): Promise<FileDownloadOutcome> {
     const quotaPaused =
       error instanceof BusinessException &&
       error.bizCode === BusinessCode.FEDERATION_QUOTA_EXCEEDED;
-    if (error instanceof FederationDownloadTerminatedError) return;
-    const failed = await this.database.db
+    if (error instanceof FederationDownloadTerminatedError)
+      return { kind: 'cancelled', error };
+    const transitioned = await this.database.db
       .update(tables.fileSyncProgress)
       .set({
         status: quotaPaused ? 'PENDING' : 'FAILED',
@@ -468,12 +715,13 @@ export class FederationInboundFileSync {
       .where(
         and(
           eq(tables.fileSyncProgress.id, progressId),
-          inArray(tables.fileSyncProgress.status, ['PENDING', 'DOWNLOADING']),
+          eq(tables.fileSyncProgress.status, 'PENDING'),
         ),
       )
       .returning({ id: tables.fileSyncProgress.id });
-    if (!quotaPaused && failed.length > 0)
-      await this.publishFileTerminal(progressId, 'failed');
+    if (transitioned.length === 0) return { kind: 'cancelled', error };
+    if (!quotaPaused) await this.publishFileTerminal(progressId, 'failed');
     this.progressTargets.delete(progressId.toString());
+    return { kind: quotaPaused ? 'quota-paused' : 'failed', error };
   }
 }

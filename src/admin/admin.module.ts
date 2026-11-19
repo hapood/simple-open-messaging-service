@@ -54,6 +54,8 @@ import { MessageReportAdminController } from './message-report-admin.controller.
 import { DurableTaskAdminController } from './durable-task-admin.controller.js';
 import { MediaCatalogService } from '../media/media-catalog.service.js';
 import { MediaMaintenanceService } from '../media/media-maintenance.service.js';
+import { TemporaryGarbageService } from '../media/temporary-garbage.service.js';
+import { TemporaryGarbageAdminController } from './temporary-garbage-admin.controller.js';
 
 @Module({
   imports: [
@@ -87,6 +89,7 @@ import { MediaMaintenanceService } from '../media/media-maintenance.service.js';
     AdminFederationController,
     AdminQuotaController,
     MediaTransferAdminController,
+    TemporaryGarbageAdminController,
     DashboardController,
     AuditController,
     AdminManageController,
@@ -118,6 +121,7 @@ import { MediaMaintenanceService } from '../media/media-maintenance.service.js';
     GroupManageService,
     MediaCatalogService,
     MediaMaintenanceService,
+    TemporaryGarbageService,
     // Self-seeds the bootstrap admin (account=admin) on every app start via OnApplicationBootstrap;
     // idempotent, decoupled from the deploy orchestrator. See admin-bootstrap.service.ts.
     AdminBootstrapService,

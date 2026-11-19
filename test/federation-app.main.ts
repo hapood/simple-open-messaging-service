@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   }
 
   // FED_E2E_REAL_KEYPAIR=1 keeps the REAL database-backed KeypairService (bootstrap,
-  //  well-known publication, and the adaptive rotation lifecycle). Used by the
+  //  discovery publication, and the adaptive rotation lifecycle). Used by the
   //  signing-key-rotation e2e; every other spec keeps the deterministic in-memory keypair.
   const overrides =
     process.env.FED_E2E_REAL_KEYPAIR === '1'
@@ -131,9 +131,48 @@ async function main(): Promise<void> {
   const app = moduleRef.createNestApplication<NestFastifyApplication>(adapter);
   app.useLogger(moduleRef.get(Logger, { strict: false }));
   await configureApp(app, adapter);
+  const activeRequests = new Map<string, { method: string; url: string }>();
+  if (process.env.FED_E2E_DEBUG === '1') {
+    adapter.getInstance().addHook('onRequest', async (request, reply) => {
+      activeRequests.set(request.id, {
+        method: request.method,
+        url: request.url,
+      });
+      reply.raw.once('close', () => activeRequests.delete(request.id));
+    });
+  }
   await app.listen(port, '0.0.0.0');
   // Signal readiness to the harness (which awaits this exact line on stdout).
   console.log(`FED_APP_READY ${port}`);
+
+  if (process.env.FED_E2E_DEBUG === '1') {
+    // Phase timings distinguish task-drain stalls from the HTTP adapter waiting
+    // on inbound connections. Instrument only the isolated test application.
+    const lifecycle = app as unknown as Record<
+      string,
+      (...args: unknown[]) => Promise<void>
+    >;
+    for (const phase of [
+      'callDestroyHook',
+      'callBeforeShutdownHook',
+      'dispose',
+      'callShutdownHook',
+    ]) {
+      const original = lifecycle[phase].bind(app);
+      lifecycle[phase] = async (...args) => {
+        const started = Date.now();
+        console.log(
+          `FED_APP_CLOSE_BEGIN ${phase}`,
+          JSON.stringify([...activeRequests.values()]),
+        );
+        try {
+          await original(...args);
+        } finally {
+          console.log(`FED_APP_CLOSE_END ${phase} ${Date.now() - started}ms`);
+        }
+      };
+    }
+  }
 
   let closing = false;
   const shutdown = async (): Promise<void> => {
@@ -141,8 +180,9 @@ async function main(): Promise<void> {
     closing = true;
     try {
       await app.close();
-    } catch {
-      // best-effort — the harness is tearing us down anyway
+    } catch (error) {
+      console.error('FED_APP_CLOSE_ERROR', error);
+      process.exit(1);
     }
     process.exit(0);
   };

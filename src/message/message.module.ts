@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { MediaProgressService } from './media-progress.service.js';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { DurableTaskModule } from '../durable-task/durable-task.module.js';
@@ -18,6 +19,7 @@ import { ContactCardProfileService } from './contact-card/contact-card-profile.s
   providers: [
     ThreadFeedService,
     MessageService,
+    MediaProgressService,
     MessageVisibilityService,
     DeletedMessageService,
     MessageReportService,
@@ -35,6 +37,7 @@ import { ContactCardProfileService } from './contact-card/contact-card-profile.s
   exports: [
     ThreadFeedService,
     MessageService,
+    MediaProgressService,
     MessageVisibilityService,
     DeletedMessageService,
     MessageReportService,

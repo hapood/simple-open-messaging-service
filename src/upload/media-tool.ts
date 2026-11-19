@@ -7,8 +7,10 @@ export function runMediaTool(
   program: 'ffprobe' | 'ffmpeg',
   args: string[],
   maxBytes = 1024 * 1024,
+  signal: AbortSignal,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
     const child = spawn(program, args, {
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -20,6 +22,8 @@ export function runMediaTool(
       failure ??= new Error(message);
       child.kill('SIGKILL');
     };
+    const abort = () => stop(`${program} cancelled`);
+    signal.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => stop(`${program} timed out`), 30_000);
     child.stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
@@ -35,7 +39,9 @@ export function runMediaTool(
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (failure) reject(failure);
+      signal.removeEventListener('abort', abort);
+      if (signal.aborted) reject(signal.reason);
+      else if (failure) reject(failure);
       else if (code !== 0)
         reject(new InvalidMediaDataError(`${program} could not decode media`));
       else resolve(Buffer.concat(chunks));

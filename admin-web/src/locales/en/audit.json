@@ -74,6 +74,8 @@
     "quota.node.continue": "Extend federation node quota",
     "quota.user.continue": "Extend user quota",
     "media.upload.abort": "Abort media upload",
+    "media.upload.stop": "Stop media upload",
+    "media.upload.retry": "Retry media upload",
     "media.download.stop": "Stop media download",
     "media.file.reclaim": "Reclaim unreferenced media file",
     "media.temporary.clean": "Clean media temporary files",

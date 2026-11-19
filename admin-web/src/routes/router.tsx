@@ -191,6 +191,13 @@ export const router = createBrowserRouter(
                 })),
             },
             {
+              path: '/garbage',
+              lazy: () =>
+                import('@/routes/media/garbage-page').then((m) => ({
+                  Component: m.GarbagePage,
+                })),
+            },
+            {
               path: '/audit',
               lazy: () =>
                 import('@/routes/audit/audit-page').then((m) => ({

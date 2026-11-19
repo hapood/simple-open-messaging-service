@@ -70,6 +70,8 @@
     "quota.node.continue": "追加联邦节点配额",
     "quota.user.continue": "追加用户配额",
     "media.upload.abort": "终止媒体上传",
+    "media.upload.stop": "停止媒体上传",
+    "media.upload.retry": "重试媒体上传",
     "media.download.stop": "停止媒体下载",
     "media.file.reclaim": "回收无引用媒体文件",
     "media.temporary.clean": "清理媒体临时文件",

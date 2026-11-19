@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   cleanMediaTemporary,
-  cleanMediaDownload,
   listMediaDownloads,
   listMediaFiles,
   listMediaUploads,
   reclaimMediaFile,
   retryMediaDownload,
+  retryMediaUpload,
   stopMediaDownload,
   stopMediaUpload,
   stopPhysicalDownload,
@@ -37,19 +37,15 @@ export function useMediaDownloads(query: MediaQuery & { status?: string }) {
 
 export type MediaCommand =
   | {
-      kind:
-        | 'upload-stop'
-        | 'download-stop'
-        | 'download-retry'
-        | 'download-clean';
+      kind: 'upload-stop' | 'upload-retry' | 'download-stop' | 'download-retry';
       id: string;
     }
   | { kind: 'reclaim' | 'physical-stop' | 'temporary-clean'; id: string };
 const commands = {
   'upload-stop': stopMediaUpload,
+  'upload-retry': retryMediaUpload,
   'download-stop': stopMediaDownload,
   'download-retry': retryMediaDownload,
-  'download-clean': cleanMediaDownload,
   reclaim: reclaimMediaFile,
   'temporary-clean': cleanMediaTemporary,
   'physical-stop': stopPhysicalDownload,

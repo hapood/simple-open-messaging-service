@@ -24,12 +24,12 @@ import { FederationHttpScheduler } from './federation-http-scheduler.js';
 import { describeError } from '../logger/describe-error.js';
 import {
   normalizeFederationDomain,
-  type WellKnownDoc,
-} from './well-known-document.js';
+  type DiscoveryDocument,
+} from './discovery-document.js';
 
-export type { WellKnownDoc } from './well-known-document.js';
+export type { DiscoveryDocument } from './discovery-document.js';
 
-/** Minimum spacing between two well-known refresh attempts for one peer, shared by
+/** Minimum spacing between two discovery refresh attempts for one peer, shared by
  *  the inbound key-miss path and the maintenance entry point. */
 const REFRESH_MIN_SPACING_MS = 30_000;
 
@@ -37,7 +37,7 @@ const REFRESH_MIN_SPACING_MS = 30_000;
  *  valid certificate. A B-mode rotation leaves exactly one such root; a group
  *  with several is resolved to the root of the certificate actually signing
  *  the request, which the recognition flow extracts itself. */
-export function currentCertifyingRoots(doc: WellKnownDoc): string[] {
+export function currentCertifyingRoots(doc: DiscoveryDocument): string[] {
   const now = Date.now();
   const roots = new Set<string>();
   for (const certificate of doc.keys) {
@@ -64,7 +64,8 @@ export class DiscoveryService implements OnApplicationShutdown {
   private readonly retiring = new Map<Agent, Promise<void>>();
   private readonly poolCancellation = new WeakMap<Agent, AbortController>();
   private stopping = false;
-  /** Single-flight well-known refreshes keyed by `<domain>#<namespaceId>`. */
+  private readonly shutdown = new AbortController();
+  /** Single-flight discovery refreshes keyed by `<domain>#<namespaceId>`. */
   private readonly refreshInFlight = new Map<string, Promise<void>>();
   private readonly lastRefreshAttemptAt = new Map<string, number>();
 
@@ -75,9 +76,16 @@ export class DiscoveryService implements OnApplicationShutdown {
     private readonly transportConfig: FederationTransportConfigService,
   ) {}
 
-  async onApplicationShutdown(): Promise<void> {
+  onModuleDestroy(): void {
+    // Stop transport before before-shutdown hooks wait for request-slot owners.
+    // This also covers insecure routes without a dedicated connection pool.
     this.stopping = true;
+    this.shutdown.abort(new Error('Federation transport shutting down'));
     this.invalidateAllRoutes();
+  }
+
+  async onApplicationShutdown(): Promise<void> {
+    this.onModuleDestroy();
     await Promise.all(this.retiring.values());
   }
 
@@ -272,7 +280,9 @@ export class DiscoveryService implements OnApplicationShutdown {
       parsed,
       route.dispatcher,
       init,
-      poolSignal,
+      poolSignal
+        ? AbortSignal.any([poolSignal, this.shutdown.signal])
+        : this.shutdown.signal,
       (this.transportConfig.get().requestIdleTimeoutSec ?? 30) * 1000,
     );
   }
@@ -283,7 +293,7 @@ export class DiscoveryService implements OnApplicationShutdown {
     return this.httpScheduler.acquire(this.normalizeDomain(peerDomain));
   }
 
-  async fetchWellKnown(domain: string): Promise<WellKnownDoc> {
+  async fetchDiscoveryDocument(domain: string): Promise<DiscoveryDocument> {
     this.keypair.assertAvailable();
     const base = await this.resolveBase(domain);
     const release = await this.acquireRequestSlot(domain);
@@ -368,7 +378,7 @@ export class DiscoveryService implements OnApplicationShutdown {
     if (Date.now() - lastAttempt < REFRESH_MIN_SPACING_MS) return;
     const flight = (async () => {
       try {
-        const doc = await this.fetchWellKnown(normalized);
+        const doc = await this.fetchDiscoveryDocument(normalized);
         await this.cacheDocument(normalized, namespaceId, doc);
       } finally {
         this.lastRefreshAttemptAt.set(scope, Date.now());
@@ -380,7 +390,7 @@ export class DiscoveryService implements OnApplicationShutdown {
   }
 
   /** Coverage-based certificate refresh gate, driven by the Health round. Returns true when a
-   *  well-known refresh was started (or already in flight) for this peer. A peer is due when its
+   *  discovery refresh was started (or already in flight) for this peer. A peer is due when its
    *  cached certificate set has no current coverage, or the continuous coverage ends within the
    *  configured refresh window. Coverage is computed from the whole set keyed by namespace — never
    *  from a guessed remote active key or only the largest notAfter. Maintenance only: the caller's
@@ -442,13 +452,13 @@ export class DiscoveryService implements OnApplicationShutdown {
   async cacheDocument(
     domain: string,
     namespaceId: number,
-    doc: WellKnownDoc,
+    doc: DiscoveryDocument,
   ): Promise<void> {
     if (
       !Number.isSafeInteger(doc.signingKeyCreatedAt) ||
       doc.signingKeyCreatedAt <= 0
     ) {
-      throw new Error('well-known requires a positive signingKeyCreatedAt');
+      throw new Error('discovery requires a positive signingKeyCreatedAt');
     }
     const normalized = this.normalizeDomain(domain);
     const mismatch = await this.database.db.transaction(async (tx) => {

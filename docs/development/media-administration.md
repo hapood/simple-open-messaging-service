@@ -25,54 +25,65 @@ Files with no known association remain visible in the global inventory.
   share one database statement/snapshot. Reclaimed records remain queryable.
   Availability is the recorded state, not a fresh filesystem integrity check.
 - **Live downloader** observes physical entries in the process-local download
-  scheduler. Concurrent consumers of one `(peer, digest)` share a physical entry.
+  scheduler. Concurrent consumers of one digest share a physical entry across peers; the admitted source determines per-peer concurrency accounting.
   SSE sends bounded full snapshots on connection and on changes, throttled to at
   most twice per second. Reconnect replaces the snapshot. The instance ID is
   explicit: these are not cluster-wide metrics. Session access is revalidated
   every 30 seconds; disconnect releases timers and subscriptions.
-- **Download tasks** queries persistent inbound `PendingMedia` batches with
-  pagination and status filters. Task state is not evidence of active network IO.
-  Completed historical jobs show their completed file count, but unknown byte
-  totals and missing historical details are not represented as zero.
+- **Download tasks** groups persistent `FileSyncProgress` rows by batch with
+  pagination and outcome filters. Temporary `PendingMedia` coordination is not
+  required for completed history. Task outcomes are not evidence of active network IO.
 - **Client uploads** lists non-completed `UploadSession` records, including failed
   and interrupted sessions. Committed offsets come from existing sidecars.
-- **Download temporary files** scans the CAS staging directory only on demand.
-  It groups recognized artifacts by digest, including orphaned checkpoints, and
-  returns a bounded page. Staging-byte totals include checkpoint metadata.
-  Client upload staging is managed through the upload panel instead.
+- **Garbage management** has its own navigation entry. It scans `resumable` and
+  `cas/tmp` only on explicit request, groups recognized companions, and shows at
+  most 20 candidates ordered by oldest latest-modification time, without pagination.
+  Unexpected directories are single entries requiring recursive-delete confirmation;
+  symbolic links and special files cannot be deleted through this interface.
 
 ## Commands
 
-### Upload: stop and clean
+### Upload: stop and retry
 
-Stopping an upload cancels its entire uncommitted message batch. This prevents
-unfinished siblings from leaving an impossible batch-completion barrier.
-Existing upload/batch exclusion protects cancellation, waits for in-flight writes,
-and prevents completion after abort. Aborted session rows and staging artifacts
-are physically removed. Cleanup treats only missing files as success; an IO
-failure retains the session for another cleanup attempt. Completed uploads are
-not cancellable through this path.
+Stopping an upload stops its entire uncommitted message batch. Task records and
+staging artifacts are retained. Durable outcomes are `PENDING`, `COMPLETED`, and
+`FAILED`; stopping records `FAILED` with `USER_STOPPED`. Completed uploads are
+not stoppable through this path.
+Retry validates the retained checkpoint instead of discarding the partial file.
+An administrator can admit another attempt, but cannot send missing client bytes.
+The client must retain the original source file to continue uploading.
 
-### Download: stop, retry, delete
+### Download: stop and retry
 
-Stopping an inbound job marks it failed and aborts its consumer. Physical IO is
+Stopping an inbound job marks it stopped and aborts its consumer. Physical IO is
 aborted when its final consumer stops; another consumer of a shared transfer is
 not cancelled by stopping only one job. Stopping a physical downloader entry
 stops the current transfers for that digest and can fail every sharing consumer.
 
-Failure retains execution rows and validated partial data until explicit task
-deletion. Both administrator retry and client failed-attachment retry delegate to
+Ordinary transport failure retains execution rows and committed partial data.
+Final integrity failure removes invalid temporary content. Both administrator retry and client failed-attachment retry delegate to
 the same message-driven restaging capability. It can reconstruct missing task
 rows from the retained message and current conversation/source context. It
 preserves existing byte progress and succeeded file rows. The source peer still
 authorizes signed requests; reconstructed addressing is not an authorization
 token. Startup recovery continues to use the admitted persisted request context.
 
-Task deletion requires a terminal job and physically removes its temporary
-execution records. Active dependent jobs must be stopped first. Temporary data
-is removed only when no remaining job references the digest and no physical
-writer still uses it. The retained message is not deleted. An authenticated
-client can later reconstruct a failed attachment job from that message.
+The task deletion endpoint and action have been removed. Stopping is never a
+cleanup operation. Temporary garbage cleanup is a separate capability; active
+shared download users must be excluded and task records remain available.
+
+Completed downloads retain their checkpoint until all durable tasks sharing the
+digest have completed. The last completion cleans the companions after committing
+its outcome; cleanup errors are logged without reversing completion or blocking
+message promotion. Startup recovery also retries cleanup from completed task
+history, including batches whose temporary coordination has already been removed.
+
+Deleting upload garbage invokes the upload cancellation state machine, including
+for active uploads. Cancellation invalidates execution before draining resources
+and deleting task-specific files. Retry conflicts during cancellation; once deletion
+settles, an explicit retry starts from zero while the stage and task history remain.
+Cleanup failure is reported and the delete command can be retried. Unowned entries
+are rechecked before direct filesystem cleanup.
 
 ### Formal file: reclaim only when unreferenced
 
@@ -98,21 +109,25 @@ re-uploading, and a remote source must still be available and authorize access.
 All JSON endpoints below are POST requests under `/admin/media`. Page bodies use
 `{ skip, take, userId? }`, with `take` limited to 100. File filters additionally
 accept a lowercase hex digest prefix and `available`/`reclaimed` status; task
-filters accept `pending`, `downloading`, `failed`, or `ready`.
+filters accept `pending`, `downloading`, `failed`, `stopped`, or `ready`.
 
-| Path                        | Purpose                                        |
-| --------------------------- | ---------------------------------------------- |
-| `/files`                    | Paginated registered CAS inventory             |
-| `/uploads`                  | Paginated non-completed client uploads         |
-| `/downloads`                | Paginated durable inbound batches              |
-| `/temporary`                | On-demand CAS temporary-file inventory         |
-| `/uploads/:uploadId/stop`   | Stop and physically clean the upload batch     |
-| `/downloads/:batchId/stop`  | Stop an inbound batch                          |
-| `/downloads/:batchId/retry` | Retry/restage a failed batch                   |
-| `/downloads/:batchId/clean` | Physically remove a terminal task              |
-| `/downloader/stop`          | Stop physical transfers for `{ digest }`       |
-| `/temporary/clean`          | Clean unused artifacts for `{ digest }`        |
-| `/files/reclaim`            | Reclaim an unreferenced asset for `{ digest }` |
+| Path                        | Purpose                                         |
+| --------------------------- | ----------------------------------------------- |
+| `/files`                    | Paginated registered CAS inventory              |
+| `/uploads`                  | Paginated non-completed client uploads          |
+| `/downloads`                | Paginated durable inbound batches               |
+| `/uploads/:id/stop`   | Stop the upload batch and retain its checkpoint |
+| `/uploads/:id/retry`  | Retry a failed or stopped upload                |
+| `/downloads/:batchId/stop`  | Stop an inbound batch                           |
+| `/downloads/:batchId/retry` | Retry/restage a failed batch                    |
+| `/downloader/stop`          | Stop physical transfers for `{ digest }`        |
+| `/files/reclaim`            | Reclaim an unreferenced asset for `{ digest }`  |
+
+Garbage endpoints are separate: `POST /admin/garbage/scan` takes no pagination
+parameters; `POST /admin/garbage/clean` accepts `{ token, confirmDirectory? }`.
+Tokens identify a scanned group, expire after 15 minutes, and never accept a
+client-supplied path. The old `/admin/media/temporary` and `/temporary/clean`
+endpoints reject requests and direct administrators to explicit garbage scanning.
 
 `GET /admin/media/downloader/stream?skip=0&take=25` is the SSE exception. It emits
 `snapshot`, transport `heartbeat`, and terminal `access-revoked` events.

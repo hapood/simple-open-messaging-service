@@ -31,11 +31,18 @@ describe('derivePreview', () => {
   });
 });
 
+function unexpectedQuery(name: string) {
+  return vi.fn(() => {
+    throw new Error(`Unexpected database query: ${name}`);
+  });
+}
+
 function databaseMock(queries: {
   message?: Mock<(...args: unknown[]) => unknown>;
   mediaMessage?: Mock<(...args: unknown[]) => unknown>;
   mediaAsset?: Mock<(...args: unknown[]) => unknown>;
   pendingMedia?: Mock<(...args: unknown[]) => unknown>;
+  fileSyncProgress?: Mock<(...args: unknown[]) => unknown>;
   user?: Mock<(...args: unknown[]) => unknown>;
   execute?: Mock<(...args: unknown[]) => unknown>;
 }) {
@@ -44,18 +51,9 @@ function databaseMock(queries: {
       query: {
         profileTable: {
           findMany: async () => {
-            const rows = (
-              queries.user
-                ? await queries.user()
-                : [
-                    {
-                      account: 'alice',
-                      publisherNamespaceId: 0,
-                      profileNamespaceId: 0,
-                      name: 'Alice',
-                    },
-                  ]
-            ) as Array<{ name: string }>;
+            const rows = (await (
+              queries.user ?? unexpectedQuery('profileTable.findMany')
+            )()) as Array<{ name: string }>;
             return rows.map((row: { name: string }) => ({
               ...row,
               displayName: row.name,
@@ -63,26 +61,31 @@ function databaseMock(queries: {
             }));
           },
         },
-        message: { findMany: queries.message ?? vi.fn() },
-        messageAsset: { findMany: queries.mediaMessage ?? vi.fn() },
-        mediaAsset: { findMany: queries.mediaAsset ?? vi.fn() },
+        message: {
+          findMany: queries.message ?? unexpectedQuery('message.findMany'),
+        },
+        messageAsset: {
+          findMany:
+            queries.mediaMessage ?? unexpectedQuery('messageAsset.findMany'),
+        },
+        mediaAsset: {
+          findMany:
+            queries.mediaAsset ?? unexpectedQuery('mediaAsset.findMany'),
+        },
         pendingMedia: {
-          findMany: queries.pendingMedia ?? vi.fn().mockResolvedValue([]),
+          findMany:
+            queries.pendingMedia ?? unexpectedQuery('pendingMedia.findMany'),
+        },
+        fileSyncProgress: {
+          findMany:
+            queries.fileSyncProgress ??
+            unexpectedQuery('fileSyncProgress.findMany'),
         },
         account: {
-          findMany:
-            queries.user ??
-            vi.fn().mockResolvedValue([
-              {
-                account: 'alice',
-                publisherNamespaceId: 0,
-                profileNamespaceId: 0,
-                name: 'Alice',
-              },
-            ]),
+          findMany: queries.user ?? unexpectedQuery('account.findMany'),
         },
       },
-      execute: queries.execute ?? vi.fn(),
+      execute: queries.execute ?? unexpectedQuery('execute'),
     },
   };
 }
@@ -176,16 +179,10 @@ describe('stripMessageId author projection namespace', () => {
   });
 
   it('rejects a row without an author instead of emitting a nullable creator', () => {
-    expect(() =>
-      stripMessageId(
-        mk({
-          id: 1n,
-          seq: 1,
-          content: '{}',
-          creatorAccount: null,
-        }),
-      ),
-    ).toThrow('message has no author');
+    const corrupted = mk({ id: 1n, seq: 1, content: '{}' });
+    // Simulate invalid runtime data; typed database rows cannot omit their author.
+    Reflect.set(corrupted, 'creatorAccount', null);
+    expect(() => stripMessageId(corrupted)).toThrow('message has no author');
   });
 
   it('uses the stored subject namespace independently of the message source', () => {
@@ -403,7 +400,7 @@ describe('MessageService.queryClientMessagePage', () => {
           query: {
             messageAsset: { findMany: vi.fn().mockResolvedValue([]) },
             mediaAsset: { findMany: vi.fn().mockResolvedValue([]) },
-            pendingMedia: { findMany: vi.fn().mockResolvedValue([]) },
+            fileSyncProgress: { findMany: vi.fn().mockResolvedValue([]) },
           },
         },
       } as never,
@@ -553,7 +550,7 @@ describe('MessageService.queryClientMessagePage', () => {
             message: { findMany: vi.fn() },
             messageAsset: { findMany: vi.fn().mockResolvedValue([]) },
             mediaAsset: { findMany: vi.fn().mockResolvedValue([]) },
-            pendingMedia: { findMany: vi.fn().mockResolvedValue([]) },
+            fileSyncProgress: { findMany: vi.fn().mockResolvedValue([]) },
             account: { findMany: vi.fn().mockResolvedValue([]) },
           },
         },
@@ -647,6 +644,7 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -664,6 +662,7 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -686,6 +685,7 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -726,6 +726,7 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -740,34 +741,63 @@ describe('MessageService.attachMediaStatus', () => {
 
   it.each([
     ['pending', 'pending'],
-    ['downloading', 'downloading'],
-  ] as const)('maps an inbound STUB %s job to %s', async (job, expected) => {
-    const svc = new MessageService(
-      databaseMock({
-        mediaMessage: vi.fn().mockResolvedValue([]),
-        mediaAsset: vi.fn().mockResolvedValue([]),
-        pendingMedia: vi
-          .fn()
-          .mockResolvedValue([{ messageId: 1n, status: job }]),
-      }) as never,
-      {} as never,
-      {} as never,
-    );
-    const out = await svc.attachMediaStatus([
-      mk({
-        id: 1n,
-        seq: 5,
-        localState: 'STUB',
-        content: JSON.stringify({ url: url(DIG) }),
-      }),
-    ]);
+    ['downloading', 'pending'],
+    ['ready', 'pending'],
+    ['failed', 'pending'],
+  ] as const)(
+    'ignores temporary %s status for an inbound STUB (%s)',
+    async (job, expected) => {
+      const svc = new MessageService(
+        databaseMock({
+          fileSyncProgress: vi.fn().mockResolvedValue([]),
+          mediaMessage: vi.fn().mockResolvedValue([]),
+          mediaAsset: vi.fn().mockResolvedValue([]),
+          pendingMedia: vi
+            .fn()
+            .mockResolvedValue([{ messageId: 1n, status: job }]),
+        }) as never,
+        {} as never,
+        {} as never,
+      );
+      const out = await svc.attachMediaStatus([
+        mk({
+          id: 1n,
+          seq: 5,
+          localState: 'STUB',
+          content: JSON.stringify({ url: url(DIG) }),
+        }),
+      ]);
 
-    expect(out[0].mediaStatus).toBe(expected);
+      expect(out[0].mediaStatus).toBe(expected);
+    },
+  );
+
+  it('uses failed task ownership without consulting staging', async () => {
+    const db = databaseMock({
+      mediaMessage: vi.fn().mockResolvedValue([]),
+      mediaAsset: vi.fn().mockResolvedValue([]),
+      fileSyncProgress: vi.fn().mockResolvedValue([{ messageId: 1n }]),
+    });
+    const svc = new MessageService(db as never, {} as never, {} as never);
+    const out = await svc.attachMediaStatus(
+      [1n, 2n].map((id) =>
+        mk({
+          id,
+          seq: Number(id),
+          localState: 'STUB',
+          content: JSON.stringify({ url: url(DIG) }),
+        }),
+      ),
+    );
+    expect(out.map((row) => row.mediaStatus)).toEqual(['failed', 'pending']);
+    expect(db.db.query.pendingMedia.findMany).not.toHaveBeenCalled();
+    expect(db.db.query.fileSyncProgress.findMany).toHaveBeenCalledOnce();
   });
 
   it('maps an inbound FAILED message to failed while retaining its job row', async () => {
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: vi.fn().mockResolvedValue([]),
         mediaAsset: vi.fn().mockResolvedValue([]),
         pendingMedia: vi
@@ -796,6 +826,7 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -821,6 +852,7 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -836,6 +868,7 @@ describe('MessageService.attachMediaStatus', () => {
   it('a reaped (non-live) asset is not exposed as ready', async () => {
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: vi
           .fn()
           .mockResolvedValue([{ messageId: 1n, digest: DIG }]),
@@ -865,6 +898,7 @@ describe('MessageService.attachMediaStatus', () => {
     };
     const svc = new MessageService(
       databaseMock({
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -914,6 +948,17 @@ describe('MessageService quote previews', () => {
     const svc = new MessageService(
       databaseMock({
         message: store.message.findMany,
+        user: vi
+          .fn()
+          .mockResolvedValue([
+            {
+              account: 'alice',
+              publisherNamespaceId: 0,
+              profileNamespaceId: 0,
+              name: 'Alice',
+            },
+          ]),
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -959,7 +1004,19 @@ describe('MessageService quote previews', () => {
       account: { name: 'Alice' },
     };
     const svc = new MessageService(
-      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      databaseMock({
+        message: vi.fn().mockResolvedValue([target]),
+        user: vi
+          .fn()
+          .mockResolvedValue([
+            {
+              account: 'alice',
+              publisherNamespaceId: 0,
+              profileNamespaceId: 0,
+              name: 'Alice',
+            },
+          ]),
+      }) as never,
       {} as never,
       {} as never,
     );
@@ -995,6 +1052,17 @@ describe('MessageService quote previews', () => {
     const svc = new MessageService(
       databaseMock({
         message: store.message.findMany,
+        user: vi
+          .fn()
+          .mockResolvedValue([
+            {
+              account: 'alice',
+              publisherNamespaceId: 0,
+              profileNamespaceId: 0,
+              name: 'Alice',
+            },
+          ]),
+        fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
       }) as never,
@@ -1032,7 +1100,19 @@ describe('MessageService quote previews', () => {
       account: { name: 'Alice' },
     };
     const svc = new MessageService(
-      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      databaseMock({
+        message: vi.fn().mockResolvedValue([target]),
+        user: vi
+          .fn()
+          .mockResolvedValue([
+            {
+              account: 'alice',
+              publisherNamespaceId: 0,
+              profileNamespaceId: 0,
+              name: 'Alice',
+            },
+          ]),
+      }) as never,
       {} as never,
       {} as never,
     );
@@ -1072,7 +1152,19 @@ describe('MessageService quote previews', () => {
       account: { name: 'Alice' },
     };
     const svc = new MessageService(
-      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      databaseMock({
+        message: vi.fn().mockResolvedValue([target]),
+        user: vi
+          .fn()
+          .mockResolvedValue([
+            {
+              account: 'alice',
+              publisherNamespaceId: 0,
+              profileNamespaceId: 0,
+              name: 'Alice',
+            },
+          ]),
+      }) as never,
       {} as never,
       {} as never,
     );

@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  type BeforeApplicationShutdown,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import type { LookupFunction } from 'node:net';
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
@@ -25,12 +30,35 @@ import ipaddr from 'ipaddr.js';
  * 5. Hard limits — connect + overall timeouts, a streaming body-size cap (aborts mid-download rather
  *    than buffering an attacker's terabyte stream), and content-type enforcement.
  *
- * Every public method returns null on any failure (never throws); the caller decides whether that
- * means generation failure (page HTML) or an omitted optional asset (image/favicon).
+ * Ordinary fetch failures return null; shutdown rejects admission and propagates cancellation.
+ * The caller decides whether unavailable HTML or an optional asset permits a fallback card.
  */
 @Injectable()
-export class SafeFetchService {
+export class SafeFetchService
+  implements OnModuleDestroy, BeforeApplicationShutdown
+{
   private readonly logger = new Logger(SafeFetchService.name);
+  private readonly shutdown = new AbortController();
+  private readonly requests = new Set<Promise<unknown>>();
+
+  onModuleDestroy(): void {
+    // Close network admission before any module's before-shutdown hook waits for
+    // business work which might otherwise start another preview request.
+    this.shutdown.abort(new Error('link-preview network shutting down'));
+  }
+
+  async beforeApplicationShutdown(): Promise<void> {
+    this.onModuleDestroy();
+    const results = await Promise.allSettled([...this.requests]);
+    const errors = results.flatMap((result) =>
+      result.status === 'rejected' &&
+      result.reason !== this.shutdown.signal.reason
+        ? [result.reason as unknown]
+        : [],
+    );
+    if (errors.length)
+      throw new AggregateError(errors, 'link-preview network shutdown failed');
+  }
 
   /** Fetch a text/html document. Returns the body + the final (post-redirect) URL, or null. */
   async fetchHtml(
@@ -67,6 +95,25 @@ export class SafeFetchService {
     accept: string,
     maxBytes: number,
   ): Promise<{ body: Buffer; finalUrl: string; contentType: string } | null> {
+    this.shutdown.signal.throwIfAborted();
+    const request = Promise.resolve().then(() =>
+      this.safeGetWithSignal(rawUrl, accept, maxBytes, this.shutdown.signal),
+    );
+    this.requests.add(request);
+    try {
+      return await request;
+    } finally {
+      this.requests.delete(request);
+    }
+  }
+
+  private async safeGetWithSignal(
+    rawUrl: string,
+    accept: string,
+    maxBytes: number,
+    signal: AbortSignal,
+  ): Promise<{ body: Buffer; finalUrl: string; contentType: string } | null> {
+    signal.throwIfAborted();
     let url: URL;
     try {
       url = this.validateUrlShape(rawUrl);
@@ -78,8 +125,11 @@ export class SafeFetchService {
     }
     try {
       for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+        signal.throwIfAborted();
         const ips = await this.resolveAndClassify(url.hostname);
-        const r = await this.fetchHop(url, ips, accept, maxBytes);
+        signal.throwIfAborted();
+        const r = await this.fetchHop(url, ips, accept, maxBytes, signal);
+        signal.throwIfAborted();
         if (!r) return null;
         if (r.kind === 'redirect') {
           url = r.url;
@@ -89,6 +139,7 @@ export class SafeFetchService {
       }
       return null; // too many redirects
     } catch (error) {
+      if (signal.aborted) throw error;
       this.logger.warn(
         `link-preview fetch rejected host=${url.hostname} reason=${errorMessage(error)}`,
       );
@@ -104,11 +155,17 @@ export class SafeFetchService {
     ips: Array<{ address: string; family: number }>,
     accept: string,
     maxBytes: number,
+    shutdownSignal: AbortSignal,
   ): Promise<
     | { kind: 'redirect'; url: URL }
     | { kind: 'ok'; body: Buffer; contentType: string }
     | null
   > {
+    shutdownSignal.throwIfAborted();
+    const signal = AbortSignal.any([
+      shutdownSignal,
+      AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    ]);
     const dispatcher = this.pinnedDispatcher(ips);
     try {
       let res: UndiciResponse;
@@ -118,9 +175,10 @@ export class SafeFetchService {
           redirect: 'manual',
           dispatcher,
           headers: { 'User-Agent': USER_AGENT, Accept: accept },
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal,
         });
       } catch (e) {
+        if (shutdownSignal.aborted) throw e;
         this.logger.warn(
           `link-preview connect failed host=${url.hostname} reason=${errorMessage(e)}`,
         );
@@ -159,7 +217,10 @@ export class SafeFetchService {
       const body = await this.readCapped(res.body, maxBytes);
       return { kind: 'ok', body, contentType };
     } finally {
-      await dispatcher.close().catch(() => {});
+      await dispatcher.close().catch((error: unknown) => {
+        this.logger.error('Could not close link-preview dispatcher', error);
+        throw error;
+      });
     }
   }
 

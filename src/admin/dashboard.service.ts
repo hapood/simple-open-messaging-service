@@ -1,16 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  and,
-  count,
-  desc,
-  eq,
-  gt,
-  inArray,
-  isNull,
-  ne,
-  or,
-  sql,
-} from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNull, ne, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   account,
@@ -18,7 +7,7 @@ import {
   durableTask,
   identityNamespace,
   mediaAsset,
-  pendingMedia,
+  fileSyncProgress,
   sessionToken,
   uploadSession,
 } from '../database/schema.js';
@@ -100,16 +89,24 @@ export class DashboardService {
       this.database.db
         .select({ value: count() })
         .from(uploadSession)
-        .where(inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']))
+        .where(eq(uploadSession.status, 'PENDING'))
         .then(([row]) => row.value),
       this.database.db
-        .select({
-          active: sql<number>`count(*) filter (where ${pendingMedia.status} in ('pending', 'downloading'))::int`,
-          failed: sql<number>`count(*) filter (where ${pendingMedia.status} = 'failed' or ${pendingMedia.anyFailed} = true)::int`,
-        })
-        .from(pendingMedia)
-        .where(eq(pendingMedia.direction, 'INBOUND'))
-        .then(([row]) => row),
+        .execute<{ active: number; failed: number }>(
+          sql`
+        WITH batches AS (
+          SELECT "batchId",
+                 bool_or(status = 'FAILED') AS failed,
+                 bool_or(status = 'PENDING') AS pending
+          FROM ${fileSyncProgress}
+          GROUP BY "batchId"
+        )
+        SELECT count(*) FILTER (WHERE pending AND NOT failed)::int AS active,
+               count(*) FILTER (WHERE failed)::int AS failed
+        FROM batches
+      `,
+        )
+        .then((result) => result.rows[0]),
       this.database.db
         .select({
           id: adminActionLog.id,

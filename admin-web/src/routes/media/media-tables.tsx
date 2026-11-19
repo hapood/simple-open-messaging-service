@@ -82,12 +82,13 @@ export function MediaStatus({ value }: { value: string }) {
     pending: t('media.pending'),
     downloading: t('media.downloading'),
     failed: t('media.failed'),
+    stopped: t('media.stopped'),
     ready: t('media.ready'),
     queued: t('media.queued'),
     active: t('media.active'),
     UPLOADING: t('media.uploading'),
     COMPLETING: t('media.completing'),
-    ABORTED: t('media.failed'),
+    STOPPED: t('media.stopped'),
     PENDING: t('media.pending'),
     DOWNLOADING: t('media.downloading'),
     SUCCEEDED: t('media.ready'),
@@ -95,11 +96,7 @@ export function MediaStatus({ value }: { value: string }) {
   };
   return (
     <Badge
-      variant={
-        ['failed', 'FAILED', 'ABORTED'].includes(value)
-          ? 'destructive'
-          : 'outline'
-      }
+      variant={['failed', 'FAILED'].includes(value) ? 'destructive' : 'outline'}
     >
       {labels[value] ?? value}
     </Badge>
@@ -346,7 +343,7 @@ export function MediaUploadsPanel({ userId }: { userId?: number }) {
             emptyMessage={t('media.empty')}
           >
             {uploads.data?.list.map((upload) => (
-              <TableRow key={upload.uploadId}>
+              <TableRow key={upload.id}>
                 <TableCell>
                   <Digest value={upload.digest} />
                 </TableCell>
@@ -354,26 +351,45 @@ export function MediaUploadsPanel({ userId }: { userId?: number }) {
                   <Link to={`/users/${upload.userId}`}>#{upload.userId}</Link>
                 </TableCell>
                 <TableCell>
-                  {formatMediaBytes(upload.bytesReceived)} /{' '}
-                  {formatMediaBytes(upload.bytes)}
+                  {upload.bytesReceived === null
+                    ? t('media.unknownBytes')
+                    : formatMediaBytes(upload.bytesReceived)}{' '}
+                  / {formatMediaBytes(upload.bytes)}
                 </TableCell>
                 <TableCell>
                   <MediaStatus value={upload.status} />
                 </TableCell>
                 <TableCell>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    disabled={command.busy}
-                    onClick={() =>
-                      void command.run(
-                        { kind: 'upload-stop', id: upload.uploadId },
-                        t('media.uploadStopConfirm'),
-                      )
-                    }
-                  >
-                    {t('media.stopAndClean')}
-                  </Button>
+                  {['UPLOADING', 'COMPLETING'].includes(upload.status) ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={command.busy}
+                      onClick={() =>
+                        void command.run(
+                          { kind: 'upload-stop', id: upload.id },
+                          t('media.uploadStopConfirm'),
+                        )
+                      }
+                    >
+                      {t('media.stop')}
+                    </Button>
+                  ) : null}
+                  {['FAILED', 'STOPPED'].includes(upload.status) ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={command.busy}
+                      onClick={() =>
+                        void command.run({
+                          kind: 'upload-retry',
+                          id: upload.id,
+                        })
+                      }
+                    >
+                      {t('media.retry')}
+                    </Button>
+                  ) : null}
                 </TableCell>
               </TableRow>
             ))}
@@ -417,6 +433,7 @@ export function MediaDownloadsPanel({ userId }: { userId?: number }) {
           <option value="pending">{t('media.pending')}</option>
           <option value="downloading">{t('media.downloading')}</option>
           <option value="failed">{t('media.failed')}</option>
+          <option value="stopped">{t('media.stopped')}</option>
           <option value="ready">{t('media.ready')}</option>
         </select>
       }
@@ -474,7 +491,7 @@ export function MediaDownloadsPanel({ userId }: { userId?: number }) {
                         {t('media.stop')}
                       </Button>
                     ) : null}
-                    {batch.status === 'failed' ? (
+                    {['failed', 'stopped'].includes(batch.status) ? (
                       <Button
                         variant="outline"
                         size="sm"
@@ -487,21 +504,6 @@ export function MediaDownloadsPanel({ userId }: { userId?: number }) {
                         }
                       >
                         {t('media.retry')}
-                      </Button>
-                    ) : null}
-                    {['failed', 'ready'].includes(batch.status) ? (
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        disabled={command.busy}
-                        onClick={() =>
-                          void command.run(
-                            { kind: 'download-clean', id: batch.batchId },
-                            t('media.downloadCleanConfirm'),
-                          )
-                        }
-                      >
-                        {t('media.clean')}
                       </Button>
                     ) : null}
                   </div>

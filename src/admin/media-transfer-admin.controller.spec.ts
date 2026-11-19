@@ -10,7 +10,11 @@ import { ADMIN_ROLES_KEY } from './admin-roles.decorator.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { ADMIN_AUDIT_KEY } from './audit.decorator.js';
-import { MediaFilesDto, MediaPageDto } from './media-admin.dto.js';
+import {
+  MediaBatchesDto,
+  MediaFilesDto,
+  MediaPageDto,
+} from './media-admin.dto.js';
 import { MediaTransferAdminController } from './media-transfer-admin.controller.js';
 
 afterEach(() => vi.useRealTimers());
@@ -28,9 +32,9 @@ describe('media administration boundaries', () => {
   it('audits every destructive operation but not inventory or streaming reads', () => {
     for (const method of [
       'stopUpload',
+      'retryUpload',
       'stopDownload',
       'retryDownload',
-      'cleanDownload',
       'reclaim',
       'cleanTemporary',
       'stopPhysicalDownload',
@@ -62,6 +66,58 @@ describe('media administration boundaries', () => {
         MediaTransferAdminController.prototype.reclaim,
       ).options,
     ).toEqual({ targetType: 'media-asset', targetBody: 'digest' });
+  });
+
+  it('delegates upload stop and retry without invoking cleanup and audits the upload ID', async () => {
+    const uploads = {
+      stopForAdmin: vi.fn().mockResolvedValue({ stopped: true }),
+      retryForAdmin: vi.fn().mockResolvedValue({ retried: true }),
+    };
+    const maintenance = { cleanTemporary: vi.fn() };
+    const subject = new MediaTransferAdminController(
+      {} as never,
+      uploads as never,
+      {} as never,
+      maintenance as never,
+      {} as never,
+      {} as never,
+    );
+    const id = '00000000-0000-4000-8000-000000000001';
+    await expect(subject.stopUpload(id)).resolves.toEqual({
+      stopped: true,
+    });
+    await expect(subject.retryUpload(id)).resolves.toEqual({
+      retried: true,
+    });
+    expect(uploads.stopForAdmin).toHaveBeenCalledWith(id);
+    expect(uploads.retryForAdmin).toHaveBeenCalledWith(id);
+    expect(maintenance.cleanTemporary).not.toHaveBeenCalled();
+    for (const [method, action] of [
+      ['stopUpload', 'media.upload.stop'],
+      ['retryUpload', 'media.upload.retry'],
+    ] as const) {
+      expect(
+        Reflect.getMetadata(
+          ADMIN_AUDIT_KEY,
+          MediaTransferAdminController.prototype[method],
+        ),
+      ).toEqual({
+        action,
+        options: { targetType: 'upload', targetParam: 'id' },
+      });
+    }
+    expect('cleanDownload' in MediaTransferAdminController.prototype).toBe(
+      false,
+    );
+  });
+
+  it('accepts stopped download filters but rejects unknown lifecycle states', async () => {
+    expect(
+      await validate(plainToInstance(MediaBatchesDto, { status: 'stopped' })),
+    ).toEqual([]);
+    expect(
+      await validate(plainToInstance(MediaBatchesDto, { status: 'deleted' })),
+    ).not.toHaveLength(0);
   });
 
   it('bounds pages and accepts only digest prefixes, not file names or arbitrary searches', async () => {

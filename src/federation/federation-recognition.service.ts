@@ -23,7 +23,7 @@ import * as tables from '../database/schema.js';
 import {
   currentCertifyingRoots,
   DiscoveryService,
-  type WellKnownDoc,
+  type DiscoveryDocument,
 } from './discovery.service.js';
 import {
   parsePeerErrorBody,
@@ -507,7 +507,7 @@ export class FederationRecognitionService {
       if (response.status !== 200) {
         // Any non-200 Health — including 401 FEDERATION_BAD_SIGNATURE — only removes
         // current reachability. It never halts, never drops pins or acceptance
-        // evidence, and must not trigger a well-known refresh in the hope of
+        // evidence, and must not trigger a discovery refresh in the hope of
         // repairing the peer's cache of the local key.
         await degrade(`Health HTTP ${response.status}`);
         throw new Error(`Health ${domain} returned HTTP ${response.status}`);
@@ -547,7 +547,7 @@ export class FederationRecognitionService {
     signatureExpires: number;
   }): Promise<void> {
     const normalized = this.normalizeDomain(params.domain);
-    const doc = await this.discovery.fetchWellKnown(normalized);
+    const doc = await this.discovery.fetchDiscoveryDocument(normalized);
     const now = Date.now();
     const certificate = doc.keys.find(
       (key) =>
@@ -1526,7 +1526,7 @@ export class FederationRecognitionService {
     this.publishProgress(domain, 'DISCOVERING');
     await this.discovery.resolveBase(domain);
     this.publishProgress(domain, 'VERIFYING_IDENTITY');
-    const doc = await this.discovery.fetchWellKnown(domain);
+    const doc = await this.discovery.fetchDiscoveryDocument(domain);
     const context = await this.prepareOutbound(domain, doc);
     await this.discovery.cacheDocument(domain, context.namespaceId, doc);
     const base = await this.discovery.resolveBase(domain);
@@ -1643,7 +1643,7 @@ export class FederationRecognitionService {
 
   private async prepareOutbound(
     domain: string,
-    doc: WellKnownDoc,
+    doc: DiscoveryDocument,
   ): Promise<VerifiedFederationNamespace> {
     const mismatch = await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, domain);
@@ -1665,7 +1665,7 @@ export class FederationRecognitionService {
         const certifyingRoots = currentCertifyingRoots(doc);
         if (certifyingRoots.length !== 1) {
           throw new Error(
-            `Recognize ${domain}: well-known group does not resolve to exactly one certifying root`,
+            `Recognize ${domain}: discovery group does not resolve to exactly one certifying root`,
           );
         }
         rootPublicKey = certifyingRoots[0]!;

@@ -65,12 +65,13 @@ const APP_MAIN = join(
 /** Compile the subprocess entry + its deps to .e2e-build/ via tsc, IF missing or stale. Staleness is
  *  gated (any relevant source newer than the build → recompile) so the ~10s compile runs only when needed. */
 export function ensureCompiledEntry(): void {
-  const _sources =
+  const sources =
     'src test/federation-app.main.ts test/federation-harness.ts test/federation-proxy.ts test/federation-test-helpers.ts tsconfig.json tsconfig.e2e.json';
+  const env = { ...process.env, APP_MAIN, sources };
   const fresh =
     'test -f "${APP_MAIN}" && test -z "$(find ${sources} -newer "${APP_MAIN}" 2>/dev/null)"';
   try {
-    execSync(fresh, { stdio: 'ignore' });
+    execSync(fresh, { stdio: 'ignore', env });
     return; // up-to-date — skip the compile
   } catch {
     // missing or stale → (re)compile below
@@ -81,7 +82,7 @@ export function ensureCompiledEntry(): void {
   // the lock so a worker queued behind the winner skips its own compile.
   execSync(
     `mkdir -p .e2e-build && flock -w 600 .e2e-build/.compile.lock sh -c '${fresh} || npx tsc -p tsconfig.e2e.json'`,
-    { stdio: 'inherit' },
+    { stdio: 'inherit', env },
   );
 }
 
@@ -303,6 +304,7 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
   const database = drizzle({ client: pool, schema: databaseSchema });
   let child: ChildProcess | null = null;
   let stopping = false;
+  const diagnostics = new WeakMap<ChildProcess, () => string>();
 
   const start = async (): Promise<void> => {
     // Fixture users are inserted by the Vitest process and their password hashes therefore use its
@@ -338,6 +340,10 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
     stopping = false;
     let stdoutTail = '';
     let stderrTail = '';
+    diagnostics.set(
+      startedChild,
+      () => `stdout tail:\n${stdoutTail}\nstderr tail:\n${stderrTail}`,
+    );
     startedChild.stdout!.on('data', (d: Buffer) => {
       stdoutTail = (stdoutTail + d.toString()).slice(-2000);
       if (process.env.FED_E2E_DEBUG === '1') {
@@ -368,10 +374,16 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
     if (!c) return;
     stopping = true;
     child = null;
-    const exited = new Promise<void>((resolve) => {
-      c.once('exit', () => {
+    const exited = new Promise<void>((resolve, reject) => {
+      c.once('exit', (code, signal) => {
         clearTimeout(timer);
-        resolve();
+        if (code === 0 && signal === null) resolve();
+        else
+          reject(
+            new Error(
+              `${cfg.domain}: shutdown failed (code=${String(code)}, signal=${String(signal)})\n${diagnostics.get(c)?.() ?? ''}`,
+            ),
+          );
       });
       // Allow bounded network requests and task finalization to drain before forcing exit.
       const timer = setTimeout(() => {

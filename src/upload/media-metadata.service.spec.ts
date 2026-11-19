@@ -23,6 +23,7 @@ function oneSecondWav(): Buffer {
 
 describe('MediaMetadataService', () => {
   const service = new MediaMetadataService();
+  const signal = new AbortController().signal;
 
   it('derives image dimensions on the server', async () => {
     const png = await sharp({
@@ -35,7 +36,7 @@ describe('MediaMetadataService', () => {
     })
       .png()
       .toBuffer();
-    await expect(service.fromBuffer(png, 'IMAGE')).resolves.toEqual({
+    await expect(service.fromBuffer(png, 'IMAGE', signal)).resolves.toEqual({
       w: 17,
       h: 23,
     });
@@ -60,7 +61,9 @@ describe('MediaMetadataService', () => {
         ],
         format: { duration: '1' },
       });
-      await expect(instance.fromFile('unused', 'VIDEO')).resolves.toEqual({
+      await expect(
+        instance.fromFile('unused', 'VIDEO', signal),
+      ).resolves.toEqual({
         w: 1080,
         h: 1920,
         duration: 1,
@@ -86,7 +89,9 @@ describe('MediaMetadataService', () => {
         ],
         format: { duration: '1' },
       });
-      await expect(instance.fromFile('unused', 'VIDEO')).resolves.toEqual({
+      await expect(
+        instance.fromFile('unused', 'VIDEO', signal),
+      ).resolves.toEqual({
         w: 1920,
         h: 1080,
         duration: 1,
@@ -111,15 +116,17 @@ describe('MediaMetadataService', () => {
       ],
       format: { duration: '1' },
     });
-    await expect(instance.fromFile('unused', 'VIDEO')).resolves.toEqual({
-      w: 1080,
-      h: 1920,
-      duration: 1,
-    });
+    await expect(instance.fromFile('unused', 'VIDEO', signal)).resolves.toEqual(
+      {
+        w: 1080,
+        h: 1920,
+        duration: 1,
+      },
+    );
   });
 
   it('derives audio duration with bounded ffprobe', async () => {
-    const meta = await service.fromBuffer(oneSecondWav(), 'AUDIO');
+    const meta = await service.fromBuffer(oneSecondWav(), 'AUDIO', signal);
     expect(meta.duration).toBeCloseTo(1, 2);
     expect(meta.w).toBeUndefined();
     expect(meta.h).toBeUndefined();

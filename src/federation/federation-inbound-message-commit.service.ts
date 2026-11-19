@@ -1,16 +1,11 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import {
-  DatabaseService,
-  type DatabaseTransaction,
-} from '../database/database.service.js';
+import type { DatabaseTransaction } from '../database/database.service.js';
 import { MessageDeleteType } from '../database/enums.js';
-import * as tables from '../database/schema.js';
 import { type InboundForwardWireBundle } from '../forward/forward-bundle.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
-import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import {
   FederationInboundMessagePageService,
   type FederationMessagePageEffect,
@@ -48,14 +43,7 @@ export interface ForwardTombstonePageCommit {
   frozenTargetSeq: number;
 }
 
-interface SatisfiedQuoteDependency {
-  threadId: number;
-  publisherNamespaceId: number;
-  originSeq: number;
-}
-
 export interface ForwardTombstonePageEffect {
-  quoteDependencies: SatisfiedQuoteDependency[];
   deletions: { messageSeq: number; deletionSeq: number }[];
 }
 
@@ -63,12 +51,10 @@ export interface ForwardTombstonePageEffect {
 @Injectable()
 export class FederationInboundMessageCommitService {
   constructor(
-    private readonly database: DatabaseService,
     private readonly threadAccess: FederationThreadAccessService,
     private readonly pages: FederationInboundMessagePageService,
     private readonly routes: FederationInboundMessageRouteService,
     private readonly deletedMessages: DeletedMessageService,
-    private readonly inboundMediaBatches: FederationInboundMediaBatchService,
   ) {}
 
   async applyReverseInTransaction(
@@ -162,7 +148,6 @@ export class FederationInboundMessageCommitService {
       params.response.threadId,
       params.threadLock,
     );
-    const satisfied: SatisfiedQuoteDependency[] = [];
     const deletions: { messageSeq: number; deletionSeq: number }[] = [];
     for (const item of params.response.data.tombstones) {
       if (
@@ -208,42 +193,9 @@ export class FederationInboundMessageCommitService {
         authority: route.authority,
       });
       if (deletion) deletions.push(deletion);
-      satisfied.push({
-        threadId: route.threadId,
-        publisherNamespaceId: params.response.peerToken.namespaceId,
-        originSeq: item.messageSeq,
-      });
     }
     return {
-      quoteDependencies: satisfied,
       deletions,
     };
-  }
-
-  async publishSatisfiedQuoteDependencies(
-    dependencies: readonly SatisfiedQuoteDependency[],
-  ): Promise<void> {
-    for (const dependency of dependencies) {
-      const waiting = await this.database.db
-        .select({ batchId: tables.pendingMedia.batchId })
-        .from(tables.pendingMedia)
-        .innerJoin(
-          tables.message,
-          eq(tables.message.id, tables.pendingMedia.messageId),
-        )
-        .where(
-          and(
-            eq(tables.pendingMedia.direction, 'INBOUND'),
-            eq(tables.message.threadId, dependency.threadId),
-            eq(
-              tables.pendingMedia.publisherNamespaceId,
-              dependency.publisherNamespaceId,
-            ),
-            eq(tables.pendingMedia.dependsOnOriginSeq, dependency.originSeq),
-          ),
-        );
-      for (const row of waiting)
-        await this.inboundMediaBatches.promotePendingMessage(row.batchId);
-    }
   }
 }

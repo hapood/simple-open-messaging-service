@@ -801,7 +801,7 @@ describe('KeypairService database-backed identity', () => {
   }, 20_000);
 
   it('serves a federation-valid roots group after a rotation: intervals, uniqueness, and certificate enclosure', async () => {
-    // The well-known document is consumed by the discovery-side validators
+    // The discovery document is consumed by the discovery-side validators
     // (federation-certificate.ts / discovery.service.ts); this test replays
     // exactly those acceptance rules against our own published surface after
     // an administrator-triggered replacement, using the real validators.
