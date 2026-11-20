@@ -10,7 +10,6 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
 import { MEDIA_STATUS, type AlbumMedia, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -29,6 +28,7 @@ import {
 } from '../../../services/runtime';
 import { formatBytes, formatDuration } from '../file-meta.util';
 import { ImageDownloadService } from '../../../services/image-download.service';
+import { FederatedDownloadStatusComponent } from './federated-download-status.component';
 import { NativeVideoService } from '../../../services/native-video.service';
 
 const GALLERY_CARD_W = 280;
@@ -54,9 +54,9 @@ const GALLERY_CARD_W = 280;
     DateRowComponent,
     AvatarComponent,
     TranslocoPipe,
-    MatProgressSpinnerModule,
     MatIconModule,
     AudioPlayerComponent,
+    FederatedDownloadStatusComponent,
   ],
   templateUrl: './media-row.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,

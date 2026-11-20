@@ -28,6 +28,13 @@
   font-size: 20px;
   line-height: 26px;
   letter-spacing: -0.3px;
+
+  .im-suffix {
+    color: var(--app-action-primary, #6366f1);
+    font-size: 15px;
+    font-weight: 600;
+    margin-left: 1px;
+  }
 }
 .product-hero p {
   margin: 2px 0 0;

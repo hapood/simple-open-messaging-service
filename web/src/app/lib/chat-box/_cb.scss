@@ -111,29 +111,19 @@
   transform: scale(0.65) rotate(-35deg);
 }
 
-.cb-edge-failed .cb-load-icon__spinner,
-.cb-tail-cap--failed .cb-load-icon__spinner {
+.cb-edge-failed .cb-load-icon__spinner {
   opacity: 0;
   transform: scale(0.65) rotate(35deg);
   animation: none;
 }
 
-.cb-edge-failed .cb-load-icon__retry,
-.cb-tail-cap--failed .cb-load-icon__retry {
+.cb-edge-failed .cb-load-icon__retry {
   opacity: 1;
   transform: scale(1) rotate(0);
 }
 
-.cb-tail-cap > .cb-load-status {
-  display: none;
-}
-.cb-tail-cap--loading > .cb-load-status,
-.cb-tail-cap--failed > .cb-load-status {
-  display: inline-grid;
-}
-
 .cb-ghost-loading.cb-edge-failed,
-.cb-tail-cap--failed {
+.cb-entry-gap.cb-edge-failed {
   color: var(--app-text-muted);
   cursor: pointer;
 
@@ -170,58 +160,20 @@
   }
 }
 
-// .cb-tail-cap: the tail cap — a kernel-managed persistent non-message element that is always the last child of content
-//  (never in mounted[], so it neither corrupts the newer cursor mounted[last].item.id nor shifts any real item's topOf).
-//  Two modes, switched by the kernel from the newer boundary:
-//   ① noNewer (at the global newest) = gap: currently no extra spacer beyond the composer reserve;
-//   ② retry in flight = loading: the chat pagination spinner (independent from the SSE connection indicator).
-//  The height is MEASURED by the kernel (offsetHeight); CSS owns the dimension, the kernel reads it, so totalH stays
-//  exact even if the gap/spinner size is tuned here. It does NOT reuse .cb-ghost-loading: the playground sticky-date
-//  query targets .cb-ghost-loading, meaning the TOP ghost — tagging the cap with it
-//  would make that query match the bottom and wrongly suppress the date float.
-.cb-tail-cap {
+// Composer reserve is independent of historical edge and interval-gap rendering.
+.cb-bottom-reserve {
   box-sizing: border-box;
-  // Floating composer reserve. The host publishes one integer border-box height; because this padding is
-  // part of the measured cap, its existing ResizeObserver applies the shared bottom/item anchor policy.
-  --cb-composer-reserve: var(--soms-content-bottom-reserve, 0px);
-  // base = hidden (no height); --gap / --loading modifiers supply the height. Kernel measures the real offsetHeight.
-  // An aggregate attachment transfer is Angular-owned but mounted inside this kernel-owned slot. Let its
-  // natural height replace the ordinary gap so it participates in scrolling and total-height accounting.
-  &:has(.msg-transfer-stack) {
-    height: auto;
-    padding-bottom: var(--cb-composer-reserve);
-  }
+  height: var(--soms-content-bottom-reserve, 0px);
+  flex-shrink: 0;
 }
-.cb-tail-cap--gap {
-  height: calc(
-    0px + var(--cb-composer-reserve)
-  ); // no extra gap for now; keep only the floating composer reserve
-}
-.cb-tail-cap--loading {
-  height: calc(
-    48px + var(--cb-composer-reserve)
-  ); // spinner row (GHOST_H) + floating composer reserve
-  display: flex;
-  // Keep the indicator at the start of the cap's loading row. Centering against the full cap would also
-  // include the (potentially large) composer reserve and push the spinner into the middle of the viewport.
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 8px;
 
-  &::before {
-    display: none;
-  }
-}
-.cb-tail-cap--failed {
-  height: calc(48px + var(--cb-composer-reserve));
+.cb-entry-gap {
+  box-sizing: border-box;
+  height: 48px;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 8px;
-
-  &::before {
-    display: none;
-  }
 }
 
 @keyframes cb-shimmer {
@@ -322,8 +274,7 @@
 // .cb-enter-above: the coordinated optimistic-confirm / incoming-at-tail enter. Used when an optimistic tail block is
 // present and a newer batch inserts reals just ABOVE it (the confirm/incoming source-demand path). The new real
 // must slide in FROM ABOVE (translateY(-N) → 0) so it descends into its slot from the newest-real side and never travels
-// DOWN through the pending tail's band (a downward enter would visually cover the pending mid-animation). The pending tail
-// simultaneously shoves via .cb-move; the pair moves apart in the same frame. Same height-model constraint as cb-enter.
+// DOWN through the trailing rows. Same height-model constraint as cb-enter.
 .cb-enter-above {
   animation: cb-enter-above 0.18s ease-out;
 }
@@ -350,30 +301,11 @@
   }
 }
 
-// .cb-move: FLIP reorder animation (reconcilePending sinking a failed send to the tail, etc.). The kernel sets a per-
-// element --cb-move-dy = (oldTop - newTop) BEFORE adding this class (after a forced reflow), so the element — already at
-// its new layout position — starts visually at its OLD position (translateY(var)) and slides to identity (new position).
-// `both` fill applies the `from` immediately so there is no one-frame flash at the un-inverted new position.
-// Height-model safe: transform never affects offsetHeight, so the kernel's measured height is unchanged during the move.
-.cb-move {
-  animation: cb-move 0.22s ease-out both;
-}
-
-@keyframes cb-move {
-  from {
-    transform: translateY(var(--cb-move-dy, 0px));
-  }
-  to {
-    transform: none;
-  }
-}
-
 // A11y: reduced motion -> near-instant (still fires animationend so the kernel completes its lifecycle; animating drains).
 @media (prefers-reduced-motion: reduce) {
   .cb-enter,
   .cb-enter-above,
-  .cb-leave,
-  .cb-move {
+  .cb-leave {
     animation-duration: 0.01s;
   }
 }

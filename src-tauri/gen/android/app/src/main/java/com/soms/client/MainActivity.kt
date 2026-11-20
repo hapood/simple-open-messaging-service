@@ -29,6 +29,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.enableEdgeToEdge
@@ -48,6 +49,8 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
+import java.io.InterruptedIOException
 
 /**
  * The app's single activity. Owns the FCM lifecycle integration:
@@ -92,7 +95,17 @@ class MainActivity : TauriActivity() {
     private var currentPipParams: PictureInPictureParams? = null
     private var nativePhotoRequestId: String? = null
     private var nativeFileRequestId: String? = null
-    private var pendingMediaSave: Pair<String, File>? = null
+    private data class PendingDocumentSave(
+        val requestId: String,
+        val mediaPath: String,
+        val taskId: String,
+        val finalName: String,
+    )
+
+    private var pendingMediaSave: PendingDocumentSave? = null
+    private val mediaCopyExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "SomsMediaCopy")
+    }
     private val nativePhotoPicker = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(),
     ) { uris ->
@@ -102,34 +115,68 @@ class MainActivity : TauriActivity() {
         NativeUploadManager.accept(this, uris, "image", requestId)
         nativeComposer.restoreAfterExternalPicker()
     }
-    private val legacyMediaSaver = registerForActivityResult(
-        ActivityResultContracts.CreateDocument("*/*"),
+    private data class DocumentSaveTarget(val filename: String, val mimeType: String)
+
+    private class DocumentSaveContract : ActivityResultContract<DocumentSaveTarget, android.net.Uri?>() {
+        override fun createIntent(context: Context, input: DocumentSaveTarget): Intent {
+            return Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = input.mimeType
+                putExtra(Intent.EXTRA_TITLE, input.filename)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    putExtra(
+                        android.provider.DocumentsContract.EXTRA_INITIAL_URI,
+                        android.provider.DocumentsContract.buildRootUri("com.android.providers.downloads.documents", "downloads"),
+                    )
+                }
+            }
+        }
+
+        override fun parseResult(resultCode: Int, intent: Intent?): android.net.Uri? {
+            return if (resultCode == android.app.Activity.RESULT_OK) intent?.data else null
+        }
+    }
+
+    private val documentSaveLauncher = registerForActivityResult(
+        DocumentSaveContract(),
     ) { uri ->
         val pending = pendingMediaSave
         pendingMediaSave = null
-        val cancelled = uri == null
-        val success = if (uri == null || pending == null) {
-            false
-        } else {
-            try {
-                contentResolver.openOutputStream(uri, "w")!!.use { output ->
-                    pending.second.inputStream().use { input -> input.copyTo(output) }
+        if (pending != null && !isDestroyed && !isFinishing) {
+            if (uri == null) {
+                reportMediaSaveResult(pending.requestId, false, true, null)
+            } else {
+                val resolver = applicationContext.contentResolver
+                mediaCopyExecutor.execute {
+                    val renamed = streamMediaToDestination(resolver, uri, pending.mediaPath, pending.taskId)
+                        ?.let { error -> Result.failure<android.net.Uri>(IllegalStateException(error)) }
+                        ?: renameSavedDocument(resolver, uri, pending.finalName)
+                    if (renamed.isFailure) {
+                        try { android.provider.DocumentsContract.deleteDocument(resolver, uri) }
+                        catch (cleanup: Exception) { Log.w("SOMS", "Unable to remove partial document", cleanup) }
+                    }
+                    reportMediaSaveResult(
+                        pending.requestId,
+                        renamed.isSuccess,
+                        false,
+                        renamed.getOrNull()?.toString(),
+                    )
                 }
-                true
-            } catch (e: Exception) {
-                Log.e("SOMS", "Legacy document save failed", e)
-                false
-            }
-        }
-        pending?.first?.let { requestId ->
-            val script =
-                "window.__SOMS_MEDIA_SAVE_RESULT__?.({" +
-                    "requestId:${JSONObject.quote(requestId)},success:$success,cancelled:$cancelled})"
-            SomsBridge.webView?.post {
-                SomsBridge.webView?.evaluateJavascript(script, null)
             }
         }
     }
+
+    private fun reportMediaSaveResult(requestId: String, success: Boolean, cancelled: Boolean, destination: String?) {
+        val webView = SomsBridge.webView ?: return
+        val script = "window.__SOMS_MEDIA_SAVE_RESULT__?.({" +
+            "requestId:${JSONObject.quote(requestId)},success:$success,cancelled:$cancelled,destination:${JSONObject.quote(destination)})}"
+        webView.post {
+            if (!isDestroyed && SomsBridge.webView === webView) {
+                webView.evaluateJavascript(script, null)
+            }
+        }
+    }
+
     private val nativeFilePicker = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
@@ -830,6 +877,7 @@ class MainActivity : TauriActivity() {
         webView.addJavascriptInterface(SomsCallInterface(this), "SomsCall")
         // Privacy-scoped system picker + native streaming uploads. File bytes never cross into the
         // webview; JS receives metadata, a bounded preview, progress, and the final API envelope.
+        RustUploadBridge.initializeSourceAccess(applicationContext)
         webView.addJavascriptInterface(SomsUploadInterface(this), "SomsUpload")
         // Rust downloads authenticated media into the app-private shared cache. This bridge performs
         // only the Android-specific final copy into MediaStore; file bytes never pass through JS.
@@ -853,73 +901,115 @@ class MainActivity : TauriActivity() {
     }
 
     /**
-     * Public-media save boundary. Rust owns network access, authentication, cache deduplication and
-     * integrity; this bridge accepts only a canonical file below this app's cache/media directory.
-     * Android 10+ copies into MediaStore; Android 7–9 uses the system document picker without broad
-     * external-storage permission.
+     * Opens a platform destination and lets Rust stream the authenticated response into it.
+     * The destination is never filled by copying an app-cache file.
+     */
+    private fun streamMediaToDestination(
+        resolver: android.content.ContentResolver,
+        uri: android.net.Uri,
+        mediaPath: String,
+        taskId: String,
+    ): String? {
+        val descriptor = try {
+            resolver.openFileDescriptor(uri, "w")
+        } catch (error: Exception) {
+            Log.e("SOMS", "Unable to open save destination", error)
+            return "unable to open save destination"
+        } ?: return "save destination is unavailable"
+        val fd = descriptor.detachFd()
+        val error = RustUploadBridge.streamMediaToFd(mediaPath, fd, taskId)
+        return error.ifEmpty { null }
+    }
+
+    private fun renameSavedDocument(
+        resolver: android.content.ContentResolver,
+        uri: android.net.Uri,
+        finalName: String,
+    ): Result<android.net.Uri> {
+        return try {
+            val renamed = android.provider.DocumentsContract.renameDocument(resolver, uri, finalName)
+                ?: return Result.failure(IllegalStateException("unable to rename completed save"))
+            Result.success(renamed)
+        } catch (error: Exception) {
+            Log.e("SOMS", "Unable to rename completed save", error)
+            Result.failure(error)
+        }
+    }
+
+    /**
+     * Android 10+ images and videos use the system media collections. Other files use the system
+     * document picker. Android 7–9 also uses the picker to avoid broad external-storage permission.
      */
     private class SomsMediaInterface(activity: MainActivity) {
         private val activityRef = java.lang.ref.WeakReference(activity)
 
         @JavascriptInterface
-        fun save(requestId: String, cachePath: String, filename: String, mimeType: String): String {
+        fun deleteSaved(uri: String) {
+            if (!uri.startsWith("content://")) return
+            try {
+                activityRef.get()?.applicationContext?.contentResolver?.delete(android.net.Uri.parse(uri), null, null)
+            } catch (error: Exception) {
+                Log.w("SOMS", "Unable to delete saved media", error)
+            }
+        }
+
+        @JavascriptInterface
+        fun save(requestId: String, mediaPath: String, filename: String, mimeType: String, taskId: String): String {
             val activity = activityRef.get() ?: return ""
-            val context = activity.applicationContext
-
-            val mediaRoot = File(context.cacheDir, "media").canonicalFile
-            val source = try {
-                File(cachePath).canonicalFile
-            } catch (e: Exception) {
-                Log.e("SOMS", "Invalid media cache path", e)
-                return ""
-            }
-            if (!source.isFile || source.parentFile != mediaRoot) {
-                Log.w("SOMS", "Rejected media save outside cache root")
-                return ""
-            }
-
+            if (!mediaPath.startsWith("/uploads/")) return ""
             val safeName = filename
                 .substringAfterLast('/')
                 .substringAfterLast('\\')
                 .trim()
                 .ifEmpty { "download" }
             val type = mimeType.ifBlank { "application/octet-stream" }
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val isVisualMedia = type.startsWith("image/") || type.startsWith("video/")
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || !isVisualMedia) {
                 activity.runOnUiThread {
-                    activity.pendingMediaSave = requestId to source
-                    activity.legacyMediaSaver.launch(safeName)
+                    if (activity.pendingMediaSave != null || activity.isFinishing || activity.isDestroyed) {
+                        activity.reportMediaSaveResult(requestId, false, false, null)
+                        return@runOnUiThread
+                    }
+                    activity.pendingMediaSave = PendingDocumentSave(requestId, mediaPath, taskId, safeName)
+                    try {
+                        activity.documentSaveLauncher.launch(DocumentSaveTarget("$safeName.part", type))
+                    } catch (error: Exception) {
+                        activity.pendingMediaSave = null
+                        Log.e("SOMS", "Unable to launch document save picker", error)
+                        activity.reportMediaSaveResult(requestId, false, false, null)
+                    }
                 }
                 return "pending"
             }
             val (collection, relativePath) = when {
                 type.startsWith("image/") ->
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI to "Pictures/SOMS"
-                type.startsWith("video/") ->
-                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI to "Movies/SOMS"
                 else ->
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI to "Download/SOMS"
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI to "Movies/SOMS"
             }
             val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "$safeName.part")
                 put(MediaStore.MediaColumns.MIME_TYPE, type)
                 put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
-            val resolver = context.contentResolver
+            val resolver = activity.applicationContext.contentResolver
             val uri = resolver.insert(collection, values) ?: return ""
-            return try {
-                resolver.openOutputStream(uri, "w")!!.use { output ->
-                    source.inputStream().use { input -> input.copyTo(output) }
+            activity.mediaCopyExecutor.execute {
+                val error = activity.streamMediaToDestination(resolver, uri, mediaPath, taskId)
+                if (error != null) {
+                    resolver.delete(uri, null, null)
+                    Log.e("SOMS", "MediaStore save failed: $error")
+                    activity.reportMediaSaveResult(requestId, false, false, null)
+                } else {
+                    values.clear()
+                    values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                    activity.reportMediaSaveResult(requestId, true, false, uri.toString())
                 }
-                values.clear()
-                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
-                uri.toString()
-            } catch (e: Exception) {
-                resolver.delete(uri, null, null)
-                Log.e("SOMS", "MediaStore save failed", e)
-                ""
             }
+            return "pending"
         }
     }
 
@@ -969,50 +1059,6 @@ class MainActivity : TauriActivity() {
             }
         }
 
-        @JavascriptInterface
-        fun upload(
-            uploadId: String,
-            attemptId: String,
-            kind: String,
-            clientMessageId: String?,
-            fieldsJson: String?,
-        ) {
-            activityRef.get()?.let {
-                NativeUploadManager.upload(
-                    it.applicationContext,
-                    uploadId,
-                    attemptId,
-                    kind,
-                    clientMessageId,
-                    fieldsJson,
-                )
-            }
-        }
-
-        @JavascriptInterface
-        fun discard(uploadId: String) {
-            NativeUploadManager.discard(uploadId)
-        }
-
-        @JavascriptInterface
-        fun release(uploadId: String) {
-            NativeUploadManager.release(uploadId)
-        }
-
-        @JavascriptInterface
-        fun cancel(uploadId: String, attemptId: String) {
-            NativeUploadManager.cancel(uploadId, attemptId)
-        }
-
-        @JavascriptInterface
-        fun getState(uploadId: String): String {
-            return NativeUploadManager.state(uploadId)
-        }
-
-        @JavascriptInterface
-        fun finish(uploadId: String, attemptId: String, succeeded: Boolean) {
-            NativeUploadManager.finishAttempt(uploadId, attemptId, succeeded)
-        }
     }
 
     /** Defensive fallback: locate the Tauri WebView in the window's view tree and hand it to SomsBridge.
@@ -1251,6 +1297,8 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        mediaCopyExecutor.shutdownNow()
+        pendingMediaSave = null
         disposeLegacyImeObserver?.invoke()
         disposeLegacyImeObserver = null
         launchOverlay?.removeCallbacks(launchTimeout)
@@ -1298,9 +1346,13 @@ class MainActivity : TauriActivity() {
 
     @Suppress("DEPRECATION")
     private fun startNativeVoiceRecorder(contextId: Long, threadId: Long) {
-        val file = File(cacheDir, "voice-${UUID.randomUUID()}.m4a")
+        val directory = File(cacheDir, "pending-uploads")
+        val file = File(directory, "voice-${UUID.randomUUID()}.m4a")
         val recorder = MediaRecorder()
         try {
+            if (!directory.isDirectory && !directory.mkdirs()) {
+                throw java.io.IOException("Cannot create recording directory")
+            }
             recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)

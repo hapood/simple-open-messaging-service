@@ -140,23 +140,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/query-media-stages": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Query the current user’s uncommitted media-send states in a conversation */
-        post: operations["MessageController_queryMediaStages"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/query-messages": {
         parameters: {
             query?: never;
@@ -1799,7 +1782,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/uploads/resumable/{uploadId}": {
+    "/api/v1/uploads/resumable/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1817,7 +1800,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/uploads/resumable/{uploadId}/complete": {
+    "/api/v1/uploads/resumable/{id}/complete": {
         parameters: {
             query?: never;
             header?: never;
@@ -1834,7 +1817,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/uploads/resumable/{uploadId}/cancel": {
+    "/api/v1/uploads/resumable/{id}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -3034,7 +3017,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/media/uploads/{uploadId}/abort": {
+    "/api/v1/admin/media/uploads/{id}/abort": {
         parameters: {
             query?: never;
             header?: never;
@@ -3079,23 +3062,6 @@ export interface paths {
         put?: never;
         /** Retry a failed inbound federation download */
         post: operations["MediaTransferAdminController_retryDownload"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/media/downloads/{batchId}/clean": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Remove an inbound federation download job */
-        post: operations["MediaTransferAdminController_cleanDownload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3986,18 +3952,6 @@ export interface components {
              * @default 1
              */
             fileCnt: number;
-            /**
-             * @description Explicit retry. When true, an existing failed stage owned by this user is moved back to pending.
-             * @default false
-             */
-            retry: boolean;
-        };
-        QueryMediaStagesDto: {
-            /**
-             * @description Conversation (MessageThread) id
-             * @example 12
-             */
-            threadId: number;
         };
         MessageTombResponseDto: {
             /**
@@ -5603,27 +5557,6 @@ export interface operations {
                         data?: components["schemas"]["MessageResponseDto"];
                     };
                 };
-            };
-        };
-    };
-    MessageController_queryMediaStages: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["QueryMediaStagesDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
@@ -7758,7 +7691,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                uploadId: string;
+                id: string;
             };
             cookie?: never;
         };
@@ -7777,7 +7710,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                uploadId: string;
+                id: string;
             };
             cookie?: never;
         };
@@ -7800,7 +7733,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                uploadId: string;
+                id: string;
             };
             cookie?: never;
         };
@@ -7819,7 +7752,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                uploadId: string;
+                id: string;
             };
             cookie?: never;
         };
@@ -9220,7 +9153,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                uploadId: string;
+                id: string;
             };
             cookie?: never;
         };
@@ -9252,25 +9185,6 @@ export interface operations {
         };
     };
     MediaTransferAdminController_retryDownload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                batchId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MediaTransferAdminController_cleanDownload: {
         parameters: {
             query?: never;
             header?: never;

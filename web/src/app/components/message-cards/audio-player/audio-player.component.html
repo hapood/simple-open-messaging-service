@@ -28,13 +28,10 @@
   </div>
   <button type="button" class="ap-rate" (click)="cycleRate()"
           [attr.aria-label]="'Playback speed ' + rate() + ' times'">{{ rate() }}×</button>
-  @if (showTransfer()) {
-    <span class="ap-transfer" [class.ap-transfer--indeterminate]="transferIndeterminate()"
-          [class.ap-transfer--download]="status() === MEDIA_STATUS.DOWNLOADING"
-          role="progressbar"
-          [attr.aria-label]="status() === MEDIA_STATUS.DOWNLOADING ? 'Audio download progress' : 'Audio upload progress'"
-          [attr.aria-valuenow]="transferProgress()">
-      <span [style.width.%]="transferProgress() ?? 32"></span>
+  @if (status() === MEDIA_STATUS.DOWNLOADING) {
+    <span class="ap-transfer"
+          role="progressbar" aria-label="Audio download progress">
+      <span style="width: 32%"></span>
     </span>
   }
 </div>

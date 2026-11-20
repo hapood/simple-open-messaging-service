@@ -1,4 +1,18 @@
 {
+  "downloadTasks": {
+    "title": "下载",
+    "downloading": "正在下载",
+    "saving": "正在保存",
+    "completed": "已保存",
+    "failed": "下载或保存失败",
+    "dismiss": "从列表移除",
+    "empty": "暂无下载任务",
+    "unknownSize": "大小未知",
+    "clearHistory": "清空历史",
+    "clearHistoryConfirm": "从列表中移除已完成和失败的下载记录？正在下载的任务会保留。",
+    "clearHistoryAction": "清空",
+    "deleteFiles": "同时删除已保存的文件"
+  },
   "playground": {
     "callResponse": "通话对方响应",
     "callDecline": "直接挂断",
@@ -8,6 +22,12 @@
     "callResponseHint": "从单聊中发起通话时生效；群聊不支持通话。"
   },
   "transfer": {
+    "taskActionFailed": "无法更新此任务，请重试。",
+    "messageSending": "消息发送中",
+    "attachmentUnavailable": "附件已不可用，请取消后重新上传。",
+    "linkTaskPreview": "链接卡片",
+    "forwardTaskPreview": "转发 {{count}} 条消息",
+    "messageFailed": "消息发送失败",
     "sendingCount": "正在发送 {{count}} 项",
     "sendingOf": "正在发送 {{completed}}/{{total}}",
     "sendingProgress": "正在发送 {{completed}}/{{total}} · {{progress}}%",
@@ -97,8 +117,8 @@
     "media-failed": "无法启动麦克风或摄像头，请重试"
   },
   "common": {
-    "appName": "SOMS",
-    "logoAria": "SOMS 标志",
+    "appName": "SOMS.im",
+    "logoAria": "SOMS.im 标志",
     "ok": "确定",
     "cancel": "取消",
     "save": "保存",
@@ -545,6 +565,9 @@
     "send": "发送"
   },
   "chat": {
+    "loadSkippedMessages": "加载跳过的消息",
+    "loadingSkippedMessages": "正在加载跳过的消息",
+    "retrySkippedMessages": "重试加载跳过的消息",
     "linkCardAction": "生成链接卡片",
     "messageNotFound": "消息不存在",
     "messageJumpFailed": "无法打开这条消息",
@@ -904,7 +927,9 @@
     "dataHint": "查看和清理本地聊天缓存",
     "cachedMessages": "已缓存消息",
     "cachedMediaFiles": "媒体文件缓存",
-    "browserMediaCacheUnavailable": "由浏览器管理",
+    "cachedAvatars": "头像缓存",
+    "temporaryUploads": "临时上传资源",
+    "cacheMeasurementUnavailable": "无法测量",
     "cacheStorageHint": "清理只影响此设备；服务器消息、登录状态和会话列表都会保留。",
     "clearChatCache": "清除本地聊天缓存",
     "clearChatCacheDesc": "删除缓存的聊天消息、图片和视频文件，保留资料头像。",

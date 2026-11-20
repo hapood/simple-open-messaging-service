@@ -41,14 +41,6 @@ object NativeUploadManager {
         val duration: Double,
     )
 
-    private val selections = ConcurrentHashMap<String, Selection>()
-    private data class ActiveUpload(
-        val attemptId: String,
-        val clientMessageId: String,
-    )
-
-    private val calls = ConcurrentHashMap<String, ActiveUpload>()
-
     fun pickerReturned(requestId: String) {
         emit("__SOMS_UPLOAD_INSPECTING__", JSONObject().put("requestId", requestId))
     }
@@ -62,8 +54,8 @@ object NativeUploadManager {
         }
     }
 
-    /** Register URI grants received by the native composer (clipboard/IME rich content) in the same
-     * retryable upload store as picker selections, then return only safe metadata to the WebView. */
+    /** Inspect original URI references received by the native composer, using the same platform
+     * metadata adapter as picker selections. Durable task ownership remains outside this adapter. */
     fun acceptForComposer(
         context: Context,
         uris: List<Uri>,
@@ -86,11 +78,23 @@ object NativeUploadManager {
         selectionExecutor.execute {
             val items = JSONArray()
             for (uri in uris) {
+                // Keep the provider reference, never copy selected bytes into an app staging file.
+                // Some providers grant only temporary access; those selections remain usable now
+                // but may require reselection after process restart.
+                try {
+                    appContext.contentResolver.takePersistableUriPermission(
+                        uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                } catch (_: SecurityException) {
+                    // The provider did not offer a persistable grant.
+                } catch (_: UnsupportedOperationException) {
+                    // This provider supports only the current picker grant.
+                }
                 inspect(appContext, uri)?.let { selection ->
                     val id = UUID.randomUUID().toString()
-                    selections[id] = selection
                     items.put(JSONObject().apply {
-                        put("uploadId", id)
+                        put("partId", id)
+                        put("path", selection.uri.toString())
                         put("kind", classify(selection.mime, requestedKind))
                         put("name", selection.name)
                         put("mimeType", selection.mime)
@@ -104,99 +108,6 @@ object NativeUploadManager {
             }
             deliver(items)
         }
-    }
-
-    fun discard(uploadId: String) {
-        calls.remove(uploadId)?.let { RustUploadBridge.cancelUpload(it.clientMessageId) }
-        selections.remove(uploadId)
-    }
-
-    fun release(uploadId: String) {
-        selections.remove(uploadId)
-    }
-
-    fun cancel(uploadId: String, attemptId: String) {
-        val active = calls[uploadId] ?: return
-        if (active.attemptId != attemptId) return
-        if (calls.remove(uploadId, active)) {
-            RustUploadBridge.cancelUpload(active.clientMessageId)
-        }
-    }
-
-    fun state(uploadId: String): String = when {
-        calls.containsKey(uploadId) -> "uploading"
-        selections.containsKey(uploadId) -> "selected"
-        else -> "missing"
-    }
-
-    fun upload(
-        context: Context,
-        uploadId: String,
-        attemptId: String,
-        kind: String,
-        clientMessageId: String?,
-        fieldsJson: String?,
-    ) {
-        val selected = selections[uploadId]
-            ?: return fail(uploadId, attemptId, "selection", "selection expired", false)
-        if (kind.lowercase() !in setOf("image", "video", "file")) {
-            return fail(uploadId, attemptId, "unsupported", "unsupported upload kind", false)
-        }
-        val cid = clientMessageId.orEmpty()
-        if (cid.isBlank()) {
-            return fail(uploadId, attemptId, "validation", "client message id missing", false)
-        }
-        val descriptor = runCatching {
-            context.contentResolver.openFileDescriptor(selected.uri, "r")
-        }.getOrNull() ?: return fail(
-            uploadId,
-            attemptId,
-            "selection",
-            "selected content is unavailable",
-            false,
-        )
-        val active = ActiveUpload(attemptId, cid)
-        if (calls.putIfAbsent(uploadId, active) != null) {
-            descriptor.close()
-            return fail(
-                uploadId,
-                attemptId,
-                "busy",
-                "upload already in progress",
-                false,
-            )
-        }
-        val fd = descriptor.detachFd()
-        try {
-            RustUploadBridge.uploadFd(
-                fd,
-                uploadId,
-                attemptId,
-                selected.name,
-                selected.mime,
-                selected.size,
-                fieldsJson ?: "{}",
-                cid,
-            )
-        } catch (error: Throwable) {
-            calls.remove(uploadId, active)
-            android.os.ParcelFileDescriptor.adoptFd(fd).close()
-            fail(
-                uploadId,
-                attemptId,
-                "unsupported",
-                error.message ?: "Rust uploader unavailable",
-                false,
-            )
-        }
-    }
-
-    /** Rust owns completion after descriptor transfer. JS calls release on success; failure/retry keeps
-     * the selection metadata and can open a fresh descriptor for the next attempt. */
-    fun finishAttempt(uploadId: String, attemptId: String, succeeded: Boolean) {
-        val active = calls[uploadId] ?: return
-        if (active.attemptId != attemptId || !calls.remove(uploadId, active)) return
-        if (succeeded) selections.remove(uploadId)
     }
 
     private fun inspect(context: Context, uri: Uri): Selection? = runCatching {
@@ -296,31 +207,6 @@ object NativeUploadManager {
         (requested == "image" || requested == "auto") && mime.startsWith("image/") -> "image"
         mime.startsWith("video/") -> "video"
         else -> "file"
-    }
-
-    private fun fail(
-        uploadId: String,
-        attemptId: String,
-        category: String,
-        message: String,
-        retryable: Boolean,
-        status: Int? = null,
-        code: Int? = null,
-        retryAfter: Long? = null,
-    ) {
-        emit(
-            "__SOMS_UPLOAD_FAILED__",
-            JSONObject().apply {
-                put("uploadId", uploadId)
-                put("attemptId", attemptId)
-                put("category", category)
-                put("message", message)
-                put("retryable", retryable)
-                if (status != null) put("status", status)
-                if (code != null) put("code", code)
-                if (retryAfter != null) put("retryAfter", retryAfter)
-            },
-        )
     }
 
     private fun emit(callback: String, payload: JSONObject) {

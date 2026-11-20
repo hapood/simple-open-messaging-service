@@ -449,7 +449,7 @@ describe('ThreadListComponent', () => {
     expect(rows[1].querySelectorAll('.thread-status-icon--muted')).toHaveLength(
       1,
     );
-    expect(row.querySelector('.thread-msg-text')?.textContent?.trim()).toBe(
+    expect(row.querySelector('.thread-msg-text .bio')?.textContent?.trim()).toBe(
       'Hello there',
     );
   });

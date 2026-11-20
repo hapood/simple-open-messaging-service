@@ -41,6 +41,7 @@ and client behavior.
 
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
 - [Client message history synchronization](./design/client-message-history-sync.md)
+- [Chat history entry and message windows](./design/chat-history-entry-and-window.md) — reviewed Web presentation design; not yet implemented
 - [Canonical Group Meta and asymmetric mirrors](./design/canonical-group-meta.md)
 - [Group announcement](./design/group-announcement.md)
 - [Durable task scheduling](./design/durable-task-scheduling.md)

@@ -1,4 +1,5 @@
 import { inject, Injectable } from '@angular/core';
+import { BrowserSendFiles } from './browser-send-files.service';
 import { NavStateMachineService } from './nav-state.service';
 import { NativeMediaCacheService } from './native-media-cache.service';
 import { WebdbService } from './webdb.service';
@@ -6,12 +7,15 @@ import { WebdbService } from './webdb.service';
 export interface LocalCacheStats {
   messageCount: number;
   mediaBytes: number | null;
+  avatarBytes: number | null;
+  temporaryUploadBytes: number;
 }
 
 /** Rebuildable chat-cache maintenance exposed through the Settings confirmation flow. */
 @Injectable({ providedIn: 'root' })
 export class LocalDataManagementService {
   private readonly nav = inject(NavStateMachineService);
+  private readonly browserFiles = inject(BrowserSendFiles);
   private readonly webdb = inject(WebdbService);
   private readonly media = inject(NativeMediaCacheService);
 
@@ -20,6 +24,10 @@ export class LocalDataManagementService {
     return {
       messageCount: await this.webdb.countCachedMessages(),
       mediaBytes: this.media.available ? this.media.info().usedBytes : null,
+      avatarBytes: this.media.available ? this.media.info().avatarBytes : null,
+      temporaryUploadBytes: this.media.available
+        ? this.media.info().temporaryUploadBytes
+        : this.browserFiles.bytes(),
     };
   }
 

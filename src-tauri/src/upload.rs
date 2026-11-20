@@ -2,10 +2,78 @@
 use crate::proxy::send_with_headers_deadline;
 use crate::*;
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UploadProgress {
+    loaded: u64,
+    total: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeUploadSource {
+    part_id: String,
+    path: String,
+    size: u64,
+}
+
+fn prepared_sources() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::collections::HashMap<String, std::fs::File>>> {
+    static PREPARED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::collections::HashMap<String, std::fs::File>>>> = std::sync::OnceLock::new();
+    PREPARED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn open_upload_source(path: &str) -> Result<std::fs::File, String> {
+    #[cfg(target_os = "android")]
+    if path.starts_with("content://") || path.starts_with("file://") {
+        return crate::android_upload_source::open(path);
+    }
+    std::fs::File::open(path).map_err(|_| "Attachment unavailable. Please cancel and upload again.".into())
+}
+
+/// Open every gallery resource before any part may transfer. A failure closes every handle opened by this call.
+fn prepare_sources(client_message_id: &str, sources: &[NativeUploadSource]) -> Result<(), String> {
+    if sources.is_empty() { return Err("Attachment unavailable. Please cancel and upload again.".into()); }
+    let mut opened = std::collections::HashMap::new();
+    for source in sources {
+        if source.part_id.is_empty() || !opened.insert(source.part_id.clone(), open_upload_source(&source.path)?).is_none() {
+            return Err("Attachment unavailable. Please cancel and upload again.".into());
+        }
+        let file = opened.get(&source.part_id).expect("just inserted");
+        let metadata = file.metadata().map_err(|_| "Attachment unavailable. Please cancel and upload again.".to_string())?;
+        if metadata.is_file() && metadata.len() != source.size {
+            return Err(format!("file changed after selection (selected {} bytes, now {} bytes)", source.size, metadata.len()));
+        }
+    }
+    let mut prepared = prepared_sources().lock().expect("prepared upload sources");
+    prepared.insert(client_message_id.to_owned(), opened);
+    Ok(())
+}
+
+fn take_prepared_source(client_message_id: &str, part_id: &str) -> Option<std::fs::File> {
+    let mut prepared = prepared_sources().lock().expect("prepared upload sources");
+    let files = prepared.get_mut(client_message_id)?;
+    let file = files.remove(part_id)?;
+    if files.is_empty() { prepared.remove(client_message_id); }
+    Some(file)
+}
+
+fn release_prepared_sources(client_message_id: &str) {
+    prepared_sources().lock().expect("prepared upload sources").remove(client_message_id);
+}
+
+#[tauri::command]
+pub(crate) fn prepare_native_upload_sources(client_message_id: String, sources: Vec<NativeUploadSource>) -> Result<(), String> {
+    prepare_sources(&client_message_id, &sources)
+}
+
+#[tauri::command]
+pub(crate) fn release_native_upload_sources(client_message_id: String) {
+    release_prepared_sources(&client_message_id);
+}
+
 /// Stream a message attachment from disk using the sequential upload protocol.
 #[tauri::command]
 pub(crate) async fn upload_stream_file(
-    app: tauri::AppHandle,
     proxy: tauri::State<'_, ServerSessionState>,
     path: String,
     filename: String,
@@ -13,9 +81,9 @@ pub(crate) async fn upload_stream_file(
     size: u64,
     fields: std::collections::HashMap<String, String>,
     client_message_id: Option<String>,
+    progress: tauri::ipc::Channel<UploadProgress>,
 ) -> Result<serde_json::Value, String> {
     upload_stream_path_core(
-        app,
         proxy.inner().clone(),
         path,
         filename,
@@ -23,12 +91,12 @@ pub(crate) async fn upload_stream_file(
         size,
         fields,
         client_message_id,
+        progress,
     )
     .await
 }
 
 async fn upload_stream_path_core(
-    app: tauri::AppHandle,
     proxy: ServerSessionState,
     path: String,
     filename: String,
@@ -36,23 +104,36 @@ async fn upload_stream_path_core(
     size: u64,
     fields: std::collections::HashMap<String, String>,
     client_message_id: Option<String>,
+    progress: tauri::ipc::Channel<UploadProgress>,
 ) -> Result<serde_json::Value, String> {
-    let file = tokio::fs::File::open(&path)
-        .await
-        .map_err(|e| format!("open file: {e}"))?;
+    let prepared = client_message_id.as_ref().zip(fields.get("partId")).and_then(|(cid, part_id)| take_prepared_source(cid, part_id));
+    let file = if let Some(file) = prepared {
+        tokio::fs::File::from_std(file)
+    } else {
+        #[cfg(target_os = "android")]
+        {
+            if path.starts_with("content://") || path.starts_with("file://") {
+                let source = tauri::async_runtime::spawn_blocking(move || crate::android_upload_source::open(&path))
+                    .await.map_err(|error| error.to_string())??;
+                tokio::fs::File::from_std(source)
+            } else {
+                tokio::fs::File::open(&path).await.map_err(|_| "Attachment unavailable. Please cancel and upload again.".to_string())?
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        { tokio::fs::File::open(&path).await.map_err(|_| "Attachment unavailable. Please cancel and upload again.".to_string())? }
+    };
     let actual_size = file
         .metadata()
         .await
         .map_err(|e| format!("file metadata: {e}"))?
         .len();
-    if size > 0 && actual_size != size {
+    if actual_size != size {
         return Err(format!(
             "file changed after selection (selected {size} bytes, now {actual_size} bytes)"
         ));
     }
-    let size = if size > 0 { size } else { actual_size };
     upload_stream_open_file_core(
-        app,
         proxy,
         file,
         filename,
@@ -60,6 +141,7 @@ async fn upload_stream_path_core(
         size,
         fields,
         client_message_id,
+        progress,
     )
     .await
 }
@@ -71,7 +153,6 @@ async fn upload_stream_path_core(
 /// Taking a `tokio::fs::File` here keeps the original picker grant alive for the whole request and
 /// makes normal Rust ownership close the descriptor on success, error, or cancellation.
 async fn upload_stream_open_file_core(
-    app: tauri::AppHandle,
     proxy: ServerSessionState,
     mut file: tokio::fs::File,
     filename: String,
@@ -79,12 +160,19 @@ async fn upload_stream_open_file_core(
     size: u64,
     fields: std::collections::HashMap<String, String>,
     client_message_id: Option<String>,
+    progress: tauri::ipc::Channel<UploadProgress>,
 ) -> Result<serde_json::Value, String> {
     let cid = client_message_id
         .as_deref()
         .ok_or_else(|| "missing client message identity".to_string())?;
     let part = ResumablePart::from_fields(&fields)?;
-    upload_resumable_open_file(app, proxy, &mut file, filename, mime, size, cid, part).await
+    let metadata = file.metadata().await.map_err(|error| format!("attachment metadata: {error}"))?;
+    // Provider pipes may not expose a file length. Regular files must match the admitted size,
+    // including zero, without reading the contents or computing a digest.
+    if metadata.is_file() && metadata.len() != size {
+        return Err(format!("file changed after selection (selected {size} bytes, now {} bytes)", metadata.len()));
+    }
+    upload_resumable_open_file(proxy, &mut file, filename, mime, size, cid, part, progress).await
 }
 
 struct ResumablePart {
@@ -111,10 +199,69 @@ impl ResumablePart {
     }
 }
 
-/// Native counterpart of the browser's sequential resumable protocol. The server owns the
-/// authoritative offset; every retry re-initializes idempotently and resumes from that offset.
+#[derive(Debug, PartialEq)]
+enum ResumableState {
+    Uploading { offset: u64, chunk_size: usize },
+    Completing,
+    Completed(serde_json::Value),
+    RetryRequired,
+}
+
+fn parse_resumable_state(
+    value: &serde_json::Value,
+    task_id: &str,
+    size: u64,
+) -> Result<ResumableState, String> {
+    if value.pointer("/data/id").and_then(|v| v.as_str()) != Some(task_id) {
+        return Err("upload response changed id".into());
+    }
+    let offset = match value.pointer("/data/offset") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .filter(|offset| *offset <= size)
+                .ok_or_else(|| "invalid upload offset".to_string())?,
+        ),
+    };
+    let status = value.pointer("/data/status").and_then(|v| v.as_str());
+    let phase = value.pointer("/data/phase");
+    if status != Some("PENDING") && phase.is_some() {
+        return Err("invalid upload phase".into());
+    }
+    match status {
+        Some("PENDING") => match phase.and_then(|v| v.as_str()) {
+            Some("UPLOADING") => Ok(ResumableState::Uploading {
+                offset: offset.ok_or_else(|| "upload progress unavailable".to_string())?,
+                chunk_size: value
+                    .pointer("/data/chunkSize")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| usize::try_from(v).ok())
+                    .filter(|v| *v > 0)
+                    .ok_or_else(|| "invalid upload chunk size".to_string())?,
+            }),
+            Some("COMPLETING") => Ok(ResumableState::Completing),
+            _ => Err("invalid upload phase".into()),
+        },
+        Some("COMPLETED") => value
+            .pointer("/data/result")
+            .filter(|result| result.is_object())
+            .cloned()
+            .map(ResumableState::Completed)
+            .ok_or_else(|| "completed upload omitted result".to_string()),
+        Some("FAILED") => Ok(ResumableState::RetryRequired),
+        _ => Err("invalid upload status".into()),
+    }
+}
+
+fn upload_result(result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "code": 0, "message": "success", "data": result })
+}
+
+/// Each invocation is a user-started attempt for the same part identity, including explicit retry.
+/// Failed/stopped tasks require one retry request; there is no automatic retry loop. Unknown
+/// progress never permits seeking or writing, and completing tasks need no source seek.
 async fn upload_resumable_open_file(
-    app: tauri::AppHandle,
     proxy: ServerSessionState,
     file: &mut tokio::fs::File,
     filename: String,
@@ -122,8 +269,14 @@ async fn upload_resumable_open_file(
     size: u64,
     client_message_id: &str,
     part: ResumablePart,
+    progress: tauri::ipc::Channel<UploadProgress>,
 ) -> Result<serde_json::Value, String> {
-    const FALLBACK_CHUNK: usize = 4 * 1024 * 1024;
+    let cancel = proxy
+        .upload_cancels
+        .lock()
+        .expect("upload_cancels lock")
+        .register(client_message_id);
+    let transfer = async {
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
     let client = proxy.api_client(&origin);
     let token = proxy.session_token();
@@ -151,36 +304,57 @@ async fn upload_resumable_open_file(
     if init_value.get("code").and_then(|v| v.as_i64()) != Some(0) {
         return Ok(init_value);
     }
-    let upload_id = init_value
-        .pointer("/data/uploadId")
+    let task_id = init_value
+        .pointer("/data/id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "upload init omitted uploadId".to_string())?
+        .ok_or_else(|| "upload init omitted id".to_string())?
         .to_string();
-    let status_url = format!("{origin}/api/v1/uploads/resumable/{upload_id}");
+    if !task_id.bytes().all(|byte| byte.is_ascii_digit())
+        || task_id.starts_with('0')
+        || task_id.parse::<i64>().map_or(true, |id| id <= 0)
+    {
+        return Err("upload init returned invalid task id".into());
+    }
+    if let ResumableState::Completed(result) = parse_resumable_state(&init_value, &task_id, size)?
+    {
+        return Ok(upload_result(result));
+    }
+    let status_url = format!("{origin}/api/v1/uploads/resumable/{task_id}");
     let status = timed_upload_json(auth(client.get(&status_url)), "upload status").await?;
     if status.get("code").and_then(|v| v.as_i64()) != Some(0) {
         return Ok(status);
     }
-    let mut offset = status
-        .pointer("/data/offset")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let chunk_size = status
-        .pointer("/data/chunkSize")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or(FALLBACK_CHUNK);
-    file.seek(std::io::SeekFrom::Start(offset))
-        .await
-        .map_err(|e| format!("seek upload source: {e}"))?;
-    let cancel = CancellationToken::new();
-    proxy
-        .upload_cancels
-        .lock()
-        .expect("upload_cancels lock")
-        .insert(client_message_id.to_string(), cancel.clone());
-    let transfer = async {
-        while offset < size {
+    let mut state = parse_resumable_state(&status, &task_id, size)?;
+    if state == ResumableState::RetryRequired {
+        let retried = timed_upload_json(
+            auth(
+                client
+                    .post(format!("{status_url}/retry"))
+                    .json(&serde_json::json!({})),
+            ),
+            "upload retry",
+        )
+        .await?;
+        if retried.get("code").and_then(|v| v.as_i64()) != Some(0) {
+            return Ok(retried);
+        }
+        state = parse_resumable_state(&retried, &task_id, size)?;
+    }
+    match &state {
+        ResumableState::Completed(result) => return Ok(upload_result(result.clone())),
+        ResumableState::RetryRequired => return Err("upload remains failed or stopped".into()),
+        ResumableState::Uploading { offset, .. } => {
+            file.seek(std::io::SeekFrom::Start(*offset))
+                .await
+                .map_err(|e| format!("seek upload source: {e}"))?;
+            let _ = progress.send(UploadProgress { loaded: *offset, total: size });
+        }
+        ResumableState::Completing => {}
+    }
+        while let ResumableState::Uploading { offset, chunk_size } = state {
+            if offset == size {
+                break;
+            }
             let wanted =
                 usize::try_from((size - offset).min(chunk_size as u64)).unwrap_or(chunk_size);
             let mut chunk = vec![0_u8; wanted];
@@ -188,34 +362,53 @@ async fn upload_resumable_open_file(
                 .await
                 .map_err(|e| format!("read upload source: {e}"))?;
             let end = offset + wanted as u64 - 1;
-            let response = timed_upload_json(
+            let progress_channel = progress.clone();
+            let (activity, receiver) = tokio::sync::watch::channel((tokio::time::Instant::now(), false));
+            let body = futures_util::stream::unfold((chunk, 0usize, std::time::Instant::now()), move |(chunk, position, last_report)| {
+                let activity = activity.clone();
+                let channel = progress_channel.clone();
+                async move {
+                    if position >= chunk.len() { return None; }
+                    let next = (position + 64 * 1024).min(chunk.len());
+                    let _ = activity.send((tokio::time::Instant::now(), next == chunk.len()));
+                    let bytes = chunk[position..next].to_vec();
+                    let now = std::time::Instant::now();
+                    let report = next == chunk.len() || now.duration_since(last_report) >= std::time::Duration::from_millis(100);
+                    if report {
+                        let _ = channel.send(UploadProgress { loaded: offset + next as u64, total: size });
+                    }
+                    Some((Ok::<_, std::io::Error>(bytes), (chunk, next, if report { now } else { last_report })))
+                }
+            });
+            let response = upload_chunk_json(
                 auth(
                     client
                         .put(&status_url)
                         .header("content-type", "application/octet-stream")
                         .header("content-range", format!("bytes {offset}-{end}/{size}"))
-                        .body(chunk),
+                        .header("content-length", wanted)
+                        .body(reqwest::Body::wrap_stream(body)),
                 ),
-                "upload chunk",
+                receiver,
             )
             .await?;
             if response.get("code").and_then(|v| v.as_i64()) != Some(0) {
                 return Ok(response);
             }
-            offset = response
-                .pointer("/data/offset")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(end + 1);
-            let _ = app.emit(
-                "upload-progress",
-                serde_json::json!({
-                    "clientMessageId": client_message_id,
-                    "loaded": offset,
-                    "total": size,
-                }),
-            );
+            state = parse_resumable_state(&response, &task_id, size)?;
+            match &state {
+                ResumableState::Uploading { offset, .. } => {
+                    if *offset != end + 1 {
+                        return Err("upload chunk returned unexpected offset".into());
+                    }
+
+                }
+                ResumableState::Completed(result) => return Ok(upload_result(result.clone())),
+                ResumableState::RetryRequired => return Err("upload failed or stopped".into()),
+                ResumableState::Completing => {}
+            }
         }
-        timed_upload_json(
+        let completed = timed_upload_json(
             auth(
                 client
                     .post(format!("{status_url}/complete"))
@@ -223,37 +416,150 @@ async fn upload_resumable_open_file(
             ),
             "upload complete",
         )
-        .await
+        .await?;
+        if completed.get("code").and_then(|v| v.as_i64()) != Some(0) {
+            return Ok(completed);
+        }
+        match parse_resumable_state(&completed, &task_id, size)? {
+            ResumableState::Completed(result) => Ok(upload_result(result)),
+            ResumableState::Completing => completed
+                .pointer("/data/result")
+                .filter(|result| result.is_object())
+                .cloned()
+                .map(upload_result)
+                .ok_or_else(|| "upload complete omitted result".to_string()),
+            _ => Err("invalid upload complete status".into()),
+        }
     };
     let result = tokio::select! {
-        value = transfer => value,
+        biased;
         _ = cancel.cancelled() => Err("upload cancelled".to_string()),
+        value = transfer => value,
     };
     proxy
         .upload_cancels
         .lock()
         .expect("upload_cancels lock")
-        .remove(client_message_id);
+        .finish(client_message_id, &cancel);
     result
 }
 
-/// Each bounded resumable operation is at most one chunk, so a progressing large upload has
-/// no total-duration limit. A stalled HTTP response (including its body) can never pin the task.
+async fn upload_chunk_json(
+    request: reqwest::RequestBuilder,
+    mut activity: tokio::sync::watch::Receiver<(tokio::time::Instant, bool)>,
+) -> Result<serde_json::Value, String> {
+    let response = request.send();
+    tokio::pin!(response);
+    let mut watching = true;
+    let response = loop {
+        let (last, finished) = *activity.borrow_and_update();
+        let delay = if finished { Duration::from_secs(12) } else { Duration::from_secs(30) };
+        tokio::select! {
+            result = &mut response => break result.map_err(|e| format!("upload chunk: {e}"))?,
+            changed = activity.changed(), if watching => {
+                if changed.is_err() { watching = false; }
+            }
+            _ = tokio::time::sleep_until(last + delay) => {
+                return Err(if finished { "upload response headers timed out" } else { "upload transmission idle timeout" }.into());
+            }
+        }
+    };
+    let bytes = crate::proxy::read_body_with_inactivity_timeout(
+        response.bytes_stream(), crate::API_BODY_INACTIVITY_TIMEOUT, None,
+    ).await?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("decode upload response: {e}"))
+}
+
+/** Small resumable control requests use the same header and body deadlines as native API calls. */
 async fn timed_upload_json(
     request: reqwest::RequestBuilder,
     phase: &str,
 ) -> Result<serde_json::Value, String> {
-    tokio::time::timeout(Duration::from_secs(120), async {
-        request.send().await?.json::<serde_json::Value>().await
-    })
-    .await
-    .map_err(|_| format!("{phase} timed out"))?
-    .map_err(|e| format!("{phase}: {e}"))
+    let response = crate::proxy::send_with_headers_deadline(request, crate::API_HEADERS_TIMEOUT)
+        .await.map_err(|error| match error {
+            crate::proxy::HeadersError::SendFailed(error) => format!("{phase}: {error}"),
+            crate::proxy::HeadersError::Timeout => format!("{phase}: response headers timed out"),
+            crate::proxy::HeadersError::Cancelled => format!("{phase}: cancelled"),
+        })?;
+    let bytes = crate::proxy::read_body_with_inactivity_timeout(
+        response.bytes_stream(), crate::API_BODY_INACTIVITY_TIMEOUT, None,
+    ).await.map_err(|e| format!("{phase}: {e}"))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("{phase}: {e}"))
 }
 
 #[cfg(test)]
 mod resumable_part_tests {
     use super::*;
+
+    #[test]
+    fn resumable_state_never_fabricates_writable_progress() {
+        let base = serde_json::json!({"data": {
+            "id": "task", "status": "PENDING", "phase": "UPLOADING", "offset": 0, "chunkSize": 4
+        }});
+        assert_eq!(
+            parse_resumable_state(&base, "task", 4).unwrap(),
+            ResumableState::Uploading {
+                offset: 0,
+                chunk_size: 4
+            }
+        );
+        for offset in [
+            serde_json::Value::Null,
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(5),
+            serde_json::json!("0"),
+        ] {
+            let mut value = base.clone();
+            value["data"]["offset"] = offset;
+            assert!(parse_resumable_state(&value, "task", 4).is_err());
+        }
+        let mut missing = base.clone();
+        missing["data"].as_object_mut().unwrap().remove("offset");
+        assert!(parse_resumable_state(&missing, "task", 4).is_err());
+        assert!(parse_resumable_state(&base, "other-task", 4).is_err());
+        for status in [
+            "FAILED",
+            "STOPPED",
+            "UPLOADING",
+            "COMPLETING",
+            "COMPLETED",
+            "UNKNOWN",
+        ] {
+            missing["data"]["status"] = serde_json::json!(status);
+            missing["data"].as_object_mut().unwrap().remove("phase");
+            let result = parse_resumable_state(&missing, "task", 4);
+            match status {
+                "FAILED" => assert_eq!(result.unwrap(), ResumableState::RetryRequired),
+                _ => assert!(result.is_err()),
+            }
+        }
+        missing["data"]["status"] = serde_json::json!("PENDING");
+        missing["data"]["phase"] = serde_json::json!("COMPLETING");
+        assert_eq!(
+            parse_resumable_state(&missing, "task", 4).unwrap(),
+            ResumableState::Completing
+        );
+        for phase in [serde_json::Value::Null, serde_json::json!("UNKNOWN")] {
+            missing["data"]["phase"] = phase;
+            assert!(parse_resumable_state(&missing, "task", 4).is_err());
+        }
+        missing["data"].as_object_mut().unwrap().remove("phase");
+        assert!(parse_resumable_state(&missing, "task", 4).is_err());
+        missing["data"]["status"] = serde_json::json!("COMPLETED");
+        missing["data"]["result"] = serde_json::json!({"digest": "done"});
+        assert_eq!(
+            parse_resumable_state(&missing, "task", 4).unwrap(),
+            ResumableState::Completed(serde_json::json!({"digest": "done"}))
+        );
+        for status in ["COMPLETED", "FAILED"] {
+            missing["data"]["status"] = serde_json::json!(status);
+            for phase in [serde_json::Value::Null, serde_json::json!("UPLOADING")] {
+                missing["data"]["phase"] = phase;
+                assert!(parse_resumable_state(&missing, "task", 4).is_err());
+            }
+        }
+    }
 
     #[test]
     fn native_voice_stage_and_retry_use_the_resumable_contract() {
@@ -299,117 +605,15 @@ mod resumable_part_tests {
     }
 }
 
-/// Android's source adapter transfers ownership of a readable descriptor (system-picker content URI or
-/// app-private recorder file) to Rust. Only metadata crosses JNI; Rust adopts the descriptor itself
-/// instead of reopening `/proc/self/fd/<n>`, which Android document providers may reject with EACCES.
-/// The resulting `File` owns the descriptor and closes it on every completion/cancellation/error path.
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
-    mut env: jni::JNIEnv,
-    _receiver: jni::objects::JObject,
-    fd: jni::sys::jint,
-    upload_id: jni::objects::JString,
-    attempt_id: jni::objects::JString,
-    filename: jni::objects::JString,
-    mime: jni::objects::JString,
-    size: jni::sys::jlong,
-    fields_json: jni::objects::JString,
-    client_message_id: jni::objects::JString,
-) {
-    if fd < 0 {
-        return;
-    }
-    // SAFETY: Kotlin calls ParcelFileDescriptor.detachFd() immediately before this JNI method and
-    // transfers sole ownership to Rust. Construct the owner before spawning so every later return or
-    // panic drops the descriptor exactly once.
-    let file = unsafe { std::fs::File::from_raw_fd(fd) };
-    let read = |env: &mut jni::JNIEnv, value: jni::objects::JString| {
-        env.get_string(&value)
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    };
-    let upload_id = read(&mut env, upload_id);
-    let attempt_id = read(&mut env, attempt_id);
-    let filename = read(&mut env, filename);
-    let mime = read(&mut env, mime);
-    let fields_json = read(&mut env, fields_json);
-    let client_message_id = read(&mut env, client_message_id);
-    let fields = serde_json::from_str::<std::collections::HashMap<String, String>>(&fields_json)
-        .unwrap_or_default();
-    let Some(app) = ANDROID_APP.get().cloned() else {
-        return;
-    };
-    let proxy = app.state::<ServerSessionState>().inner().clone();
-    tauri::async_runtime::spawn(async move {
-        let result = upload_stream_open_file_core(
-            app.clone(),
-            proxy,
-            tokio::fs::File::from_std(file),
-            filename,
-            mime,
-            size.max(0) as u64,
-            fields,
-            Some(client_message_id),
-        )
-        .await;
-        let payload = match result {
-            Ok(response) => serde_json::json!({
-                "uploadId": upload_id,
-                "attemptId": attempt_id,
-                "ok": true,
-                "response": response,
-            }),
-            Err(message) => serde_json::json!({
-                "uploadId": upload_id,
-                "attemptId": attempt_id,
-                "ok": false,
-                "message": message,
-            }),
-        };
-        let _ = app.emit("native-upload-result", payload);
-    });
-}
-
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "system" fn Java_com_soms_client_RustUploadBridge_cancelUpload(
-    mut env: jni::JNIEnv,
-    _receiver: jni::objects::JObject,
-    client_message_id: jni::objects::JString,
-) {
-    let Ok(client_message_id) = env.get_string(&client_message_id) else {
-        return;
-    };
-    let Some(app) = ANDROID_APP.get() else {
-        return;
-    };
-    cancel_upload(
-        app.state::<ServerSessionState>(),
-        client_message_id.to_string_lossy().into_owned(),
-    );
-}
-
 #[cfg(any(not(desktop), test))]
-fn native_voice_stage_body(
-    thread_id: i64,
-    client_message_id: &str,
-    retry: bool,
-) -> serde_json::Value {
-    serde_json::json!({
-        "threadId": thread_id,
-        "contentType": "AUDIO",
-        "clientMessageId": client_message_id,
-        "retry": retry,
-    })
+fn native_voice_stage_body(thread_id: i64, client_message_id: &str, retry: bool) -> serde_json::Value {
+    serde_json::json!({ "threadId": thread_id, "contentType": "AUDIO", "clientMessageId": client_message_id, "retry": retry })
 }
 
 #[cfg(any(not(desktop), test))]
 fn native_voice_upload_fields(part_id: &str) -> std::collections::HashMap<String, String> {
     std::collections::HashMap::from([
-        ("partId".into(), part_id.into()),
-        ("position".into(), "0".into()),
-        ("intent".into(), "AUDIO".into()),
+        ("partId".into(), part_id.into()), ("position".into(), "0".into()), ("intent".into(), "AUDIO".into()),
     ])
 }
 
@@ -424,58 +628,6 @@ pub(crate) struct NativeVoicePending {
     duration_ms: i64,
     size: i64,
     active: bool,
-}
-
-/// Only a previously recorded app-private file may be retried. JS supplies the opaque send ID,
-/// never a path. Keep the recording until confirmation or explicit discard.
-#[cfg(not(desktop))]
-#[tauri::command]
-pub(crate) fn retry_native_voice(
-    app: tauri::AppHandle,
-    proxy: tauri::State<'_, ServerSessionState>,
-    client_message_id: String,
-) -> Result<(), String> {
-    let pending = {
-        let mut entries = proxy
-            .native_voice_pending
-            .lock()
-            .expect("native voice lock");
-        let entry = entries
-            .get_mut(&client_message_id)
-            .ok_or("voice recording unavailable")?;
-        entry.owner.assert_active().map_err(|e| e.to_string())?;
-        if entry.active {
-            return Err("voice upload already active".into());
-        }
-        entry.active = true;
-        entry.clone()
-    };
-    spawn_native_voice_upload(app, proxy.inner().clone(), pending, client_message_id, true);
-    Ok(())
-}
-
-#[cfg(not(desktop))]
-#[tauri::command]
-pub(crate) fn discard_native_voice(
-    proxy: tauri::State<'_, ServerSessionState>,
-    client_message_id: String,
-) {
-    if let Some(token) = proxy
-        .upload_cancels
-        .lock()
-        .expect("upload cancels lock")
-        .remove(&client_message_id)
-    {
-        token.cancel();
-    }
-    if let Some(pending) = proxy
-        .native_voice_pending
-        .lock()
-        .expect("native voice lock")
-        .remove(&client_message_id)
-    {
-        let _ = fs::remove_file(pending.path);
-    }
 }
 
 #[cfg(target_os = "android")]
@@ -509,22 +661,7 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         Ok(None) | Err(_) => {
             // No login connection exists at all: nothing can own or retry this recording, so
             // close the UI loop visibly and drop the file instead of leaking it silently.
-            let emit = |phase: &str, error: Option<&str>| {
-                let _ = app.emit(
-                    "native-voice-upload",
-                    serde_json::json!({
-                        "contextId": context_id,
-                        "threadId": thread_id,
-                        "clientMessageId": client_message_id,
-                        "durationMs": duration_ms,
-                        "size": size,
-                        "phase": phase,
-                        "error": error,
-                    }),
-                );
-            };
-            emit("started", None);
-            emit("failed", Some("no native login to upload with"));
+            log::warn!("Recording admission rejected: no native login owns the resource");
             let _ = fs::remove_file(path);
             return;
         }
@@ -539,6 +676,17 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         size,
         active: true,
     };
+    let registered = owner.capture_database_work().map_err(|error| error.to_string()).and_then(|work| {
+        work.with_database(|connection| {
+            crate::send_outbox::SendOutboxStorage::new(connection)
+                .register_owned_recording(&client_message_id, std::path::Path::new(&pending.path))
+        }).map_err(|error| error.to_string())
+    });
+    if let Err(error) = registered {
+        log::warn!("Recording ownership registration failed: {error}");
+        let _ = fs::remove_file(&pending.path);
+        return;
+    }
     proxy
         .native_voice_pending
         .lock()
@@ -546,6 +694,7 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         .insert(client_message_id.clone(), pending.clone());
     // The captured epoch owns disposal. Late cancellation only removes its own recording,
     // never a successor's entry, and never holds a lifecycle lock during filesystem work.
+    let session_id = owner.id().clone();
     let cleanup_proxy = proxy.clone();
     let cleanup_id = client_message_id.clone();
     tauri::async_runtime::spawn(async move {
@@ -564,156 +713,62 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
                 None
             }
         };
-        if let Some(entry) = removed {
-            if let Some(cancel) = cleanup_proxy
-                .upload_cancels
-                .lock()
-                .expect("upload cancels lock")
-                .remove(&cleanup_id)
-            {
-                cancel.cancel();
+        if removed.is_some() {
+            cancel_task_uploads(&cleanup_proxy, &cleanup_id);
+            if let Ok(work) = owner.capture_database_work() {
+                let _ = work.with_database(|connection| {
+                    let store = crate::send_outbox::SendOutboxStorage::new(connection);
+                    if store.get(&cleanup_id)?.is_some() { return Ok(()); }
+                    let paths = store.owned_recordings(&cleanup_id)?;
+                    crate::send_outbox::release_owned_recordings(paths)?;
+                    connection.execute("DELETE FROM owned_send_resources WHERE client_message_id=?1", [&cleanup_id]).map_err(|error| error.to_string())?;
+                    Ok(())
+                });
             }
-            let _ = fs::remove_file(entry.path);
         }
     });
-    spawn_native_voice_upload(app, proxy, pending, client_message_id, false);
+    let _ = app.emit("native-voice-ready", serde_json::json!({
+        "sessionId": session_id,
+        "contextId": context_id, "threadId": thread_id, "clientMessageId": client_message_id,
+        "durationMs": duration_ms, "size": size, "path": pending.path,
+        "partId": pending.part_id, "name": "voice.m4a", "mimeType": "audio/mp4",
+    }));
 }
 
-#[cfg(not(desktop))]
-fn spawn_native_voice_upload(
-    app: tauri::AppHandle,
-    proxy: ServerSessionState,
-    pending: NativeVoicePending,
-    client_message_id: String,
-    retry: bool,
-) {
-    tauri::async_runtime::spawn(async move {
-        let owner = pending.owner.clone();
-        let NativeVoicePending {
-            path,
-            part_id,
-            context_id,
-            thread_id,
-            duration_ms,
-            size,
-            ..
-        } = pending;
-        let emit_phase = |phase: &str, error: Option<&str>| {
-            let _ = app.emit(
-                "native-voice-upload",
-                serde_json::json!({
-                    "contextId": context_id,
-                    "threadId": thread_id,
-                    "clientMessageId": client_message_id,
-                    "durationMs": duration_ms,
-                    "size": size,
-                    "phase": phase,
-                    "error": error,
-                }),
-            );
-        };
-        emit_phase("started", None);
-        let origin = proxy.api_origin.lock().expect("origin lock").clone();
-        let token = match owner.credential() {
-            Ok(token) => token,
-            Err(_) => {
-                // The epoch ended between "started" and the credential read: still emit the
-                // terminal phase so the UI never waits on a stuck "started".
-                emit_phase("failed", Some("native login is not admitted"));
-                return;
-            }
-        };
-        let stage_body = native_voice_stage_body(thread_id, &client_message_id, retry).to_string();
-        let mut stage = proxy
-            .api_client(&origin)
-            .post(format!("{origin}/api/v1/send-media"))
-            .header("content-type", "application/json")
-            .body(stage_body);
-        stage = stage.header("authorization", format!("Bearer {token}"));
-        let cancellation = owner.cancellation();
-        let stage_result = tokio::select! {
-          biased;
-          _ = cancellation.cancelled() => return,
-          result = async {
-            let response = send_with_headers_deadline(stage, API_HEADERS_TIMEOUT)
-                .await
-                .map_err(|e| format!("stage send: {e:?}"))?;
-            let status = response.status();
-            let text = tokio::time::timeout(API_HEADERS_TIMEOUT, response.text())
-                .await
-                .map_err(|_| "stage body timed out".to_string())?
-                .map_err(|e| format!("stage read: {e}"))?;
-            if !status.is_success() {
-                return Err(format!("stage HTTP {}: {text}", status.as_u16()));
-            }
-            let envelope: serde_json::Value =
-                serde_json::from_str(&text).map_err(|e| format!("stage parse: {e}"))?;
-            if envelope.get("code").and_then(|v| v.as_i64()) != Some(0) {
-                return Err(format!("stage rejected: {text}"));
-            }
-            Ok(())
-          } => result,
-        };
-        let result = match stage_result {
-            Ok(()) => {
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => return,
-                    result = upload_stream_path_core(
-                        app.clone(),
-                        proxy.clone(),
-                        path.clone(),
-                        "voice.m4a".to_string(),
-                        "audio/mp4".to_string(),
-                        size.max(0) as u64,
-                        native_voice_upload_fields(&part_id),
-                        Some(client_message_id.clone()),
-                    ) => result,
-                }
-            }
-            Err(error) => Err(error),
-        };
-        if owner.assert_active().is_err() {
-            return;
-        }
-        let success = matches!(&result, Ok(response) if response.get("code").and_then(|v| v.as_i64()) == Some(0));
-        // Discard may have removed this entry while an IPC request was in flight. Never resurrect it.
-        let retained = {
-            let mut entries = proxy
-                .native_voice_pending
-                .lock()
-                .expect("native voice lock");
-            if let Some(entry) = entries.get_mut(&client_message_id) {
-                entry.active = false;
-                true
-            } else {
-                false
-            }
-        };
-        if !retained {
-            return;
-        }
-        match result {
-            Ok(_) if success => emit_phase("completed", None),
-            Ok(response) => emit_phase("failed", Some(&format!("upload rejected: {response}"))),
-            Err(error) => emit_phase("failed", Some(&error)),
-        }
-    });
-}
-
-/// Cancel one shell streaming upload. Idempotent: a task that already completed or has not reached the
-/// streaming phase simply has no token. Browser cancellation remains owned by HttpClient unsubscribe.
+/// Cancel all registered parts of a shell upload, including control requests and source reads.
+/// Idempotent for completed tasks. Browser cancellation remains owned by HttpClient unsubscribe.
 #[tauri::command]
 pub(crate) fn cancel_upload(
     proxy: tauri::State<'_, ServerSessionState>,
     client_message_id: String,
 ) {
-    if let Some(token) = proxy
-        .upload_cancels
-        .lock()
-        .expect("upload_cancels lock")
-        .remove(&client_message_id)
-    {
-        token.cancel();
+    cancel_task_uploads(&proxy, &client_message_id);
+    release_prepared_sources(&client_message_id);
+}
+
+fn cancel_task_uploads(proxy: &ServerSessionState, client_message_id: &str) {
+    let tokens = proxy.upload_cancels.lock().expect("upload_cancels lock").take(client_message_id);
+    for token in tokens { token.cancel(); }
+}
+
+#[cfg(test)]
+mod prepared_source_tests {
+    use super::*;
+
+    #[test]
+    fn opens_every_source_before_retaining_any_handle() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("one");
+        std::fs::write(&first, b"abc").unwrap();
+        let missing = directory.path().join("missing");
+        let sources = vec![
+            NativeUploadSource { part_id: "a".into(), path: first.display().to_string(), size: 3 },
+            NativeUploadSource { part_id: "b".into(), path: missing.display().to_string(), size: 1 },
+        ];
+        assert!(prepare_sources("prepare-cid", &sources).unwrap_err().contains("Attachment unavailable"));
+        assert!(take_prepared_source("prepare-cid", "a").is_none());
+        prepare_sources("prepare-cid", &sources[..1]).unwrap();
+        assert!(take_prepared_source("prepare-cid", "a").is_some());
+        assert!(take_prepared_source("prepare-cid", "a").is_none());
     }
 }

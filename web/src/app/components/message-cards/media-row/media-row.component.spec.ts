@@ -16,6 +16,7 @@ import type {
   AuthoredMessageItem,
 } from '../chat-item';
 import { MediaRowComponent } from './media-row.component';
+import { MEDIA_STATUS } from '../chat-item';
 
 describe('MediaRowComponent — deferred image loading', () => {
   let downloads: FakeImageDownloads;
@@ -289,6 +290,66 @@ describe('MediaRowComponent — deferred image loading', () => {
     expect(markLoaded).not.toHaveBeenCalled();
   });
 
+  it('uses one top-right federated spinner without changing bubble height', async () => {
+    const images = [image(1, 1024)];
+    const fixture = await render(images);
+    const bubble = fixture.nativeElement.querySelector(
+      '.msg-bubble',
+    ) as HTMLElement;
+    const height = bubble.offsetHeight;
+    fixture.componentRef.setInput('data', {
+      ...message(images, 'IMAGE'),
+      mediaStatus: MEDIA_STATUS.DOWNLOADING,
+    });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(
+      fixture.nativeElement.querySelectorAll(
+        'app-federated-download-status .downloading',
+      ),
+    ).toHaveLength(1);
+    expect(
+      fixture.nativeElement.querySelector('mat-progress-spinner'),
+    ).toBeNull();
+    expect(
+      fixture.nativeElement.querySelector('.msg-media-overlay[role="status"]'),
+    ).not.toBeNull();
+    expect(bubble.offsetHeight).toBe(height);
+    const status = fixture.nativeElement.querySelector(
+      'app-federated-download-status',
+    ) as HTMLElement;
+    expect(getComputedStyle(status).position).toBe('absolute');
+    expect(getComputedStyle(status).top).toBe('8px');
+    expect(getComputedStyle(status).right).toBe('8px');
+  });
+
+  it.each(['GALLERY', 'AUDIO'] as const)(
+    'shows federated download feedback for %s without changing height',
+    async (contentType) => {
+      const media: AlbumMedia =
+        contentType === 'AUDIO'
+          ? { ...file(1, 'voice.ogg'), kind: 'audio', duration: 12 }
+          : file(1, 'report.pdf');
+      const fixture = await render([media], contentType);
+      const bubble = fixture.nativeElement.querySelector(
+        '.msg-bubble',
+      ) as HTMLElement;
+      const height = bubble.offsetHeight;
+      fixture.componentRef.setInput('data', {
+        ...message([media], contentType),
+        mediaStatus: MEDIA_STATUS.DOWNLOADING,
+      });
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(
+        fixture.nativeElement.querySelectorAll(
+          'app-federated-download-status .downloading',
+        ),
+      ).toHaveLength(1);
+      expect(bubble.offsetHeight).toBe(height);
+    },
+  );
+
   it('treats an absent federated media status as ready', async () => {
     const fixture = await render([image(1, 1024)]);
 
@@ -401,7 +462,6 @@ function task(
     loaded,
     total,
     status,
-    saveAfterLoad: false,
     blobUrl: status === 'loaded' ? `blob:${media.msgId}` : null,
     startedAt: 1,
   };

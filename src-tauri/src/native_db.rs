@@ -56,6 +56,10 @@ pub(crate) fn is_login_session_current(id: &crate::login_session_store::LoginSes
         .is_some_and(|owner| owner.id() == id && owner.assert_active().is_ok())
 }
 
+pub(crate) fn avatar_cache_path() -> Result<PathBuf, String> {
+    Ok(db_path()?.with_extension("profile-avatars"))
+}
+
 fn db_path() -> Result<PathBuf, String> {
     Ok(location::path()?.to_path_buf())
 }
@@ -520,13 +524,15 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         params![CACHE_SCHEMA_VERSION.to_string()],
     )
     .map_err(|e| format!("set native cache schema version: {e}"))?;
+    crate::send_outbox::SendOutboxStorage::initialize(conn)?;
+    crate::download_history::DownloadHistoryStorage::initialize(conn)?;
     Ok(())
 }
 
 fn recreate_cache_schema(conn: &mut Connection) -> Result<(), String> {
-    // This connection owns only a disposable per-login cache. The login journal and device
-    // preferences live in a separate database. Enumerate the actual schema, not a generation's
-    // table list, so no obsolete objects or cached data survive repair. TEMP objects belong to
+    // Full recreation discards all per-login database contents, including pending sends.
+    // The login journal and device preferences live in a separate database. Enumerate actual
+    // objects so no obsolete data survive repair. TEMP objects belong to
     // the retained physical connection and are not part of the persistent cache schema.
     if !conn.is_autocommit() {
         return Err("native cache recreation requires no active transaction".into());
@@ -555,6 +561,16 @@ fn recreate_cache_schema(conn: &mut Connection) -> Result<(), String> {
             .map_err(|e| format!("read native cache objects: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("decode native cache objects: {e}"))?;
+        let owned = if objects.iter().any(|(_, name)| name == "owned_send_resources") {
+            tx.prepare("SELECT path FROM owned_send_resources ORDER BY path")
+                .map_err(|e| format!("inspect owned recordings: {e}"))?
+                .query_map([], |row| row.get(0))
+                .map_err(|e| format!("read owned recordings: {e}"))?
+                .collect::<Result<Vec<String>, _>>()
+                .map_err(|e| format!("decode owned recordings: {e}"))?
+        } else {
+            Vec::new()
+        };
         for (kind, name) in objects {
             // Dropping tables also removes their indexes and triggers. Quote identifiers from
             // the database, and qualify main so a TEMP name cannot shadow a persistent object.
@@ -564,7 +580,8 @@ fn recreate_cache_schema(conn: &mut Connection) -> Result<(), String> {
         }
         create_cache_schema(&tx)?;
         tx.commit()
-            .map_err(|e| format!("commit native cache recreation: {e}"))
+            .map_err(|e| format!("commit native cache recreation: {e}"))?;
+        crate::send_outbox::release_owned_recordings(owned)
     })();
     // Restore enforcement after either commit or rollback before the owner can admit work.
     let restored = conn
@@ -787,7 +804,12 @@ pub(crate) async fn native_db_validate_cache() -> Result<(), String> {
         .ok_or("no native login connection initialized")?;
     tauri::async_runtime::spawn_blocking(move || {
         owner
-            .with_initialization_database(|conn| validate_cache_schema(conn))
+            .with_initialization_database(|conn| {
+                validate_cache_schema(conn)?;
+                crate::send_outbox::SendOutboxStorage::initialize(conn)?;
+                crate::download_history::DownloadHistoryStorage::initialize(conn)?;
+                Ok(())
+            })
             .map_err(|e| e.to_string())
     })
     .await
@@ -890,6 +912,8 @@ pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
                 let tx = conn
                     .transaction()
                     .map_err(|e| format!("begin user clear: {e}"))?;
+                let owned = crate::send_outbox::SendOutboxStorage::new(&tx).clear()?;
+                crate::download_history::DownloadHistoryStorage::new(&tx).clear()?;
                 for table in [
                     "thread_previews",
                     "threads",
@@ -909,6 +933,7 @@ pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
                     .map_err(|e| format!("clear {table}: {e}"))?;
                 }
                 tx.commit().map_err(|e| format!("commit user clear: {e}"))?;
+                crate::send_outbox::release_owned_recordings(owned)?;
                 profile_avatars::clear_user(user_id)
             })
             .map_err(|e| e.to_string())

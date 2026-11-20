@@ -197,13 +197,13 @@ for (const reduced of [false, true]) {
       ];
       let inits = 0;
       let creates = 0;
-      const init = source.init.bind(source);
+      const loadWindow = source.loadWindow.bind(source);
       const create = component.threadAdapter.createSource.bind(
         component.threadAdapter,
       );
-      source.init = (...args) => {
+      source.loadWindow = (...args) => {
         inits++;
-        return init(...args);
+        return loadWindow(...args);
       };
       component.threadAdapter.createSource = (...args) => {
         creates++;
@@ -246,7 +246,7 @@ for (const reduced of [false, true]) {
         };
       } finally {
         viewport.scrollTo = scroll;
-        source.init = init;
+        source.loadWindow = loadWindow;
         component.threadAdapter.createSource = create;
       }
     }, reduced);

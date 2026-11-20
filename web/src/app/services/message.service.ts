@@ -3,16 +3,16 @@ import {
   SseDecoder,
   type SseFrame,
 } from '../../../../shared/sse-client';
+import { WebUploadTransport } from './web-upload-transport';
+import { NativeUploadTransport } from './native-upload-transport.service';
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpContext, HttpHeaders } from '@angular/common/http';
+import type { StoredNonMediaSendContent } from './send-outbox-storage';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import {
   defer,
   firstValueFrom,
-  fromEvent,
   Observable,
   switchMap,
-  takeUntil,
-  timeout,
 } from 'rxjs';
 import {
   Message,
@@ -21,7 +21,8 @@ import {
   type ContactCardSendTarget,
 } from './model';
 import { apiPrefix } from './constants';
-import { isTauri, listenEvent, tauriInvoke } from './runtime';
+import { isTauri } from './runtime';
+import type { UploadPartIdentity, UploadProgressHandler } from './upload-transport';
 import type { ThreadAliasApplied } from '../../../../shared/thread-attention';
 import {
   SessionLifecycleService,
@@ -29,26 +30,6 @@ import {
 } from './session-lifecycle.service';
 import { REPLAY_SAFE } from '../request-context';
 import type { ForwardWireBundle } from '../components/forward-detail/forward-bundle.model';
-
-export type UploadProgressHandler = (loaded: number, total: number) => void;
-type UploadPartIntent = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
-
-export interface UploadPartIdentity {
-  clientMessageId: string;
-  partId: string;
-  position: number;
-  intent: UploadPartIntent;
-}
-
-interface ResumableUploadState {
-  uploadId: string;
-  clientMessageId: string;
-  totalBytes: number;
-  offset: number;
-  chunkSize: number;
-  status: 'UPLOADING' | 'COMPLETING' | 'COMPLETED' | 'ABORTED';
-  result?: Record<string, unknown>;
-}
 
 interface MessageHistoryGap {
   startSeq: number;
@@ -92,11 +73,7 @@ interface MessageTombstoneQueryPage {
   providedIn: 'root',
 })
 export class MsgService {
-  private readonly streamProgressHandlers = new Map<
-    string,
-    UploadProgressHandler
-  >();
-  private streamProgressListener?: Promise<void>;
+  private readonly nativeUpload = new NativeUploadTransport();
 
   private readonly aliasWrites = new WeakMap<
     SessionWorkScope,
@@ -114,6 +91,57 @@ export class MsgService {
 
   addFriend(account: string) {
     return this.http.post(`${apiPrefix()}/add-friend`, { account });
+  }
+
+  /** Execute the original non-media request without reconstructing it from a display card. */
+  sendIntent(task: {
+    clientMessageId: string;
+    threadId: number;
+    item: Extract<
+      StoredNonMediaSendContent,
+      { type: 'FORWARD' | 'CONTACT_CARD' }
+    >;
+  }): Observable<StandardResponse<Message>>;
+  sendIntent(task: {
+    clientMessageId: string;
+    threadId: number;
+    item: StoredNonMediaSendContent;
+  }): Observable<StandardResponse<unknown>>;
+  sendIntent(task: {
+    clientMessageId: string;
+    threadId: number;
+    item: StoredNonMediaSendContent;
+  }): Observable<StandardResponse<unknown>> {
+    const { clientMessageId, threadId, item } = task;
+    switch (item.type) {
+      case 'PURE_TEXT':
+        return this.sendMessage({
+          clientMessageId,
+          threadId,
+          contentType: 'PURE_TEXT',
+          content: item.content,
+        });
+      case 'LINK':
+        return this.sendMessage({
+          clientMessageId,
+          threadId,
+          contentType: 'LINK',
+          content: item.generationId,
+        });
+      case 'CONTACT_CARD':
+        return this.sendContactCard({
+          clientMessageId,
+          threadId,
+          target: item.target,
+        });
+      case 'FORWARD':
+        return this.sendForward({
+          clientMessageId,
+          threadId,
+          sourceMessages: item.sourceMessages,
+          mode: item.mode,
+        });
+    }
   }
 
   sendMessage(params: {
@@ -187,29 +215,12 @@ export class MsgService {
     contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
     clientMessageId: string;
     fileCnt?: number;
-    retry?: boolean;
   }) {
     return this.http.post<StandardResponse<{ clientMessageId: string }>>(
       `${apiPrefix()}/send-media`,
       params,
       { context: new HttpContext().set(REPLAY_SAFE, true) },
     );
-  }
-
-  queryMediaStages(threadId: number) {
-    return this.http.post<
-      StandardResponse<
-        Array<{
-          clientMessageId: string;
-          contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
-          content: string;
-          status: 'pending' | 'failed';
-          failReason: string | null;
-          createdAt: number;
-          updatedAt: number;
-        }>
-      >
-    >(`${apiPrefix()}/query-media-stages`, { threadId });
   }
 
   cancelUploadBatch(clientMessageId: string) {
@@ -244,62 +255,12 @@ export class MsgService {
     onProgress?: UploadProgressHandler,
   ): Observable<StandardResponse<T>> {
     if (this.canStream(file)) {
-      return new Observable<StandardResponse<T>>((subscriber) => {
-        let settled = false;
-        void this.streamUpload<T>(
-          file,
-          this.partFields(identity),
-          identity.clientMessageId,
-          onProgress
-            ? (loaded, total) => {
-                if (!subscriber.closed) onProgress(loaded, total);
-              }
-            : undefined,
-        ).then(
-          (result) => {
-            settled = true;
-            subscriber.next(result);
-            subscriber.complete();
-          },
-          (error) => {
-            settled = true;
-            subscriber.error(error);
-          },
-        );
-        return () => {
-          if (!settled)
-            void tauriInvoke('cancel_upload', {
-              clientMessageId: identity.clientMessageId,
-            }).catch(() => undefined);
-        };
-      });
+      return this.nativeUpload.upload<T>({
+        path: (file as File & { path: string }).path,
+        name: file.name, mimeType: file.type || 'application/octet-stream', size: file.size,
+      }, identity, onProgress);
     }
-    return new Observable<StandardResponse<T>>((subscriber) => {
-      const abort = new AbortController();
-      void this.resumableUpload<T>(
-        file,
-        identity,
-        abort.signal,
-        (loaded, total) => {
-          if (!abort.signal.aborted) onProgress?.(loaded, total);
-        },
-      ).then(
-        (result) => {
-          subscriber.next(result);
-          subscriber.complete();
-        },
-        (error) => subscriber.error(error),
-      );
-      return () => abort.abort();
-    });
-  }
-
-  private partFields(identity: UploadPartIdentity): Record<string, string> {
-    return {
-      partId: identity.partId,
-      position: String(identity.position),
-      intent: identity.intent,
-    };
+    return new WebUploadTransport(this.http).upload<T>(file, identity, onProgress);
   }
 
   /** True when the upload can stream from disk: the Tauri DESKTOP shell, where Tauri's `<input type=file>`
@@ -307,136 +268,6 @@ export class MsgService {
    *  the File is an in-memory blob with no path, so sequential HttpClient chunks are used. */
   private canStream(file: File): boolean {
     return isTauri() && typeof (file as { path?: string }).path === 'string';
-  }
-
-  /** Stream-upload a file via the Rust `upload_stream_file` command, which reads + sends it in chunks
-   *  straight from disk (peak memory = one chunk, NOT the whole file — the api:// URI-scheme proxy can't
-   *  do this: Tauri hands it a fully-buffered `Request<Vec<u8>>` at the IPC boundary).
-   *  `fields` carry the stable upload-part identity. Returns the
-   *  raw {code,message,data} envelope so callers read it exactly like the HttpClient response. */
-  private async streamUpload<T>(
-    file: File,
-    fields: Record<string, string>,
-    clientMessageId?: string,
-    onProgress?: UploadProgressHandler,
-  ): Promise<StandardResponse<T>> {
-    if (clientMessageId && onProgress) {
-      await this.ensureStreamProgressListener();
-      this.streamProgressHandlers.set(clientMessageId, onProgress);
-    }
-    try {
-      return await tauriInvoke<StandardResponse<T>>('upload_stream_file', {
-        path: (file as { path?: string }).path,
-        filename: file.name,
-        mime: file.type || 'application/octet-stream',
-        size: file.size,
-        fields,
-        clientMessageId: clientMessageId ?? null,
-      });
-    } finally {
-      if (
-        clientMessageId &&
-        this.streamProgressHandlers.get(clientMessageId) === onProgress
-      )
-        this.streamProgressHandlers.delete(clientMessageId);
-    }
-  }
-
-  private ensureStreamProgressListener(): Promise<void> {
-    if (this.streamProgressListener) return this.streamProgressListener;
-    this.streamProgressListener = listenEvent<{
-      clientMessageId: string;
-      loaded: number;
-      total: number;
-    }>('upload-progress', ({ payload }) => {
-      this.streamProgressHandlers.get(payload.clientMessageId)?.(
-        Math.max(0, payload.loaded),
-        Math.max(0, payload.total),
-      );
-    }).then(() => undefined);
-    return this.streamProgressListener;
-  }
-
-  /** Sequential resumable upload. Session state lives on the server; retrying this method first
-   * recovers its authoritative offset, with offset=0 naturally meaning a fresh upload. */
-  private async resumableUpload<T>(
-    file: File,
-    identity: UploadPartIdentity,
-    signal: AbortSignal,
-    onProgress?: UploadProgressHandler,
-  ): Promise<StandardResponse<T>> {
-    const read = <R>(request: Observable<R>): Promise<R> => {
-      if (signal.aborted) return Promise.reject(new Error('Upload cancelled'));
-      return firstValueFrom(
-        request.pipe(timeout(120_000), takeUntil(fromEvent(signal, 'abort'))),
-      );
-    };
-    const init = await read(
-      this.http.post<StandardResponse<ResumableUploadState>>(
-        `${apiPrefix()}/uploads/resumable/init`,
-        {
-          clientMessageId: identity.clientMessageId,
-          partId: identity.partId,
-          position: identity.position,
-          intent: identity.intent,
-          originalName: file.name || 'attachment',
-          mimeType: file.type || 'application/octet-stream',
-          totalBytes: file.size,
-        },
-        { context: new HttpContext().set(REPLAY_SAFE, true) },
-      ),
-    );
-    if (init.code !== 0 || !init.data)
-      throw new Error(init.message || 'upload init failed');
-    let state = await read(
-      this.http.get<StandardResponse<ResumableUploadState>>(
-        `${apiPrefix()}/uploads/resumable/${encodeURIComponent(init.data.uploadId)}`,
-        { context: new HttpContext().set(REPLAY_SAFE, true) },
-      ),
-    );
-    if (state.code !== 0 || !state.data)
-      throw new Error(state.message || 'upload status failed');
-    let current = state.data;
-    onProgress?.(current.offset, file.size);
-    while (current.status === 'UPLOADING' && current.offset < file.size) {
-      const end = Math.min(current.offset + current.chunkSize, file.size);
-      const chunk = file.slice(current.offset, end);
-      const response = await read(
-        this.http.put<StandardResponse<ResumableUploadState>>(
-          `${apiPrefix()}/uploads/resumable/${encodeURIComponent(current.uploadId)}`,
-          chunk,
-          {
-            headers: new HttpHeaders({
-              'Content-Type': 'application/octet-stream',
-              'Content-Range': `bytes ${current.offset}-${end - 1}/${file.size}`,
-            }),
-          },
-        ),
-      );
-      if (response.code !== 0 || !response.data) {
-        throw new Error(response.message || 'upload chunk failed');
-      }
-      current = response.data;
-      onProgress?.(current.offset, file.size);
-    }
-    if (current.status === 'COMPLETED' && current.result) {
-      return { code: 0, message: 'success', data: current.result as T };
-    }
-    const completed = await read(
-      this.http.post<StandardResponse<ResumableUploadState>>(
-        `${apiPrefix()}/uploads/resumable/${encodeURIComponent(current.uploadId)}/complete`,
-        {},
-        { context: new HttpContext().set(REPLAY_SAFE, true) },
-      ),
-    );
-    if (completed.code !== 0 || !completed.data?.result) {
-      throw new Error(completed.message || 'upload complete failed');
-    }
-    return {
-      code: 0,
-      message: completed.message,
-      data: completed.data.result as T,
-    };
   }
 
   /** Raw page contract used by the browser history walker. Cursor recovery, range reduction, commit,

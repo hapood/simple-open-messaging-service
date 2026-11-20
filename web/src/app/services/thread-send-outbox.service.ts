@@ -1,158 +1,204 @@
-import { Injectable } from '@angular/core';
-import type { CbItem } from '../lib/chat-box/chat-box-scroller';
-import type { ChatMsgData } from '../components/message-cards/chat-item';
-import type { NativeUploadSelection } from './native-upload.service';
+import { Injectable, computed, inject, signal } from '@angular/core';
+import { WebdbService } from './webdb.service';
+import { BrowserSendFiles } from './browser-send-files.service';
+import { isTauri } from './runtime';
+import { SessionLifecycleService, type SessionWorkScope } from './session-lifecycle.service';
+import type { StoredSendTask } from './send-outbox-storage';
 
-export type PendingSendResource =
-  | {
-      type: 'web-attachment';
-      file: File;
-      partId: string;
-      mediaKind: 'image' | 'file' | 'video' | 'audio';
-    }
-  | {
-      type: 'native-attachment';
-      selection: NativeUploadSelection;
-      partId: string;
-      release: () => void;
-      discard: () => void;
-    }
-  | {
-      type: 'voice';
-      file: File;
-      partId: string;
-      duration: number;
-      previewUrl: string;
-    }
-  | {
-      type: 'native-voice';
-      threadId: number;
-      size: number;
-      discard: () => void;
-    }
-  | {
-      type: 'web-gallery';
-      parts: readonly {
-        file: File;
-        partId: string;
-        position: number;
-        intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
-      }[];
-      previewUrls: readonly string[];
-    }
-  | {
-      type: 'native-gallery';
-      parts: readonly {
-        selection: NativeUploadSelection;
-        partId: string;
-        position: number;
-      }[];
-      release: () => void;
-      discard: () => void;
-    };
+export type PendingSendTask = StoredSendTask;
+export type SendPhase = 'sending' | 'failed';
 
-/**
- * Application-scoped, memory-only optimistic-send outbox.
- *
- * A HttpItemSource is recreated whenever its thread view is recreated. Keeping pending sends here,
- * keyed by threadId, lets the new source remount the same optimistic bubbles without introducing
- * IndexedDB/native persistence. The server-confirmed Message remains the durable truth; this store
- * only survives for the lifetime of the current JavaScript application.
+/** History may retire a failed leftover, never an in-flight send. */
+export function failedMatchingIntentIds(rows: readonly SendingTask[], messageIds: readonly string[]): string[] {
+  const present = new Set(messageIds);
+  return rows
+    .filter(row => row.execution.phase === 'failed' && present.has(row.task.clientMessageId))
+    .map(row => row.task.clientMessageId);
+}
+
+export type UploadFailure =
+  | { kind: 'interrupted' }
+  | { kind: 'attachment-unavailable' }
+  | { kind: 'size-limit'; limit: number }
+  | { kind: 'transport'; message: string };
+
+export type SendExecution =
+  | { kind: 'message'; phase: SendPhase }
+  | { kind: 'attachment'; phase: SendPhase; loaded: number; total: number; startedAt: number; failure: UploadFailure | null };
+
+export interface SendingTask {
+  readonly task: PendingSendTask;
+  readonly execution: SendExecution;
+}
+
+function initialExecution(task: PendingSendTask, phase: SendPhase): SendExecution {
+  const item = task.item;
+  if (!('file' in item) && item.type !== 'GALLERY') return { kind: 'message', phase };
+  return { kind: 'attachment', phase, loaded: 0, total: 0, startedAt: 0, failure: phase === 'failed' ? { kind: 'interrupted' } : null };
+}
+
+/** Read projection of durable pending intents plus process-local execution state.
+ * No rendered cards, attachment ownership callbacks, or independent memory queue live here.
  */
 @Injectable({ providedIn: 'root' })
 export class ThreadSendOutbox {
-  private readonly byThread = new Map<number, CbItem<ChatMsgData>[]>();
-  private readonly resources = new Map<string, PendingSendResource>();
-  private nextPlaceholderId = -1;
+  private readonly database = inject(WebdbService);
+  private readonly browserFiles = inject(BrowserSendFiles);
+  private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly projection = signal<ReadonlyMap<string, SendingTask>>(new Map());
+  readonly tasks = computed(() => [...this.projection().values()]);
+  readonly failures = computed(() => this.tasks().filter(row => row.execution.phase === 'failed'));
+  readonly uploads = computed(() => this.tasks().filter(row => row.execution.kind === 'attachment'));
 
-  /** Return the live array owned by this outbox. HttpItemSource is the sole mutator. */
-  forThread(threadId: number): CbItem<ChatMsgData>[] {
-    let pending = this.byThread.get(threadId);
-    if (!pending) {
-      pending = [];
-      this.byThread.set(threadId, pending);
-    }
+  constructor() {
+    this.lifecycle.invalidated$.subscribe(() => {
+      this.projection.set(new Map());
+    });
+  }
+
+  forThread(threadId: number): readonly SendingTask[] {
+    return this.tasks().filter(row => row.task.threadId === threadId);
+  }
+
+  get(clientMessageId: string): SendingTask | undefined {
+    return this.projection().get(clientMessageId);
+  }
+
+  private restoredScope: SessionWorkScope | null = null;
+  private restoring: Promise<void> | null = null;
+
+  /** Existing lifecycle callers serialize database opening/recreation before this call. */
+  restore(reset = false): Promise<void> {
+    const scope = this.lifecycle.capture();
+    if (!reset && this.restoredScope === scope) return this.restoring ?? Promise.resolve();
+    this.restoredScope = scope;
+    const pending = this.loadProjection(scope, reset);
+    this.restoring = pending;
+    void pending.then(() => {
+      if (this.restoring === pending) this.restoring = null;
+    }, () => {
+      if (this.restoring === pending) {
+        this.restoring = null;
+        this.restoredScope = null;
+      }
+    });
     return pending;
   }
 
-  /** Allocate an application-wide synthetic id that cannot collide across restored thread sources. */
-  allocatePlaceholderId(): number {
-    return this.nextPlaceholderId--;
+  private async loadProjection(scope: SessionWorkScope, reset: boolean): Promise<void> {
+    const tasks = await this.database.pendingSends();
+    this.lifecycle.assertCurrent(scope);
+    if (reset && !isTauri()) {
+      const retainedPaths = new Set(tasks.flatMap(task => {
+        const item = task.item;
+        return (item.type === 'GALLERY' ? item.files : 'file' in item ? [item.file] : []).map(file => file.path);
+      }));
+      for (const { task } of this.projection().values()) {
+        const item = task.item;
+        const files = item.type === 'GALLERY' ? item.files : 'file' in item ? [item.file] : [];
+        for (const file of files) {
+          if (!retainedPaths.has(file.path)) this.browserFiles.release(file.path);
+        }
+      }
+    }
+    this.projection.set(new Map(tasks.map(task => [task.clientMessageId, {
+      task, execution: initialExecution(task, 'failed'),
+    }])));
   }
 
-  retainResource(clientMessageId: string, resource: PendingSendResource): void {
-    this.releaseResource(clientMessageId, true);
-    this.resources.set(clientMessageId, resource);
+  /** Attachment bytes or native files must be ready before admission. */
+  async enqueue(task: PendingSendTask): Promise<void> {
+    const scope = this.lifecycle.capture();
+    await this.database.enqueuePendingSend(task);
+    this.lifecycle.assertCurrent(scope);
+    this.projection.update(previous => new Map(previous).set(task.clientMessageId, {
+      task, execution: initialExecution(task, 'sending'),
+    }));
   }
 
-  resource(clientMessageId: string): PendingSendResource | undefined {
-    return this.resources.get(clientMessageId);
+  /** Retry reads the authoritative request, never a card or a retained callback. */
+  async retry(clientMessageId: string): Promise<PendingSendTask | null> {
+    const scope = this.lifecycle.capture();
+    const task = await this.database.pendingSend(clientMessageId);
+    this.lifecycle.assertCurrent(scope);
+    if (!task) return null;
+    this.projection.update(previous => new Map(previous).set(clientMessageId, {
+      task, execution: initialExecution(task, 'sending'),
+    }));
+    return task;
   }
 
-  /** A network timeout can arrive after the thread view was torn down. Keep the outbox
-   * retryable even without a mounted source or scroller; a later mount reads this same array. */
-  failPending(clientMessageId: string): boolean {
-    for (const pending of this.byThread.values()) {
-      const index = pending.findIndex(
-        (item) => item.clientMessageId === clientMessageId,
-      );
-      if (index < 0) continue;
-      const item = pending.splice(index, 1)[0];
-      pending.push({
-        ...item,
-        data: { ...item.data, status: 'failed', kind: undefined },
+  setPhase(clientMessageId: string, phase: SendPhase): void {
+    this.projection.update(previous => {
+      const row = previous.get(clientMessageId);
+      return row ? new Map(previous).set(clientMessageId, {
+        task: row.task, execution: row.execution.kind === 'attachment'
+          ? { ...row.execution, phase, failure: phase === 'failed' ? row.execution.failure : null }
+          : { ...row.execution, phase },
+      }) : previous;
+    });
+  }
+
+  failUpload(clientMessageId: string, failure: UploadFailure): void {
+    this.projection.update(previous => {
+      const row = previous.get(clientMessageId);
+      if (!row || row.execution.kind !== 'attachment') return previous;
+      return new Map(previous).set(clientMessageId, {
+        task: row.task, execution: { ...row.execution, phase: 'failed', failure },
       });
-      return true;
-    }
-    return false;
+    });
   }
 
-  /** Discard a send whose thread source is no longer mounted. */
-  discardPending(clientMessageId: string): number | undefined {
-    for (const [threadId, pending] of this.byThread) {
-      const index = pending.findIndex(
-        (item) => item.clientMessageId === clientMessageId,
-      );
-      if (index < 0) continue;
-      pending.splice(index, 1);
-      this.releaseResource(clientMessageId, true);
-      this.releaseIfEmpty(threadId);
-      return threadId;
-    }
-    return undefined;
+  setProgress(clientMessageId: string, loaded: number, total: number, startedAt: number): void {
+    this.projection.update(previous => {
+      const row = previous.get(clientMessageId);
+      if (!row || row.execution.kind !== 'attachment') return previous;
+      return new Map(previous).set(clientMessageId, {
+        task: row.task, execution: { ...row.execution, loaded, total, startedAt },
+      });
+    });
   }
 
-  /** Release retry data only when its pending send is confirmed or explicitly discarded. */
-  releaseResource(clientMessageId: string, discard = false): void {
-    const resource = this.resources.get(clientMessageId);
-    if (!resource) return;
-    this.resources.delete(clientMessageId);
-    if (resource.type === 'native-attachment') {
-      if (discard) resource.discard();
-      else resource.release();
-    }
-    if (resource.type === 'voice') URL.revokeObjectURL(resource.previewUrl);
-    if (resource.type === 'native-voice') resource.discard();
-    if (resource.type === 'web-gallery') {
-      for (const url of resource.previewUrls) URL.revokeObjectURL(url);
-    }
-    if (resource.type === 'native-gallery') {
-      if (discard) resource.discard();
-      else resource.release();
+  /** Canonical server messages can confirm multiple parts represented by one gallery row. */
+  async confirm(threadId: number, clientMessageIds: readonly string[]): Promise<void> {
+    for (const clientMessageId of new Set(clientMessageIds)) {
+      const scope = this.lifecycle.capture();
+      const task = await this.database.pendingSend(clientMessageId);
+      this.lifecycle.assertCurrent(scope);
+      if (task?.threadId === threadId) await this.remove(clientMessageId);
     }
   }
 
-  /** Drop the empty thread bucket once all optimistic sends have been confirmed or discarded. */
-  releaseIfEmpty(threadId: number): void {
-    if (this.byThread.get(threadId)?.length === 0)
-      this.byThread.delete(threadId);
+  /** Caller stops execution before removal and releases native files after the row is deleted. */
+  async remove(clientMessageId: string): Promise<void> {
+    const scope = this.lifecycle.capture();
+    const task = await this.database.pendingSend(clientMessageId);
+    this.lifecycle.assertCurrent(scope);
+    await this.database.removePendingSend(clientMessageId);
+    this.lifecycle.assertCurrent(scope);
+    if (task) this.releaseBrowserFiles(task);
+    this.projection.update(previous => {
+      const next = new Map(previous);
+      next.delete(clientMessageId);
+      return next;
+    });
   }
 
-  /** Session teardown hook; intentionally does not persist anything across a JavaScript restart. */
-  clear(): void {
-    for (const clientMessageId of [...this.resources.keys()])
-      this.releaseResource(clientMessageId, true);
-    this.byThread.clear();
-    this.nextPlaceholderId = -1;
+  private releaseBrowserFiles(task: PendingSendTask): void {
+    if (isTauri()) return;
+    const item = task.item;
+    const files = item.type === 'GALLERY' ? item.files : 'file' in item ? [item.file] : [];
+    for (const file of files) this.browserFiles.release(file.path);
+  }
+
+  /** Called by existing account cleanup after execution has been cancelled. */
+  async clear(): Promise<void> {
+    const scope = this.lifecycle.capture();
+    const tasks = await this.database.pendingSends();
+    this.lifecycle.assertCurrent(scope);
+    await this.database.clearPendingSends();
+    this.lifecycle.assertCurrent(scope);
+    for (const task of tasks) this.releaseBrowserFiles(task);
+    this.projection.set(new Map());
   }
 }

@@ -129,10 +129,8 @@ interface ChatMessageBase {
    *  succeeded and keeps the spinner visible while awaiting the push echo; `sent` is the echoed server row and
    *  renders the check; `failed` exposes retry. Absent on received messages. */
   status?: 'sending' | 'accepted' | 'sent' | 'failed';
-  /** Why a transient item exists — mirrors the playground insert orchestrator's `type` ('pending' = optimistic in
-   *  flight, 'fake' = debug insert). Absent on history messages. Used by the dev badge / debug UI only; the kernel
-   *  ignores it (a transient is a transient regardless of kind). */
-  kind?: 'pending' | 'fake';
+  /** Debug-only synthetic history row marker. Sending tasks never use a history row marker. */
+  kind?: 'fake';
 }
 
 export type AuthoredContentType =

@@ -34,6 +34,20 @@ import { ToastService } from '../../services/toast.service';
           </mat-list-item>
           <mat-list-item>
             <span matListItemTitle>{{
+              'settings.cachedAvatars' | transloco
+            }}</span>
+            <span matListItemMeta>{{ storageUsage(avatarBytes()) }}</span>
+          </mat-list-item>
+          <mat-list-item>
+            <span matListItemTitle>{{
+              'settings.temporaryUploads' | transloco
+            }}</span>
+            <span matListItemMeta>{{
+              storageUsage(temporaryUploadBytes())
+            }}</span>
+          </mat-list-item>
+          <mat-list-item>
+            <span matListItemTitle>{{
               'settings.clearChatCache' | transloco
             }}</span>
             <span matListItemLine class="hint">{{
@@ -73,12 +87,17 @@ export class SettingsDataComponent implements OnInit {
   readonly messageCount = signal(0);
   readonly mediaBytes = signal<number | null>(null);
 
-  readonly mediaUsage = () => {
-    const bytes = this.mediaBytes();
+  readonly avatarBytes = signal<number | null>(null);
+  readonly temporaryUploadBytes = signal<number | null>(null);
+
+  readonly mediaUsage = () => this.storageUsage(this.mediaBytes());
+
+  storageUsage(bytes: number | null): string {
+    if (this.loading()) return '…';
     if (bytes === null)
-      return this.transloco.translate('settings.browserMediaCacheUnavailable');
+      return this.transloco.translate('settings.cacheMeasurementUnavailable');
     return this.formatBytes(bytes);
-  };
+  }
 
   ngOnInit(): void {
     void this.refresh();
@@ -104,6 +123,8 @@ export class SettingsDataComponent implements OnInit {
       const stats = await this.localData.stats();
       this.messageCount.set(stats.messageCount);
       this.mediaBytes.set(stats.mediaBytes);
+      this.avatarBytes.set(stats.avatarBytes);
+      this.temporaryUploadBytes.set(stats.temporaryUploadBytes);
     } catch {
       this.toast.warn(this.transloco.translate('settings.cacheStatsFailed'));
     } finally {
@@ -117,10 +138,12 @@ export class SettingsDataComponent implements OnInit {
     try {
       await this.localData.clearChatCache();
       this.toast.info(this.transloco.translate('settings.chatCacheCleared'));
+      await this.refresh();
     } catch {
       this.toast.warn(
         this.transloco.translate('settings.clearChatCacheFailed'),
       );
+    } finally {
       this.clearing.set(false);
     }
   }

@@ -19,5 +19,6 @@ export async function deleteBrowserSessionCache(
   value: SessionCacheDescriptor,
 ): Promise<void> {
   const descriptor = restoreSessionCacheDescriptor(value);
+  await deleteDatabase(`${descriptor.indexedDbName}-pending-sends`);
   await deleteDatabase(descriptor.indexedDbName);
 }

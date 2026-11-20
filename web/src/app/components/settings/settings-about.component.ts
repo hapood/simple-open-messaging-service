@@ -28,7 +28,7 @@ import { personalQuotaStatus } from '../profile-editor/personal-quota-status';
       <header class="product-hero">
         <img class="product-mark" src="logo.svg" alt="" />
         <div>
-          <h2>SOMS</h2>
+          <h2>SOMS<span class="im-suffix">.im</span></h2>
           <p>{{ 'settings.aboutTagline' | transloco }}</p>
         </div>
         <span class="version-chip" (click)="debug.bumpGesture()"

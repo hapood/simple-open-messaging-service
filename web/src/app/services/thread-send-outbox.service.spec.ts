@@ -1,100 +1,150 @@
-import { describe, expect, it, vi } from 'vitest';
-import { ThreadSendOutbox } from './thread-send-outbox.service';
+import { BrowserSendFiles } from './browser-send-files.service';
+import { TestBed } from '@angular/core/testing';
+import { failedMatchingIntentIds, ThreadSendOutbox, type PendingSendTask, type SendingTask } from './thread-send-outbox.service';
+import { WebdbService } from './webdb.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 
-describe('ThreadSendOutbox', () => {
-  it('marks a send failed in its original thread after the view is gone', () => {
-    const outbox = new ThreadSendOutbox();
-    const pending = outbox.forThread(42);
-    pending.push({
-      id: -1,
-      clientMessageId: 'cid',
-      data: { type: 'msg', status: 'sending', kind: 'pending' },
-    } as never);
-    expect(outbox.failPending('cid')).toBe(true);
-    expect(outbox.forThread(42)[0].data.status).toBe('failed');
-    expect(outbox.failPending('other')).toBe(false);
+const task: PendingSendTask = {
+  clientMessageId: 'cid', threadId: 7,
+  item: { type: 'LINK', generationId: 'original-generation' },
+};
+
+describe('durable sending task projection', () => {
+  let outbox: ThreadSendOutbox;
+  let lifecycle: SessionLifecycleService;
+  let database: {
+    enqueuePendingSend: ReturnType<typeof vi.fn>;
+    pendingSends: ReturnType<typeof vi.fn>;
+    pendingSend: ReturnType<typeof vi.fn>;
+    removePendingSend: ReturnType<typeof vi.fn>;
+    clearPendingSends: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(() => {
+    database = {
+      enqueuePendingSend: vi.fn().mockResolvedValue(undefined),
+      pendingSends: vi.fn().mockResolvedValue([task]),
+      pendingSend: vi.fn().mockResolvedValue(task),
+      removePendingSend: vi.fn().mockResolvedValue(undefined),
+      clearPendingSends: vi.fn().mockResolvedValue(undefined),
+    };
+    TestBed.configureTestingModule({ providers: [{ provide: WebdbService, useValue: database }] });
+    lifecycle = TestBed.inject(SessionLifecycleService);
+    outbox = TestBed.inject(ThreadSendOutbox);
   });
 
-  it('discards an unmounted native voice and its retained recording', () => {
-    const outbox = new ThreadSendOutbox();
-    const discard = vi.fn();
-    outbox.forThread(42).push({
-      id: -1,
-      clientMessageId: 'cid',
-      data: { type: 'msg', status: 'failed' },
-    } as never);
-    outbox.retainResource('cid', {
-      type: 'native-voice',
-      threadId: 42,
-      size: 512,
-      discard,
-    });
-    expect(outbox.discardPending('cid')).toBe(42);
-    expect(outbox.resource('cid')).toBeUndefined();
-    expect(discard).toHaveBeenCalledOnce();
-  });
-  it('retains retry resources across thread bucket release and disposes them explicitly', () => {
-    const outbox = new ThreadSendOutbox();
-    const dispose = vi.fn().mockName('dispose');
-
-    outbox.retainResource('cid-native', {
-      type: 'native-attachment',
-      partId: 'part-native',
-      selection: {} as never,
-      release: dispose,
-      discard: dispose,
-    });
-    outbox.releaseIfEmpty(42);
-
-    expect(outbox.resource('cid-native')).toBeDefined();
-    expect(dispose).not.toHaveBeenCalled();
-
-    outbox.releaseResource('cid-native');
-    expect(outbox.resource('cid-native')).toBeUndefined();
-    expect(dispose).toHaveBeenCalledTimes(1);
+  it('publishes only after durable admission completes', async () => {
+    let commit!: () => void;
+    database.enqueuePendingSend.mockReturnValue(new Promise<void>(resolve => { commit = resolve; }));
+    const pending = outbox.enqueue(task);
+    expect(outbox.tasks()).toEqual([]);
+    commit();
+    await pending;
+    expect(outbox.tasks()).toEqual([{ task, execution: { kind: 'message', phase: 'sending' } }]);
+    expect(database.enqueuePendingSend).toHaveBeenCalledWith(task);
   });
 
-  it('clear disposes every retained native resource', () => {
-    const outbox = new ThreadSendOutbox();
-    const first = vi.fn().mockName('firstDispose');
-    const second = vi.fn().mockName('secondDispose');
-    outbox.retainResource('cid-1', {
-      type: 'native-attachment',
-      partId: 'part-1',
-      selection: {} as never,
-      release: vi.fn().mockName('firstRelease'),
-      discard: first,
-    });
-    outbox.retainResource('cid-2', {
-      type: 'native-attachment',
-      partId: 'part-2',
-      selection: {} as never,
-      release: vi.fn().mockName('secondRelease'),
-      discard: second,
-    });
-
-    outbox.clear();
-
-    expect(first).toHaveBeenCalledTimes(1);
-    expect(second).toHaveBeenCalledTimes(1);
-    expect(outbox.resource('cid-1')).toBeUndefined();
-    expect(outbox.resource('cid-2')).toBeUndefined();
+  it('admits attachment metadata and original upload identity as one complete intent', async () => {
+    const attachment: PendingSendTask = {
+      clientMessageId: 'attachment', threadId: 7,
+      item: { type: 'FILE', file: { partId: 'original-part', path: 'runtime-file', size: 10, name: 'file.bin', mimeType: 'application/x-custom' } },
+    };
+    await outbox.enqueue(attachment);
+    expect(database.enqueuePendingSend).toHaveBeenCalledWith(attachment);
+    expect(outbox.get('attachment')).toEqual({ task: attachment, execution: {
+      kind: 'attachment', phase: 'sending', loaded: 0, total: 0, startedAt: 0, failure: null,
+    } });
   });
 
-  it('releases every preview owned by an atomic web gallery', () => {
-    const outbox = new ThreadSendOutbox();
-    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockReturnValue(undefined);
-    outbox.retainResource('cid-gallery', {
-      type: 'web-gallery',
-      parts: [],
-      previewUrls: ['blob:first', 'blob:second'],
-    });
+  it('does not create a task when persistence fails', async () => {
+    database.enqueuePendingSend.mockRejectedValue(new Error('quota'));
+    await expect(outbox.enqueue(task)).rejects.toThrow('quota');
+    expect(outbox.tasks()).toEqual([]);
+  });
 
-    outbox.releaseResource('cid-gallery');
+  it('restores remaining rows as failed without writing or executing them', async () => {
+    await outbox.restore();
+    expect(outbox.forThread(7)).toEqual([{ task, execution: { kind: 'message', phase: 'failed' } }]);
+    expect(outbox.forThread(8)).toEqual([]);
+    expect(database.enqueuePendingSend).not.toHaveBeenCalled();
+    expect(outbox.failures()).toHaveLength(1);
+  });
 
-    expect(vi.mocked(revoke).mock.calls).toEqual([
-      ['blob:first'],
-      ['blob:second'],
-    ]);
+  it('does not reset live execution on repeated restore but reloads after explicit recreation', async () => {
+    await outbox.restore();
+    outbox.setPhase('cid', 'sending');
+    await outbox.restore();
+    expect(database.pendingSends).toHaveBeenCalledTimes(1);
+    expect(outbox.get('cid')?.execution.phase).toBe('sending');
+    database.pendingSends.mockResolvedValue([]);
+    await outbox.restore(true);
+    expect(outbox.tasks()).toEqual([]);
+  });
+
+  it('retries the database request rather than a display-card snapshot', async () => {
+    await outbox.restore();
+    expect(await outbox.retry('cid')).toEqual(task);
+    expect(database.pendingSend).toHaveBeenCalledWith('cid');
+    expect(outbox.get('cid')?.execution.phase).toBe('sending');
+    expect(database.enqueuePendingSend).not.toHaveBeenCalled();
+  });
+
+  it('confirms each identity once and does not delete another thread task', async () => {
+    await outbox.restore();
+    database.pendingSend.mockImplementation(async (cid: string) => cid === 'cid' ? task : { ...task, clientMessageId: cid, threadId: 8 });
+    await outbox.confirm(7, ['cid', 'cid', 'other']);
+    expect(database.removePendingSend).toHaveBeenCalledExactlyOnceWith('cid');
+    expect(outbox.tasks()).toEqual([]);
+  });
+
+  it('releases browser files only after their durable record is removed', async () => {
+    const files = TestBed.inject(BrowserSendFiles);
+    const descriptor = files.retain(new File(['data'], 'file.bin'), 'part');
+    const attachment: PendingSendTask = { clientMessageId: 'file', threadId: 7, item: { type: 'FILE', file: descriptor } };
+    await outbox.enqueue(attachment);
+    database.pendingSend.mockResolvedValue(attachment);
+    database.removePendingSend.mockRejectedValueOnce(new Error('busy'));
+    await expect(outbox.remove('file')).rejects.toThrow('busy');
+    expect(files.resolve(descriptor).size).toBe(4);
+    await outbox.remove('file');
+    expect(() => files.resolve(descriptor)).toThrow('Please cancel and upload again');
+  });
+
+  it('releases unreferenced browser files after explicit full database recreation', async () => {
+    const files = TestBed.inject(BrowserSendFiles);
+    const descriptor = files.retain(new File(['data'], 'file.bin'), 'part');
+    await outbox.enqueue({ clientMessageId: 'file', threadId: 7, item: { type: 'FILE', file: descriptor } });
+    database.pendingSends.mockResolvedValue([]);
+    await outbox.restore(true);
+    expect(outbox.tasks()).toEqual([]);
+    expect(files.bytes()).toBe(0);
+    expect(() => files.resolve(descriptor)).toThrow('Please cancel and upload again');
+  });
+
+  it('retains the projection if durable deletion fails', async () => {
+    await outbox.restore();
+    database.removePendingSend.mockRejectedValueOnce(new Error('busy'));
+    await expect(outbox.remove('cid')).rejects.toThrow('busy');
+    expect(outbox.get('cid')).toBeDefined();
+    await outbox.remove('cid');
+    expect(outbox.tasks()).toEqual([]);
+  });
+
+  it('does not publish an old admission after session invalidation', async () => {
+    let commit!: () => void;
+    database.enqueuePendingSend.mockReturnValue(new Promise<void>(resolve => { commit = resolve; }));
+    const pending = outbox.enqueue(task);
+    lifecycle.invalidateSession();
+    commit();
+    await expect(pending).rejects.toThrow();
+    expect(outbox.tasks()).toEqual([]);
+  });
+
+  it('lets history retire only failed leftovers with a matching client message ID', () => {
+    const rows: SendingTask[] = [
+      { task, execution: { kind: 'message', phase: 'sending' } },
+      { task: { ...task, clientMessageId: 'failed' }, execution: { kind: 'message', phase: 'failed' } },
+    ];
+    expect(failedMatchingIntentIds(rows, ['cid', 'failed', 'other'])).toEqual(['failed']);
   });
 });

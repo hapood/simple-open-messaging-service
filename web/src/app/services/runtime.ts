@@ -283,32 +283,17 @@ declare global {
     SomsUpload?: {
       pickPhotos: (requestId: string) => void;
       pickFile: (requestId: string) => void;
-      upload: (
-        uploadId: string,
-        attemptId: string,
-        kind: string,
-        clientMessageId: string | null,
-        fieldsJson: string | null,
-      ) => void;
-      cancel: (uploadId: string, attemptId: string) => void;
-      release: (uploadId: string) => void;
-      discard: (uploadId: string) => void;
-      getState: (uploadId: string) => string;
-      finish?: (
-        uploadId: string,
-        attemptId: string,
-        succeeded: boolean,
-      ) => void;
     };
-    /** Android public-file bridge. Rust owns authenticated download + private cache; Kotlin only copies
-     *  that verified app-cache file into MediaStore so it becomes visible in Gallery/Downloads. */
+    /** Android destination bridge. Kotlin opens the album or document target; Rust streams into it. */
     SomsMedia?: {
       save: (
         requestId: string,
-        cachePath: string,
+        mediaPath: string,
         filename: string,
         mimeType: string,
+        taskId: string,
       ) => string;
+      deleteSaved?: (uri: string) => void;
     };
     /** Android Media3 chat-video bridge. Only canonical CAS paths are accepted natively. */
     SomsVideo?: {
@@ -319,33 +304,13 @@ declare global {
       requestId: string;
       success: boolean;
       cancelled?: boolean;
+      destination?: string;
     }) => void;
     __SOMS_UPLOAD_PICKED__?: (payload: {
       requestId: string;
       items: import('./native-upload.service').NativeUploadSelection[];
     }) => void;
     __SOMS_UPLOAD_INSPECTING__?: (payload: { requestId: string }) => void;
-    __SOMS_UPLOAD_PROGRESS__?: (payload: {
-      uploadId: string;
-      attemptId: string;
-      loaded: number;
-      total: number;
-    }) => void;
-    __SOMS_UPLOAD_COMPLETED__?: (payload: {
-      uploadId: string;
-      attemptId: string;
-      response: unknown;
-    }) => void;
-    __SOMS_UPLOAD_FAILED__?: (payload: {
-      uploadId: string;
-      attemptId: string;
-      category: import('./native-upload.service').NativeUploadErrorCategory;
-      message: string;
-      retryable: boolean;
-      status?: number;
-      code?: number;
-      retryAfter?: number;
-    }) => void;
     /** Native media adapter→JS push: the Rust call runtime's current snapshot
      *  ({phase, callSid, …, mediaState, startedAt, muted}) whenever a transition the native layer owns
      *  fires (media connect/disconnect/failed, mute, phase changes). Installed by {@link CallEventService};

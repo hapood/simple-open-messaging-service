@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { NativeUploadSelection } from '../../services/native-upload.service';
 import { ThreadPasteQueueController } from './thread-paste-queue.controller';
 
-function native(uploadId: string): NativeUploadSelection {
+function native(partId: string): NativeUploadSelection {
   return {
-    uploadId,
-    name: `${uploadId}.jpg`,
+    partId,
+    name: `${partId}.jpg`,
     size: 10,
     kind: 'image',
   } as NativeUploadSelection;

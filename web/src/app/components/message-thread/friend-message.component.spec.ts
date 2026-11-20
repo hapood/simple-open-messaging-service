@@ -1,4 +1,4 @@
-import { NEVER, of, Subject } from 'rxjs';
+import { firstValueFrom, NEVER, of, Subject } from 'rxjs';
 import {
   ChatBoxScroller,
   type CbItem,
@@ -18,6 +18,33 @@ import { ThreadScrollController } from './thread-scroll.controller';
 import { BusinessCode } from '../../services/biz-code';
 
 describe('MessageThreadComponent binding lifecycle', () => {
+  it('scopes task actions to the opening binding, including reopening the same thread', async () => {
+    const component = Object.create(MessageThreadComponent.prototype);
+    const lifecycle = new ChatSurfaceLifecycle();
+    const popupDlg = vi.fn();
+    const cancelPending = vi.fn(async () => {});
+    const retrySend = vi.fn(async () => {});
+    Object.assign(component, { lifecycle, route: { popupDlg }, cancelPending, retrySend });
+    component.openUploadDetails();
+    expect(popupDlg).not.toHaveBeenCalled();
+    lifecycle.bind(6);
+    component.openUploadDetails();
+    const [, inputs, , options] = popupDlg.mock.calls[0];
+    expect(inputs.threadId).toBe(6);
+    expect(options).toEqual({ scopeThreadId: 6 });
+    await inputs.messageActions.cancel('first');
+    await inputs.messageActions.retry('first');
+    expect(cancelPending).toHaveBeenCalledExactlyOnceWith('first');
+    expect(retrySend).toHaveBeenCalledExactlyOnceWith('first');
+    lifecycle.unbind();
+    lifecycle.bind(6);
+    await inputs.messageActions.cancel('stale');
+    await inputs.messageActions.retry('stale');
+    expect(cancelPending).toHaveBeenCalledTimes(1);
+    expect(retrySend).toHaveBeenCalledTimes(1);
+    lifecycle.destroy();
+  });
+
   function pane(blocked = false) {
     const thread = signal(
       createP2PConversation({
@@ -284,7 +311,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     const scroller = new ChatBoxScroller<ChatItemData>({
       viewport,
       content,
-      config: { deferInitFill: true, followBottom: false },
+      config: { followBottom: false },
       hooks: {
         createItem: () => {
           const el = document.createElement('div');
@@ -293,7 +320,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
             el,
             update: () => {},
             destroy: () => {},
-            onHeightChange: () => () => {},
           };
         },
       },
@@ -303,7 +329,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     component.scroller = scroller;
     let firstRead = true;
     const source = () => ({
-      init: async () => {
+      loadWindow: async () => {
         if (!firstRead) return [];
         firstRead = false;
         // The body has been read, but the DOM has not mounted and misses this signal.
@@ -312,13 +338,14 @@ describe('MessageThreadComponent binding lifecycle', () => {
       },
       requestOlder: () => of({ kind: 'boundary' as const }),
       requestNewer: () => NEVER,
+      requestMessagesForEmptyWindow: () => NEVER,
       getPending: () => [],
       pushLive: () => {},
       destroy: () => {},
     });
     try {
       scroller.bind(source());
-      await scroller.init();
+      await scroller.openWindow({ kind: 'latest' });
       await Promise.resolve();
       await Promise.resolve();
       expect(getMessageDeletions).toHaveBeenCalledExactlyOnceWith(6, [10]);
@@ -333,7 +360,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
       expect(component.messageInteraction.removeMessage).not.toHaveBeenCalled();
       scroller.unbind();
       scroller.bind(source());
-      await scroller.init();
+      await scroller.openWindow({ kind: 'latest' });
       expect(scroller.getInfo().mounted).toBe(0);
       expect(deletedLive$.observed).toBe(false);
     } finally {
@@ -444,7 +471,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
       component.convList.latestSeq = () => latest();
       const refreshLatest = vi.fn();
       component.source = { refreshLatest };
-      component.scroller.scrollToBottom = vi.fn();
+      component.scroller.goToLatest = vi.fn();
       component.bind();
       thread.update((value) => ({ ...value, messageEndSeq: 10 }));
       TestBed.runInInjectionContext(() =>
@@ -462,7 +489,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
       await TestBed.inject(ApplicationRef).whenStable();
       expect(refreshLatest).toHaveBeenLastCalledWith(13);
       expect(component.initScroller).toHaveBeenCalledTimes(1);
-      expect(component.scroller.scrollToBottom).not.toHaveBeenCalled();
+      expect(component.scroller.goToLatest).not.toHaveBeenCalled();
     } finally {
       TestBed.resetTestingModule();
     }
@@ -506,13 +533,20 @@ describe('MessageThreadComponent binding lifecycle', () => {
         resolve = yes;
         reject = no;
       });
-      const source = { getPending: () => [], finishLocalInit: vi.fn() };
+      const source = {
+        prepareEntry: async () => ({
+          lastReadSeq: 0,
+          hasCachedMessages: false,
+          hasCachedHead: false,
+        }),
+        getPending: () => [],
+        finishLocalInit: vi.fn(),
+      };
       const deleted = new Subject();
       const scroller = {
         bind: vi.fn(),
-        init: () => pending,
+        openWindow: vi.fn(() => pending),
         unbind: vi.fn(),
-        backfillOlder: vi.fn(() => Promise.resolve()),
       };
       Object.assign(component, {
         scroller,
@@ -520,7 +554,10 @@ describe('MessageThreadComponent binding lifecycle', () => {
         optimistic: { bind: vi.fn(), reset: vi.fn() },
         transferStackRef: () => undefined,
         contentRef: () => ({ nativeElement: { querySelector: () => null } }),
-        convList: { previewUnreadEntryBoundary: () => null },
+        convList: {
+          entryReadSeq: () => 0,
+          captureUnreadEntryBoundary: () => null,
+        },
         scrollState: { open: vi.fn(), reset: vi.fn() },
         cancelPaste: vi.fn(),
         nativeDraft: { reset: vi.fn() },
@@ -530,6 +567,10 @@ describe('MessageThreadComponent binding lifecycle', () => {
       });
       component.bind();
       expect(deleted.observed).toBe(true);
+      expect(component.ready.emit).toHaveBeenCalledExactlyOnceWith(6);
+      expect(component.isWarm()).toBe(true);
+      component.ready.emit.mockClear();
+      await vi.waitFor(() => expect(scroller.openWindow).toHaveBeenCalled());
       component.unbind();
       expect(deleted.observed).toBe(false);
       expect(scroller.unbind).toHaveBeenCalled();
@@ -542,7 +583,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
       expect(component.initialLoadFailed()).toBe(false);
       expect(component.ready.emit).not.toHaveBeenCalled();
       expect(source.finishLocalInit).not.toHaveBeenCalled();
-      expect(scroller.backfillOlder).not.toHaveBeenCalled();
     },
   );
 
@@ -692,11 +732,51 @@ describe('MessageThreadComponent binding lifecycle', () => {
     );
   });
 
-  it('does not restart a binding that is already loading', () => {
+  it('announces shell readiness before kernel setup and honors synchronous unbind', () => {
+    const { component } = pane();
+    component.ready.emit.mockImplementation(() => {
+      expect(component.initScroller).not.toHaveBeenCalled();
+      component.unbind();
+    });
+    component.bind();
+    expect(component.ready.emit).toHaveBeenCalledExactlyOnceWith(6);
+    expect(component.initScroller).not.toHaveBeenCalled();
+    expect(component.lifecycle.binding).toBeUndefined();
+  });
+
+  it('reuses a loading shell without restarting history on repeated bind', () => {
     const { component } = pane();
     component.bind();
+    expect(component.ready.emit).toHaveBeenCalledExactlyOnceWith(6);
+    expect(component.presentation()).toBe('loading');
+    expect(component.isWarm()).toBe(true);
     component.bind();
+    expect(component.ready.emit).toHaveBeenCalledTimes(2);
     expect(component.initScroller).toHaveBeenCalledTimes(1);
+  });
+
+  it('activates only the selected foreground shell while history is loading', () => {
+    const { component, lifecycle } = pane();
+    const foreground = signal(false);
+    const openThreadId = signal(6);
+    Object.assign(component, {
+      nativeComposerActive: foreground,
+      convList: { openThreadId },
+    });
+    component.bind();
+    const binding = lifecycle.binding;
+    component.synchronizeForeground();
+    expect(lifecycle.state()).toMatchObject({ phase: 'bound', foreground: false });
+    foreground.set(true);
+    component.synchronizeForeground();
+    expect(component.presentation()).toBe('loading');
+    expect(lifecycle.state()).toMatchObject({ phase: 'bound', foreground: true });
+    expect(component.kernelReady).toBe(false);
+    expect(component.unreadDividerReady()).toBe(false);
+    openThreadId.set(7);
+    component.synchronizeForeground();
+    expect(lifecycle.state()).toMatchObject({ phase: 'bound', foreground: false });
+    expect(lifecycle.binding).toBe(binding);
   });
 
   it('teardown cancels the re-anchor timer and releases the deletion subscription', () => {
@@ -739,8 +819,16 @@ describe('MessageThreadComponent binding lifecycle', () => {
       stickyOverlays: () => undefined,
       optimistic: { reset: vi.fn() },
     });
-    const first = component.replaceMessageWindow({ startMsgId: 10 });
-    const second = component.replaceMessageWindow({ startMsgId: 20 });
+    const first = component.replaceMessageWindow({
+      kind: 'message',
+      anchor: 'center',
+      messageId: 10,
+    });
+    const second = component.replaceMessageWindow({
+      kind: 'message',
+      anchor: 'center',
+      messageId: 20,
+    });
     expect(await first).toBe(false);
     expect(component.windowJumpState()).toBe('loading');
     expect(lifecycle.binding).toBe(binding);
@@ -803,6 +891,39 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(component.scroller).toBe(kernel);
   });
 
+  it.each([
+    { cached: true, read: 80, expected: { kind: 'message', messageId: 80, anchor: 'center' } },
+    { cached: true, read: 0, expected: { kind: 'start' } },
+    { cached: false, read: 0, expected: { kind: 'start' } },
+    {
+      cached: false,
+      read: 80,
+      expected: { kind: 'message', messageId: 80, anchor: 'center' },
+    },
+  ])(
+    'selects ordinary entry from cache=$cached and read=$read',
+    async ({ cached, read, expected }) => {
+      const { component } = pane();
+      const source = {
+        prepareEntry: vi
+          .fn()
+          .mockResolvedValue({
+            lastReadSeq: read,
+            hasCachedMessages: cached,
+            hasCachedHead: cached,
+          }),
+      };
+      const scroller = { openWindow: vi.fn().mockResolvedValue(undefined) };
+      await firstValueFrom(
+        component.loadMessageWindow(source, scroller, {
+          kind: 'openConversation',
+        }),
+      );
+      expect(source.prepareEntry).toHaveBeenCalledOnce();
+      expect(scroller.openWindow).toHaveBeenCalledExactlyOnceWith(expected);
+    },
+  );
+
   it('presents initialization failure as a bound retry surface', async () => {
     const { component, thread, lifecycle } = pane();
     delete component.initScroller;
@@ -811,13 +932,24 @@ describe('MessageThreadComponent binding lifecycle', () => {
     Object.assign(component, {
       threadAdapter: {
         deletedLive$: new Subject(),
-        createSource: () => ({ getPending: () => [], destroy: vi.fn() }),
+        createSource: () => ({
+          prepareEntry: async () => ({
+            lastReadSeq: 0,
+            hasCachedMessages: false,
+            hasCachedHead: false,
+          }),
+          getPending: () => [],
+          destroy: vi.fn(),
+        }),
       },
-      scroller: { bind: vi.fn(), init: () => Promise.reject(error) },
+      scroller: { bind: vi.fn(), openWindow: () => Promise.reject(error) },
       optimistic: { bind: vi.fn() },
       transferStackRef: () => undefined,
       contentRef: () => undefined,
-      convList: { previewUnreadEntryBoundary: () => undefined },
+      convList: {
+        entryReadSeq: () => 0,
+        captureUnreadEntryBoundary: () => undefined,
+      },
       scrollState: { open: vi.fn(), firstUnreadSeq: null },
     });
     lifecycle.bind(6);
@@ -833,11 +965,13 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(component.closeMessageWindow).toHaveBeenCalledOnce();
     expect(component.openMessageWindow).toHaveBeenCalledExactlyOnceWith(
       component.userMsgTrd(),
+      { kind: 'openConversation' },
     );
     expect(lifecycle.binding).toBe(binding);
     expect(binding?.signal.aborted).toBe(false);
     expect(component.initialLoading()).toBe(true);
     expect(component.initialLoadFailed()).toBe(false);
+    expect(component.presentation()).toBe('loading');
     warning.mockRestore();
   });
 });

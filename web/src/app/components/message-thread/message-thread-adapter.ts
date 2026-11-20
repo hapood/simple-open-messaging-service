@@ -1,15 +1,14 @@
 import { inject, Injectable, InjectionToken } from '@angular/core';
-import { firstValueFrom, timeout, type Observable } from 'rxjs';
+import { firstValueFrom, type Observable } from 'rxjs';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type {
   CbConfig,
   ScrollerApi,
 } from '../../lib/chat-box/chat-box-scroller';
-import type { CbSource } from '../../lib/chat-box/cb-source';
+import type { CbDemand, CbSource } from '../../lib/chat-box/cb-source';
 import type { ChatItemData, MediaStatus } from '../message-cards/chat-item';
 import type {
   ConversationItem,
-  ContactCardSendTarget,
   Message,
   StandardResponse,
 } from '../../services/model';
@@ -22,13 +21,14 @@ import { HttpItemSource } from './http-item-source';
 import type {
   UploadPartIdentity,
   UploadProgressHandler,
-} from '../../services/message.service';
-import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
+} from '../../services/upload-transport';
+import type { StoredNonMediaSendContent } from '../../services/send-outbox-storage';
 import type {
   MountedMessageDeletionStore,
   MessageDeletionFact,
 } from './mounted-message-deletion';
 import type { HistoryAnchor } from '../../services/history-anchor';
+import type { PreparedMessageEntry } from './message-entry';
 
 export interface MessageThreadLiveCallbacks {
   onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
@@ -42,6 +42,9 @@ export interface MessageThreadLiveCallbacks {
 
 /** The complete source contract consumed by the production thread shell. */
 export interface MessageThreadSource extends CbSource<ChatItemData> {
+  prepareEntry(): Promise<PreparedMessageEntry>;
+  /** One finite newer page after the frozen entry cursor, including successful empty results. */
+  requestEntrySuffix(count: number): CbDemand<ChatItemData>;
   /** Optional for alternate offline/demo sources; production resolves through the repository. */
   resolveHistoryAnchor?(
     anchor: HistoryAnchor,
@@ -53,16 +56,6 @@ export interface MessageThreadSource extends CbSource<ChatItemData> {
       import('../message-cards/chat-item').ChatMsgData['quote']
     >,
   ): () => void;
-  addPending(item: CbItem<ChatItemData>): void;
-  pendingByClientMessageId(
-    clientMessageId: string,
-  ): CbItem<ChatItemData> | undefined;
-  failPending(clientMessageId: string): boolean;
-  retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined;
-  discardPending(clientMessageId: string): boolean;
-  markPendingAccepted(clientMessageId: string): boolean;
-  acceptedPending?(): CbItem<ChatItemData>[];
-  restoreMediaStages?(): Promise<void>;
   finishLocalInit?(
     liveLatestSeq: number | undefined,
     persistedLatestSeq?: number | null,
@@ -70,22 +63,6 @@ export interface MessageThreadSource extends CbSource<ChatItemData> {
   pauseLiveUpdates?(): void;
   resumeLiveUpdates?(latestSeq?: number): void;
   refreshLatest?(latestSeq: number): void;
-}
-
-export interface SendTextRequest {
-  threadId: number;
-  content: string;
-  clientMessageId: string;
-  optimistic: CbItem<ChatItemData>;
-  source: MessageThreadSource;
-}
-
-export interface SendContactRequest {
-  threadId: number;
-  target: ContactCardSendTarget;
-  clientMessageId: string;
-  optimistic: CbItem<ChatItemData>;
-  source: MessageThreadSource;
 }
 
 export interface ForwardMessagesRequest {
@@ -107,17 +84,6 @@ export interface StageMediaRequest {
   contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
   clientMessageId: string;
   fileCnt?: number;
-  retry?: boolean;
-}
-
-export interface MediaStageState {
-  clientMessageId: string;
-  contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
-  content: string;
-  status: 'pending' | 'failed';
-  failReason: string | null;
-  createdAt: number;
-  updatedAt: number;
 }
 
 /** Runtime boundary for the production chatbox. Alternate hosts replace data and transport, never its UI. */
@@ -132,22 +98,11 @@ export abstract class MessageThreadAdapter
 
   abstract createSource(
     conversation: ConversationItem,
+    entryReadSeq: number,
     callbacks: MessageThreadLiveCallbacks,
   ): MessageThreadSource;
 
-  abstract sendText(
-    request: SendTextRequest,
-  ): Promise<StandardResponse<unknown>>;
-
-  abstract sendContact(
-    request: SendContactRequest,
-  ): Promise<StandardResponse<unknown>>;
-
-  abstract sendLink(request: {
-    threadId: number;
-    generationId: string;
-    clientMessageId: string;
-  }): Promise<StandardResponse<unknown>>;
+  abstract sendIntent(task: { clientMessageId: string; threadId: number; item: StoredNonMediaSendContent }): Promise<StandardResponse<unknown>>;
 
   abstract searchMessages(request: SearchMessagesRequest): Observable<
     StandardResponse<{ seq: number; createdAt: number }[]> & {
@@ -187,10 +142,6 @@ export abstract class MessageThreadAdapter
   abstract stageMedia(
     request: StageMediaRequest,
   ): Observable<StandardResponse<{ clientMessageId: string }>>;
-
-  abstract queryMediaStages(
-    threadId: number,
-  ): Observable<StandardResponse<MediaStageState[]>>;
 
   abstract cancelUploadBatch(
     clientMessageId: string,
@@ -245,10 +196,12 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
 
   override createSource(
     conversation: ConversationItem,
+    entryReadSeq: number,
     callbacks: MessageThreadLiveCallbacks,
   ): MessageThreadSource {
     return new HttpItemSource(
       conversation,
+      entryReadSeq,
       this.repository,
       this.users,
       this.outbox,
@@ -258,50 +211,8 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
     );
   }
 
-  override sendText(
-    request: SendTextRequest,
-  ): Promise<StandardResponse<unknown>> {
-    return firstValueFrom(
-      this.messages
-        .sendMessage({
-          threadId: request.threadId,
-          content: request.content,
-          contentType: 'PURE_TEXT',
-          clientMessageId: request.clientMessageId,
-        })
-        .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
-    );
-  }
-
-  override sendContact(
-    request: SendContactRequest,
-  ): Promise<StandardResponse<unknown>> {
-    return firstValueFrom(
-      this.messages
-        .sendContactCard({
-          threadId: request.threadId,
-          target: request.target,
-          clientMessageId: request.clientMessageId,
-        })
-        .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
-    );
-  }
-
-  override sendLink(request: {
-    threadId: number;
-    generationId: string;
-    clientMessageId: string;
-  }): Promise<StandardResponse<unknown>> {
-    return firstValueFrom(
-      this.messages
-        .sendMessage({
-          threadId: request.threadId,
-          content: request.generationId,
-          contentType: 'LINK',
-          clientMessageId: request.clientMessageId,
-        })
-        .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
-    );
+  override sendIntent(task: { clientMessageId: string; threadId: number; item: StoredNonMediaSendContent }): Promise<StandardResponse<unknown>> {
+    return firstValueFrom(this.messages.sendIntent(task));
   }
 
   override searchMessages(request: SearchMessagesRequest) {
@@ -317,7 +228,11 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
   }
 
   override sendForward(request: ForwardMessagesRequest) {
-    return this.messages.sendForward(request);
+    return this.messages.sendIntent({
+      clientMessageId: request.clientMessageId,
+      threadId: request.threadId,
+      item: { type: 'FORWARD', sourceMessages: [...request.sourceMessages], mode: request.mode },
+    });
   }
 
   override setBlocked(request: { threadId: number; blocked: boolean }) {
@@ -334,10 +249,6 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
 
   override stageMedia(request: StageMediaRequest) {
     return this.messages.sendMedia(request);
-  }
-
-  override queryMediaStages(threadId: number) {
-    return this.messages.queryMediaStages(threadId);
   }
 
   override cancelUploadBatch(clientMessageId: string) {

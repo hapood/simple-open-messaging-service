@@ -362,6 +362,11 @@ pub(crate) enum NativeHistoryDemand {
     LocalLatest {
         count: i64,
     },
+    LocalAround {
+        anchor: i64,
+        older_count: i64,
+        newer_count: i64,
+    },
     Latest {
         count: i64,
         known_newest_seq: Option<i64>,
@@ -949,7 +954,28 @@ async fn bootstrap_message_bounds(
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum HistoryReadMode {
+    CacheOnly,
+    Fill,
+}
+
 async fn walk_native_history(
+    intent: &mut NativeHistoryIntent,
+    direction: HistoryDirection,
+    cursor: i64,
+    count: i64,
+    lower: i64,
+    upper: i64,
+    known_newest: Option<i64>,
+) -> Result<DirectionalWalk, String> {
+    walk_native_history_with_mode(
+        intent, direction, cursor, count, lower, upper, known_newest,
+        HistoryReadMode::Fill,
+    ).await
+}
+
+async fn walk_native_history_with_mode(
     intent: &mut NativeHistoryIntent,
     direction: HistoryDirection,
     mut cursor: i64,
@@ -957,6 +983,7 @@ async fn walk_native_history(
     mut lower: i64,
     mut upper: i64,
     known_newest: Option<i64>,
+    mode: HistoryReadMode,
 ) -> Result<DirectionalWalk, String> {
     // A gap item belongs to the left-open/right-closed source page containing its inclusive right
     // endpoint. In particular, the older leg of an around read must skip a gap that crosses the anchor;
@@ -1044,6 +1071,12 @@ async fn walk_native_history(
                     continue;
                 }
             }
+        }
+
+        // Return the connected projection at an unknown cache interval. Its
+        // edge remains open for the kernel's ordinary directional demand.
+        if mode == HistoryReadMode::CacheOnly {
+            return Ok(DirectionalWalk { items, has_more: true });
         }
 
         let optimistic_boundary = match direction {
@@ -1290,6 +1323,33 @@ impl NativeHistoryIntent {
             }
         };
         let result = match demand {
+            NativeHistoryDemand::LocalAround {
+                anchor,
+                older_count,
+                newer_count,
+            } => {
+                if anchor < 0 || anchor == i64::MAX {
+                    return Err("invalid local history anchor".to_string());
+                }
+                let older_count = validate_count(older_count)?;
+                let newer_count = validate_count(newer_count)?;
+                let mut older = walk_native_history_with_mode(
+                    &mut self, HistoryDirection::Older, anchor + 1, older_count,
+                    0, i64::MAX, None, HistoryReadMode::CacheOnly,
+                ).await?;
+                let newer = walk_native_history_with_mode(
+                    &mut self, HistoryDirection::Newer, anchor, newer_count,
+                    0, i64::MAX, None, HistoryReadMode::CacheOnly,
+                ).await?;
+                older.items.reverse();
+                older.items.extend(newer.items);
+                Ok(NativeHistoryResult {
+                    items: older.items,
+                    has_older: older.has_more,
+                    has_newer: newer.has_more,
+                    failed: false,
+                })
+            }
             NativeHistoryDemand::LocalLatest { count } => {
                 let count = validate_count(count)?;
                 let mut messages = query_native_messages(

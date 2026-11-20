@@ -641,7 +641,7 @@ export class AuthService {
     const browser = this.requireBrowserSession();
     this.clearLocalSessionState();
     this.clearPresenceCookie();
-    this.sendOutbox.clear();
+    await this.sendOutbox.clear();
     const ending = browser.end();
     await Promise.all([
       ending,
@@ -672,7 +672,7 @@ export class AuthService {
   }
 
   private async performBrowserLogout(): Promise<void> {
-    this.sendOutbox.clear();
+    const cleanup = this.sendOutbox.clear();
     const completion = await this.requireBrowserSession().logoutWithDecision(
       (signal) => sessionRequest(
         this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, {}, {
@@ -683,6 +683,7 @@ export class AuthService {
       ).then(() => undefined),
       (outcome) => this.logoutDecision.decide(outcome),
       async () => {
+        await cleanup;
         await this.webPush.unsubscribe().catch((error) => {
           console.warn('[push] logout unsubscribe failed', error);
           this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), { duration: IMPORTANT_NOTICE_MS });
@@ -713,7 +714,7 @@ export class AuthService {
   private async performDesktopLogout(): Promise<void> {
     // Rust retains the credential and auth transition, including between IPC commands.
     await tauriInvoke('begin_logout');
-    this.sendOutbox.clear();
+    await this.sendOutbox.clear();
     await this.userService.releaseSession();
     const status = await tauriInvoke<string>('logout_status');
     let localOnly = false;
@@ -790,7 +791,7 @@ export class AuthService {
     const endedLogin = this.nativeLoginUuid;
     this.nativeLoginUuid = null;
     this.clearLocalSessionState();
-    this.sendOutbox.clear();
+    const cleanup = this.sendOutbox.clear();
     // Invalidate admission synchronously, but retain the physical cache and account preferences.
     let release: Promise<void>;
     try {
@@ -802,6 +803,7 @@ export class AuthService {
       () => ({ failed: false as const }),
       (error: unknown) => ({ failed: true as const, error }),
     );
+    await cleanup;
     let nativeOk = true;
     if (remote) {
       let ticket: string | null = null;

@@ -79,6 +79,34 @@ pub(crate) struct CachedMediaFile {
     size: u64,
 }
 
+/// Only an explicit, valid Content-Length declares the displayed full-response size.
+fn declared_download_length(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let value = headers.get(reqwest::header::CONTENT_LENGTH)?.to_str().ok()?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+#[cfg(test)]
+mod download_length_tests {
+    use super::*;
+
+    #[test]
+    fn absent_or_invalid_length_is_unknown_but_zero_is_known() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(declared_download_length(&headers), None);
+        for value in ["", "-1", "+1", "1.5", "18446744073709551616"] {
+            headers.insert(reqwest::header::CONTENT_LENGTH, value.parse().unwrap());
+            assert_eq!(declared_download_length(&headers), None);
+        }
+        headers.insert(reqwest::header::CONTENT_LENGTH, "0".parse().unwrap());
+        assert_eq!(declared_download_length(&headers), Some(0));
+        headers.insert(reqwest::header::CONTENT_LENGTH, "1024".parse().unwrap());
+        assert_eq!(declared_download_length(&headers), Some(1024));
+    }
+}
+
 #[derive(Clone)]
 struct MediaDownloadObserver {
     app: tauri::AppHandle,
@@ -87,7 +115,7 @@ struct MediaDownloadObserver {
 }
 
 impl MediaDownloadObserver {
-    fn progress(&self, loaded: u64, total: u64) {
+    fn progress(&self, loaded: u64, total: Option<u64>) {
         let _ = self.app.emit(
             "media-download-progress",
             serde_json::json!({
@@ -108,6 +136,8 @@ impl MediaDownloadObserver {
 pub(crate) struct MediaCacheInfo {
     limit_mb: u64,
     used_bytes: u64,
+    avatar_bytes: u64,
+    temporary_upload_bytes: u64,
 }
 
 fn validate_path(path: &str) -> Result<(), String> {
@@ -650,7 +680,8 @@ async fn stream_response_range(
         if let Some(observer) = observer {
             let loaded = already_cached.saturating_add(received).min(total);
             if loaded.saturating_sub(last_reported) >= 64 * 1024 || loaded >= total {
-                observer.progress(loaded, total);
+                // A 206 Content-Length describes this range, not the complete download.
+                observer.progress(loaded, None);
                 last_reported = loaded;
             }
         }
@@ -946,7 +977,8 @@ async fn get_or_fetch_inner(
                 .await
                 .map(|value| value.len())
                 .unwrap_or(0);
-            observer.progress(size, size);
+            // Cache metadata is not an HTTP Content-Length declaration.
+            observer.progress(size, None);
         }
         return Ok(cached);
     }
@@ -1090,7 +1122,11 @@ async fn get_or_fetch_inner(
         .or_else(|| response.headers().get(reqwest::header::LAST_MODIFIED))
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let total = response.content_length().unwrap_or(0);
+    let response_length = declared_download_length(response.headers());
+    let total = response_length.unwrap_or(0);
+    if let Some(observer) = observer {
+        observer.progress(0, response_length);
+    }
 
     // Write the initial full response into the authoritative sparse-cache path and checkpoint its
     // contiguous prefix. A cancelled/failed image download can then reuse the same missing-range
@@ -1171,19 +1207,19 @@ async fn get_or_fetch_inner(
             if received.saturating_sub(last_reported) >= 64 * 1024
                 || (total > 0 && received >= total)
             {
-                observer.progress(received, total);
+                observer.progress(received, response_length);
                 last_reported = received;
             }
         }
     }
     if let Some(observer) = observer {
-        observer.progress(received, if total > 0 { total } else { received });
+        observer.progress(received, response_length);
     }
     file.flush()
         .await
         .map_err(|e| format!("flush media cache: {e}"))?;
     drop(file);
-    if total > 0 && received != total {
+    if response_length.is_some_and(|expected| received != expected) {
         partial_meta.ranges = (received > 0)
             .then_some(CachedRange {
                 start: 0,
@@ -1381,11 +1417,66 @@ async fn cache_used_bytes(app: &tauri::AppHandle) -> u64 {
     )
 }
 
+async fn additional_cache_bytes(app: &tauri::AppHandle) -> Result<(u64, u64), String> {
+    let avatars = crate::native_db::avatar_cache_path()?;
+    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || measure_additional_cache_bytes(&avatars, &cache))
+        .await.map_err(|e| e.to_string())?
+}
+
+fn measure_additional_cache_bytes(avatars: &std::path::Path, cache: &std::path::Path) -> Result<(u64, u64), String> {
+        fn files(root: &std::path::Path, recursive: bool) -> Result<Vec<std::fs::DirEntry>, String> {
+            let entries = match std::fs::read_dir(root) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(error.to_string()),
+            };
+            let mut result = Vec::new();
+            for entry in entries {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let kind = entry.file_type().map_err(|e| e.to_string())?;
+                if kind.is_dir() && recursive { result.extend(files(&entry.path(), true)?); }
+                else if kind.is_file() { result.push(entry); }
+            }
+            Ok(result)
+        }
+        let size = |entry: std::fs::DirEntry| entry.metadata().map(|m| m.len()).map_err(|e| e.to_string());
+        let avatar_bytes = files(&avatars, true)?.into_iter().map(size).collect::<Result<Vec<_>, _>>()?.into_iter().sum();
+        let pending_bytes: u64 = files(&cache.join("pending-uploads"), true)?.into_iter().map(size).collect::<Result<Vec<_>, _>>()?.into_iter().sum();
+        // Recordings created before the dedicated directory remain part of the same usage category.
+        let legacy_bytes: u64 = files(&cache, false)?.into_iter().filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("voice-") && name.ends_with(".m4a")
+        }).map(size).collect::<Result<Vec<_>, _>>()?.into_iter().sum();
+        Ok((avatar_bytes, pending_bytes + legacy_bytes))
+}
+
+#[test]
+fn additional_cache_usage_counts_only_owned_categories() {
+    let root = tempfile::tempdir().unwrap();
+    let avatars = root.path().join("avatars");
+    let cache = root.path().join("cache");
+    assert_eq!(measure_additional_cache_bytes(&avatars, &cache).unwrap(), (0, 0));
+    std::fs::create_dir_all(avatars.join("nested")).unwrap();
+    std::fs::create_dir_all(cache.join("pending-uploads/nested")).unwrap();
+    std::fs::write(avatars.join("nested/avatar"), b"avatar").unwrap();
+    std::fs::write(cache.join("pending-uploads/nested/file"), b"pending").unwrap();
+    std::fs::write(cache.join("voice-old.m4a"), b"old").unwrap();
+    std::fs::write(cache.join("unrelated"), b"ignore").unwrap();
+    assert_eq!(measure_additional_cache_bytes(&avatars, &cache).unwrap(), (6, 10));
+    assert!(measure_additional_cache_bytes(&cache.join("unrelated"), &cache).is_err());
+}
+
+
 #[tauri::command]
 pub(crate) async fn get_media_cache_info(app: tauri::AppHandle) -> Result<MediaCacheInfo, String> {
+    let (avatar_bytes, temporary_upload_bytes) = additional_cache_bytes(&app).await?;
     Ok(MediaCacheInfo {
         limit_mb: cache_limit_mb(&app),
         used_bytes: cache_used_bytes(&app).await,
+        avatar_bytes,
+        temporary_upload_bytes,
     })
 }
 
@@ -1416,9 +1507,12 @@ pub(crate) async fn set_media_cache_limit(
     if let Ok(root) = app.path().app_cache_dir().map(|path| path.join(CACHE_DIR)) {
         prune_cache(&app, &root, "").await;
     }
+    let (avatar_bytes, temporary_upload_bytes) = additional_cache_bytes(&app).await?;
     Ok(MediaCacheInfo {
         limit_mb,
         used_bytes: cache_used_bytes(&app).await,
+        avatar_bytes,
+        temporary_upload_bytes,
     })
 }
 
@@ -1447,9 +1541,12 @@ pub(crate) async fn clear_media_cache(app: tauri::AppHandle) -> Result<MediaCach
         Err(error) => return Err(format!("clear thumbnail cache: {error}")),
     }
     std::fs::create_dir_all(&root).map_err(|e| format!("recreate media cache: {e}"))?;
+    let (avatar_bytes, temporary_upload_bytes) = additional_cache_bytes(&app).await?;
     Ok(MediaCacheInfo {
         limit_mb: cache_limit_mb(&app),
         used_bytes: 0,
+        avatar_bytes,
+        temporary_upload_bytes,
     })
 }
 
@@ -1484,10 +1581,8 @@ pub(crate) async fn cache_media(
     cached_media_file(&app, &proxy, &path, media).await
 }
 
-/// Renderer-owned native download task. It reuses the exact media cache pipeline used by media:// and
-/// save_media_desktop, but adds a task-scoped progress event + cancellation token. The returned path is
-/// the private cache file; the renderer continues to display the canonical media:// URL so no file://
-/// permission is exposed to the WebView.
+/// Renderer-owned preview download. It fills the private media cache and reports progress. Explicit
+/// saves do not use this cache; they stream the response into the destination the user selected.
 #[tauri::command]
 pub(crate) async fn download_media(
     app: tauri::AppHandle,
@@ -1560,6 +1655,108 @@ async fn cached_media_file(
     })
 }
 
+async fn stream_media_to_writer(
+    app: &tauri::AppHandle,
+    proxy: &ServerSessionState,
+    path: &str,
+    mut file: tokio::fs::File,
+    task_id: Option<&str>,
+) -> Result<u64, String> {
+    validate_path(path)?;
+    let cancel = CancellationToken::new();
+    let observer = task_id.and_then(|task_id| {
+        if !valid_download_task_id(task_id) {
+            return None;
+        }
+        proxy
+            .media_download_cancels
+            .lock()
+            .expect("media_download_cancels lock")
+            .insert(task_id.to_string(), cancel.clone());
+        Some(MediaDownloadObserver {
+            app: app.clone(),
+            task_id: task_id.to_string(),
+            cancel: cancel.clone(),
+        })
+    });
+    let result = stream_media_body(proxy, path, &mut file, observer.as_ref()).await;
+    if let Some(task_id) = task_id {
+        proxy
+            .media_download_cancels
+            .lock()
+            .expect("media_download_cancels lock")
+            .remove(task_id);
+    }
+    file.shutdown()
+        .await
+        .map_err(|e| format!("finish save destination: {e}"))?;
+    result
+}
+
+async fn stream_media_body(
+    proxy: &ServerSessionState,
+    path: &str,
+    file: &mut tokio::fs::File,
+    observer: Option<&MediaDownloadObserver>,
+) -> Result<u64, String> {
+    let (origin, token, _) = request_identity(proxy, path);
+    let mut request = proxy.api_client(&origin).get(format!("{origin}{path}"));
+    if let Some(token) = token {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = if let Some(observer) = observer {
+        tokio::select! {
+            value = request.send() => value.map_err(|error| format!("media request failed: {error}"))?,
+            _ = observer.cancel.cancelled() => return Err("media download cancelled".into()),
+        }
+    } else {
+        request.send().await.map_err(|error| format!("media request failed: {error}"))?
+    };
+    if !response.status().is_success() {
+        return Err(format!("media HTTP {}", response.status()));
+    }
+    let declared = declared_download_length(response.headers());
+    if let Some(observer) = observer {
+        observer.progress(0, declared);
+    }
+    let mut received = 0u64;
+    let mut last_reported = 0u64;
+    let mut stream = response.bytes_stream();
+    loop {
+        let next = if let Some(observer) = observer {
+            tokio::select! {
+                value = stream.next() => value,
+                _ = observer.cancel.cancelled() => return Err("media download cancelled".into()),
+            }
+        } else {
+            stream.next().await
+        };
+        let Some(chunk) = next else { break };
+        let chunk = chunk.map_err(|error| format!("read media body: {error}"))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|error| format!("write save destination: {error}"))?;
+        received = received.saturating_add(chunk.len() as u64);
+        if let Some(observer) = observer {
+            if received.saturating_sub(last_reported) >= 64 * 1024
+                || declared.is_some_and(|total| received >= total)
+            {
+                observer.progress(received, declared);
+                last_reported = received;
+            }
+        }
+    }
+    if let Some(observer) = observer {
+        observer.progress(received, declared);
+    }
+    if let Some(total) = declared {
+        if received != total {
+            return Err(format!("save received {received} bytes, declared {total}"));
+        }
+    }
+    Ok(received)
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 pub(crate) async fn save_media_desktop(
@@ -1567,19 +1764,76 @@ pub(crate) async fn save_media_desktop(
     proxy: tauri::State<'_, ServerSessionState>,
     path: String,
     filename: String,
+    task_id: Option<String>,
 ) -> Result<String, String> {
-    let cached = cache_media(app.clone(), proxy, path).await?;
     let safe_name = sanitize_filename(&filename);
-    let downloads = app
-        .path()
-        .download_dir()
-        .map_err(|e| format!("resolve downloads directory: {e}"))?;
-    std::fs::create_dir_all(&downloads).map_err(|e| format!("create downloads directory: {e}"))?;
-    let destination = unique_destination(&downloads, &safe_name);
-    tokio::fs::copy(&cached.path, &destination)
+    let dialog_app = app.clone();
+    let selected = tokio::task::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        dialog_app
+            .dialog()
+            .file()
+            .set_title("Save")
+            .set_file_name(&safe_name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("save dialog: {e}"))?;
+    let Some(selected) = selected else {
+        return Err("media save cancelled".into());
+    };
+    let destination = selected
+        .into_path()
+        .map_err(|_| "media save destination is not a local path".to_string())?;
+    if destination.as_os_str().is_empty() || destination.is_dir() {
+        return Err("media save destination is not a file".into());
+    }
+    if let Some(parent) = destination.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("create save directory: {e}"))?;
+        }
+    }
+    let partial = partial_save_path(&destination);
+    let file = tokio::fs::File::create(&partial)
         .await
-        .map_err(|e| format!("save media: {e}"))?;
+        .map_err(|e| format!("create save destination: {e}"))?;
+    if let Err(error) = stream_media_to_writer(&app, &proxy, &path, file, task_id.as_deref()).await {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(error);
+    }
+    if let Err(error) = replace_with_completed_save(&partial, &destination).await {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(error);
+    }
     Ok(destination.to_string_lossy().into_owned())
+}
+
+#[cfg(desktop)]
+async fn replace_with_completed_save(partial: &Path, destination: &Path) -> Result<(), String> {
+    match tokio::fs::rename(partial, destination).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            tokio::fs::remove_file(destination)
+                .await
+                .map_err(|error| format!("replace save destination: {error}"))?;
+            tokio::fs::rename(partial, destination)
+                .await
+                .map_err(|error| format!("rename completed save: {error}"))
+        }
+        Err(error) => Err(format!("rename completed save: {error}")),
+    }
+}
+
+fn partial_save_path(destination: &Path) -> PathBuf {
+    let mut name = destination
+        .file_name()
+        .map(|name| name.to_os_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "download".into());
+    name.push(".part");
+    destination.with_file_name(name)
 }
 
 #[cfg(desktop)]
@@ -1594,26 +1848,46 @@ fn sanitize_filename(filename: &str) -> String {
     }
 }
 
-#[cfg(desktop)]
-fn unique_destination(dir: &Path, filename: &str) -> PathBuf {
-    let initial = dir.join(filename);
-    if !initial.exists() {
-        return initial;
-    }
-    let path = Path::new(filename);
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("download");
-    let extension = path.extension().and_then(|s| s.to_str());
-    for index in 1..10_000 {
-        let candidate = match extension {
-            Some(ext) => dir.join(format!("{stem} ({index}).{ext}")),
-            None => dir.join(format!("{stem} ({index})")),
-        };
-        if !candidate.exists() {
-            return candidate;
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustUploadBridge_streamMediaToFd(
+    mut env: jni::JNIEnv,
+    _receiver: jni::objects::JObject,
+    path: jni::objects::JString,
+    fd: jni::sys::jint,
+    task_id: jni::objects::JString,
+) -> jni::sys::jstring {
+    let read = |env: &mut jni::JNIEnv, value: jni::objects::JString| {
+        env.get_string(&value)
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let path = read(&mut env, path);
+    let task_id = read(&mut env, task_id);
+    let error = if fd < 0 {
+        "invalid save destination".to_string()
+    } else {
+        use std::os::unix::io::FromRawFd;
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        match crate::ANDROID_APP.get() {
+            Some(app) => {
+                let proxy = app.state::<ServerSessionState>().inner().clone();
+                let task_id = (!task_id.is_empty()).then_some(task_id);
+                match tauri::async_runtime::block_on(stream_media_to_writer(
+                    app,
+                    &proxy,
+                    &path,
+                    tokio::fs::File::from_std(file),
+                    task_id.as_deref(),
+                )) {
+                    Ok(_) => String::new(),
+                    Err(error) => error,
+                }
+            }
+            None => "native runtime is unavailable".to_string(),
         }
-    }
-    dir.join(format!("{stem}-{}", std::process::id()))
+    };
+    env.new_string(error)
+        .map(|value| value.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }

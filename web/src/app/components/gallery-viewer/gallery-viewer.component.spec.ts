@@ -6,7 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import { MEDIA_STATUS, type AlbumMedia } from '../message-cards/chat-item';
 import type { ImageDownloadTask } from '../../services/image-download.service';
 import { ImageDownloadService } from '../../services/image-download.service';
-import { MediaSaveService } from '../../services/media-save.service';
+import { DownloadService } from '../../services/download.service';
 import { MessageRepository } from '../../services/message-repository.service';
 import { MsgService } from '../../services/message.service';
 import { ToastService } from '../../services/toast.service';
@@ -58,7 +58,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
             retry: vi.fn().mockResolvedValue(MEDIA_STATUS.READY),
           },
         },
-        { provide: MediaSaveService, useValue: {} },
+        { provide: DownloadService, useValue: { download: vi.fn(async () => undefined) } },
         { provide: ToastService, useValue: toast },
       ],
     });
@@ -78,7 +78,20 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(component.currentNeedsLoad()).toBe(false);
 
     component.saveCurrent(new MouseEvent('click'));
-    expect(downloads.start).toHaveBeenCalledWith(media, 7, true);
+    expect(downloads.start).not.toHaveBeenCalled();
+    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(expect.objectContaining({ path: media.src, threadId: 7 }));
+  });
+
+  it('preserves the actual MIME type when saving media', async () => {
+    const component = create([{ ...media, src: '/uploads/animation.webp', mimeType: 'image/webp', name: 'animation.webp' }]);
+    await component.saveCurrent(new MouseEvent('click'));
+    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(expect.objectContaining({ mimeType: 'image/webp', filename: 'animation.webp' }));
+  });
+
+  it('does not infer a file format from the media category', async () => {
+    const component = create([media]);
+    await component.saveCurrent(new MouseEvent('click'));
+    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(expect.objectContaining({ mimeType: 'application/octet-stream' }));
   });
 
   it('shows dynamic byte units and delegates cancellation for the current image', () => {
@@ -105,19 +118,19 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(toast.info).not.toHaveBeenCalled();
   });
 
-  it('toasts a queued save exactly once when the shared task reaches saved', async () => {
+  it('does not infer download completion from unrelated image cache tasks', async () => {
     const component = create();
     component.saveCurrent(new MouseEvent('click'));
 
-    downloads.set(task('saved', 1536, 1536));
+    downloads.set(task('loaded', 1536, 1536));
     TestBed.flushEffects();
     await Promise.resolve();
-    expect(toast.info).toHaveBeenCalledTimes(1);
+    expect(toast.info).not.toHaveBeenCalled();
 
     downloads.tasks.set([...downloads.tasks()]);
     TestBed.flushEffects();
     await Promise.resolve();
-    expect(toast.info).toHaveBeenCalledTimes(1);
+    expect(toast.info).not.toHaveBeenCalled();
   });
 
   it('shows thumbnails for paused video and hides them while video is playing', () => {
@@ -384,8 +397,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
       loaded,
       total,
       status,
-      saveAfterLoad: true,
-      blobUrl: status === 'saved' ? 'blob:photo' : null,
+      blobUrl: status === 'loaded' ? 'blob:photo' : null,
       startedAt: 1,
     };
   }

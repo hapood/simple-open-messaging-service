@@ -42,6 +42,24 @@ function message(
 }
 
 describe('computeRowFlags', () => {
+  it('an explicit window grouping break preserves date context while separating both sender runs', () => {
+    const before = message(1, 2);
+    const after = { ...message(101, 2), groupingBreakBefore: true };
+    expect(computeRowFlags(before, null, after).groupPosition).toBe('single');
+    expect(computeRowFlags(after, before)).toMatchObject({
+      isShowHead: true,
+      isGroupStart: true,
+      showDate: false,
+      groupPosition: 'single',
+    });
+    expect(computeRowFlags(after, before, message(102, 2)).groupPosition).toBe(
+      'head',
+    );
+    const restored = { ...after, groupingBreakBefore: false };
+    expect(computeRowFlags(restored, before).isShowHead).toBe(false);
+    expect(computeRowFlags(before, null, restored).groupPosition).toBe('head');
+  });
+
   it('starts a visible sender group after a system event from the same creator', () => {
     const system = message(0, 2, 'SYSTEM');
     const firstChatMessage = message(1, 2);
@@ -110,7 +128,7 @@ describe('computeRowFlags', () => {
     'GALLERY',
     'LINK',
     'CONTACT_CARD',
-      'FORWARD',
+    'FORWARD',
   ] as const)(
     'keeps a %s message and the following text message out of compact grouping',
     (contentType) => {

@@ -87,14 +87,31 @@ describe('ChatInputComponent binding isolation', () => {
       const owner = new ChatSurfaceLifecycle();
       const binding = owner.bind(42);
       const clear = vi.fn();
+      const enabled = signal(true);
+      const editor = signal({ clear, getText: () => 'draft' });
       Object.assign(component, {
         lifecycle: signal(owner),
-        editor: signal({ clear, getText: () => 'draft' }),
+        enabled,
+        editor,
       });
       await TestBed.inject(ApplicationRef).whenStable();
       expect(component['boundContext']).toBe(binding);
       component.draftHtml.set('draft');
       const before = clear.mock.calls.length;
+      // No history kernel exists in this fixture. Foreground activation alone
+      // makes the bound composer usable, without replacing its editor or draft.
+      expect(component.interactive()).toBe(false);
+      owner.activate(binding, true);
+      expect(component.interactive()).toBe(true);
+      const originalEditor = editor();
+      owner.activate(binding, false);
+      expect(component.interactive()).toBe(false);
+      expect(component['boundContext']).toBe(binding);
+      owner.activate(binding, true);
+      expect(component.interactive()).toBe(true);
+      expect(editor()).toBe(originalEditor);
+      expect(component.draftHtml()).toBe('draft');
+      expect(clear).toHaveBeenCalledTimes(before);
       component['startGeneration']('', 'https://example.com', true);
       expect(pendingGeneration.observed).toBe(true);
       owner.unbind();
@@ -107,6 +124,17 @@ describe('ChatInputComponent binding isolation', () => {
       expect(component['boundContext']).toBe(successor);
       owner.activate(successor, true);
       expect(component.interactive()).toBe(true);
+      // Shell readiness never overrides a permission/quota disable.
+      enabled.set(false);
+      await TestBed.inject(ApplicationRef).whenStable();
+      expect(component.interactive()).toBe(false);
+      expect(component['boundContext']).toBeUndefined();
+      expect(owner.binding).toBe(successor);
+      enabled.set(true);
+      await TestBed.inject(ApplicationRef).whenStable();
+      expect(component.interactive()).toBe(true);
+      expect(component['boundContext']).toBe(successor);
+      expect(editor()).toBe(originalEditor);
       owner.unbind();
       expect(component.interactive()).toBe(false);
       component.ngOnDestroy();

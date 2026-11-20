@@ -9,14 +9,14 @@
       rel="canonical"
       href="https://hapood.github.io/simple-open-messaging-service/"
     />
-    <title>SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform</title>
+    <title>SOMS.im Playground — Live Browser Demo for Simple Open Messaging Service</title>
     <meta
       name="description"
-      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."
+      content="Interactive in-memory browser playground for SOMS.im (Simple Open Messaging Service). Experience self-hosted, federated chat UI, WebRTC calls, and deployment configuration."
     />
     <meta
       name="keywords"
-      content="simple-open-messaging-service, simple open messaging service, soms, self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
+      content="soms playground, soms.im demo, simple-open-messaging-service, somfp demo, federated chat demo, web chat playground"
     />
 
     <meta property="og:type" content="website" />
@@ -26,11 +26,11 @@
     />
     <meta
       property="og:title"
-      content="SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform"
+      content="SOMS.im Playground — Live Browser Demo"
     />
     <meta
       property="og:description"
-      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+      content="Interactive in-memory browser playground for SOMS.im (Simple Open Messaging Service). Experience the federated chat UI directly in your browser."
     />
     <meta
       property="og:image"
@@ -44,11 +44,11 @@
     />
     <meta
       name="twitter:title"
-      content="SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform"
+      content="SOMS.im Playground — Live Browser Demo"
     />
     <meta
       name="twitter:description"
-      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+      content="Interactive in-memory browser playground for SOMS.im (Simple Open Messaging Service). Experience the federated chat UI directly in your browser."
     />
     <meta
       name="twitter:image"
@@ -59,16 +59,17 @@
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
-        "@type": "SoftwareApplication",
-        "name": "SOMS (Simple Open Messaging Service)",
-        "operatingSystem": "Web, Android, Linux, Windows, macOS",
+        "@type": "WebApplication",
+        "name": "SOMS.im Playground",
         "applicationCategory": "CommunicationApplication",
-        "offers": {
-          "@type": "Offer",
-          "price": "0"
-        },
+        "operatingSystem": "All",
         "url": "https://hapood.github.io/simple-open-messaging-service/",
-        "description": "SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices."
+        "isPartOf": {
+          "@type": "WebSite",
+          "name": "SOMS.im",
+          "url": "https://soms.im/"
+        },
+        "description": "Interactive browser playground for SOMS.im (Simple Open Messaging Service)."
       }
     </script>
     <meta
@@ -281,9 +282,9 @@
   </head>
   <body class="playground-page">
     <header class="project-bar" lang="en">
-      <a class="project-brand" href="#/" aria-label="SOMS Playground home">
+      <a class="project-brand" href="#/" aria-label="SOMS.im Playground home">
         <img src="logo.svg" alt="" width="24" height="24" />
-        <strong>SOMS</strong>
+        <strong>SOMS<span class="brand-im" style="color: #6366f1; font-weight: 600; font-size: 12px; margin-left: 1px;">.im</span></strong>
         <span class="project-label">Playground</span>
       </a>
       <nav class="project-actions" aria-label="Project links">
@@ -341,7 +342,7 @@
     <app-root class="playground-viewport">
       <div class="app-splash">
         <img class="app-splash__mark" src="logo.svg" alt="" />
-        <div class="app-splash__word">SOMS</div>
+        <div class="app-splash__word">SOMS<span style="color: #6366f1; font-size: 0.72em; margin-left: 1px;">.im</span></div>
         <div class="app-splash__spinner"></div>
       </div>
     </app-root>

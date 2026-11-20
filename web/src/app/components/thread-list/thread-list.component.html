@@ -173,9 +173,20 @@
                               ></app-icon>
                             </span>
                           }
-                          <span class="thread-msg-text">{{
-                            previewText(thread)
-                          }}</span>
+                          @let tasks = sendingTasks.forThread(thread.threadId);
+                          <app-sending-task-indicator
+                            class="thread-msg-text"
+                            style="
+                              --task-icon-size: 14px;
+                              --task-alignment: start;
+                              --task-text-align: left;
+                            "
+                            [interactive]="false"
+                            [bio]="previewText(thread)"
+                            [messageCount]="tasks.messageCount"
+                            [uploadCount]="tasks.uploadCount"
+                            [failedCount]="tasks.failedCount"
+                          />
                         </span>
                       }
                       @if (thread.unreadCount > 0) {

@@ -6,7 +6,7 @@ import { NEVER, of } from 'rxjs';
 export class ForwardSnapshotSource implements CbSource<ChatItemData> {
   constructor(private readonly items: CbItem<ChatItemData>[]) {}
 
-  async init(): Promise<CbItem<ChatItemData>[]> {
+  async loadWindow(): Promise<CbItem<ChatItemData>[]> {
     return this.items;
   }
 
@@ -23,6 +23,10 @@ export class ForwardSnapshotSource implements CbSource<ChatItemData> {
   }
 
   requestNewer(): CbDemand<ChatItemData> {
+    return NEVER;
+  }
+
+  requestMessagesForEmptyWindow(): CbDemand<ChatItemData> {
     return NEVER;
   }
 

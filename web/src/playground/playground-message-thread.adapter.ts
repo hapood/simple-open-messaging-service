@@ -12,23 +12,21 @@ import type {
 } from '../app/components/message-cards/chat-item';
 import {
   createP2PConversation,
+  messageCreatorKey,
   type ConversationItem,
   type StandardResponse,
 } from '../app/services/model';
 import {
   MessageThreadAdapter,
-  type MessageThreadLiveCallbacks,
   type MessageThreadSource,
   type ForwardMessagesRequest,
   type SearchMessagesRequest,
-  type SendTextRequest,
-  type SendContactRequest,
   type StageMediaRequest,
 } from '../app/components/message-thread/message-thread-adapter';
 import type {
   UploadPartIdentity,
   UploadProgressHandler,
-} from '../app/services/message.service';
+} from '../app/services/upload-transport';
 import {
   MockItemSource,
   MockUserService,
@@ -67,7 +65,6 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     thresholdFloor: 6000,
     vhExtra: 2000,
     initBatch: 100,
-    deferInitFill: true,
     followBottom: true,
   });
 
@@ -104,11 +101,12 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
 
   override createSource(
     conversation: ConversationItem,
-    _callbacks: MessageThreadLiveCallbacks,
+    entryReadSeq: number,
   ): MessageThreadSource {
     const isGroupConversation = conversation.type === 'GROUP';
     const source = new MockItemSource(
       this.itemCount(),
+      entryReadSeq,
       this.sourceLatency(),
       new MockUserService(),
       1,
@@ -123,41 +121,40 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     return source;
   }
 
-  override async sendText(
-    request: SendTextRequest,
-  ): Promise<StandardResponse<unknown>> {
-    return this.sendAuthored(request);
-  }
-
-  override async sendContact(
-    request: SendContactRequest,
-  ): Promise<StandardResponse<unknown>> {
-    return this.sendAuthored(request);
-  }
-
-  private async sendAuthored(
-    request: SendTextRequest | SendContactRequest,
+  override async sendIntent(
+    request: { clientMessageId: string; threadId: number; item: import('../app/services/send-outbox-storage').StoredNonMediaSendContent },
   ): Promise<StandardResponse<unknown>> {
     await wait(this.confirmDelay());
     if (this.sendError()) return { code: -1, message: 'Mock send failed' };
 
-    const source = request.source as MockItemSource;
-    if (request.optimistic.data.type !== 'msg') {
-      throw new Error('Only authored messages can be sent optimistically');
-    }
-    const isGroupConversation = this.groupSources.has(request.source);
+    const source = this.sources.get(request.threadId);
+    if (!source) throw new Error('Mock conversation is not open');
+    const isGroupConversation = this.groupSources.has(source);
+    const intent = request.item;
+    const content = intent.type === 'PURE_TEXT' ? intent.content
+      : intent.type === 'LINK' ? JSON.stringify({ generationId: intent.generationId })
+      : intent.type === 'CONTACT_CARD' ? JSON.stringify(intent.target)
+      : JSON.stringify({ sourceMessages: intent.sourceMessages, mode: intent.mode });
+    const body = intent.type === 'PURE_TEXT' ? (parseTextMessageContent(content)?.text ?? '') : content;
+    const now = new Date();
     const sentId = source.allocateMsgId();
     const sent: CbItem<ChatItemData> = {
       id: sentId,
       clientMessageId: request.clientMessageId,
       data: {
-        ...request.optimistic.data,
+        type: 'msg',
         msgId: sentId,
+        creator: messageCreatorKey(this.state.self),
+        name: this.state.self.name,
+        sender: mockSender(this.state.self, this.state.self.name),
+        text: body,
+        time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+        contentType: intent.type,
+        images: null,
+        file: null,
+        createdAtMs: now.getTime(),
         isSelf: true,
-        // The real production source carries `sent` when the push echo wins the HTTP-response race.
-        // Keeping it here lets the kernel-tagged real play the same spinner-to-check choreography.
         status: 'sent',
-        kind: undefined,
         isGroupConversation,
       },
     };
@@ -165,55 +162,15 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       ? this.groupPushCount()
       : this.opponentPushCount();
     const incoming = this.makeReplies(source, replies, isGroupConversation);
-    this.commitSentMessage(request);
+    this.state.commitMessage(request.threadId, {
+      senderAccount: this.state.self.account,
+      senderNamespaceId: 0,
+      contentType: intent.type,
+      content,
+      createdAtMs: now.getTime(),
+      isSelf: true,
+    });
     void this.deliverEcho(request.threadId, source, sent, incoming);
-    return { code: 0, message: 'ok' };
-  }
-
-  override async sendLink(request: {
-    threadId: number;
-    generationId: string;
-    clientMessageId: string;
-  }): Promise<StandardResponse<unknown>> {
-    await wait(this.confirmDelay());
-    if (this.sendError()) return { code: -1, message: 'Mock action failed' };
-    const source = this.sources.get(request.threadId);
-    const optimistic = source?.pendingByClientMessageId(
-      request.clientMessageId,
-    );
-    if (source && optimistic?.data.type === 'msg') {
-      const sentId = source.allocateMsgId();
-      const now = new Date();
-      source.pushLive([
-        {
-          id: sentId,
-          clientMessageId: request.clientMessageId,
-          data: {
-            ...optimistic.data,
-            type: 'msg' as const,
-            msgId: sentId,
-            isSelf: true,
-            text: optimistic.data.text,
-            time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-            contentType: 'LINK',
-            images: null,
-            file: null,
-            createdAtMs: now.getTime(),
-            status: 'sent',
-          },
-        },
-      ]);
-      if (optimistic.data.text) {
-        this.state.commitMessage(request.threadId, {
-          senderAccount: this.state.self.account,
-          senderNamespaceId: 0,
-          contentType: 'LINK',
-          content: optimistic.data.text,
-          createdAtMs: now.getTime(),
-          isSelf: true,
-        });
-      }
-    }
     return { code: 0, message: 'ok' };
   }
 
@@ -276,10 +233,6 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       message: 'ok',
       data: { clientMessageId: request.clientMessageId },
     });
-  }
-
-  override queryMediaStages(_threadId: number) {
-    return of({ code: 0, message: 'ok', data: [] });
   }
 
   override cancelUploadBatch(clientMessageId: string) {
@@ -405,28 +358,6 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       content: stringifyTextMessageContent({ text: data.text }),
       createdAtMs: data.createdAtMs,
       isSelf: false,
-    });
-  }
-
-  /** Commit the confirmed optimistic row: PURE_TEXT carries the wire envelope
-   *  from the send request; CONTACT_CARD/LINK keep their persisted JSON bodies. */
-  private commitSentMessage(
-    request: SendTextRequest | SendContactRequest,
-  ): void {
-    const data = request.optimistic.data;
-    if (data.type !== 'msg') return;
-    const contentType = data.contentType;
-    const content =
-      contentType === 'PURE_TEXT' && 'content' in request
-        ? request.content
-        : data.text;
-    this.state.commitMessage(request.threadId, {
-      senderAccount: this.state.self.account,
-      senderNamespaceId: 0,
-      contentType,
-      content,
-      createdAtMs: Date.now(),
-      isSelf: true,
     });
   }
 

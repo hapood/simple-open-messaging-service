@@ -14,52 +14,52 @@
        LanguageService own runtime updates after boot. Referenced by RELATIVE path
        so it resolves against <base href>, which the Pages build rewrites to the deploy sub-path. -->
     <script src="boot.js"></script>
-    <title>SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform</title>
+    <title>SOMS.im — Simple Open Messaging Service | Self-Hosted Federated Chat</title>
     <meta
       name="description"
-      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."
+      content="SOMS.im (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Cross-server communication, WebRTC calls, and modern privacy-first UX."
     />
     <meta
       name="keywords"
-      content="simple-open-messaging-service, simple open messaging service, soms, self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
+      content="soms, soms.im, simple-open-messaging-service, simple open messaging service, self-hosted chat, federated messaging, data ownership, private chat, somfp, webrtc, tauri, nestjs, angular"
     />
 
     <!-- Open Graph / Social Media -->
     <meta property="og:type" content="website" />
     <meta
       property="og:url"
-      content="https://hapood.github.io/simple-open-messaging-service/"
+      content="https://soms.im/"
     />
     <meta
       property="og:title"
-      content="SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform"
+      content="SOMS.im — Simple Open Messaging Service | Self-Hosted Federated Chat"
     />
     <meta
       property="og:description"
-      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+      content="SOMS.im (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
     />
     <meta
       property="og:image"
-      content="https://hapood.github.io/simple-open-messaging-service/social-preview.png"
+      content="https://soms.im/assets/social-preview.png"
     />
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta
       name="twitter:url"
-      content="https://hapood.github.io/simple-open-messaging-service/"
+      content="https://soms.im/"
     />
     <meta
       name="twitter:title"
-      content="SOMS (Simple Open Messaging Service) — Self-Hosted, Federated Chat Platform"
+      content="SOMS.im — Simple Open Messaging Service | Self-Hosted Federated Chat"
     />
     <meta
       name="twitter:description"
-      content="SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
+      content="SOMS.im (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices. Independent identities, WebRTC calls, and cross-server communication."
     />
     <meta
       name="twitter:image"
-      content="https://hapood.github.io/simple-open-messaging-service/social-preview.png"
+      content="https://soms.im/assets/social-preview.png"
     />
 
     <!-- Structured Data (Schema.org JSON-LD) -->
@@ -67,15 +67,20 @@
       {
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
-        "name": "SOMS (Simple Open Messaging Service)",
+        "name": "SOMS.im",
+        "alternateName": [
+          "SOMS",
+          "Simple Open Messaging Service",
+          "simple-open-messaging-service"
+        ],
         "operatingSystem": "Web, Android, Linux, Windows, macOS",
         "applicationCategory": "CommunicationApplication",
         "offers": {
           "@type": "Offer",
           "price": "0"
         },
-        "url": "https://hapood.github.io/simple-open-messaging-service/",
-        "description": "SOMS (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices."
+        "url": "https://soms.im/",
+        "description": "SOMS.im (Simple Open Messaging Service) is an open-source, self-hosted, and federated chat platform for web and native devices."
       }
     </script>
     <!-- Scale locked (`minimum-scale=maximum-scale=1`, `user-scalable=no`): disables the browser's
@@ -93,7 +98,7 @@
     <link rel="icon" type="image/svg+xml" href="logo.svg" />
     <!-- iOS home-screen icon (180×180 transparent Web mark). -->
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
-    <meta name="apple-mobile-web-app-title" content="SOMS" />
+    <meta name="apple-mobile-web-app-title" content="SOMS.im" />
   </head>
   <body>
     <!-- App-shell spinner: shows the instant the page parses (before Angular boots), so a freshly-created
@@ -103,7 +108,7 @@
     <app-root>
       <div class="app-splash">
         <img class="app-splash__mark" src="logo.svg" alt="" />
-        <div class="app-splash__word">SOMS</div>
+        <div class="app-splash__word">SOMS.im</div>
         <div class="app-splash__spinner"></div>
       </div>
     </app-root>

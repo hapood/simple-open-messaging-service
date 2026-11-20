@@ -94,6 +94,11 @@ export class PlaygroundConversationList
     );
   }
 
+  entryReadSeq(threadId: number): number {
+    return this.conversations().find((item) => item.threadId === threadId)
+      ?.lastReadSeq ?? 0;
+  }
+
   unreadEntryBoundary(): undefined {
     return undefined;
   }

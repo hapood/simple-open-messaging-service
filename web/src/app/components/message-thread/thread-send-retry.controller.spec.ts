@@ -1,89 +1,40 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { ChatItemData } from '../message-cards/chat-item';
+import { ThreadSendRetryController } from './thread-send-retry.controller';
 import type { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
-import type { ThreadOptimisticController } from './thread-optimistic.controller';
-import {
-  ThreadSendRetryController,
-  type ThreadSendRetryHandlers,
-} from './thread-send-retry.controller';
 
-const item = {
-  id: -1,
-  data: { type: 'msg', serverGap: false },
-} as unknown as CbItem<ChatItemData>;
+describe('durable request retry routing', () => {
+  function setup(item: unknown) {
+    const task = { clientMessageId: 'original', threadId: 7, item };
+    const outbox = { retry: vi.fn().mockResolvedValue(task), setPhase: vi.fn() };
+    const handlers = { message: vi.fn().mockResolvedValue(undefined), webAttachment: vi.fn().mockResolvedValue(undefined), nativeAttachment: vi.fn().mockResolvedValue(undefined) };
+    return { task, outbox, handlers, controller: new ThreadSendRetryController(outbox as unknown as ThreadSendOutbox, handlers) };
+  }
 
-function handlers(): ThreadSendRetryHandlers {
-  return {
-    webGallery: vi.fn(),
-    nativeGallery: vi.fn(),
-    voice: vi.fn(),
-    nativeVoice: vi.fn(),
-    nativeAttachment: vi.fn(),
-    webAttachment: vi.fn(),
-    text: vi.fn(),
-  };
-}
-
-describe('ThreadSendRetryController', () => {
-  it('replays text when no retained binary resource exists', async () => {
-    const callbacks = handlers();
-    const controller = new ThreadSendRetryController(
-      { resource: () => undefined } as unknown as ThreadSendOutbox,
-      {
-        beginRetry: async () => item,
-      } as unknown as ThreadOptimisticController,
-      callbacks,
-    );
-    await controller.retry('cid');
-    expect(callbacks.text).toHaveBeenCalledWith(item);
+  it('routes contacts as contacts rather than text', async () => {
+    const { controller, handlers, task } = setup({ type: 'CONTACT_CARD', target: { account: 'peer', namespaceId: 2, profileRev: 3 } });
+    await controller.retry('original');
+    expect(handlers.message).toHaveBeenCalledExactlyOnceWith(task);
+    expect(handlers.webAttachment).not.toHaveBeenCalled();
   });
 
-  it('routes a retained native attachment to its dedicated replay path', async () => {
-    const callbacks = handlers();
-    const resource = {
-      type: 'native-attachment' as const,
-      selection: { uploadId: 'upload' },
-      partId: 'part',
-      release: vi.fn(),
-      discard: vi.fn(),
-    };
-    const controller = new ThreadSendRetryController(
-      { resource: () => resource } as unknown as ThreadSendOutbox,
-      {
-        beginRetry: async () => item,
-      } as unknown as ThreadOptimisticController,
-      callbacks,
-    );
-    await controller.retry('cid');
-    expect(callbacks.nativeAttachment).toHaveBeenCalledWith(
-      'cid',
-      resource,
-      item,
-    );
+  it('preserves ordered gallery resources and original MIME', async () => {
+    const files = [1, 2].map(n => ({ partId: `part-${n}`, path: `runtime-${n}`, size: n, name: `${n}.bin`, mimeType: 'application/x-custom', intent: 'FILE' }));
+    const { controller, handlers, task } = setup({ type: 'GALLERY', files });
+    await controller.retry('original');
+    expect(handlers.webAttachment).toHaveBeenCalledExactlyOnceWith(task);
+
   });
 
-  it('retries a native voice using its retained recording rather than sending empty text', async () => {
-    const callbacks = handlers();
-    const resource = {
-      type: 'native-voice' as const,
-      threadId: 4,
-      size: 512,
-      discard: vi.fn(),
-    };
-    const controller = new ThreadSendRetryController(
-      {
-        resource: () => resource,
-      } as unknown as ThreadSendOutbox,
-      { beginRetry: async () => item } as unknown as ThreadOptimisticController,
-      callbacks,
-    );
-    await controller.retry('voice-cid');
-    expect(callbacks.nativeVoice).toHaveBeenCalledWith(
-      'voice-cid',
-      resource,
-      item,
-    );
-    expect(callbacks.text).not.toHaveBeenCalled();
+  it('does not infer the native platform from the path shape', async () => {
+    const { controller, handlers, task } = setup({ type: 'AUDIO', file: { partId: 'part', path: 'voice.m4a', name: 'voice.m4a', mimeType: 'audio/mp4' } });
+    await controller.retry('original');
+    expect(handlers.webAttachment).toHaveBeenCalledExactlyOnceWith(task);
+    expect(handlers.nativeAttachment).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed execution retryable', async () => {
+    const { controller, handlers, outbox } = setup({ type: 'LINK', generationId: 'generation' });
+    handlers.message.mockRejectedValue(new Error('offline'));
+    await expect(controller.retry('original')).rejects.toThrow('offline');
+    expect(outbox.setPhase).toHaveBeenCalledWith('original', 'failed');
   });
 });

@@ -37,9 +37,23 @@ function msg(msgId: number, isSelf = true): CbItem<ChatItemData> {
 }
 
 describe('MockItemSource (cursor contract)', () => {
+  it('around an absent cursor retains surrounding history', async () => {
+    const source = new MockItemSource(100, 0, 0, new MockUserService(), 1);
+    source.withdraw(50);
+    const aroundHole = await source.loadWindow({
+      kind: 'around', messageId: 50, olderCount: 2, newerCount: 2,
+    });
+    expect(aroundHole.map(item => item.id)).toEqual([48, 49, 51, 52]);
+    const beyondTail = await source.loadWindow({
+      kind: 'around', messageId: 101, olderCount: 2, newerCount: 2,
+    });
+    expect(beyondTail.map(item => item.id)).toEqual([99, 100]);
+    source.destroy();
+  });
+
   it('init(-1,100,0) caps at MAX_PAGE (50): newest 50 ascending; last=newest; not yet at oldest', async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
-    const items = await s.init(-1, 100, 0); // olderCount(100) > MAX_PAGE → one page returned (mirrors HttpItemSource)
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
+    const items = await s.loadWindow({ kind: 'latest', count: 100 }); // olderCount(100) > MAX_PAGE → one page returned (mirrors HttpItemSource)
     expect(items.length).toBe(50); // capped at MAX_PAGE
     expect(items[0].id).toBe(451); // oldest of this capped batch
     expect(items[49].id).toBe(500); // anchor = newest
@@ -48,8 +62,8 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('init with a small total (olderCount overshoots) → takes all; first=oldest, last=newest', async () => {
-    const s = new MockItemSource(50, 0, new MockUserService(), 1);
-    const items = await s.init(-1, 100, 0);
+    const s = new MockItemSource(50, 0, 0, new MockUserService(), 1);
+    const items = await s.loadWindow({ kind: 'latest', count: 100 });
     expect(items.length).toBe(50);
     expect(items[0].id).toBe(1);
     expect(items[0].boundary).toBe('oldest');
@@ -58,8 +72,8 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('getOlder(400,100) caps at MAX_PAGE (50): 50 older ascending; no boundary', async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
-    await s.init(-1, 100, 0);
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
+    await s.loadWindow({ kind: 'latest', count: 100 });
     const items = await s.getOlder(400, 100); // count(100) > MAX_PAGE → one page returned
     expect(items.length).toBe(50); // capped at MAX_PAGE
     expect(items[0].id).toBe(350);
@@ -68,7 +82,7 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('getOlder reaching the oldest → truncates + first=oldest', async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
     const items = await s.getOlder(51, 100); // cursor=full[50], older=full[0..49]
     expect(items.length).toBe(50);
     expect(items[0].id).toBe(1);
@@ -77,13 +91,13 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('getOlder already at the oldest (cursor=1) → empty', async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
     const items = await s.getOlder(1, 100);
     expect(items.length).toBe(0);
   });
 
   it("getNewer(400,100) caps at MAX_PAGE (50): 50 newer ascending; doesn't reach the end → no newest", async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
     const items = await s.getNewer(400, 100); // 99 newer remain (> MAX_PAGE) → one page, end NOT reached
     expect(items.length).toBe(50); // capped at MAX_PAGE
     expect(items[0].id).toBe(401);
@@ -92,8 +106,8 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('pushLive caches; getNewer then returns the live items (last tagged newest)', async () => {
-    const s = new MockItemSource(100, 0, new MockUserService(), 1);
-    await s.init(-1, 100, 0);
+    const s = new MockItemSource(100, 0, 0, new MockUserService(), 1);
+    await s.loadWindow({ kind: 'latest', count: 100 });
     s.pushLive([msg(101), msg(102)]);
     const newer = await s.getNewer(100, 10);
     expect(newer.map((i) => i.id)).toEqual([101, 102]);
@@ -101,8 +115,8 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('a sender-carrying live push under a real-account creator keeps its name (no Unknown fallback)', async () => {
-    const s = new MockItemSource(100, 0, new MockUserService(), 1);
-    await s.init(-1, 100, 0);
+    const s = new MockItemSource(100, 0, 0, new MockUserService(), 1);
+    await s.loadWindow({ kind: 'latest', count: 100 });
     // Live ticker pushes are authored under real playground accounts, which the
     // synthetic user-N profile table cannot resolve; the push carries its own
     // revision-backed sender (mirroring production toMsgData). shape must pass
@@ -131,8 +145,8 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('getNewer returns reals only + reconciles pending by clientMessageId (never appends pending)', async () => {
-    const s = new MockItemSource(100, 0, new MockUserService(), 1);
-    await s.init(-1, 100, 0);
+    const s = new MockItemSource(100, 0, 0, new MockUserService(), 1);
+    await s.loadWindow({ kind: 'latest', count: 100 });
     // Two in-flight optimistic sends, each keyed by a clientMessageId. The server echo carries the SAME clientMessageId
     // but a FRESH server msgId (mirrors production: clientMessageId reconciles, the server-assigned msgId is new).
     s.addPending({ ...msg(201), clientMessageId: 'cid-1' });
@@ -152,13 +166,13 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('init reconciles pending by clientMessageId (empty-thread confirm routes through init, not getNewer)', async () => {
-    const s = new MockItemSource(0, 0, new MockUserService(), 1);
+    const s = new MockItemSource(0, 0, 0, new MockUserService(), 1);
     s.addPending({ ...msg(201), clientMessageId: 'cid-1' });
     s.pushLive([{ ...msg(1), clientMessageId: 'cid-1' }]); // server echo confirming pending-1 (cid-1)
     // The kernel's loadNewer falls back to init(-1) when the window is entirely optimistic (an empty-thread confirm).
     // init MUST reconcile pending just like getNewer — otherwise the confirmed pending survives in source.pending and
     // the kernel's elevatePending re-mounts it as a stale optimistic bubble below the next incoming message.
-    const items = await s.init(-1, 100, 0);
+    const items = await s.loadWindow({ kind: 'latest', count: 100 });
     expect(items.map((i) => i.id)).toEqual([1]);
     expect(items[0].clientMessageId).toBe('cid-1'); // shape preserves the reconcile key on the confirmed real
     expect(items[0].boundary).toBe('both'); // sole item spanning both edges (empty thread)
@@ -167,8 +181,8 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('getNewer never appends pending even when real fills the page at the edge (MAX_PAGE reals reach the end)', async () => {
-    const s = new MockItemSource(150, 0, new MockUserService(), 1); // total=150 → id 101..150 = exactly MAX_PAGE newer
-    await s.init(-1, 100, 0);
+    const s = new MockItemSource(150, 0, 0, new MockUserService(), 1); // total=150 → id 101..150 = exactly MAX_PAGE newer
+    await s.loadWindow({ kind: 'latest', count: 100 });
     s.addPending(msg(299));
     // cursor=100, count=100: exactly MAX_PAGE (50) real items (101..150) fill the page AND reach the end → no pending mixing.
     const newer = await s.getNewer(100, 100);
@@ -180,18 +194,18 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('deterministic: same total, two inits → identical data', async () => {
-    const a = new MockItemSource(300, 0, new MockUserService(), 1);
-    const b = new MockItemSource(300, 0, new MockUserService(), 1);
-    const ia = await a.init(-1, 300, 0);
-    const ib = await b.init(-1, 300, 0);
+    const a = new MockItemSource(300, 0, 0, new MockUserService(), 1);
+    const b = new MockItemSource(300, 0, 0, new MockUserService(), 1);
+    const ia = await a.loadWindow({ kind: 'latest', count: 300 });
+    const ib = await b.loadWindow({ kind: 'latest', count: 300 });
     expect(ia.map((i) => JSON.stringify(i.data))).toEqual(
       ib.map((i) => JSON.stringify(i.data)),
     );
   });
 
   it('data shape: all msgs + createdAtMs spread across many days', async () => {
-    const s = new MockItemSource(2000, 0, new MockUserService(), 1);
-    const items = await s.init(-1, 2000, 0);
+    const s = new MockItemSource(2000, 0, 0, new MockUserService(), 1);
+    const items = await s.loadWindow({ kind: 'latest', count: 2000 });
     expect(items.every((i) => i.data.type === 'msg')).toBe(true);
     expect(items.some((i) => i.data.contentType === 'IMAGE')).toBe(true);
     const ms = items.map((i) => i.data.createdAtMs);
@@ -199,16 +213,16 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('mirrors production: every IMAGE is a single image (consecutive same-creator merged by kernel mergeItems)', async () => {
-    const s = new MockItemSource(2000, 0, new MockUserService(), 1);
-    const items = await s.init(-1, 2000, 0);
+    const s = new MockItemSource(2000, 0, 0, new MockUserService(), 1);
+    const items = await s.loadWindow({ kind: 'latest', count: 2000 });
     const albums = items.filter((i) => i.data.contentType === 'IMAGE');
     expect(albums.length).toBeGreaterThan(0);
     expect(albums.every((a) => a.data.images?.length === 1)).toBe(true); // single image; merging is in mergeItems
   });
 
   it('ensureProfiles fills name/isSelf by creator via MockUserService (mirrors production ensureProfiles→queryUserInfo)', async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
-    const items = await s.init(-1, 100, 0);
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
+    const items = await s.loadWindow({ kind: 'latest', count: 100 });
     const self = items.find(
       (i) =>
         i.data.type === 'msg' &&
@@ -231,8 +245,8 @@ describe('MockItemSource (cursor contract)', () => {
   // the pending queue. clientMessageId is the retry/reconcile key; data.msgId is a stable numeric id unchanged across
   // the fail/retry flip (it is NOT the retry key — that is clientMessageId).
   it('failPending flips status to failed, sinks the entry to the end of pending, keeps clientMessageId + msgId stable', async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
-    await s.init(-1, 100, 0);
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
+    await s.loadWindow({ kind: 'latest', count: 100 });
     s.addPending({ ...msg(201), clientMessageId: 'cid-A' });
     s.addPending({ ...msg(202), clientMessageId: 'cid-B' });
     expect(s.failPending('cid-A')).toBe(true);
@@ -246,8 +260,8 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('retryPending flips status back to sending at its current position, keeping clientMessageId + msgId stable', async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
-    await s.init(-1, 100, 0);
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
+    await s.loadWindow({ kind: 'latest', count: 100 });
     s.addPending({ ...msg(201), clientMessageId: 'cid-A' });
     s.failPending('cid-A');
     const retrying = s.retryPending('cid-A');
@@ -260,17 +274,17 @@ describe('MockItemSource (cursor contract)', () => {
   });
 
   it('markPendingAccepted keeps the optimistic entry and spinner until its push echo arrives', async () => {
-    const s = new MockItemSource(500, 0, new MockUserService(), 1);
-    await s.init(-1, 100, 0);
+    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
+    await s.loadWindow({ kind: 'latest', count: 100 });
     s.addPending({
       ...msg(201),
       clientMessageId: 'cid-A',
-      data: { ...msg(201).data, status: 'sending', kind: 'pending' },
+      data: { ...msg(201).data, status: 'sending' },
     });
 
     expect(s.markPendingAccepted('cid-A')).toBe(true);
     expect(s.getPending()[0].data.status).toBe('accepted');
-    expect(s.getPending()[0].data.kind).toBeUndefined();
+    expect(Object.hasOwn(s.getPending()[0].data, 'kind')).toBe(false);
     expect(s.markPendingAccepted('missing')).toBe(false);
   });
 });

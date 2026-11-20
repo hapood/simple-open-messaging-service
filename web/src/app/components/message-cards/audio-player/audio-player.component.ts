@@ -1,14 +1,13 @@
-import { ChangeDetectionStrategy, ChangeDetectorRef, Component, computed, effect, ElementRef, inject, input, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, computed, ElementRef, inject, input, signal, viewChild } from '@angular/core';
 import { MEDIA_STATUS, type MediaStatus } from '../chat-item';
 import { formatDuration } from '../file-meta.util';
-import { MediaTransferService } from '../../../services/media-transfer.service';
 import { AudioPlaybackCoordinator } from './audio-playback-coordinator.service';
 
 /**
  * Flat progress-bar voice player, rendered inside an AUDIO cell of {@link MediaRowComponent}.
  *
  * Self-contained: owns one `<audio>` element + play/pause state + a progress fill driven by `timeupdate`.
- * Takes `src` (a CAS shard URL or an optimistic blob URL) and `duration` (seconds). The component FILLS its
+ * Takes `src` (a CAS shard URL) and `duration` (seconds). The component FILLS its
  * cell (100% width/height); the cell's height is locked to an integer px by layoutAlbum's audio branch, and
  * playback only animates a width fill — never a height change — so the virtual-scroll kernel's height-model
  * invariant (totalH === Σ offsetHeight) holds during playback.
@@ -28,13 +27,11 @@ import { AudioPlaybackCoordinator } from './audio-playback-coordinator.service';
 export class AudioPlayerComponent {
   /** Exposed for transfer-state comparisons in the template. */
   readonly MEDIA_STATUS = MEDIA_STATUS;
-  /** Audio source URL — a /uploads/cas/… CAS URL, or a blob: URL for an optimistic in-flight clip. */
+  /** Audio source URL — a /uploads/cas/… CAS URL. */
   readonly src = input.required<string>();
   /** Clip duration in seconds (client-probed / recorded). Display + the progress denominator. */
   readonly duration = input(0);
   readonly time = input('');
-  readonly pending = input(false);
-  readonly transferId = input('');
   readonly showUnplayed = input(true);
   /** Federated media localize status (message-level — every cell of the message shares it). Anything but
    *  'ready' ('downloading' = still localizing, 'failed' = localize failed) means the local shard URL is
@@ -50,7 +47,6 @@ export class AudioPlayerComponent {
    *  reference and pause any other clip playing elsewhere in the app when this one starts. */
   private readonly coordinator = inject(AudioPlaybackCoordinator);
   private readonly cdr = inject(ChangeDetectorRef);
-  private readonly transfers = inject(MediaTransferService);
   private readonly pauseFn = (): void => {
     this.audioRef()?.nativeElement?.pause();
   };
@@ -71,28 +67,6 @@ export class AudioPlayerComponent {
   readonly durLabel = computed(() => formatDuration(this.duration()));
   readonly played = signal(false);
   readonly rate = signal(1);
-  readonly transferProgress = computed<number | null>(() => {
-    const id = this.transferId();
-    if (!id) return null;
-    const task = this.transfers.tasks().find((candidate) => candidate.clientMessageId === id);
-    if (!task || task.status !== 'uploading' || task.size <= 0) return null;
-    return Math.max(0, Math.min(100, (task.loaded / task.size) * 100));
-  });
-  readonly showTransfer = computed(
-    () => this.pending() || this.status() === MEDIA_STATUS.DOWNLOADING,
-  );
-  readonly transferIndeterminate = computed(
-    () => this.status() === MEDIA_STATUS.DOWNLOADING || this.transferProgress() === null,
-  );
-
-  constructor() {
-    // Voice rows live in detached, imperatively-created views. Track app-scoped upload progress here
-    // and explicitly repaint the player without attaching the whole virtual list to global CD.
-    effect(() => {
-      this.transferProgress();
-      queueMicrotask(() => this.render());
-    });
-  }
 
   toggle(): void {
     const el = this.audioRef()?.nativeElement;

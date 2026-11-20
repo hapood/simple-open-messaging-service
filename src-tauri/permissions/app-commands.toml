@@ -145,22 +145,12 @@ commands.allow = ["sse_retry"]
 [[permission]]
 identifier = "allow-upload-stream-file"
 description = "Enables upload_stream_file — desktop streaming multipart upload from an on-disk file path (avoids buffering the whole file through the webview/IPC)."
-commands.allow = ["upload_stream_file"]
+commands.allow = ["upload_stream_file", "prepare_native_upload_sources", "release_native_upload_sources"]
 
 [[permission]]
 identifier = "allow-cancel-upload"
 description = "Enables cancel_upload — idempotently cancel one desktop streaming upload by its client message ID."
 commands.allow = ["cancel_upload"]
-
-[[permission]]
-identifier = "allow-retry-native-voice"
-description = "Retry a previously recorded native voice upload by client message ID."
-commands.allow = ["retry_native_voice"]
-
-[[permission]]
-identifier = "allow-discard-native-voice"
-description = "Discard a retained native voice recording by client message ID."
-commands.allow = ["discard_native_voice"]
 
 [[permission]]
 identifier = "allow-report-diagnostics"
@@ -225,6 +215,15 @@ commands.allow = [
   "native_db_query_group_members",
   "native_db_recreate_cache",
   "native_db_recreate_messages",
+  "native_send_enqueue",
+  "native_send_list",
+  "native_send_get",
+  "native_send_remove",
+  "native_send_clear",
+  "native_download_put",
+  "native_download_list",
+  "native_download_remove",
+  "native_download_clear",
   "native_db_thread_states",
   "native_db_validate_cache",
   "native_db_threads",
@@ -298,8 +297,6 @@ permissions = [
   "allow-sse-retry",
   "allow-upload-stream-file",
   "allow-cancel-upload",
-  "allow-retry-native-voice",
-  "allow-discard-native-voice",
   "allow-report-diagnostics",
   "allow-read-native-log",
   "allow-debug-logging",

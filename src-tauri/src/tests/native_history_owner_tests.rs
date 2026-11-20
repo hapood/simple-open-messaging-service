@@ -205,6 +205,18 @@ async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connectio
         .unwrap();
     assert!(local.has_older && local.has_newer);
     assert_eq!(sequences(local), [2, 3]);
+    for (anchor, older_count, newer_count, expected) in [
+        (2, 1, 1, vec![2, 3]),
+        (1, 1, 1, vec![1, 2]),
+        (0, 0, 2, vec![1, 2]),
+    ] {
+        let local = intent(&owner, &proxy)
+            .get(NativeHistoryDemand::LocalAround { anchor, older_count, newer_count })
+            .await.unwrap();
+        assert_eq!(local.has_older, anchor > 1);
+        assert!(local.has_newer);
+        assert_eq!(sequences(local), expected);
+    }
     // Both legs now use the same cached ranges without contacting the unreachable new origin.
     let result = intent(&owner, &proxy)
         .get(NativeHistoryDemand::Around {
@@ -225,9 +237,24 @@ async fn bootstrap_pages_and_cached_around_keep_one_owner_and_physical_connectio
             let ranges = load_message_ranges(conn, 42, 7)?;
             assert_eq!(ranges.len(), 1);
             assert_eq!((ranges[0].left, ranges[0].right), (0, 3));
+            // Keep all bodies but remove coverage for the middle coordinate.
+            conn.execute("DELETE FROM message_ranges WHERE user_id=42 AND thread_id=7", [])
+                .map_err(|e| e.to_string())?;
+            conn.execute("INSERT INTO message_ranges(user_id, thread_id, left_exclusive, right_inclusive, state)
+                VALUES (42,7,0,1,'LOCAL_COVERED'), (42,7,2,3,'LOCAL_COVERED')", [])
+                .map_err(|e| e.to_string())?;
             Ok(())
         })
         .unwrap();
+    for (anchor, expected) in [(0, vec![1]), (1, vec![1]), (2, vec![3])] {
+        let local = intent(&owner, &proxy)
+            .get(NativeHistoryDemand::LocalAround {
+                anchor, older_count: 50, newer_count: 50,
+            }).await.unwrap();
+        assert_eq!(local.has_older, anchor == 2);
+        assert!(local.has_newer);
+        assert_eq!(sequences(local), expected);
+    }
 }
 
 #[tokio::test]

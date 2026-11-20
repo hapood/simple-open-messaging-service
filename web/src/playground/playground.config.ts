@@ -44,7 +44,8 @@ import {
 import { MemberProfileRepository } from '../app/services/member-profile-store.service';
 import { ProfileNamespaceRepository } from '../app/services/profile-namespace-store.service';
 import { UserService } from '../app/services/user.service';
-import { WebdbService, WebdbStorage } from '../app/services/webdb.service';
+import { WebdbService } from '../app/services/webdb.service';
+import { PlaygroundWebdbStorage } from './playground-webdb-storage';
 import { SessionLifecycleService } from '../app/services/session-lifecycle.service';
 
 const playgroundNamespaceRepository = {
@@ -82,7 +83,7 @@ export const playgroundConfig: ApplicationConfig = {
     {
       provide: WebdbService,
       useFactory: (lifecycle: SessionLifecycleService) =>
-        new WebdbStorage(() => null, lifecycle),
+        new PlaygroundWebdbStorage(() => null, lifecycle),
       deps: [SessionLifecycleService],
     },
     provideRouter(

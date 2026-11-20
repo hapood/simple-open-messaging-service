@@ -198,6 +198,11 @@
 }
 
 .msg-name {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 11px;
   line-height: 13px; // integer px (see the integer-height contract)
   font-weight: 600;
@@ -341,7 +346,6 @@
 //  - retry: a clockwise circular arrow with an arrowhead.
 $msg-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='butt' stroke-linejoin='miter' stroke-miterlimit='3'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
 $msg-arc: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Ccircle cx='12' cy='12' r='9' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-dasharray='42 56'/%3E%3C/svg%3E");
-$msg-circle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Ccircle cx='12' cy='12' r='9' stroke='%23fff' stroke-width='3'/%3E%3C/svg%3E");
 $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='23 4 23 10 17 10'/%3E%3Cpath d='M20.49 15a9 9 0 1 1-2.12-9.36L23 10'/%3E%3C/svg%3E");
 
 // Delivery receipt tick — at the bubble's TOP-RIGHT corner (its original placement; only the icon artwork was upgraded
@@ -393,10 +397,7 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
   &.msg-status--accepted::before {
     opacity: 0;
   }
-  // Static sent check (default): a plain, persistent angular check for any status:'sent' row that is NOT an
-  // optimistic-send confirm — e.g. a sent real that mounts without a resort, or future delivery receipts. No animation.
-  // Only the optimistic-confirm reals (kernel-tagged cb-confirmed at the resort reveal) get the spinner→check→fade
-  // choreography under :host(.cb-confirmed) below — so the fade is scoped to those "special" items, not every sent row.
+  // Historical sent state is static; task acceptance never animates a history row.
   &.msg-status--sent::before {
     mask-image: $msg-check;
     -webkit-mask-image: $msg-check;
@@ -424,67 +425,9 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
   }
 }
 
-// Optimistic-send-confirm choreography — ONLY for reals that just confirmed a mounted optimistic send. The kernel tags
-// those cb-confirmed at the resort reveal handoff (after the optimistic bubble slid on and was removed), so the sequence
-// starts fresh right at reveal, synced with the outgoing optimistic spinner:
-//   1. the spinner closes into a rotation-invariant circle, which fades out as the check fades in (D1 = 0.4s).
-//   2. check → transparent: the ::before check fades to 0 over D2, beginning at D1 (only AFTER the spinner→check
-//      crossfade), then stays gone (forwards).
-// ::before is an in-flow flex item (the check, centered); ::after is an absolute overlay (the arc, centered via
-// margin:auto) so the two overlap and the crossfade reads as a morph. Bare status:'sent' (no cb-confirmed) keeps the
-// static check above and never animates. opacity-only never affects offsetHeight.
-:host(.cb-confirmed) {
-  .msg-status--sent::before {
-    animation: msg-sent-check 1.2s ease-out forwards; // 0→1 over D1 (check appears), 1→0 over D2 (check→transparent)
-  }
-  .msg-status--sent::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    margin: auto;
-    width: 13px; // matches --sending arc box → seamless spinner handoff at reveal
-    height: 13px;
-    background-color: currentColor;
-    mask-image: $msg-circle;
-    mask-position: center;
-    mask-size: contain;
-    mask-repeat: no-repeat;
-    -webkit-mask-image: $msg-circle;
-    -webkit-mask-position: center;
-    -webkit-mask-size: contain;
-    -webkit-mask-repeat: no-repeat;
-    // Closing the arc removes orientation from the handoff altogether: there is no spinner gap whose angle can jump.
-    animation: msg-sent-spinner 0.4s ease-out forwards;
-  }
-}
-
 @keyframes msg-status-spin {
   to {
     transform: rotate(360deg);
-  }
-}
-
-// Check lifecycle: fade in over D1 (0.4s ≈ 33% of 1.2s), then fade out to transparent over D2. The fade-out begins at
-// D1 — i.e. only after the spinner→check crossfade — per the "delayed after spinner-to-check duration" requirement.
-@keyframes msg-sent-check {
-  from {
-    opacity: 0;
-  }
-  33% {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
-}
-
-// Spinner ring fade-out: 1 → 0 over D1 (the spinner → check crossfade window).
-@keyframes msg-sent-spinner {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
   }
 }
 

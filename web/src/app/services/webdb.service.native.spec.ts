@@ -67,6 +67,49 @@ describe('WebdbService native SQLite routing', () => {
     tauriWindow().__TAURI__ = undefined;
   });
 
+  it('routes pending intents through SQLite with original attachment identities and MIME', async () => {
+    const task = { clientMessageId: 'cid', threadId: 7, item: {
+      type: 'FILE' as const, file: { path: 'file.bin', name: 'file.bin', partId: 'part', mimeType: 'application/x-custom' },
+    } };
+    await service.enqueuePendingSend(task);
+    expect(calls).toContainEqual({ cmd: 'native_send_enqueue', args: { task } });
+    responses.set('native_send_get', task);
+    expect(await service.pendingSend('cid')).toEqual(task);
+    expect(calls).toContainEqual({ cmd: 'native_send_get', args: { clientMessageId: 'cid' } });
+    responses.set('native_send_list', [task]);
+    expect(await service.pendingSends()).toEqual([task]);
+    await service.removePendingSend('cid');
+    expect(calls).toContainEqual({ cmd: 'native_send_remove', args: { clientMessageId: 'cid' } });
+    await service.clearPendingSends();
+    expect(calls).toContainEqual({ cmd: 'native_send_clear', args: undefined });
+    responses.delete('native_send_get');
+    expect(await service.pendingSend('missing')).toBeNull();
+  });
+
+  it('rejects pending storage work after account closure without invoking SQLite commands', async () => {
+    await service.close();
+    calls.length = 0;
+    await expect(service.pendingSends()).rejects.toThrow();
+    await expect(service.pendingSend('cid')).rejects.toThrow();
+    await expect(service.removePendingSend('cid')).rejects.toThrow();
+    await expect(service.clearPendingSends()).rejects.toThrow();
+    await expect(service.enqueuePendingSend({ clientMessageId: 'cid', threadId: 7,
+      item: { type: 'PURE_TEXT', content: 'hello' },
+    })).rejects.toThrow();
+    expect(calls.filter(call => call.cmd.startsWith('native_send_'))).toEqual([]);
+  });
+
+  it('rejects browser attachment bytes before invoking native pending storage', async () => {
+    const file = { partId: 'part', name: 'image.png', mimeType: 'image/png', blob: new Blob(['image']) };
+    await expect(service.enqueuePendingSend({ clientMessageId: 'file', threadId: 7,
+      item: { type: 'IMAGE', file },
+    })).rejects.toThrow('native pending send requires path attachments');
+    await expect(service.enqueuePendingSend({ clientMessageId: 'gallery', threadId: 7,
+      item: { type: 'GALLERY', files: [{ ...file, intent: 'IMAGE' }] },
+    })).rejects.toThrow('native pending send requires path attachments');
+    expect(calls.some(call => call.cmd === 'native_send_enqueue')).toBe(false);
+  });
+
   it('initializes the native account record before opening reads without inventing sync cursors', async () => {
     expect(calls).toContainEqual({
       cmd: 'native_db_initialize_account_state',

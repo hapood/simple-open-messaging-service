@@ -4,6 +4,13 @@ Status: design checkpoints 1 through 5 are approved and implemented. The backend
 browser/native range reducers, transactional range storage, browser/native source walkers, viewport gap
 projection, and superseded sparse-marker cleanup are complete.
 
+The separately reviewed [chat history entry and message-window design](./chat-history-entry-and-window.md)
+specifies the next Web presentation changes: read-cursor entry, skeleton/composer
+transitions, disposable entry gaps, edge demand, and bottom following. That work
+has not started and does not change this document's durable range model or
+browser/native query contracts. Its temporary entry gaps must not be confused
+with the persisted server gaps described here.
+
 ## 1. Scope
 
 This design replaces the web client's message-row section markers with an

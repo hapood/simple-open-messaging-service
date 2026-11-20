@@ -134,7 +134,7 @@ pub(crate) fn command(
         target: value.target,
         latest_seq: None,
         title: if preferences.private_preview || personal || value.title.is_empty() {
-            "SOMS".into()
+            "SOMS.im".into()
         } else {
             value.title.clone()
         },
@@ -338,7 +338,7 @@ mod tests {
         let NotificationCommand::Show(c) = command(&value, &private, "en", true) else {
             panic!()
         };
-        assert_eq!(c.title, "SOMS");
+        assert_eq!(c.title, "SOMS.im");
         assert!(c.latest_seq.is_none());
         assert!(serde_json::to_value(&c).unwrap().get("latestSeq").is_none());
         assert!(c.silent);

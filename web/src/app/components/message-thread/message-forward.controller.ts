@@ -1,4 +1,4 @@
-import { firstValueFrom, timeout } from 'rxjs';
+import { firstValueFrom } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
@@ -9,7 +9,6 @@ import type { StandardResponse } from '../../services/model';
 import type { ForwardDialogResult } from '../forward-dialog/forward-dialog.component';
 import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
 import { MessageThreadAdapter } from './message-thread-adapter';
-import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
 
 /** Coordinates the forward dialog and fan-out requests independently of thread rendering. */
 export class MessageForwardController {
@@ -96,7 +95,7 @@ export class MessageForwardController {
                   mode: result.mode,
                   clientMessageId: this.newClientMessageId(),
                 })
-                .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
+,
             );
             responses.push(response);
           } catch {

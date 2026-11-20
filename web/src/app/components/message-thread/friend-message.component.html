@@ -23,7 +23,9 @@
     <app-message-header
       #msgHeader
       [userMsgTrd]="userMsgTrd()"
+      [tailCueVisible]="tailCueVisible()"
       (searchJump)="onSearchJump($event)"
+      (sendingTasksRequested)="openUploadDetails()"
       [style.--soms-safe-top]="showCallBanner() ? '0px' : null"
       [style.--msg-header-h]="showCallBanner() ? '56px' : null"
     ></app-message-header>
@@ -158,7 +160,7 @@
       #viewport
       tabindex="0"
       role="region"
-      [attr.aria-busy]="windowJumpState() === 'loading'"
+      [attr.aria-busy]="showWindowSkeleton()"
       [attr.aria-label]="'chat.messageListAria' | transloco"
       (transitionend)="onViewportTransitionEnd($event)"
     >
@@ -167,15 +169,8 @@
       <div class="msg-content" #content role="list">
         <div class="msg-sentinel" #topSentinel></div>
       </div>
-      @if (windowJumpState() === 'loading') {
-        <div class="msg-window-loading" role="status">
-          <span class="msg-window-status">{{
-            'common.loading' | transloco
-          }}</span>
-          @for (row of [0, 1, 2, 3, 4]; track row) {
-            <div class="msg-window-skeleton" aria-hidden="true"></div>
-          }
-        </div>
+      @if (showWindowSkeleton()) {
+        <app-message-window-skeleton />
       } @else if (
         windowJumpState() === 'failed' || windowJumpState() === 'missing'
       ) {
@@ -305,231 +300,6 @@
         </button>
       }
     </div>
-
-    @if (sendingTransfers().length || failedTransfers().length) {
-      <div #transferStack class="msg-transfer-stack" aria-live="polite">
-        @if (sendingTransfers().length) {
-          <div class="msg-transfer-line">
-            <div class="msg-transfer-actions">
-              <button
-                type="button"
-                class="msg-transfer-btn msg-transfer-btn--cancel"
-                (click)="cancelUploadingTransfers()"
-                [attr.aria-label]="'transfer.cancel' | transloco"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            </div>
-            <div
-              class="msg-transfer-card msg-transfer-card--interactive"
-              role="button"
-              tabindex="0"
-              (click)="openUploadDetails()"
-              (keydown.enter)="openUploadDetails()"
-              (keydown.space)="$event.preventDefault(); openUploadDetails()"
-              [attr.aria-label]="'transfer.openDetails' | transloco"
-            >
-              <div class="msg-transfer-head">
-                <span>{{
-                  'transfer.sendingCount'
-                    | transloco: { count: sendingTransfers().length }
-                }}</span>
-                <span class="msg-transfer-count">{{ uploadCountLabel() }}</span>
-              </div>
-              <div class="msg-transfer-thumbs">
-                @for (
-                  task of displayedSendingTransfers().slice(0, 4);
-                  track task.clientMessageId
-                ) {
-                  <span
-                    class="msg-transfer-thumb"
-                    [class.msg-transfer-thumb--uploading]="
-                      task.clientMessageId === currentUploadingTransferId()
-                    "
-                  >
-                    @if (task.previewUrl) {
-                      <img [src]="task.previewUrl" alt="" />
-                    } @else {
-                      <span
-                        class="msg-transfer-file-icon msg-transfer-file-icon--{{
-                          transferCategory(task.name)
-                        }}"
-                      >
-                        <svg
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.6"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          aria-hidden="true"
-                        >
-                          @if (transferCategory(task.name) === 'unknown') {
-                            <path
-                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
-                            />
-                            <path d="M14 3v5h5" />
-                            <path
-                              d="M10 11a2 2 0 1 1 3.3 1.5c-.8.6-1.3 1-1.3 2"
-                            />
-                            <path d="M12 18h.01" />
-                          } @else {
-                            <path
-                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
-                            />
-                            <path d="M14 3v5h5" />
-                          }
-                        </svg>
-                        <span>{{ transferExt(task.name) }}</span>
-                      </span>
-                    }
-                    @if (
-                      task.clientMessageId === currentUploadingTransferId()
-                    ) {
-                      <svg
-                        class="msg-transfer-spinner"
-                        viewBox="0 0 28 28"
-                        role="progressbar"
-                        [attr.aria-label]="
-                          'transfer.sendingCount' | transloco: { count: 1 }
-                        "
-                        aria-valuemin="0"
-                        aria-valuemax="100"
-                        [attr.aria-valuenow]="
-                          transferProgress(task.loaded, task.size)
-                        "
-                      >
-                        <circle
-                          class="msg-transfer-spinner-track"
-                          cx="14"
-                          cy="14"
-                          r="10"
-                        />
-                        <circle
-                          class="msg-transfer-spinner-value"
-                          cx="14"
-                          cy="14"
-                          r="10"
-                          [style.stroke-dashoffset]="
-                            62.832 *
-                            (1 - transferProgress(task.loaded, task.size) / 100)
-                          "
-                        />
-                        <text x="14" y="14">
-                          {{ transferProgress(task.loaded, task.size) }}
-                        </text>
-                      </svg>
-                    }
-                  </span>
-                }
-                @if (sendingTransfers().length > 4) {
-                  <span class="msg-transfer-thumb msg-transfer-more"
-                    >+{{ sendingTransfers().length - 4 }}</span
-                  >
-                }
-              </div>
-            </div>
-          </div>
-        }
-        @if (failedTransfers().length) {
-          <div class="msg-transfer-line">
-            <div class="msg-transfer-actions">
-              @if (retryableFailedTransfers().length) {
-                <button
-                  type="button"
-                  class="msg-transfer-btn msg-transfer-btn--retry"
-                  (click)="retryFailedTransfers()"
-                  [attr.aria-label]="'transfer.retry' | transloco"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
-                  </svg>
-                </button>
-              }
-              <button
-                type="button"
-                class="msg-transfer-btn msg-transfer-btn--cancel"
-                (click)="cancelFailedTransfers()"
-                [attr.aria-label]="'transfer.cancel' | transloco"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            </div>
-            <div
-              class="msg-transfer-card msg-transfer-card--failed msg-transfer-card--interactive"
-              role="button"
-              tabindex="0"
-              (click)="openUploadDetails()"
-              (keydown.enter)="openUploadDetails()"
-              (keydown.space)="$event.preventDefault(); openUploadDetails()"
-              [attr.aria-label]="'transfer.openDetails' | transloco"
-            >
-              <div class="msg-transfer-head">
-                <span>{{
-                  'transfer.failedCount'
-                    | transloco: { count: failedTransfers().length }
-                }}</span>
-                <span aria-hidden="true">!</span>
-              </div>
-              <div class="msg-transfer-thumbs">
-                @for (
-                  task of failedTransfers().slice(0, 4);
-                  track task.clientMessageId
-                ) {
-                  <span class="msg-transfer-thumb">
-                    @if (task.previewUrl) {
-                      <img [src]="task.previewUrl" alt="" />
-                    } @else {
-                      <span
-                        class="msg-transfer-file-icon msg-transfer-file-icon--{{
-                          transferCategory(task.name)
-                        }}"
-                      >
-                        <svg
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.6"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          aria-hidden="true"
-                        >
-                          @if (transferCategory(task.name) === 'unknown') {
-                            <path
-                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
-                            />
-                            <path d="M14 3v5h5" />
-                            <path
-                              d="M10 11a2 2 0 1 1 3.3 1.5c-.8.6-1.3 1-1.3 2"
-                            />
-                            <path d="M12 18h.01" />
-                          } @else {
-                            <path
-                              d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
-                            />
-                            <path d="M14 3v5h5" />
-                          }
-                        </svg>
-                        <span>{{ transferExt(task.name) }}</span>
-                      </span>
-                    }
-                  </span>
-                }
-                @if (failedTransfers().length > 4) {
-                  <span class="msg-transfer-thumb msg-transfer-more"
-                    >+{{ failedTransfers().length - 4 }}</span
-                  >
-                }
-              </div>
-            </div>
-          </div>
-        }
-      </div>
-    }
 
     @if (selectionMode()) {
       <div

@@ -76,6 +76,17 @@ export class ConversationListService {
     void this.repo.setOpenThread(threadId);
   }
 
+  /** Capture this value before asynchronous entry work; unread eligibility is independent. */
+  entryReadSeq(threadId: number): number {
+    const cursor = this.repo.readCursorState(threadId);
+    return (
+      cursor.effectiveLastReadSeq ??
+      this.repo.items().find((item) => item.threadId === threadId)
+        ?.lastReadSeq ??
+      0
+    );
+  }
+
   /** A non-mutating read for last-read positioning before the first mount. The
    * divider itself is captured and applied only once the pane has mounted. */
   previewUnreadEntryBoundary(
@@ -183,10 +194,7 @@ export class ConversationListService {
   }
 
   /** Apply an optimistic local group metadata patch. Durable replacement arrives via state delta. */
-  applyGroupUpdate(
-    threadId: number,
-    patch: GroupThreadPatch,
-  ): void {
+  applyGroupUpdate(threadId: number, patch: GroupThreadPatch): void {
     this.repo.applyGroupUpdate(threadId, patch);
   }
 

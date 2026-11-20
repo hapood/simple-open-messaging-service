@@ -31,8 +31,8 @@ describe('PlaygroundMessageThreadAdapter', () => {
       profileRev: 1,
     });
     const callbacks = { onNewerAvailable: () => {}, onMediaStatus: () => {} };
-    const source = adapter.createSource(conversation, callbacks);
-    const items = await source.init(-1, 20, 0);
+    const source = adapter.createSource(conversation, 0);
+    const items = await source.loadWindow({ kind: 'latest', count: 20 });
     const seq = items.find((item) => item.data.type === 'msg')!.id;
     const event = vi.fn();
     const subscription = adapter.deletedLive$.subscribe(event);
@@ -57,9 +57,11 @@ describe('PlaygroundMessageThreadAdapter', () => {
     expect(
       await adapter.getMessageDeletions(conversation.threadId, []),
     ).toEqual([]);
-    const replacement = adapter.createSource(conversation, callbacks);
+    const replacement = adapter.createSource(conversation, 0);
     expect(
-      (await replacement.init(-1, 20, 0)).some((item) => item.id === seq),
+      (await replacement.loadWindow({ kind: 'latest', count: 20 })).some(
+        (item) => item.id === seq,
+      ),
     ).toBe(false);
     subscription.unsubscribe();
     source.destroy?.();
@@ -77,10 +79,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
         publisherNamespaceId: 0,
         profileRev: 1,
       }),
-      {
-        onNewerAvailable: () => undefined,
-        onMediaStatus: () => undefined,
-      },
+      0,
     ) as MockItemSource;
     const pushed: CbItem<ChatItemData>[][] = [];
     vi.spyOn(source, 'pushLive').mockImplementation((items) =>
@@ -121,10 +120,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
         publisherNamespaceId: 0,
         profileRev: 1,
       }),
-      {
-        onNewerAvailable: () => undefined,
-        onMediaStatus: () => undefined,
-      },
+      0,
     ) as MockItemSource;
     const pushed: CbItem<ChatItemData>[][] = [];
     vi.spyOn(source, 'pushLive').mockImplementation((items) =>
@@ -166,10 +162,10 @@ describe('PlaygroundMessageThreadAdapter', () => {
     adapter.confirmDelay.set(0);
     adapter.pushSignalDelay.set(0);
     adapter.replyDelay.set(0);
-    const source = adapter.createSource({ threadId: 1 } as ConversationItem, {
-      onNewerAvailable: () => undefined,
-      onMediaStatus: () => undefined,
-    }) as MockItemSource;
+    const source = adapter.createSource(
+      { threadId: 1 } as ConversationItem,
+      0,
+    ) as MockItemSource;
     const optimistic: CbItem<ChatItemData> = {
       id: -1,
       clientMessageId: 'contact-1',
@@ -237,13 +233,10 @@ describe('PlaygroundMessageThreadAdapter', () => {
     adapter.groupSenderCount.set(3);
     const source = adapter.createSource(
       { threadId: 2, type: 'GROUP' } as ConversationItem,
-      {
-        onNewerAvailable: () => undefined,
-        onMediaStatus: () => undefined,
-      },
+      0,
     );
 
-    const messages = await source.init(-1, 100, 0);
+    const messages = await source.loadWindow({ kind: 'latest', count: 100 });
     const incoming = messages.filter(
       (item) => item.data.type === 'msg' && !item.data.isSelf,
     );
@@ -258,10 +251,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
     const adapter = makeAdapter();
     adapter.itemCount.set(30);
     adapter.sourceLatency.set(0);
-    adapter.createSource({ threadId: 1 } as ConversationItem, {
-      onNewerAvailable: () => undefined,
-      onMediaStatus: () => undefined,
-    });
+    adapter.createSource({ threadId: 1 } as ConversationItem, 0);
 
     const search = await firstValueFrom(
       adapter.searchMessages({
@@ -298,15 +288,15 @@ describe('PlaygroundMessageThreadAdapter', () => {
     const adapter = makeAdapter();
     adapter.sourceLatency.set(0);
     adapter.itemCount.set(30);
-    const first = adapter.createSource({ threadId: 1 } as ConversationItem, {
-      onNewerAvailable: () => undefined,
-      onMediaStatus: () => undefined,
-    }) as MockItemSource;
+    const first = adapter.createSource(
+      { threadId: 1 } as ConversationItem,
+      0,
+    ) as MockItemSource;
     adapter.itemCount.set(1);
-    const second = adapter.createSource({ threadId: 2 } as ConversationItem, {
-      onNewerAvailable: () => undefined,
-      onMediaStatus: () => undefined,
-    }) as MockItemSource;
+    const second = adapter.createSource(
+      { threadId: 2 } as ConversationItem,
+      0,
+    ) as MockItemSource;
 
     const search = await firstValueFrom(
       adapter.searchMessages({
@@ -319,27 +309,37 @@ describe('PlaygroundMessageThreadAdapter', () => {
     expect(second.search('virtual scroll', 50)).toEqual([]);
 
     await firstValueFrom(adapter.withdrawMessage({ threadId: 1, seq: 1 }));
-    expect((await first.init(-1, 50, 0)).some((item) => item.id === 1)).toBe(
-      false,
-    );
-    expect((await second.init(-1, 50, 0)).map((item) => item.id)).toEqual([1]);
+    expect(
+      (await first.loadWindow({ kind: 'latest', count: 50 })).some(
+        (item) => item.id === 1,
+      ),
+    ).toBe(false);
+    expect(
+      (await second.loadWindow({ kind: 'latest', count: 50 })).map(
+        (item) => item.id,
+      ),
+    ).toEqual([1]);
   });
 
   it('keeps withdrawal successful when send errors are enabled', async () => {
     const adapter = makeAdapter();
     adapter.itemCount.set(2);
     adapter.sourceLatency.set(0);
-    const source = adapter.createSource({ threadId: 1 } as ConversationItem, {
-      onNewerAvailable: () => undefined,
-      onMediaStatus: () => undefined,
-    }) as MockItemSource;
+    const source = adapter.createSource(
+      { threadId: 1 } as ConversationItem,
+      0,
+    ) as MockItemSource;
     adapter.sendError.set(true);
 
     const result = await firstValueFrom(
       adapter.withdrawMessage({ threadId: 1, seq: 1 }),
     );
     expect(result.code).toBe(0);
-    expect((await source.init(-1, 50, 0)).map((item) => item.id)).toEqual([2]);
+    expect(
+      (await source.loadWindow({ kind: 'latest', count: 50 })).map(
+        (item) => item.id,
+      ),
+    ).toEqual([2]);
   });
 
   it('confirms a delayed link in its original conversation, not the newly opened one', async () => {
@@ -347,10 +347,10 @@ describe('PlaygroundMessageThreadAdapter', () => {
     adapter.itemCount.set(0);
     adapter.sourceLatency.set(0);
     adapter.confirmDelay.set(10);
-    const first = adapter.createSource({ threadId: 1 } as ConversationItem, {
-      onNewerAvailable: () => undefined,
-      onMediaStatus: () => undefined,
-    }) as MockItemSource;
+    const first = adapter.createSource(
+      { threadId: 1 } as ConversationItem,
+      0,
+    ) as MockItemSource;
     first.addPending({
       id: -1,
       clientMessageId: 'link-1',
@@ -373,14 +373,18 @@ describe('PlaygroundMessageThreadAdapter', () => {
       generationId: 'generation-1',
       clientMessageId: 'link-1',
     });
-    const second = adapter.createSource({ threadId: 2 } as ConversationItem, {
-      onNewerAvailable: () => undefined,
-      onMediaStatus: () => undefined,
-    }) as MockItemSource;
+    const second = adapter.createSource(
+      { threadId: 2 } as ConversationItem,
+      0,
+    ) as MockItemSource;
 
     expect((await sending).code).toBe(0);
-    expect((await first.init(-1, 50, 0)).map((item) => item.id)).toEqual([1]);
-    expect(await second.init(-1, 50, 0)).toEqual([]);
+    expect(
+      (await first.loadWindow({ kind: 'latest', count: 50 })).map(
+        (item) => item.id,
+      ),
+    ).toEqual([1]);
+    expect(await second.loadWindow({ kind: 'latest', count: 50 })).toEqual([]);
   });
 
   it('completes mock uploads without an HTTP transport', async () => {

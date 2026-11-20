@@ -10,6 +10,7 @@ import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dia
 import { ClientIncompatibleDialogComponent } from '../components/client-incompatible-dialog/client-incompatible-dialog.component';
 import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
 import { SettingsComponent } from '../components/settings/settings.component';
+import { DownloadDetailDialogComponent } from '../components/download-detail-dialog/download-detail-dialog.component';
 import { UploadDetailDialogComponent } from '../components/upload-detail-dialog/upload-detail-dialog.component';
 import {
   ForwardDialogComponent,
@@ -67,6 +68,7 @@ export enum PopupType {
   CONFIRM,
   CLIENT_INCOMPATIBLE,
   UPLOAD_DETAIL,
+  DOWNLOAD_DETAIL,
   FORWARD,
   FORWARD_DETAIL,
   LINK_ORIGINAL,
@@ -89,6 +91,7 @@ const componentDict: Record<PopupType, () => Type<unknown>> = {
   [PopupType.CONFIRM]: () => ConfirmDialogComponent,
   [PopupType.CLIENT_INCOMPATIBLE]: () => ClientIncompatibleDialogComponent,
   [PopupType.UPLOAD_DETAIL]: () => UploadDetailDialogComponent,
+  [PopupType.DOWNLOAD_DETAIL]: () => DownloadDetailDialogComponent,
   [PopupType.FORWARD]: () => ForwardDialogComponent,
   [PopupType.FORWARD_DETAIL]: () => ForwardDetailComponent,
   [PopupType.LINK_ORIGINAL]: () => LinkOriginalDialogComponent,
@@ -107,6 +110,7 @@ const presentationDict: Record<PopupType, DialogPresentation> = {
   [PopupType.CONFIRM]: 'modal',
   [PopupType.CLIENT_INCOMPATIBLE]: 'modal',
   [PopupType.UPLOAD_DETAIL]: 'page',
+  [PopupType.DOWNLOAD_DETAIL]: 'page',
   [PopupType.FORWARD]: 'page',
   [PopupType.FORWARD_DETAIL]: 'viewer',
   [PopupType.LINK_ORIGINAL]: 'modal',
@@ -145,7 +149,8 @@ export interface PopupInput {
   };
   /** Once-per-launch shell↔backend incompatibility notice. `serverVersion` is interpolated into the copy. */
   [PopupType.CLIENT_INCOMPATIBLE]: { serverVersion: string };
-  [PopupType.UPLOAD_DETAIL]: { threadId?: number };
+  [PopupType.DOWNLOAD_DETAIL]: Record<string, never>;
+  [PopupType.UPLOAD_DETAIL]: { threadId: number; messageActions: { cancel(cid: string): Promise<void>; retry(cid: string): Promise<void> } };
   [PopupType.FORWARD]: {
     messages?: readonly ForwardMessageItem[];
     recordKind?: ForwardRecordKind;
@@ -198,6 +203,7 @@ export interface PopupResult {
   // acknowledge-only — no meaningful result (undefined on dismiss).
   [PopupType.CLIENT_INCOMPATIBLE]: undefined;
   [PopupType.UPLOAD_DETAIL]: undefined;
+  [PopupType.DOWNLOAD_DETAIL]: undefined;
   [PopupType.FORWARD]: ForwardDialogResult | undefined;
   [PopupType.FORWARD_DETAIL]: undefined;
   [PopupType.LINK_ORIGINAL]: undefined;

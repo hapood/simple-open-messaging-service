@@ -85,7 +85,7 @@ static NSColor *SomsColor(unsigned rgb) {
     self.logo.wantsLayer = YES;
     self.brand = [[NSView alloc] initWithFrame:NSZeroRect];
     self.brand.wantsLayer = YES;
-    self.title = [NSTextField labelWithString:@"SOMS"];
+    self.title = [NSTextField labelWithString:@"SOMS.im"];
     self.title.font = [NSFont boldSystemFontOfSize:28];
     self.title.alignment = NSTextAlignmentCenter;
     self.tagline = [NSTextField wrappingLabelWithString:self.chinese ? @"开放聊天，简单即时。" : @"Open chat. Simple and instant."];
@@ -100,7 +100,7 @@ static NSColor *SomsColor(unsigned rgb) {
     [self addSubview:self.status];
     [self setAccessibilityElement:YES];
     [self setAccessibilityRole:NSAccessibilityGroupRole];
-    [self setAccessibilityLabel:@"SOMS"];
+    [self setAccessibilityLabel:@"SOMS.im"];
     return self;
 }
 - (void)layout {

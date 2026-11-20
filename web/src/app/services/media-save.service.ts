@@ -13,6 +13,11 @@ export interface SaveMediaRequest {
 }
 
 /** The user closed the platform save picker without choosing a destination. */
+function isMediaSaveCancelled(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('media save cancelled');
+}
+
 export class MediaSaveCancelledError extends Error {
   constructor() {
     super('Media save was cancelled');
@@ -29,7 +34,7 @@ export class MediaSaveCancelledError extends Error {
 export class MediaSaveService {
   private readonly pendingAndroidSaves = new Map<
     string,
-    { resolve: () => void; reject: (error: Error) => void }
+    { resolve: (destination: string | null) => void; reject: (error: Error) => void }
   >();
 
   constructor() {
@@ -37,49 +42,54 @@ export class MediaSaveService {
       requestId,
       success,
       cancelled,
+      destination,
     }) => {
       const pending = this.pendingAndroidSaves.get(requestId);
       if (!pending) return;
       this.pendingAndroidSaves.delete(requestId);
-      if (success) pending.resolve();
+      if (success) pending.resolve(destination ?? null);
       else if (cancelled) pending.reject(new MediaSaveCancelledError());
       else pending.reject(new Error('Android document save was cancelled or failed'));
     };
   }
 
-  async save(request: SaveMediaRequest): Promise<void> {
+  async save(request: SaveMediaRequest, taskId = ''): Promise<string | null> {
     if (!isTauri()) {
       this.saveInBrowser(request);
-      return;
+      return null;
     }
 
     if (isAndroidNative()) {
-      const cached = await tauriInvoke<{ path: string }>('cache_media', {
-        path: request.path,
-      });
       const requestId = crypto.randomUUID();
-      const legacyResult = new Promise<void>((resolve, reject) => {
+      const saveResult = new Promise<string | null>((resolve, reject) => {
         this.pendingAndroidSaves.set(requestId, { resolve, reject });
       });
-      const saved = window.SomsMedia?.save(
-        requestId,
-        cached.path,
-        request.filename,
-        request.mimeType ?? '',
-      );
-      if (!saved) {
+      try {
+        const saved = window.SomsMedia?.save(
+          requestId,
+          request.path,
+          request.filename,
+          request.mimeType ?? '',
+          taskId,
+        );
+        if (!saved) throw new Error('Android media save bridge is unavailable');
+        if (saved === 'pending') return await saveResult;
+        return null;
+      } finally {
         this.pendingAndroidSaves.delete(requestId);
-        throw new Error('Android media save bridge is unavailable');
       }
-      if (saved === 'pending') await legacyResult;
-      else this.pendingAndroidSaves.delete(requestId);
-      return;
     }
 
-    await tauriInvoke<string>('save_media_desktop', {
-      path: request.path,
-      filename: request.filename,
-    });
+    try {
+      return await tauriInvoke<string>('save_media_desktop', {
+        path: request.path,
+        filename: request.filename,
+        taskId: taskId || null,
+      });
+    } catch (error) {
+      if (isMediaSaveCancelled(error)) throw new MediaSaveCancelledError();
+      throw error;
+    }
   }
 
   private saveInBrowser(request: SaveMediaRequest): void {

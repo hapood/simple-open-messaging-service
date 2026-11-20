@@ -3,7 +3,6 @@ import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { AudioPlayerComponent } from './audio-player.component';
 import { MEDIA_STATUS, type MediaStatus } from '../chat-item';
-import { MediaTransferService } from '../../../services/media-transfer.service';
 
 /**
  * Guards the federated playback bug: while a clip is not playable — still localizing (status
@@ -102,47 +101,17 @@ describe('AudioPlayerComponent', () => {
     expect(comp.failed()).toBe(false); // inert preempts play, so onError never trips a spurious failed
   });
 
-  it('uses the same playable player structure for an optimistic blob URL', async () => {
+  it('renders ready audio without a transfer rail', async () => {
     const fixture = TestBed.createComponent(AudioPlayerComponent);
-    fixture.componentRef.setInput('src', 'blob:voice');
+    fixture.componentRef.setInput('src', '/uploads/cas/aa/bb/voice.webm');
     fixture.componentRef.setInput('duration', 8);
-    fixture.componentRef.setInput('pending', true);
     fixture.detectChanges();
     await fixture.whenStable();
 
     expect(fixture.componentInstance.inert()).toBe(false);
-    // Sending/upload state belongs to the message receipt and transfer rail; the play control must not
-    // render a second spinner that looks like audio buffering.
-    expect(fixture.nativeElement.querySelector('.ap-pending-ring')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.ap-transfer')).toBeNull();
     expect(fixture.nativeElement.querySelector('.ap-btn').disabled).toBe(false);
     expect(fixture.nativeElement.querySelector('.ap-wave')).not.toBeNull();
-  });
-
-  it('renders upload progress as a height-neutral bottom rail', async () => {
-    const transfers = TestBed.inject(MediaTransferService);
-    transfers.start({
-      clientMessageId: 'voice-progress',
-      threadId: 1,
-      kind: 'audio',
-      name: 'voice.webm',
-      size: 100,
-    });
-    transfers.progress('voice-progress', 40, 100);
-    const fixture = TestBed.createComponent(AudioPlayerComponent);
-    fixture.componentRef.setInput('src', 'blob:voice');
-    fixture.componentRef.setInput('pending', true);
-    fixture.componentRef.setInput('transferId', 'voice-progress');
-    fixture.detectChanges();
-    await fixture.whenStable();
-
-    const rail = fixture.nativeElement.querySelector(
-      '.ap-transfer',
-    ) as HTMLElement;
-    const fill = rail.querySelector('span') as HTMLElement;
-    expect(rail).not.toBeNull();
-    expect(rail.classList).not.toContain('ap-transfer--indeterminate');
-    expect(fill.style.width).toBe('40%');
-    transfers.dismiss('voice-progress');
   });
 
   it('renders a visible indeterminate progress rail while audio is downloading', async () => {
@@ -156,8 +125,7 @@ describe('AudioPlayerComponent', () => {
       '.ap-transfer',
     ) as HTMLElement;
     expect(rail).not.toBeNull();
-    expect(rail.classList).toContain('ap-transfer--indeterminate');
-    expect(rail.classList).toContain('ap-transfer--download');
+    expect(rail.hasAttribute('aria-valuenow')).toBe(false);
     expect(rail.getAttribute('aria-label')).toBe('Audio download progress');
   });
 

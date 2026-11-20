@@ -7,8 +7,8 @@
     <string name="notif_message_retracted">[消息已撤回]</string>
     <string name="notif_message_removed">[管理员已删除]</string>
     <string name="notif_private_body">你有新消息</string>
-    <string name="app_name">"SOMS"</string>
-    <string name="main_activity_title">"SOMS"</string>
+    <string name="app_name">"SOMS.im"</string>
+    <string name="main_activity_title">"SOMS.im"</string>
     <string name="splash_tagline">开放聊天，简单即时。</string>
     <string name="splash_preparing">准备中</string>
     <string name="splash_recovery_slow">恢复时间较长，请稍候或重试。</string>

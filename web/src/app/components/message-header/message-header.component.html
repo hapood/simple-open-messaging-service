@@ -60,9 +60,16 @@
           </button>
         }
       </span>
-      @if (subtitle()) {
-        <span class="msg-subtitle" [title]="subtitle()">{{ subtitle() }}</span>
-      }
+      <app-sending-task-indicator
+        class="msg-subtitle"
+        [bio]="subtitle()"
+        [suppressed]="tailCueVisible()"
+        [composerActive]="composerEditing()"
+        [messageCount]="taskSummary().messageCount"
+        [failedCount]="taskSummary().failedCount"
+        [uploadCount]="taskSummary().uploadCount"
+        (openPanel)="openSendingTasks()"
+      />
     </div>
     <div class="msg-actions">
       @if (canCall()) {

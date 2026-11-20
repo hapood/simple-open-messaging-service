@@ -25,7 +25,7 @@ import {
   MediaAvailabilityRegistration,
   MediaAvailabilityService,
 } from '../../services/media-availability.service';
-import { MediaSaveService } from '../../services/media-save.service';
+import { DownloadService } from '../../services/download.service';
 import { ToastService } from '../../services/toast.service';
 import { ImageDownloadService } from '../../services/image-download.service';
 import { formatBytes } from '../message-cards/file-meta.util';
@@ -126,7 +126,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
         ? this.i18n.translate('gallery.downloadedBytes', { size: loaded })
         : '';
   });
-  readonly saving = computed(() => this.currentTask()?.status === 'saving');
+  readonly saving = signal(false);
 
   private readonly retryKeys = new Map<number, number>();
   private readonly slides: GallerySlideData[] = [];
@@ -135,7 +135,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly videoErrorLayers = new Map<number, HTMLElement>();
   private pswp: PhotoSwipe | null = null;
   private destroying = false;
-  private readonly saveToastKeys = new Set<string>();
   private readonly renderedBlobUrls = new Map<number, string>();
 
   private readonly mediaAvailability = inject(MediaAvailabilityService);
@@ -143,7 +142,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private removeStatusListener?: () => void;
   private removeWithdrawnListener?: () => void;
   private readonly i18n = inject(TranslocoService);
-  private readonly mediaSave = inject(MediaSaveService);
+  private readonly downloadService = inject(DownloadService);
   private readonly toast = inject(ToastService);
   readonly downloads = inject(ImageDownloadService);
   private readonly nativeVideo = inject(NativeVideoService);
@@ -168,17 +167,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       );
     });
     effect(() => {
-      const tasks = this.downloads.tasks();
-      for (const task of tasks) {
-        if (task.status === 'saved' && this.saveToastKeys.delete(task.key)) {
-          this.toast.info(this.i18n.translate('gallery.saved'));
-        } else if (
-          task.status === 'failed' &&
-          this.saveToastKeys.delete(task.key)
-        ) {
-          this.toast.warn(this.i18n.translate('gallery.saveFailed'));
-        }
-      }
+      this.downloads.tasks();
       queueMicrotask(() => this.refreshDownloadedSlides());
     });
   }
@@ -290,8 +279,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       const task = this.downloads.task(media);
       if (
         this.ownedDownloads.has(key) &&
-        task?.status === 'downloading' &&
-        !task.saveAfterLoad
+        task?.status === 'downloading'
       )
         this.downloads.cancel(media);
     }
@@ -324,12 +312,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     event.stopPropagation();
     const media = this.current();
     if (!media || this.saving()) return;
-    if (media.kind === 'image') {
-      const key = this.downloads.key(media);
-      this.saveToastKeys.add(key);
-      this.downloads.start(media, this.threadId(), true);
-      return;
-    }
     await this.saveMedia(media, this.index());
   }
 
@@ -356,9 +338,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   cancelCurrent(): void {
     const media = this.current();
     if (!media) return;
-    // Cancellation is a neutral outcome. Drop the queued save notification before aborting so an
-    // adapter's abort signal can never surface as either "save failed" or a later stale success toast.
-    this.saveToastKeys.delete(this.downloads.key(media));
     this.downloads.cancel(media);
   }
 
@@ -825,21 +804,20 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   private async saveMedia(media: AlbumMedia, index: number): Promise<void> {
+    if (this.saving()) return;
+    this.saving.set(true);
     try {
-      await this.mediaSave.save({
+      await this.downloadService.download({
+        threadId: this.threadId(),
         path: media.src,
         filename: media.name || this.defaultFilename(media, index),
-        mimeType:
-          media.kind === 'video'
-            ? 'video/mp4'
-            : media.kind === 'audio'
-              ? 'audio/mpeg'
-              : 'image/jpeg',
+        mimeType: media.mimeType || 'application/octet-stream',
       });
-      this.toast.info(this.i18n.translate('gallery.saved'));
     } catch (error) {
       console.error('[gallery] save failed:', error);
       this.toast.warn(this.i18n.translate('gallery.saveFailed'));
+    } finally {
+      this.saving.set(false);
     }
   }
 

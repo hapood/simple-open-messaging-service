@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FlipListAnimator, FlipListRow } from './flip-list';
+import { FlipListAnimator, FlipListRow } from './thread-list-animator';
 
 const motion = { reduced: false };
 
@@ -10,6 +10,7 @@ describe('FlipListAnimator with a virtual window', () => {
   let cancel: ReturnType<typeof vi.fn>;
   let layout: Map<string, FlipListRow>;
   let revisions: Map<string, number>;
+  let motionEvents: EventTarget;
 
   function render(keys: string[], start = 0, end = keys.length): HTMLElement[] {
     layout = new Map(
@@ -56,10 +57,62 @@ describe('FlipListAnimator with a virtual window', () => {
     animator.play(container, layout);
   }
 
+  it('cancels running moves and outgoing clones when reduced motion is enabled', () => {
+    render(['a', 'b']);
+    play();
+    render(['b', 'a']);
+    play(['b']);
+    expect(animate).toHaveBeenCalled();
+    motion.reduced = true;
+    motionEvents.dispatchEvent(new Event('change'));
+    expect(cancel).toHaveBeenCalledTimes(animate.mock.calls.length);
+    expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
+    const cancellations = cancel.mock.calls.length;
+    animator.destroy();
+    expect(cancel).toHaveBeenCalledTimes(cancellations);
+  });
+
+  it('releases completed animations and makes late completion callbacks inert', () => {
+    render(['a', 'b']);
+    play();
+    render(['b', 'a']);
+    play(['b']);
+    const completions = animate.mock.results.map(
+      (result) => result.value.onfinish as () => void,
+    );
+    expect(completions.length).toBeGreaterThan(0);
+    for (const finish of completions) finish();
+    expect(cancel).toHaveBeenCalledTimes(completions.length);
+    expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
+    render(['a', 'b']);
+    play(['a']);
+    const count = cancel.mock.calls.length;
+    for (const finish of completions) finish();
+    expect(cancel).toHaveBeenCalledTimes(count);
+    animator.destroy();
+    expect(cancel).toHaveBeenCalledTimes(animate.mock.calls.length);
+  });
+
+  it('does not retain completed animation cleanup until destruction', () => {
+    render(['a']);
+    play();
+    render(['b', 'a']);
+    play();
+    for (const result of animate.mock.results) result.value.onfinish();
+    const count = cancel.mock.calls.length;
+    animator.destroy();
+    expect(cancel).toHaveBeenCalledTimes(count);
+  });
+
   beforeEach(() => {
     motion.reduced = false;
+    motionEvents = new EventTarget();
     vi.stubGlobal('matchMedia', (query: string) => ({
-      matches: query === '(prefers-reduced-motion: reduce)' && motion.reduced,
+      get matches() {
+        return query === '(prefers-reduced-motion: reduce)' && motion.reduced;
+      },
+      addEventListener: motionEvents.addEventListener.bind(motionEvents),
+      removeEventListener: motionEvents.removeEventListener.bind(motionEvents),
     }));
     revisions = new Map();
     container = document.createElement('div');

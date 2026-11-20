@@ -28,6 +28,11 @@ mod call;
 mod client_compat;
 mod credential_storage;
 mod diagnostics;
+mod send_outbox;
+mod send_attachment_files;
+mod send_outbox_commands;
+mod download_history;
+mod download_history_commands;
 #[cfg(desktop)]
 mod launch;
 mod login_connection;
@@ -45,7 +50,10 @@ mod realtime;
 mod secure_storage;
 mod server_setup;
 mod sse;
+#[cfg(target_os = "android")]
+mod android_upload_source;
 mod upload;
+mod upload_cancellation;
 mod window_lifecycle;
 
 pub(crate) use proxy::{activate_origin, is_network_failure, pick_origin_race, runtime_switch};
@@ -82,7 +90,7 @@ use tokio_util::sync::CancellationToken;
 const MEDIA_SCHEME: &str = "media";
 
 #[cfg(target_os = "android")]
-static ANDROID_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+pub(crate) static ANDROID_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 /// Max wait for reading the next chunk of response body stream. If the server goes silent
 /// for longer than this duration during body transfer, the request is aborted to prevent leaks.
@@ -171,7 +179,7 @@ pub(crate) struct ServerSessionState {
     api_http: Arc<Mutex<(String, reqwest::Client)>>,
     /// Shell streaming uploads keyed by clientMessageId. A cancel action resolves the token, which drops
     /// the in-flight reqwest future and closes the request body stream/file descriptor.
-    upload_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    upload_cancels: Arc<Mutex<upload_cancellation::UploadCancellations>>,
     /// In-flight HTTP requests dispatched from the WebView keyed by reqId.
     pub(crate) http_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     #[cfg(not(desktop))]
@@ -218,7 +226,7 @@ impl ServerSessionState {
                 initial_origin.clone(),
                 http_client_for(&initial_origin),
             ))),
-            upload_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            upload_cancels: Arc::new(Mutex::new(upload_cancellation::UploadCancellations::default())),
             http_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             #[cfg(not(desktop))]
             native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -378,6 +386,9 @@ pub fn run() {
     );
 
     #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+
+    #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
@@ -421,6 +432,15 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 tauri::generate_handler![
+                    send_outbox_commands::native_send_enqueue,
+                    send_outbox_commands::native_send_list,
+                    send_outbox_commands::native_send_remove,
+                    send_outbox_commands::native_send_clear,
+                    send_outbox_commands::native_send_get,
+                    download_history_commands::native_download_put,
+                    download_history_commands::native_download_list,
+                    download_history_commands::native_download_remove,
+                    download_history_commands::native_download_clear,
                     launch::launch_update,
                     native_db::desktop_notifications::desktop_badge_refresh,
                     native_db::desktop_notifications::desktop_notification_permission,
@@ -467,6 +487,8 @@ pub fn run() {
                     sse::sse_retry,
                     sse::sse_replay_hello,
                     upload::upload_stream_file,
+                    upload::prepare_native_upload_sources,
+                    upload::release_native_upload_sources,
                     upload::cancel_upload,
                     diagnostics::report_diagnostics,
                     diagnostics::set_debug_logging,
@@ -533,6 +555,15 @@ pub fn run() {
             #[cfg(not(desktop))]
             {
                 tauri::generate_handler![
+                    send_outbox_commands::native_send_enqueue,
+                    send_outbox_commands::native_send_list,
+                    send_outbox_commands::native_send_remove,
+                    send_outbox_commands::native_send_clear,
+                    send_outbox_commands::native_send_get,
+                    download_history_commands::native_download_put,
+                    download_history_commands::native_download_list,
+                    download_history_commands::native_download_remove,
+                    download_history_commands::native_download_clear,
                     origin_commands::get_api_origin,
                     origin_commands::get_active_api_origin,
                     origin_commands::is_origin_configured,
@@ -555,9 +586,9 @@ pub fn run() {
                     client_compat::init_validate_cert,
                     client_compat::init_compat_status,
                     upload::upload_stream_file,
+                    upload::prepare_native_upload_sources,
+                    upload::release_native_upload_sources,
                     upload::cancel_upload,
-                    upload::retry_native_voice,
-                    upload::discard_native_voice,
                     diagnostics::report_diagnostics,
                     diagnostics::set_debug_logging,
                     diagnostics::log_js,

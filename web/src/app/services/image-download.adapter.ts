@@ -1,9 +1,7 @@
-import { HttpClient, HttpEventType } from '@angular/common/http';
 import { Injectable, InjectionToken, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
   assetUrl,
-  isTauri,
   listenEvent,
   tauriInvoke,
 } from './runtime';
@@ -11,8 +9,9 @@ import {
 export interface ImageDownloadArtifact {
   /** URL used by <img>/PhotoSwipe after the transfer completes. */
   displayUrl: string;
-  /** Path passed to the platform save adapter. Web uses the same blob URL; native may use a cache path. */
+  /** Canonical resource path passed to the native save adapter; never a renderer-owned Blob URL. */
   savePath: string;
+  contentType: string | null;
   size: number;
   release(): void;
 }
@@ -29,55 +28,7 @@ export interface ImageDownloadAdapter {
   download(path: string): Observable<ImageDownloadEvent>;
 }
 
-/** Browser/PWA transport: XHR-backed HttpClient events provide byte progress; unsubscribe aborts it. */
-@Injectable({ providedIn: 'root' })
-class WebImageDownloadAdapter implements ImageDownloadAdapter {
-  private readonly http = inject(HttpClient);
-
-  download(path: string): Observable<ImageDownloadEvent> {
-    return new Observable<ImageDownloadEvent>((subscriber) => {
-      const request = this.http
-        .get(assetUrl(path), {
-          observe: 'events',
-          reportProgress: true,
-          responseType: 'blob',
-        })
-        .subscribe({
-          next: (event) => {
-            if (event.type === HttpEventType.DownloadProgress) {
-              subscriber.next({
-                type: 'progress',
-                loaded: event.loaded,
-                total: event.total ?? null,
-              });
-            } else if (event.type === HttpEventType.Response && event.body) {
-              const blob = event.body;
-              const url = URL.createObjectURL(blob);
-              subscriber.next({
-                type: 'completed',
-                artifact: {
-                  displayUrl: url,
-                  savePath: url,
-                  size: blob.size,
-                  release: () => URL.revokeObjectURL(url),
-                },
-              });
-              subscriber.complete();
-            }
-          },
-          error: (error) => subscriber.error(error),
-        });
-      return () => request.unsubscribe();
-    });
-  }
-}
-
-/**
- * Native seam. TauriHttpBackend already keeps authenticated media bytes outside normal browser HTTP
- * concerns, so this compatibility implementation shares the web event adapter today. Rust/Kotlin can
- * replace only this class with command + progress-event + cancel-command plumbing without changing the
- * task store or any UI.
- */
+/** Rust-owned media cache download transport. Browser image loading never uses this adapter. */
 @Injectable({ providedIn: 'root' })
 export class NativeImageDownloadAdapter implements ImageDownloadAdapter {
   download(path: string): Observable<ImageDownloadEvent> {
@@ -88,26 +39,30 @@ export class NativeImageDownloadAdapter implements ImageDownloadAdapter {
           : `media-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       let disposed = false;
       let finished = false;
+      let started = false;
       let unlisten: (() => void) | undefined;
+      const releaseListener = () => {
+        const release = unlisten;
+        unlisten = undefined;
+        release?.();
+      };
 
       void (async () => {
+        try {
         unlisten = await listenEvent<{
           taskId: string;
           loaded: number;
-          total: number;
+          total: number | null;
         }>('media-download-progress', ({ payload }) => {
           if (payload.taskId !== taskId || disposed) return;
           subscriber.next({
             type: 'progress',
             loaded: payload.loaded,
-            total: payload.total > 0 ? payload.total : null,
+            total: payload.total,
           });
         });
-        if (disposed) {
-          unlisten?.();
-          return;
-        }
-        try {
+        if (disposed) return;
+          started = true;
           const result = await tauriInvoke<{
             path: string;
             contentType?: string;
@@ -124,22 +79,24 @@ export class NativeImageDownloadAdapter implements ImageDownloadAdapter {
               // Existing save commands deliberately accept the canonical remote path and resolve its
               // private cache identity internally; no raw file:// path is exposed to the WebView.
               savePath: path,
+              contentType: result.contentType ?? null,
               size: result.size,
               release: () => undefined,
             },
           });
           subscriber.complete();
         } catch (error) {
+          finished = true;
           if (!disposed) subscriber.error(error);
         } finally {
-          unlisten?.();
+          releaseListener();
         }
       })();
 
       return () => {
         disposed = true;
-        unlisten?.();
-        if (!finished) {
+        releaseListener();
+        if (started && !finished) {
           void tauriInvoke('cancel_media_download', { taskId }).catch(
             () => undefined,
           );
@@ -153,9 +110,6 @@ export const IMAGE_DOWNLOAD_ADAPTER = new InjectionToken<ImageDownloadAdapter>(
   'IMAGE_DOWNLOAD_ADAPTER',
   {
     providedIn: 'root',
-    factory: () =>
-      isTauri()
-        ? inject(NativeImageDownloadAdapter)
-        : inject(WebImageDownloadAdapter),
+    factory: () => inject(NativeImageDownloadAdapter),
   },
 );

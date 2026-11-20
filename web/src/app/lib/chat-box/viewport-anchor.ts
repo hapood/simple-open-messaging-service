@@ -1,6 +1,24 @@
+/** Capture before mutation, except pinLatest which resolves after mounting/measurement. */
+export type WindowPositionScenario =
+  | { kind: 'olderDelivery' }
+  | { kind: 'newerDelivery' }
+  | { kind: 'entryDelivery' }
+  | { kind: 'pendingUpdate' }
+  | { kind: 'gapReplacement'; suffixId: number }
+  | { kind: 'viewportResize' }
+  | { kind: 'preserveReading' }
+  | { kind: 'goToLatest' }
+  | { kind: 'pinLatest' };
+
 export type ViewportAnchor =
   | { mode: 'bottom' }
   | { mode: 'offset'; offset: number }
+  | {
+      mode: 'message-bottom';
+      id: number;
+      offset: number;
+      fallbackId: number | null;
+    }
   | { mode: 'item'; id: number; offset: number; fallbackId: number | null };
 
 export function alignedItemOffset(
@@ -13,6 +31,10 @@ export function alignedItemOffset(
   return 0;
 }
 
-export function clampScrollTop(target: number, scrollHeight: number, viewportHeight: number): number {
+export function clampScrollTop(
+  target: number,
+  scrollHeight: number,
+  viewportHeight: number,
+): number {
   return Math.max(0, Math.min(target, scrollHeight - viewportHeight));
 }

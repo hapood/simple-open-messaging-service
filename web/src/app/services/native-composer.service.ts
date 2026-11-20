@@ -1,5 +1,5 @@
 import { inject, Injectable, signal } from '@angular/core';
-import { isAndroidNative, listenEvent } from './runtime';
+import { isAndroidNative } from './runtime';
 import { KeyboardInsetService } from './keyboard-inset.service';
 
 const DEFAULT_COMPOSER_HEIGHT_PX = 64;
@@ -135,16 +135,6 @@ interface NativeComposerLinkMarker {
   end: number;
 }
 
-export interface NativeVoiceUploadEvent {
-  contextId: number;
-  threadId: number;
-  clientMessageId: string;
-  durationMs: number;
-  size: number;
-  phase: 'started' | 'completed' | 'failed';
-  error?: string;
-}
-
 @Injectable({ providedIn: 'root' })
 export class NativeComposerService {
   readonly supported = isAndroidNative() && !!window.SomsShell?.showComposer;
@@ -153,12 +143,6 @@ export class NativeComposerService {
   /** Native keyboard surface height (system IME or emoji replacement); excludes the safe-area inset. */
   readonly keyboardHeight = signal(0);
   readonly event = signal<NativeComposerEvent | null>(null);
-  readonly voiceUpload = signal<NativeVoiceUploadEvent | null>(null);
-  readonly uploadProgress = signal<{
-    clientMessageId: string;
-    loaded: number;
-    total: number;
-  } | null>(null);
 
   private readonly activeState = signal(false);
   /** Whether the native composer currently owns a visible chat surface. Cached geometry may outlive it. */
@@ -208,15 +192,6 @@ export class NativeComposerService {
       }
       this.event.set(raw);
     };
-    void listenEvent<NativeVoiceUploadEvent>(
-      'native-voice-upload',
-      ({ payload }) => this.voiceUpload.set(payload),
-    );
-    void listenEvent<{
-      clientMessageId: string;
-      loaded: number;
-      total: number;
-    }>('upload-progress', ({ payload }) => this.uploadProgress.set(payload));
   }
 
   show(context: NativeComposerContext): void {

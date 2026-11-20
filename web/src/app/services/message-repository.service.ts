@@ -29,6 +29,12 @@ export interface MessageHistoryTarget {
 export type NativeMessageHistoryDemand =
   | { kind: 'localLatest'; count: number }
   | {
+      kind: 'localAround';
+      anchor: number;
+      olderCount: number;
+      newerCount: number;
+    }
+  | {
       kind: 'latest';
       count: number;
       target?: MessageHistoryTarget;
@@ -177,7 +183,7 @@ export class MessageRepository {
       threadId,
       demand,
       signal,
-      demand.kind !== 'localLatest' && liveHead >= 0 ? liveHead : undefined,
+      demand.kind !== 'localLatest' && demand.kind !== 'localAround' && liveHead >= 0 ? liveHead : undefined,
     );
     signal.throwIfAborted();
     if (!this.sessionLifecycle.isCurrent(scope))
@@ -206,6 +212,33 @@ export class MessageRepository {
     try {
       lifetime.throwIfAborted();
       switch (demand.kind) {
+        case 'localAround': {
+          if (
+            !Number.isSafeInteger(demand.anchor) ||
+            demand.anchor < 0 ||
+            demand.anchor === Number.MAX_SAFE_INTEGER ||
+            ![demand.olderCount, demand.newerCount].every(
+              (count) => Number.isSafeInteger(count) && count >= 0 && count <= 200,
+            )
+          )
+            throw new Error('invalid local history window');
+          // Use the ordinary range projection, stopping at the first unknown
+          // interval in each direction instead of filling it from the server.
+          const older = await this.walkBrowserMessageHistory(
+            threadId, 'older', demand.anchor + 1, demand.olderCount,
+            0, Number.MAX_SAFE_INTEGER, undefined, lifetime, 'cache-only',
+          );
+          const newer = await this.walkBrowserMessageHistory(
+            threadId, 'newer', demand.anchor, demand.newerCount,
+            0, Number.MAX_SAFE_INTEGER, undefined, lifetime, 'cache-only',
+          );
+          return {
+            items: [...older.items.reverse(), ...newer.items],
+            hasOlder: older.hasMore,
+            hasNewer: newer.hasMore,
+            failed: false,
+          };
+        }
         case 'localLatest': {
           if (
             !Number.isSafeInteger(demand.count) ||
@@ -398,6 +431,7 @@ export class MessageRepository {
     initialUpper: number,
     knownNewestSeq: number | undefined,
     lifetime: AbortSignal,
+    mode: 'cache-only' | 'fill' = 'fill',
   ): Promise<DirectionalHistoryWalk> {
     lifetime.throwIfAborted();
     if (!Number.isSafeInteger(count) || count < 0 || count > 200)
@@ -463,6 +497,9 @@ export class MessageRepository {
         cursor = direction === 'older' ? range.left + 1 : range.right;
         continue;
       }
+
+      // Unknown cache coverage is an open edge, not a server boundary.
+      if (mode === 'cache-only') return { items, hasMore: true };
 
       const optimisticBoundary = direction === 'older' ? lower : upper;
       const optimistic = await this.queryBrowserMessages(

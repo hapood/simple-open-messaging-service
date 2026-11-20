@@ -14,7 +14,7 @@ import type {
   CbDemand,
   CbDemandResult,
   CbSource,
-  CbSourceInitOpts,
+  CbSourceWindowRequest,
 } from '../../lib/chat-box/cb-source';
 import type {
   AlbumMedia,
@@ -179,6 +179,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
 
   constructor(
     total: number,
+    private readonly entryReadSeq: number,
     latency: number,
     userService: MockUserService,
     userId: number,
@@ -222,67 +223,60 @@ export class MockItemSource implements CbSource<ChatItemData> {
     if (liveIndex >= 0) this.live.splice(liveIndex, 1);
   }
 
-  /**
-   * Initialize / re-anchor:
-   *  - anchorId === -1: take the last `olderCount` items (the newest `olderCount`, including the anchor = newest),
-   *    ascending, tagged with edges.
-   *  - otherwise (a real msgId): locate anchorId in the sequence, take an older slice (including anchorId) + a newer
-   *    slice, merge ascending (mirrors HttpItemSource's bidirectional fetch); older reaching the sequence start →
-   *    out[0] tagged 'oldest'; newer reaching the end → out[last] tagged 'newest'.
-   */
-  async init(
-    anchorId: number,
-    olderCount: number,
-    newerCount: number,
-    _opts?: CbSourceInitOpts,
+  async prepareEntry() {
+    return {
+      lastReadSeq: this.entryReadSeq,
+      hasCachedMessages: this.sequence().length > 0,
+      hasCachedHead: this.sequence().length > 0,
+    };
+  }
+
+  async loadWindow(
+    request: CbSourceWindowRequest,
   ): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
-    if (anchorId === -1) {
-      const take = Math.min(olderCount, MAX_PAGE);
-      const start = Math.max(0, seq.length - take);
-      const raw = seq.slice(start);
-      if (raw.length === 0) return [];
-      await this.ensureProfiles(raw); // look up creators on userService to fill profiles (mirrors production)
-      const items = raw.map((it) => this.shape(it));
-      // init(-1) always anchors at the newest (the last item is the global newest); start===0 means it also reached the
-      // oldest. A length-1 batch spanning both edges is a sole item → mark 'both' (the boundary field is single-valued;
-      // naive items[0]='oldest' then items[last]='newest' would collide on it and lose the oldest marker → noOlder never
-      // set → a permanent top ghost on a single-message thread).
-      const atOldest = start === 0;
-      if (atOldest && items.length === 1)
-        items[0] = { ...items[0], boundary: 'both' };
-      else {
-        if (atOldest) items[0] = { ...items[0], boundary: 'oldest' };
-        items[items.length - 1] = {
-          ...items[items.length - 1],
-          boundary: 'newest',
-        };
+    switch (request.kind) {
+      case 'cached':
+      case 'latest':
+        return this.shapeWindow(
+          seq,
+          Math.max(0, seq.length - Math.min(request.count, MAX_PAGE)),
+          seq.length,
+        );
+      case 'start':
+        return this.shapeWindow(
+          seq,
+          0,
+          Math.min(seq.length, request.count, MAX_PAGE),
+        );
+      case 'around': {
+        // The cursor is a coordinate, not a requirement for an extant row.
+        const firstNewer = seq.findIndex((item) => item.id > request.messageId);
+        const split = firstNewer < 0 ? seq.length : firstNewer;
+        return this.shapeWindow(
+          seq,
+          Math.max(0, split - Math.min(request.olderCount, MAX_PAGE)),
+          Math.min(seq.length, split + Math.min(request.newerCount, MAX_PAGE)),
+        );
       }
-      this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from source.pending
-      return items;
     }
-    // Real msgId: bidirectional slice (older includes anchorId = olderCount items; newer = newerCount items)
-    const idx = seq.findIndex((it) => it.id === anchorId);
-    if (idx < 0) return [];
-    const olderTake = Math.min(olderCount, MAX_PAGE);
-    const newerTake = Math.min(newerCount, MAX_PAGE);
-    const olderStart = Math.max(0, idx - olderTake + 1);
-    const newerEnd = Math.min(seq.length, idx + 1 + newerTake);
-    const raw = [
-      ...seq.slice(olderStart, idx + 1),
-      ...seq.slice(idx + 1, newerEnd),
-    ]; // [older..anchorId] ++ (anchorId..newer]
+  }
+
+  private async shapeWindow(
+    sequence: CbItem<ChatItemData>[],
+    start: number,
+    end: number,
+  ): Promise<CbItem<ChatItemData>[]> {
+    const raw = sequence.slice(start, end);
     if (raw.length === 0) return [];
     await this.ensureProfiles(raw);
-    const items = raw.map((it) => this.shape(it));
-    // Bidirectional fetch: olderStart===0 → reached oldest; newerEnd===seq.length → reached newest. A length-1 batch
-    // spanning both edges → 'both' (see init(-1) above for why the sole item can't carry two single-valued markers).
-    const atOldest = olderStart === 0;
-    const atNewest = newerEnd === seq.length;
-    if (atOldest && atNewest && items.length === 1)
+    const items = raw.map((item) => this.shape(item));
+    const atOldest = start === 0;
+    const atNewest = end === sequence.length;
+    if (atOldest && atNewest && items.length === 1) {
       items[0] = { ...items[0], boundary: 'both' };
-    else {
+    } else {
       if (atOldest) items[0] = { ...items[0], boundary: 'oldest' };
       if (atNewest)
         items[items.length - 1] = {
@@ -290,7 +284,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
           boundary: 'newest',
         };
     }
-    this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from source.pending
+    this.reconcilePending(items);
     return items;
   }
 
@@ -325,11 +319,11 @@ export class MockItemSource implements CbSource<ChatItemData> {
   ): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
-    const idx = seq.findIndex((it) => it.id === cursorId);
-    if (idx < 0) return [];
+    const start = seq.findIndex((item) => item.id > cursorId);
+    if (start < 0) return [];
     const take = Math.min(count, MAX_PAGE);
-    const end = Math.min(seq.length, idx + 1 + take);
-    const rawReal = seq.slice(idx + 1, end);
+    const end = Math.min(seq.length, start + take);
+    const rawReal = seq.slice(start, end);
     const reachedEnd = end === seq.length;
 
     // Reconcile pending: a returned real confirms its in-flight optimistic counterpart (matched by clientMessageId,
@@ -360,6 +354,17 @@ export class MockItemSource implements CbSource<ChatItemData> {
     });
   }
 
+  requestEntrySuffix(count: number): CbDemand<ChatItemData> {
+    return mockDemand(async () => ({
+      kind: 'items',
+      items: await this.getNewer(this.entryReadSeq, count),
+    }));
+  }
+
+  requestMessagesForEmptyWindow(count: number): CbDemand<ChatItemData> {
+    return this.requestNewer(this.entryReadSeq, count);
+  }
+
   requestNewer(cursorId: number, count: number): CbDemand<ChatItemData> {
     return new Observable((subscriber) => {
       const waiter = { cursorId, count, subscriber };
@@ -380,10 +385,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     this.pumpingWaiters.add(waiter);
     const revision = this.liveRevision;
     try {
-      const items =
-        waiter.cursorId === -1
-          ? await this.init(-1, waiter.count, 0)
-          : await this.getNewer(waiter.cursorId, waiter.count);
+      const items = await this.getNewer(waiter.cursorId, waiter.count);
       if (!this.newerWaiters.has(waiter) || items.length === 0) return;
       this.newerWaiters.delete(waiter);
       waiter.subscriber.next({ kind: 'items', items });
@@ -419,19 +421,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     this.pending.push(item);
   }
 
-  /**
-   * Mark an in-flight optimistic send FAILED and sink it to the END of the pending queue. The source owns pending
-   * order/status; the kernel's reconcilePending re-reads getPending and reflects this (in-place status morph + FLIP
-   * reorder). The entry STAYS in `pending` — a failed send is still unconfirmed, not abandoned — so it remains
-   * mountable at the newest edge and the failure survives a remount (unlike the old fabricated failed-N ghost).
-   *
-   * Stable identity: the SAME clientMessageId is kept, and `data.msgId` with it (the row's retry output emits
-   * `data.msgId` = the clientMessageId, so the retry key stays valid). A NEW data ref carries `status: 'failed'`
-   * (signal-input ref change ⇒ the row re-renders). Returns false if no pending entry matches the clientMessageId.
-   *
-   * Mock-only: production (HttpItemSource) has no optimistic-send layer yet (getPending returns []); when one ships,
-   * the same mutation belongs there too.
-   */
+  /** Retain a failed simulated send for explicit retry using the same client identity. */
   failPending(clientMessageId: string): boolean {
     const i = this.pending.findIndex(
       (p) => p.clientMessageId === clientMessageId,
@@ -440,18 +430,13 @@ export class MockItemSource implements CbSource<ChatItemData> {
     const entry = this.pending.splice(i, 1)[0];
     const failed: CbItem<ChatItemData> = {
       ...entry,
-      data: { ...entry.data, status: 'failed', kind: undefined },
+      data: { ...entry.data, status: 'failed' },
     };
     this.pending.push(failed); // sink to the end of the pending queue
     return true;
   }
 
-  /**
-   * Flip a failed send BACK to 'sending' (a retry) at its CURRENT position (the end), keeping the SAME clientMessageId —
-   * stable identity lets the kernel morph the bubble in place (failed→sending) instead of remounting it, and the
-   * subsequent confirm reconciles by this same clientMessageId. A NEW data ref carries `status: 'sending'`. Returns the
-   * updated item (the caller re-arms the confirm timer with it), or undefined if no pending entry matches.
-   */
+  /** Retry a simulated send without allocating a new client identity. */
   retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined {
     const i = this.pending.findIndex(
       (p) => p.clientMessageId === clientMessageId,
@@ -459,7 +444,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     if (i < 0) return undefined;
     const retrying: CbItem<ChatItemData> = {
       ...this.pending[i],
-      data: { ...this.pending[i].data, status: 'sending', kind: 'pending' },
+      data: { ...this.pending[i].data, status: 'sending' },
     };
     this.pending[i] = retrying; // stay at the current position (the end)
     return retrying;
@@ -490,7 +475,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     const item = this.pending[index];
     this.pending[index] = {
       ...item,
-      data: { ...item.data, status: 'accepted', kind: undefined },
+      data: { ...item.data, status: 'accepted' },
     };
     return true;
   }

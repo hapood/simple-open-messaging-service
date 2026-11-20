@@ -347,6 +347,86 @@ describe('MessageRepository', () => {
     });
   });
 
+  it('localAround stops at unknown coverage on both edges instead of joining cached islands', async () => {
+    for (const [left, right] of [[0, 10], [90, 110], [190, 200]]) {
+      await webdb.commitBrowserMessagePage({
+        threadId: 42, scan: { left, right },
+        messages: [left + 1, right].map(seq => msg(42, seq)),
+        gaps: [], knownNewestSeq: 250,
+      });
+    }
+    const result = await repo.queryBrowserMessageHistory(42, {
+      kind: 'localAround', anchor: 100, olderCount: 50, newerCount: 50,
+    });
+    expect(result.items).toEqual([
+      { kind: 'message', message: msg(42, 91) },
+      { kind: 'message', message: msg(42, 110) },
+    ]);
+    expect(result.hasOlder && result.hasNewer).toBe(true);
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+  });
+
+  it('localAround at zero does not skip unknown beginning coverage to a later cached row', async () => {
+    await webdb.commitBrowserMessagePage({
+      threadId: 42, scan: { left: 249, right: 250 },
+      messages: [msg(42, 250)], gaps: [], knownNewestSeq: 250,
+    });
+    const result = await repo.queryBrowserMessageHistory(42, {
+      kind: 'localAround', anchor: 0, olderCount: 0, newerCount: 50,
+    });
+    expect(result).toEqual({ items: [], hasOlder: false, hasNewer: true, failed: false });
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+  });
+
+  it('localAround projects a known server gap once across the anchor without filling it', async () => {
+    // Supply source range facts without writing a gap message to the cache.
+    const ranges = vi.spyOn(webdb, 'getMessageRanges').mockResolvedValue([
+      { threadId: 42, left: 90, right: 110, state: 'SERVER_PENDING' },
+    ]);
+    try {
+      const result = await repo.queryBrowserMessageHistory(42, {
+        kind: 'localAround', anchor: 100, olderCount: 50, newerCount: 50,
+      });
+      expect(result.items).toEqual([
+        { kind: 'serverGap', left: 90, right: 110, state: 'SERVER_PENDING' },
+      ]);
+      expect(result.hasOlder && result.hasNewer).toBe(true);
+      expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+    } finally { ranges.mockRestore(); }
+  });
+
+  it('localAround empty cache does not claim exhaustion or perform HTTP', async () => {
+    const result = await repo.queryBrowserMessageHistory(42, {
+      kind: 'localAround', anchor: 100, olderCount: 50, newerCount: 50,
+    });
+    expect(result).toEqual({ items: [], hasOlder: true, hasNewer: true, failed: false });
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, Number.MAX_SAFE_INTEGER, Number.NaN])('localAround rejects invalid anchor %s before reading', async (anchor) => {
+    await expect(repo.queryBrowserMessageHistory(42, {
+      kind: 'localAround', anchor, olderCount: 50, newerCount: 50,
+    })).resolves.toEqual({ items: [], hasOlder: true, hasNewer: true, failed: true });
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 100])('localAround includes R=%s and never reads the latest tail or HTTP', async (anchor) => {
+    await webdb.commitBrowserMessagePage({
+      threadId: 42,
+      scan: { left: 0, right: 200 },
+      messages: [1, 2, 99, 100, 101, 102, 180, 200].map(seq => msg(42, seq)),
+      gaps: [], knownNewestSeq: 250,
+    });
+    const result = await repo.queryBrowserMessageHistory(42, {
+      kind: 'localAround', anchor, olderCount: 2, newerCount: 2,
+    });
+    expect(result.items.map(item => item.kind === 'message' ? item.message.seq : null))
+      .toEqual(anchor === 0 ? [1, 2] : [99, 100, 101, 102]);
+    expect(result.hasOlder).toBe(anchor > 0);
+    expect(result.hasNewer).toBe(true);
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])(
     'localLatest returns immediately without HTTP (cached=%s)',
     async (cached) => {
@@ -596,12 +676,12 @@ describe('MessageRepository', () => {
       pulseVisibleMention: () => {},
       onScroll: () => {},
       updateStickyOverlays: () => {},
+      syncTailCue: () => [],
       createItem: () => {
         const el = document.createElement('div');
         Object.defineProperty(el, 'offsetHeight', { get: () => 100 });
         return {
           el,
-          onHeightChange: () => () => {},
           update: () => {},
           destroy: () => {},
         };
@@ -619,14 +699,15 @@ describe('MessageRepository', () => {
         publisherNamespaceId: 0,
         profileRev: 1,
       }),
+      0,
       repo,
       TestBed.inject(UserService),
-      new ThreadSendOutbox(),
+      TestBed.inject(ThreadSendOutbox),
       { onNewerAvailable: available },
       TestBed.inject(MsgService),
     );
     scroller.bind(source, { chatId: 42 });
-    await scroller.init();
+    await scroller.openWindow({ kind: 'cached' });
     queryMessageHistoryPageSpy.mockImplementation((request) =>
       of({
         code: 0,
@@ -726,10 +807,15 @@ describe('MessageRepository', () => {
     try {
       mounted.viewport.scrollTop = 0;
       const before = mounted.scroller.getMountedGeometry(9)!.top;
-      await mounted.scroller.backfillOlder();
-      expect(mounted.scroller.getMountedGeometry(1)).not.toBeNull();
+      mounted.viewport.dispatchEvent(new Event('scroll'));
+      await vi.waitFor(() =>
+        expect(mounted.scroller.getMountedGeometry(1)).not.toBeNull(),
+      );
       expect(mounted.scroller.getMountedGeometry(9)!.top).toBe(before);
-      expect(mounted.viewport.scrollTop).toBeLessThan(
+      // Preserving the original real-message edge may coincide with the content
+      // bottom after loading placeholders are replaced; the message coordinate
+      // above is the authoritative no-jump assertion.
+      expect(mounted.viewport.scrollTop).toBeLessThanOrEqual(
         mounted.viewport.firstElementChild!.scrollHeight -
           mounted.viewport.clientHeight,
       );

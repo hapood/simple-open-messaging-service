@@ -148,7 +148,7 @@ describe('RouteService adaptive account surfaces', () => {
   });
 
   it('opens upload details as a page dialog and preserves its thread scope', () => {
-    service.popupDlg(PopupType.UPLOAD_DETAIL, { threadId: 17 });
+    service.popupDlg(PopupType.UPLOAD_DETAIL, { threadId: 17, messageActions: { cancel: async () => {}, retry: async () => {} } });
 
     expect(nav.pushPane).toHaveBeenCalledTimes(1);
 
@@ -157,7 +157,7 @@ describe('RouteService adaptive account surfaces', () => {
         kind: 'dialog',
         presentation: 'page',
         desktopSize: 'standard',
-        inputs: { threadId: 17 },
+        inputs: expect.objectContaining({ threadId: 17, messageActions: expect.any(Object) }),
       }),
     );
   });

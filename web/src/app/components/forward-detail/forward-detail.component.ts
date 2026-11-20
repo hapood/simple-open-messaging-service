@@ -22,7 +22,7 @@ import { RouteService } from '../../services/route.service';
 import {
   ChatBoxScroller,
   type CbElement,
-  type CbInitOpts,
+  type CbWindowRequest,
   type CbItem,
 } from '../../lib/chat-box/chat-box-scroller';
 import type {
@@ -33,6 +33,7 @@ import type {
 import {
   computeRowFlags,
   createMsgCbElement,
+  createGhostCbElement,
 } from '../message-cards/create-item';
 import {
   absorbAlbumTail,
@@ -207,7 +208,10 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
         viewport,
         content,
         hooks: {
-          createItem: (item, prev) => this.createItem(item, prev),
+          createItem: (item, prev, presentation) =>
+            presentation.kind === 'message'
+              ? this.createItem(item, prev)
+              : createGhostCbElement(),
           mergeItems: (items) => mergeAlbumItemsAtBoundary(items, null),
           absorbTail: (target, incoming) => absorbAlbumTail(target, incoming),
         },
@@ -216,10 +220,12 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       });
     }
     this.snapshotItems = this.toItems(bundle);
-    void this.openSnapshotWindow({});
+    void this.openSnapshotWindow({ kind: 'latest' });
   }
 
-  private openSnapshotWindow(options: CbInitOpts): Promise<boolean> {
+  private openSnapshotWindow(
+    options: CbWindowRequest<ChatItemData>,
+  ): Promise<boolean> {
     const kernel = this.scroller;
     if (!kernel) return Promise.resolve(false);
     this.closeSnapshotWindow();
@@ -227,21 +233,21 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     kernel.bind(this.snapshotSource);
     return new Promise<boolean>((resolve) => {
       this.finishWindowJump = resolve;
-      this.snapshotInitialization = defer(() => kernel.init(options)).subscribe(
-        {
-          next: () => {
-            this.finishWindowJump = undefined;
-            resolve(
-              options.startMsgId == null ||
-                kernel.getMountedGeometry(options.startMsgId) !== null,
-            );
-          },
-          error: () => {
-            this.finishWindowJump = undefined;
-            resolve(false);
-          },
+      this.snapshotInitialization = defer(() =>
+        kernel.openWindow(options),
+      ).subscribe({
+        next: () => {
+          this.finishWindowJump = undefined;
+          resolve(
+            options.kind !== 'message' ||
+              kernel.getMountedGeometry(options.messageId) !== null,
+          );
         },
-      );
+        error: () => {
+          this.finishWindowJump = undefined;
+          resolve(false);
+        },
+      });
     });
   }
 

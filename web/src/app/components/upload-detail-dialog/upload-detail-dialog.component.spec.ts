@@ -1,80 +1,96 @@
 import { provideZonelessChangeDetection } from '@angular/core';
+import { provideHttpClient } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco } from '@jsverse/transloco';
+import { of } from 'rxjs';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
-import { ConversationListService } from '../../services/conversation-list.service';
+import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { MediaTransferService } from '../../services/media-transfer.service';
+import { MsgService } from '../../services/message.service';
+import { WebdbService } from '../../services/webdb.service';
 import { RouteService } from '../../services/route.service';
 import { UploadDetailDialogComponent } from './upload-detail-dialog.component';
 
-describe('UploadDetailDialogComponent', () => {
+describe('UploadDetailDialogComponent task subscriptions', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
       imports: [UploadDetailDialogComponent],
       providers: [
-        provideZonelessChangeDetection(),
-        provideTransloco({
-          config: { availableLangs: ['en'], defaultLang: 'en' },
-          loader: InlineTranslocoLoader,
-        }),
-        MediaTransferService,
-        { useValue: { closeDlg: vi.fn() }, provide: RouteService },
-        { useValue: { items: () => [] }, provide: ConversationListService },
+        provideZonelessChangeDetection(), provideHttpClient(),
+        provideTransloco({ config: { availableLangs: ['en'], defaultLang: 'en' }, loader: InlineTranslocoLoader }),
+        { provide: MsgService, useValue: { cancelUploadBatch: () => of({ code: 0 }) } },
+        { provide: WebdbService, useValue: {
+          enqueuePendingSend: vi.fn(async () => undefined),
+          pendingSend: vi.fn(async () => null),
+          removePendingSend: vi.fn(async () => undefined),
+        } },
+        { provide: RouteService, useValue: { closeDlg: vi.fn() } },
       ],
     });
-    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test');
-    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
   });
 
-  afterEach(() => vi.restoreAllMocks());
+  async function enqueue(cid: string, threadId: number) {
+    const outbox = TestBed.inject(ThreadSendOutbox);
+    await outbox.enqueue({ clientMessageId: cid, threadId, item: {
+      type: 'FILE', file: { path: cid, partId: cid, name: `${cid}.txt`, mimeType: 'text/plain', size: 100 },
+    } });
+    TestBed.inject(MediaTransferService).start(cid, 100);
+    return outbox;
+  }
 
-  it('offers send-completed and cancel actions for an active upload', () => {
-    const transfers = TestBed.inject(MediaTransferService);
-    const sendCompleted = vi.spyOn(transfers, 'sendCompleted');
-    const discard = vi.spyOn(transfers, 'discard');
-    transfers.start({
-      clientMessageId: 'cid-gallery',
-      threadId: 10,
-      kind: 'file',
-      name: 'gallery.zip',
-      size: 100,
-      supportsSendCompleted: true,
-    });
-
+  it('receives snapshots, progress deltas and removal for the selected thread', async () => {
+    const outbox = await enqueue('first', 10);
+    await enqueue('second', 20);
     const fixture = TestBed.createComponent(UploadDetailDialogComponent);
+    fixture.componentRef.setInput('threadId', 10);
     fixture.detectChanges();
-    const element: HTMLElement = fixture.nativeElement;
-
-    const sendCompletedButton = element.querySelector<HTMLButtonElement>(
-      '.ud-action--send-done',
-    );
-    expect(sendCompletedButton).toBeTruthy();
-    sendCompletedButton!.click();
-    expect(sendCompleted).toHaveBeenCalledWith('cid-gallery');
-
-    const buttons = [...element.querySelectorAll<HTMLButtonElement>('.ud-action')];
-    const cancelButton = buttons.find(
-      (button) => button !== sendCompletedButton,
-    );
-    expect(cancelButton).toBeTruthy();
-    cancelButton!.click();
-    expect(discard).toHaveBeenCalledWith('cid-gallery');
+    await fixture.whenStable();
+    expect(fixture.componentInstance.uploads().map(row => row.clientMessageId)).toEqual(['first']);
+    TestBed.inject(MediaTransferService).progress('first', 42, 100);
+    await fixture.whenStable();
+    expect(fixture.componentInstance.uploads()[0].loaded).toBe(42);
+    fixture.componentRef.setInput('threadId', 20);
+    await fixture.whenStable();
+    expect(fixture.componentInstance.uploads().map(row => row.clientMessageId)).toEqual(['second']);
+    TestBed.inject(MediaTransferService).progress('first', 90, 100);
+    await fixture.whenStable();
+    expect(fixture.componentInstance.uploads()[0].clientMessageId).toBe('second');
+    await outbox.remove('second');
+    await fixture.whenStable();
+    expect(fixture.componentInstance.uploads()).toEqual([]);
+    fixture.destroy();
+    expect(TestBed.inject(MediaTransferService).isUploading('first')).toBe(true);
   });
 
-  it('hides send-completed for single-file uploads', () => {
-    const transfers = TestBed.inject(MediaTransferService);
-    transfers.start({
-      clientMessageId: 'cid-single',
-      threadId: 10,
-      kind: 'file',
-      name: 'one.pdf',
-      size: 100,
-    });
-
+  it('renders failure details without losing transmitted progress', async () => {
+    const outbox = await enqueue('failed', 10);
     const fixture = TestBed.createComponent(UploadDetailDialogComponent);
+    fixture.componentRef.setInput('threadId', 10);
     fixture.detectChanges();
-    const element: HTMLElement = fixture.nativeElement;
+    await fixture.whenStable();
+    TestBed.inject(MediaTransferService).progress('failed', 73, 100);
+    outbox.failUpload('failed', { kind: 'transport', message: 'connection lost' });
+    await fixture.whenStable();
+    expect(fixture.componentInstance.uploads()[0]).toMatchObject({ loaded: 73, status: 'failed', failure: 'connection lost' });
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('connection lost');
+  });
 
-    expect(element.querySelector('.ud-action--send-done')).toBeNull();
+  it('coalesces actions and permits retry after an operation error', async () => {
+    const fixture = TestBed.createComponent(UploadDetailDialogComponent);
+    fixture.componentRef.setInput('threadId', 10);
+    let reject!: (error: Error) => void;
+    const cancel = vi.fn(() => new Promise<void>((_resolve, fail) => { reject = fail; }));
+    const retry = vi.fn(async () => undefined);
+    fixture.componentRef.setInput('messageActions', { cancel, retry });
+    const panel = fixture.componentInstance;
+    const first = panel.actOnMessage('cid', 'cancel');
+    await panel.actOnMessage('cid', 'cancel');
+    expect(cancel).toHaveBeenCalledTimes(1);
+    reject(new Error('offline'));
+    await first;
+    expect(panel.messageActionFailed().has('cid')).toBe(true);
+    await panel.actOnMessage('cid', 'retry');
+    expect(retry).toHaveBeenCalledWith('cid');
+    expect(panel.messageActionFailed().has('cid')).toBe(false);
   });
 });

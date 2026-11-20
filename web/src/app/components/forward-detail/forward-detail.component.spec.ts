@@ -22,7 +22,7 @@ describe('forward snapshot window ownership', () => {
         boundSource = source;
       }),
       getMountedGeometry: vi.fn(() => ({})),
-      init: vi.fn(
+      openWindow: vi.fn(
         () =>
           new Promise<void>((resolve, reject) => {
             pending.push({ resolve, reject });
@@ -37,10 +37,18 @@ describe('forward snapshot window ownership', () => {
     'replacing a window cancels its caller before late %s',
     async (outcome) => {
       const { component, kernel, pending } = setup();
-      const first = component['openSnapshotWindow']({ startMsgId: 1 });
+      const first = component['openSnapshotWindow']({
+        kind: 'message',
+        anchor: 'center',
+        messageId: 1,
+      });
       const source = component['snapshotSource']!;
       const destroy = vi.spyOn(source, 'destroy');
-      const next = component['openSnapshotWindow']({ startMsgId: 2 });
+      const next = component['openSnapshotWindow']({
+        kind: 'message',
+        anchor: 'center',
+        messageId: 2,
+      });
       expect(await first).toBe(false);
       expect(destroy).toHaveBeenCalledOnce();
       expect(component['snapshotSource']).not.toBe(source);
@@ -58,7 +66,11 @@ describe('forward snapshot window ownership', () => {
 
   it('destroy settles pending navigation and releases window resources once', async () => {
     const { component, kernel, pending } = setup();
-    const navigation = component['openSnapshotWindow']({ startMsgId: 1 });
+    const navigation = component['openSnapshotWindow']({
+      kind: 'message',
+      anchor: 'center',
+      messageId: 1,
+    });
     const source = component['snapshotSource']!;
     const destroy = vi.spyOn(source, 'destroy');
     component.ngOnDestroy();

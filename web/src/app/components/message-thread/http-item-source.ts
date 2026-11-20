@@ -42,7 +42,7 @@ import {
   type NativeMessageHistoryResult,
 } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
-import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
+import { failedMatchingIntentIds, ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { messageAuthorAvatarProfile } from '../../services/avatar-profile-ref';
 import { messageAuthorProfileDemand } from '../../services/profile-demand';
@@ -59,7 +59,8 @@ import type {
   CbDemand,
   CbDemandResult,
   CbSource,
-  CbSourceInitOpts,
+  CbSourceWindowContext,
+  CbSourceWindowRequest,
 } from '../../lib/chat-box/cb-source';
 import type {
   AlbumMedia,
@@ -87,6 +88,7 @@ import { parseClientMessageQuote } from '../../../../../shared/client-message-qu
 import { deriveMessagePreview } from '../../../../../shared/message-preview';
 import { isTauri } from '../../services/runtime';
 import type { HistoryAnchor } from '../../services/history-anchor';
+import type { PreparedMessageEntry } from './message-entry';
 
 /**
  * Backend QueryMessagesDto enforces @Max(50) per request — the source owns this ceiling so the kernel's
@@ -140,12 +142,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       avatarIdentityId?: string;
     }
   >();
-  /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
-   *  Each entry's id === its clientMessageId. On confirm (a real whose clientMessageId matches) the entry is
-   *  dropped by reconcilePending inside init/getNewer, and the kernel's reconcileOptimistic removes the mounted
-   *  optimistic bubble. The array is owned by the application-scoped ThreadSendOutbox, so failed/in-flight
-   *  entries survive destruction and recreation of this thread source. */
-  private readonly pending: CbItem<ChatMsgData>[];
   private sseSub?: Subscription;
   private reconnectSub?: Subscription;
   private livePaused = false;
@@ -163,6 +159,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
   >();
   private initializingDb = true;
+  private entryPreparation?: Promise<PreparedMessageEntry>;
+  private entryKnownEndSeq = 0;
+  private entrySeed?: NativeMessageHistoryResult;
   private loadedSeq = -1;
   private notifiedNewestSeq = -1;
   /** Newer-edge demands are long-lived: at the current newest they remain pending until a real item exists. */
@@ -188,6 +187,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   constructor(
     private readonly conv: ConversationItem,
+    private readonly entryReadSeq: number,
     private readonly repo: MessageRepository,
     private readonly userService: UserService,
     private readonly outbox: ThreadSendOutbox,
@@ -195,7 +195,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly messages: MsgService,
     private readonly profileRepo?: ProfileRepository,
   ) {
-    this.pending = outbox.forThread(conv.threadId);
     this.onQuoteUpdated = live.onQuoteUpdated ?? (() => {});
     this.quoteDbSub = repo.slotsChanged$
       .pipe(filter((threadId) => threadId === conv.threadId))
@@ -212,13 +211,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           this.deletedQuoteSeqs.add(seq);
           for (const replySeq of this.repliesByQuote.get(seq) ?? []) {
             live.onQuoteDeleted?.(replySeq, seq);
-          }
-          for (const item of this.pending) {
-            if (item.data.quote?.seq !== seq) continue;
-            // Erase the preview. A jump can still resolve an ephemeral mounted
-            // notice; after it is unmounted the deleted target is unavailable.
-            item.data.quote = { seq };
-            live.onQuoteDeleted?.(item.id, seq);
           }
         }
       });
@@ -290,16 +282,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.onNewerAvailable(seq);
   }
 
-  /**
-   * Initialize / re-anchor:
-   *  - anchorId === -1: take the latest `olderCount` messages (desc, reversed to ascending); the anchor
-   *    is the newest (noNewer=true; SSE pushes one way only).
-   *  - otherwise (a real msgId): fetch both directions — older (desc, skip:0, includes anchorId) +
-   *    newer (asc, skip:1, excludes anchorId), merged into ascending order; noOlder/noNewer are set from
-   *    each direction's hasMore (a middle window leaves both false → scrolling up/down can still reach the
-   *    global edges).
-   * Returns ascending raw messages; the global oldest/newest carry a boundary flag.
-   */
+  /** Keep a mounted reply's quote synchronized with durable updates. */
   mountQuote(
     replySeq: number,
     quote: NonNullable<ChatMsgData['quote']>,
@@ -381,15 +364,50 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
   }
 
-  async init(
-    anchorId: number,
-    olderCount: number,
-    newerCount: number,
-    _opts?: CbSourceInitOpts,
+  /** Read only the local seed. A failed read is retryable, never an empty-cache decision. */
+  prepareEntry(): Promise<PreparedMessageEntry> {
+    this.lifetime.signal.throwIfAborted();
+    if (this.entryPreparation) return this.entryPreparation;
+    const knownEndSeq = Math.max(
+      this.conv.messageEndSeq,
+      this.repo.newestKnownSeq(this.conv.threadId),
+    );
+    this.entryKnownEndSeq = knownEndSeq;
+    this.entryPreparation = this.queryHistory({
+      kind: 'localAround',
+      anchor: this.entryReadSeq,
+      olderCount: this.entryReadSeq > 0 ? MAX_PAGE : 0,
+      newerCount: MAX_PAGE,
+    })
+      .then((result) => {
+        if (result.failed) throw new MessagePageLoadError();
+        this.lifetime.signal.throwIfAborted();
+        this.entrySeed = result;
+        return Object.freeze({
+          lastReadSeq: this.entryReadSeq,
+          hasCachedMessages: result.items.some(
+            (item) => item.kind === 'message',
+          ),
+          hasCachedHead: result.items.some(
+            (item) =>
+              item.kind === 'message' && item.message.seq === knownEndSeq,
+          ),
+        });
+      })
+      .catch((error: unknown) => {
+        this.entryPreparation = undefined;
+        throw error;
+      });
+    return this.entryPreparation;
+  }
+
+  async loadWindow(
+    request: CbSourceWindowRequest,
+    context?: CbSourceWindowContext,
   ): Promise<CbItem<ChatItemData>[]> {
-    if (_opts?.signal && this.bindingSignal !== _opts.signal) {
+    if (context?.signal && this.bindingSignal !== context.signal) {
       this.detachBindingAbort?.();
-      const signal = _opts.signal;
+      const signal = context.signal;
       this.bindingSignal = signal;
       const abort = () => this.destroy();
       signal.addEventListener('abort', abort, { once: true });
@@ -398,44 +416,83 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       if (signal.aborted) abort();
     }
     this.lifetime.signal.throwIfAborted();
-    const result = await this.queryHistory(
-      anchorId === -1
-        ? {
-            kind: this.initializingDb ? 'localLatest' : 'latest',
-            count: Math.min(olderCount, MAX_PAGE),
-          }
-        : {
-            kind: 'around',
-            anchor: anchorId,
-            olderCount: Math.min(olderCount, MAX_PAGE),
-            newerCount: Math.min(newerCount, MAX_PAGE),
-          },
-    );
+    if (this.entryPreparation) await this.wait(this.entryPreparation);
+    let result: NativeMessageHistoryResult;
+    switch (request.kind) {
+      case 'cached': {
+        const count = Math.min(request.count, MAX_PAGE);
+        const seed = this.entrySeed;
+        result = seed
+          ? {
+              ...seed,
+              items: count > 0 ? seed.items.slice(-count) : [],
+              hasOlder: seed.hasOlder || seed.items.length > count,
+            }
+          : await this.queryHistory({ kind: 'localLatest', count });
+        const entry = this.entryPreparation
+          ? await this.wait(this.entryPreparation)
+          : undefined;
+        if (
+          entry?.hasCachedHead &&
+          this.repo.newestKnownSeq(this.conv.threadId) <=
+            this.entryKnownEndSeq &&
+          result.items.some(
+            (item) =>
+              item.kind === 'message' &&
+              item.message.seq === this.entryKnownEndSeq,
+          )
+        )
+          result = { ...result, hasNewer: false };
+        break;
+      }
+      case 'latest':
+        result = await this.queryHistory({
+          kind: 'latest',
+          count: Math.min(request.count, MAX_PAGE),
+        });
+        break;
+      case 'start':
+        result = this.entryReadSeq === 0 && this.entrySeed?.items.length
+          ? { ...this.entrySeed, items: this.entrySeed.items.slice(0, request.count) }
+          : await this.queryHistory({
+              kind: 'newer',
+              after: 0,
+              count: Math.min(request.count, MAX_PAGE),
+            });
+        break;
+      case 'around': {
+        const seed = request.messageId === this.entryReadSeq ? this.entrySeed : undefined;
+        result = seed?.items.length
+          ? seed
+          : await this.queryHistory({
+              kind: 'around',
+              anchor: request.messageId,
+              olderCount: Math.min(request.olderCount, MAX_PAGE),
+              newerCount: Math.min(request.newerCount, MAX_PAGE),
+            });
+        break;
+      }
+    }
+    this.entrySeed = undefined;
     if (result.failed) throw new MessagePageLoadError();
     const items = await this.wait(this.historyItemsToCb(result.items));
     this.noOlder = !result.hasOlder;
     this.noNewer = !result.hasNewer;
     this.applyBoundaries(items);
-    this.reconcilePending(items);
+    await this.confirmSendingTasks(items);
+    // Ordinary edge demand may start before the component receives window completion.
+    this.initializingDb = false;
+    this.requestNewerPump();
     return items;
   }
 
-  /** Drop any in-flight optimistic (pending) entry whose clientMessageId matches a returned real — its confirm arrived.
-   *  Mirrors the kernel's mounted-entry reconcile; keeps this.pending in sync so the kernel's elevatePending doesn't
-   *  re-mount an already-confirmed send as a stale optimistic bubble. Must run in EVERY method that returns reals —
-   *  init AND getNewer: the kernel routes an empty-thread confirm through init(-1) (loadNewer's no-real-cursor fallback). */
-  private reconcilePending(reals: CbItem<ChatItemData>[]): void {
-    for (const r of reals) {
-      if (r.clientMessageId === undefined) continue;
-      const pi = this.pending.findIndex(
-        (p) => p.clientMessageId === r.clientMessageId,
-      );
-      if (pi >= 0) {
-        this.pending.splice(pi, 1);
-        this.outbox.releaseResource(r.clientMessageId);
-      }
-    }
-    this.outbox.releaseIfEmpty(this.conv.threadId);
+  /** A loaded message can retire only a failed leftover. An in-flight send is removed by its own response. */
+  private async confirmSendingTasks(reals: CbItem<ChatItemData>[]): Promise<void> {
+    const failed = failedMatchingIntentIds(this.outbox.forThread(this.conv.threadId), reals.flatMap(item => [
+      ...(item.clientMessageId ? [item.clientMessageId] : []),
+      ...(item.clientMessageIds ?? []),
+    ]));
+    if (failed.length > 0) await this.outbox.confirm(this.conv.threadId, failed);
   }
 
   /** Fetch `count` messages older than cursorId (desc, then reversed to ascending). out[0] is tagged
@@ -443,17 +500,21 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   async getOlder(
     cursorId: number,
     count: number,
+    signal: AbortSignal = this.lifetime.signal,
   ): Promise<CbItem<ChatItemData>[]> {
-    if (this.lifetime.signal.aborted) return [];
-    if (this.noOlder) return [];
+    signal.throwIfAborted();
     const take = Math.min(count, MAX_PAGE);
-    const result = await this.queryHistory({
-      kind: 'older',
-      before: (this.gapById.get(cursorId)?.left ?? cursorId - 1) + 1,
-      count: take,
-    });
+    const result = await this.queryHistory(
+      {
+        kind: 'older',
+        before: (this.gapById.get(cursorId)?.left ?? cursorId - 1) + 1,
+        count: take,
+      },
+      signal,
+    );
     if (result.failed) throw new MessagePageLoadError();
-    const items = await this.wait(this.historyItemsToCb(result.items));
+    const items = await awaitAbortable(this.historyItemsToCb(result.items), signal);
+    signal.throwIfAborted();
     this.noOlder = !result.hasOlder;
     if (this.noOlder && items.length > 0)
       items[0] = { ...items[0], boundary: 'oldest' };
@@ -476,20 +537,75 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (result.failed) throw new MessagePageLoadError();
     const items = await this.wait(this.historyItemsToCb(result.items));
     this.noNewer = !result.hasNewer;
-    if (this.noNewer && items.length > 0)
-      items[items.length - 1] = {
-        ...items[items.length - 1],
-        boundary: 'newest',
+    if (!result.hasOlder && items.length > 0) {
+      this.noOlder = true;
+      items[0] = { ...items[0], boundary: 'oldest' };
+    }
+    if (this.noNewer && items.length > 0) {
+      const last = items.length - 1;
+      items[last] = {
+        ...items[last],
+        boundary: items[last].boundary === 'oldest' ? 'both' : 'newest',
       };
-    this.reconcilePending(items);
+    }
+    await this.confirmSendingTasks(items);
     return items;
   }
 
   requestOlder(cursorId: number, count: number): CbDemand<ChatItemData> {
-    return sourceDemand(async () => {
-      const items = await this.getOlder(cursorId, count);
+    return sourceDemand(this.lifetime.signal, async (signal) => {
+      const items = await this.getOlder(cursorId, count, signal);
       return items.length > 0 ? { kind: 'items', items } : { kind: 'boundary' };
     });
+  }
+
+  /** A finite entry read, unlike ordinary newer demand which parks at the head. */
+  requestEntrySuffix(count: number): CbDemand<ChatItemData> {
+    return new Observable((subscriber) => {
+      const request = new CancellationScope(this.lifetime.signal);
+      const run = async () => {
+        const result = await this.queryHistory(
+          {
+            kind: 'newer',
+            after: this.entryReadSeq,
+            count: Math.min(count, MAX_PAGE),
+          },
+          request.signal,
+        );
+        if (result.failed) throw new MessagePageLoadError();
+        request.signal.throwIfAborted();
+        const items = await awaitAbortable(
+          this.historyItemsToCb(result.items),
+          request.signal,
+        );
+        request.signal.throwIfAborted();
+        // This page does not describe the prefix still mounted in the window.
+        // Keep source-wide older state intact; attach only this page's evidence.
+        if (items.length > 0) {
+          if (!result.hasOlder) items[0] = { ...items[0], boundary: 'oldest' };
+          if (!result.hasNewer) {
+            const last = items.length - 1;
+            items[last] = {
+              ...items[last],
+              boundary: items[last].boundary === 'oldest' ? 'both' : 'newest',
+            };
+          }
+        }
+        await this.confirmSendingTasks(items);
+        subscriber.next({ kind: 'items', items });
+        subscriber.complete();
+      };
+      void run().catch((error: unknown) => {
+        if (subscriber.closed) return;
+        subscriber.next({ kind: 'error', error });
+        subscriber.complete();
+      });
+      return () => request.cancel();
+    });
+  }
+
+  requestMessagesForEmptyWindow(count: number): CbDemand<ChatItemData> {
+    return this.requestNewer(this.entryReadSeq, count);
   }
 
   requestNewer(cursorId: number, count: number): CbDemand<ChatItemData> {
@@ -525,10 +641,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         if (this.livePaused) break; // finish the current request, but start no new one
         if (!this.newerWaiters.has(waiter)) continue;
         try {
-          const items =
-            waiter.cursorId === -1
-              ? await this.init(-1, waiter.count, 0)
-              : await this.getNewer(waiter.cursorId, waiter.count);
+          const items = await this.getNewer(waiter.cursorId, waiter.count);
           if (!this.newerWaiters.has(waiter) || items.length === 0) continue;
           this.newerWaiters.delete(waiter);
           waiter.subscriber.next({ kind: 'items', items });
@@ -556,212 +669,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * explicit push entry point is therefore a no-op for this repository-backed implementation. */
   pushLive(_rawItems: CbItem<ChatItemData>[]): void {
     /* signal-only: no cache */
-  }
-
-  /** In-flight optimistic sends that own a message bubble (defensive copy). Non-audio attachments
-   * stay in the outbox for retry/SSE reconciliation, but their aggregate transfer card is their sole
-   * pending UI, including after a pane remount. */
-  getPending(): CbItem<ChatItemData>[] {
-    return this.pending.filter((item) => {
-      if (
-        item.data.quote?.seq !== undefined &&
-        this.deletedQuoteSeqs.has(item.data.quote.seq)
-      ) {
-        item.data.quote = { seq: item.data.quote.seq };
-      }
-      if (item.data.type !== 'msg') return true;
-      if (item.data.contentType === 'AUDIO' && item.clientMessageId) {
-        const resource = this.outbox.resource(item.clientMessageId);
-        if (resource?.type === 'voice' || resource?.type === 'native-voice')
-          return true;
-      }
-      return !(
-        item.data.status !== 'failed' &&
-        (item.data.contentType === 'IMAGE' ||
-          item.data.contentType === 'VIDEO' ||
-          item.data.contentType === 'FILE' ||
-          item.data.contentType === 'AUDIO' ||
-          item.data.contentType === 'GALLERY')
-      );
-    });
-  }
-
-  acceptedPending(): CbItem<ChatItemData>[] {
-    return this.pending.filter((item) => item.data.status === 'accepted');
-  }
-
-  async restoreMediaStages(): Promise<void> {
-    this.lifetime.signal.throwIfAborted();
-    let response;
-    try {
-      response = await firstValueFromAbortable(
-        this.messages.queryMediaStages(this.conv.threadId),
-        this.lifetime.signal,
-      );
-    } catch {
-      return;
-    }
-    this.lifetime.signal.throwIfAborted();
-    if (response.code !== 0 || !Array.isArray(response.data)) return;
-    const profile = this.userService.sessionProfile();
-    if (!profile) return;
-    for (const stage of response.data) {
-      if (
-        this.pending.some(
-          (item) => item.clientMessageId === stage.clientMessageId,
-        )
-      )
-        continue;
-      this.pending.push(
-        this.mediaStageToFailedItem(stage, {
-          account: profile.account,
-          name: profile.name,
-          namespaceId: profile.namespaceId,
-        }),
-      );
-    }
-  }
-
-  private mediaStageToFailedItem(
-    stage: {
-      clientMessageId: string;
-      contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
-      createdAt: number;
-    },
-    author: {
-      account: string;
-      name: string;
-      namespaceId: number;
-    },
-  ): CbItem<ChatMsgData> {
-    const createdAtMs = Number(stage.createdAt) || Date.now();
-    const date = new Date(createdAtMs);
-    const msgId = this.outbox.allocatePlaceholderId();
-    const base = {
-      type: 'msg' as const,
-      msgId,
-      creator: messageCreatorKey(author),
-      isSelf: true,
-      isGroupConversation: this.conv.type === 'GROUP',
-      name: author.name,
-      text: '',
-      time: `${String(date.getHours()).padStart(2, '0')}:${String(
-        date.getMinutes(),
-      ).padStart(2, '0')}`,
-      createdAtMs,
-      status: 'failed' as const,
-      images: null,
-      file: null,
-    };
-    const failedMedia = {
-      kind: 'file' as const,
-      src: '',
-      w: 1,
-      h: 1,
-      name: 'Unfinished upload',
-      size: 0,
-      mimeType: 'application/octet-stream',
-      msgId,
-      status: 'failed' as MediaStatus,
-    };
-    const data: ChatMsgData =
-      stage.contentType === 'FILE'
-        ? {
-            ...base,
-            contentType: 'FILE',
-            file: {
-              url: '',
-              name: 'Unfinished upload',
-              size: 0,
-              mimeType: 'application/octet-stream',
-            },
-          }
-        : {
-            ...base,
-            contentType: stage.contentType,
-            images: [failedMedia],
-            mediaStatus: 'failed',
-          };
-    return {
-      id: msgId,
-      clientMessageId: stage.clientMessageId,
-      data,
-    };
-  }
-
-  /** Store an in-flight optimistic send (separate from the reloadable sequence). */
-  addPending(item: CbItem<ChatItemData>): void {
-    if (item.data.serverGap)
-      throw new Error('server gap cannot enter the optimistic outbox');
-    this.pending.push(item as CbItem<ChatMsgData>);
-  }
-
-  /** Look up an outbox entry even when it is intentionally omitted from getPending() presentation. */
-  pendingByClientMessageId(
-    clientMessageId: string,
-  ): CbItem<ChatMsgData> | undefined {
-    return this.pending.find(
-      (item) => item.clientMessageId === clientMessageId,
-    );
-  }
-
-  /**
-   * Mark an in-flight optimistic send FAILED and sink it to the END of the pending queue. The source owns
-   * pending order/status; the kernel's reconcilePending re-reads getPending and reflects this (in-place
-   * status morph sending→failed + FLIP reorder to the tail). The entry STAYS in `pending` — a failed send is
-   * still unconfirmed, not abandoned — so it remains mountable at the newest edge and the failure survives a
-   * remount. Stable identity: the SAME clientMessageId (and data.msgId) is kept, so the row's retry output
-   * (which emits data.msgId = the clientMessageId) stays a valid retry key. Returns false if no pending
-   * entry matches the clientMessageId (e.g. the confirm already arrived and dropped it).
-   */
-  failPending(clientMessageId: string): boolean {
-    return this.outbox.failPending(clientMessageId);
-  }
-
-  /**
-   * Flip a failed send BACK to 'sending' (a retry) at its CURRENT position (the end), keeping the SAME
-   * clientMessageId — stable identity lets the kernel morph the bubble in place (failed→sending) instead of
-   * remounting it, and the subsequent confirm reconciles by this same clientMessageId. A NEW data ref carries
-   * status:'sending'. Returns the updated item (the caller re-issues the HTTP send with it), or undefined if no
-   * pending entry matches (e.g. it was confirmed/dropped meanwhile).
-   */
-  retryPending(clientMessageId: string): CbItem<ChatMsgData> | undefined {
-    const i = this.pending.findIndex(
-      (p) => p.clientMessageId === clientMessageId,
-    );
-    if (i < 0) return undefined;
-    const retrying: CbItem<ChatMsgData> = {
-      ...this.pending[i],
-      data: { ...this.pending[i].data, status: 'sending', kind: 'pending' },
-    };
-    this.pending[i] = retrying; // stay at the current position (the end)
-    return retrying;
-  }
-
-  /** Permanently discard a failed optimistic send after explicit user confirmation/action. */
-  discardPending(clientMessageId: string): boolean {
-    if (!this.pending.some((item) => item.clientMessageId === clientMessageId))
-      return false;
-    this.outbox.discardPending(clientMessageId);
-    void firstValueFrom(this.messages.cancelUploadBatch(clientMessageId)).catch(
-      () => undefined,
-    );
-    return true;
-  }
-
-  /** Mark HTTP/upload acceptance without claiming delivery. The entry stays pending at its current position and
-   * keeps a spinner, but `accepted` removes cancellation/dimming. Only the push echo advances it to `sent`. */
-  markPendingAccepted(clientMessageId: string): boolean {
-    const i = this.pending.findIndex(
-      (p) => p.clientMessageId === clientMessageId,
-    );
-    if (i < 0) return false;
-    const entry = this.pending[i];
-    this.pending[i] = {
-      ...entry,
-      data: { ...entry.data, status: 'accepted', kind: undefined },
-    }; // stay at the current position
-    return true;
   }
 
   destroy(): void {
@@ -794,8 +701,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   /**
-   * Leave the DB-only phase after the scroller has initialized, then reconcile the durable conversation
-   * metadata and the live-session HWM against the newest message actually loaded from the local DB.
+   * Reconcile durable conversation metadata and the live-session HWM after the
+   * component has presented the window. loadWindow already releases the local-read
+   * gate so centered fill does not depend on this presentation callback.
    *
    * `persistedLatestSeq` is the server-authored `ConversationItem.messageEndSeq` stored with the thread
    * row. It is deliberately independent from the messages cache: after a fresh install, storage migration,
@@ -847,10 +755,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       const replies = this.repliesByQuote.get(target.seq) ?? new Set<number>();
       replies.add(message.seq);
       this.repliesByQuote.set(target.seq, replies);
-    }
-    for (const item of this.pending) {
-      if (item.data.quote?.seq !== undefined)
-        quoteSeqs.add(item.data.quote.seq);
     }
     await this.wait(this.ensureProfiles(msgs));
     if (quoteSeqs.size) {
@@ -922,14 +826,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       }
       if (m.clientMessageId) {
         item.clientMessageId = m.clientMessageId;
-        // Single-trigger "lock" on the real side: the spinner→check→fade choreography plays on THIS real only when
-        // Push echo is the sole owner of the spinner→check choreography. HTTP success only changes the optimistic
-        // entry to `accepted` (spinner remains, cancel disappears), so any matching pending entry means this fresh
-        // server row must carry `sent`. History / incoming rows without a pending match carry no delivery tick.
-        const pending = this.pending.find(
-          (p) => p.clientMessageId === m.clientMessageId,
-        );
-        if (pending) item.data = { ...item.data, status: 'sent' };
       }
       out.push(item);
     }
@@ -1009,20 +905,22 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private queryHistory(
     demand: NativeMessageHistoryDemand,
+    signal: AbortSignal = this.lifetime.signal,
   ): Promise<NativeMessageHistoryResult> {
-    this.lifetime.signal.throwIfAborted();
-    return this.wait(
+    signal.throwIfAborted();
+    return awaitAbortable(
       isTauri()
         ? this.repo.queryNativeMessageHistory(
             this.conv.threadId,
             demand,
-            this.lifetime.signal,
+            signal,
           )
         : this.repo.queryBrowserMessageHistory(
             this.conv.threadId,
             demand,
-            this.lifetime.signal,
+            signal,
           ),
+      signal,
     );
   }
 
@@ -1195,16 +1093,21 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 }
 
-function sourceDemand<T>(work: () => Promise<CbDemandResult<T>>): CbDemand<T> {
-  // Individual viewport unsubscription detaches its result; destroying the source
-  // cancels its whole history lane, including HTTP and further pagination.
+function sourceDemand<T>(
+  parent: AbortSignal,
+  work: (signal: AbortSignal) => Promise<CbDemandResult<T>>,
+): CbDemand<T> {
   return new Observable((subscriber) => {
-    void work()
+    // Retiring one edge/gap cancels only its query consumer, not the source,
+    // sibling demands, or repository-owned cache transactions.
+    const request = new CancellationScope(parent);
+    void work(request.signal)
       .catch((error): CbDemandResult<T> => ({ kind: 'error', error }))
       .then((result) => {
         if (subscriber.closed) return;
         subscriber.next(result);
         subscriber.complete();
       });
+    return () => request.cancel();
   });
 }

@@ -28,6 +28,19 @@ describe('MountedMessageScroll', () => {
     },
   );
 
+  it('distinguishes bottom following from jumps and clears it on interruption', () => {
+    const { viewport, motion } = setup();
+    motion.start(500, true);
+    expect(motion.followingBottom).toBe(false);
+    motion.start(700, true, true);
+    expect(motion.followingBottom).toBe(true);
+    viewport.dispatchEvent(new Event('wheel'));
+    expect(motion.followingBottom).toBe(false);
+    motion.start(800, true, true);
+    viewport.dispatchEvent(new Event('scrollend'));
+    expect(motion.followingBottom).toBe(false);
+  });
+
   it('replaces a running scroll and releases it on unbind', () => {
     const { viewport, scroll, motion } = setup();
     motion.start(500, true);

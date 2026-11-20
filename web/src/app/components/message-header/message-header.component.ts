@@ -1,3 +1,5 @@
+import { SendingTaskIndicatorComponent } from './sending-task-indicator.component';
+import { SendingTaskPresentation } from '../../services/sending-task-presentation.service';
 import { toObservable, toSignal } from '@angular/core/rxjs-interop';
 import {
   Component,
@@ -31,7 +33,12 @@ import { currentGroupAnnouncement } from '../../services/group-announcement';
  */
 @Component({
   selector: 'app-message-header',
-  imports: [IconComponent, TranslocoModule, MessageSearchComponent],
+  imports: [
+    IconComponent,
+    TranslocoModule,
+    MessageSearchComponent,
+    SendingTaskIndicatorComponent,
+  ],
   templateUrl: './message-header.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './message-header.component.scss',
@@ -39,6 +46,17 @@ import { currentGroupAnnouncement } from '../../services/group-announcement';
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType;
   readonly userMsgTrd = input<ConversationItem>();
+  readonly composerEditing = input(false);
+  readonly tailCueVisible = input(false);
+  private readonly sendingTasks = inject(SendingTaskPresentation);
+  readonly taskSummary = computed(() =>
+    this.sendingTasks.forThread(this.threadId()),
+  );
+
+  readonly sendingTasksRequested = output<void>();
+  openSendingTasks(): void {
+    this.sendingTasksRequested.emit();
+  }
   /** The current thread's id, fed to the embedded search field. Derived from userMsgTrd. */
   readonly threadId = computed(() => this.userMsgTrd()?.threadId ?? 0);
 
@@ -95,10 +113,7 @@ export class MessageHeaderComponent {
 
   readonly groupInactive = computed(() => {
     const trd = this.userMsgTrd();
-    return (
-      trd?.type === 'GROUP' &&
-      trd.conversationState === 'READ_ONLY'
-    );
+    return trd?.type === 'GROUP' && trd.conversationState === 'READ_ONLY';
   });
 
   /** Place an outgoing audio-first call to the P2P peer. Video is enabled from the shared in-call UI instead

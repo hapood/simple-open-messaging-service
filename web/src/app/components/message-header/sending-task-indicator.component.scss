@@ -1,0 +1,48 @@
+:host {
+  display: block;
+  min-width: 0;
+  height: 20px;
+  line-height: 20px;
+}
+.faces {
+  display: grid;
+  height: 20px;
+  perspective: 240px;
+}
+.bio,
+.tasks {
+  grid-area: 1 / 1;
+  min-width: 0;
+  height: 20px;
+  line-height: 20px;
+  backface-visibility: hidden;
+  transform-origin: center;
+  transition: transform 240ms ease, opacity 240ms ease;
+}
+.bio {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: var(--task-text-align, center);
+}
+.tasks {
+  justify-self: var(--task-alignment, center);
+  transform: rotateX(-90deg);
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-visible {
+  .bio {
+    transform: rotateX(90deg);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .tasks {
+    transform: rotateX(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bio, .tasks { transition: none; }
+}

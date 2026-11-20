@@ -57,29 +57,35 @@ describe('MediaSaveService', () => {
     expect(document.querySelector('a[download="photo.jpg"]')).toBeNull();
   });
 
-  it('uses the shared Rust cache and Android MediaStore bridge', async () => {
+  it('asks Android to stream the remote media into the platform destination', async () => {
     Object.defineProperty(navigator, 'userAgent', {
       value: 'Mozilla/5.0 (Linux; Android 14)',
       configurable: true,
     });
-    const save = vi.fn().mockName('save').mockReturnValue('content://saved/1');
+    const save = vi.fn().mockName('save').mockImplementation((requestId: string) => {
+      queueMicrotask(() => window.__SOMS_MEDIA_SAVE_RESULT__?.({
+        requestId, success: true, cancelled: false,
+      }));
+      return 'pending';
+    });
     const windowMock = window as unknown as MockWindow;
     windowMock.__TAURI_INTERNALS__ = {};
     windowMock.__TAURI__ = { core: { invoke } };
     windowMock.SomsMedia = { save };
-    invoke.mockResolvedValue({ path: '/private/cache/media/hash.bin' });
 
     await service.save({
       path: '/uploads/photo.jpg',
       filename: 'photo.jpg',
       mimeType: 'image/jpeg',
-    });
+    }, 'task');
 
+    expect(invoke).not.toHaveBeenCalled();
     expect(save).toHaveBeenCalledWith(
       expect.any(String),
-      '/private/cache/media/hash.bin',
+      '/uploads/photo.jpg',
       'photo.jpg',
       'image/jpeg',
+      'task',
     );
   });
 
@@ -98,7 +104,20 @@ describe('MediaSaveService', () => {
     expect(invoke).toHaveBeenCalledWith('save_media_desktop', {
       path: '/uploads/photo.jpg',
       filename: 'photo.jpg',
+      taskId: null,
     });
+  });
+
+  it('treats a closed desktop Save As dialog as cancellation', async () => {
+    const windowMock = window as unknown as MockWindow;
+    windowMock.__TAURI_INTERNALS__ = {};
+    windowMock.__TAURI__ = { core: { invoke } };
+    invoke.mockRejectedValue('media save cancelled');
+
+    await expect(service.save({
+      path: '/uploads/photo.jpg',
+      filename: 'photo.jpg',
+    })).rejects.toBeInstanceOf(MediaSaveCancelledError);
   });
 
   it('waits for the Android system document picker on legacy Android', async () => {
@@ -131,7 +150,20 @@ describe('MediaSaveService', () => {
     expect(completed).toBe(true);
   });
 
-  it('reports closing the legacy Android document picker as cancellation', async () => {
+  it('propagates Android bridge failure rather than claiming the file was saved', async () => {
+    Object.defineProperty(navigator, 'userAgent', { value: 'Mozilla/5.0 (Linux; Android 14)', configurable: true });
+    const windowMock = window as unknown as MockWindow;
+    windowMock.__TAURI_INTERNALS__ = {};
+    windowMock.__TAURI__ = { core: { invoke } };
+    const save = vi.fn().mockImplementation(() => { throw new Error('bridge unavailable'); });
+    windowMock.SomsMedia = { save };
+    invoke.mockResolvedValue({ path: '/private/cache/media/hash.bin' });
+    await expect(service.save({ path: '/uploads/file.bin', filename: 'file.bin' })).rejects.toThrow('bridge unavailable');
+    const requestId = save.mock.calls[0][0] as string;
+    expect(() => window.__SOMS_MEDIA_SAVE_RESULT__?.({ requestId, success: true })).not.toThrow();
+  });
+
+  it('reports closing the Android document picker as cancellation', async () => {
     Object.defineProperty(navigator, 'userAgent', {
       value: 'Mozilla/5.0 (Linux; Android 9)',
       configurable: true,

@@ -34,10 +34,12 @@ import {
 import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
+import { SendingTaskIndicatorComponent } from '../message-header/sending-task-indicator.component';
+import { SendingTaskPresentation } from '../../services/sending-task-presentation.service';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { LanguageService } from '../../services/language.service';
 import { formatListTime } from '../message-cards/date-format';
-import { FlipListAnimator, FlipListLayout } from '../../lib/flip-list';
+import { FlipListAnimator, FlipListLayout } from './thread-list-animator';
 import { THREAD_ROW_HEIGHT, threadListWindow } from './thread-list-window';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
@@ -55,6 +57,7 @@ import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-st
     AsyncPipe,
     IconComponent,
     EmptyStateComponent,
+    SendingTaskIndicatorComponent,
     TranslocoPipe,
     UserIdentityLabelComponent,
   ],
@@ -63,6 +66,7 @@ import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-st
   styleUrl: './thread-list.component.scss',
 })
 export class ThreadListComponent implements OnInit {
+  readonly sendingTasks = inject(SendingTaskPresentation);
   readonly UserAvatarType = UserAvatarType;
   /** exposes the icon enum to the template (mute indicator on muted threads). */
   readonly AppIconType = AppIconType;

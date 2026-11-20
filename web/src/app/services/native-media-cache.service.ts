@@ -9,6 +9,8 @@ import {
 export interface NativeMediaCacheInfo {
   limitMb: number;
   usedBytes: number;
+  avatarBytes: number;
+  temporaryUploadBytes: number;
 }
 
 export const MEDIA_CACHE_LIMIT_OPTIONS_MB = [128, 256, 512, 1024, 2048] as const;
@@ -20,6 +22,8 @@ export class NativeMediaCacheService {
   private readonly infoState = signal<NativeMediaCacheInfo>({
     limitMb: 512,
     usedBytes: 0,
+    avatarBytes: 0,
+    temporaryUploadBytes: 0,
   });
   readonly info = this.infoState.asReadonly();
   readonly available = isTauri();

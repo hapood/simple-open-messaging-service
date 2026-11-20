@@ -8,10 +8,6 @@ import {
   type ImageDownloadEvent,
 } from './image-download.adapter';
 import { ImageDownloadService } from './image-download.service';
-import {
-  MediaSaveCancelledError,
-  MediaSaveService,
-} from './media-save.service';
 
 describe('ImageDownloadService', () => {
   const media: AlbumMedia = {
@@ -24,13 +20,12 @@ describe('ImageDownloadService', () => {
   };
   let events: Subject<ImageDownloadEvent>;
   let teardown: Mock;
-  let save: Mock;
   let service: ImageDownloadService;
 
   beforeEach(() => {
+    window.__TAURI_INTERNALS__ = {};
     events = new Subject<ImageDownloadEvent>();
     teardown = vi.fn().mockName('teardown');
-    save = vi.fn().mockName('save').mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -47,10 +42,18 @@ describe('ImageDownloadService', () => {
               }),
           },
         },
-        { provide: MediaSaveService, useValue: { save } },
       ],
     });
     service = TestBed.inject(ImageDownloadService);
+  });
+
+  afterEach(() => { delete window.__TAURI_INTERNALS__; });
+
+  it('rejects browser task admission without starting a transport', () => {
+    delete window.__TAURI_INTERNALS__;
+    expect(() => service.start(media, 7)).toThrow('Browser images');
+    expect(service.tasks()).toEqual([]);
+    expect(events.observed).toBe(false);
   });
 
   it('shares byte progress and exposes the completed local artifact', () => {
@@ -69,6 +72,7 @@ describe('ImageDownloadService', () => {
       artifact: {
         displayUrl: 'blob:test',
         savePath: 'blob:test',
+        contentType: 'image/jpeg',
         size: 2000,
         release: vi.fn().mockName('release'),
       },
@@ -102,57 +106,10 @@ describe('ImageDownloadService', () => {
     expect(service.task(media)).toBeUndefined();
   });
 
-  it('clears save-after-load intent when a save download is cancelled', () => {
-    service.start(media, 7, true);
-    expect(service.task(media)?.saveAfterLoad).toBe(true);
-
-    service.cancel(media);
-    expect(service.task(media)).toBeUndefined();
-
+  it('shares an in-flight preview without starting another request', () => {
     service.start(media, 7);
-    expect(service.task(media)?.saveAfterLoad).toBe(false);
-  });
-
-  it('upgrades an in-flight view load to save-after-load without a second request', async () => {
     service.start(media, 7);
-    service.start(media, 7, true);
-    events.next({
-      type: 'completed',
-      artifact: {
-        displayUrl: 'blob:test',
-        savePath: 'blob:test',
-        size: 2000,
-        release: vi.fn().mockName('release'),
-      },
-    });
-    await Promise.resolve();
-    expect(save).toHaveBeenCalledWith(
-      expect.objectContaining({ path: 'blob:test' }),
-    );
-  });
-
-  it('keeps a downloaded image loaded when the platform save picker is cancelled', async () => {
-    save.mockRejectedValue(new MediaSaveCancelledError());
-    service.start(media, 7, true);
-    events.next({
-      type: 'completed',
-      artifact: {
-        displayUrl: 'blob:test',
-        savePath: 'blob:test',
-        size: 2000,
-        release: vi.fn().mockName('release'),
-      },
-    });
-
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(service.task(media)).toEqual(
-      expect.objectContaining({
-        status: 'loaded',
-        saveAfterLoad: false,
-        blobUrl: 'blob:test',
-      }),
-    );
+    expect(teardown).not.toHaveBeenCalled();
+    expect(service.tasks()).toHaveLength(1);
   });
 });

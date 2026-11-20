@@ -43,7 +43,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
             <mat-slide-toggle matListItemMeta
               [checked]="chatAppearance.showSelfAvatar()"
               (change)="chatAppearance.setShowSelfAvatar($event.checked)"
-              [attr.aria-label]="'settings.showSelfAvatar' | transloco" />
+              [aria-label]="'settings.showSelfAvatar' | transloco" />
           </mat-list-item>
         </mat-list>
       </mat-card>

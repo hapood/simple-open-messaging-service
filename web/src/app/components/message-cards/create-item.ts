@@ -86,6 +86,7 @@ export function computeRowFlags(
     const curCtx: GroupCtx = { creator: msg.creator };
     const prevCtx: GroupCtx | null =
       prevMsg &&
+      !item.groupingBreakBefore &&
       participatesInSenderGroup(prevMsg) &&
       participatesInSenderGroup(msg)
         ? { creator: prevMsg.creator }
@@ -93,6 +94,7 @@ export function computeRowFlags(
     const nextMsg = next?.data.type === 'msg' ? next.data : null;
     const nextCtx: GroupCtx | null =
       nextMsg &&
+      !next?.groupingBreakBefore &&
       participatesInSenderGroup(msg) &&
       participatesInSenderGroup(nextMsg)
         ? { creator: nextMsg.creator }
@@ -139,6 +141,7 @@ function groupPositionFrom(
     item.data.type === 'msg' &&
     participatesInSenderGroup(item.data) &&
     next?.data.type === 'msg' &&
+    !next.groupingBreakBefore &&
     participatesInSenderGroup(next.data) &&
     next.data.creator === item.data.creator;
   return isShowHead
@@ -164,9 +167,8 @@ function groupPositionFrom(
  * Height contract (cb-element-border-box memory): components must be border-box with vertical spacing via
  * padding (offsetHeight excludes margin). This factory does NOT estimate height — the kernel's createEntry
  * mounts with height=0 (hidden for one frame via .cb-pending), and measurePending reads the real
- * el.offsetHeight synchronously to settle it; the onHeightChange ResizeObserver only captures post-render
- * async changes (font/image/data updates). Do not use the RO's contentRect.height — content-box would miss
- * the padding.
+ * el.offsetHeight synchronously to settle it. Later layout changes must be submitted through
+ * the active layout-request contract before mutating the rendered content.
  */
 export function createMsgCbElement(
   item: CbItem<ChatItemData>,
@@ -620,21 +622,15 @@ export function createGhostCbElement(): CbElement<ChatItemData> {
   el.style.height = `${GHOST_H}px`;
   return {
     el,
-    onHeightChange: () => () => {}, // fixed height never changes (no ResizeObserver); settled by the kernel's measurePending reading offsetHeight
     update: () => {}, // ghosts are placeholders, never morphed in place (no optimistic send is ever a ghost)
     destroy: () => {},
   };
 }
 
 /**
- * Generic CbElement wrapper: onHeightChange reports the real el.offsetHeight via ResizeObserver (border-box,
- * same basis as the kernel's measurePending — do not use the RO's contentRect.height, content-box would miss
- * the padding); destroy disconnects the RO and destroys the component ref. Factored out to avoid duplicating
- * the RO + destroy boilerplate across text/media/invite.
- *
- * No estimateHeight: the kernel never estimates height (see the CbElement doc). createEntry mounts with
- * height=0 and measurePending reads the real offsetHeight synchronously to settle it; this RO only captures
- * post-render async changes (secondary height changes from font/image/data updates).
+ * Own the rendered component lifetime. Initial and explicit updates are measured synchronously.
+ * Subsequent layout mutations must request a kernel transaction before changing the DOM;
+ * there is deliberately no passive height-observation fallback.
  */
 function wrapEl<T>(
   ref: { location: { nativeElement: HTMLElement }; destroy: () => void },
@@ -645,29 +641,11 @@ function wrapEl<T>(
 ): CbElement<T> {
   const el = measuredHost ?? ref.location.nativeElement;
   applyMessageListItemSemantics(el);
-  let ro: ResizeObserver | null = null;
-  let live: ((h: number) => void) | null = null;
   return {
     el,
-    onHeightChange: (cb) => {
-      live = cb;
-      if (!ro) {
-        ro = new ResizeObserver(() => {
-          const h = el.offsetHeight; // border-box, same basis as the kernel's measurePending
-          if (h > 0) live?.(h);
-        });
-        ro.observe(el);
-      }
-      return () => {
-        live = null;
-      };
-    },
     update,
     updateNext,
     destroy: () => {
-      ro?.disconnect();
-      ro = null;
-      live = null;
       beforeDestroy?.();
       ref.destroy();
     },
@@ -697,27 +675,10 @@ export function createServerGapCbElement(
   text.textContent = label;
   host.append(rule, text);
   applyMessageListItemSemantics(host);
-  let observer: ResizeObserver | null = null;
-  let heightListener: ((height: number) => void) | null = null;
   return {
     el: host,
-    onHeightChange: (listener) => {
-      heightListener = listener;
-      observer ??= new ResizeObserver(() => {
-        const height = host.offsetHeight;
-        if (height > 0) heightListener?.(height);
-      });
-      observer.observe(host);
-      return () => {
-        heightListener = null;
-      };
-    },
     update: () => {},
     updateNext: () => {},
-    destroy: () => {
-      observer?.disconnect();
-      observer = null;
-      heightListener = null;
-    },
+    destroy: () => {},
   };
 }

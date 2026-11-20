@@ -1,5 +1,4 @@
 //! Dock unread projection. Rust reads the login-owned durable projection; the renderer only wakes it.
-use super::unread::unread_total;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
@@ -33,6 +32,7 @@ fn badge_label(count: i64) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use super::super::unread::unread_total;
     use super::*;
     use std::ffi::{c_char, CString};
     use std::sync::OnceLock;

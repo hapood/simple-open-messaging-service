@@ -74,6 +74,7 @@ tar = "0.4"
 # instead of the plaintext webview localStorage copy — so a trusted desktop may hold a permanent token.
 # Backends are enabled per OS; Android is excluded (it uses its own EncryptedSharedPreferences bridge).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 

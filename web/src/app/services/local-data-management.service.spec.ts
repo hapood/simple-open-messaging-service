@@ -1,4 +1,5 @@
 import type { Mock } from 'vitest';
+import { BrowserSendFiles } from './browser-send-files.service';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { LocalDataManagementService } from './local-data-management.service';
@@ -17,6 +18,8 @@ describe('LocalDataManagementService', () => {
     info: () => {
       limitMb: number;
       usedBytes: number;
+      avatarBytes: number;
+      temporaryUploadBytes: number;
     };
   };
 
@@ -37,7 +40,7 @@ describe('LocalDataManagementService', () => {
       },
       {
         available: true,
-        info: () => ({ limitMb: 512, usedBytes: 4096 }),
+        info: () => ({ limitMb: 512, usedBytes: 4096, avatarBytes: 128, temporaryUploadBytes: 256 }),
       },
     );
     webdb.countCachedMessages.mockResolvedValue(37);
@@ -48,6 +51,7 @@ describe('LocalDataManagementService', () => {
       providers: [
         provideZonelessChangeDetection(),
         LocalDataManagementService,
+        { provide: BrowserSendFiles, useValue: { bytes: () => 17 } },
         { provide: NavStateMachineService, useValue: nav },
         { provide: WebdbService, useValue: webdb },
         { provide: NativeMediaCacheService, useValue: media },
@@ -60,8 +64,17 @@ describe('LocalDataManagementService', () => {
     await expect(service.stats()).resolves.toEqual({
       messageCount: 37,
       mediaBytes: 4096,
+      avatarBytes: 128,
+      temporaryUploadBytes: 256,
     });
     expect(media.refresh).toHaveBeenCalled();
+  });
+
+  it('measures live browser file references without inventing unavailable cache measurements', async () => {
+    media.available = false;
+    await expect(service.stats()).resolves.toEqual({
+      messageCount: 37, mediaBytes: null, avatarBytes: null, temporaryUploadBytes: 17,
+    });
   });
 
   it('returns to the thread list before replacing messages, then clears media', async () => {

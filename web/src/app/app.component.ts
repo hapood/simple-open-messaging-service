@@ -35,6 +35,7 @@ import { UpdateBannerComponent } from './components/update-banner/update-banner.
 import { ComposerGeometryService } from './services/composer-geometry.service';
 import { AuthService } from './services/auth.service';
 import { ConfigService } from './services/config.service';
+import { NativeRecordingAdmissionService } from './services/native-recording-admission.service';
 import { NativeShareService } from './services/native-share.service';
 import { MsgService } from './services/message.service';
 import { ToastService } from './services/toast.service';
@@ -73,6 +74,7 @@ export class AppComponent {
   private readonly snackbarGeometry = inject(SnackbarGeometryService);
   // Register the Android ACTION_SEND pull hook before any recipient UI exists. Payloads remain native-owned
   // until the future forwarding flow explicitly acknowledges them.
+  private readonly recordingAdmission = inject(NativeRecordingAdmissionService);
   private readonly nativeShare = inject(NativeShareService);
   private readonly messages = inject(MsgService);
   private readonly toast = inject(ToastService);

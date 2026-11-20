@@ -67,6 +67,10 @@
         [class.msg-sending]="isSending()"
         [style.width.%]="100"
       >
+        <app-federated-download-status
+          [status]="mediaStatus()"
+          [messageId]="data().msgId"
+        />
         @if (data().contentType === 'GALLERY') {
           <div
             class="msg-gallery-row"
@@ -217,12 +221,7 @@
                       <mat-icon class="msg-media-overlay-icon"
                         >schedule</mat-icon
                       >
-                    } @else if (c.status === MEDIA_STATUS.DOWNLOADING) {
-                      <mat-progress-spinner
-                        mode="indeterminate"
-                        [diameter]="24"
-                      />
-                    } @else {
+                    } @else if (c.status !== MEDIA_STATUS.DOWNLOADING) {
                       <mat-icon class="msg-media-overlay-icon"
                         >cloud_off</mat-icon
                       >
@@ -268,8 +267,6 @@
                     [duration]="c.duration ?? 0"
                     [status]="c.status"
                     [time]="metaBar().time"
-                    [pending]="isSending()"
-                    [transferId]="clientMessageId()"
                     [showUnplayed]="!data().isSelf"
                   />
                 }
@@ -337,9 +334,7 @@
               >
                 @if (mediaStatus() === MEDIA_STATUS.PENDING) {
                   <mat-icon>schedule</mat-icon>
-                } @else if (mediaStatus() === MEDIA_STATUS.DOWNLOADING) {
-                  <mat-progress-spinner mode="indeterminate" [diameter]="12" />
-                } @else {
+                } @else if (mediaStatus() !== MEDIA_STATUS.DOWNLOADING) {
                   <mat-icon>error_outline</mat-icon>
                 }
                 {{

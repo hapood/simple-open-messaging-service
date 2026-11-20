@@ -3,6 +3,7 @@ import {
   SseDecoder,
   type SseFrame,
 } from '../../../../shared/sse-client';
+import { ThreadSendOutbox } from './thread-send-outbox.service';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot';
 import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
 import {
@@ -168,6 +169,7 @@ export class UserService {
     return BigInt(head.requestEndId) > covered;
   });
   private readonly webdb = inject(WebdbService);
+  private readonly sendOutbox = inject(ThreadSendOutbox);
   private readonly profileRepo = inject(ProfileRepository);
   private readonly preferences = inject(PreferenceStore);
   private readonly sessionLifecycle = inject(SessionLifecycleService);
@@ -283,6 +285,8 @@ export class UserService {
     if (this.freshCachePending) {
       await this.webdb.recreateForUser(String(userId));
       checkSession();
+      await this.sendOutbox.restore(true);
+      checkSession();
       await this.preferences.remove(`account:${userId}`, CACHE_REBUILD_KEY);
       checkSession();
       this.freshCachePending = false;
@@ -316,7 +320,11 @@ export class UserService {
       await this.preferences.set(scope, CACHE_REBUILD_KEY, 'attempted');
       checkSession();
       await this.webdb.recreateForUser(String(userId));
+      checkSession();
+      await this.sendOutbox.restore(true);
     }
+    checkSession();
+    await this.sendOutbox.restore();
     checkSession();
     const state = await this.webdb.readAccountState();
     checkSession();
@@ -440,6 +448,8 @@ export class UserService {
           await this.webdb.openExistingForUser(String(userId));
           await this.restoreCachedSelfProfile(userId, signal);
           check();
+          await this.sendOutbox.restore();
+          check();
           return;
         } catch (error) {
           check();
@@ -455,6 +465,9 @@ export class UserService {
       check();
       if (isTauri()) await tauriInvoke('native_db_recreate_cache');
       await this.webdb.recreateForUser(String(userId));
+      check();
+      await this.sendOutbox.restore(true);
+      check();
       await this.restoreCachedSelfProfile(userId, signal);
       check();
       console.warn(

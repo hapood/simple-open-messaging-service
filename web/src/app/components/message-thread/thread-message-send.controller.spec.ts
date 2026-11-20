@@ -1,134 +1,49 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { ChatMsgData } from '../message-cards/chat-item';
-import type {
-  MessageThreadAdapter,
-  MessageThreadSource,
-} from './message-thread-adapter';
-import {
-  ThreadMessageSendController,
-  type ThreadMessageSendHost,
-} from './thread-message-send.controller';
-import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
+import { ThreadMessageSendController } from './thread-message-send.controller';
+import type { MessageThreadAdapter } from './message-thread-adapter';
+import type { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 
-describe('ThreadMessageSendController', () => {
-  it('fails a text send when the HTTP/IPC promise never settles', async () => {
-    vi.useFakeTimers();
-    try {
-      const fail = vi.fn(async () => undefined);
-      const item = {
-        id: -1,
-        clientMessageId: 'cid',
-        data: { type: 'msg', text: 'hello' },
-      } as unknown as CbItem<ChatMsgData>;
-      const host = {
-        threadId: () => 3,
-        selfMentionIdentity: () => ({ account: 'alice', namespaceId: 12 }),
-        consumeQuote: () => null,
-        makeItem: () => item,
-        newClientMessageId: () => 'cid',
-        dispatch: vi.fn(),
-        source: () => ({}) as never,
-        fail,
-        accept: vi.fn(),
-        surfaceFailure: vi.fn(),
-      } satisfies ThreadMessageSendHost;
-      new ThreadMessageSendController(
-        {
-          sendText: () => new Promise(() => undefined),
-        } as unknown as MessageThreadAdapter,
-        host,
-      ).text('hello');
-      await vi.advanceTimersByTimeAsync(MESSAGE_SEND_TIMEOUT_MS);
-      expect(fail).toHaveBeenCalledWith(item);
-      expect(host.accept).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+describe('durable non-media sending', () => {
+  function setup() {
+    const outbox = { enqueue: vi.fn().mockResolvedValue(undefined), retry: vi.fn(), setPhase: vi.fn(), confirm: vi.fn() };
+    const adapter = { sendIntent: vi.fn().mockResolvedValue({ code: 0 }) };
+    const host = { threadId: () => 7, consumeQuote: () => null, newClientMessageId: () => 'cid', surfaceFailure: vi.fn() };
+    const controller = new ThreadMessageSendController(adapter as unknown as MessageThreadAdapter, host, outbox as unknown as ThreadSendOutbox);
+    return { outbox, adapter, host, controller };
+  }
+
+  it('waits for persistence before starting network work', async () => {
+    const { outbox, adapter, controller } = setup();
+    let commit!: () => void;
+    outbox.enqueue.mockReturnValue(new Promise<void>(resolve => { commit = resolve; }));
+    const sending = controller.text('hello');
+    expect(adapter.sendIntent).not.toHaveBeenCalled();
+    commit();
+    await sending;
+    expect(adapter.sendIntent).toHaveBeenCalledWith(outbox.enqueue.mock.calls[0][0]);
+    expect(outbox.setPhase).not.toHaveBeenCalledWith('cid', 'accepted');
+    expect(outbox.confirm).toHaveBeenCalledWith(7, ['cid']);
   });
 
-  it('builds and dispatches one optimistic text send', async () => {
-    const sendText = vi.fn(async () => ({ code: 0, message: 'ok' }));
-    const dispatch = vi.fn();
-    const accept = vi.fn(async () => undefined);
-    const item = {
-      id: -1,
-      clientMessageId: 'cid',
-      data: { type: 'msg', text: 'hello' },
-    } as unknown as CbItem<ChatMsgData>;
-    const host = {
-      threadId: () => 3,
-      selfMentionIdentity: () => ({ account: 'alice', namespaceId: 12 }),
-      consumeQuote: () => null,
-      makeItem: () => item,
-      newClientMessageId: () => 'cid',
-      dispatch,
-      source: () => ({}) as never,
-      fail: vi.fn(),
-      accept,
-      surfaceFailure: vi.fn(),
-    } satisfies ThreadMessageSendHost;
-    new ThreadMessageSendController(
-      { sendText } as unknown as MessageThreadAdapter,
-      host,
-    ).text(' hello ');
-    await vi.waitFor(() => expect(accept).toHaveBeenCalledWith(item));
-    expect(dispatch).toHaveBeenCalledWith(item);
-    expect(sendText).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 3, clientMessageId: 'cid' }),
-    );
-    expect(accept).toHaveBeenCalledWith(item);
+  it('does not send when admission fails', async () => {
+    const { outbox, adapter, controller } = setup();
+    outbox.enqueue.mockRejectedValue(new Error('quota'));
+    await expect(controller.text('hello')).rejects.toThrow('quota');
+    expect(adapter.sendIntent).not.toHaveBeenCalled();
   });
 
-  it('routes a contact card through the thread adapter with its optimistic item', async () => {
-    const sendContact = vi.fn(async () => ({ code: 0, message: 'ok' }));
-    const item = {
-      id: -1,
-      clientMessageId: 'contact-cid',
-      data: { type: 'msg', contentType: 'CONTACT_CARD' },
-    } as unknown as CbItem<ChatMsgData>;
-    const source = {} as MessageThreadSource;
-    const host = {
-      threadId: () => 3,
-      selfMentionIdentity: () => ({ account: 'alice', namespaceId: 12 }),
-      consumeQuote: () => null,
-      makeItem: vi.fn(() => item),
-      newClientMessageId: () => 'contact-cid',
-      dispatch: vi.fn(),
-      source: () => source,
-      fail: vi.fn(async () => undefined),
-      accept: vi.fn(async () => undefined),
-      surfaceFailure: vi.fn(),
-    } satisfies ThreadMessageSendHost;
+  it('executes a stored link request without reading it again or creating another record', async () => {
+    const { outbox, adapter, controller } = setup();
+    const task = { clientMessageId: 'original', threadId: 7, item: { type: 'LINK', generationId: 'generation' } };
+    await controller.execute({ ...task, item: { type: 'LINK', generationId: 'generation' } });
+    expect(outbox.retry).not.toHaveBeenCalled();
+    expect(adapter.sendIntent).toHaveBeenCalledWith(task);
+    expect(outbox.enqueue).not.toHaveBeenCalled();
+  });
 
-    new ThreadMessageSendController(
-      { sendContact } as unknown as MessageThreadAdapter,
-      host,
-    ).contact({
-      kind: 'contact',
-      target: {
-        account: 'maya',
-        namespaceId: 0,
-        profileRev: 2,
-      },
-      account: 'maya',
-      name: 'Maya',
-      bio: '',
-    });
-    await vi.waitFor(() => expect(host.accept).toHaveBeenCalledWith(item));
-
-    expect(host.dispatch).toHaveBeenCalledWith(item);
-    expect(sendContact).toHaveBeenCalledWith({
-      threadId: 3,
-      target: {
-        account: 'maya',
-        namespaceId: 0,
-        profileRev: 2,
-      },
-      clientMessageId: 'contact-cid',
-      optimistic: item,
-      source,
-    });
-    expect(host.accept).toHaveBeenCalledWith(item);
+  it('keeps a network failure retryable', async () => {
+    const { outbox, adapter, controller } = setup();
+    adapter.sendIntent.mockRejectedValue(new Error('offline'));
+    await controller.text('hello');
+    expect(outbox.setPhase).toHaveBeenCalledWith('cid', 'failed');
   });
 });

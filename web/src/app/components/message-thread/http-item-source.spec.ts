@@ -45,7 +45,8 @@ function conv(threadId: number): ConversationItem {
     authorityNamespaceId: 0,
     id: 1,
     type: 'P2P',
-    lastReadSeq: null,
+    messageEndSeq: 0,
+    lastReadSeq: 0,
     role: null,
     unreadCount: 0,
     lastMessagePreview: null,
@@ -130,7 +131,6 @@ function pendingItem(cid: string, id = -1) {
       file: null,
       createdAtMs: 0,
       status: 'sending',
-      kind: 'pending',
     } as never,
     clientMessageId: cid,
   };
@@ -143,18 +143,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     tid = 42,
     outbox = new ThreadSendOutbox(),
     resolutionRepo?: ProfileRepository,
-    stageResponse: StandardResponse<
-      Array<{
-        clientMessageId: string;
-        contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
-        content: string;
-        status: 'pending' | 'failed';
-        failReason: string | null;
-        createdAt: number;
-        updatedAt: number;
-      }>
-    > = { code: 0, message: 'ok', data: [] },
     groupRoster = false,
+    entryReadSeq = 0,
   ) {
     const liveSignal$ = new Subject<{
       threadId: number;
@@ -282,7 +272,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
               kind: 'message',
               message,
             })),
-            hasOlder: demand.kind === 'newer' ? true : (page.hasMore ?? false),
+            hasOlder:
+              demand.kind === 'newer'
+                ? demand.after > 0
+                : (page.hasMore ?? false),
             hasNewer: demand.kind === 'newer' ? (page.hasMore ?? false) : false,
             failed: page.failed === true,
           };
@@ -355,10 +348,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       }),
     } as unknown as UserService;
     const messages = {
-      queryMediaStages: vi
-        .fn()
-        .mockName('queryMediaStages')
-        .mockReturnValue(of(stageResponse)),
       cancelUploadBatch: vi
         .fn()
         .mockName('cancelUploadBatch')
@@ -395,6 +384,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const createSource = () =>
       new HttpItemSource(
         groupRoster ? groupConv(tid) : conv(tid),
+        entryReadSeq,
         repo,
         userService,
         outbox,
@@ -430,6 +420,215 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     };
   }
 
+  it.each([10, 11])(
+    'captures exact cached-head evidence for known end %s',
+    async (end) => {
+      const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+      repo.retainNewestSeq(42, end);
+      const query = vi.mocked(repo.queryBrowserMessageHistory);
+      query.mockResolvedValue({
+        items: [{ kind: 'message', message: row(10, 2) }],
+        hasOlder: true,
+        hasNewer: true,
+        failed: false,
+      });
+      expect(await src.prepareEntry()).toEqual({
+        lastReadSeq: 0,
+        hasCachedMessages: true,
+        hasCachedHead: end === 10,
+      });
+      const items = await src.loadWindow({ kind: 'cached', count: 50 });
+      expect(items[0].boundary).toBe(end === 10 ? 'newest' : undefined);
+      expect(query).toHaveBeenCalledTimes(1);
+      src.destroy();
+    },
+  );
+
+  it('a head advanced after preparation is not hidden by cached-head evidence', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+    repo.retainNewestSeq(42, 10);
+    vi.mocked(repo.queryBrowserMessageHistory).mockResolvedValue({
+      items: [{ kind: 'message', message: row(10, 2) }],
+      hasOlder: true,
+      hasNewer: true,
+      failed: false,
+    });
+    expect((await src.prepareEntry()).hasCachedHead).toBe(true);
+    repo.retainNewestSeq(42, 11);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
+    expect(items[0].boundary).toBeUndefined();
+    src.destroy();
+  });
+
+  it.each([0, 100])(
+    'entry suffix queries frozen R=%s and completes even when empty',
+    async (read) => {
+      const { src, repo } = setup(
+        { code: 0, message: 'ok', data: [] },
+        42,
+        new ThreadSendOutbox(),
+        undefined,
+        false,
+        read,
+      );
+      const query = vi.mocked(repo.queryBrowserMessageHistory);
+      query.mockResolvedValue({
+        items: [],
+        hasOlder: true,
+        hasNewer: false,
+        failed: false,
+      });
+      repo.retainNewestSeq(42, 200);
+      expect(await firstValueFrom(src.requestEntrySuffix(500))).toEqual({
+        kind: 'items',
+        items: [],
+      });
+      expect(query).toHaveBeenCalledExactlyOnceWith(
+        42,
+        { kind: 'newer', after: read, count: 50 },
+        expect.any(AbortSignal),
+      );
+      src.destroy();
+    },
+  );
+
+  it('entry suffix cancellation aborts its query and rejects late delivery without destroying the source', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+    const query = vi.mocked(repo.queryBrowserMessageHistory);
+    let resolve!: (
+      value: Awaited<ReturnType<typeof repo.queryBrowserMessageHistory>>,
+    ) => void;
+    query.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const delivery = vi.fn();
+    const subscription = src.requestEntrySuffix(50).subscribe(delivery);
+    const signal = query.mock.calls[0][2]!;
+    subscription.unsubscribe();
+    expect(signal.aborted).toBe(true);
+    resolve({ items: [], hasOlder: false, hasNewer: false, failed: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(delivery).not.toHaveBeenCalled();
+    expect(await firstValueFrom(src.requestEntrySuffix(50))).toEqual({
+      kind: 'items',
+      items: [],
+    });
+    src.destroy();
+  });
+
+  it('entry suffix failure retries the same frozen cursor', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+    const query = vi.mocked(repo.queryBrowserMessageHistory);
+    const error = new Error('offline');
+    query.mockRejectedValueOnce(error);
+    expect(await firstValueFrom(src.requestEntrySuffix(50))).toEqual({
+      kind: 'error',
+      error,
+    });
+    expect(await firstValueFrom(src.requestEntrySuffix(50))).toEqual({
+      kind: 'items',
+      items: [],
+    });
+    expect(query.mock.calls.map((call) => call[1])).toEqual([
+      { kind: 'newer', after: 0, count: 50 },
+      { kind: 'newer', after: 0, count: 50 },
+    ]);
+    src.destroy();
+  });
+
+  it.each(['browser', 'native'] as const)(
+    'retiring an older/gap demand aborts only its %s query and ignores late results',
+    async (host) => {
+      const nativeWindow = window as unknown as {
+        __TAURI_INTERNALS__?: unknown;
+      };
+      if (host === 'native') nativeWindow.__TAURI_INTERNALS__ = {};
+      const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+      try {
+        const query = vi.mocked(host === 'native'
+          ? repo.queryNativeMessageHistory
+          : repo.queryBrowserMessageHistory);
+        type Result = Awaited<ReturnType<typeof repo.queryBrowserMessageHistory>>;
+        const pending: Array<(result: Result) => void> = [];
+        query.mockImplementation(() => new Promise<Result>((resolve) => pending.push(resolve)));
+        const retiredDelivery = vi.fn();
+        const siblingDelivery = vi.fn();
+        const retired = src.requestOlder(101, 50).subscribe(retiredDelivery);
+        const sibling = src.requestOlder(51, 50).subscribe(siblingDelivery);
+        const retiredSignal = query.mock.calls[0][2]!;
+        const siblingSignal = query.mock.calls[1][2]!;
+        retired.unsubscribe();
+        expect(retiredSignal.aborted).toBe(true);
+        expect(siblingSignal.aborted).toBe(false);
+        pending[0]({ items: [], hasOlder: false, hasNewer: false, failed: false });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(retiredDelivery).not.toHaveBeenCalled();
+        pending[1]({
+          items: [{ kind: 'message', message: row(50, 2) }],
+          hasOlder: true, hasNewer: true, failed: false,
+        });
+        await vi.waitFor(() => expect(siblingDelivery).toHaveBeenCalledOnce());
+        expect(siblingDelivery.mock.calls[0][0].items[0].id).toBe(50);
+        expect(sibling.closed).toBe(true);
+        const afterRetirement = src.requestOlder(31, 50).subscribe();
+        const freshSignal = query.mock.calls[2][2]!;
+        expect(freshSignal.aborted).toBe(false);
+        src.destroy();
+        expect(freshSignal.aborted).toBe(true);
+        afterRetirement.unsubscribe();
+      } finally {
+        src.destroy();
+        if (host === 'native') delete nativeWindow.__TAURI_INTERNALS__;
+      }
+    },
+  );
+
+  it('an oldest cached prefix does not suppress a later gap-adjacent older query', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+    const query = vi.mocked(repo.queryBrowserMessageHistory);
+    query.mockResolvedValueOnce({
+      items: [{ kind: 'message', message: row(1, 2) }],
+      hasOlder: false,
+      hasNewer: true,
+      failed: false,
+    });
+    await src.loadWindow({ kind: 'cached', count: 50 });
+    query.mockResolvedValueOnce({
+      items: [{ kind: 'message', message: row(100, 2) }],
+      hasOlder: true,
+      hasNewer: true,
+      failed: false,
+    });
+    const result = await firstValueFrom(src.requestOlder(101, 50));
+    expect(query.mock.calls[1][1]).toEqual({
+      kind: 'older',
+      before: 101,
+      count: 50,
+    });
+    expect(result.kind).toBe('items');
+    if (result.kind === 'items')
+      expect(result.items.map((item) => item.id)).toEqual([100]);
+    src.destroy();
+  });
+
+  it('failed entry preparation remains retryable rather than reporting empty cache', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+    const query = vi.mocked(repo.queryBrowserMessageHistory);
+    query.mockRejectedValueOnce(new Error('cache read failed'));
+    await expect(src.prepareEntry()).rejects.toThrow('cache read failed');
+    await expect(src.prepareEntry()).resolves.toEqual({
+      lastReadSeq: 0,
+      hasCachedMessages: false,
+      hasCachedHead: false,
+    });
+    src.destroy();
+  });
+
   it('destroy releases live notifications without cancelling other repository consumers', async () => {
     const {
       src,
@@ -446,7 +645,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     } = setup({ code: 0, message: 'ok', data: [] });
     const siblingMedia = vi.fn();
     const sibling = mediaStatusLive$.subscribe(siblingMedia);
-    await src.init(-1, 10, 0);
+    await src.loadWindow({ kind: 'cached', count: 10 });
     src.finishLocalInit(undefined);
     mediaStatusLive$.next({
       threadId: 42,
@@ -526,11 +725,11 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         });
       },
     );
-    const first = src.init(-1, 10, 0);
+    const first = src.loadWindow({ kind: 'cached', count: 10 });
     const rejected = expect(first).rejects.toMatchObject({
       name: 'AbortError',
     });
-    const second = sibling.init(-1, 10, 0);
+    const second = sibling.loadWindow({ kind: 'cached', count: 10 });
     expect(requests).toHaveLength(2);
     src.destroy();
     src.destroy();
@@ -552,8 +751,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(requests[1].signal.aborted).toBe(true);
   });
 
-  it('destroy cancels history ownership and does not proceed to media restoration', async () => {
-    const { src, repo, messages } = setup({ code: 0, message: 'ok', data: [] });
+  it('destroy cancels history ownership and rejects late delivery', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
     let signal: AbortSignal | undefined;
     let complete!: (value: never) => void;
     vi.spyOn(repo, 'queryBrowserMessageHistory').mockImplementation(
@@ -564,7 +763,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         });
       },
     );
-    const pending = src.init(-1, 10, 0);
+    const pending = src.loadWindow({ kind: 'cached', count: 10 });
     const rejected = expect(pending).rejects.toMatchObject({
       name: 'AbortError',
     });
@@ -578,37 +777,25 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       failed: false,
     } as never);
     await Promise.resolve();
-    expect(messages.queryMediaStages).not.toHaveBeenCalled();
   });
 
-  it('binding abort cancels media HTTP and cannot restart source subscriptions', async () => {
-    const { src, messages, liveSignal$, newerAvailable } = setup({
+  it('binding abort cannot restart source subscriptions', async () => {
+    const { src, liveSignal$, newerAvailable } = setup({
       code: 0,
       message: 'ok',
       data: [],
     });
-    const subscribed = vi.fn();
-    const unsubscribed = vi.fn();
-    messages.queryMediaStages.mockReturnValue(
-      new Observable(() => {
-        subscribed();
-        return unsubscribed;
-      }),
-    );
     const binding = new AbortController();
-    await src.init(-1, 10, 0, { signal: binding.signal });
-    expect(subscribed).not.toHaveBeenCalled();
-    const pending = src.restoreMediaStages();
-    await vi.waitFor(() => expect(subscribed).toHaveBeenCalledOnce());
+    await src.loadWindow(
+      { kind: 'cached', count: 10 },
+      { signal: binding.signal },
+    );
     binding.abort();
-    await pending;
-    expect(unsubscribed).toHaveBeenCalledOnce();
     src.resumeLiveUpdates();
     src.finishLocalInit(10);
     liveSignal$.next({ threadId: 42, seq: 10 });
     expect(newerAvailable).not.toHaveBeenCalled();
     src.destroy();
-    expect(unsubscribed).toHaveBeenCalledOnce();
   });
 
   it('resolves group message authors through the message profile demand', async () => {
@@ -630,11 +817,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       42,
       new ThreadSendOutbox(),
       accountProfiles,
-      { code: 0, message: 'ok', data: [] },
       true,
     );
 
-    const items = await src.init(-1, 20, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 20 });
 
     expect(items).toHaveLength(1);
     expect(items[0]!.data).toMatchObject({
@@ -667,11 +853,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       42,
       new ThreadSendOutbox(),
       accountProfiles,
-      { code: 0, message: 'ok', data: [] },
       true,
     );
 
-    const items = await src.init(-1, 20, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 20 });
 
     expect(items).toHaveLength(1);
     expect(items[0]!.data).toMatchObject({
@@ -707,11 +892,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       42,
       new ThreadSendOutbox(),
       accountProfiles,
-      { code: 0, message: 'ok', data: [] },
       true,
     );
 
-    const items = await src.init(-1, 20, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 20 });
 
     const byId = new Map(
       items.map((item) => [item.id, item.data as { name: string }]),
@@ -719,7 +903,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(byId.get(1)).toMatchObject({ name: 'Alice' });
     expect(byId.get(2)).toMatchObject({ name: 'charlie' });
   });
-  it('remounts an accepted native voice bubble so its confirmation timeout and retry remain visible', () => {
+  it('retains accepted native voice data for confirmation tracking without a pending marker', () => {
     const { src, outbox } = setup({ code: 0, message: 'ok', data: [] });
     const pending = pendingItem('voice-cid') as unknown as {
       id: number;
@@ -752,7 +936,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       new ThreadSendOutbox(),
       repository as unknown as ProfileRepository,
     );
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
     expect(items[0].data).toMatchObject({
       sender: {
         kind: 'demand',
@@ -809,7 +993,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       new ThreadSendOutbox(),
       repository as unknown as ProfileRepository,
     );
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
     expect(items[0].data).toMatchObject({
       type: 'system',
       threadId: 42,
@@ -837,12 +1021,16 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         data: [row(12, 2), legacy, tomb as MessageQueryRow, row(9, 2)],
         hasMore: false,
       });
-      expect((await src.init(-1, 50, 0)).map((item) => item.id)).toEqual([
-        9, 12,
-      ]);
-      expect((await src.init(-1, 50, 0)).map((item) => item.id)).toEqual([
-        9, 12,
-      ]);
+      expect(
+        (await src.loadWindow({ kind: 'cached', count: 50 })).map(
+          (item) => item.id,
+        ),
+      ).toEqual([9, 12]);
+      expect(
+        (await src.loadWindow({ kind: 'cached', count: 50 })).map(
+          (item) => item.id,
+        ),
+      ).toEqual([9, 12]);
       src.destroy();
     },
   );
@@ -854,13 +1042,17 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [row(10, 2)],
       hasMore: false,
     });
-    expect((await src.init(-1, 50, 0)).map((item) => item.id)).toEqual([10]);
+    expect(
+      (await src.loadWindow({ kind: 'cached', count: 50 })).map(
+        (item) => item.id,
+      ),
+    ).toEqual([10]);
     deletedLive$.next({
       threadId: 42,
       deletions: [{ seq: 10, type: 'USER_RETRACTION' }],
     });
     // Even an in-flight/stale source result cannot reintroduce the old body.
-    expect(await src.init(-1, 50, 0)).toEqual([]);
+    expect(await src.loadWindow({ kind: 'cached', count: 50 })).toEqual([]);
     src.destroy();
   });
 
@@ -1060,7 +1252,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
 
     liveSignal$.next({ threadId: 42, seq: 12 });
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     (repo.queryMessages as Mock).mockResolvedValue({
       data: [],
       hasMore: false,
@@ -1084,7 +1276,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: [],
       hasMore: false,
     });
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     const before = vi.mocked(repo.queryMessages as Mock).mock.calls.length;
     src.finishLocalInit(undefined, 0);
     await Promise.resolve();
@@ -1102,9 +1294,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     const before = vi.mocked(repo.queryMessages as Mock).mock.calls.length;
-    const subscription = src.requestNewer(-1, 50).subscribe();
+    const subscription = src.requestMessagesForEmptyWindow(50).subscribe();
     src.finishLocalInit(undefined, 258);
     await Promise.resolve();
     expect(newerAvailable).toHaveBeenCalledTimes(1);
@@ -1113,6 +1305,42 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       vi.mocked(repo.queryMessages as Mock).mock.calls.length,
     ).toBeGreaterThan(before);
     subscription.unsubscribe();
+  });
+
+  it('allows centered-window newer fill before component completion', async () => {
+    const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
+    const history = vi.mocked(repo.queryBrowserMessageHistory);
+    history.mockResolvedValueOnce({
+      items: [{ kind: 'message', message: row(10, 2) }],
+      hasOlder: false,
+      hasNewer: true,
+      failed: false,
+    });
+    history.mockResolvedValueOnce({
+      items: [{ kind: 'message', message: row(11, 2) }],
+      hasOlder: true,
+      hasNewer: false,
+      failed: false,
+    });
+
+    await src.loadWindow({
+      kind: 'around',
+      messageId: 10,
+      olderCount: 1,
+      newerCount: 1,
+    });
+    // No component completion callback: fill is part of opening the window.
+    await expect(
+      firstValueFrom(src.requestNewer(10, 1)),
+    ).resolves.toMatchObject({
+      kind: 'items',
+      items: [{ id: 11, boundary: 'newest' }],
+    });
+    expect(history.mock.calls[1][1]).toEqual({
+      kind: 'newer',
+      after: 10,
+      count: 1,
+    });
   });
 
   it('marks the sole server message as both after a cold empty-cache init', async () => {
@@ -1128,9 +1356,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       .mockResolvedValueOnce({ data: [], hasMore: false })
       .mockResolvedValueOnce({ data: [only], hasMore: false });
 
-    expect(await src.init(-1, 50, 0)).toEqual([]);
+    expect(await src.loadWindow({ kind: 'cached', count: 50 })).toEqual([]);
 
-    const next = firstValueFrom(src.requestNewer(-1, 50));
+    const next = firstValueFrom(src.requestMessagesForEmptyWindow(50));
     src.finishLocalInit(undefined, 1);
 
     await expect(next).resolves.toMatchObject({
@@ -1147,7 +1375,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     (repo.queryMessages as Mock).mockResolvedValue({
       data: [],
       hasMore: false,
@@ -1173,7 +1401,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     const queryMessages = repo.queryMessages as Mock;
 
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     src.finishLocalInit(undefined, 20);
     await src.getNewer(11, 50);
 
@@ -1194,7 +1422,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     const queryHistory = repo.queryBrowserMessageHistory as Mock;
 
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     src.finishLocalInit(undefined, 50);
     liveSignal$.next({ threadId: 42, seq: 50 });
     queryHistory.mockResolvedValueOnce({
@@ -1276,7 +1504,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     src.finishLocalInit(12, 11);
   });
 
@@ -1289,7 +1517,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     const queryHistory = repo.queryBrowserMessageHistory as Mock;
 
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     src.finishLocalInit(undefined);
     await src.getOlder(10, 50);
 
@@ -1309,7 +1537,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     const queryMessages = repo.queryMessages as Mock;
 
-    const initial = await src.init(-1, 50, 0);
+    const initial = await src.loadWindow({ kind: 'cached', count: 50 });
     expect(initial.map((item) => item.id)).toEqual([11, 12]);
 
     // Model the virtual-list lifecycle: the kernel trims these rows after the user scrolls upward,
@@ -1343,7 +1571,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
 
     expect(items[0].data.text).toBe(content);
   });
@@ -1377,7 +1605,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         file: null,
         createdAtMs: 0,
         status: 'sending',
-        kind: 'pending',
       } as never,
       clientMessageId: cid,
     });
@@ -1386,7 +1613,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     liveSignal$.next({ threadId: 42, seq: 100 }); // repo cached the echo body → signal (no shaping here)
     expect(src.getPending().length).toBe(1); // pending NOT touched by the signal — only init reconciles
 
-    const items = await src.init(-1, 50, 0); // kernel pulls the cached body via the repo
+    const items = await src.loadWindow({ kind: 'cached', count: 50 }); // kernel pulls the cached body via the repo
     expect(items.length).toBe(1);
     expect(items[0].id).toBe(100);
     expect(items[0].clientMessageId).toBe(cid); // preserved so the kernel pairs it with the optimistic bubble
@@ -1403,7 +1630,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
     src.finishLocalInit(undefined);
 
     expect(items.map((item) => item.id)).toEqual([100]);
@@ -1419,7 +1646,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
     src.finishLocalInit(undefined);
 
     expect(items.map((item) => item.id)).toEqual([100]);
@@ -1456,7 +1683,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: true,
     });
     const queryMessages = repo.queryMessages as Mock;
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     queryMessages.mockResolvedValue({ data: [], hasMore: true, failed: true });
 
     await expect(src.getOlder(10, 50)).rejects.toThrow();
@@ -1469,7 +1696,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const queryMessages = repo.queryMessages as Mock;
     queryMessages.mockResolvedValue({ data: [], hasMore: true, failed: true });
 
-    await expect(src.init(-1, 50, 0)).rejects.toThrow();
+    await expect(
+      src.loadWindow({ kind: 'cached', count: 50 }),
+    ).rejects.toThrow();
   });
 
   it('pushLive is a no-op (signal-only path caches nothing; satisfies the CbSource interface)', () => {
@@ -1525,7 +1754,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(pending.length).toBe(2);
     expect(pending[0].clientMessageId).toBe('cid-keep-1'); // position KEPT (unlike failPending, which sinks to tail)
     expect(pending[0].data.status).toBe('accepted');
-    expect(pending[0].data.kind).toBeUndefined();
+    expect(Object.hasOwn(pending[0].data, 'kind')).toBe(false);
     expect(pending[1].clientMessageId).toBe('cid-keep-2'); // sibling untouched
     expect(pending[1].data.status).toBe('sending');
 
@@ -1549,78 +1778,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(src.markPendingAccepted('cid-image')).toBe(true);
   });
 
-  it('restores durable media stages after local initialization', async () => {
-    const { src, messages } = setup(
-      { code: 0, message: 'ok', data: [], hasMore: false },
-      42,
-      new ThreadSendOutbox(),
-      undefined,
-      {
-        code: 0,
-        message: 'ok',
-        data: [
-          {
-            clientMessageId: 'cid-stage-file',
-            contentType: 'FILE',
-            content: '{}',
-            status: 'pending',
-            failReason: null,
-            createdAt: 1700000000000,
-            updatedAt: 1700000000000,
-          },
-        ],
-      },
-    );
-
-    await src.init(-1, 50, 0);
-    expect(messages.queryMediaStages).not.toHaveBeenCalled();
-    await src.restoreMediaStages();
-
-    expect(messages.queryMediaStages).toHaveBeenCalledWith(42);
-    expect(src.getPending()).toEqual([
-      expect.objectContaining({
-        clientMessageId: 'cid-stage-file',
-        data: expect.objectContaining({
-          contentType: 'FILE',
-          status: 'failed',
-          file: expect.objectContaining({ name: 'Unfinished upload' }),
-        }),
-      }),
-    ]);
-  });
-
-  it('abandons a durable media stage when the restored failed item is discarded', async () => {
-    const { src, messages } = setup(
-      { code: 0, message: 'ok', data: [], hasMore: false },
-      42,
-      new ThreadSendOutbox(),
-      undefined,
-      {
-        code: 0,
-        message: 'ok',
-        data: [
-          {
-            clientMessageId: 'cid-stage-discard',
-            contentType: 'FILE',
-            content: '{}',
-            status: 'pending',
-            failReason: null,
-            createdAt: 1700000000000,
-            updatedAt: 1700000000000,
-          },
-        ],
-      },
-    );
-
-    await src.init(-1, 50, 0);
-    await src.restoreMediaStages();
-
-    expect(src.discardPending('cid-stage-discard')).toBe(true);
-    expect(messages.cancelUploadBatch).toHaveBeenCalledWith(
-      'cid-stage-discard',
-    );
-  });
-
   it('rawToItems: a real whose cid matches a still-sending pending entry carries status sent (SSE-first → real owns the choreography)', async () => {
     const cid = 'sse-first-cid';
     const echo = row(100, 1, cid);
@@ -1641,7 +1798,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     liveSignal$.next({ threadId: 42, seq: 100 }); // SSE echo wins the race → signal
 
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
     expect(items[0].data.status).toBe('sent'); // SSE-first → the real carries the choreography
     expect(src.getPending().length).toBe(0); // fulfilled pending dropped
     expect(dispose).toHaveBeenCalledTimes(1);
@@ -1684,7 +1841,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(src.markPendingAccepted(cid)).toBe(true); // HTTP 200 won the race → pending now 'accepted'
 
     liveSignal$.next({ threadId: 42, seq: 100 });
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
     expect(items[0].data.status).toBe('sent');
   });
 
@@ -1697,7 +1854,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
     liveSignal$.next({ threadId: 42, seq: 100 });
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
     expect(items[0].data.status).toBeUndefined();
   });
 
@@ -1821,7 +1978,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         complete = resolve;
       }),
     );
-    const pending = src.init(-1, 10, 0);
+    const pending = src.loadWindow({ kind: 'cached', count: 10 });
     const rejected = expect(pending).rejects.toMatchObject({
       name: 'AbortError',
     });
@@ -1842,7 +1999,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     getMessageDeletions.mockResolvedValue([
       { seq: 44, type: 'MODERATION_REMOVAL' },
     ]);
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
     expect(getMessageDeletions).toHaveBeenCalledWith(42, [44]);
     expect(items[0].data.quote).toEqual({ seq: 44 });
     expect(items[0].data.text).toBe('reply');
@@ -1855,7 +2012,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       message: 'ok',
       data: [quotedReply()],
     });
-    await src.init(-1, 50, 0);
+    await src.loadWindow({ kind: 'cached', count: 50 });
     deletedLive$.next({
       threadId: 99,
       deletions: [{ seq: 44, type: 'USER_RETRACTION' }],
@@ -1867,7 +2024,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     expect(onQuoteDeleted).toHaveBeenCalledWith(101, 44);
     // A later stale HTTP/cache body cannot restore the preview.
-    expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({ seq: 44 });
+    expect(
+      (await src.loadWindow({ kind: 'cached', count: 50 }))[0].data.quote,
+    ).toEqual({ seq: 44 });
     src.destroy();
     onQuoteDeleted.mockClear();
     deletedLive$.next({
@@ -1890,7 +2049,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       });
       return [];
     });
-    expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({ seq: 44 });
+    expect(
+      (await src.loadWindow({ kind: 'cached', count: 50 }))[0].data.quote,
+    ).toEqual({ seq: 44 });
     src.destroy();
   });
 
@@ -1912,7 +2073,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
 
     expect(items[0].data.quote).toEqual({
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
@@ -1933,9 +2094,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    await expect(src.init(-1, 50, 0)).rejects.toThrowError(
-      'invalid PURE_TEXT message envelope',
-    );
+    await expect(
+      src.loadWindow({ kind: 'cached', count: 50 }),
+    ).rejects.toThrowError('invalid PURE_TEXT message envelope');
   });
 
   it('keeps an unavailable quote jump target with an empty preview for localized fallback', async () => {
@@ -1953,7 +2114,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
 
     expect(items[0].data.quote).toEqual({
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
@@ -1982,7 +2143,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       hasMore: false,
     });
 
-    const items = await src.init(-1, 50, 0);
+    const items = await src.loadWindow({ kind: 'cached', count: 50 });
 
     expect(items.length).toBe(1);
     expect(items[0].data.contentType).toBe('AUDIO');
@@ -2027,7 +2188,12 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         failed: false,
       });
 
-      const items = await src.init(40, 20, 10);
+      const items = await src.loadWindow({
+        kind: 'around',
+        messageId: 40,
+        olderCount: 20,
+        newerCount: 10,
+      });
 
       expect(items.map((item) => item.id)).toEqual([40, 41]);
       expect(queryNative).toHaveBeenCalledTimes(1);
@@ -2074,7 +2240,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
           failed: false,
         });
 
-      const initial = await src.init(-1, 50, 0);
+      const initial = await src.loadWindow({ kind: 'cached', count: 50 });
       const older = await src.getOlder(initial[0].id, 50);
       const newer = await src.getNewer(initial[0].id, 50);
 

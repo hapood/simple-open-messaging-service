@@ -190,7 +190,7 @@ impl Session {
             .call(
                 "Notify",
                 &(
-                    "SOMS",
+                    "SOMS.im",
                     replaces,
                     "",
                     title,

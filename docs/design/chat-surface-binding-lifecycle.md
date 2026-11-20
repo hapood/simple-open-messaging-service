@@ -5,6 +5,14 @@ history cancellation, explicit surface binding, and window subscription ownershi
 are implemented. Native history cancellation remains per request; global host
 sweeps are intentionally omitted. Device validation remains open.
 
+The [chat history entry and message-window design](./chat-history-entry-and-window.md)
+defines a reviewed, not-yet-implemented extension to Web presentation readiness:
+a bound skeleton-plus-composer shell can be promoted before message history is
+ready. It also specifies read-position entry, temporary entry gaps, and shared
+window-loading transitions. Conversation binding, foreground permissions, and
+native/platform ownership remain unchanged; that work does not modify Android
+or Rust implementation.
+
 ## Message window implementation
 
 A conversation binding and its foreground permission outlive individual message

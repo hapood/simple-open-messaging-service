@@ -1,4 +1,6 @@
 import { BusinessCode } from './biz-code';
+import { BrowserDownloadHistoryStorage, type StoredDownloadRecord } from './download-history-storage';
+import { BrowserSendOutboxStorage, type StoredSendTask } from './send-outbox-storage';
 import { createGroupMeta } from './model';
 import {
   restoreThread,
@@ -741,6 +743,95 @@ export class WebdbStorage implements AccountStateStorage {
    * replacement database. */
   private messageLifetime = new AbortController();
   private sessionCache: SessionCacheDescriptor | null = null;
+  private sendStorage: Promise<BrowserSendOutboxStorage> | null = null;
+  private downloadHistoryStorage: Promise<BrowserDownloadHistoryStorage> | null = null;
+
+  private browserSendStorage(): Promise<BrowserSendOutboxStorage> {
+    if (isTauri()) throw new Error('native pending sends require SQLite storage');
+    if (this.currentUserId === null) throw new Error('send db: no active user');
+    this.sendStorage ??= BrowserSendOutboxStorage.open(`${this.dbName(this.currentUserId)}-pending-sends`);
+    return this.sendStorage;
+  }
+
+  async enqueuePendingSend(task: StoredSendTask): Promise<void> {
+    return this.runAccountOperation(async () => {
+      const item = task.item;
+      const files = item.type === 'GALLERY' ? item.files : 'file' in item ? [item.file] : [];
+      if (files.some(file => !file.path || 'blob' in file))
+        throw new Error('pending send requires attachment paths, not file bytes');
+      if (isTauri()) return tauriInvoke<void>('native_send_enqueue', { task });
+      await (await this.browserSendStorage()).enqueue(task);
+    });
+  }
+
+  async pendingSend(clientMessageId: string): Promise<StoredSendTask | null> {
+    return this.runAccountOperation(async () => isTauri()
+      ? tauriInvoke('native_send_get', { clientMessageId })
+      : (await (await this.browserSendStorage()).get(clientMessageId)) ?? null);
+  }
+
+  async pendingSends(): Promise<StoredSendTask[]> {
+    return this.runAccountOperation(async () => isTauri()
+      ? tauriInvoke('native_send_list')
+      : (await this.browserSendStorage()).list());
+  }
+
+  async removePendingSend(clientMessageId: string): Promise<void> {
+    return this.runAccountOperation(async () => isTauri()
+      ? tauriInvoke<void>('native_send_remove', { clientMessageId })
+      : (await this.browserSendStorage()).remove(clientMessageId));
+  }
+
+  async clearPendingSends(): Promise<void> {
+    return this.runAccountOperation(async () => isTauri()
+      ? tauriInvoke<void>('native_send_clear')
+      : (await this.browserSendStorage()).clear());
+  }
+
+  private async closeSendStorage(): Promise<void> {
+    const opening = this.sendStorage;
+    this.sendStorage = null;
+    if (opening) (await opening).close();
+  }
+
+  private browserDownloadHistory(): Promise<BrowserDownloadHistoryStorage> {
+    if (isTauri()) throw new Error('native download history requires SQLite storage');
+    if (this.currentUserId === null) throw new Error('download history: no active user');
+    this.downloadHistoryStorage ??= BrowserDownloadHistoryStorage.open(`${this.dbName(this.currentUserId)}-download-history`);
+    return this.downloadHistoryStorage;
+  }
+
+  async putDownloadRecord(record: StoredDownloadRecord): Promise<void> {
+    return this.runAccountOperation(async () => isTauri()
+      ? tauriInvoke('native_download_put', { record })
+      : (await this.browserDownloadHistory()).put(record));
+  }
+
+  async downloadRecords(): Promise<StoredDownloadRecord[]> {
+    return this.runAccountOperation(async () => isTauri()
+      ? tauriInvoke('native_download_list')
+      : (await this.browserDownloadHistory()).list());
+  }
+
+  async removeDownloadRecord(id: string): Promise<void> {
+    return this.runAccountOperation(async () => isTauri()
+      ? tauriInvoke('native_download_remove', { id })
+      : (await this.browserDownloadHistory()).remove(id));
+  }
+
+  async clearDownloadRecords(deleteFiles: boolean): Promise<string[]> {
+    return this.runAccountOperation(async () => {
+      if (isTauri()) return tauriInvoke('native_download_clear', { deleteFiles });
+      await (await this.browserDownloadHistory()).clear();
+      return [];
+    });
+  }
+
+  private async closeDownloadHistory(): Promise<void> {
+    const opening = this.downloadHistoryStorage;
+    this.downloadHistoryStorage = null;
+    if (opening) (await opening).close();
+  }
   private sessionCacheUserId: string | null = null;
   private cacheBindingOperations = 0;
 
@@ -939,6 +1030,7 @@ export class WebdbStorage implements AccountStateStorage {
   ): Promise<IDBPDatabase<WebdbSchema> | null> {
     await this.waitForAccountIdle();
     await this.closeHandles();
+    await deleteDB(`${this.dbName(userId)}-pending-sends`);
     await deleteDB(this.dbName(userId));
     if (epoch !== this.cacheEpoch) return null;
     this.currentUserId = userId;
@@ -1015,6 +1107,10 @@ export class WebdbStorage implements AccountStateStorage {
     }
     if (valid) return existing;
     existing.close();
+    await this.closeSendStorage();
+    await this.closeDownloadHistory();
+    await deleteDB(`${name}-pending-sends`);
+    await deleteDB(`${name}-download-history`);
     await deleteDB(name);
     if (epoch !== this.cacheEpoch)
       throw new Error('webdb: stale cache recreation discarded');
@@ -1162,7 +1258,13 @@ export class WebdbStorage implements AccountStateStorage {
         /* deletion below remains authoritative */
       }
     }
-    if (idbAvailable()) await deleteDB(this.dbName(userId));
+    await this.closeSendStorage();
+    await this.closeDownloadHistory();
+    if (idbAvailable()) {
+      await deleteDB(`${this.dbName(userId)}-pending-sends`);
+      await deleteDB(`${this.dbName(userId)}-download-history`);
+      await deleteDB(this.dbName(userId));
+    }
     if (isTauri()) {
       await tauriInvoke('native_db_clear_user', { userId: Number(userId) });
     }
@@ -1184,6 +1286,8 @@ export class WebdbStorage implements AccountStateStorage {
     this.currentUserId = null;
     this.ready.set(false);
     await this.waitForAccountIdle();
+    await this.closeSendStorage();
+    await this.closeDownloadHistory();
     if (closing) {
       try {
         (await closing).close();
@@ -1208,6 +1312,8 @@ export class WebdbStorage implements AccountStateStorage {
   }
 
   private async closeHandles(): Promise<void> {
+    await this.closeSendStorage();
+    await this.closeDownloadHistory();
     const closing = this.dbPromise;
     this.dbPromise = null;
     this.currentUserId = null;

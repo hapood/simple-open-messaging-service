@@ -140,23 +140,17 @@
   height: 4px;
   border-radius: 2px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--bubble-accent) 24%, var(--bubble-bg));
+  background: color-mix(in srgb, var(--bubble-accent) 30%, var(--bubble-bg));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--bubble-accent) 14%, transparent);
   pointer-events: none;
 
   > span {
     display: block;
-    height: 100%;
+    height: 4px;
     border-radius: inherit;
     background: var(--bubble-accent);
-    transition: width 0.12s linear;
+    animation: ap-transfer-slide 1.1s ease-in-out infinite;
   }
-}
-.ap-transfer--download {
-  background: color-mix(in srgb, var(--bubble-accent) 30%, var(--bubble-bg));
-}
-.ap-transfer--indeterminate > span {
-  animation: ap-transfer-slide 1.1s ease-in-out infinite;
 }
 @keyframes ap-transfer-slide {
   from {

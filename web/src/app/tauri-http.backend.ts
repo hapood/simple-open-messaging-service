@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import {
   FetchBackend,
   HttpBackend,
+  HttpXhrBackend,
   HttpErrorResponse,
   HttpEvent,
   HttpHeaders,
@@ -10,6 +11,8 @@ import {
 } from '@angular/common/http';
 import { Observable, catchError, from, throwError } from 'rxjs';
 import { isTauri, tauriInvoke } from './services/runtime';
+import { withFetchApiDeadline } from './fetch-api-deadline';
+import { withXhrUploadDeadline } from './xhr-upload-deadline';
 import { REPLAY_SAFE } from './request-context';
 
 /**
@@ -56,9 +59,16 @@ function mediaProxyPath(url: string): string | null {
 export class TauriHttpBackend implements HttpBackend {
   /** Stock fetch backend for the browser path + non-routed requests under Tauri. */
   private readonly fetchBackend = inject(FetchBackend);
+  private readonly xhrBackend = inject(HttpXhrBackend);
 
   handle(req: HttpRequest<any>): Observable<HttpEvent<any>> {
-    if (!isTauri()) return this.fetchBackend.handle(req);
+    if (!isTauri()) {
+      return req.reportProgress && req.method === 'PUT' && req.url.includes('/uploads/resumable/')
+        ? withXhrUploadDeadline(this.xhrBackend.handle(req), req.urlWithParams)
+        : req.url.startsWith('/api/v1/')
+          ? withFetchApiDeadline(this.fetchBackend.handle(req.clone({ reportProgress: true })), req.urlWithParams)
+          : this.fetchBackend.handle(req);
+    }
     const url = req.urlWithParams;
     let path: string | null = null;
     if (url.startsWith('/api/v1')) {

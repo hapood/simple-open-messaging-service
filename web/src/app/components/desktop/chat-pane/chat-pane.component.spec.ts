@@ -175,13 +175,35 @@ describe('ChatPaneComponent A/B coordinator', () => {
       .find((s) => s.threadId() === tid);
   }
 
-  /** Emit the pane's `ready` (kernel finished) and let `promote` run. */
+  /** Emit shell readiness (independent of history completion) and promote. */
   async function ready(tid: number): Promise<void> {
     const p = pane(tid);
     if (!p) throw new Error(`no pane bound to thread ${tid}`);
     p.ready.emit(tid);
     await settle();
   }
+
+  it('switches composer ownership on shell readiness and ignores stale readiness', async () => {
+    await open(1);
+    const first = pane(1)!;
+    expect(first.nativeComposerActive()).toBe(false);
+    await ready(1);
+    expect(first.nativeComposerActive()).toBe(true);
+    await open(2);
+    const second = pane(2)!;
+    // The outgoing slot remains visually foreground until promotion. The real
+    // thread additionally checks openThreadId before activating its composer.
+    expect(first.threadId()).not.toBe(openThreadId());
+    expect(second.nativeComposerActive()).toBe(false);
+    await ready(2);
+    expect(second.nativeComposerActive()).toBe(true);
+    const foreground = comp.fgSlot();
+    first.ready.emit(1);
+    await settle();
+    expect(comp.fgSlot()).toBe(foreground);
+    expect(first.nativeComposerActive()).toBe(false);
+    expect(second.nativeComposerActive()).toBe(true);
+  });
 
   // ----------------------------- close -----------------------------
 

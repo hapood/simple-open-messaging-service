@@ -328,7 +328,7 @@ export class PlaygroundControlsComponent {
   }
 
   applyKernelConfig(): void {
-    this.runtime.config.set({ ...this.kernelConfig, deferInitFill: true });
+    this.runtime.config.set({ ...this.kernelConfig });
   }
 
   onSettingsButtonDown(event: PointerEvent): void {

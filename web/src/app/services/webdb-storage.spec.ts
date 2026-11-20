@@ -21,6 +21,50 @@ describe('shared background storage', () => {
     await storage.closeAndDelete(userId);
   });
 
+  it('rejects embedded file bytes before writing tasks, including gallery members', async () => {
+    await storage.openForUser(userId);
+    const file = { partId: 'part', name: 'image.png', mimeType: 'image/png', path: 'image.png', size: 5, blob: new Blob(['image']) };
+    await expect(storage.enqueuePendingSend({ clientMessageId: 'file', threadId: 7,
+      item: { type: 'IMAGE', file },
+    })).rejects.toThrow('pending send requires attachment paths, not file bytes');
+    await expect(storage.enqueuePendingSend({ clientMessageId: 'gallery', threadId: 7,
+      item: { type: 'GALLERY', files: [{ ...file, intent: 'IMAGE' }] },
+    })).rejects.toThrow('pending send requires attachment paths, not file bytes');
+    expect(await storage.pendingSends()).toEqual([]);
+  });
+
+  it('clears pending sends during full account cache recreation', async () => {
+    await storage.openForUser(userId);
+    await storage.enqueuePendingSend({ clientMessageId: 'discard-on-reset', threadId: 7, item: { type: 'PURE_TEXT', content: 'hello' } });
+    await storage.recreateForUser(userId);
+    expect(await storage.pendingSends()).toEqual([]);
+  });
+
+  it('clears pending path metadata through the database manager', async () => {
+    await storage.openForUser(userId);
+    await storage.enqueuePendingSend({ clientMessageId: 'audio', threadId: 7, item: {
+      type: 'AUDIO', file: { partId: 'part', path: 'voice', size: 5, name: 'voice.webm', mimeType: 'audio/webm' },
+    } });
+    await storage.clearPendingSends();
+    expect(await storage.pendingSends()).toEqual([]);
+  });
+
+  it('preserves pending sends through message eviction and close, but deletes them with account data', async () => {
+    await storage.openForUser(userId);
+    const task = { clientMessageId: 'persisted', threadId: 7, item: { type: 'PURE_TEXT' as const, content: 'hello' } };
+    await storage.enqueuePendingSend(task);
+    expect(await storage.pendingSend(task.clientMessageId)).toEqual(task);
+    expect(await storage.pendingSend('missing')).toBeNull();
+    await storage.recreateMessageCache();
+    expect(await storage.pendingSends()).toEqual([task]);
+    await storage.close();
+    await storage.openForUser(userId);
+    expect(await storage.pendingSends()).toEqual([task]);
+    await storage.closeAndDelete(userId);
+    await storage.openForUser(userId);
+    expect(await storage.pendingSends()).toEqual([]);
+  });
+
   it('runs feed synchronization without an Angular injector or a nested worker', async () => {
     await storage.openForUser(userId);
     const result = await syncThreadFeed(storage, 1, async () => ({

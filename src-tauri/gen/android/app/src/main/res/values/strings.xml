@@ -2,8 +2,8 @@
     <string name="notif_message_retracted">[Message retracted]</string>
     <string name="notif_message_removed">[Deleted by administrator]</string>
     <string name="notif_private_body">You have new messages</string>
-    <string name="app_name">"SOMS"</string>
-    <string name="main_activity_title">"SOMS"</string>
+    <string name="app_name">"SOMS.im"</string>
+    <string name="main_activity_title">"SOMS.im"</string>
     <string name="splash_tagline">Open chat. Simple and instant.</string>
     <string name="splash_preparing">Preparing</string>
     <string name="splash_recovery_slow">Recovery is taking longer than expected.</string>

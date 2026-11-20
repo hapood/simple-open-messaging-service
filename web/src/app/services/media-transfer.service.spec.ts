@@ -1,200 +1,141 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { provideHttpClient } from '@angular/common/http';
+import { TestBed } from '@angular/core/testing';
+import { of, from, throwError } from 'rxjs';
+import { MsgService } from './message.service';
 import { MediaTransferService } from './media-transfer.service';
+import { ThreadSendOutbox } from './thread-send-outbox.service';
+import { WebdbService } from './webdb.service';
 
-describe('MediaTransferService', () => {
+describe('attachment execution over durable tasks', () => {
+  let outbox: ThreadSendOutbox;
   let service: MediaTransferService;
+  let remove: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    service = new MediaTransferService();
-    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test');
-    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
-  });
-  afterEach(() => vi.restoreAllMocks());
-
-  const file = (name: string, size: number) =>
-    new File([new Uint8Array(size)], name, { type: 'image/png' });
-
-  it('aggregates active and failed transfers by thread', () => {
-    service.start({
-      clientMessageId: 'a',
-      threadId: 10,
-      kind: 'image',
-      file: file('a.png', 3),
-    });
-    service.start({
-      clientMessageId: 'b',
-      threadId: 10,
-      kind: 'image',
-      file: file('b.png', 5),
-    });
-    service.fail('b');
-
-    expect(service.summaryFor(10)).toEqual(
-      expect.objectContaining({
-        threadId: 10,
-        uploading: 1,
-        failed: 1,
-        total: 2,
-        bytes: 8,
-      }),
-    );
-    expect(service.activeCount()).toBe(1);
-    expect(service.failedCount()).toBe(1);
+    remove = vi.fn().mockResolvedValue(undefined);
+    TestBed.configureTestingModule({ providers: [
+      provideHttpClient(),
+      { provide: MsgService, useValue: { cancelUploadBatch: vi.fn(() => of({ code: 0 })), sendCompletedUploadBatch: vi.fn(() => of({ code: 0, data: { sent: true } })) } },
+      { provide: WebdbService, useValue: {
+      pendingSend: vi.fn(async (cid: string) => outbox.get(cid)?.task ?? null),
+      enqueuePendingSend: vi.fn().mockResolvedValue(undefined),
+      removePendingSend: remove,
+    } }] });
+    outbox = TestBed.inject(ThreadSendOutbox);
+    service = TestBed.inject(MediaTransferService);
   });
 
-  it('discards the optimistic send when the transfer card is dismissed', () => {
-    const discard = vi.fn();
-    service.start({
-      clientMessageId: 'cid',
-      threadId: 10,
-      kind: 'file',
-      name: 'report.pdf',
-      size: 10,
-    });
-    service.registerDiscard('cid', discard);
+  async function enqueue(): Promise<void> {
+    await outbox.enqueue({ clientMessageId: 'cid', threadId: 1, item: {
+      type: 'FILE', file: { partId: 'part', path: 'runtime-file', size: 4, name: 'file', mimeType: 'application/octet-stream' },
+    } });
+  }
+
+  it('sends completed parts of a recovered gallery without resolving local files or cancelling the batch', async () => {
+    await outbox.enqueue({ clientMessageId: 'gallery', threadId: 1, item: { type: 'GALLERY', files: [
+      { path: 'lost-runtime-file', partId: 'part', name: 'file', size: 4, mimeType: 'application/octet-stream', intent: 'FILE' },
+    ] } });
+    outbox.setPhase('gallery', 'failed');
+    const stopLocal = vi.fn();
+    service.registerLocalStop('gallery', stopLocal);
+    expect(service.canSendCompleted('gallery')).toBe(true);
+    await service.sendCompleted('gallery');
+    expect(TestBed.inject(MsgService).sendCompletedUploadBatch).toHaveBeenCalledWith('gallery');
+    expect(stopLocal).toHaveBeenCalledOnce();
+    expect(TestBed.inject(MsgService).cancelUploadBatch).not.toHaveBeenCalled();
+    expect(remove).toHaveBeenCalledWith('gallery');
+    expect(outbox.get('gallery')).toBeUndefined();
+  });
+
+  it('does not mark accepted when the server has no completed parts to send', async () => {
+    await outbox.enqueue({ clientMessageId: 'empty-gallery', threadId: 1, item: { type: 'GALLERY', files: [
+      { path: 'unavailable', partId: 'part', name: 'file', size: 4, mimeType: 'application/octet-stream', intent: 'FILE' },
+    ] } });
+    vi.mocked(TestBed.inject(MsgService).sendCompletedUploadBatch).mockReturnValue(of({ code: 0, message: 'ok', data: { clientMessageId: 'empty-gallery', sent: false, completed: 0 } }));
+    await service.sendCompleted('empty-gallery');
+    expect(outbox.get('empty-gallery')?.execution.phase).toBe('failed');
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('refuses to create an upload without a durable attachment intent', () => {
+    expect(() => service.start('missing', 100)).toThrow('persisted attachment intent');
+    expect(outbox.tasks()).toEqual([]);
+  });
+
+  it('preserves the last displayed bytes when an upload fails', async () => {
+    await enqueue();
+    service.start('cid', 100);
+    service.progress('cid', 73, 100);
     service.fail('cid');
-    service.discard('cid');
-    expect(discard).toHaveBeenCalledOnce();
-    expect(service.tasks()).toEqual([]);
+    expect(outbox.get('cid')?.execution).toMatchObject({ phase: 'failed', loaded: 73, total: 100 });
+    expect(remove).not.toHaveBeenCalled();
   });
 
-  it('removes a successful task and restarts a failed retry in place', () => {
-    service.start({
-      clientMessageId: 'a',
-      threadId: 10,
-      kind: 'image',
-      file: file('a.png', 3),
-    });
-    service.fail('a');
-    service.start({
-      clientMessageId: 'a',
-      threadId: 10,
-      kind: 'image',
-      file: file('a.png', 3),
-    });
-
-    expect(service.summaryFor(10)?.uploading).toBe(1);
-    expect(service.summaryFor(10)?.failed).toBe(0);
-
-    service.complete('a');
-    expect(service.summaryFor(10)).toEqual(
-      expect.objectContaining({ uploading: 0, completed: 1, progress: 100 }),
-    );
+  it('normalizes transport progress and keeps upload completion unconfirmed', async () => {
+    await enqueue();
+    service.start('cid', 100);
+    service.progress('cid', 60, 120);
+    expect(outbox.get('cid')?.execution).toMatchObject({ loaded: 50, total: 100, phase: 'sending' });
+    service.progress('cid', 30, 120);
+    expect(outbox.get('cid')?.execution).toMatchObject({ loaded: 50 });
+    expect(remove).not.toHaveBeenCalled();
   });
 
-  it('computes byte-weighted progress without allowing regressions', () => {
-    service.start({
-      clientMessageId: 'small',
-      threadId: 10,
-      kind: 'image',
-      file: file('small.png', 100),
-    });
-    service.start({
-      clientMessageId: 'large',
-      threadId: 10,
-      kind: 'video',
-      file: file('large.mp4', 900),
-    });
-
-    service.progress('small', 100, 100);
-    service.complete('small');
-    service.progress('large', 400, 900);
-    expect(service.summaryFor(10)).toEqual(
-      expect.objectContaining({
-        completed: 1,
-        total: 2,
-        loadedBytes: 500,
-        bytes: 1000,
-        progress: 50,
-      }),
-    );
-
-    service.progress('large', 300, 900);
-    expect(service.summaryFor(10)?.progress).toBe(50);
+  it('stops execution and deletes the intent before releasing files', async () => {
+    await enqueue();
+    service.start('cid', 100);
+    const order: string[] = [];
+    service.cancelled('cid').subscribe(() => order.push('stop'));
+    remove.mockImplementation(async () => { order.push('delete'); });
+    service.registerDiscard('cid', async () => { order.push('release'); });
+    await service.discard('cid');
+    expect(order).toEqual(['stop', 'delete', 'release']);
+    expect(outbox.tasks()).toEqual([]);
   });
 
-  it('keeps the file-size denominator stable when multipart total includes overhead', () => {
-    service.start({
-      clientMessageId: 'image',
-      threadId: 10,
-      kind: 'image',
-      file: file('image.png', 1000),
-    });
-
-    service.progress('image', 500, 1100);
-    const first = service.summaryFor(10);
-    expect(first?.bytes).toBe(1000);
-    expect(first?.progress).toBe(45);
-
-    service.progress('image', 880, 1100);
-    const second = service.summaryFor(10);
-    expect(second?.bytes).toBe(1000);
-    expect(second?.progress).toBe(80);
+  it('waits for asynchronous cancellation before deleting the intent', async () => {
+    await enqueue();
+    service.start('cid', 100);
+    let finish!: () => void;
+    vi.mocked(TestBed.inject(MsgService).cancelUploadBatch).mockReturnValue(from(new Promise<{ code: number; message: string; data: { clientMessageId: string; cancelled: number } }>(resolve => { finish = () => resolve({ code: 0, message: 'ok', data: { clientMessageId: 'cid', cancelled: 1 } }); })));
+    const pending = service.discard('cid');
+    await Promise.resolve();
+    expect(remove).not.toHaveBeenCalled();
+    finish();
+    await pending;
+    expect(remove).toHaveBeenCalledWith('cid');
   });
 
-  it('emits a distinct latest-position request for repeated navigation', () => {
-    service.requestLatest(42);
-    const first = service.latestRequest();
-    expect(first?.threadId).toBe(42);
-
-    service.requestLatest(42);
-    expect(service.latestRequest()).not.toBe(first);
+  it('marks stopped before cancellation observers run and cancels the batch once', async () => {
+    await enqueue();
+    service.start('cid', 100);
+    service.cancelled('cid').subscribe(() => {
+      expect(service.isUploading('cid')).toBe(false);
+      void service.cancel('cid');
+    });
+    await service.cancel('cid');
+    expect(TestBed.inject(MsgService).cancelUploadBatch).toHaveBeenCalledExactlyOnceWith('cid');
+    expect(outbox.get('cid')?.execution.phase).toBe('failed');
   });
 
-  it('cancels the active stream and exposes its retry action', () => {
-    const retry = vi.fn().mockName('retry');
-    let cancelled = 0;
-    service.start({
-      clientMessageId: 'a',
-      threadId: 10,
-      kind: 'image',
-      file: file('a.png', 3),
-    });
-    service.registerRetry('a', retry);
-    service.cancelled('a').subscribe(() => cancelled++);
-
-    service.cancel('a');
-    expect(cancelled).toBe(1);
-    expect(service.summaryFor(10)?.failed).toBe(1);
-
-    service.retry('a');
-    expect(retry).toHaveBeenCalledTimes(1);
+  it('does not delete the intent if asynchronous cancellation fails', async () => {
+    await enqueue();
+    service.start('cid', 100);
+    vi.mocked(TestBed.inject(MsgService).cancelUploadBatch).mockReturnValue(throwError(() => new Error('cancel failed')));
+    await expect(service.discard('cid')).rejects.toThrow('cancel failed');
+    expect(remove).not.toHaveBeenCalled();
+    expect(outbox.get('cid')?.execution.phase).toBe('failed');
   });
 
-  it('sends completed files through the registered action and stops the local stream', () => {
-    const sendCompleted = vi.fn();
-    let cancelled = 0;
-    service.start({
-      clientMessageId: 'gallery',
-      threadId: 10,
-      kind: 'file',
-      name: 'gallery-item',
-      size: 10,
-    });
-    service.registerSendCompleted('gallery', sendCompleted);
-    service.cancelled('gallery').subscribe(() => cancelled++);
-
-    service.sendCompleted('gallery');
-
-    expect(cancelled).toBe(1);
-    expect(sendCompleted).toHaveBeenCalledOnce();
-    expect(service.tasks()[0].status).toBe('uploading');
-  });
-
-  it('does not retry a permanent validation failure', () => {
-    const retry = vi.fn().mockName('retry');
-    service.start({
-      clientMessageId: 'oversized',
-      threadId: 10,
-      kind: 'file',
-      file: file('large.bin', 3),
-    });
-    service.registerRetry('oversized', retry);
-    service.fail('oversized', 'too large', false);
-
-    service.retry('oversized');
-
-    expect(retry).not.toHaveBeenCalled();
-    expect(service.tasks()[0].retryable).toBe(false);
+  it('does not release a referenced file when durable deletion fails', async () => {
+    await enqueue();
+    service.start('cid', 100);
+    const release = vi.fn();
+    service.registerDiscard('cid', release);
+    remove.mockRejectedValue(new Error('database busy'));
+    await expect(service.discard('cid')).rejects.toThrow('database busy');
+    expect(release).not.toHaveBeenCalled();
+    expect(outbox.get('cid')?.execution.phase).toBe('failed');
+    expect(service.isUploading('cid')).toBe(false);
   });
 });

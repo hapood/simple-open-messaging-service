@@ -2,6 +2,11 @@
  * Starting another animation or receiving user scroll input ends the old one. */
 export class MountedMessageScroll {
   private active = false;
+  private bottomFollow = false;
+
+  get followingBottom(): boolean {
+    return this.active && this.bottomFollow;
+  }
   private readonly interrupt = () => this.cancel();
   private readonly finished = () => this.detach();
   private readonly keydown = (event: KeyboardEvent) => {
@@ -21,10 +26,11 @@ export class MountedMessageScroll {
 
   constructor(private readonly viewport: HTMLElement) {}
 
-  start(top: number, smooth: boolean): void {
+  start(top: number, smooth: boolean, bottomFollow = false): void {
     this.cancel();
     if (smooth) {
       this.active = true;
+      this.bottomFollow = bottomFollow;
       this.viewport.addEventListener('wheel', this.interrupt, {
         passive: true,
       });
@@ -52,6 +58,7 @@ export class MountedMessageScroll {
 
   private detach(): void {
     this.active = false;
+    this.bottomFollow = false;
     this.viewport.removeEventListener('wheel', this.interrupt);
     this.viewport.removeEventListener('touchstart', this.interrupt);
     this.viewport.removeEventListener('pointerdown', this.interrupt);

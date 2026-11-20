@@ -80,7 +80,7 @@ export function shellQuote(value: string): string {
             aria-hidden="true"
           />
           @if (!collapsed()) {
-            <strong>SOMS</strong>
+            <strong>SOMS<span style="color: var(--app-action-primary, #6366f1); font-size: 0.75em; margin-left: 1px;">.im</span></strong>
           }
         </button>
         <a

@@ -1,4 +1,18 @@
 {
+  "downloadTasks": {
+    "title": "Downloads",
+    "downloading": "Downloading",
+    "saving": "Saving",
+    "completed": "Saved",
+    "failed": "Download or save failed",
+    "dismiss": "Remove from list",
+    "empty": "No downloads",
+    "unknownSize": "Size unknown",
+    "clearHistory": "Clear history",
+    "clearHistoryConfirm": "Remove completed and failed downloads from this list? Downloads still in progress are kept.",
+    "clearHistoryAction": "Clear",
+    "deleteFiles": "Also delete saved files"
+  },
   "playground": {
     "callResponse": "Peer call response",
     "callDecline": "Hang up",
@@ -8,6 +22,12 @@
     "callResponseHint": "Applies when you start a call from a direct chat. Group calls are not available."
   },
   "transfer": {
+    "taskActionFailed": "Could not update this task. Please try again.",
+    "messageSending": "Sending message",
+    "attachmentUnavailable": "Attachment unavailable. Please cancel and upload again.",
+    "linkTaskPreview": "Link card",
+    "forwardTaskPreview": "Forwarding {{count}} messages",
+    "messageFailed": "Message failed to send",
     "sendingCount": "Sending {{count}}",
     "sendingOf": "Sending {{completed}}/{{total}}",
     "sendingProgress": "Sending {{completed}}/{{total}} · {{progress}}%",
@@ -97,8 +117,8 @@
     "media-failed": "Couldn't start the microphone or camera. Please try again"
   },
   "common": {
-    "appName": "SOMS",
-    "logoAria": "SOMS logo",
+    "appName": "SOMS.im",
+    "logoAria": "SOMS.im logo",
     "ok": "OK",
     "cancel": "Cancel",
     "save": "Save",
@@ -545,6 +565,9 @@
     "send": "Send"
   },
   "chat": {
+    "loadSkippedMessages": "Load skipped messages",
+    "loadingSkippedMessages": "Loading skipped messages",
+    "retrySkippedMessages": "Retry loading skipped messages",
     "linkCardAction": "Create link card",
     "messageNotFound": "Message not found",
     "messageJumpFailed": "Cannot open this message",
@@ -904,7 +927,9 @@
     "dataHint": "Review and clear local chat caches",
     "cachedMessages": "Cached messages",
     "cachedMediaFiles": "Media file cache",
-    "browserMediaCacheUnavailable": "Managed by browser",
+    "cachedAvatars": "Avatar cache",
+    "temporaryUploads": "Temporary upload resources",
+    "cacheMeasurementUnavailable": "Measurement unavailable",
     "cacheStorageHint": "Clearing affects only this device. Server messages, sign-in state and the thread list are kept.",
     "clearChatCache": "Clear local chat cache",
     "clearChatCacheDesc": "Deletes cached chat messages, images, and videos. Profile avatars remain available.",

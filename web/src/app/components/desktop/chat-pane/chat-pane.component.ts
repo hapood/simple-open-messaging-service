@@ -408,7 +408,7 @@ export class ChatPaneComponent implements OnDestroy {
     });
   }
 
-  /** `ready` from a pane's kernel — promote it if it matches the in-flight switch, else ignore (stale). */
+  /** Shell readiness does not wait for history. Promote only the matching in-flight switch. */
   onReady(key: SlotKey, tid: number): void {
     const p = this.pending;
     if (!p || p.bgKey !== key || p.targetId !== tid) return;

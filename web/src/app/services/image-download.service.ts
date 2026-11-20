@@ -1,11 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type { Subscription } from 'rxjs';
 import type { AlbumMedia } from '../components/message-cards/chat-item';
-import {
-  MediaSaveCancelledError,
-  MediaSaveService,
-} from './media-save.service';
-import { assetUrl, chatThumbnailUrl } from './runtime';
+import { assetUrl, chatThumbnailUrl, isTauri } from './runtime';
 import {
   IMAGE_DOWNLOAD_ADAPTER,
   type ImageDownloadArtifact,
@@ -14,8 +10,6 @@ import {
 type ImageDownloadStatus =
   | 'downloading'
   | 'loaded'
-  | 'saving'
-  | 'saved'
   | 'failed';
 
 export interface ImageDownloadTask {
@@ -28,21 +22,18 @@ export interface ImageDownloadTask {
   loaded: number;
   total: number;
   status: ImageDownloadStatus;
-  saveAfterLoad: boolean;
   blobUrl: string | null;
   startedAt: number;
 }
 
 /**
- * One app-scoped, cancellable image download store. A task is keyed by the owning message + source URL,
- * so the virtualized chat row, fullscreen gallery and global transfer surface always render the same
- * progress instead of starting competing requests.
+ * Native image-preview cache requests shared by virtualized rows and the fullscreen gallery.
+ * User-initiated saves belong to DownloadService; browser images use ordinary resource URLs.
  */
 @Injectable({ providedIn: 'root' })
 export class ImageDownloadService {
   private static readonly PROGRESS_PAINT_INTERVAL_MS = 100;
   private readonly adapter = inject(IMAGE_DOWNLOAD_ADAPTER);
-  private readonly mediaSave = inject(MediaSaveService);
   private readonly taskMap = signal<ReadonlyMap<string, ImageDownloadTask>>(
     new Map(),
   );
@@ -64,7 +55,7 @@ export class ImageDownloadService {
   readonly activeCount = computed(
     () =>
       this.tasks().filter(
-        (task) => task.status === 'downloading' || task.status === 'saving',
+        (task) => task.status === 'downloading',
       ).length,
   );
 
@@ -92,18 +83,12 @@ export class ImageDownloadService {
     return Boolean(this.task(media)?.blobUrl);
   }
 
-  /** Start a load, or upgrade the existing load to "save when ready". */
-  start(media: AlbumMedia, threadId: number, saveAfterLoad = false): void {
+  /** Load an original image into the native preview cache. Saving is a separate download task. */
+  start(media: AlbumMedia, threadId: number): void {
+    if (!isTauri()) throw new Error('Browser images are loaded by the browser, not a download task');
     const key = this.key(media);
     const current = this.taskMap().get(key);
     if (current) {
-      if (saveAfterLoad && !current.saveAfterLoad) {
-        this.patch(key, { ...current, saveAfterLoad: true });
-      }
-      if (current.blobUrl && saveAfterLoad) {
-        void this.save(key);
-        return;
-      }
       if (current.status !== 'failed') return;
     }
 
@@ -118,7 +103,6 @@ export class ImageDownloadService {
       loaded: 0,
       total: expectedSize,
       status: 'downloading',
-      saveAfterLoad,
       blobUrl: current?.blobUrl ?? null,
       startedAt: current?.startedAt ?? Date.now(),
     };
@@ -144,7 +128,6 @@ export class ImageDownloadService {
           };
           this.patch(key, completed);
           this.subscriptions.delete(key);
-          if (completed.saveAfterLoad) void this.save(key);
         }
       },
       error: () => {
@@ -164,7 +147,7 @@ export class ImageDownloadService {
     const subscription = this.subscriptions.get(key);
     // Remove the user-cancelled task before tearing down the adapter. Native bridges may report their
     // abort synchronously during teardown; the error callback must not be able to resurrect that benign
-    // cancellation as a failed task (or retain its save-after-load intent).
+    // cancellation as a failed task.
     this.subscriptions.delete(key);
     this.clearProgressThrottle(key);
     this.remove(key);
@@ -172,31 +155,7 @@ export class ImageDownloadService {
   }
 
   retry(media: AlbumMedia, threadId: number): void {
-    this.start(media, threadId, this.task(media)?.saveAfterLoad ?? false);
-  }
-
-  async save(key: string): Promise<void> {
-    const task = this.taskMap().get(key);
-    if (!task?.blobUrl || task.status === 'saving') return;
-    this.patch(key, { ...task, status: 'saving', saveAfterLoad: true });
-    try {
-      await this.mediaSave.save({
-        path: this.artifacts.get(key)?.savePath ?? task.blobUrl,
-        filename: task.name,
-        mimeType: 'image/jpeg',
-      });
-      const live = this.taskMap().get(key);
-      if (live) this.patch(key, { ...live, status: 'saved' });
-    } catch (error) {
-      const live = this.taskMap().get(key);
-      if (!live) return;
-      this.patch(
-        key,
-        error instanceof MediaSaveCancelledError
-          ? { ...live, status: 'loaded', saveAfterLoad: false }
-          : { ...live, status: 'failed' },
-      );
-    }
+    this.start(media, threadId);
   }
 
   private defaultFilename(media: AlbumMedia): string {

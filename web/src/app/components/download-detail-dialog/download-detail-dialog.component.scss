@@ -1,0 +1,43 @@
+:host {
+  display: block;
+}
+
+section {
+  padding: 16px;
+  line-height: 24px;
+}
+
+mat-list-item {
+  height: auto;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+span[matListItemTitle],
+span[matListItemLine],
+p,
+button {
+  line-height: 24px;
+}
+
+span[matListItemTitle] {
+  overflow-wrap: anywhere;
+}
+
+p,
+.download-empty {
+  margin: 0;
+}
+
+mat-progress-bar {
+  width: 100%;
+  margin-top: 8px;
+  --mat-progress-bar-track-height: 4px;
+  --mat-progress-bar-active-indicator-height: 4px;
+}
+
+.download-actions {
+  display: flex;
+  gap: 8px;
+  min-height: 36px;
+}

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SOMS",
+  "productName": "SOMS.im",
   "version": "0.1.0-alpha.2",
   "identifier": "com.soms.client",
   "build": {

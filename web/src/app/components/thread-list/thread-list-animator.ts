@@ -1,4 +1,4 @@
-import { prefersReducedMotion } from './motion-utils';
+import { prefersReducedMotion } from '../../lib/motion-utils';
 
 export type FlipListRow = {
   /** Position in the complete list, independent of the rendered window. */
@@ -26,9 +26,17 @@ export class FlipListAnimator {
   private previous = new Map<string, RowSnapshot>();
   private previousLayout?: FlipListLayout;
   private previousScrollTop = 0;
-  private cleanups: (() => void)[] = [];
+  private cleanups = new Set<() => void>();
+  private motion?: MediaQueryList;
+  private readonly onMotionChange = () => {
+    if (this.motion?.matches) this.cancel();
+  };
 
   play(container: HTMLElement, layout: FlipListLayout): void {
+    if (!this.motion && typeof matchMedia === 'function') {
+      this.motion = matchMedia('(prefers-reduced-motion: reduce)');
+      this.motion.addEventListener('change', this.onMotionChange);
+    }
     const scrollTop = container.scrollTop;
     const scrolled = scrollTop !== this.previousScrollTop;
     const changed = layout !== this.previousLayout;
@@ -107,13 +115,15 @@ export class FlipListAnimator {
 
   destroy(): void {
     this.cancel();
+    this.motion?.removeEventListener('change', this.onMotionChange);
+    this.motion = undefined;
     this.previous.clear();
     this.previousLayout = undefined;
     this.previousScrollTop = 0;
   }
 
   private cancel(): void {
-    for (const cleanup of this.cleanups.splice(0)) cleanup();
+    for (const cleanup of [...this.cleanups]) cleanup();
   }
 
   private animate(row: HTMLElement, frames: Keyframe[]): void {
@@ -121,7 +131,20 @@ export class FlipListAnimator {
       duration: 300,
       easing: 'cubic-bezier(0.32, 0.72, 0, 1)',
     });
-    this.cleanups.push(() => animation.cancel());
+    this.track(animation);
+  }
+
+  private track(animation: Animation, dispose: () => void = () => {}): void {
+    const cleanup = () => {
+      if (!this.cleanups.delete(cleanup)) return;
+      animation.onfinish = null;
+      animation.oncancel = null;
+      animation.cancel();
+      dispose();
+    };
+    this.cleanups.add(cleanup);
+    animation.onfinish = cleanup;
+    animation.oncancel = cleanup;
   }
 
   private fadeOutgoing(container: HTMLElement, old: RowSnapshot): void {
@@ -154,10 +177,6 @@ export class FlipListAnimator {
         fill: 'forwards',
       },
     );
-    animation.onfinish = () => ghost.remove();
-    this.cleanups.push(() => {
-      animation.cancel();
-      ghost.remove();
-    });
+    this.track(animation, () => ghost.remove());
   }
 }

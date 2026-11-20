@@ -1,3 +1,4 @@
+import { DownloadButtonComponent } from '../../download-detail-dialog/download-button.component';
 import {
   Component,
   inject,
@@ -24,7 +25,7 @@ import { LanguageService } from '../../../services/language.service';
  */
 @Component({
   selector: 'app-icon-rail',
-  imports: [DemandAvatarComponent, IconComponent, TranslocoPipe],
+  imports: [DemandAvatarComponent, IconComponent, TranslocoPipe, DownloadButtonComponent],
   template: `
     <div class="icon-rail">
       <div class="top">
@@ -75,6 +76,7 @@ import { LanguageService } from '../../../services/language.service';
         </button>
       </div>
       <div class="bottom">
+        <app-download-button />
         <button
           class="rail-btn"
           (click)="settings()"

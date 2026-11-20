@@ -1,0 +1,80 @@
+<section [attr.aria-label]="'downloadTasks.title' | transloco">
+  <app-page-header
+    [title]="'downloadTasks.title' | transloco"
+    (back)="close()"
+  >
+    <button
+      pageHeaderAction
+      mat-button
+      type="button"
+      [disabled]="!hasHistory()"
+      (click)="confirmClear()"
+    >
+      {{ 'downloadTasks.clearHistory' | transloco }}
+    </button>
+  </app-page-header>
+  @if (tasks().length) {
+    <mat-list>
+      @for (task of tasks(); track task.id) {
+        <mat-list-item>
+          <span matListItemTitle>{{ task.request.filename }}</span>
+          <span matListItemLine>{{
+            ('downloadTasks.' + task.phase) | transloco
+          }}</span>
+          <span matListItemLine>
+            {{ task.loaded }} B /
+            @if (task.total === null) {
+              {{ 'downloadTasks.unknownSize' | transloco }}
+            } @else {
+              {{ task.total }} B
+            }
+          </span>
+          @if (task.total !== null) {
+            <mat-progress-bar
+              mode="determinate"
+              [value]="percentage(task)"
+              [attr.aria-label]="task.request.filename"
+            />
+          } @else if (task.phase === 'downloading') {
+            <mat-progress-bar
+              mode="indeterminate"
+              [attr.aria-label]="task.request.filename"
+            />
+          }
+          @if (task.error) {
+            <p role="alert">{{ task.error }}</p>
+          }
+          <div class="download-actions">
+            @if (task.phase === 'downloading') {
+              <button mat-button type="button" (click)="cancel(task.id)">
+                {{ 'transfer.cancel' | transloco }}
+              </button>
+            }
+            @if (task.phase === 'failed') {
+              <button
+                mat-button
+                type="button"
+                [disabled]="busy().has(task.id)"
+                (click)="retry(task.id)"
+              >
+                {{ 'transfer.retry' | transloco }}
+              </button>
+            }
+            @if (task.phase === 'failed' || task.phase === 'completed') {
+              <button
+                mat-button
+                type="button"
+                [disabled]="busy().has(task.id)"
+                (click)="dismiss(task.id)"
+              >
+                {{ 'downloadTasks.dismiss' | transloco }}
+              </button>
+            }
+          </div>
+        </mat-list-item>
+      }
+    </mat-list>
+  } @else {
+    <p class="download-empty">{{ 'downloadTasks.empty' | transloco }}</p>
+  }
+</section>

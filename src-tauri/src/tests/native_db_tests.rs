@@ -5,6 +5,22 @@ use super::{
 };
 use rusqlite::{params, Connection};
 
+#[test]
+fn full_recreation_clears_pending_sends_and_obsolete_cache_tables() {
+    use crate::send_outbox::{SendOutboxStorage, StoredSendContent, StoredSendTask};
+    let mut connection = Connection::open_in_memory().unwrap();
+    super::create_cache_schema(&connection).unwrap();
+    let task = StoredSendTask { client_message_id: "pending".into(), thread_id: 42,
+        item: StoredSendContent::Text { content: "not yet confirmed".into() } };
+    SendOutboxStorage::initialize(&connection).unwrap().enqueue(&task).unwrap();
+    connection.execute_batch("CREATE TABLE obsolete_cache(value TEXT);").unwrap();
+    super::recreate_cache_schema(&mut connection).unwrap();
+    assert!(SendOutboxStorage::initialize(&connection).unwrap().list().unwrap().is_empty());
+    let obsolete: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='obsolete_cache')", [], |row| row.get(0)).unwrap();
+    assert!(!obsolete);
+}
+
+
 fn message_range(left: i64, right: i64, state: MessageRangeState) -> MessageRange {
     MessageRange {
         thread_id: 42,

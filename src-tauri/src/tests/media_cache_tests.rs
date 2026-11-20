@@ -1,5 +1,5 @@
 #[cfg(desktop)]
-use super::sanitize_filename;
+use super::{partial_save_path, sanitize_filename};
 use super::{
     cache_key, expected_digest, intersecting_missing_ranges, merge_range, missing_ranges,
     remove_range, requested_range, valid_download_task_id, validate_path, CacheMeta, CachedRange,
@@ -173,4 +173,6 @@ async fn streamed_range_writes_preserve_other_segments() {
 fn desktop_filename_is_confined_to_its_basename() {
     assert_eq!(sanitize_filename("../../photo.jpg"), "photo.jpg");
     assert_eq!(sanitize_filename(""), "download");
+    let destination = std::path::Path::new("/tmp/photo.jpg");
+    assert_eq!(partial_save_path(destination), std::path::PathBuf::from("/tmp/photo.jpg.part"));
 }

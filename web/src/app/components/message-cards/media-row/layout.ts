@@ -19,7 +19,7 @@
  *   branch is used.)
  *
  * Bad w/h (NaN/0/negative) → fall back to 4:3 (DEFAULT_R), so corrupt data can't poison totalH and ripple into
- * the virtual scroll. totalH is the grid height the kernel measures (same basis as onHeightChange), and it is
+ * the virtual scroll. totalH is the grid height included in the kernel's synchronous measurement, and it is
  * Math.rounded so an album row's offsetHeight is always a whole number (see the integer-height contract in
  * _row-base.scss → the kernel's Σ offsetHeight equals content.scrollHeight exactly).
  */

@@ -30,6 +30,18 @@
   font-weight: 700;
   letter-spacing: 1.4px;
   color: var(--bl-word-color);
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+
+  .bl-im {
+    color: var(--app-action-primary, #6366f1);
+    font-size: calc(var(--bl-word) * 0.72);
+    font-weight: 600;
+    letter-spacing: 0;
+    margin-left: 1px;
+    opacity: 0.9;
+  }
 }
 
 .bl-tag {

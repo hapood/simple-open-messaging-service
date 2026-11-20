@@ -5,18 +5,27 @@ package com.soms.client
  * (`content://`, permissions and metadata); descriptor ownership transfers to Rust at [uploadFd].
  */
 object RustUploadBridge {
-    external fun uploadFd(
-        fd: Int,
-        uploadId: String,
-        attemptId: String,
-        filename: String,
-        mime: String,
-        size: Long,
-        fieldsJson: String,
-        clientMessageId: String,
-    )
+    private var sourceContext: android.content.Context? = null
 
-    external fun cancelUpload(clientMessageId: String)
+    fun initializeSourceAccess(context: android.content.Context) {
+        sourceContext = context.applicationContext
+        bindSourceAdapter()
+    }
+
+    private external fun bindSourceAdapter()
+
+    /** Transfers one OS descriptor to Rust; does not start or manage an upload. */
+    fun openSource(path: String): Int {
+        val context = sourceContext ?: return -1
+        return try {
+            val uri = android.net.Uri.parse(path)
+            if (uri.scheme != "content" && uri.scheme != "file") return -1
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { it.detachFd() } ?: -1
+        } catch (_: Exception) { -1 }
+    }
+
+    /** Streams an authenticated media response into a destination descriptor. Empty result means success. */
+    external fun streamMediaToFd(path: String, fd: Int, taskId: String): String
 
     external fun uploadVoicePath(
         path: String,

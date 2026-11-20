@@ -1469,9 +1469,6 @@ class NativeComposerController(
         NativeUploadManager.acceptForComposer(activity.applicationContext, uris, "auto") { items ->
             activity.runOnUiThread {
                 if (pastedContextId != contextId || !visible) {
-                    for (index in 0 until items.length()) {
-                        NativeUploadManager.discard(items.getJSONObject(index).getString("uploadId"))
-                    }
                     return@runOnUiThread
                 }
                 emit(JSONObject().apply {

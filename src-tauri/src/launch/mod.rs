@@ -120,7 +120,7 @@ fn dispatch(
 pub(crate) fn create_window(app: &tauri::App) -> tauri::Result<tauri::Window> {
     use tauri::window::WindowBuilder;
     let window = WindowBuilder::new(app, "main")
-        .title("SOMS")
+        .title("SOMS.im")
         .inner_size(1200.0, 800.0)
         .min_inner_size(390.0, 600.0)
         .visible(false)

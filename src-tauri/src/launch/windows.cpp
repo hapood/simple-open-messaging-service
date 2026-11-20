@@ -79,7 +79,7 @@ void draw(HDC dc, RECT bounds, Overlay &o) {
     FontFamily family(L"Segoe UI");
     Font bold(&family,28,FontStyleBold,UnitPixel), normal(&family,12,FontStyleRegular,UnitPixel);
     StringFormat centered; centered.SetAlignment(StringAlignmentCenter);
-    g.DrawString(L"SOMS",-1,&bold,RectF(24,h/2+66,w-48,34),&centered,&title);
+    g.DrawString(L"SOMS.im",-1,&bold,RectF(24,h/2+66,w-48,34),&centered,&title);
     g.DrawString(o.chinese ? L"开放聊天，简单即时。" : L"Open chat. Simple and instant.",-1,&normal,RectF(24,h/2+110,w-48,28),&centered,&subtitle);
     const wchar_t *en[] = {L"Preparing",L"Restoring session",L"Requesting remote configuration",L"Preparing interface",L"Startup is taking longer. Still preparing…",L"Startup failed. Close the window and reopen the app."};
     const wchar_t *zh[] = {L"准备中",L"恢复会话",L"请求远端配置",L"整理界面",L"启动时间较长，仍在准备…",L"启动失败，请关闭窗口后重新打开应用。"};
@@ -190,7 +190,7 @@ extern "C" bool soms_windows_launch_install(void *raw, bool dark) {
     if (Gdiplus::GdiplusStartup(&owner->graphics, &input, nullptr) != Gdiplus::Ok) return false;
     RECT bounds;
     GetClientRect(parent, &bounds);
-    HWND child = CreateWindowExW(0, wc.lpszClassName, L"SOMS",
+    HWND child = CreateWindowExW(0, wc.lpszClassName, L"SOMS.im",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, bounds.right, bounds.bottom,
         parent, nullptr, wc.hInstance, owner.get());
     if (!child) return false;
