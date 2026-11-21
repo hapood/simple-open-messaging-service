@@ -6,6 +6,7 @@ import 'dayjs/locale/en';
 import 'dayjs/locale/zh-cn';
 import { translations } from '../i18n/transloco.loader';
 import { PreferenceStore } from './preference-store.service';
+import { isTauri } from './runtime';
 
 /** Languages the app ships with. Add an entry here + a dictionary to extend. */
 export type AppLang = 'en' | 'zh-CN';
@@ -101,6 +102,12 @@ export class LanguageService {
     const revision = this.writeRevision;
     const stored = await this.preferences.get<AppLang>('global', LANG_KEY);
     if (revision !== this.writeRevision) return;
-    if (stored === 'en' || stored === 'zh-CN') this.lang.set(stored);
+    if (stored === 'en' || stored === 'zh-CN') {
+      this.lang.set(stored);
+    } else if (isTauri()) {
+      // Persist the resolved initial choice so background Rust uses the UI language
+      // even when no language has been selected manually and no WebView is alive.
+      await this.preferences.set('global', LANG_KEY, this.lang()).catch(() => {});
+    }
   }
 }

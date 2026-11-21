@@ -512,6 +512,7 @@ mod tests {
             has_unread_mention: false,
             muted: false,
             title: "Peer".into(),
+            is_group: false,
             previews: vec![],
         });
         deliver_batch(batch, true, platform(false)).await.unwrap();

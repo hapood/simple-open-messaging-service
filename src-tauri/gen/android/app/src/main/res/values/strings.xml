@@ -1,7 +1,4 @@
 <resources>
-    <string name="notif_message_retracted">[Message retracted]</string>
-    <string name="notif_message_removed">[Deleted by administrator]</string>
-    <string name="notif_private_body">You have new messages</string>
     <string name="app_name">"SOMS.im"</string>
     <string name="main_activity_title">"SOMS.im"</string>
     <string name="splash_tagline">Open chat. Simple and instant.</string>
@@ -48,10 +45,4 @@
     <string name="video_unsupported">This video format is not supported on this device.</string>
     <string name="video_retry">Retry</string>
     <string name="video_back">Back</string>
-    <!-- Per-thread ("thread" grouping) notification bundle summary — the collapsed header counting how many
-         conversations have new messages. Android picks the plural by count + device locale. -->
-    <plurals name="notif_group_summary">
-        <item quantity="one">"%d new conversation"</item>
-        <item quantity="other">"%d new conversations"</item>
-    </plurals>
 </resources>

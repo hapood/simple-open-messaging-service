@@ -73,6 +73,7 @@ pub(crate) struct NotificationThread {
     pub(crate) has_unread_mention: bool,
     pub(crate) muted: bool,
     pub(crate) title: String,
+    pub(crate) is_group: bool,
     pub(crate) previews: Vec<Value>,
 }
 
@@ -539,6 +540,7 @@ mod tests {
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"][0]["title"], "Private name");
         assert_eq!(batch.threads[0].title, "Private name");
+        assert!(batch.threads[0].is_group);
         assert_eq!(serde_json::to_value(&batch.threads).unwrap(), metadata["threads"]);
         delivered.server.as_mut().unwrap().alias = None;
         save(&conn, &delivered);
@@ -803,6 +805,7 @@ fn assemble_selected(
             has_unread_mention: server.last_mention_seq.is_some_and(|seq| seq > local),
             muted: thread["muted"].as_bool().unwrap_or(false),
             title,
+            is_group: server.kind == "GROUP",
             previews,
         });
     }

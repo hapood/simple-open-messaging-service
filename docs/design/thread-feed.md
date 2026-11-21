@@ -289,9 +289,11 @@ against advancing the cursor after a complete notification-consumed feed page.
   Pending wakes retain the greatest target; a pending scheduled poll retains head
   discovery. Returned cards are checked against the existing Rust account epoch,
   persisted session token, user ID and foreground status before presentation.
-- Kotlin renders exact counts, localized retraction/moderation placeholders,
-  per-sender cached avatars. Missing avatars use the app
-  logo. A zero-count update cancels its thread card. Session clearing cancels all
+- Rust generates the exact-count, unread-mention, latest-summary body and all
+  message placeholder copy; see [native notification content](native-notification-content.md).
+  Kotlin renders the same body in collapsed and expanded templates, with only the
+  selected summary's cached avatar (missing avatars use the app logo). Private
+  mode forwards no sender metadata. A zero-count update cancels its thread card. Session clearing cancels all
   message cards, not only the retired summary ID. Notification clicks retain the
   existing thread deep-link route.
 - The old Kotlin notification HTTP query, persisted notification-feed cursor and

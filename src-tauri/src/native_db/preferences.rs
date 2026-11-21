@@ -75,19 +75,21 @@ impl NotificationPreferences {
     }
 }
 
-/// Device language is presentation data, not part of login identity.
+/// Use the same global preference as the UI, independent of login identity.
 pub(crate) fn notification_language() -> Result<String, String> {
-    preferences_connection()?.with_database(|conn| {
-        let raw: Option<String> = conn.query_row(
-            "SELECT value_json FROM client_preferences WHERE scope='device' AND key='language'",
-            [], |row| row.get(0),
-        ).optional().map_err(|e| e.to_string())?;
-        match raw {
-            None => Ok("en".into()),
-            Some(raw) => parse_json(raw)?.as_str().map(str::to_owned)
-                .ok_or_else(|| "invalid device language".into()),
-        }
-    })
+    preferences_connection()?.with_database(|conn| read_notification_language(conn))
+}
+
+fn read_notification_language(conn: &rusqlite::Connection) -> Result<String, String> {
+    let raw: Option<String> = conn.query_row(
+        "SELECT value_json FROM client_preferences WHERE scope='global' AND key='language'",
+        [], |row| row.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    match raw {
+        None => Ok("en".into()),
+        Some(raw) => parse_json(raw)?.as_str().map(str::to_owned)
+            .ok_or_else(|| "invalid global language".into()),
+    }
 }
 
 /// One SQLite statement reads a consistent set of presentation preferences.
@@ -110,6 +112,20 @@ pub(crate) fn notification_preferences() -> Result<NotificationPreferences, Stri
 #[cfg(test)]
 mod notification_tests {
     use super::*;
+    #[test]
+    fn notification_language_reads_the_ui_global_setting() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE client_preferences(scope TEXT, key TEXT, value_json TEXT);
+            INSERT INTO client_preferences VALUES('device','language','\"en\"');").unwrap();
+        assert_eq!(read_notification_language(&conn).unwrap(), "en");
+        conn.execute("INSERT INTO client_preferences VALUES('global','language',?1)", ["\"zh-CN\""]).unwrap();
+        assert_eq!(read_notification_language(&conn).unwrap(), "zh-CN");
+        conn.execute("UPDATE client_preferences SET value_json='false' WHERE scope='global'", []).unwrap();
+        assert!(read_notification_language(&conn).is_err());
+        conn.execute("DROP TABLE client_preferences", []).unwrap();
+        assert!(read_notification_language(&conn).is_err());
+    }
+
     #[test]
     fn defaults_and_explicit_privacy_match_existing_device_settings() {
         let mut values = std::collections::HashMap::new();

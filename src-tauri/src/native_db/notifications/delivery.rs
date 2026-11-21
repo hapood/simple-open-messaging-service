@@ -389,7 +389,7 @@ mod tests {
     fn show() -> NotificationCommand {
         NotificationCommand::Show(NotificationContent {
             target: NotificationTarget::Thread { thread_id: 7 }, latest_seq: Some(42), title: "Peer".into(), body: "Message".into(), count: 1,
-            silent: false, messages: vec![], has_unread_mention: false,
+            public_body: "New message".into(), silent: false, messages: vec![], has_unread_mention: false,
         })
     }
     fn policy() -> AlertPolicy { AlertPolicy::Cooldown(Duration::from_secs(5)) }

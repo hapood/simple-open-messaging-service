@@ -10,7 +10,6 @@ import android.os.Build
 import android.os.Bundle
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -274,7 +273,6 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setDeleteIntent(dismissed)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
-                .setContentText(d.body)
                 // Standard notification badging only: supply this card's Rust-projected count, not an
                 // account-wide unread total. The launcher and system settings decide whether to show
                 // a number, a dot, or no badge. Do not maintain a separate OEM badge counter.
@@ -286,39 +284,27 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setContentIntent(pendingIntent)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-                .setPublicVersion(buildPublicVersion(ctx, pendingIntent))
-            if (d.messages.isEmpty()) {
-                builder.setStyle(NotificationCompat.BigTextStyle().bigText(d.body))
-            } else {
-                val self = Person.Builder().setName(ctx.getString(R.string.app_name)).build()
-                val style = NotificationCompat.MessagingStyle(self)
-                    .setConversationTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
-                    .setGroupConversation(true)
-                for (message in d.messages) {
-                    val sender = Person.Builder()
-                        .setKey(message.senderKey)
-                        .setName(message.senderName)
-                        .apply {
-                            avatarImages[message.senderKey]?.let { bitmap ->
-                                setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bitmap))
-                            }
-                        }
-                        .build()
-                    style.addMessage(message.text, message.timestamp, sender)
-                }
-                builder.setStyle(style)
-            }
+                .setPublicVersion(buildPublicVersion(ctx, pendingIntent, d.publicBody))
+            applyNotificationBody(builder, d.body)
+            // Rust forwards only the selected summary's sanitized avatar metadata.
+            avatarImages.values.singleOrNull()?.let { builder.setLargeIcon(it) }
             if (d.silent == true) builder.setSilent(true)
             val notification = builder.build()
             beforeSubmit()
             nm.notify(d.tag, id, notification)
         }
 
-        private fun buildPublicVersion(ctx: Context, contentIntent: PendingIntent): Notification =
+        /** Use the identical Rust body in collapsed and expanded OS templates. */
+        internal fun applyNotificationBody(builder: NotificationCompat.Builder, body: String) {
+            builder.setContentText(body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        }
+
+        private fun buildPublicVersion(ctx: Context, contentIntent: PendingIntent, body: String): Notification =
             NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(ctx.getString(R.string.app_name))
-                .setContentText(ctx.getString(R.string.notif_private_body))
+                .setContentText(body)
                 .setContentIntent(contentIntent)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .build()

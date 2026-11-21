@@ -40,6 +40,7 @@ class NativeNotificationBatch(
                 tag = notificationId,
                 title = if (remove) "" else content.getString("title"),
                 body = if (remove) "" else content.getString("body"),
+                publicBody = if (remove) "" else content.getString("publicBody"),
                 count = if (remove) 0 else content.getInt("count"),
                 attention = if (!remove && content.getBoolean("hasUnreadMention")) "mention" else null,
                 silent = remove || content.getBoolean("silent"), messages = messages,

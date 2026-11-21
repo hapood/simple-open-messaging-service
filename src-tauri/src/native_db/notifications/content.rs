@@ -5,6 +5,15 @@ pub(crate) struct NotificationCopy<'a> {
     pub(crate) private_body: &'a str,
     pub(crate) retracted: &'a str,
     pub(crate) removed: &'a str,
+    count_one: &'a str,
+    count_many: &'a str,
+}
+
+impl NotificationCopy<'_> {
+    fn count_prefix(self, count: i64) -> String {
+        let unit = if count == 1 { self.count_one } else { self.count_many };
+        format!("[{count}{unit}]")
+    }
 }
 
 pub(crate) fn localized_copy(language: &str) -> NotificationCopy<'static> {
@@ -13,12 +22,16 @@ pub(crate) fn localized_copy(language: &str) -> NotificationCopy<'static> {
             private_body: "新消息",
             retracted: "[消息已撤回]",
             removed: "[消息已被管理员删除]",
+            count_one: "条",
+            count_many: "条",
         }
     } else {
         NotificationCopy {
             private_body: "New message",
             retracted: "[Message retracted]",
             removed: "[Message removed by administrator]",
+            count_one: " message",
+            count_many: " messages",
         }
     }
 }
@@ -44,6 +57,8 @@ pub(crate) struct NotificationContent {
     pub(crate) latest_seq: Option<i32>,
     pub(crate) title: String,
     pub(crate) body: String,
+    /// Generic lock-screen copy, independent of message and conversation metadata.
+    pub(crate) public_body: String,
     pub(crate) count: i64,
     pub(crate) silent: bool,
     pub(crate) messages: Vec<NotificationMessage>,
@@ -122,16 +137,16 @@ fn content(
     let messages: Vec<NotificationMessage> = if private_preview {
         Vec::new()
     } else {
-        let mut previews: Vec<_> = thread.previews.iter()
+        // Only the highest unread sequence is presentation content, including avatar metadata.
+        thread.previews.iter()
             .filter(|preview| preview["seq"].as_i64().is_some_and(|seq| seq > i64::from(thread.last_read_seq)))
-            .collect();
-        previews.sort_by_key(|preview| preview["seq"].as_i64().unwrap_or_default());
-        previews.into_iter()
+            .max_by_key(|preview| preview["seq"].as_i64())
+            .into_iter()
             .map(|preview| {
                 let text = match preview["status"].as_str() {
                     Some("USER_RETRACTION") => copy.retracted,
                     Some("MODERATION_REMOVAL") => copy.removed,
-                    Some("LIVE") => preview["text"].as_str().filter(|text| !text.is_empty()).unwrap_or(copy.private_body),
+                    Some("LIVE") => preview["text"].as_str().filter(|text| !text.trim().is_empty()).unwrap_or(copy.private_body),
                     // Unknown states must never expose potentially removed content.
                     _ => copy.private_body,
                 };
@@ -152,9 +167,23 @@ fn content(
         target: thread.thread_id.into(),
         latest_seq: Some(thread.message_end_seq),
         title: thread.title.clone(),
-        body: if messages.is_empty() { copy.private_body.to_owned() } else {
-            messages.iter().map(|message| message.text.as_str()).collect::<Vec<_>>().join("\n")
+        body: {
+            let mut body = copy.count_prefix(thread.unread_count);
+            if thread.has_unread_mention {
+                body.push_str("[@]");
+            }
+            if let Some(message) = messages.last() {
+                if thread.is_group && !message.sender_name.trim().is_empty() {
+                    body.push_str(&message.sender_name);
+                    body.push_str(": ");
+                }
+                body.push_str(&message.text);
+            } else {
+                body.push_str(copy.private_body);
+            }
+            body
         },
+        public_body: copy.private_body.to_owned(),
         messages,
         has_unread_mention: thread.has_unread_mention,
         count: thread.unread_count,
@@ -171,7 +200,7 @@ mod tests {
         NotificationThread {
             thread_id: 7, thread_feed_id: 9, message_end_seq: 42, unread_count: 3,
             last_read_seq: 2, has_unread_mention: false, muted: true,
-            title: "Alice".into(),
+            title: "Alice".into(), is_group: false,
             previews: vec![
                 json!({"seq":2,"text":"already read"}),
                 json!({"seq":3,"text":"hello","status":"LIVE"}),
@@ -182,13 +211,13 @@ mod tests {
     }
 
     fn copy() -> NotificationCopy<'static> {
-        NotificationCopy { private_body: "New message", retracted: "Retracted", removed: "Removed" }
+        localized_copy("en")
     }
 
     #[test]
     fn uses_only_unread_previews_and_replaces_removed_content() {
         let result = content(&thread(), false, copy());
-        assert_eq!(result.body, "hello\nRetracted\nRemoved");
+        assert_eq!(result.body, "[3 messages][Message removed by administrator]");
         assert_eq!(result.title, "Alice");
         assert_eq!(result.count, 3);
         assert_eq!(result.latest_seq, Some(42));
@@ -200,7 +229,7 @@ mod tests {
         let mut thread = thread();
         thread.previews.reverse();
         thread.previews.push(json!({"seq":6,"status":"UNKNOWN","text":"secret"}));
-        assert_eq!(content(&thread, false, copy()).body, "hello\nRetracted\nRemoved\nNew message");
+        assert_eq!(content(&thread, false, copy()).body, "[3 messages]New message");
     }
 
     #[test]
@@ -215,7 +244,7 @@ mod tests {
         assert_eq!(result.messages, vec![NotificationMessage {
             seq: 8, sender_name: "Peer".into(), sender_key: Some("peer@example.test".into()),
             timestamp_ms: Some(1767225600000),
-            avatar_index: Some(2), text: "Retracted".into(),
+            avatar_index: Some(2), text: "[Message retracted]".into(),
         }]);
         assert!(!result.body.contains("secret"));
     }
@@ -247,7 +276,7 @@ mod tests {
         assert_eq!(wire["notification"]["target"]["threadId"], 7);
         // The authoritative ceiling is independent of truncated or private previews.
         assert_eq!(wire["notification"]["latestSeq"], 42);
-        assert_eq!(wire["notification"]["body"], "New message");
+        assert_eq!(wire["notification"]["body"], "[3 messages]New message");
         assert_eq!(wire["notification"]["messages"], json!([]));
         assert!(wire["notification"].get("previews").is_none());
         assert!(!wire.to_string().contains("hello"));
@@ -268,18 +297,11 @@ mod tests {
         let command = command(&thread, &preferences, copy());
         let wire = serde_json::to_value(command).unwrap();
         assert_eq!(wire["notification"]["messages"], json!([]));
-        assert_eq!(wire["notification"]["body"], "New message");
+        assert_eq!(wire["notification"]["body"], "[3 messages]New message");
         let raw = wire.to_string();
         for value in ["private message", "Private sender", "private-account", "private.test", "2026-01-01", "avatarIndex"] {
             assert!(!raw.contains(value), "private command leaked {value}");
         }
-    }
-
-    #[test]
-    fn private_mode_never_includes_message_text() {
-        let result = content(&thread(), true, copy());
-        assert_eq!(result.body, "New message");
-        assert!(result.messages.is_empty());
     }
 
     #[test]
@@ -305,7 +327,7 @@ mod tests {
             panic!("expected a notification");
         };
         assert!(result.silent);
-        assert_eq!(result.body, "New message");
+        assert_eq!(result.body, "[3 messages]New message");
     }
 
     #[test]
@@ -361,18 +383,102 @@ mod tests {
     }
 
     #[test]
-    fn localized_content_uses_native_copy_without_renderer_descriptors() {
-        assert_eq!(content(&thread(), true, localized_copy("zh-CN")).body, "新消息");
-        assert_eq!(content(&thread(), true, localized_copy("en")).body, "New message");
-        assert_eq!(content(&thread(), true, localized_copy("unknown")).body, "New message");
-        assert!(!content(&thread(), false, localized_copy("zh-CN")).body.contains("removed secret"));
+    fn counts_mentions_and_group_sender_are_shared_and_localized() {
+        for (language, one, many) in [("en", "1 message", "101 messages"), ("en-US", "1 message", "101 messages"), ("unknown", "1 message", "101 messages")] {
+            for (count, label) in [(1, one), (101, many)] {
+                for mention in [false, true] {
+                    for is_group in [false, true] {
+                        let mut thread = thread();
+                        thread.unread_count = count;
+                        thread.has_unread_mention = mention;
+                        thread.is_group = is_group;
+                        thread.previews = vec![
+                            json!({"seq":9,"status":"LIVE","text":"latest","senderName":"Bob"}),
+                            json!({"seq":3,"status":"LIVE","text":"older","senderName":"Alice","avatarIndex":4}),
+                        ];
+                        let result = content(&thread, false, localized_copy(language));
+                        assert_eq!(result.body, format!("[{label}]{}{}latest", if mention { "[@]" } else { "" }, if is_group { "Bob: " } else { "" }));
+                        assert_eq!(result.messages.len(), 1);
+                        assert_eq!(result.messages[0].seq, 9);
+                        assert_eq!(result.messages[0].avatar_index, None);
+                        assert_eq!(result.count, count);
+                        assert!(!serde_json::to_string(&result).unwrap().contains("older"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn latest_empty_removed_or_unknown_preview_never_falls_back_to_older_text() {
+        let copy = copy();
+        for (status, text, expected) in [
+            ("LIVE", "", copy.private_body),
+            ("LIVE", " \n\t", copy.private_body),
+            ("USER_RETRACTION", "secret", copy.retracted),
+            ("MODERATION_REMOVAL", "secret", copy.removed),
+            ("UNKNOWN", "secret", copy.private_body),
+        ] {
+            let mut thread = thread();
+            thread.previews = vec![
+                json!({"seq":3,"status":"LIVE","text":"older secret"}),
+                json!({"seq":9,"status":status,"text":text}),
+            ];
+            let result = content(&thread, false, copy);
+            assert_eq!(result.body, format!("{}{expected}", copy.count_prefix(3)));
+            assert!(!serde_json::to_string(&result).unwrap().contains("secret"));
+        }
+    }
+
+    #[test]
+    fn missing_fields_and_blank_group_sender_use_safe_copy_without_a_prefix() {
+        let mut thread = thread();
+        thread.is_group = true;
+        for preview in [
+            json!({"seq":9,"status":"LIVE","senderName":" "}),
+            json!({"seq":9,"text":"secret"}),
+            json!({"seq":9,"status":"LIVE","text":null}),
+        ] {
+            thread.previews = vec![preview];
+            assert_eq!(content(&thread, false, copy()).body, "[3 messages]New message");
+        }
+    }
+
+    #[test]
+    fn privacy_preserves_count_and_mention_but_public_copy_is_always_generic() {
+        let mut thread = thread();
+        thread.is_group = true;
+        thread.has_unread_mention = true;
+        thread.previews = vec![json!({"seq":9,"status":"LIVE","text":"secret","senderName":"Hidden sender","avatarIndex":1})];
+        let result = content(&thread, true, copy());
+        assert_eq!(result.body, "[3 messages][@]New message");
+        assert_eq!(result.public_body, "New message");
+        assert!(result.messages.is_empty());
+        let wire = serde_json::to_string(&result).unwrap();
+        for secret in ["secret", "Hidden sender", "avatarIndex"] { assert!(!wire.contains(secret)); }
+        assert_eq!(content(&thread, false, copy()).public_body, "New message");
+    }
+
+    #[test]
+    fn updated_read_projection_replaces_count_mention_and_removes_when_empty() {
+        let mut thread = thread();
+        thread.has_unread_mention = true;
+        assert!(content(&thread, false, copy()).body.starts_with("[3 messages][@]"));
+        thread.last_read_seq = 4;
+        thread.unread_count = 1;
+        thread.has_unread_mention = false;
+        assert_eq!(content(&thread, false, copy()).body, "[1 message][Message removed by administrator]");
+        thread.last_read_seq = 5;
+        thread.unread_count = 0;
+        let prefs = super::super::super::preferences::NotificationPreferences { enabled: true, sound: true, private_preview: false };
+        assert_eq!(command(&thread, &prefs, copy()), NotificationCommand::Remove { target: 7.into() });
     }
 
     #[test]
     fn missing_unread_preview_uses_private_fallback() {
         let mut thread = thread();
         thread.last_read_seq = 5;
-        assert_eq!(content(&thread, false, copy()).body, "New message");
+        assert_eq!(content(&thread, false, copy()).body, "[3 messages]New message");
         assert_eq!(content(&thread, false, copy()).latest_seq, Some(42));
     }
 }

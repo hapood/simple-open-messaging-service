@@ -7,7 +7,7 @@ class NativeNotificationBatchTest {
     @org.junit.Test fun request_target_survives_without_a_thread_id() {
         val result = NativeNotificationBatch("""{"commands":[{"operation":"show","notification":{
             "target":{"kind":"friend-requests"},"notificationId":"request-card","count":1,
-            "title":"SOMS","body":"New requests","silent":true,"hasUnreadMention":false,"messages":[]
+            "title":"SOMS","publicBody":"New message","body":"New requests","silent":true,"hasUnreadMention":false,"messages":[]
         }}]}""", emptyArray()).descriptors().single()
         assertNull(result.latestSeq)
         org.junit.Assert.assertFalse(org.json.JSONObject(result.target).has("threadId"))
@@ -17,7 +17,7 @@ class NativeNotificationBatchTest {
     @Test
     fun decodes_rust_content_without_reordering_or_rewriting_it() {
         val batch = NativeNotificationBatch("""{"commands":[{"operation":"show","notification":{
-          "notificationId":"card-a","target":{"kind":"thread","threadId":7},"latestSeq":42,"count":101,"title":"Peer","body":"Rust body","hasUnreadMention":true,"silent":true,
+          "notificationId":"card-a","target":{"kind":"thread","threadId":7},"latestSeq":42,"count":101,"title":"Peer","publicBody":"New message","body":"Rust body","hasUnreadMention":true,"silent":true,
           "messages":[{"seq":6,"timestampMs":1788912000000,"senderKey":"peer@example.test",
           "senderName":"Peer","text":"Rust text","avatarIndex":0}]
         }}]}""", arrayOf(byteArrayOf(0, -1)))
@@ -32,6 +32,25 @@ class NativeNotificationBatchTest {
         assertEquals(7, org.json.JSONObject(descriptor.target).getInt("threadId"))
     }
 
+    @Test
+    fun preservesLocalizedPrivateBodyAndPublicCopyWithoutInferringFromMetadata() {
+        for ((body, publicBody) in listOf(
+            "[101 messages][@]New message" to "New message",
+        )) {
+            val descriptor = NativeNotificationBatch("""{"commands":[{"operation":"show","notification":{
+                "notificationId":"private-card","target":{"kind":"thread","threadId":7},"latestSeq":42,
+                "count":101,"title":"Group","body":"$body","publicBody":"$publicBody",
+                "hasUnreadMention":true,"silent":true,"messages":[]
+            }}]}""", emptyArray()).descriptors().single()
+            assertEquals(body, descriptor.body)
+            assertEquals(publicBody, descriptor.publicBody)
+            assertEquals(101, descriptor.count)
+            assertEquals("mention", descriptor.attention)
+            assertEquals(true, descriptor.silent)
+            assertTrue(descriptor.messages.isEmpty())
+        }
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun show_without_instance_id_is_rejected() {
         NativeNotificationBatch("""{"commands":[{"operation":"show","notification":{"target":{"kind":"thread","threadId":7}}}]}""",
@@ -43,7 +62,7 @@ class NativeNotificationBatchTest {
         for (field in listOf("", ",\"latestSeq\":-1", ",\"latestSeq\":2147483648", ",\"latestSeq\":1.5", ",\"latestSeq\":\"42\"")) {
             val metadata = """{"commands":[{"operation":"show","notification":{
                 "notificationId":"card-a","target":{"kind":"thread","threadId":7}$field,
-                "count":1,"title":"Peer","body":"New message","hasUnreadMention":false,"silent":false,"messages":[]
+                "count":1,"title":"Peer","publicBody":"New message","body":"New message","hasUnreadMention":false,"silent":false,"messages":[]
             }}]}"""
             assertTrue(runCatching { NativeNotificationBatch(metadata, emptyArray()).descriptors() }.isFailure)
         }
@@ -60,7 +79,7 @@ class NativeNotificationBatchTest {
     fun renders_content_free_show_and_remove_commands() {
         val batch = NativeNotificationBatch("""{"commands":[
           {"operation":"show","notification":{"notificationId":"card-b","target":{"kind":"thread","threadId":7},"latestSeq":42,"count":1,"title":"Peer",
-           "body":"New message","hasUnreadMention":false,"silent":false,"messages":[]}},
+           "publicBody":"New message","body":"New message","hasUnreadMention":false,"silent":false,"messages":[]}},
           {"operation":"remove","notification":{"notificationId":"card-c","target":{"kind":"thread","threadId":8}}}
         ]}""", emptyArray())
         val descriptors = batch.descriptors()

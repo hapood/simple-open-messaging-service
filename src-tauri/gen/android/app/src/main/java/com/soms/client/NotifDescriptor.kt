@@ -15,9 +15,10 @@ data class NotifDescriptor(
     val tag: String,
     val title: String,
     val body: String,
+    val publicBody: String,
     /** Unread count represented by this notification, independent of dismissal. */
     val count: Int,
-    /** Optional reason for elevated visual treatment; copy remains server-authored. */
+    /** Rust-projected attention metadata; never used to rebuild the body. */
     val attention: String?,
     val silent: Boolean?,
     val messages: List<NotifMessage>,

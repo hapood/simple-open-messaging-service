@@ -139,6 +139,7 @@ pub(crate) fn command(
             value.title.clone()
         },
         body: label.into(),
+        public_body: super::content::localized_copy(language).private_body.into(),
         count: 1,
         silent: !alert || !preferences.sound || value.muted,
         messages: vec![],
